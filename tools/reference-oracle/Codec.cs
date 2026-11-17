@@ -20,6 +20,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using OpenMetaverse;
+using OpenMetaverse.Packets;
 using OpenMetaverse.StructuredData;
 
 namespace Ferroan.ReferenceOracle;
@@ -88,6 +89,8 @@ internal static class Codec
                 return Canon(DecodeLlsd(format, payload));
             if (family == "bytes")
                 return DecodeBytes(format, payload, parms ?? new JsonObject());
+            if (family == "packet")
+                return DecodePacket(payload, parms ?? new JsonObject());
             throw new InvalidOperationException("unknown family: " + family);
         }
         catch (Exception ex) when (IsDecodeFailure(ex))
@@ -424,6 +427,23 @@ internal static class Codec
                     return false;
                 OSD value = DecodeLlsd(format, payload);
                 return EncodeLlsd(format, value).AsSpan().SequenceEqual(payload);
+            }
+
+            if (family == "packet")
+            {
+                JsonObject packetParms = parms ?? new JsonObject();
+                string name = packetParms["name"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(name))
+                {
+                    return false;
+                }
+
+                if (!PacketCases.EncodeNamed(name).AsSpan().SequenceEqual(payload))
+                {
+                    return false;
+                }
+
+                return PacketCases.MatchesClass(name, payload);
             }
 
             return ReencodeBytes(format, payload, parms ?? new JsonObject()).AsSpan().SequenceEqual(payload);
@@ -816,6 +836,24 @@ internal static class Codec
         return node;
     }
 
+    static JsonObject DecodePacket(byte[] payload, JsonObject parms)
+    {
+        string name = parms["name"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(name) || payload.Length < 7)
+        {
+            throw new InvalidOperationException("packet fixture is missing a name or a header");
+        }
+
+        var node = new JsonObject
+        {
+            ["type"] = "packet",
+            ["name"] = name,
+            ["length"] = payload.Length,
+            ["flags"] = payload[0],
+        };
+        return node;
+    }
+
     static bool IsDecodeFailure(Exception ex)
     {
         return ex is OSDException
@@ -825,6 +863,7 @@ internal static class Codec
             or IndexOutOfRangeException
             or EndOfStreamException
             or DecoderFallbackException
+            or MalformedDataException
             or System.Xml.XmlException;
     }
 }

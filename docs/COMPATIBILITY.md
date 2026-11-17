@@ -6,7 +6,7 @@ Ferroan must work on grids where the rest is still Tranquillity ([D2](DECISIONS.
 
 | Interface | Used by | Must match |
 | --- | --- | --- |
-| Viewer protocol | Firestorm, Aurora and other SL-style viewers | LLUDP message template, acks and throttles, CAPS with LLSD, the event queue, mesh and texture fetch |
+| Viewer protocol | Firestorm, Aurora and other SL-style viewers | LLUDP message template, acks and throttles, CAPS with LLSD, the event queue, mesh and texture fetch. The template and framing choices are in [PROTOCOL.md](PROTOCOL.md) |
 | Login | Viewers and grid websites | XML-RPC `login_to_simulator` and its response fields |
 | Region to Robust | C# regions and services | The service connectors' HTTP and XML forms |
 | Hypergrid | Other OpenSim grids | Gatekeeper, user agent, HG inventory and asset services, universal user identifiers |

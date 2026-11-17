@@ -372,6 +372,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-protocol"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "ferroan-types"
 version = "0.1.0"
 dependencies = [

@@ -11,6 +11,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-config` | Tranquillity INI loading: Nini's parser, includes, and `${Section|key}` substitution. The region and grid loaders keep their different include order |
 | `ferroan-llsd` | LLSD in XML, binary and notation, matching OpenMetaverse. Maps keep insertion order. Dates are tick counts, because one `f64` cannot hold both the XML text and the binary `AddSeconds` result |
 | `ferroan-http` | Robust form bodies, `<ServerResponse>` XML and LLSD over HTTP, on axum and reqwest |
+| `ferroan-protocol` | LLUDP messages generated from libopenmetaverse's `message_template.msg`, plus framing, zero-coding and appended acks. See [docs/PROTOCOL.md](docs/PROTOCOL.md) |
 | `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config` and `http` |
 
 ## Planned
@@ -34,15 +35,9 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-physics` | The only crate that calls Jolt (native C++) | 3 |
 | `ferroan-scripting` | The only crate that calls Linden's SLua engine (native C++); the `ll`, `os` and `bot` functions | 4 |
 
-### Shared crates
-
-| Crate | Purpose | Phase |
-| --- | --- | --- |
-| `ferroan-protocol` | Packets generated from the viewer's `message_template.msg` | 0 |
-
 ## Where code comes from
 
-Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies later prim volumes ([D11](docs/DECISIONS.md)). Texture entries, extra parameters and shape quantizers follow libopenmetaverse: Aurora's viewer packer does not emit the same bytes. Permission folding is ported from Tranquillity. Other C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md).
+Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies later prim volumes ([D11](docs/DECISIONS.md)). The message template Ferroan generates from is libopenmetaverse's, the one Tranquillity speaks. Texture entries, extra parameters and shape quantizers follow libopenmetaverse: Aurora's viewer packer does not emit the same bytes. Permission folding is ported from Tranquillity. Packet quaternions use OpenMetaverse `Quaternion.ToBytes`. Other C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md). The template differences are listed in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Vectors and quaternions
 
