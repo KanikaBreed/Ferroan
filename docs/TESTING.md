@@ -29,17 +29,21 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 `ferroan-capture check` decodes every UDP record in a capture and requires the same bytes back. The steps, the Tranquillity patch and the redaction rules are in [CAPTURES.md](CAPTURES.md). CI runs the synthetic `UseCircuitCode` test and the local HTTP proxy test. It does not run Tranquillity, and no redacted session is committed yet. A raw capture is checked before redaction and is not committed. The committed file is the scrubbed encoding, checked again with `replay`.
 
+## Live harness
+
+Planned in P0.10 ([ACTION_PLAN.md](ACTION_PLAN.md)). `cargo xtask live run all` builds Tranquillity at the pinned revision under `.scratch/live/`, starts a standalone region, and drives it with `ferroan-bot`, a headless client, through scenarios checked from the server's replies. Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following `docs/MANUAL_CHECKS.md`.
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |
 | --- | --- |
 | Parsing or encoding (packets, LLSD, XML, archives) | Tests against bytes captured from Tranquillity, plus malformed and oversized input. A round trip through our own encoder and decoder alone is not enough |
-| A grid service | Captured-traffic fixtures, then a run behind a test grid with C# regions |
-| Region behavior | A viewer check (Aurora scripted, Firestorm by hand), recorded with viewer version and steps |
+| A grid service | Captured-traffic fixtures, then a live-harness run with the C# region using the Rust service, compared with the C# service |
+| Region behavior | A `ferroan-bot` scenario in the live harness, run against the C# region (and against the Ferroan region once it exists). Firestorm by hand at the phase gate |
 | Configuration | Resolved key/value sets from the Nini oracle, including the shipped region and grid examples when the reference checkout is present |
 | Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
 | Native code (planned physics and scripting crates) | `SAFETY` comments on every unsafe block, and fuzzing of the boundary |
 
 ## Honest status
 
-A compile check proves the code builds. It does not prove a viewer can log in, a script behaves as it did in C#, or a grid stays up. Record those as pending until someone has seen them work, with the revision, viewer or grid, and result.
+A compile check proves the code builds. It does not prove a viewer can log in, a script behaves as it did in C#, or a grid stays up. Record those as pending until someone has seen them work, with the revision, viewer or grid, and result. A passing live-harness run is evidence of protocol behavior seen by `ferroan-bot`; it is not evidence that Firestorm renders the result, which the phase-gate check covers.
