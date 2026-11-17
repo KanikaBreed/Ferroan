@@ -15,8 +15,8 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-capture` | The capture file, the HTTP logging proxy, and redaction. UDP recording is the local Tranquillity patch in [docs/CAPTURES.md](docs/CAPTURES.md) |
 | `ferroan-bot` | Headless viewer in `tools/bot`: XML-RPC login, one LLUDP circuit and the seed capability. It has not logged into a region. Scenarios are still planned |
 | `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
-| `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port` |
-| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http` and `asset` |
+| `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port`. `[Network] bind_ip_address` chooses the listen address; empty means `0.0.0.0`, the same default as Tranquillity with that key unset |
+| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live` |
 
 ## Planned
 

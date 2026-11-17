@@ -31,7 +31,7 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 ## Live harness
 
-P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, checked without a region (`cargo test -p ferroan-bot`). `cargo xtask live`, the scenarios and the CI job are still planned (P0.10b to P0.10e in [ACTION_PLAN.md](ACTION_PLAN.md)). The manual recipe the harness will automate is in [LIVE.md](LIVE.md). Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, checked without a region (`cargo test -p ferroan-bot`). `cargo xtask live build`, `up` and `down` build the pinned Tranquillity region into `.scratch/live/` and start it on `127.0.0.1` (P0.10b). The patches and the SQLite column workaround are in [tools/live/README.md](../tools/live/README.md). Scenarios, captures and the CI job are still planned (P0.10c to P0.10e in [ACTION_PLAN.md](ACTION_PLAN.md)). The manual recipe is in [LIVE.md](LIVE.md). Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following [MANUAL_CHECKS.md](MANUAL_CHECKS.md). `ring` is allowed by [D16](DECISIONS.md).
 
 ## Evidence by kind of change
 

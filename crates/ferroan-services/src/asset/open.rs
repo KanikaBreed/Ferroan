@@ -92,6 +92,28 @@ pub fn network_port(config: &Config) -> Result<u16, AssetError> {
         .map_err(|_| AssetError::Config("Network port is not a port number"))
 }
 
+/// Address of `[Network] bind_ip_address`.
+///
+/// Empty or absent means every IPv4 interface (`0.0.0.0`), which is what
+/// Tranquillity does when the key is unset. A value must be an IP address.
+/// The harness sets `127.0.0.1`. The name is the one Tranquillity PR #412 adds.
+pub fn listen_address(config: &Config) -> Result<std::net::IpAddr, AssetError> {
+    let Some(text) = config.get("Network", "bind_ip_address") else {
+        return Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    }
+    if text.len() > 64 {
+        return Err(AssetError::Config(
+            "[Network] bind_ip_address is not an IP address",
+        ));
+    }
+    text.parse()
+        .map_err(|_| AssetError::Config("[Network] bind_ip_address is not an IP address"))
+}
+
 fn is_stock_asset_service(module: &str) -> bool {
     let module = module.trim();
     if module.contains("FSAsset") || module.contains("XAsset") {
@@ -159,4 +181,37 @@ fn config_bool_in(
 
 fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str> {
     config.get(section, key).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    fn parsed(text: &str) -> Config {
+        Config::parse(text).expect("ini")
+    }
+
+    #[test]
+    fn listen_address_defaults_to_every_ipv4_interface() {
+        let missing = listen_address(&parsed("[Network]\nport = 9000\n")).expect("default");
+        assert_eq!(missing, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let empty = listen_address(&parsed("[Network]\nbind_ip_address =\n")).expect("empty");
+        assert_eq!(empty, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let blank = listen_address(&parsed("[Network]\nbind_ip_address =   \n")).expect("blank");
+        assert_eq!(blank, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn listen_address_accepts_an_ip_and_rejects_a_name() {
+        let v4 = listen_address(&parsed("[Network]\nbind_ip_address = 127.0.0.1\n")).expect("v4");
+        assert_eq!(v4, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let v6 = listen_address(&parsed("[Network]\nbind_ip_address = ::1\n")).expect("v6");
+        assert_eq!(v6, IpAddr::V6(Ipv6Addr::LOCALHOST));
+        let explicit =
+            listen_address(&parsed("[Network]\nbind_ip_address = 0.0.0.0\n")).expect("any");
+        assert_eq!(explicit, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert!(listen_address(&parsed("[Network]\nbind_ip_address = localhost\n")).is_err());
+    }
 }

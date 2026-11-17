@@ -1,0 +1,23 @@
+diff --git a/Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs b/Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs
+--- a/Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs
++++ b/Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs
+@@ -119,7 +119,8 @@ public class BaseHttpServer : IHttpServer
+     protected string m_certCN= "";
+     protected RemoteCertificateValidationCallback m_certificateValidationCallback = null;
+ 
+-    protected IPAddress m_listenIPAddress = IPAddress.Any;
++    // Ferroan harness: loopback until [Network] bind_ip_address exists upstream.
++    protected IPAddress m_listenIPAddress = IPAddress.Loopback;
+ 
+     public string Protocol
+     {
+@@ -2004,7 +2005,8 @@ public class BaseHttpServer : IHttpServer
+             }
+             else
+             {
+-                m_httpListener = tinyHTTPListener.Create(IPAddress.Any, (int)m_port, m_cert);
++                // Ferroan harness: the HTTPS listener hardcoded every interface.
++                m_httpListener = tinyHTTPListener.Create(m_listenIPAddress, (int)m_port, m_cert);
+                 if(m_certificateValidationCallback is not null)
+                     m_httpListener.CertificateValidationCallback = m_certificateValidationCallback;
+                 m_httpListener.ExceptionThrown += httpServerException;

@@ -13,5 +13,5 @@ pub mod asset;
 pub use asset::{
     Asset, AssetError, AssetHttp, AssetOptions, AssetStore, DeleteMode, content_type, decode_asset,
     decode_metadata_type, decode_strings, encode_asset, encode_bool, encode_bools, encode_metadata,
-    encode_string, encode_strings, network_port,
+    encode_string, encode_strings, listen_address, network_port,
 };

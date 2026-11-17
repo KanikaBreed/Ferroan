@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repository tasks for Ferroan: cargo xtask check, oracle, schema, config, http and asset"
+description = "Repository tasks for Ferroan: cargo xtask check, oracle, schema, config, http, asset and live"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
