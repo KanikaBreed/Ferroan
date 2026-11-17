@@ -204,6 +204,50 @@ fn snake(name: &str) -> String {
     out
 }
 
+/// Fields a committed capture must not keep. Object UUIDs stay. Avatar
+/// names, sessions, circuit codes and every IP address do not.
+fn scrub_line(block: &str, field: &str, ty: &VarType, rust_field: &str) -> Option<String> {
+    let block = block.to_ascii_lowercase();
+    let field = field.to_ascii_lowercase();
+    let text = field == "name"
+        || field == "fromname"
+        || field == "fromagentname"
+        || field == "firstname"
+        || field == "lastname"
+        || field == "username"
+        || field == "namevalue"
+        || field == "objectowner"
+        || field.contains("password")
+        || field.contains("passwd")
+        || field.contains("secret")
+        || field.contains("token")
+        || field.contains("email");
+    match ty {
+        VarType::Simple(_, "ipaddr") => Some(format!("self.{rust_field} = [127, 0, 0, 1];")),
+        VarType::Simple(_, "uuid") if field.contains("session") => {
+            Some(format!("self.{rust_field} = uuid::Uuid::from_u128(2);"))
+        }
+        VarType::Simple(_, "uuid")
+            if field.contains("agentid")
+                || field.contains("userid")
+                || field.contains("ownerid")
+                || field.contains("creatorid")
+                || field.contains("abuserid")
+                || field.contains("reporterid")
+                || (field == "id" && block.contains("circuit")) =>
+        {
+            Some(format!("self.{rust_field} = uuid::Uuid::from_u128(1);"))
+        }
+        VarType::Simple(_, "u32") if field == "code" || field.contains("circuitcode") => {
+            Some(format!("self.{rust_field} = 1;"))
+        }
+        VarType::Variable(_) if text => {
+            Some(format!("self.{rust_field} = b\"Redacted\".to_vec();"))
+        }
+        _ => None,
+    }
+}
+
 fn generate(msgs: &[Message]) -> String {
     let mut s = String::new();
     s.push_str("// @generated from message_template.msg by build.rs. Do not edit.\n\n");
@@ -282,6 +326,13 @@ fn generate(msgs: &[Message]) -> String {
             }
             let _ = writeln!(s, "            }})");
             let _ = writeln!(s, "        }}");
+            let _ = writeln!(s, "        #[inline] pub fn scrub(&mut self) {{");
+            for v in &b.vars {
+                if let Some(line) = scrub_line(&b.name, &v.name, &v.ty, &snake(&v.name)) {
+                    let _ = writeln!(s, "            {line}");
+                }
+            }
+            let _ = writeln!(s, "        }}");
             let _ = writeln!(s, "    }}");
         }
         let _ = writeln!(s, "}}");
@@ -359,6 +410,21 @@ fn generate(msgs: &[Message]) -> String {
         let _ = writeln!(s, "        }})");
         let _ = writeln!(s, "    }}");
         let _ = writeln!(s, "}}");
+        let _ = writeln!(s, "impl {} {{", m.name);
+        let _ = writeln!(s, "    pub fn scrub(&mut self) {{");
+        for b in &m.blocks {
+            let f = snake(&b.name);
+            match b.kind {
+                BlockKind::Single => {
+                    let _ = writeln!(s, "        self.{f}.scrub();");
+                }
+                _ => {
+                    let _ = writeln!(s, "        for b in &mut self.{f} {{ b.scrub(); }}");
+                }
+            }
+        }
+        let _ = writeln!(s, "    }}");
+        let _ = writeln!(s, "}}");
     }
 
     // id -> info table
@@ -394,6 +460,25 @@ fn generate(msgs: &[Message]) -> String {
         let _ = writeln!(
             s,
             "        {id} => {{ let m = {}::decode(body)?; let mut w = Writer::new(); m.encode_body(&mut w); Ok(w.buf) }},",
+            m.name
+        );
+    }
+    s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
+
+    s.push_str("pub fn scrub_body(id: MsgId, body: &[u8]) -> Result<Vec<u8>, DecodeError> {\n    match id {\n");
+    let mut scrubbed = std::collections::BTreeSet::new();
+    for m in msgs {
+        let id = match m.freq.as_str() {
+            "High" => format!("MsgId::High({})", m.number),
+            "Medium" => format!("MsgId::Medium({})", m.number),
+            _ => format!("MsgId::Low({})", m.number & 0xFFFF),
+        };
+        if !scrubbed.insert(id.clone()) {
+            panic!("duplicate message id {id} ({})", m.name);
+        }
+        let _ = writeln!(
+            s,
+            "        {id} => {{ let mut m = {}::decode(body)?; m.scrub(); let mut w = Writer::new(); m.encode_body(&mut w); Ok(w.buf) }},",
             m.name
         );
     }

@@ -25,6 +25,10 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 `cargo xtask asset generate` and `verify` build [tools/asset-oracle](../tools/asset-oracle/README.md) and serialize `AssetBase` with Tranquillity's `ServerUtils.SerializeResult`. The documents are committed under [fixtures/asset](../fixtures/asset/README.md). CI does not run the tool. `ferroan-services` tests encode to those bytes and serve them from a copy of the AssetStore SQLite fixture. A Tranquillity region has not been pointed at `ferroan-robust`, and Aurora has not shown or uploaded a texture.
 
+## Session captures
+
+`ferroan-capture check` decodes every UDP record in a capture and requires the same bytes back. The steps, the Tranquillity patch and the redaction rules are in [CAPTURES.md](CAPTURES.md). CI runs the synthetic `UseCircuitCode` test and the local HTTP proxy test. It does not run Tranquillity, and no redacted session is committed yet. A raw capture is checked before redaction and is not committed. The committed file is the scrubbed encoding, checked again with `replay`.
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |

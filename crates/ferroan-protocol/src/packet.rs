@@ -274,6 +274,31 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
+/// Decode, replace session, agent, name, circuit and IP fields, and encode
+/// again. Other bytes follow the same path as [`reencode_datagram`].
+pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    let parsed = parse_packet(data)?;
+    if !parsed.extra.is_empty() {
+        return Err(DecodeError::Malformed("extra header is not re-encoded"));
+    }
+    let info = crate::message_info(parsed.id).ok_or(DecodeError::Malformed("unknown message"))?;
+    let body = crate::scrub_body(parsed.id, &parsed.body)?;
+    let mut payload = Vec::with_capacity(4 + body.len());
+    parsed.id.encode(&mut payload);
+    payload.extend(body);
+    let mut out = Vec::new();
+    build_raw(
+        &payload,
+        info.zerocoded,
+        parsed.sequence,
+        parsed.reliable(),
+        parsed.resent(),
+        &parsed.acks,
+        &mut out,
+    );
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

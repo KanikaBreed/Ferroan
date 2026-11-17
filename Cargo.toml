@@ -8,6 +8,7 @@ members = [
     "crates/ferroan-protocol",
     "crates/ferroan-services",
     "crates/ferroan-robust",
+    "crates/ferroan-capture",
     "xtask",
 ]
 resolver = "3"

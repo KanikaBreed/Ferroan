@@ -335,6 +335,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-capture"
+version = "0.1.0"
+dependencies = [
+ "ferroan-protocol",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ferroan-config"
 version = "0.1.0"
 
