@@ -1,0 +1,209 @@
+{
+  "format": 1,
+  "tranquillity": "713857f10b8e91a639a967d4354a4682b080793c",
+  "cases": [
+    {
+      "id": "asset/texture",
+      "kind": "asset",
+      "file": "asset/texture.xml",
+      "uuid": "00112233-4455-6677-8899-aabbccddeeff",
+      "name": "Wood",
+      "description": "a plank",
+      "type": 0,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 0,
+      "data_hex": "68656c6c6f"
+    },
+    {
+      "id": "metadata/texture",
+      "kind": "metadata",
+      "file": "metadata/texture.xml",
+      "uuid": "00112233-4455-6677-8899-aabbccddeeff",
+      "name": "Wood",
+      "description": "a plank",
+      "type": 0,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 0,
+      "data_hex": "68656c6c6f"
+    },
+    {
+      "id": "asset/escaped",
+      "kind": "asset",
+      "file": "asset/escaped.xml",
+      "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "a & b <c>",
+      "description": "line\ntwo",
+      "type": 7,
+      "local": true,
+      "temporary": true,
+      "creator_id": "00000000-0000-0000-0000-000000000000",
+      "flags": 1,
+      "data_hex": "0001ff"
+    },
+    {
+      "id": "metadata/escaped",
+      "kind": "metadata",
+      "file": "metadata/escaped.xml",
+      "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "a & b <c>",
+      "description": "line\ntwo",
+      "type": 7,
+      "local": true,
+      "temporary": true,
+      "creator_id": "00000000-0000-0000-0000-000000000000",
+      "flags": 1,
+      "data_hex": "0001ff"
+    },
+    {
+      "id": "asset/long-data",
+      "kind": "asset",
+      "file": "asset/long-data.xml",
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+      "description": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "type": 6,
+      "local": false,
+      "temporary": false,
+      "creator_id": "maker",
+      "flags": 3,
+      "data_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7"
+    },
+    {
+      "id": "metadata/long-data",
+      "kind": "metadata",
+      "file": "metadata/long-data.xml",
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+      "description": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "type": 6,
+      "local": false,
+      "temporary": false,
+      "creator_id": "maker",
+      "flags": 3,
+      "data_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7"
+    },
+    {
+      "id": "asset/all-flags",
+      "kind": "asset",
+      "file": "asset/all-flags.xml",
+      "uuid": "22222222-3333-4444-5555-666666666666",
+      "name": "all",
+      "description": "d",
+      "type": 0,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 7,
+      "data_hex": "78"
+    },
+    {
+      "id": "metadata/all-flags",
+      "kind": "metadata",
+      "file": "metadata/all-flags.xml",
+      "uuid": "22222222-3333-4444-5555-666666666666",
+      "name": "all",
+      "description": "d",
+      "type": 0,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 7,
+      "data_hex": "78"
+    },
+    {
+      "id": "asset/empty",
+      "kind": "asset",
+      "file": "asset/empty.xml",
+      "uuid": "44444444-5555-6666-7777-888888888888",
+      "name": "empty",
+      "description": "",
+      "type": -1,
+      "local": false,
+      "temporary": false,
+      "creator_id": "",
+      "flags": 0,
+      "data_hex": ""
+    },
+    {
+      "id": "metadata/empty",
+      "kind": "metadata",
+      "file": "metadata/empty.xml",
+      "uuid": "44444444-5555-6666-7777-888888888888",
+      "name": "empty",
+      "description": "",
+      "type": -1,
+      "local": false,
+      "temporary": false,
+      "creator_id": "",
+      "flags": 0,
+      "data_hex": ""
+    },
+    {
+      "id": "asset/controls",
+      "kind": "asset",
+      "file": "asset/controls.xml",
+      "uuid": "55555555-6666-7777-8888-999999999999",
+      "name": "say \"hi\"",
+      "description": "a\r\nb\t<",
+      "type": 7,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 4,
+      "data_hex": "20"
+    },
+    {
+      "id": "metadata/controls",
+      "kind": "metadata",
+      "file": "metadata/controls.xml",
+      "uuid": "55555555-6666-7777-8888-999999999999",
+      "name": "say \"hi\"",
+      "description": "a\r\nb\t<",
+      "type": 7,
+      "local": false,
+      "temporary": false,
+      "creator_id": "creator",
+      "flags": 4,
+      "data_hex": "20"
+    },
+    {
+      "id": "bool-true",
+      "kind": "scalar",
+      "file": "scalar/bool-true.xml"
+    },
+    {
+      "id": "bool-false",
+      "kind": "scalar",
+      "file": "scalar/bool-false.xml"
+    },
+    {
+      "id": "string-id",
+      "kind": "scalar",
+      "file": "scalar/string-id.xml"
+    },
+    {
+      "id": "bools",
+      "kind": "scalar",
+      "file": "scalar/bools.xml"
+    },
+    {
+      "id": "ids",
+      "kind": "scalar",
+      "file": "scalar/ids.xml"
+    },
+    {
+      "id": "bools-empty",
+      "kind": "scalar",
+      "file": "scalar/bools-empty.xml"
+    },
+    {
+      "id": "ids-empty",
+      "kind": "scalar",
+      "file": "scalar/ids-empty.xml"
+    }
+  ]
+}

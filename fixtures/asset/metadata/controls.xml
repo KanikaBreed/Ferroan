@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetMetadata xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <FullID>
+    <Guid>55555555-6666-7777-8888-999999999999</Guid>
+  </FullID>
+  <ID>55555555-6666-7777-8888-999999999999</ID>
+  <Name>say "hi"</Name>
+  <Description>a
+b	&lt;</Description>
+  <CreationDate>0001-01-01T00:00:00</CreationDate>
+  <Type>7</Type>
+  <ContentType>application/vnd.ll.notecard</ContentType>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID>creator</CreatorID>
+  <Flags>Collectable</Flags>
+</AssetMetadata>

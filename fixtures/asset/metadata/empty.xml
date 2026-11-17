@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetMetadata xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <FullID>
+    <Guid>44444444-5555-6666-7777-888888888888</Guid>
+  </FullID>
+  <ID>44444444-5555-6666-7777-888888888888</ID>
+  <Name>empty</Name>
+  <Description />
+  <CreationDate>0001-01-01T00:00:00</CreationDate>
+  <Type>-1</Type>
+  <ContentType>application/octet-stream</ContentType>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID />
+  <Flags>Normal</Flags>
+</AssetMetadata>
