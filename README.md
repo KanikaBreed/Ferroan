@@ -21,7 +21,7 @@ Details, effort and the gate that ends each phase are in the [plan](docs/PLAN.md
 
 ## Development
 
-Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy; nothing else is needed.
+Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy. `cargo xtask check` needs nothing else. The C# oracle (`cargo xtask oracle`) also needs the .NET SDK 10 and the reference checkouts; CI does not run it.
 
 ```sh
 git clone https://github.com/KanikaBreed/ferroan.git

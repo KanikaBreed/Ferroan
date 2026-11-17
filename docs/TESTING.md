@@ -9,6 +9,10 @@ cargo xtask check --docs-only  # Markdown links only
 
 The command is the same on every platform. CI runs it on Linux, Windows and macOS.
 
+## The C# oracle
+
+`cargo xtask oracle build`, `generate` and `verify` build [tools/reference-oracle](../tools/reference-oracle/README.md) against the pinned libopenmetaverse checkout and read or write [fixtures/oracle](../fixtures/oracle/README.md). `FERROAN_REF` selects the checkout root and defaults to `~/Git/reference`. The fixtures are committed. CI does not run the oracle; `cargo xtask oracle verify` is a manual step until a Linux CI job is added (P0.1 in [TASKS.md](../TASKS.md)). That command needs the .NET SDK 10. The reference checkout is only read; build output goes under `.scratch/`.
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |

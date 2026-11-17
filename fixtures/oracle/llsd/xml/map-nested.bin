@@ -1,0 +1,1 @@
+<llsd><map><key>zeta</key><string>second-key-first</string><key>alpha</key><integer>7</integer><key>id</key><uuid>97f4aeca-88a1-42a1-b385-b97b18abb255</uuid><key>flags</key><array><boolean>1</boolean><integer>-1</integer><real>0.5</real><undef/></array><key>child</key><map><key>n</key><integer>1</integer><key>label</key><string>inner</string></map></map></llsd>
