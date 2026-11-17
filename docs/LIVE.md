@@ -1,6 +1,6 @@
 # Live harness
 
-The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. Until `cargo xtask live` exists, this file is the manual recipe it automates. The recipe below was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`).
+The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. Until `cargo xtask live` exists, this file is the manual recipe it automates. The recipe below was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity `develop` at `578db56` with PRs #411 and #412 and `bind_ip_address = "127.0.0.1"`, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service.
 
 ## Manual recipe (Linux)
 
