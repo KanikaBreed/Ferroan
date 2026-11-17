@@ -21,15 +21,15 @@ Details, effort and the gate that ends each phase are in the [plan](docs/PLAN.md
 
 ## Development
 
-Install [Rust through rustup](https://rustup.rs) and Python 3.11 or newer. The checked-in toolchain file selects stable Rust with rustfmt and clippy.
+Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy; nothing else is needed.
 
 ```sh
 git clone https://github.com/KanikaBreed/ferroan.git
 cd ferroan
-python3 scripts/check.py
+cargo xtask check
 ```
 
-On Windows, use `py -3 scripts/check.py`. The script checks local Markdown links, formatting, clippy with warnings denied, and the workspace tests. The same Cargo checks can be run directly:
+`cargo xtask check` works the same on every platform. It checks local Markdown links, formatting, clippy with warnings denied, and the workspace tests. The same Cargo checks can be run directly:
 
 ```sh
 cargo fmt --all -- --check

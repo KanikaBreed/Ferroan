@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ferroan-types"]
+members = ["crates/ferroan-types", "xtask"]
 resolver = "3"
 
 [workspace.package]

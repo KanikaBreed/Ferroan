@@ -23,7 +23,7 @@ Other checkouts the maintainers have, read for context only:
 
 ## Toolchains on the maintainers' machine
 
-- Rust stable through rustup, Python 3.11 or newer.
+- Rust stable through rustup.
 - .NET SDK 10, for building Tranquillity at the reference revision and for the C# oracle.
 - CMake and a C++ compiler, for Jolt and Linden's SLua engine in later phases.
 

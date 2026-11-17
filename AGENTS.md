@@ -10,7 +10,9 @@ Tranquillity's `develop` branch, at the revision pinned in [REFERENCES.md](docs/
 
 Do not change a protocol, schema or file format to simplify the Rust side. If Tranquillity has a bug, reproduce its observable behavior only where viewers or other servers depend on it, and record the decision. Fixes that change behavior are separate, documented decisions.
 
-## 2. Native code
+## 2. Rust first, and native code
+
+Write everything in Rust: server code, tools, scripts, test helpers and CI tasks ([D13](docs/DECISIONS.md)). Repository tasks go in `xtask/` and run as `cargo xtask <task>`. Another language is allowed only where the job cannot be done in Rust, and only with an entry in [DECISIONS.md](docs/DECISIONS.md). Today's exceptions: the C# oracle and the Tranquillity capture patch, which must run or change C# code, and the two native libraries below.
 
 Only two native C++ libraries are allowed: Jolt (through `oxijolt-sys`) and Linden Lab's SLua engine (through a C interface). Each is reached from exactly one crate, `ferroan-physics` and `ferroan-scripting`, once those exist. All other crates forbid unsafe code (the workspace sets `unsafe_code = "forbid"`). Every unsafe block in the two native crates needs a `SAFETY` comment covering ownership, lifetime, threading and bounds. Do not add another native dependency without a recorded decision in [DECISIONS.md](docs/DECISIONS.md).
 
@@ -48,7 +50,7 @@ Check `git worktree list` before creating or reusing one. Put temporary logs in 
 
 ## 7. Validation and honest status
 
-Run `python3 scripts/check.py` (Windows: `py -3 scripts/check.py`) before handing off code. For documentation-only changes, `python3 scripts/check.py --docs-only` is enough unless tooling or build files changed. See [testing](docs/TESTING.md).
+Run `cargo xtask check` before handing off code. For documentation-only changes, `cargo xtask check --docs-only` is enough unless tooling or build files changed. See [testing](docs/TESTING.md).
 
 Add checks for the behavior changed: captured-traffic fixtures, side-by-side runs against the C# server, viewer checks, archive round trips. A build or a passing unit test does not prove a viewer can log in. Record viewer and live-grid checks as pending until someone has done them, never as passed.
 

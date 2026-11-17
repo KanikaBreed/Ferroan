@@ -8,7 +8,7 @@
 
 ## Checks
 
-- [ ] `python3 scripts/check.py` passes (or `--docs-only` for documentation only).
+- [ ] `cargo xtask check` passes (or `cargo xtask check --docs-only` for documentation only).
 - [ ] CI passes for this revision.
 - [ ] Compatibility evidence against the C# server is included, or not applicable.
 - [ ] Viewer or live-grid checks are recorded, or listed as pending, or not applicable.

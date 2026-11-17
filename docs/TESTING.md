@@ -3,11 +3,11 @@
 ## The local check
 
 ```sh
-python3 scripts/check.py            # links, formatting, clippy, tests
-python3 scripts/check.py --docs-only  # Markdown links only
+cargo xtask check              # links, formatting, clippy, tests
+cargo xtask check --docs-only  # Markdown links only
 ```
 
-On Windows, use `py -3`. CI runs the same script on Linux, Windows and macOS.
+The command is the same on every platform. CI runs it on Linux, Windows and macOS.
 
 ## Evidence by kind of change
 

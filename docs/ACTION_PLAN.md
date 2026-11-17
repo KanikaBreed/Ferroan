@@ -9,7 +9,7 @@ This is the work for Phase 0 (Foundations), broken into packages a developer can
 1. Take the next package whose dependencies are done. Set its row in [TASKS.md](../TASKS.md) to `IN PROGRESS` with the branch name.
 2. Create a task worktree from `origin/main` (see [AGENTS.md](../AGENTS.md) section 5).
 3. Read the listed sources at their pinned revisions. Copy or port with the headers [PORTING.md](PORTING.md) requires.
-4. Meet every acceptance point. Run `python3 scripts/check.py`.
+4. Meet every acceptance point. Run `cargo xtask check`.
 5. Open a PR using the template, with the source revisions, the checks run and anything still pending. Update TASKS.md with the evidence.
 6. Stop at the PR. Merging is the maintainer's call.
 
@@ -31,13 +31,13 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
 
 **Goal:** a small .NET tool that produces and checks fixtures with the exact C# code Tranquillity uses, so Rust is tested against the real encoder, not against itself.
 
-- **Sources:** `libopenmetaverse` (OpenMetaverse, OpenMetaverse.StructuredData, OpenMetaverse.Types), `OpenSim-Tranquillity` (for Robust's XML helpers in `Source/OpenSim.Server.Base/ServerUtils.cs` later). Pattern to follow: `~/Git/dcs-srs-rust/tools/reference-fixtures` and `scripts/reference_fixtures.py`.
-- **Output:** `tools/reference-oracle/` (.NET 10 console project referencing the reference checkout's projects by path, never copying them), `scripts/oracle.py` to build and run it, fixtures under `fixtures/oracle/`.
+- **Sources:** `libopenmetaverse` (OpenMetaverse, OpenMetaverse.StructuredData, OpenMetaverse.Types), `OpenSim-Tranquillity` (for Robust's XML helpers in `Source/OpenSim.Server.Base/ServerUtils.cs` later). Pattern to follow: `~/Git/dcs-srs-rust/tools/reference-fixtures` (its Python driver becomes an `xtask` here, per [D13](DECISIONS.md)).
+- **Output:** `tools/reference-oracle/` (.NET 10 console project referencing the reference checkout's projects by path, never copying them), `cargo xtask oracle build|generate|verify` to build and run it, fixtures under `fixtures/oracle/`. The oracle is the one C# program in this repository, allowed by D13 because it must run Tranquillity's own C# code.
 - **Modes:** `generate` writes fixtures (a JSON manifest plus binary payloads); `verify` reads bytes Rust produced and decodes them with C#, reporting any field that differs.
 - **Acceptance:**
   - The tool builds against the pinned `libopenmetaverse` with a path set by an environment variable (`FERROAN_REF`, default `~/Git/reference`).
   - Fixtures are deterministic: two runs produce identical files.
-  - CI does not need .NET; the generated fixtures are committed, and `scripts/oracle.py verify` is a manual step until a Linux CI job is added (note it in TASKS.md).
+  - CI does not need .NET; the generated fixtures are committed, and `cargo xtask oracle verify` is a manual step until a Linux CI job is added (note it in TASKS.md).
 
 ## P0.2 `ferroan-llsd`
 
@@ -78,9 +78,9 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
 - **Recording half (can start at once):**
   1. Build Tranquillity at the reference revision in a worktree or `.scratch/`, never in the reference checkout. Run it as a standalone grid with SQLite on localhost, with a test account.
   2. Record UDP: write a small patch for Tranquillity's LLUDP server that writes raw inbound and outbound datagrams (direction, timestamp, bytes) to a file when a debug option is set. Keep it as `tools/capture/tranquillity-capture.patch`, applied only to the local build and never sent upstream.
-  3. Record HTTP: write `tools/http-capture`, a small logging reverse proxy. Point the region's service URLs at it to record region-to-service traffic, and put it in front of CAPS to record viewer traffic.
+  3. Record HTTP: write `tools/capture`, a Rust crate (`ferroan-capture`) whose `http-proxy` subcommand is a small logging reverse proxy. Point the region's service URLs at it to record region-to-service traffic, and put it in front of CAPS to record viewer traffic.
   4. Drive a session with Aurora: log in, walk, chat, rez and edit a prim, teleport within the region, log out. Record the viewer revision and steps.
-  5. Write `scripts/redact_capture.py`: replace names, IP addresses, session and circuit IDs, passwords and tokens with fixed placeholders, consistently. Commit only redacted captures, under `fixtures/captures/`.
+  5. Add a `redact` subcommand to `ferroan-capture`: replace names, IP addresses, session and circuit IDs, passwords and tokens with fixed placeholders, consistently. Commit only redacted captures, under `fixtures/captures/`.
 - **Replay half (after P0.4):** a test that decodes every recorded datagram and re-encodes it byte for byte, listing any message that fails.
 - **Acceptance:** at least one full redacted session is committed. The replay test passes, or every failure is a filed task. The capture steps are written up in `docs/CAPTURES.md`.
 
