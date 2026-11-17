@@ -148,8 +148,8 @@ pub fn parse_packet(data: &[u8]) -> Result<IncomingPacket, DecodeError> {
         }
         end -= 1;
         let start = end - count * 4;
-        for chunk in data[start..end].chunks_exact(4) {
-            acks.push(u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        for chunk in data[start..end].as_chunks::<4>().0 {
+            acks.push(u32::from_be_bytes(*chunk));
         }
         end = start;
     }
