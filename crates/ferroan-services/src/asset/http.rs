@@ -177,9 +177,8 @@ async fn post_store(State(app): State<AssetHttp>, headers: HeaderMap, body: Body
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    let bytes = match read_body(app.inner.body_limit, body).await {
-        Ok(bytes) => bytes,
-        Err(response) => return response,
+    let Some(bytes) = read_body(app.inner.body_limit, body).await else {
+        return too_large();
     };
     let decoded = match xml::decode_asset(&bytes) {
         Ok(decoded) => decoded,
@@ -207,9 +206,8 @@ async fn post_update(State(app): State<AssetHttp>, headers: HeaderMap, body: Bod
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    let bytes = match read_body(app.inner.body_limit, body).await {
-        Ok(bytes) => bytes,
-        Err(response) => return response,
+    let Some(bytes) = read_body(app.inner.body_limit, body).await else {
+        return too_large();
     };
     if xml::decode_asset(&bytes).is_err() {
         return bad_xml();
@@ -238,9 +236,8 @@ async fn delete_asset(
 }
 
 async fn post_exists(State(app): State<AssetHttp>, body: Body) -> Response {
-    let bytes = match read_body(app.inner.body_limit, body).await {
-        Ok(bytes) => bytes,
-        Err(response) => return response,
+    let Some(bytes) = read_body(app.inner.body_limit, body).await else {
+        return too_large();
     };
     let ids = match xml::decode_strings(&bytes) {
         Ok(ids) => ids,
@@ -316,10 +313,14 @@ fn xml_bytes(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> R
     (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
-async fn read_body(limit: usize, body: Body) -> Result<axum::body::Bytes, Response> {
-    axum::body::to_bytes(body, limit)
-        .await
-        .map_err(|_| xml_bytes(StatusCode::PAYLOAD_TOO_LARGE, "text/plain", Vec::new()))
+fn too_large() -> Response {
+    xml_bytes(StatusCode::PAYLOAD_TOO_LARGE, "text/plain", Vec::new())
+}
+
+async fn read_body(limit: usize, body: Body) -> Option<axum::body::Bytes> {
+    // `None` means the body exceeded `limit`. A `Result` whose error is a
+    // `Response` trips clippy 1.99 `result_large_err`.
+    axum::body::to_bytes(body, limit).await.ok()
 }
 
 impl AssetStore {
