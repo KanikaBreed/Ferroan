@@ -4,7 +4,7 @@ A ground-up Rust rebuild of [OpenSim Tranquillity](https://github.com/OpenSim-NG
 
 Ferroan aims to run the same grids, viewers, content and scripts as Tranquillity, with everything in Rust except two native C++ libraries: [Jolt](https://github.com/jrouwe/JoltPhysics) for physics and Linden Lab's [SLua engine](https://github.com/secondlife/slua) for LSL and SLua scripts.
 
-**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions and colours), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder) and `ferroan-http` (Robust forms, XML replies and LLSD over HTTP). There is no region and no grid service yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
+**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions, colours, texture entries and extra parameters), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder) and `ferroan-http` (Robust forms, XML replies and LLSD over HTTP). There is no region and no grid service yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
 
 ## How it gets built
 
