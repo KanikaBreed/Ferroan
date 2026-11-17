@@ -1,0 +1,178 @@
+diff --git a/Source/OpenSim.Region.ClientStack.LindenUDP/DatagramCapture.cs b/Source/OpenSim.Region.ClientStack.LindenUDP/DatagramCapture.cs
+new file mode 100644
+index 0000000000..428a250413
+--- /dev/null
++++ b/Source/OpenSim.Region.ClientStack.LindenUDP/DatagramCapture.cs
+@@ -0,0 +1,93 @@
++/*
++ * Copyright (c) 2026 Ferroan contributors
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * New file added by tools/capture/tranquillity-capture.patch.
++ * Applied only to a local Tranquillity build. Not part of upstream.
++ */
++
++using System.Buffers.Binary;
++using Microsoft.Extensions.Logging;
++
++namespace OpenSim.Region.ClientStack.LindenUDP;
++
++/// <summary>
++/// Appends raw UDP datagrams to a FERROCAP1 file. The socket address is not written.
++/// </summary>
++/// <remarks>
++/// Record layout, little-endian: kind u8, time_ms u64, length u32, bytes.
++/// Kind 1 is inbound. Kind 2 is outbound. A datagram longer than 4096 bytes is skipped.
++/// </remarks>
++internal sealed class DatagramCapture : IDisposable
++{
++    private const int MaxDatagram = 4096;
++    private readonly ILogger m_log;
++    private readonly FileStream m_file;
++    private readonly object m_writeLock = new();
++    private bool m_closed;
++
++    private DatagramCapture(FileStream file, ILogger log)
++    {
++        m_file = file;
++        m_log = log;
++    }
++
++    public static DatagramCapture Open(string path, ILogger log)
++    {
++        FileStream file = new(path, FileMode.Create, FileAccess.Write, FileShare.Read);
++        DatagramCapture capture = new(file, log);
++        capture.m_file.Write("FERROCAP1"u8);
++        capture.m_file.Flush();
++        return capture;
++    }
++
++    public void Write(byte kind, byte[] data, int offset, int length)
++    {
++        if (data == null || length <= 0 || length > MaxDatagram)
++            return;
++        if (offset < 0 || offset > data.Length - length)
++            return;
++
++        Span<byte> head = stackalloc byte[13];
++        head[0] = kind;
++        BinaryPrimitives.WriteUInt64LittleEndian(
++            head.Slice(1, 8),
++            (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++        BinaryPrimitives.WriteUInt32LittleEndian(head.Slice(9, 4), (uint)length);
++
++        lock (m_writeLock)
++        {
++            if (m_closed)
++                return;
++            try
++            {
++                m_file.Write(head);
++                m_file.Write(data, offset, length);
++                m_file.Flush();
++            }
++            catch (Exception e)
++            {
++                m_closed = true;
++                m_log.LogWarning("[UDPBASE]: datagram capture write failed: {Type}", e.GetType().Name);
++            }
++        }
++    }
++
++    public void Dispose()
++    {
++        lock (m_writeLock)
++        {
++            if (m_closed)
++                return;
++            m_closed = true;
++            try
++            {
++                m_file.Dispose();
++            }
++            catch (Exception e)
++            {
++                m_log.LogWarning("[UDPBASE]: datagram capture close failed: {Type}", e.GetType().Name);
++            }
++        }
++    }
++}
+diff --git a/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs b/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+index 003d191273..dbf435458b 100755
+--- a/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
++++ b/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+@@ -422,6 +422,7 @@ public class LLUDPServer : OpenSimUDPBase
+             m_ackTimeout = 1000 * config.GetInt("AckTimeout", 60);
+             m_pausedAckTimeout = 1000 * config.GetInt("PausedAckTimeout", 300);
+             SupportViewerObjectsCache = config.GetBoolean("SupportViewerObjectsCache", SupportViewerObjectsCache);
++            OpenDatagramCapture(config.GetString("CaptureFile", string.Empty));
+         }
+         else
+         {
+diff --git a/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs b/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
+index c40a6c263b..d3ef45a9ff 100644
+--- a/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
++++ b/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
+@@ -66,6 +66,9 @@ public abstract class OpenSimUDPBase
+     /// <summary>UDP socket, used in either client or server mode</summary>
+     private Socket m_udpSocket;
+ 
++    /// <summary>Optional FERROCAP1 writer. Null when CaptureFile is unset.</summary>
++    private DatagramCapture m_capture;
++
+     public static Object m_udpBuffersPoolLock = new();
+     public static UDPPacketBuffer[] m_udpBuffersPool = new UDPPacketBuffer[1000];
+     public static int m_udpBuffersPoolPtr = -1;
+@@ -268,9 +271,36 @@ public abstract class OpenSimUDPBase
+             InboundCancellationSource.Cancel();
+             m_udpSocket.Close();
+             m_udpSocket = null;
++            CloseDatagramCapture();
++        }
++    }
++
++    /// <summary>
++    /// Open a FERROCAP1 file for raw inbound and outbound datagrams.
++    /// An empty path leaves capture off. A failure is logged by exception type and does not stop the server.
++    /// </summary>
++    public void OpenDatagramCapture(string path)
++    {
++        if (string.IsNullOrEmpty(path) || m_capture != null)
++            return;
++        try
++        {
++            m_capture = DatagramCapture.Open(path, m_log);
++        }
++        catch (Exception e)
++        {
++            m_log.LogWarning("[UDPBASE]: datagram capture did not open: {Type}", e.GetType().Name);
+         }
+     }
+ 
++    /// <summary>Close the capture file. Safe to call more than once.</summary>
++    public void CloseDatagramCapture()
++    {
++        DatagramCapture capture = m_capture;
++        m_capture = null;
++        capture?.Dispose();
++    }
++
+     public virtual void StopOutbound()
+     {
+         m_log.LogDebug("[UDPBASE]: Stopping outbound UDP loop");
+@@ -301,6 +331,7 @@ public abstract class OpenSimUDPBase
+                     buf.RemoteEndPoint = Util.GetEndPoint(workSktAddress);
+                     buf.DataLength = nbytes;
+                     UdpReceives++;
++                    m_capture?.Write(1, buf.Data, 0, buf.DataLength);
+ 
+                     PacketReceived(buf);
+ 
+@@ -337,6 +368,7 @@ public abstract class OpenSimUDPBase
+             return; // already expired
+         try
+         {
++            m_capture?.Write(2, buf.Data, 0, buf.DataLength);
+             m_udpSocket.SendTo(
+                 buf.Data,
+                 0,
