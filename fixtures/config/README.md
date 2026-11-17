@@ -2,6 +2,8 @@
 
 Resolved key/value sets from `cargo xtask config generate`. The generator runs `tools/config-oracle`, which calls Nini 0.9.2.16 and Tranquillity's include walk at the revision in `manifest.txt`. Do not edit the files by hand.
 
+`parse-crlf/source.ini` is stored so a checkout keeps CRLF. The other files use LF.
+
 `manifest.txt` lists the case ids. Each case has `kind.txt` (`parse`, `expand`, `region`, `grid`, `region-ref` or `grid-ref`). A success writes `resolved.txt` and `warnings.txt`. A failure writes `error.txt` as `code` or `code` plus a tab and a detail. Values escape `\`, newlines and tabs. Rows are sorted by the escaped line, ordinal.
 
 `region-ref` and `grid-ref` read the shipped INI files from the pinned checkout (`FERROAN_REF`, default `~/Git/reference`). Rust skips those two when the checkout is absent, which is the case in CI. The other cases use the small files committed next to them.
