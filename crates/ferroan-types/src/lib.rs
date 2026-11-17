@@ -3,8 +3,22 @@
 
 //! Shared types for Ferroan.
 //!
-//! This crate is a placeholder. UUIDs, vectors, rotations, prim shapes and
-//! permission masks land here in Phase 0 (task F01 in `TASKS.md`).
+//! UUID, vector, quaternion and colour packet bytes match OpenMetaverse.
+//! TextureEntry, extra parameters, prim shapes and permission masks are not
+//! here yet.
+
+mod wire;
+
+pub use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
+pub use wire::{
+    Color4, WireError, float_to_u16_bounds, float_to_u16_range, float_to_unit_u16,
+    float_zero_one_to_byte, read_color4, read_color4_floats, read_dvec3, read_quaternion_full,
+    read_quaternion_packed, read_quaternion_shorts, read_u16_value, read_uuid, read_vec2,
+    read_vec3, read_vec3_clamped, read_vec4, u16_to_float, write_color4, write_color4_floats,
+    write_dvec3, write_quaternion_full, write_quaternion_get_bytes, write_quaternion_shorts,
+    write_quaternion_to_bytes, write_u16, write_uuid, write_vec2, write_vec3, write_vec3_clamped,
+    write_vec4,
+};
 
 /// The OpenSim Tranquillity `develop` commit that Ferroan's ports and
 /// compatibility checks currently follow. Ported files record their own
