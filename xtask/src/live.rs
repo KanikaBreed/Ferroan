@@ -23,6 +23,7 @@ use crate::repo_root;
 const READY: &str = "INITIALIZATION COMPLETE FOR Ferroan Test - LOGINS ENABLED";
 const ESTATE_OWNER: &str = "4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55";
 const REGION_UUID: &str = "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01";
+const CHAT_USER: &str = "8c4e1a70-2b59-4d6f-9e13-5a7c0d8b2f44";
 const START_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const ALTERS: &[&str] = &[
@@ -40,6 +41,10 @@ pub fn up() -> ExitCode {
 
 pub fn down() -> ExitCode {
     finish(down_inner())
+}
+
+pub fn run(scenario: &str) -> ExitCode {
+    finish(run_inner(scenario))
 }
 
 fn finish(result: Result<String, String>) -> ExitCode {
@@ -86,6 +91,18 @@ fn down_inner() -> Result<String, String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
+        Err("cargo xtask live runs on Linux".to_string())
+    }
+}
+
+fn run_inner(scenario: &str) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        run_linux(scenario)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = scenario;
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -390,7 +407,159 @@ fn build_linux() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
+struct Started {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    public_port: u16,
+    password: String,
+    log: PathBuf,
+    altered: bool,
+}
+
+#[cfg(target_os = "linux")]
 fn up_linux() -> Result<String, String> {
+    let started = start_region(false)?;
+    let report = up_report(started.public_port, &started.log, started.altered);
+    // Dropping Child does not kill the process. `live up` exits and init inherits it.
+    drop(started.child);
+    drop(started.stdin);
+    Ok(report)
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(scenario: &str) -> Result<String, String> {
+    if ferroan_bot::scenario::selection(scenario).is_none() {
+        return Err(format!(
+            "unknown scenario {scenario}; expected all or {}",
+            ferroan_bot::scenario::NAMES.join(", ")
+        ));
+    }
+    if let Some(state) = read_state(&state_path())?
+        && region_pid_live(state.pid)
+    {
+        return Err(format!(
+            "the region is already up (pid {}); cargo xtask live down stops it",
+            state.pid
+        ));
+    }
+    let mut started = start_region(true)?;
+    let result = run_scenarios(&mut started, scenario);
+    let _ = stop_started(&mut started);
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn run_scenarios(started: &mut Started, scenario: &str) -> Result<String, String> {
+    let chat_password = generate_password()?;
+    create_chat_user(started, &chat_password)?;
+    let texture = texture_bytes()?;
+    let region_id = uuid::Uuid::parse_str(REGION_UUID)
+        .map_err(|_| "the region uuid is not a uuid".to_string())?;
+    let library = uuid::Uuid::parse_str("2a4880b6-b7a3-690a-2049-bfbe38eafb9f")
+        .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
+    let harness = ferroan_bot::scenario::Harness {
+        login_uri: format!("http://127.0.0.1:{}/", started.public_port),
+        region_id,
+        owner: ferroan_bot::scenario::Account {
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            password: started.password.clone(),
+        },
+        chat: ferroan_bot::scenario::Account {
+            first_name: "Chat".to_string(),
+            last_name: "Bot".to_string(),
+            password: chat_password,
+        },
+        texture,
+        library_texture: library,
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not start tokio: {error}"))?;
+    runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))
+}
+
+#[cfg(target_os = "linux")]
+fn texture_bytes() -> Result<Vec<u8>, String> {
+    let path = source_dir().join(
+        "Source/OpenSim.Services.InventoryService/AppData/assets/TexturesAssetSet/rainbow.j2c",
+    );
+    let bytes =
+        fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(format!("{} is larger than 2 MiB", path.display()));
+    }
+    if bytes.len() < 2 || bytes[0] != 0xff || bytes[1] != 0x4f {
+        return Err(format!("{} is not a JPEG 2000 codestream", path.display()));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn create_chat_user(started: &mut Started, password: &str) -> Result<(), String> {
+    let stdin = started
+        .stdin
+        .as_mut()
+        .ok_or("the region was started without a console")?;
+    let prompt_deadline = Instant::now() + Duration::from_secs(60);
+    while !log_contains(&started.log, "# ")? {
+        if log_contains(&started.log, "Cannot see if a key has been pressed")? {
+            return Err(
+                "the region console cannot read a pipe; --console basic was not applied"
+                    .to_string(),
+            );
+        }
+        if Instant::now() >= prompt_deadline {
+            return Err(format!(
+                "the region console did not prompt\n{}",
+                log_tail(&started.log, &started.password)
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    // The handler prompts for a model name when that argument is absent.
+    // An empty answer keeps the default appearance.
+    let command = format!("create user Chat Bot {password} chat@example.invalid {CHAT_USER}\n\n");
+    use std::io::Write;
+    stdin
+        .write_all(command.as_bytes())
+        .map_err(|error| format!("could not write the create user command: {error}"))?;
+    stdin
+        .flush()
+        .map_err(|error| format!("could not write the create user command: {error}"))?;
+    let needle = format!("Account Chat Bot {CHAT_USER} created successfully");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !log_contains(&started.log, &needle)? {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "create user did not finish\n{}",
+                redact(&log_tail(&started.log, password), &started.password)
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    if log_contains(&started.log, password)? {
+        return Err("the region log contains the chat password".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn stop_started(started: &mut Started) -> Result<(), String> {
+    let pid = started.child.id();
+    drop(started.stdin.take());
+    if region_pid_live(pid) {
+        stop_child(&mut started.child);
+    } else {
+        let _ = started.child.wait();
+    }
+    let _ = fs::remove_file(state_path());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn start_region(console: bool) -> Result<Started, String> {
     let binary = region_binary();
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
@@ -424,10 +593,10 @@ fn up_linux() -> Result<String, String> {
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let first_log = run.join("region-first.log");
     println!("live: starting the region on 127.0.0.1:{public_port}");
-    let mut first = spawn_region(&binary, &publish, &config, &first_log)?;
+    let mut first = spawn_region(&binary, &publish, &config, &first_log, console)?;
     match wait_region(&mut first, &first_log, START_TIMEOUT)? {
         Waited::Ready => {
-            return keep_region(
+            return finish_start(
                 first,
                 &first_log,
                 public_port,
@@ -461,9 +630,9 @@ fn up_linux() -> Result<String, String> {
     }
     println!("live: added the SQLite user columns; starting again");
     let log = run.join("region.log");
-    let mut child = spawn_region(&binary, &publish, &config, &log)?;
+    let mut child = spawn_region(&binary, &publish, &config, &log, console)?;
     match wait_region(&mut child, &log, START_TIMEOUT)? {
-        Waited::Ready => keep_region(child, &log, public_port, private_port, true, &password),
+        Waited::Ready => finish_start(child, &log, public_port, private_port, true, &password),
         Waited::Timeout => {
             stop_child(&mut child);
             Err(format!(
@@ -479,14 +648,14 @@ fn up_linux() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn keep_region(
+fn finish_start(
     mut child: std::process::Child,
     log: &Path,
     public_port: u16,
     private_port: u16,
     altered: bool,
     password: &str,
-) -> Result<String, String> {
+) -> Result<Started, String> {
     let pid = child.id();
     let checked = process_sockets(pid).and_then(|sockets| loopback_report(&sockets, public_port));
     if let Err(error) = checked {
@@ -501,9 +670,15 @@ fn keep_region(
             private_port,
         },
     )?;
-    // Dropping Child does not kill the process. `live up` exits and init inherits it.
-    drop(child);
-    Ok(up_report(public_port, log, altered))
+    let stdin = child.stdin.take();
+    Ok(Started {
+        child,
+        stdin,
+        public_port,
+        password: password.to_owned(),
+        log: log.to_owned(),
+        altered,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -727,6 +902,7 @@ fn spawn_region(
     publish: &Path,
     config: &Path,
     log: &Path,
+    console: bool,
 ) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -744,9 +920,17 @@ fn spawn_region(
     command
         .current_dir(publish)
         .arg("--inidirectory")
-        .arg(config)
-        .arg("--background")
-        .stdin(Stdio::null())
+        .arg(config);
+    if console {
+        // Foreground keeps the console prompt, so `live run` can create the
+        // second account. `--console` defaults to local, which reads keys and
+        // throws when stdin is a pipe, and that default is applied after the
+        // ini. `basic` uses ReadLine. `--background` is what `live up` uses.
+        command.args(["--console", "basic"]).stdin(Stdio::piped());
+    } else {
+        command.arg("--background").stdin(Stdio::null());
+    }
+    command
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(err_file));
     let child = command

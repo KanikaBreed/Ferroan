@@ -11,6 +11,7 @@ publish.workspace = true
 base64 = "0.23.1"
 ferroan-llsd = { path = "../../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../../crates/ferroan-protocol" }
+glam = "0.34.1"
 md-5 = "0.10.6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 thiserror = "2.0.21"

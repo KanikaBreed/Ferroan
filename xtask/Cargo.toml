@@ -7,5 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+ferroan-bot = { path = "../tools/bot" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
 [lints]
 workspace = true

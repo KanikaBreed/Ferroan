@@ -17,8 +17,9 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use ferroan_protocol::msgs::{
-    AgentHeightWidth, AgentThrottle, CompleteAgentMovement, CompletePingCheck, LogoutReply,
-    LogoutRequest, PacketAck, RegionHandshake, RegionHandshakeReply, StartPingCheck,
+    AgentHeightWidth, AgentThrottle, CoarseLocationUpdate, CompleteAgentMovement,
+    CompletePingCheck, ImageData, LayerData, LogoutReply, LogoutRequest, PacketAck,
+    RegionHandshake, RegionHandshakeReply, SimStats, SimulatorViewerTimeMessage, StartPingCheck,
     UseCircuitCode,
 };
 use ferroan_protocol::{IncomingPacket, Msg, parse_packet};
@@ -107,6 +108,29 @@ impl Session {
 
     pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
         self.circuit.local_addr()
+    }
+
+    pub fn agent(&self) -> Agent {
+        self.agent
+    }
+
+    /// Send one message. The caller drives the circuit so acks and resends run.
+    pub async fn send<M: Msg>(&mut self, message: &M, reliable: bool) -> Result<(), SessionError> {
+        self.circuit.send(message, reliable).await?;
+        Ok(())
+    }
+
+    /// Pump the circuit for `budget`, answering pings and queueing other packets.
+    pub async fn drive(&mut self, budget: Duration) -> Result<(), SessionError> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            self.pump_once(left.min(Duration::from_millis(50))).await?;
+        }
+        Ok(())
     }
 
     /// The next packet that was not part of the handshake, if one is waiting.
@@ -292,6 +316,18 @@ impl Session {
             return;
         }
         self.circuit.accept(flags, sequence);
+        // Terrain and stats can fill the inbox before a scenario reads
+        // AgentMovementComplete. The checks do not use these packets.
+        if matches!(
+            packet.id,
+            id if id == LayerData::ID
+                || id == CoarseLocationUpdate::ID
+                || id == SimStats::ID
+                || id == SimulatorViewerTimeMessage::ID
+                || id == ImageData::ID
+        ) {
+            return;
+        }
         if self.inbox.len() >= MAX_INBOX {
             self.inbox.pop_front();
         }

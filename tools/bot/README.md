@@ -22,7 +22,7 @@ ferroan-bot login --uri http://127.0.0.1:9100/ --user "Test User" --start last -
 
 The password is `--password` or `FERROAN_BOT_PASSWORD`. The command prints `login: true`, the agent id and the simulator address. It does not print the password, the session id, the circuit code or the seed URL. `--circuit` is the handshake and a logout.
 
-No region has been logged into with this command yet. Starting the region is P0.10b. Scenarios are P0.10c.
+`cargo xtask live run <scenario>|all` starts the local region, runs one or all of `login`, `walk`, `chat`, `build`, `teleport`, `texture` and `inventory`, and stops the region. The report is one line per scenario. A passing `all` run has logged into the harness region. This command does not start a region by itself. CI does not run the harness yet.
 
 ## Tests
 
