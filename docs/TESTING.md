@@ -31,7 +31,7 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 ## Live harness
 
-Planned in P0.10 ([ACTION_PLAN.md](ACTION_PLAN.md)); the manual recipe it automates is in [LIVE.md](LIVE.md). `cargo xtask live run all` builds Tranquillity at the pinned revision under `.scratch/live/`, starts a standalone region, and drives it with `ferroan-bot`, a headless client, through scenarios checked from the server's replies. Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, checked without a region (`cargo test -p ferroan-bot`). `cargo xtask live`, the scenarios and the CI job are still planned (P0.10b to P0.10e in [ACTION_PLAN.md](ACTION_PLAN.md)). The manual recipe the harness will automate is in [LIVE.md](LIVE.md). Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
 
 ## Evidence by kind of change
 

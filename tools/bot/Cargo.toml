@@ -1,0 +1,21 @@
+[package]
+name = "ferroan-bot"
+description = "Headless viewer: XML-RPC login, the LLUDP circuit and the seed capability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+ferroan-llsd = { path = "../../crates/ferroan-llsd" }
+ferroan-protocol = { path = "../../crates/ferroan-protocol" }
+md-5 = "0.10.6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
+[lints]
+workspace = true
