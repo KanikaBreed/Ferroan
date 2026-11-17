@@ -213,6 +213,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-config"
+version = "0.1.0"
+
+[[package]]
 name = "ferroan-db"
 version = "0.1.0"
 dependencies = [

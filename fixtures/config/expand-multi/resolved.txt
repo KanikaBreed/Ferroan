@@ -1,0 +1,2 @@
+S	A	x
+S	B	x-x

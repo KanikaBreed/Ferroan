@@ -1,0 +1,2 @@
+reference_appdata OpenSim.Server.GridServer/AppData
+ini_master GridServer.ini.example

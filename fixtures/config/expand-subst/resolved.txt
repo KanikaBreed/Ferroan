@@ -1,0 +1,4 @@
+Const	Base	http://x
+S	U	http://x/app
+S	V	http://x/app/z
+S	W	http://x

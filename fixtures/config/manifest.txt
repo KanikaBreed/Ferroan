@@ -1,0 +1,28 @@
+format 1
+nini 0.9.2.16
+revision 713857f10b8e91a639a967d4354a4682b080793c
+
+parse-basic
+parse-section-replace
+parse-before-section
+parse-crlf
+parse-hash
+parse-hash-in-value
+parse-space-section
+expand-subst
+expand-order
+expand-missing-key
+expand-missing-section
+expand-self
+expand-unclosed
+expand-multi
+expand-empty
+region-order
+region-directory
+region-missing-master
+region-none
+region-remote
+grid-include
+grid-missing-master
+region-shipped
+grid-shipped

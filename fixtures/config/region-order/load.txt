@@ -1,0 +1,5 @@
+ini_master master.ini
+ini_file user.ini
+ini_directory overrides
+env FERROAN_CONFIG_ORACLE_SAMPLE=oracle-sample
+argv Startup Note from-argv

@@ -17,3 +17,5 @@ tools/reference-oracle/bin/
 tools/reference-oracle/obj/
 tools/schema-oracle/bin/
 tools/schema-oracle/obj/
+tools/config-oracle/bin/
+tools/config-oracle/obj/

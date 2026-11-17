@@ -1,0 +1,3 @@
+S	A	xy
+S	B	xy
+S	C	y
