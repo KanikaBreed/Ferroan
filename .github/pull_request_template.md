@@ -1,0 +1,20 @@
+## What changed
+
+<!-- What does this change do? Use Closes #n only if the issue is fully resolved; otherwise Refs #n. -->
+
+## Reference and provenance
+
+<!-- Tranquillity files and revision followed, licence of each ported file, captured fixtures used. N/A if none. -->
+
+## Checks
+
+- [ ] `python3 scripts/check.py` passes (or `--docs-only` for documentation only).
+- [ ] CI passes for this revision.
+- [ ] Compatibility evidence against the C# server is included, or not applicable.
+- [ ] Viewer or live-grid checks are recorded, or listed as pending, or not applicable.
+- [ ] Ported files carry their original notices and C# source (docs/PORTING.md).
+- [ ] TASKS.md and the docs match what was actually done.
+
+## Still pending
+
+<!-- What is left, what was not checked, and any deliberate difference from Tranquillity. -->

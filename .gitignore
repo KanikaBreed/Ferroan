@@ -1,0 +1,15 @@
+/target/
+**/target/
+.scratch/
+.env
+.env.*
+!.env.example
+*.log
+*.pcap
+*.pcapng
+*.ini.local
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/

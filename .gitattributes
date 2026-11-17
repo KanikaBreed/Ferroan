@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.png binary
+*.jp2 binary
+*.j2c binary
+*.oar binary
+*.iar binary
+*.bin binary
+*.pcap binary

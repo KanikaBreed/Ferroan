@@ -1,0 +1,24 @@
+name: Feature or task
+description: Propose work that fits the plan.
+title: "[Task]: "
+labels: [task]
+body:
+  - type: input
+    id: phase
+    attributes:
+      label: Phase
+      description: Which phase of docs/PLAN.md this belongs to.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: The behavior wanted, and the Tranquillity code or behavior it ports, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: How we know it is done
+      description: The evidence that would show it works.

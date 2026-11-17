@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a problem you can reproduce.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Remove passwords, grid addresses, account names and session IDs before posting. Ferroan has no runnable server yet."
+  - type: input
+    id: revision
+    attributes:
+      label: Commit
+      description: The Ferroan commit hash, and the Tranquillity revision of any C# pieces involved.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, `rustc --version`, and the viewer and grid setup if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps, expected and actual results
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: A short log excerpt or a minimal reproduction.

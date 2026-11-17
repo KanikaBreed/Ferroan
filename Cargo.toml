@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/ferroan-types"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/KanikaBreed/ferroan"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
