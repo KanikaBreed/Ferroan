@@ -394,8 +394,8 @@ pub mod msgs {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-pub use msgs::{message_info, reencode_body};
-pub use packet::reencode_datagram;
+pub use msgs::{message_info, reencode_body, scrub_body};
+pub use packet::{reencode_datagram, scrub_datagram};
 
 #[cfg(test)]
 mod tests {
@@ -422,6 +422,27 @@ mod tests {
         m.encode_body(&mut w);
         let back = ChatFromViewer::decode(&w.buf).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn scrub_replaces_the_circuit_identity_and_still_round_trips() {
+        let mut m = UseCircuitCode::default();
+        m.circuit_code.code = 99;
+        m.circuit_code.session_id = Uuid::from_u128(0x1111);
+        m.circuit_code.id = Uuid::from_u128(0x2222);
+        let mut raw = Vec::new();
+        packet::build_packet(&m, 7, true, false, &[], &mut raw);
+        assert_eq!(reencode_datagram(&raw).unwrap(), raw);
+        let scrubbed = scrub_datagram(&raw).unwrap();
+        assert_ne!(scrubbed, raw);
+        assert_eq!(reencode_datagram(&scrubbed).unwrap(), scrubbed);
+        let back = parse_packet(&scrubbed)
+            .unwrap()
+            .decode::<UseCircuitCode>()
+            .unwrap();
+        assert_eq!(back.circuit_code.code, 1);
+        assert_eq!(back.circuit_code.session_id, Uuid::from_u128(2));
+        assert_eq!(back.circuit_code.id, Uuid::from_u128(1));
     }
 
     #[test]
