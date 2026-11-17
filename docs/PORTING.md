@@ -1,49 +1,70 @@
 # Porting rules
 
-A Rust file ported from Tranquillity is a derivative work of the C# file it came from. These rules keep the licences and the trail back to the source intact ([D4](DECISIONS.md)).
+Ferroan is GPL-3.0-or-later. A Rust file ported from C#, or copied and adapted from Aurora Viewer, is a derivative work of its source. These rules keep the licences and the trail back to each source intact ([D4](DECISIONS.md)).
 
 ## Before porting
 
-1. Use a clean checkout of Tranquillity's `develop` and note the commit hash.
-2. Read the C# files involved, and the C# tests that cover them.
-3. Check the file headers: the licence of each C# file decides the licence of its port.
+1. Use the pinned, clean checkouts in [REFERENCES.md](REFERENCES.md), never a working checkout with local changes.
+2. Read the source files involved, and the tests that cover them.
+3. Check each source file's header. Its licence must be one the table below allows.
 
-## The header of a ported file
+| Source licence | Allowed | What the header keeps |
+| --- | --- | --- |
+| BSD-3-Clause (OpenSimulator, Halcyon, OpenMetaverse) | Yes | The original copyright lines and the BSD notice |
+| MPL-2.0 (Tranquillity's own files) | Yes | The original copyright lines and the MPL notice; the ported file stays available under MPL-2.0 as well |
+| Apache-2.0 (Phlox) | Yes | The original notice, plus a statement that the file was changed |
+| MIT (Luau, lsl-definitions, Linden's SLua) | Yes | The original copyright line and MIT notice |
+| GPL-3.0-or-later (Aurora Viewer) | Yes | Aurora's notice, its source path and revision |
+| LGPL-2.1 (Second Life viewer, Firestorm) | Yes, under GPL-3.0-or-later as LGPL-2.1 section 3 permits | The original copyright line and "originally LGPL 2.1" |
+| AGPL (Benthic) | No | Read for comparison only |
+| None or unclear | No | Ask in the task's PR |
 
-Keep the original copyright and licence notice word for word, then add where the file came from:
+## File headers
+
+A file ported from C#:
 
 ```rust
 // Copyright (c) Contributors, http://opensimulator.org/
 // See CONTRIBUTORS.TXT for a full list of copyright holders.
 //
-// <the original licence text or notice, unchanged>
+// <the original licence notice, unchanged>
 //
 // Ported to Rust for Ferroan from
-//   OpenSim/Region/Framework/Scenes/SceneObjectPart.cs
+//   Source/OpenSim.Region.Framework/Scenes/SceneObjectPart.cs
 //   OpenSim-NGC/OpenSim-Tranquillity @ 713857f10b8e91a639a967d4354a4682b080793c
-// Ferroan changes: Copyright (c) 2026 Ferroan contributors, MPL-2.0.
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors,
+// SPDX-License-Identifier: GPL-3.0-or-later
 ```
 
-For a C# file under MPL-2.0, the port stays under MPL-2.0 with the original copyright lines. For Apache-2.0 (Phlox), keep the notice and state that the file was changed, as that licence requires.
+A file copied or adapted from Aurora Viewer:
 
-A Rust file drawn from several C# files lists all of them. A Rust file written fresh, without porting C#, carries only the MPL-2.0 header:
+```rust
+// Copyright (c) 2026 the Aurora Viewer contributors
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Adapted from Aurora Viewer crates/aurora-llsd/src/xml.rs
+//   Aurora-Viewer/Aurora-Viewer @ 48cb76e830a13965ac080128bb874afedda86d69
+// <and, if Aurora's file says so, "originally LGPL 2.1" with its viewer sources>
+```
+
+A file written fresh:
 
 ```rust
 // Copyright (c) 2026 Ferroan contributors
-//
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: GPL-3.0-or-later
 ```
 
-## Licences that need care
+A file drawn from several sources lists all of them.
 
-- **LGPL:** a few Tranquillity files are LGPL. Do not port them without a recorded decision; write the feature fresh or use a crate instead.
-- **Unclear licence:** if a file has no notice or an unclear one, do not port it. Ask in the task's PR.
-- **Assets:** textures, sounds, fonts and default content have their own licences. Check before copying them.
+## Assets
+
+Textures, sounds, fonts, avatar definitions and default content have their own licences. Check each before copying, and record it in [NOTICE.md](../NOTICE.md).
 
 ## After porting
 
 - Record any new source origin in [NOTICE.md](../NOTICE.md).
-- Note the C# revision in the PR.
-- Because of the freeze ([D7](DECISIONS.md)), check the C# history since that revision for bug fixes and carry them over.
+- Note the source revisions in the PR.
+- Because of the freeze ([D7](DECISIONS.md)), check the C# history since the pinned revision for bug fixes, and carry them over.
+
+Ferroan code is GPL, so it cannot be copied back into Tranquillity's BSD/MPL tree. Fixes found while porting go to Tranquillity as separate C# changes.

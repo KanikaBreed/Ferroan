@@ -40,6 +40,10 @@ Ferroan is a Cargo workspace. Today it holds one placeholder crate. Everything e
 | `ferroan-config` | Reads Tranquillity's INI files | 0 |
 | `ferroan-http` | HTTP server and client for Robust's forms and CAPS | 0 |
 
+## Where code comes from
+
+Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies TextureEntry, extra parameters and later prim volumes ([D11](docs/DECISIONS.md)). C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md).
+
 ## Rules that shape the code
 
 - **Wire compatibility.** Every crate that talks to the outside speaks exactly what the C# server speaks, so Rust and C# pieces can share a grid ([D2](docs/DECISIONS.md)).

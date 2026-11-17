@@ -6,7 +6,7 @@ These instructions apply to this repository. Read this file, [ARCHITECTURE.md](A
 
 Build a Rust virtual world server that replaces OpenSim Tranquillity piece by piece. Every piece must work on a grid where the rest is still C#: same wire formats, same database schemas, same archive formats, same configuration files. See [compatibility](docs/COMPATIBILITY.md).
 
-Tranquillity's `develop` branch is the reference for observable behavior: packets, CAPS and LLSD payloads, Robust's HTTP and XML forms, region-to-region messages, OAR and IAR files, and script results. Before porting behavior, read the relevant C# files and record the revision (see [porting rules](docs/PORTING.md)). A clean checkout of upstream `develop` is the reference; a working checkout with local changes can be read for context but is not a reference.
+Tranquillity's `develop` branch, at the revision pinned in [REFERENCES.md](docs/REFERENCES.md), is the reference for observable behavior: packets, CAPS and LLSD payloads, Robust's HTTP and XML forms, region-to-region messages, OAR and IAR files, and script results. Before porting behavior, read the relevant C# files and record the revision (see [porting rules](docs/PORTING.md)). Use the clean, pinned checkouts listed in [REFERENCES.md](docs/REFERENCES.md); working checkouts with local changes are not references. Treat reference checkouts as read-only.
 
 Do not change a protocol, schema or file format to simplify the Rust side. If Tranquillity has a bug, reproduce its observable behavior only where viewers or other servers depend on it, and record the decision. Fixes that change behavior are separate, documented decisions.
 
@@ -16,7 +16,7 @@ Only two native C++ libraries are allowed: Jolt (through `oxijolt-sys`) and Lind
 
 ## 3. Licensing and attribution
 
-Ported code keeps its original licence and copyright notices; new code is MPL-2.0. Follow the header rules in [PORTING.md](docs/PORTING.md) for every file derived from C#: the original notice, the C# file it came from and the Tranquillity revision. Record new sources in [NOTICE.md](NOTICE.md). Do not copy material whose redistribution rights are unclear.
+Ferroan is GPL-3.0-or-later. Ported or copied code keeps its original licence and copyright notices. Follow the header rules in [PORTING.md](docs/PORTING.md) for every file derived from another project: the original notice, the source files and the revision from [REFERENCES.md](docs/REFERENCES.md). Record new sources in [NOTICE.md](NOTICE.md). Do not copy AGPL code (Benthic) or material whose redistribution rights are unclear.
 
 ## 4. Authorized work, privacy and shared resources
 
@@ -43,7 +43,7 @@ Check `git worktree list` before creating or reusing one. Put temporary logs in 
 - Structured errors for anything from outside: packets, HTTP bodies, database rows, archives, configuration. No `unwrap()` or `expect()` on external input; tests and documented internal invariants may use them.
 - Bound every size that comes from outside: packet and LLSD sizes, queue depths, retries, cache sizes, archive entries.
 - Networking and services run on tokio. The region frame loop, Jolt and the SLua engine each run on their own threads, not as async tasks ([D6](docs/DECISIONS.md)).
-- Keep dependencies maintained, justified and licence-compatible with MPL-2.0. Commit `Cargo.lock`.
+- Keep dependencies maintained, justified and licence-compatible with GPL-3.0-or-later (no AGPL). Commit `Cargo.lock`.
 - Prefer explicit byte order and checked lengths. Round-tripping only our own encoder and decoder proves nothing: check against bytes captured from the C# server.
 
 ## 7. Validation and honest status

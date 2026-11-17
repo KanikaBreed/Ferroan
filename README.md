@@ -43,11 +43,12 @@ cargo test --workspace --locked
 - [Architecture](ARCHITECTURE.md) and [current tasks](TASKS.md)
 - [Agent instructions](AGENTS.md) and [human contributor guide](HUMANS.md)
 - [Porting rules](docs/PORTING.md), including licence headers and attribution
+- [Action plan](docs/ACTION_PLAN.md) and [reference checkouts](docs/REFERENCES.md)
 - [Compatibility](docs/COMPATIBILITY.md) and [testing](docs/TESTING.md)
 - [Bug reports](docs/BUG_REPORTING.md) and [security](SECURITY.md)
 
 ## Licence and attribution
 
-New Ferroan code is under the Mozilla Public License 2.0, the licence Tranquillity uses for its own new code; see [LICENSE](LICENSE). Code ported from Tranquillity keeps the licence and copyright notices of the file it came from (BSD-3-Clause, MPL-2.0, Apache-2.0 or MIT). [NOTICE.md](NOTICE.md) lists the sources and their licences.
+Ferroan is licensed under the GNU General Public License, version 3 or later; see [LICENSE](LICENSE). Code ported from Tranquillity, OpenMetaverse or Aurora Viewer keeps the copyright and licence notices of the file it came from. [NOTICE.md](NOTICE.md) lists the sources and their licences.
 
 This is an independent project. It is not an official OpenSimulator, Tranquillity or Linden Lab release. Second Life is a trademark of Linden Research, Inc.

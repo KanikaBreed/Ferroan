@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Ferroan contributors
-#
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check Markdown links to local files, then format, lint and test the workspace."""
 
 import argparse
