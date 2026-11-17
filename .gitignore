@@ -13,3 +13,5 @@ Thumbs.db
 .vscode/
 .idea/
 __pycache__/
+tools/reference-oracle/bin/
+tools/reference-oracle/obj/

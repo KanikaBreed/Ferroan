@@ -30,7 +30,7 @@ Gate: the protocol crate decodes and re-encodes every packet captured from a C# 
 
 | ID | Status | Depends on | Task and acceptance |
 | --- | --- | --- | --- |
-| P0.1 | TODO | | C# oracle in `tools/reference-oracle`: deterministic fixtures from libopenmetaverse, and verification of Rust-encoded bytes. |
+| P0.1 | IN PROGRESS | | C# oracle in `tools/reference-oracle`: deterministic fixtures from libopenmetaverse, and verification of Rust-encoded bytes. Branch: `feat/p0-1-oracle`. `cargo xtask oracle verify` is still a manual step; a Linux CI job for it is not added yet. |
 | P0.2 | TODO | P0.1 | `ferroan-llsd` from Aurora's `aurora-llsd`; XML, binary and notation match the C# encoder both ways; limits return errors; fuzz target compiles. |
 | P0.3 | TODO | P0.1 | `ferroan-types`: UUID, vectors, quaternions, colours, prim shapes, permissions, TextureEntry, extra parameters, matching C# encodings. |
 | P0.4 | TODO | P0.2, P0.3 | `ferroan-protocol` from Aurora's `aurora-msg`; `docs/PROTOCOL.md` reconciles the two message templates; every message round-trips against C# fixtures; framing and zero-coding. |

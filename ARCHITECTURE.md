@@ -7,7 +7,7 @@ Ferroan is a Cargo workspace. Today it holds one placeholder crate. Everything e
 | Crate | What it holds |
 | --- | --- |
 | `ferroan-types` | Placeholder. Records the Tranquillity reference revision. Shared types land here in Phase 0 |
-| `xtask` | Repository tasks: `cargo xtask check` (Markdown links, formatting, clippy, tests) |
+| `xtask` | Repository tasks: `cargo xtask check` (Markdown links, formatting, clippy, tests) and `cargo xtask oracle` (the C# libopenmetaverse fixture tool) |
 
 ## Planned
 

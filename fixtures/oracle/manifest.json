@@ -1,0 +1,2389 @@
+{
+  "format": 1,
+  "libopenmetaverse": "a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b",
+  "cases": [
+    {
+      "id": "llsd/xml/undef",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/undef.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/binary/undef",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/undef.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/notation/undef",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/undef.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/boolean-true",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/boolean-true.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "llsd/binary/boolean-true",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/boolean-true.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "llsd/notation/boolean-true",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/boolean-true.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "llsd/xml/boolean-false",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/boolean-false.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "llsd/binary/boolean-false",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/boolean-false.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "llsd/notation/boolean-false",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/boolean-false.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "llsd/xml/integer-zero",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 0
+      }
+    },
+    {
+      "id": "llsd/binary/integer-zero",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 0
+      }
+    },
+    {
+      "id": "llsd/notation/integer-zero",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 0
+      }
+    },
+    {
+      "id": "llsd/xml/integer-one",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-one.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1
+      }
+    },
+    {
+      "id": "llsd/binary/integer-one",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-one.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1
+      }
+    },
+    {
+      "id": "llsd/notation/integer-one",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-one.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1
+      }
+    },
+    {
+      "id": "llsd/xml/integer-neg",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-neg.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -1
+      }
+    },
+    {
+      "id": "llsd/binary/integer-neg",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-neg.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -1
+      }
+    },
+    {
+      "id": "llsd/notation/integer-neg",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-neg.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -1
+      }
+    },
+    {
+      "id": "llsd/xml/integer-min",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-min.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -2147483648
+      }
+    },
+    {
+      "id": "llsd/binary/integer-min",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-min.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -2147483648
+      }
+    },
+    {
+      "id": "llsd/notation/integer-min",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-min.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": -2147483648
+      }
+    },
+    {
+      "id": "llsd/xml/integer-max",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 2147483647
+      }
+    },
+    {
+      "id": "llsd/binary/integer-max",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 2147483647
+      }
+    },
+    {
+      "id": "llsd/notation/integer-max",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 2147483647
+      }
+    },
+    {
+      "id": "llsd/xml/integer-1234843",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/integer-1234843.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1234843
+      }
+    },
+    {
+      "id": "llsd/binary/integer-1234843",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/integer-1234843.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1234843
+      }
+    },
+    {
+      "id": "llsd/notation/integer-1234843",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/integer-1234843.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "integer",
+        "value": 1234843
+      }
+    },
+    {
+      "id": "llsd/xml/real-zero",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000000"
+      }
+    },
+    {
+      "id": "llsd/binary/real-zero",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-zero",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000000"
+      }
+    },
+    {
+      "id": "llsd/xml/real-neg-zero",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-neg-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "8000000000000000"
+      }
+    },
+    {
+      "id": "llsd/binary/real-neg-zero",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-neg-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "8000000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-neg-zero",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-neg-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "8000000000000000"
+      }
+    },
+    {
+      "id": "llsd/xml/real-one-half",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-one-half.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3ff8000000000000"
+      }
+    },
+    {
+      "id": "llsd/binary/real-one-half",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-one-half.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3ff8000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-one-half",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-one-half.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3ff8000000000000"
+      }
+    },
+    {
+      "id": "llsd/xml/real-tenth",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-tenth.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3fb999999999999a"
+      }
+    },
+    {
+      "id": "llsd/binary/real-tenth",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-tenth.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3fb999999999999a"
+      }
+    },
+    {
+      "id": "llsd/notation/real-tenth",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-tenth.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "3fb999999999999a"
+      }
+    },
+    {
+      "id": "llsd/xml/real-947835-234",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-947835-234.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "412cecf677ced917"
+      }
+    },
+    {
+      "id": "llsd/binary/real-947835-234",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-947835-234.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "412cecf677ced917"
+      }
+    },
+    {
+      "id": "llsd/notation/real-947835-234",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-947835-234.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "412cecf677ced917"
+      }
+    },
+    {
+      "id": "llsd/xml/real-max",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "7fefffffffffffff"
+      }
+    },
+    {
+      "id": "llsd/binary/real-max",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "7fefffffffffffff"
+      }
+    },
+    {
+      "id": "llsd/notation/real-max",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-max.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "7fefffffffffffff"
+      }
+    },
+    {
+      "id": "llsd/xml/real-epsilon",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-epsilon.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000001"
+      }
+    },
+    {
+      "id": "llsd/binary/real-epsilon",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-epsilon.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000001"
+      }
+    },
+    {
+      "id": "llsd/notation/real-epsilon",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-epsilon.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "0000000000000001"
+      }
+    },
+    {
+      "id": "llsd/xml/real-nan",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-nan.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "fff8000000000000"
+      }
+    },
+    {
+      "id": "llsd/binary/real-nan",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-nan.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "fff8000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-nan",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-nan.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "decode-error",
+        "exception": "OSDException",
+        "message": "Notation LLSD parsing: Can\u0027t parse real value: "
+      }
+    },
+    {
+      "id": "llsd/xml/real-pos-inf",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-pos-inf.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/binary/real-pos-inf",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-pos-inf.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "7ff0000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-pos-inf",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-pos-inf.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "decode-error",
+        "exception": "OSDException",
+        "message": "Notation LLSD parsing: Can\u0027t parse real value: "
+      }
+    },
+    {
+      "id": "llsd/xml/real-neg-inf",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/real-neg-inf.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/binary/real-neg-inf",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/real-neg-inf.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "real",
+        "bits": "fff0000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/real-neg-inf",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/real-neg-inf.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "decode-error",
+        "exception": "OSDException",
+        "message": "Notation LLSD parsing: Can\u0027t parse real value: -"
+      }
+    },
+    {
+      "id": "llsd/xml/string-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/string-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": ""
+      }
+    },
+    {
+      "id": "llsd/binary/string-empty",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/string-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": ""
+      }
+    },
+    {
+      "id": "llsd/notation/string-empty",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/string-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": ""
+      }
+    },
+    {
+      "id": "llsd/xml/string-plain",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/string-plain.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "widget"
+      }
+    },
+    {
+      "id": "llsd/binary/string-plain",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/string-plain.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "widget"
+      }
+    },
+    {
+      "id": "llsd/notation/string-plain",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/string-plain.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "widget"
+      }
+    },
+    {
+      "id": "llsd/xml/string-escapes",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/string-escapes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "caf\u00E9 \u003C\u0026\u003E \u0022\u0027 \u2603 \uD83D\uDE82"
+      }
+    },
+    {
+      "id": "llsd/binary/string-escapes",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/string-escapes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "caf\u00E9 \u003C\u0026\u003E \u0022\u0027 \u2603 \uD83D\uDE82"
+      }
+    },
+    {
+      "id": "llsd/notation/string-escapes",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/string-escapes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "caf\u00E9 \u003C\u0026\u003E \u0022\u0027 \u2603 \uD83D\uDE82"
+      }
+    },
+    {
+      "id": "llsd/xml/string-nul",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/string-nul.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/binary/string-nul",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/string-nul.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "string",
+        "value": "a\u0000b"
+      }
+    },
+    {
+      "id": "llsd/notation/string-nul",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/string-nul.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "string",
+        "value": "a"
+      }
+    },
+    {
+      "id": "llsd/xml/uuid-zero",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/uuid-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    {
+      "id": "llsd/binary/uuid-zero",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/uuid-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    {
+      "id": "llsd/notation/uuid-zero",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/uuid-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    {
+      "id": "llsd/xml/uuid-sample",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/uuid-sample.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+      }
+    },
+    {
+      "id": "llsd/binary/uuid-sample",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/uuid-sample.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+      }
+    },
+    {
+      "id": "llsd/notation/uuid-sample",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/uuid-sample.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+      }
+    },
+    {
+      "id": "llsd/xml/uuid-ordered",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/uuid-ordered.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00112233-4455-6677-8899-aabbccddeeff"
+      }
+    },
+    {
+      "id": "llsd/binary/uuid-ordered",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/uuid-ordered.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00112233-4455-6677-8899-aabbccddeeff"
+      }
+    },
+    {
+      "id": "llsd/notation/uuid-ordered",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/uuid-ordered.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00112233-4455-6677-8899-aabbccddeeff"
+      }
+    },
+    {
+      "id": "llsd/xml/date-seconds",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/date-seconds.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05Z"
+      }
+    },
+    {
+      "id": "llsd/binary/date-seconds",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/date-seconds.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05Z"
+      }
+    },
+    {
+      "id": "llsd/notation/date-seconds",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/date-seconds.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05Z"
+      }
+    },
+    {
+      "id": "llsd/xml/date-millis",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/date-millis.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.12Z"
+      }
+    },
+    {
+      "id": "llsd/binary/date-millis",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/date-millis.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.11Z"
+      }
+    },
+    {
+      "id": "llsd/notation/date-millis",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/date-millis.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.12Z"
+      }
+    },
+    {
+      "id": "llsd/xml/date-millis-trunc",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/date-millis-trunc.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.12Z"
+      }
+    },
+    {
+      "id": "llsd/binary/date-millis-trunc",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/date-millis-trunc.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.12Z"
+      }
+    },
+    {
+      "id": "llsd/notation/date-millis-trunc",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/date-millis-trunc.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "date",
+        "value": "2020-01-02T03:04:05.12Z"
+      }
+    },
+    {
+      "id": "llsd/xml/uri-absolute",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/uri-absolute.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uri",
+        "value": "https://example.test/path?q=1"
+      }
+    },
+    {
+      "id": "llsd/binary/uri-absolute",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/uri-absolute.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uri",
+        "value": "https://example.test/path?q=1"
+      }
+    },
+    {
+      "id": "llsd/notation/uri-absolute",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/uri-absolute.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uri",
+        "value": "https://example.test/path?q=1"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": ""
+      }
+    },
+    {
+      "id": "llsd/binary/binary-empty",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/binary-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": ""
+      }
+    },
+    {
+      "id": "llsd/notation/binary-empty",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/binary-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": ""
+      }
+    },
+    {
+      "id": "llsd/xml/binary-bytes",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-bytes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": "AAH/f0E="
+      }
+    },
+    {
+      "id": "llsd/binary/binary-bytes",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/binary-bytes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": "AAH/f0E="
+      }
+    },
+    {
+      "id": "llsd/notation/binary-bytes",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/binary-bytes.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "binary",
+        "base64": "AAH/f0E="
+      }
+    },
+    {
+      "id": "llsd/xml/array-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/array-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": []
+      }
+    },
+    {
+      "id": "llsd/binary/array-empty",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/array-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": []
+      }
+    },
+    {
+      "id": "llsd/notation/array-empty",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/array-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": []
+      }
+    },
+    {
+      "id": "llsd/xml/array-mixed",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/array-mixed.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "undef"
+          },
+          {
+            "type": "boolean",
+            "value": false
+          },
+          {
+            "type": "integer",
+            "value": 0
+          },
+          {
+            "type": "real",
+            "bits": "8000000000000000"
+          },
+          {
+            "type": "string",
+            "value": "x"
+          },
+          {
+            "type": "uuid",
+            "value": "00000000-0000-0000-0000-000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/binary/array-mixed",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/array-mixed.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "undef"
+          },
+          {
+            "type": "boolean",
+            "value": false
+          },
+          {
+            "type": "integer",
+            "value": 0
+          },
+          {
+            "type": "real",
+            "bits": "8000000000000000"
+          },
+          {
+            "type": "string",
+            "value": "x"
+          },
+          {
+            "type": "uuid",
+            "value": "00000000-0000-0000-0000-000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/notation/array-mixed",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/array-mixed.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "undef"
+          },
+          {
+            "type": "boolean",
+            "value": false
+          },
+          {
+            "type": "integer",
+            "value": 0
+          },
+          {
+            "type": "real",
+            "bits": "8000000000000000"
+          },
+          {
+            "type": "string",
+            "value": "x"
+          },
+          {
+            "type": "uuid",
+            "value": "00000000-0000-0000-0000-000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/map-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/map-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": []
+      }
+    },
+    {
+      "id": "llsd/binary/map-empty",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/map-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": []
+      }
+    },
+    {
+      "id": "llsd/notation/map-empty",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/map-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": []
+      }
+    },
+    {
+      "id": "llsd/xml/map-nested",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llsd/binary/map-nested",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llsd/notation/map-nested",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/nest-4",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/nest-4.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "array",
+            "value": [
+              {
+                "type": "array",
+                "value": [
+                  {
+                    "type": "array",
+                    "value": [
+                      {
+                        "type": "integer",
+                        "value": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/binary/nest-4",
+      "family": "llsd",
+      "format": "binary",
+      "file": "llsd/binary/nest-4.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "array",
+            "value": [
+              {
+                "type": "array",
+                "value": [
+                  {
+                    "type": "array",
+                    "value": [
+                      {
+                        "type": "integer",
+                        "value": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/notation/nest-4",
+      "family": "llsd",
+      "format": "notation",
+      "file": "llsd/notation/nest-4.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "array",
+            "value": [
+              {
+                "type": "array",
+                "value": [
+                  {
+                    "type": "array",
+                    "value": [
+                      {
+                        "type": "integer",
+                        "value": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml-formal/map-nested",
+      "family": "llsd",
+      "format": "xml-formal",
+      "file": "llsd/xml-formal/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llsd/binary-raw/map-nested",
+      "family": "llsd",
+      "format": "binary-raw",
+      "file": "llsd/binary-raw/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llsd/notation-header/map-nested",
+      "family": "llsd",
+      "format": "notation-header",
+      "file": "llsd/notation-header/map-nested.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "map",
+        "pairs": [
+          [
+            "zeta",
+            {
+              "type": "string",
+              "value": "second-key-first"
+            }
+          ],
+          [
+            "alpha",
+            {
+              "type": "integer",
+              "value": 7
+            }
+          ],
+          [
+            "id",
+            {
+              "type": "uuid",
+              "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+            }
+          ],
+          [
+            "flags",
+            {
+              "type": "array",
+              "value": [
+                {
+                  "type": "boolean",
+                  "value": true
+                },
+                {
+                  "type": "integer",
+                  "value": -1
+                },
+                {
+                  "type": "real",
+                  "bits": "3fe0000000000000"
+                },
+                {
+                  "type": "undef"
+                }
+              ]
+            }
+          ],
+          [
+            "child",
+            {
+              "type": "map",
+              "pairs": [
+                [
+                  "n",
+                  {
+                    "type": "integer",
+                    "value": 1
+                  }
+                ],
+                [
+                  "label",
+                  {
+                    "type": "string",
+                    "value": "inner"
+                  }
+                ]
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "bytes/uuid-zero",
+      "family": "bytes",
+      "format": "uuid",
+      "file": "bytes/uuid-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    {
+      "id": "bytes/uuid-sample",
+      "family": "bytes",
+      "format": "uuid",
+      "file": "bytes/uuid-sample.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "97f4aeca-88a1-42a1-b385-b97b18abb255"
+      }
+    },
+    {
+      "id": "bytes/uuid-ordered",
+      "family": "bytes",
+      "format": "uuid",
+      "file": "bytes/uuid-ordered.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "uuid",
+        "value": "00112233-4455-6677-8899-aabbccddeeff"
+      }
+    },
+    {
+      "id": "bytes/vector2",
+      "family": "bytes",
+      "format": "vector2",
+      "file": "bytes/vector2.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3fc00000",
+          "c0000000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector3",
+      "family": "bytes",
+      "format": "vector3",
+      "file": "bytes/vector3.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3f800000",
+          "40000000",
+          "40400000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector3-tenth",
+      "family": "bytes",
+      "format": "vector3",
+      "file": "bytes/vector3-tenth.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3dcccccd",
+          "bdcccccd",
+          "3dcccccd"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector3-neg-zero",
+      "family": "bytes",
+      "format": "vector3",
+      "file": "bytes/vector3-neg-zero.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "80000000",
+          "3f800000",
+          "40000000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector3d",
+      "family": "bytes",
+      "format": "vector3d",
+      "file": "bytes/vector3d.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f64",
+        "bits": [
+          "3ff8000000000000",
+          "c002000000000000",
+          "4010000000000000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector4",
+      "family": "bytes",
+      "format": "vector4",
+      "file": "bytes/vector4.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3f800000",
+          "40000000",
+          "40400000",
+          "40800000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/vector3-clamped-inside",
+      "family": "bytes",
+      "format": "vector3-clamped",
+      "file": "bytes/vector3-clamped-inside.bin",
+      "params": {
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "vector3-clamped",
+        "x": 40959,
+        "y": 16383,
+        "z": 36863,
+        "x_bits": "3e7ffd00",
+        "y_bits": "bf000180",
+        "z_bits": "3dfff900"
+      }
+    },
+    {
+      "id": "bytes/vector3-clamped-outside",
+      "family": "bytes",
+      "format": "vector3-clamped",
+      "file": "bytes/vector3-clamped-outside.bin",
+      "params": {
+        "range_bits": "3f800000"
+      },
+      "round_trip": false,
+      "decoded": {
+        "type": "vector3-clamped",
+        "x": 54612,
+        "y": 0,
+        "z": 38228,
+        "x_bits": "3f2aa9aa",
+        "y_bits": "bf800000",
+        "z_bits": "3e2aa4a8"
+      }
+    },
+    {
+      "id": "bytes/quaternion-getbytes-identity",
+      "family": "bytes",
+      "format": "quaternion-getbytes",
+      "file": "bytes/quaternion-getbytes-identity.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "00000000",
+        "y_bits": "00000000",
+        "z_bits": "00000000",
+        "w_bits": "3f800000",
+        "encoder": "quaternion-getbytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-tobytes-identity",
+      "family": "bytes",
+      "format": "quaternion-tobytes",
+      "file": "bytes/quaternion-tobytes-identity.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "00000000",
+        "y_bits": "00000000",
+        "z_bits": "00000000",
+        "w_bits": "3f800000",
+        "encoder": "quaternion-tobytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-shorts-identity",
+      "family": "bytes",
+      "format": "quaternion-shorts",
+      "file": "bytes/quaternion-shorts-identity.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "u16x4",
+        "x": 32767,
+        "y": 32767,
+        "z": 32767,
+        "w": 65535
+      }
+    },
+    {
+      "id": "bytes/quaternion-full-identity",
+      "family": "bytes",
+      "format": "quaternion-full",
+      "file": "bytes/quaternion-full-identity.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "00000000",
+          "00000000",
+          "00000000",
+          "3f800000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/quaternion-getbytes-tilt",
+      "family": "bytes",
+      "format": "quaternion-getbytes",
+      "file": "bytes/quaternion-getbytes-tilt.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "3dd21ed0",
+        "y_bits": "be521ed0",
+        "z_bits": "3e9d971c",
+        "w_bits": "3f6c62ab",
+        "encoder": "quaternion-getbytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-tobytes-tilt",
+      "family": "bytes",
+      "format": "quaternion-tobytes",
+      "file": "bytes/quaternion-tobytes-tilt.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "3dd21ed0",
+        "y_bits": "be521ed0",
+        "z_bits": "3e9d971c",
+        "w_bits": "3f6c62ab",
+        "encoder": "quaternion-tobytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-shorts-tilt",
+      "family": "bytes",
+      "format": "quaternion-shorts",
+      "file": "bytes/quaternion-shorts-tilt.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "u16x4",
+        "x": 36043,
+        "y": 26213,
+        "z": 42597,
+        "w": 62257
+      }
+    },
+    {
+      "id": "bytes/quaternion-full-tilt",
+      "family": "bytes",
+      "format": "quaternion-full",
+      "file": "bytes/quaternion-full-tilt.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3dcccccd",
+          "be4ccccd",
+          "3e99999a",
+          "3f666666"
+        ]
+      }
+    },
+    {
+      "id": "bytes/quaternion-getbytes-neg-w",
+      "family": "bytes",
+      "format": "quaternion-getbytes",
+      "file": "bytes/quaternion-getbytes-neg-w.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "80000000",
+        "y_bits": "bf3504f4",
+        "z_bits": "80000000",
+        "w_bits": "3f3504f2",
+        "encoder": "quaternion-getbytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-tobytes-neg-w",
+      "family": "bytes",
+      "format": "quaternion-tobytes",
+      "file": "bytes/quaternion-tobytes-neg-w.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion",
+        "x_bits": "80000000",
+        "y_bits": "bf3504f4",
+        "z_bits": "80000000",
+        "w_bits": "3f3504f2",
+        "encoder": "quaternion-tobytes"
+      }
+    },
+    {
+      "id": "bytes/quaternion-shorts-neg-w",
+      "family": "bytes",
+      "format": "quaternion-shorts",
+      "file": "bytes/quaternion-shorts-neg-w.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "u16x4",
+        "x": 32767,
+        "y": 55937,
+        "z": 32767,
+        "w": 9596
+      }
+    },
+    {
+      "id": "bytes/quaternion-full-neg-w",
+      "family": "bytes",
+      "format": "quaternion-full",
+      "file": "bytes/quaternion-full-neg-w.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "00000000",
+          "3f3504f3",
+          "00000000",
+          "bf3504f3"
+        ]
+      }
+    },
+    {
+      "id": "bytes/color4",
+      "family": "bytes",
+      "format": "color4",
+      "file": "bytes/color4.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "color4",
+        "inverted": false,
+        "raw": [
+          255,
+          128,
+          0,
+          64
+        ],
+        "r_bits": "3f800000",
+        "g_bits": "3f008081",
+        "b_bits": "00000000",
+        "a_bits": "3e808081"
+      }
+    },
+    {
+      "id": "bytes/color4-inverted",
+      "family": "bytes",
+      "format": "color4-inverted",
+      "file": "bytes/color4-inverted.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "color4",
+        "inverted": true,
+        "raw": [
+          0,
+          127,
+          255,
+          191
+        ],
+        "r_bits": "3f800000",
+        "g_bits": "3f008081",
+        "b_bits": "00000000",
+        "a_bits": "3e808081"
+      }
+    },
+    {
+      "id": "bytes/color4-floats",
+      "family": "bytes",
+      "format": "color4-floats",
+      "file": "bytes/color4-floats.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "f32",
+        "bits": [
+          "3e800000",
+          "3f000000",
+          "3f400000",
+          "3f800000"
+        ]
+      }
+    },
+    {
+      "id": "bytes/float-u16-range-zero",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-range-zero.bin",
+      "params": {
+        "mode": "range",
+        "input_bits": "00000000",
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 32767,
+        "float_bits": "00000000"
+      }
+    },
+    {
+      "id": "bytes/float-u16-range-half",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-range-half.bin",
+      "params": {
+        "mode": "range",
+        "input_bits": "3f000000",
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 49151,
+        "float_bits": "3effff00"
+      }
+    },
+    {
+      "id": "bytes/float-u16-range-neg-half",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-range-neg-half.bin",
+      "params": {
+        "mode": "range",
+        "input_bits": "bf000000",
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 16383,
+        "float_bits": "bf000180"
+      }
+    },
+    {
+      "id": "bytes/float-u16-range-below",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-range-below.bin",
+      "params": {
+        "mode": "range",
+        "input_bits": "c0000000",
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 0,
+        "float_bits": "bf800000"
+      }
+    },
+    {
+      "id": "bytes/float-u16-range-above",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-range-above.bin",
+      "params": {
+        "mode": "range",
+        "input_bits": "40000000",
+        "range_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 65535,
+        "float_bits": "3f800000"
+      }
+    },
+    {
+      "id": "bytes/float-u16-bounds-mid",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-bounds-mid.bin",
+      "params": {
+        "mode": "bounds",
+        "input_bits": "3e800000",
+        "lower_bits": "00000000",
+        "upper_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 16383,
+        "float_bits": "3e7ffd00"
+      }
+    },
+    {
+      "id": "bytes/float-u16-bounds-low",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-bounds-low.bin",
+      "params": {
+        "mode": "bounds",
+        "input_bits": "bf800000",
+        "lower_bits": "00000000",
+        "upper_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 0,
+        "float_bits": "00000000"
+      }
+    },
+    {
+      "id": "bytes/float-u16-bounds-high",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-bounds-high.bin",
+      "params": {
+        "mode": "bounds",
+        "input_bits": "40000000",
+        "lower_bits": "00000000",
+        "upper_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 65535,
+        "float_bits": "3f800000"
+      }
+    },
+    {
+      "id": "bytes/float-u16-unit-zero",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-unit-zero.bin",
+      "params": {
+        "mode": "unit",
+        "input_bits": "00000000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 32767
+      }
+    },
+    {
+      "id": "bytes/float-u16-unit-quarter",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-unit-quarter.bin",
+      "params": {
+        "mode": "unit",
+        "input_bits": "3e800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 40958
+      }
+    },
+    {
+      "id": "bytes/float-u16-unit-one",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-unit-one.bin",
+      "params": {
+        "mode": "unit",
+        "input_bits": "3f800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 65535
+      }
+    },
+    {
+      "id": "bytes/float-u16-unit-neg",
+      "family": "bytes",
+      "format": "float-u16",
+      "file": "bytes/float-u16-unit-neg.bin",
+      "params": {
+        "mode": "unit",
+        "input_bits": "bf800000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "u16",
+        "value": 0
+      }
+    }
+  ]
+}

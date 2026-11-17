@@ -6,6 +6,11 @@
 //! `check` verifies that every Markdown link to a local file resolves, then
 //! runs formatting, clippy (warnings denied) and the workspace tests. With
 //! `--docs-only` it stops after the Markdown check.
+//!
+//! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
+//! `verify`. CI does not run it.
+
+mod oracle;
 
 use std::env;
 use std::ffi::OsString;
@@ -16,7 +21,11 @@ use std::process::{Command, ExitCode};
 /// Directories never searched for Markdown files.
 const SKIP_DIRS: &[&str] = &[".git", "target", ".scratch"];
 
-const USAGE: &str = "usage: cargo xtask check [--docs-only]";
+const USAGE: &str = "\
+usage: cargo xtask check [--docs-only]
+       cargo xtask oracle build
+       cargo xtask oracle generate [fixture-dir]
+       cargo xtask oracle verify [fixture-dir]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -24,6 +33,15 @@ fn main() -> ExitCode {
     match refs.as_slice() {
         ["check"] => check(false),
         ["check", "--docs-only"] => check(true),
+        ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
+        ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
+        ["oracle", "verify"] => oracle::run(oracle::CommandKind::Verify, None),
+        ["oracle", "generate", dir] => {
+            oracle::run(oracle::CommandKind::Generate, Some(PathBuf::from(*dir)))
+        }
+        ["oracle", "verify", dir] => {
+            oracle::run(oracle::CommandKind::Verify, Some(PathBuf::from(*dir)))
+        }
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -68,7 +86,7 @@ fn check(docs_only: bool) -> ExitCode {
 }
 
 /// The workspace root: the parent of this crate's manifest directory.
-fn repo_root() -> PathBuf {
+pub(crate) fn repo_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest.parent().map(Path::to_path_buf).unwrap_or(manifest)
 }
