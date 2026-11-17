@@ -292,7 +292,7 @@ fn resolve_include(config_dir: &Path, file: &str) -> Result<Vec<String>, ConfigE
         None => (file, ""),
     };
     let combined = dotnet_combine(config_dir, prefix);
-    let full = get_full_path(&combined);
+    let full = canonical_existing(&get_full_path(&combined));
     let pattern = format!("{full}{suffix}");
     let mut paths = Vec::new();
     for path in glob(&pattern)? {
@@ -361,6 +361,22 @@ fn dotnet_combine(base: &Path, extra: &str) -> String {
         text.push(separator);
     }
     text.push_str(extra);
+    text
+}
+
+/// `canonicalize` turns Windows 8.3 names into the long names `read_dir`
+/// returns, and resolves a symlink in the prefix. The suffix after the
+/// first wildcard is appended by the caller and is not resolved here.
+fn canonical_existing(path: &str) -> String {
+    let trailing = path.ends_with('/') || path.ends_with('\\');
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let Ok(found) = std::fs::canonicalize(trimmed) else {
+        return path.to_string();
+    };
+    let mut text = found.to_string_lossy().into_owned();
+    if trailing && !text.ends_with('/') && !text.ends_with('\\') {
+        text.push(std::path::MAIN_SEPARATOR);
+    }
     text
 }
 

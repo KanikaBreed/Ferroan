@@ -45,6 +45,11 @@ pub(crate) fn glob(pattern: &str) -> Result<Vec<PathBuf>, ConfigError> {
 }
 
 fn split_root(pattern: &str) -> (String, &str) {
+    // `canonicalize` on Windows returns `\\?\C:\...`. The walk has to start
+    // at that root; a normal `C:` split rejects the `\\?\` prefix.
+    if let Some(rest) = strip_verbatim(pattern) {
+        return rest;
+    }
     if cfg!(windows)
         && let Some((volume, rest)) = pattern.split_once(':')
         && !volume.is_empty()
@@ -53,6 +58,26 @@ fn split_root(pattern: &str) -> (String, &str) {
         return (format!("{volume}:\\"), rest);
     }
     (std::path::MAIN_SEPARATOR.to_string(), pattern)
+}
+
+/// Splits a `\\?\C:\` or `\\?\UNC\server\share\` path into the root and the rest.
+fn strip_verbatim(pattern: &str) -> Option<(String, &str)> {
+    let after = pattern.strip_prefix(r"\\?\")?;
+    if let Some(unc) = after.strip_prefix(r"UNC\") {
+        let mut pieces = unc.split(['/', '\\']);
+        let server = pieces.next().filter(|part| !part.is_empty())?;
+        let share = pieces.next().filter(|part| !part.is_empty())?;
+        let prefix_len = r"\\?\UNC\".len() + server.len() + 1 + share.len();
+        let root = format!(r"\\?\UNC\{server}\{share}\");
+        return Some((root, pattern.get(prefix_len..).unwrap_or("")));
+    }
+    let mut chars = after.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
+        return None;
+    }
+    let root = format!(r"\\?\{letter}:\");
+    Some((root, pattern.get(r"\\?\".len() + 2..).unwrap_or("")))
 }
 
 fn list_matching(
@@ -71,8 +96,15 @@ fn list_matching(
             message: error.to_string(),
         })?;
         let path = entry.path();
-        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-        if want_dirs != is_dir {
+        // `is_dir` and `is_file` follow the link, as `GetDirectories` and
+        // `GetFiles` do. `DirEntry::file_type` does not, so a symlink or a
+        // Windows junction would otherwise hide the directory. A broken link
+        // is neither, and is skipped.
+        if want_dirs {
+            if !path.is_dir() {
+                continue;
+            }
+        } else if !path.is_file() {
             continue;
         }
         let Some(name) = path.file_name().and_then(|item| item.to_str()) else {
@@ -129,5 +161,23 @@ fn byte_eq(pattern_byte: u8, name_byte: u8) -> bool {
         pattern_byte.eq_ignore_ascii_case(&name_byte)
     } else {
         pattern_byte == name_byte
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_verbatim;
+
+    #[test]
+    fn verbatim_drive_and_unc_split() {
+        assert_eq!(
+            strip_verbatim(r"\\?\C:\Users\runneradmin\nested\*.ini"),
+            Some((r"\\?\C:\".to_string(), r"\Users\runneradmin\nested\*.ini"))
+        );
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share\dir\*.ini"),
+            Some((r"\\?\UNC\server\share\".to_string(), r"\dir\*.ini"))
+        );
+        assert_eq!(strip_verbatim(r"C:\Users"), None);
     }
 }

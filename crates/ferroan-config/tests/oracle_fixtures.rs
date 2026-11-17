@@ -95,9 +95,47 @@ fn glob_include_finds_one_file() {
     }
     .load()
     .unwrap();
-    assert_eq!(resolved.config.get("S", "A"), Some("1"));
+    assert_eq!(
+        resolved.config.get("S", "A"),
+        Some("1"),
+        "config_dir {}",
+        root.display()
+    );
     assert_eq!(resolved.config.get("S", "B"), Some("2"));
     assert!(resolved.warnings.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn glob_include_follows_a_directory_symlink() {
+    let root = std::env::temp_dir().join(format!("ferroan-config-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("real")).unwrap();
+    std::fs::write(root.join("real/one.ini"), "[S]\nA=1\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real"), root.join("linked")).unwrap();
+    let mut argv = Config::default();
+    argv.set("Startup", "inimaster", "none");
+    argv.set("Startup", "inifile", "user.ini");
+    argv.set("Startup", "inidirectory", "no-such-dir");
+    std::fs::write(
+        root.join("user.ini"),
+        "[S]\nInclude-Nested = linked/*.ini\n",
+    )
+    .unwrap();
+    let resolved = RegionLoad {
+        config_dir: root.clone(),
+        argv,
+        environment: BTreeMap::new(),
+    }
+    .load()
+    .unwrap();
+    assert_eq!(
+        resolved.config.get("S", "A"),
+        Some("1"),
+        "config_dir {}",
+        root.display()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -25,7 +25,7 @@ Nini's source is not in this repository. `tools/config-oracle` calls the `nini-c
 - Substitution stops after 4096 steps on one value (`limit`). Nini has no cap.
 - An INI over 16 MiB, more than 8192 sections, more than 8192 keys in one section, more than 10000 sources, or more than 10000 glob matches is `limit`.
 - The region directory filter uses an ASCII case-insensitive `.ini` suffix. Tranquillity uses the culture's `ToLower()`. For the ASCII names in the shipped files the two agree.
-- Glob walks with `read_dir`. `*` matches a dotfile, because the directory entry is returned. `file_type` does not follow a symlink, so a symlink component can hide a file that .NET's `GetDirectories` would enter. The shipped AppData tree has no such link.
+- Glob walks with `read_dir`. `*` matches a dotfile. The prefix before the first wildcard is canonicalized, so a Windows 8.3 name (`RUNNER~1`) or a symlink such as macOS `/var` becomes the directory name the walk will see. A symlink or junction found while walking counts as a directory or a file according to its target, which is what `Directory.GetDirectories` and `GetFiles` do. A broken link is skipped.
 - The grid directory pattern is case-sensitive `.ini` except on Windows, where both loaders compare ASCII case-insensitively. Tranquillity's grid `Directory.GetFiles(dir, "*.ini")` is case-sensitive on Linux.
 
 ## Shipped files
