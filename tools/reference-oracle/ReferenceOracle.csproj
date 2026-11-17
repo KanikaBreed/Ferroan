@@ -21,6 +21,8 @@
   <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
     <Error Condition="!Exists('$(FerroanRef)/libopenmetaverse/OpenMetaverse.StructuredData/OpenMetaverse.StructuredData.csproj')"
            Text="Set FerroanRef (or FERROAN_REF) to the reference checkouts root. Missing $(FerroanRef)/libopenmetaverse." />
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Framework/OpenSim.Framework.csproj')"
+           Text="Set FerroanRef (or FERROAN_REF) to the reference checkouts root. Missing OpenSim.Framework." />
   </Target>
 
   <ItemGroup>
@@ -31,6 +33,13 @@
     </ProjectReference>
     <!-- TextureEntry and extra parameters live in the client library, not in Types. -->
     <ProjectReference Include="$(FerroanRef)/libopenmetaverse/OpenMetaverse/OpenMetaverse.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <!-- Permission folding lives in Tranquillity. The NuGet OpenMetaverse copy
+         that project uses must not be compiled into this program: the source
+         checkout above is the oracle's OpenMetaverse. -->
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Framework/OpenSim.Framework.csproj">
       <Private>true</Private>
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>

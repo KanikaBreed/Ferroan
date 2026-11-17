@@ -3,15 +3,32 @@
 
 //! Shared types for Ferroan.
 //!
-//! UUID, vector, quaternion, colour, texture-entry and extra-parameter bytes
-//! match OpenMetaverse. Prim shapes and permission masks are not here yet.
+//! UUID, vector, quaternion, colour, texture-entry, extra-parameter, prim-shape
+//! and permission-mask bytes match OpenMetaverse and Tranquillity.
 
 mod extra;
+mod permissions;
+mod shape;
 mod texture;
 mod wire;
 
 pub use extra::{ExtraParams, FlexibleData, LightData, LightImage, MAX_EXTRA_BYTES, SculptData};
 pub use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
+pub use permissions::{
+    PERM_ALL, PERM_ALL_AND_EXPORT, PERM_ALL_AND_EXPORT_NO_MOD, PERM_ALL_EFFECTIVE, PERM_COPY,
+    PERM_DAMAGE, PERM_EXPORT, PERM_FOLDED_COPY, PERM_FOLDED_EXPORT, PERM_FOLDED_MASK,
+    PERM_FOLDED_MODIFY, PERM_FOLDED_TRANSFER, PERM_FOLDING_SHIFT, PERM_MODIFY, PERM_MOVE,
+    PERM_NONE, PERM_SLAM, PERM_TRANSFER, PERM_UNFOLDED_MASK, PERMISSIONS_LEN, Permissions,
+    apply_folded_permissions, apply_no_mod_folded_permissions, fix_and_fold_permissions,
+};
+pub use shape::{
+    HOLE_TRIANGLE, PATH_CIRCLE, PATH_LINE, PROFILE_SQUARE, SHAPE_LEN, ShapeParams, pack_begin_cut,
+    pack_end_cut, pack_path_revolutions, pack_path_scale, pack_path_shear, pack_path_taper,
+    pack_path_twist, pack_profile_hollow, profile_curve, profile_hole, set_profile_curve,
+    set_profile_hole, swap_nibbles, unpack_begin_cut, unpack_end_cut, unpack_path_revolutions,
+    unpack_path_scale, unpack_path_shear, unpack_path_taper, unpack_path_twist,
+    unpack_profile_hollow,
+};
 pub use texture::{
     MAX_FACES, MAX_TEXTURE_BYTES, TextureEntry, TextureFaceSet, TextureFaceView, WHITE_TEXTURE,
 };

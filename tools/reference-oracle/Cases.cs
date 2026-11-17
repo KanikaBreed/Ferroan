@@ -241,6 +241,8 @@ internal static class Cases
         list.Add(U16("float-u16-unit-neg", "unit", -1f, 0f, 0f, 0f));
         AddTextures(list);
         AddExtra(list);
+        AddShapes(list);
+        AddPermissions(list);
     }
 
     static void AddTextures(List<Fixture> list)
@@ -698,6 +700,218 @@ internal static class Cases
         }
 
         return Bytes(name, "float-u16", Utils.UInt16ToBytes(bits), parms);
+    }
+
+    static void AddShapes(List<Fixture> list)
+    {
+        list.Add(Shape(
+            "shape-box", PathCurve.Line, ProfileCurve.Square, HoleType.Same,
+            0f, 1f, 1f, 1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 1f, 0f));
+        list.Add(Shape(
+            "shape-mixed", PathCurve.Circle, ProfileCurve.Circle, HoleType.Square,
+            0.25f, 0.75f, 0.5f, 1.5f, 0.1f, -0.2f, 0.3f, -0.4f, 0.15f, 0.25f, -0.5f, 1.5f, -0.05f,
+            0.2f, 0.8f, 0.5f));
+        list.Add(Shape(
+            "shape-midpoint", PathCurve.Line, ProfileCurve.Square, HoleType.Same,
+            0.00005f, 0.00007f, 0.025f, 0.035f, 0.025f, 0.035f, 0.025f, 0.035f, 0.025f, 0.025f, 0.035f,
+            1.0375f, 0.025f, 0.00005f, 0.00007f, 0.00005f));
+        list.Add(Shape(
+            "shape-wrap", PathCurve.Flexible, ProfileCurve.HalfCircle, HoleType.Triangle,
+            0f, 1f, 2.6f, -0.2f, 2f, -2f, 2f, -2f, 2f, 2f, -2f, 4f, 2f, 0f, 1f, 1.2f));
+        list.Add(Attachment("attachment-chest", AttachmentPoint.Chest));
+        list.Add(Attachment("attachment-nibbles", (AttachmentPoint)0x2A));
+    }
+
+    static Fixture Shape(
+        string name,
+        PathCurve path,
+        ProfileCurve profile,
+        HoleType hole,
+        float pathBegin,
+        float pathEnd,
+        float scaleX,
+        float scaleY,
+        float shearX,
+        float shearY,
+        float twist,
+        float twistBegin,
+        float radius,
+        float taperX,
+        float taperY,
+        float revolutions,
+        float skew,
+        float profileBegin,
+        float profileEnd,
+        float hollow)
+    {
+        var data = new Primitive.ConstructionData();
+        data.PathCurve = path;
+        data.ProfileCurve = profile;
+        data.ProfileHole = hole;
+        byte[] bytes = new byte[23];
+        bytes[0] = (byte)data.PathCurve;
+        bytes[1] = data.profileCurve;
+        Utils.UInt16ToBytes(Primitive.PackBeginCut(pathBegin)).CopyTo(bytes, 2);
+        Utils.UInt16ToBytes(Primitive.PackEndCut(pathEnd)).CopyTo(bytes, 4);
+        bytes[6] = Primitive.PackPathScale(scaleX);
+        bytes[7] = Primitive.PackPathScale(scaleY);
+        bytes[8] = (byte)Primitive.PackPathShear(shearX);
+        bytes[9] = (byte)Primitive.PackPathShear(shearY);
+        bytes[10] = (byte)Primitive.PackPathTwist(twist);
+        bytes[11] = (byte)Primitive.PackPathTwist(twistBegin);
+        bytes[12] = (byte)Primitive.PackPathTwist(radius);
+        bytes[13] = (byte)Primitive.PackPathTaper(taperX);
+        bytes[14] = (byte)Primitive.PackPathTaper(taperY);
+        bytes[15] = Primitive.PackPathRevolutions(revolutions);
+        bytes[16] = (byte)Primitive.PackPathTwist(skew);
+        Utils.UInt16ToBytes(Primitive.PackBeginCut(profileBegin)).CopyTo(bytes, 17);
+        Utils.UInt16ToBytes(Primitive.PackEndCut(profileEnd)).CopyTo(bytes, 19);
+        Utils.UInt16ToBytes(Primitive.PackProfileHollow(hollow)).CopyTo(bytes, 21);
+        var parms = new JsonObject
+        {
+            ["build"] = true,
+            ["path_curve"] = bytes[0],
+            ["profile_curve"] = bytes[1],
+            ["path_begin_bits"] = Codec.F32(pathBegin),
+            ["path_end_bits"] = Codec.F32(pathEnd),
+            ["path_scale_x_bits"] = Codec.F32(scaleX),
+            ["path_scale_y_bits"] = Codec.F32(scaleY),
+            ["path_shear_x_bits"] = Codec.F32(shearX),
+            ["path_shear_y_bits"] = Codec.F32(shearY),
+            ["path_twist_bits"] = Codec.F32(twist),
+            ["path_twist_begin_bits"] = Codec.F32(twistBegin),
+            ["path_radius_offset_bits"] = Codec.F32(radius),
+            ["path_taper_x_bits"] = Codec.F32(taperX),
+            ["path_taper_y_bits"] = Codec.F32(taperY),
+            ["path_revolutions_bits"] = Codec.F32(revolutions),
+            ["path_skew_bits"] = Codec.F32(skew),
+            ["profile_begin_bits"] = Codec.F32(profileBegin),
+            ["profile_end_bits"] = Codec.F32(profileEnd),
+            ["profile_hollow_bits"] = Codec.F32(hollow),
+        };
+        return Bytes(name, "shape", bytes, parms);
+    }
+
+    static Fixture Attachment(string name, AttachmentPoint point)
+    {
+        var data = new Primitive.ConstructionData();
+        data.AttachmentPoint = point;
+        var parms = new JsonObject
+        {
+            ["build"] = true,
+            ["attachment"] = (int)point,
+        };
+        return Bytes(name, "attachment-state", new[] { data.State }, parms);
+    }
+
+    static void AddPermissions(List<Fixture> list)
+    {
+        AssertSharedMasks();
+        uint all = (uint)OpenSim.Framework.PermissionMask.All;
+        uint export = (uint)OpenSim.Framework.PermissionMask.Export;
+        uint modify = (uint)OpenSim.Framework.PermissionMask.Modify;
+        uint copy = (uint)OpenSim.Framework.PermissionMask.Copy;
+        uint transfer = (uint)OpenSim.Framework.PermissionMask.Transfer;
+        uint noMod = (uint)OpenSim.Framework.PermissionMask.AllAndExportNoMod;
+        uint[] masks =
+        {
+            all,
+            all | export,
+            modify | copy,
+            transfer,
+            noMod,
+        };
+        byte[] blob = new byte[20];
+        for (int i = 0; i < masks.Length; i++)
+            Utils.UIntToBytes(masks[i]).CopyTo(blob, i * 4);
+        var parms = new JsonObject
+        {
+            ["build"] = true,
+            ["base"] = masks[0],
+            ["owner"] = masks[1],
+            ["group"] = masks[2],
+            ["everyone"] = masks[3],
+            ["next_owner"] = masks[4],
+        };
+        list.Add(Bytes("permissions-object", "permissions", blob, parms));
+        list.Add(MaskConstants());
+        uint foldedCopyTransfer = (uint)(OpenSim.Framework.PermissionMask.FoldedCopy | OpenSim.Framework.PermissionMask.FoldedTransfer);
+        uint foldedCopy = (uint)OpenSim.Framework.PermissionMask.FoldedCopy;
+        list.Add(Fold("permission-fold-apply", "apply", foldedCopyTransfer, all));
+        list.Add(Fold("permission-fold-ignore-empty", "apply", 0, all));
+        list.Add(Fold("permission-fold-ignore-full", "apply", (uint)OpenSim.Framework.PermissionMask.FoldedMask, all));
+        list.Add(Fold("permission-fold-nomod", "nomod", foldedCopy, all));
+        list.Add(Fold("permission-fold-fix", "fix", 0, modify));
+        list.Add(Fold("permission-fold-fix-neither", "fix", 0, (uint)OpenSim.Framework.PermissionMask.Slam));
+    }
+
+    static void AssertSharedMasks()
+    {
+        Same(PermissionMask.None, OpenSim.Framework.PermissionMask.None, "None");
+        Same(PermissionMask.Transfer, OpenSim.Framework.PermissionMask.Transfer, "Transfer");
+        Same(PermissionMask.Modify, OpenSim.Framework.PermissionMask.Modify, "Modify");
+        Same(PermissionMask.Copy, OpenSim.Framework.PermissionMask.Copy, "Copy");
+        Same(PermissionMask.Export, OpenSim.Framework.PermissionMask.Export, "Export");
+        Same(PermissionMask.Move, OpenSim.Framework.PermissionMask.Move, "Move");
+        Same(PermissionMask.Damage, OpenSim.Framework.PermissionMask.Damage, "Damage");
+        Same(PermissionMask.All, OpenSim.Framework.PermissionMask.All, "All");
+    }
+
+    static void Same(PermissionMask omv, OpenSim.Framework.PermissionMask tranq, string name)
+    {
+        if ((uint)omv != (uint)tranq)
+            throw new InvalidOperationException("permission bit " + name + " differs between OpenMetaverse and Tranquillity");
+    }
+
+    static Fixture MaskConstants()
+    {
+        OpenSim.Framework.PermissionMask[] names =
+        {
+            OpenSim.Framework.PermissionMask.None,
+            OpenSim.Framework.PermissionMask.FoldedTransfer,
+            OpenSim.Framework.PermissionMask.FoldedModify,
+            OpenSim.Framework.PermissionMask.FoldedCopy,
+            OpenSim.Framework.PermissionMask.FoldedExport,
+            OpenSim.Framework.PermissionMask.Slam,
+            OpenSim.Framework.PermissionMask.FoldedMask,
+            (OpenSim.Framework.PermissionMask)OpenSim.Framework.PermissionMask.FoldingShift,
+            OpenSim.Framework.PermissionMask.Transfer,
+            OpenSim.Framework.PermissionMask.Modify,
+            OpenSim.Framework.PermissionMask.Copy,
+            OpenSim.Framework.PermissionMask.Export,
+            OpenSim.Framework.PermissionMask.Move,
+            OpenSim.Framework.PermissionMask.Damage,
+            OpenSim.Framework.PermissionMask.All,
+            OpenSim.Framework.PermissionMask.AllAndExport,
+            OpenSim.Framework.PermissionMask.AllAndExportNoMod,
+            OpenSim.Framework.PermissionMask.AllEffective,
+            OpenSim.Framework.PermissionMask.UnfoldedMask,
+        };
+        byte[] blob = new byte[names.Length * 4];
+        for (int i = 0; i < names.Length; i++)
+            Utils.UIntToBytes((uint)names[i]).CopyTo(blob, i * 4);
+        return Bytes("permission-masks", "permission-masks", blob, null);
+    }
+
+    static Fixture Fold(string name, string op, uint source, uint target)
+    {
+        uint result = target;
+        if (op == "apply")
+            OpenSim.Framework.PermissionsUtil.ApplyFoldedPermissions(source, ref result);
+        else if (op == "nomod")
+            OpenSim.Framework.PermissionsUtil.ApplyNoModFoldedPermissions(source, ref result);
+        else if (op == "fix")
+            result = OpenSim.Framework.PermissionsUtil.FixAndFoldPermissions(target);
+        else
+            throw new InvalidOperationException("unknown fold op: " + op);
+        var parms = new JsonObject
+        {
+            ["build"] = true,
+            ["op"] = op,
+            ["source"] = source,
+            ["target"] = target,
+        };
+        return Bytes(name, "permission-fold", Utils.UIntToBytes(result), parms);
     }
 
     static Fixture Bytes(string name, string format, byte[] payload, JsonObject parms)

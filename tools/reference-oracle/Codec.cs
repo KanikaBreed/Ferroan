@@ -281,6 +281,16 @@ internal static class Codec
                 return TextureEntryNode(payload);
             case "extra-params":
                 return ExtraNode(payload);
+            case "shape":
+                return ShapeNode(payload);
+            case "attachment-state":
+                return AttachmentNode(payload);
+            case "permissions":
+                return PermissionsNode(payload);
+            case "permission-fold":
+                return FoldNode(payload);
+            case "permission-masks":
+                return MasksNode(payload);
             default:
                 throw new InvalidOperationException("unknown byte format: " + format);
         }
@@ -547,6 +557,16 @@ internal static class Codec
                 prim.SetExtraParamsFromBytes(payload, 0);
                 return prim.GetExtraParamsBytes();
             }
+            case "shape":
+                return ShapeAgain(payload);
+            case "attachment-state":
+                return new[] { Utils.SwapNibbles(Utils.SwapNibbles(payload[0])) };
+            case "permissions":
+                return PermissionsAgain(payload);
+            case "permission-fold":
+                return Utils.UIntToBytes(Utils.BytesToUInt(payload, 0));
+            case "permission-masks":
+                return (byte[])payload.Clone();
             default:
                 throw new InvalidOperationException("unknown byte format: " + format);
         }
@@ -672,6 +692,113 @@ internal static class Codec
     static JsonNode JsonNull()
     {
         return JsonNode.Parse("null");
+    }
+
+    static JsonObject ShapeNode(byte[] payload)
+    {
+        if (payload.Length != 23)
+            throw new ArgumentException("expected 23 bytes, got " + payload.Length);
+        byte profile = payload[1];
+        JsonObject node = Type("shape");
+        node["path_curve"] = payload[0];
+        node["profile_curve"] = profile;
+        node["profile_shape"] = profile & 0x0f;
+        node["profile_hole"] = profile & 0xf0;
+        node["path_begin_bits"] = F32(Primitive.UnpackBeginCut(Utils.BytesToUInt16(payload, 2)));
+        node["path_end_bits"] = F32(Primitive.UnpackEndCut(Utils.BytesToUInt16(payload, 4)));
+        node["path_scale_x_bits"] = F32(Primitive.UnpackPathScale(payload[6]));
+        node["path_scale_y_bits"] = F32(Primitive.UnpackPathScale(payload[7]));
+        node["path_shear_x_bits"] = F32(Primitive.UnpackPathShear((sbyte)payload[8]));
+        node["path_shear_y_bits"] = F32(Primitive.UnpackPathShear((sbyte)payload[9]));
+        node["path_twist_bits"] = F32(Primitive.UnpackPathTwist((sbyte)payload[10]));
+        node["path_twist_begin_bits"] = F32(Primitive.UnpackPathTwist((sbyte)payload[11]));
+        node["path_radius_offset_bits"] = F32(Primitive.UnpackPathTwist((sbyte)payload[12]));
+        node["path_taper_x_bits"] = F32(Primitive.UnpackPathTaper((sbyte)payload[13]));
+        node["path_taper_y_bits"] = F32(Primitive.UnpackPathTaper((sbyte)payload[14]));
+        node["path_revolutions_bits"] = F32(Primitive.UnpackPathRevolutions(payload[15]));
+        node["path_skew_bits"] = F32(Primitive.UnpackPathTwist((sbyte)payload[16]));
+        node["profile_begin_bits"] = F32(Primitive.UnpackBeginCut(Utils.BytesToUInt16(payload, 17)));
+        node["profile_end_bits"] = F32(Primitive.UnpackEndCut(Utils.BytesToUInt16(payload, 19)));
+        node["profile_hollow_bits"] = F32(Primitive.UnpackProfileHollow(Utils.BytesToUInt16(payload, 21)));
+        node["again_hex"] = Convert.ToHexString(ShapeAgain(payload)).ToLowerInvariant();
+        return node;
+    }
+
+    static byte[] ShapeAgain(byte[] payload)
+    {
+        if (payload.Length != 23)
+            throw new ArgumentException("expected 23 bytes, got " + payload.Length);
+        byte[] again = new byte[23];
+        again[0] = payload[0];
+        again[1] = payload[1];
+        Utils.UInt16ToBytes(Primitive.PackBeginCut(Primitive.UnpackBeginCut(Utils.BytesToUInt16(payload, 2)))).CopyTo(again, 2);
+        Utils.UInt16ToBytes(Primitive.PackEndCut(Primitive.UnpackEndCut(Utils.BytesToUInt16(payload, 4)))).CopyTo(again, 4);
+        again[6] = Primitive.PackPathScale(Primitive.UnpackPathScale(payload[6]));
+        again[7] = Primitive.PackPathScale(Primitive.UnpackPathScale(payload[7]));
+        again[8] = (byte)Primitive.PackPathShear(Primitive.UnpackPathShear((sbyte)payload[8]));
+        again[9] = (byte)Primitive.PackPathShear(Primitive.UnpackPathShear((sbyte)payload[9]));
+        again[10] = (byte)Primitive.PackPathTwist(Primitive.UnpackPathTwist((sbyte)payload[10]));
+        again[11] = (byte)Primitive.PackPathTwist(Primitive.UnpackPathTwist((sbyte)payload[11]));
+        again[12] = (byte)Primitive.PackPathTwist(Primitive.UnpackPathTwist((sbyte)payload[12]));
+        again[13] = (byte)Primitive.PackPathTaper(Primitive.UnpackPathTaper((sbyte)payload[13]));
+        again[14] = (byte)Primitive.PackPathTaper(Primitive.UnpackPathTaper((sbyte)payload[14]));
+        again[15] = Primitive.PackPathRevolutions(Primitive.UnpackPathRevolutions(payload[15]));
+        again[16] = (byte)Primitive.PackPathTwist(Primitive.UnpackPathTwist((sbyte)payload[16]));
+        Utils.UInt16ToBytes(Primitive.PackBeginCut(Primitive.UnpackBeginCut(Utils.BytesToUInt16(payload, 17)))).CopyTo(again, 17);
+        Utils.UInt16ToBytes(Primitive.PackEndCut(Primitive.UnpackEndCut(Utils.BytesToUInt16(payload, 19)))).CopyTo(again, 19);
+        Utils.UInt16ToBytes(Primitive.PackProfileHollow(Primitive.UnpackProfileHollow(Utils.BytesToUInt16(payload, 21)))).CopyTo(again, 21);
+        return again;
+    }
+
+    static JsonObject AttachmentNode(byte[] payload)
+    {
+        if (payload.Length != 1)
+            throw new ArgumentException("expected 1 byte, got " + payload.Length);
+        JsonObject node = Type("attachment-state");
+        node["state"] = payload[0];
+        node["attachment"] = Utils.SwapNibbles(payload[0]);
+        return node;
+    }
+
+    static JsonObject PermissionsNode(byte[] payload)
+    {
+        if (payload.Length != 20)
+            throw new ArgumentException("expected 20 bytes, got " + payload.Length);
+        JsonObject node = Type("permissions");
+        node["base"] = Utils.BytesToUInt(payload, 0);
+        node["owner"] = Utils.BytesToUInt(payload, 4);
+        node["group"] = Utils.BytesToUInt(payload, 8);
+        node["everyone"] = Utils.BytesToUInt(payload, 12);
+        node["next_owner"] = Utils.BytesToUInt(payload, 16);
+        return node;
+    }
+
+    static byte[] PermissionsAgain(byte[] payload)
+    {
+        if (payload.Length != 20)
+            throw new ArgumentException("expected 20 bytes, got " + payload.Length);
+        return (byte[])payload.Clone();
+    }
+
+    static JsonObject FoldNode(byte[] payload)
+    {
+        if (payload.Length != 4)
+            throw new ArgumentException("expected 4 bytes, got " + payload.Length);
+        JsonObject node = Type("permission-fold");
+        node["result"] = Utils.BytesToUInt(payload, 0);
+        return node;
+    }
+
+    static JsonObject MasksNode(byte[] payload)
+    {
+        if (payload.Length % 4 != 0)
+            throw new ArgumentException("permission masks are 4-byte values");
+        var values = new JsonArray();
+        for (int i = 0; i < payload.Length; i += 4)
+            values.Add(Utils.BytesToUInt(payload, i));
+        JsonObject node = Type("permission-masks");
+        node["values"] = values;
+        return node;
     }
 
     static JsonObject Type(string name)

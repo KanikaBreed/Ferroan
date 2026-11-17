@@ -3216,6 +3216,402 @@
         "sculpt": null,
         "again_hex": "0110001000000094856e080000803f000000c00000003f"
       }
+    },
+    {
+      "id": "bytes/shape-box",
+      "family": "bytes",
+      "format": "shape",
+      "file": "bytes/shape-box.bin",
+      "params": {
+        "build": true,
+        "path_curve": 16,
+        "profile_curve": 1,
+        "path_begin_bits": "00000000",
+        "path_end_bits": "3f800000",
+        "path_scale_x_bits": "3f800000",
+        "path_scale_y_bits": "3f800000",
+        "path_shear_x_bits": "00000000",
+        "path_shear_y_bits": "00000000",
+        "path_twist_bits": "00000000",
+        "path_twist_begin_bits": "00000000",
+        "path_radius_offset_bits": "00000000",
+        "path_taper_x_bits": "00000000",
+        "path_taper_y_bits": "00000000",
+        "path_revolutions_bits": "3f800000",
+        "path_skew_bits": "00000000",
+        "profile_begin_bits": "00000000",
+        "profile_end_bits": "3f800000",
+        "profile_hollow_bits": "00000000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "shape",
+        "path_curve": 16,
+        "profile_curve": 1,
+        "profile_shape": 1,
+        "profile_hole": 0,
+        "path_begin_bits": "00000000",
+        "path_end_bits": "3f800000",
+        "path_scale_x_bits": "3f800000",
+        "path_scale_y_bits": "3f800000",
+        "path_shear_x_bits": "00000000",
+        "path_shear_y_bits": "00000000",
+        "path_twist_bits": "00000000",
+        "path_twist_begin_bits": "00000000",
+        "path_radius_offset_bits": "00000000",
+        "path_taper_x_bits": "00000000",
+        "path_taper_y_bits": "00000000",
+        "path_revolutions_bits": "3f800000",
+        "path_skew_bits": "00000000",
+        "profile_begin_bits": "00000000",
+        "profile_end_bits": "3f800000",
+        "profile_hollow_bits": "00000000",
+        "again_hex": "1001000000006464000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/shape-mixed",
+      "family": "bytes",
+      "format": "shape",
+      "file": "bytes/shape-mixed.bin",
+      "params": {
+        "build": true,
+        "path_curve": 32,
+        "profile_curve": 32,
+        "path_begin_bits": "3e800000",
+        "path_end_bits": "3f400000",
+        "path_scale_x_bits": "3f000000",
+        "path_scale_y_bits": "3fc00000",
+        "path_shear_x_bits": "3dcccccd",
+        "path_shear_y_bits": "be4ccccd",
+        "path_twist_bits": "3e99999a",
+        "path_twist_begin_bits": "becccccd",
+        "path_radius_offset_bits": "3e19999a",
+        "path_taper_x_bits": "3e800000",
+        "path_taper_y_bits": "bf000000",
+        "path_revolutions_bits": "3fc00000",
+        "path_skew_bits": "bd4ccccd",
+        "profile_begin_bits": "3e4ccccd",
+        "profile_end_bits": "3f4ccccd",
+        "profile_hollow_bits": "3f000000"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "shape",
+        "path_curve": 32,
+        "profile_curve": 32,
+        "profile_shape": 0,
+        "profile_hole": 32,
+        "path_begin_bits": "3e800000",
+        "path_end_bits": "3f400000",
+        "path_scale_x_bits": "3f000000",
+        "path_scale_y_bits": "3fc00000",
+        "path_shear_x_bits": "3dcccccc",
+        "path_shear_y_bits": "be4ccccc",
+        "path_twist_bits": "3e999999",
+        "path_twist_begin_bits": "becccccc",
+        "path_radius_offset_bits": "3e199999",
+        "path_taper_x_bits": "3e800000",
+        "path_taper_y_bits": "bf000000",
+        "path_revolutions_bits": "3fbf5c29",
+        "path_skew_bits": "bd4ccccc",
+        "profile_begin_bits": "3e4ccccc",
+        "profile_end_bits": "3f4ccccc",
+        "profile_hollow_bits": "3f000000",
+        "again_hex": "2020d430d43096320aec1ed80f19ce21fb10271027a861"
+      }
+    },
+    {
+      "id": "bytes/shape-midpoint",
+      "family": "bytes",
+      "format": "shape",
+      "file": "bytes/shape-midpoint.bin",
+      "params": {
+        "build": true,
+        "path_curve": 16,
+        "profile_curve": 1,
+        "path_begin_bits": "3851b717",
+        "path_end_bits": "3892ccf7",
+        "path_scale_x_bits": "3ccccccd",
+        "path_scale_y_bits": "3d0f5c29",
+        "path_shear_x_bits": "3ccccccd",
+        "path_shear_y_bits": "3d0f5c29",
+        "path_twist_bits": "3ccccccd",
+        "path_twist_begin_bits": "3d0f5c29",
+        "path_radius_offset_bits": "3ccccccd",
+        "path_taper_x_bits": "3ccccccd",
+        "path_taper_y_bits": "3d0f5c29",
+        "path_revolutions_bits": "3f84cccd",
+        "path_skew_bits": "3ccccccd",
+        "profile_begin_bits": "3851b717",
+        "profile_end_bits": "3892ccf7",
+        "profile_hollow_bits": "3851b717"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "shape",
+        "path_curve": 16,
+        "profile_curve": 1,
+        "profile_shape": 1,
+        "profile_hole": 0,
+        "path_begin_bits": "3827c5ac",
+        "path_end_bits": "38a7c5ac",
+        "path_scale_x_bits": "3ca3d70a",
+        "path_scale_y_bits": "3d23d70a",
+        "path_shear_x_bits": "3ca3d70a",
+        "path_shear_y_bits": "3d23d70a",
+        "path_twist_bits": "3ca3d70a",
+        "path_twist_begin_bits": "3d23d70a",
+        "path_radius_offset_bits": "3ca3d70a",
+        "path_taper_x_bits": "3ca3d70a",
+        "path_taper_y_bits": "3d23d70a",
+        "path_revolutions_bits": "3f85c28f",
+        "path_skew_bits": "3ca3d70a",
+        "profile_begin_bits": "3827c5ac",
+        "profile_end_bits": "38a7c5ac",
+        "profile_hollow_bits": "3827c5ac",
+        "again_hex": "100102004cc3c6c402040204020204030202004cc30200"
+      }
+    },
+    {
+      "id": "bytes/shape-wrap",
+      "family": "bytes",
+      "format": "shape",
+      "file": "bytes/shape-wrap.bin",
+      "params": {
+        "build": true,
+        "path_curve": 128,
+        "profile_curve": 53,
+        "path_begin_bits": "00000000",
+        "path_end_bits": "3f800000",
+        "path_scale_x_bits": "40266666",
+        "path_scale_y_bits": "be4ccccd",
+        "path_shear_x_bits": "40000000",
+        "path_shear_y_bits": "c0000000",
+        "path_twist_bits": "40000000",
+        "path_twist_begin_bits": "c0000000",
+        "path_radius_offset_bits": "40000000",
+        "path_taper_x_bits": "40000000",
+        "path_taper_y_bits": "c0000000",
+        "path_revolutions_bits": "40800000",
+        "path_skew_bits": "40000000",
+        "profile_begin_bits": "00000000",
+        "profile_end_bits": "3f800000",
+        "profile_hollow_bits": "3f99999a"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "shape",
+        "path_curve": 128,
+        "profile_curve": 53,
+        "profile_shape": 5,
+        "profile_hole": 48,
+        "path_begin_bits": "00000000",
+        "path_end_bits": "3f800000",
+        "path_scale_x_bits": "3d23d70a",
+        "path_scale_y_bits": "be4ccccc",
+        "path_shear_x_bits": "bf0f5c29",
+        "path_shear_y_bits": "3f0f5c29",
+        "path_twist_bits": "bf0f5c29",
+        "path_twist_begin_bits": "3f0f5c29",
+        "path_radius_offset_bits": "bf0f5c29",
+        "path_taper_x_bits": "bf0f5c29",
+        "path_taper_y_bits": "3f0f5c29",
+        "path_revolutions_bits": "40800000",
+        "path_skew_bits": "bf0f5c29",
+        "profile_begin_bits": "00000000",
+        "profile_end_bits": "3f800000",
+        "profile_hollow_bits": "3f999999",
+        "again_hex": "803500000000c4dcc838c838c8c838c8c80000000060ea"
+      }
+    },
+    {
+      "id": "bytes/attachment-chest",
+      "family": "bytes",
+      "format": "attachment-state",
+      "file": "bytes/attachment-chest.bin",
+      "params": {
+        "build": true,
+        "attachment": 1
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "attachment-state",
+        "state": 16,
+        "attachment": 1
+      }
+    },
+    {
+      "id": "bytes/attachment-nibbles",
+      "family": "bytes",
+      "format": "attachment-state",
+      "file": "bytes/attachment-nibbles.bin",
+      "params": {
+        "build": true,
+        "attachment": 42
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "attachment-state",
+        "state": 162,
+        "attachment": 42
+      }
+    },
+    {
+      "id": "bytes/permissions-object",
+      "family": "bytes",
+      "format": "permissions",
+      "file": "bytes/permissions-object.bin",
+      "params": {
+        "build": true,
+        "base": 581632,
+        "owner": 647168,
+        "group": 49152,
+        "everyone": 8192,
+        "next_owner": 630784
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permissions",
+        "base": 581632,
+        "owner": 647168,
+        "group": 49152,
+        "everyone": 8192,
+        "next_owner": 630784
+      }
+    },
+    {
+      "id": "bytes/permission-masks",
+      "family": "bytes",
+      "format": "permission-masks",
+      "file": "bytes/permission-masks.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-masks",
+        "values": [
+          0,
+          1,
+          2,
+          4,
+          8,
+          16,
+          15,
+          13,
+          8192,
+          16384,
+          32768,
+          65536,
+          524288,
+          1048576,
+          581632,
+          647168,
+          630784,
+          647168,
+          122880
+        ]
+      }
+    },
+    {
+      "id": "bytes/permission-fold-apply",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-apply.bin",
+      "params": {
+        "build": true,
+        "op": "apply",
+        "source": 5,
+        "target": 581632
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 565248
+      }
+    },
+    {
+      "id": "bytes/permission-fold-ignore-empty",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-ignore-empty.bin",
+      "params": {
+        "build": true,
+        "op": "apply",
+        "source": 0,
+        "target": 581632
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 581632
+      }
+    },
+    {
+      "id": "bytes/permission-fold-ignore-full",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-ignore-full.bin",
+      "params": {
+        "build": true,
+        "op": "apply",
+        "source": 15,
+        "target": 581632
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 581632
+      }
+    },
+    {
+      "id": "bytes/permission-fold-nomod",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-nomod.bin",
+      "params": {
+        "build": true,
+        "op": "nomod",
+        "source": 4,
+        "target": 581632
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 573440
+      }
+    },
+    {
+      "id": "bytes/permission-fold-fix",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-fix.bin",
+      "params": {
+        "build": true,
+        "op": "fix",
+        "source": 0,
+        "target": 16384
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 548867
+      }
+    },
+    {
+      "id": "bytes/permission-fold-fix-neither",
+      "family": "bytes",
+      "format": "permission-fold",
+      "file": "bytes/permission-fold-fix-neither.bin",
+      "params": {
+        "build": true,
+        "op": "fix",
+        "source": 0,
+        "target": 16
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "permission-fold",
+        "result": 532497
+      }
     }
   ]
 }

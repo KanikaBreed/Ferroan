@@ -175,18 +175,42 @@ fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
             "libopenmetaverse checkout is not clean; the oracle only reads it:\n{status}"
         ));
     }
+    let tranq_pin = pinned_named(&text, "OpenSim-Tranquillity")?;
+    let tranq = reference.join("OpenSim-Tranquillity");
+    let framework = tranq.join("Source/OpenSim.Framework/OpenSim.Framework.csproj");
+    if !framework.is_file() {
+        return Err(format!(
+            "missing {} (FERROAN_REF={})",
+            framework.display(),
+            reference.display()
+        ));
+    }
+    let tranq_actual = git(&tranq, &["rev-parse", "HEAD"])?;
+    if tranq_actual != tranq_pin {
+        return Err(format!(
+            "OpenSim-Tranquillity is at {tranq_actual}, docs/REFERENCES.md pins {tranq_pin}"
+        ));
+    }
+    let tranq_status = git(&tranq, &["status", "--porcelain"])?;
+    if !tranq_status.is_empty() {
+        return Err(format!(
+            "OpenSim-Tranquillity checkout is not clean; the oracle only reads it:\n{tranq_status}"
+        ));
+    }
     Ok(pinned)
 }
 
 fn reference_is_clean(reference: &Path) -> bool {
-    match git(
-        &reference.join("libopenmetaverse"),
-        &["status", "--porcelain"],
-    ) {
+    clean_checkout(reference, "libopenmetaverse")
+        && clean_checkout(reference, "OpenSim-Tranquillity")
+}
+
+fn clean_checkout(reference: &Path, name: &str) -> bool {
+    match git(&reference.join(name), &["status", "--porcelain"]) {
         Ok(status) if status.is_empty() => true,
         Ok(status) => {
             eprintln!(
-                "oracle: the build wrote into the libopenmetaverse checkout. That checkout is read-only:\n{status}"
+                "oracle: the build wrote into the {name} checkout. That checkout is read-only:\n{status}"
             );
             false
         }
@@ -221,9 +245,15 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 
 /// The 40-character revision in the `libopenmetaverse` row of `docs/REFERENCES.md`.
 fn pinned_revision(markdown: &str) -> Result<String, String> {
+    pinned_named(markdown, "libopenmetaverse")
+}
+
+/// The 40-character revision in one checkout row of `docs/REFERENCES.md`.
+fn pinned_named(markdown: &str, checkout: &str) -> Result<String, String> {
+    let marker = format!("| `{checkout}`");
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if !trimmed.starts_with("| `libopenmetaverse`") {
+        if !trimmed.starts_with(&marker) {
             continue;
         }
         let bytes = trimmed.as_bytes();
@@ -237,9 +267,9 @@ fn pinned_revision(markdown: &str) -> Result<String, String> {
             }
             index += 1;
         }
-        return Err("libopenmetaverse row has no 40-character revision".to_string());
+        return Err(format!("{checkout} row has no 40-character revision"));
     }
-    Err("docs/REFERENCES.md has no libopenmetaverse row".to_string())
+    Err(format!("docs/REFERENCES.md has no {checkout} row"))
 }
 
 fn dotnet(

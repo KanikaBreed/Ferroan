@@ -2,7 +2,7 @@
 
 Packet bytes for the OpenMetaverse value types, checked against `fixtures/oracle`.
 
-`src/wire.rs`, `src/texture.rs` and `src/extra.rs` are ported from libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`:
+`src/wire.rs`, `src/texture.rs`, `src/extra.rs` and `src/shape.rs` are ported from libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. `src/permissions.rs` is ported from Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`, and the shared permission bits match OpenMetaverse:
 
 - `OpenMetaverse.Types/UUID.cs`
 - `Vector2.cs`, `Vector3.cs`, `Vector3d.cs`, `Vector4.cs`
@@ -10,7 +10,9 @@ Packet bytes for the OpenMetaverse value types, checked against `fixtures/oracle
 - `Color4.cs`
 - `UtilsConversions.cs` (`FloatToUInt16`, `FloatToUnitUInt16`, `UInt16ToFloat`, `FloatZeroOneToByte`, `UInt16ToBytes`)
 - `OpenMetaverse/Primitives/TextureEntry.cs` and `OpenMetaverse/Helpers.cs` (`TEOffsetShort`, `TEOffsetFloat`, `TERotationShort`, `TERotationFloat`, `TEGlowByte`, `TEGlowFloat`)
-- `OpenMetaverse/Primitives/Primitive.cs` (`FlexibleData`, `LightData`, `LightImage`, `SculptData`, `GetExtraParamsBytes`, `SetExtraParamsFromBytes`) and `OpenMetaverse.Types/EnumsPrimitive.cs`
+- `OpenMetaverse/Primitives/Primitive.cs` (`FlexibleData`, `LightData`, `LightImage`, `SculptData`, `GetExtraParamsBytes`, `SetExtraParamsFromBytes`, `PackBeginCut` and the other `Pack*` / `Unpack*` methods, the profile-curve nibbles) and `OpenMetaverse.Types/EnumsPrimitive.cs`
+- `OpenMetaverse.Types/UtilsConversions.cs` (`SwapNibbles`) and `OpenMetaverse/Permissions.cs`
+- Tranquillity `Source/OpenSim.Framework/Util.cs` (`PermissionMask`) and `PermissionsUtil.cs` (`ApplyFoldedPermissions`, `ApplyNoModFoldedPermissions`, `FixAndFoldPermissions`)
 
 Vectors and quaternions are `glam` 0.34 values. Each field is written on its own, little-endian. A `glam` struct is not the wire layout. `Color4` is a plain struct.
 
@@ -36,6 +38,11 @@ Vectors and quaternions are `glam` 0.34 values. Each field is written on its own
 | `TextureEntry::from_bytes` | `new TextureEntry(bytes, 0, length)` |
 | `ExtraParams::to_bytes` | `Primitive.GetExtraParamsBytes` |
 | `ExtraParams::from_bytes` | `Primitive.SetExtraParamsFromBytes` |
+| `ShapeParams::to_bytes` | `Primitive.Pack*` in `ObjectAdd` field order |
+| `ShapeParams::from_bytes` | `Primitive.Unpack*` |
+| `swap_nibbles` | `Utils.SwapNibbles`, which `AttachmentPoint` uses for `State` |
+| `Permissions::to_bytes` | five little-endian masks: base, owner, group, everyone, next owner |
+| `apply_folded_permissions` | `PermissionsUtil.ApplyFoldedPermissions` |
 
 A buffer shorter than a fixed layout returns `WireError::Short`. A texture entry shorter than 16 bytes has no default face, and `to_bytes` of that value is empty. A texture entry or extra-parameter blob over 64 KiB returns `WireError::Limit`. OpenMetaverse does not apply that cap. A face bitfield stops after eight 7-bit groups; a 45-face mask fits in seven.
 
@@ -63,8 +70,14 @@ A light stores intensity in the colour alpha and sets `Color.A` to 1 on decode. 
 
 `SculptData` and `FlexibleData` in C# decide whether the payload is present by looking at the length of the whole buffer, not the bytes remaining at the read position. A payload that runs past the buffer is `WireError::Short` here.
 
-## Not in this crate yet
+## Shape parameters
 
-Prim shape parameters and permission masks are P0.3c.
+`ObjectAdd` writes `PathCurve` through `ProfileHollow` as 23 bytes. `MathF.Round` sends a midpoint to the even integer, and the cast keeps the low bits of that integer (`(byte)260f` is `4`). Aurora's `pack.rs` rounds midpoints away from zero and then clamps, so it is not copied.
+
+The profile byte keeps the hole in the high nibble and the curve in the low nibble. `AttachmentPoint` is stored in `State` with the nibbles swapped. Unpacking a packed field is not always the float that was packed. Encoding the source float is what restores the file. Packing the unpacked float is what `again_hex` records.
+
+## Permission masks
+
+Tranquillity's `PermissionMask` includes OpenMetaverse's bits at the same values. The oracle refuses to generate if `None`, `Transfer`, `Modify`, `Copy`, `Export`, `Move`, `Damage` or `All` differ. `All` does not include `Export`. The folded low bits, `Slam` and the named combinations are Tranquillity's. `ApplyFoldedPermissions` leaves the target alone when the folded source is `0` or every folded bit.
 
 A viewer has not been shown these bytes. The comparison is the committed oracle fixtures. CI does not run the C# oracle.
