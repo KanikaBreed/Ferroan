@@ -26,8 +26,9 @@
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. CI does
 //! not run it.
 //!
-//! `live` builds the pinned Tranquillity region into `.scratch/live/` and
-//! starts or stops it. It runs on Linux. CI does not run it yet.
+//! `live` builds the pinned Tranquillity region into `.scratch/live/`,
+//! starts or stops it, and runs bot scenarios against it. It runs on Linux.
+//! CI does not run it yet.
 
 mod asset_oracle;
 mod config_oracle;
@@ -60,7 +61,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset verify [directory]
        cargo xtask live build
        cargo xtask live up
-       cargo xtask live down";
+       cargo xtask live down
+       cargo xtask live run <scenario>|all";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -98,6 +100,7 @@ fn main() -> ExitCode {
         ["live", "build"] => live::build(),
         ["live", "up"] => live::up(),
         ["live", "down"] => live::down(),
+        ["live", "run", scenario] => live::run(scenario),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

@@ -3,16 +3,18 @@
 
 //! A headless viewer for the live harness.
 //!
-//! XML-RPC login, one LLUDP circuit (acks, resends, the region handshake)
-//! and the seed capability. Scenarios that drive a running region are added
-//! with the harness. Nothing here starts a region.
+//! XML-RPC login, one LLUDP circuit (acks, resends, the region handshake),
+//! the seed capability, and the scenarios `cargo xtask live run` drives.
+//! Nothing here starts a region.
 
 mod body;
 pub mod caps;
 pub mod circuit;
 pub mod login;
+pub mod scenario;
 pub mod session;
 pub mod throttle;
+mod world;
 mod xmlrpc;
 
 pub use caps::{SEED_CAPS, request_seed};
