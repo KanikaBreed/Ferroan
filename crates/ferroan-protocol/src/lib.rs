@@ -446,6 +446,27 @@ mod tests {
     }
 
     #[test]
+    fn scrub_replaces_the_chat_owner_and_keeps_the_message() {
+        let mut m = ChatFromSimulator::default();
+        m.chat_data.from_name = b"Ada".to_vec();
+        m.chat_data.source_id = Uuid::from_u128(0x3333);
+        m.chat_data.owner_id = Uuid::from_u128(0x4444);
+        m.chat_data.message = b"hello".to_vec();
+        let mut raw = Vec::new();
+        packet::build_packet(&m, 3, false, false, &[], &mut raw);
+        let scrubbed = scrub_datagram(&raw).unwrap();
+        let back = parse_packet(&scrubbed)
+            .unwrap()
+            .decode::<ChatFromSimulator>()
+            .unwrap();
+        assert_eq!(back.chat_data.from_name, b"Redacted");
+        assert_eq!(back.chat_data.owner_id, Uuid::from_u128(1));
+        assert_eq!(back.chat_data.source_id, Uuid::from_u128(0x3333));
+        assert_eq!(back.chat_data.message, b"hello");
+        assert_eq!(reencode_datagram(&scrubbed).unwrap(), scrubbed);
+    }
+
+    #[test]
     fn quat_roundtrip() {
         let q = Quat::from_rotation_z(1.0);
         let mut w = Writer::new();

@@ -6,7 +6,7 @@ The generator and the packet codec were adapted from Aurora Viewer `crates/auror
 
 [docs/PROTOCOL.md](../../docs/PROTOCOL.md) lists every message that differs between the two templates and the choice made for each. Ferroan generates the libopenmetaverse layout. It does not define Aurora's five extra messages and does not emit Aurora's extra trailing blocks.
 
-`build.rs` emits encode and decode for every message. `scrub_datagram` replaces session UUIDs, agent and user UUIDs, circuit codes, every `IPADDR`, and variable fields named Name, FromName, FirstName, LastName, UserName or NameValue. A variable field whose name contains password, passwd, secret, token or email is replaced the same way. The placeholders are fixed. Object UUIDs stay. Chat text stays. Quaternion fields use `Quaternion.ToBytes` / `FromBytes`, not `GetBytes` and not a glam normalize-and-flip. `IPADDR` is stored as the four little-endian wire bytes. `IPPORT` is big-endian.
+`build.rs` emits encode and decode for every message. `scrub_datagram` replaces session UUIDs, agent, user, owner, creator, abuser and reporter UUIDs, circuit codes, every `IPADDR`, and variable fields named Name, FromName, FromAgentName, FirstName, LastName, UserName, NameValue or ObjectOwner. A variable field whose name contains password, passwd, secret, token or email is replaced the same way. The placeholders are fixed. Other object UUIDs stay. `SourceID` stays. Chat text stays. Quaternion fields use `Quaternion.ToBytes` / `FromBytes`, not `GetBytes` and not a glam normalize-and-flip. `IPADDR` is stored as the four little-endian wire bytes. `IPPORT` is big-endian.
 
 ## Fixtures
 

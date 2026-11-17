@@ -211,10 +211,12 @@ fn scrub_line(block: &str, field: &str, ty: &VarType, rust_field: &str) -> Optio
     let field = field.to_ascii_lowercase();
     let text = field == "name"
         || field == "fromname"
+        || field == "fromagentname"
         || field == "firstname"
         || field == "lastname"
         || field == "username"
         || field == "namevalue"
+        || field == "objectowner"
         || field.contains("password")
         || field.contains("passwd")
         || field.contains("secret")
@@ -228,6 +230,10 @@ fn scrub_line(block: &str, field: &str, ty: &VarType, rust_field: &str) -> Optio
         VarType::Simple(_, "uuid")
             if field.contains("agentid")
                 || field.contains("userid")
+                || field.contains("ownerid")
+                || field.contains("creatorid")
+                || field.contains("abuserid")
+                || field.contains("reporterid")
                 || (field == "id" && block.contains("circuit")) =>
         {
             Some(format!("self.{rust_field} = uuid::Uuid::from_u128(1);"))

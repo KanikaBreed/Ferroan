@@ -75,12 +75,12 @@ cargo run -p ferroan-capture -- redact --in /tmp/session.cap --out fixtures/capt
 | --- | --- |
 | `IPADDR` | `127.0.0.1`. The port stays |
 | UUID whose name contains `session` | `00000000-0000-0000-0000-000000000002` |
-| UUID whose name contains `agentid` or `userid`, and `ID` inside a circuit block | `00000000-0000-0000-0000-000000000001` |
+| UUID whose name contains `agentid`, `userid`, `ownerid`, `creatorid`, `abuserid` or `reporterid`, and `ID` inside a circuit block | `00000000-0000-0000-0000-000000000001` |
 | U32 named `Code`, or whose name contains `circuitcode` | `1` |
-| Variable field named Name, FromName, FirstName, LastName, UserName or NameValue | `Redacted` |
+| Variable field named Name, FromName, FromAgentName, FirstName, LastName, UserName, NameValue or ObjectOwner | `Redacted` |
 | Variable field whose name contains password, passwd, secret, token or email | `Redacted` |
 
-Object UUIDs stay. Chat `Message` text stays, so read the redacted file before committing it. An object `Name` becomes `Redacted`. The placeholders are fixed values. They are not a hash of the original.
+Object UUIDs stay, including `SourceID`, which is an agent id on some chat and an object id on others. Chat `Message` text stays, so read the redacted file before committing it. An object `Name` becomes `Redacted`. `OwnerID` and `LastOwnerID` become the agent placeholder. The placeholders are fixed values. They are not a hash of the original.
 
 HTTP `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` values become `Redacted`. Other header lines, and a body whose `Content-Type` contains text, xml, json, form or llsd, have dotted IPv4 addresses replaced with `127.0.0.1`. An XML-RPC `<string>` that follows `<name>password</name>`, or the same shape for passwd, token, secret, first, last, firstname, lastname, session or session_id, becomes `Redacted`. A body with another content type is copied unchanged. A missing `Content-Type` is treated as text.
 

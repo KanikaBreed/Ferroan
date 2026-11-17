@@ -146,7 +146,7 @@ Malformed datagrams return `DecodeError`. The unit tests cover a short header, a
 
 ## Redaction
 
-`scrub_datagram` is the capture scrub. It decodes one datagram, replaces session UUIDs with `00000000-0000-0000-0000-000000000002`, agent and user UUIDs and the circuit block's `ID` with `00000000-0000-0000-0000-000000000001`, circuit `Code` fields with 1, and every `IPADDR` with `127.0.0.1`. Variable fields named Name, FromName, FirstName, LastName, UserName or NameValue, and variable fields whose names contain password, passwd, secret, token or email, become the bytes of `Redacted`. Ports, object UUIDs and chat text stay. The datagram is then encoded again, so a redacted capture is a Ferroan encoding of the scrubbed fields. [CAPTURES.md](CAPTURES.md) says to prove the raw datagram round-trips before that replacement.
+`scrub_datagram` is the capture scrub. It decodes one datagram, replaces session UUIDs with `00000000-0000-0000-0000-000000000002`, and replaces agent, user, owner, creator, abuser and reporter UUIDs, plus the circuit block's `ID`, with `00000000-0000-0000-0000-000000000001`. Circuit `Code` fields become 1. Every `IPADDR` becomes `127.0.0.1`. Variable fields named Name, FromName, FromAgentName, FirstName, LastName, UserName, NameValue or ObjectOwner, and variable fields whose names contain password, passwd, secret, token or email, become the bytes of `Redacted`. Ports, other object UUIDs and chat text stay. `SourceID` stays, because that field is an agent id on some messages and an object id on others. The datagram is then encoded again, so a redacted capture is a Ferroan encoding of the scrubbed fields. [CAPTURES.md](CAPTURES.md) says to prove the raw datagram round-trips before that replacement.
 
 ## Not claimed
 
