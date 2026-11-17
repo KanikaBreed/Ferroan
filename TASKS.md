@@ -23,6 +23,11 @@ Tracked in the Tranquillity fork; packages are in [SLUA_TRANQUILLITY.md](docs/SL
 | S1.1 | TODO | Bindings generated from `ISystemAPI`; all 831 functions callable from LSL and SLua. |
 | S1.2 | TODO | Compiler patch and `ll`, `ossl`, `bot` tables, with `OsslGate`. |
 | S1.3 | TODO | Delays and deferred calls as yields; Phlox's syscall and sleep tests pass. |
+| M1 | TODO | Portable script state spec (LLSD, versioned), YEngine exporter, `script migrate audit` dry run on a copy of real grid state. No behaviour change. |
+| M2 | TODO | Phlox exporter and importer, YEngine importer; corpus round trips with no `state_entry`. |
+| M3 | TODO | SLua engine imports and exports portable state (after S2). |
+| M4 | TODO | Migrator: three engines, `FallbackScriptEngines`, one owner per script, compile and risk checks, round trip, quiet-point switch, rollback window. |
+| M5 | TODO | Hypergrid: `<Variables>`-form state for LSL on SLua, travel copy for SLua scripts, arrivals with YEngine or XEngine state; checked on the live harness against core OpenSim. |
 
 ## Phase 0: Foundations
 

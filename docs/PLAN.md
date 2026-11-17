@@ -53,10 +53,10 @@ The region and Aurora checks for this pilot are still open. See [TASKS.md](../TA
 | Script VM and compilers | Native: Linden Lab's SLua engine (C++), one engine for LSL, SLua, OSSL (an `ossl` table) and InWorldz bot functions (a `bot` table) |
 | Physics engine | Native: Jolt 5.6 (C++) through `oxijolt-sys` |
 | BulletSim, ubODE, POS and basic physics | Dropped; Jolt only |
-| YEngine and its language extensions | Dropped |
+| YEngine and its language extensions | Dropped; YEngine and XEngine state from hypergrid visitors is still imported |
 | Gloebit and XmlRpcGroups | Dropped until someone needs them |
 | Third-party C# region modules | Cannot load into Rust |
-| Saved script state from Phlox and YEngine | Not carried over; scripts restart once |
+| Saved script state from Phlox and YEngine | Carried over through the portable script state format ([SLUA_TRANQUILLITY.md](SLUA_TRANQUILLITY.md)), written by the C# server before the cut-over; a script whose state does not convert stays on a C# region until it does |
 
 ## Rust building blocks
 
@@ -78,7 +78,7 @@ These crates were checked on 17 November 2026; versions move.
 - **Phase 1:** assets (including FS assets), inventory, accounts, authentication, grid user, presence, grid, avatars, friends, offline IM, Groups V2, search, login over XML-RPC, hypergrid (gatekeeper, user agent, HG inventory and assets), and the money server. Each runs behind a C# grid as soon as it passes its fixtures.
 - **Phase 2:** the LLUDP circuit, CAPS and the event queue, the scene, object and inventory updates, permissions, appearance and baking, teleports and crossings to and from C# regions, and loading OAR files with terrain-height standing only.
 - **Phase 3:** Jolt behind `ferroan-physics`, prim, sculpt and mesh shapes, the avatar controller, vehicles, buoyancy and collision events.
-- **Phase 4:** the SLua engine plan's C interface called from Rust, the 831 `ll`, `os` and `bot` functions, the scheduler, events, time slices, memory limits and state saving.
+- **Phase 4:** the SLua engine plan's C interface called from Rust, the 831 `ll`, `os` and `bot` functions, the scheduler, events, time slices, memory limits and state saving, and reading and writing portable script state, YEngine snapshots and the `<Variables>` form for hypergrid.
 - **Phase 5:** land and parcels, estates, groups in the region, inventory transfer, the money module, NPCs and bots, linkset data, Experiences, map tiles, dynamic textures, OAR and IAR, media, sound, remote admin, monitoring.
 - **Phase 6:** WebRTC voice through the external Janus server, search, offline IM, the mute list.
 - **Phase 7:** the operator migration guide and tooling, beta grids, performance tuning, and retiring the C# processes.
