@@ -31,6 +31,7 @@ internal static class Cases
         var list = new List<Fixture>();
         AddLlsd(list);
         AddBytes(list);
+        PacketCases.Add(list);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (Fixture fixture in list)
         {

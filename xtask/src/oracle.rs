@@ -287,6 +287,7 @@ fn dotnet(
         .env("DOTNET_NOLOGO", "1")
         .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .env("NUGET_XMLDOC_MODE", "skip")
+        .env("FERROAN_REF", reference)
         .arg(action);
     if action == "run" {
         command.arg("--project").arg(project);

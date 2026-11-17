@@ -5,6 +5,7 @@ members = [
     "crates/ferroan-config",
     "crates/ferroan-llsd",
     "crates/ferroan-http",
+    "crates/ferroan-protocol",
     "xtask",
 ]
 resolver = "3"

@@ -4,7 +4,7 @@ A ground-up Rust rebuild of [OpenSim Tranquillity](https://github.com/OpenSim-NG
 
 Ferroan aims to run the same grids, viewers, content and scripts as Tranquillity, with everything in Rust except two native C++ libraries: [Jolt](https://github.com/jrouwe/JoltPhysics) for physics and Linden Lab's [SLua engine](https://github.com/secondlife/slua) for LSL and SLua scripts.
 
-**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions, colours, texture entries, extra parameters and prim shapes, plus Tranquillity permission masks), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder) and `ferroan-http` (Robust forms, XML replies and LLSD over HTTP). There is no region and no grid service yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
+**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions, colours, texture entries, extra parameters and prim shapes, plus Tranquillity permission masks), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder), `ferroan-http` (Robust forms, XML replies and LLSD over HTTP) and `ferroan-protocol` (LLUDP messages from libopenmetaverse's template, with framing and zero-coding). There is no region and no grid service yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
 
 ## How it gets built
 
@@ -44,7 +44,7 @@ cargo test --workspace --locked
 - [Agent instructions](AGENTS.md) and [human contributor guide](HUMANS.md)
 - [Porting rules](docs/PORTING.md), including licence headers and attribution
 - [Action plan](docs/ACTION_PLAN.md) and [reference checkouts](docs/REFERENCES.md)
-- [Compatibility](docs/COMPATIBILITY.md) and [testing](docs/TESTING.md)
+- [Compatibility](docs/COMPATIBILITY.md), [LLUDP messages](docs/PROTOCOL.md) and [testing](docs/TESTING.md)
 - [Bug reports](docs/BUG_REPORTING.md) and [security](SECURITY.md)
 
 ## Licence and attribution
