@@ -17,11 +17,11 @@ Code ported or copied from other projects keeps the copyright and licence notice
 | Luau and lsl-definitions (in Tranquillity) | MIT | [licenses/Luau.txt](licenses/Luau.txt), [licenses/lsl-definitions.txt](licenses/lsl-definitions.txt) | Porting source |
 | [OpenSim-NGC/libopenmetaverse](https://github.com/OpenSim-NGC/libopenmetaverse), the OpenMetaverse library Tranquillity uses, copyright openmetaverse.co and contributors | BSD-3-Clause | added with the first port | Porting source for types, packets and LLSD |
 | [Aurora Viewer](https://github.com/Aurora-Viewer/Aurora-Viewer), copyright the Aurora Viewer contributors | GPL-3.0-or-later | [LICENSE](LICENSE) | Rust crates reused or adapted (LLSD, message template code generation, prim volumes); viewer protocol reference |
-| Second Life viewer and Firestorm, copyright Linden Research, Inc. and The Phoenix Firestorm Project, Inc. | LGPL-2.1, used here under GPL-3.0-or-later as LGPL-2.1 section 3 permits | added with the first port | The message template and protocol behavior |
+| Second Life viewer and Firestorm, copyright Linden Research, Inc. and The Phoenix Firestorm Project, Inc. | LGPL-2.1, used here under GPL-3.0-or-later as LGPL-2.1 section 3 permits | [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt) | The message template and protocol behavior. `ferroan-llsd` also follows the viewer's `llcommon/llsd.cpp` and `llsdserialize*.cpp` through Aurora's port |
 
 The reference revisions used for porting are listed in [docs/REFERENCES.md](docs/REFERENCES.md). Each ported file names its source files and revision ([PORTING.md](docs/PORTING.md)).
 
-No code has been ported yet. The table lists the sources the plan draws on, so their terms are settled before the first port.
+`crates/ferroan-llsd` is the first adapted code. It comes from Aurora Viewer `crates/aurora-llsd` at `48cb76e830a13965ac080128bb874afedda86d69` (GPL-3.0-or-later). Aurora describes that crate as a port of the Second Life viewer's `llcommon/llsd.cpp` and `llsdserialize*.cpp`, originally LGPL 2.1. Each adapted file names that path and revision. `number.rs`, the fixture test and `llsd-fuzz` are new Ferroan files. The encodings follow libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`; that C# source is not copied into this repository.
 
 `tools/config-oracle` calls the NuGet package `nini-core` 0.9.2.16 (X11, copyright Brent R. Matzelle, maintained by Sjofn LLC). `ferroan-config` reimplements that reader. Nini's source is not copied into this repository.
 
