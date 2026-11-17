@@ -8,7 +8,8 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | --- | --- |
 | `ferroan-types` | Placeholder. Records the Tranquillity reference revision. Shared types land here in Phase 0 |
 | `ferroan-db` | sqlx pools for SQLite, MySQL and PostgreSQL. Checks Tranquillity's `migrations` versions and refuses to start when they differ. Does not migrate |
-| `xtask` | Repository tasks: `cargo xtask check` (Markdown links, formatting, clippy, tests), `cargo xtask oracle` (the C# libopenmetaverse fixture tool) and `cargo xtask schema` (SQLite databases created by Tranquillity's migration code) |
+| `ferroan-config` | Tranquillity INI loading: Nini's parser, includes, and `${Section|key}` substitution. The region and grid loaders keep their different include order |
+| `xtask` | Repository tasks: `cargo xtask check` (Markdown links, formatting, clippy, tests), `cargo xtask oracle` (the C# libopenmetaverse fixture tool), `cargo xtask schema` (SQLite databases created by Tranquillity's migration code) and `cargo xtask config` (resolved INI sets from Nini) |
 
 ## Planned
 
@@ -38,7 +39,6 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-protocol` | Packets generated from the viewer's `message_template.msg` | 0 |
 | `ferroan-llsd` | LLSD in XML, binary and notation | 0 |
 | `ferroan-types` | UUIDs, vectors, rotations, prim shapes, permissions | 0 |
-| `ferroan-config` | Reads Tranquillity's INI files | 0 |
 | `ferroan-http` | HTTP server and client for Robust's forms and CAPS | 0 |
 
 ## Where code comes from
