@@ -15,3 +15,5 @@ Thumbs.db
 __pycache__/
 tools/reference-oracle/bin/
 tools/reference-oracle/obj/
+tools/schema-oracle/bin/
+tools/schema-oracle/obj/

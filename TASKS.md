@@ -36,7 +36,7 @@ Gate: the protocol crate decodes and re-encodes every packet captured from a C# 
 | P0.4 | TODO | P0.2, P0.3 | `ferroan-protocol` from Aurora's `aurora-msg`; `docs/PROTOCOL.md` reconciles the two message templates; every message round-trips against C# fixtures; framing and zero-coding. |
 | P0.5 | TODO | P0.4 for replay | Captures: local capture patch for Tranquillity, HTTP capture proxy, an Aurora session recorded and redacted, replay test, `docs/CAPTURES.md`. |
 | P0.6 | TODO | P0.1 | `ferroan-config`: resolves Tranquillity's shipped INI files to the same key/value set as C#. |
-| P0.7 | TODO | | `ferroan-db`: sqlx on Tranquillity's schemas, migration versions checked, tests on Tranquillity-created SQLite databases. |
+| P0.7 | IN PROGRESS | | `ferroan-db`: sqlx on Tranquillity's schemas, migration versions checked, tests on Tranquillity-created SQLite databases. Branch: `feat/p0-7-db`. MySQL and PostgreSQL checks run when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set; a Linux CI job with service containers is not added yet. |
 | P0.8 | TODO | P0.2 | `ferroan-http`: axum server, Robust XML replies and forms, LLSD over HTTP, reqwest client, matching `ServerUtils`. |
 | P0.9 | TODO | P0.6, P0.7, P0.8 | Asset service pilot in `ferroan-robust`, behind a Tranquillity region; Aurora shows and uploads textures; porting rate measured and the plan re-estimated. |
 
