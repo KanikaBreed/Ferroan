@@ -9,8 +9,13 @@
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
 //! `verify`. CI does not run it.
+//!
+//! `schema` builds the C# schema oracle and generates or verifies the SQLite
+//! fixtures. It needs the .NET SDK and the reference checkouts. CI does not
+//! run it.
 
 mod oracle;
+mod schema;
 
 use std::env;
 use std::ffi::OsString;
@@ -25,7 +30,9 @@ const USAGE: &str = "\
 usage: cargo xtask check [--docs-only]
        cargo xtask oracle build
        cargo xtask oracle generate [fixture-dir]
-       cargo xtask oracle verify [fixture-dir]";
+       cargo xtask oracle verify [fixture-dir]
+       cargo xtask schema generate [directory]
+       cargo xtask schema verify [directory]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -42,6 +49,10 @@ fn main() -> ExitCode {
         ["oracle", "verify", dir] => {
             oracle::run(oracle::CommandKind::Verify, Some(PathBuf::from(*dir)))
         }
+        ["schema", "generate"] => schema::generate(None),
+        ["schema", "generate", directory] => schema::generate(Some(PathBuf::from(directory))),
+        ["schema", "verify"] => schema::verify(None),
+        ["schema", "verify", directory] => schema::verify(Some(PathBuf::from(directory))),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

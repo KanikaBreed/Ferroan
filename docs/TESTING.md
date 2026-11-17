@@ -13,6 +13,10 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 `cargo xtask oracle build`, `generate` and `verify` build [tools/reference-oracle](../tools/reference-oracle/README.md) against the pinned libopenmetaverse checkout and read or write [fixtures/oracle](../fixtures/oracle/README.md). `FERROAN_REF` selects the checkout root and defaults to `~/Git/reference`. The fixtures are committed. CI does not run the oracle; `cargo xtask oracle verify` is a manual step until a Linux CI job is added (P0.1 in [TASKS.md](../TASKS.md)). That command needs the .NET SDK 10. The reference checkout is only read; build output goes under `.scratch/`.
 
+## Schema fixtures
+
+`cargo xtask schema generate` and `verify` build [tools/schema-oracle](../tools/schema-oracle/README.md) and run Tranquillity's `Migration.Update` on SQLite. The databases are committed under [fixtures/db/sqlite](../fixtures/db/sqlite/README.md). CI does not run the tool. MySQL and PostgreSQL are checked by the same Rust code when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set; a CI job with those servers is not added yet (P0.7 in [TASKS.md](../TASKS.md)).
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |
@@ -20,7 +24,7 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 | Parsing or encoding (packets, LLSD, XML, archives) | Tests against bytes captured from Tranquillity, plus malformed and oversized input. A round trip through our own encoder and decoder alone is not enough |
 | A grid service | Captured-traffic fixtures, then a run behind a test grid with C# regions |
 | Region behavior | A viewer check (Aurora scripted, Firestorm by hand), recorded with viewer version and steps |
-| Database access | Tests on all three backends, on unchanged Tranquillity schemas |
+| Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
 | Native code (planned physics and scripting crates) | `SAFETY` comments on every unsafe block, and fuzzing of the boundary |
 
 ## Honest status
