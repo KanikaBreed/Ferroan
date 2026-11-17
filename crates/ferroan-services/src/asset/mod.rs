@@ -18,7 +18,7 @@ mod xml;
 pub use content_type::content_type;
 pub use http::{AssetHttp, AssetOptions, DeleteMode};
 pub use model::Asset;
-pub use open::{AssetError, network_port};
+pub use open::{AssetError, listen_address, network_port};
 pub use store::AssetStore;
 pub use xml::{
     decode_asset, decode_metadata_type, decode_strings, encode_asset, encode_bool, encode_bools,

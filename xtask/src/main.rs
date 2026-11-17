@@ -25,10 +25,14 @@
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. CI does
 //! not run it.
+//!
+//! `live` builds the pinned Tranquillity region into `.scratch/live/` and
+//! starts or stops it. It runs on Linux. CI does not run it yet.
 
 mod asset_oracle;
 mod config_oracle;
 mod http_oracle;
+mod live;
 mod oracle;
 mod schema;
 
@@ -53,7 +57,10 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http generate [directory]
        cargo xtask http verify [directory]
        cargo xtask asset generate [directory]
-       cargo xtask asset verify [directory]";
+       cargo xtask asset verify [directory]
+       cargo xtask live build
+       cargo xtask live up
+       cargo xtask live down";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -88,6 +95,9 @@ fn main() -> ExitCode {
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
+        ["live", "build"] => live::build(),
+        ["live", "up"] => live::up(),
+        ["live", "down"] => live::down(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

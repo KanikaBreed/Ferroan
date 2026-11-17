@@ -16,7 +16,7 @@ use std::env;
 use std::process::ExitCode;
 
 use ferroan_config::GridLoad;
-use ferroan_services::{AssetHttp, network_port};
+use ferroan_services::{AssetHttp, listen_address, network_port};
 use tokio::net::TcpListener;
 
 fn main() -> ExitCode {
@@ -36,6 +36,7 @@ fn run() -> Result<(), String> {
         eprintln!("ferroan-robust: include not found: {}", warning.value);
     }
     let port = network_port(&resolved.config).map_err(|error| error.to_string())?;
+    let listen = listen_address(&resolved.config).map_err(|error| error.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -45,10 +46,10 @@ fn run() -> Result<(), String> {
             .await
             .map_err(|error| error.to_string())?;
         let router = http.into_router();
-        let listener = TcpListener::bind(("0.0.0.0", port))
+        let listener = TcpListener::bind((listen, port))
             .await
             .map_err(|error| error.to_string())?;
-        eprintln!("ferroan-robust: asset service on 0.0.0.0:{port}");
+        eprintln!("ferroan-robust: asset service on {listen}:{port}");
         axum_serve(listener, router).await
     })
 }
