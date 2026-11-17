@@ -1,0 +1,2 @@
+* text eol=lf
+parse-crlf/source.ini text eol=crlf

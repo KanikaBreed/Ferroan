@@ -1,0 +1,11 @@
+S	A	1
+S	B	4
+S	K	v
+S	Ke	
+S	Kh	hello
+S	Km	bare
+S	Kq	hello ; world
+S	Ks	a\\
+S	M	
+S	N	
+S	b	3

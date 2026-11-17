@@ -4,7 +4,7 @@ Ferroan is built by volunteers. This guide covers how to pick up work, how to wo
 
 ## Getting started
 
-Clone the repository, install Rust through rustup, and run `cargo xtask check`. At this stage the workspace has one placeholder crate and no server to launch.
+Clone the repository, install Rust through rustup, and run `cargo xtask check`. The workspace has the foundation crates that have landed and no server to launch.
 
 You will also want a clean checkout of [Tranquillity's `develop`](https://github.com/OpenSim-NGC/OpenSim-Tranquillity) beside this one. It is the reference for every behavior Ferroan ports.
 

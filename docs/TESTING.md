@@ -17,6 +17,10 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 `cargo xtask schema generate` and `verify` build [tools/schema-oracle](../tools/schema-oracle/README.md) and run Tranquillity's `Migration.Update` on SQLite. The databases are committed under [fixtures/db/sqlite](../fixtures/db/sqlite/README.md). CI does not run the tool. MySQL and PostgreSQL are checked by the same Rust code when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set; a CI job with those servers is not added yet (P0.7 in [TASKS.md](../TASKS.md)).
 
+## Configuration fixtures
+
+`cargo xtask config generate` and `verify` build [tools/config-oracle](../tools/config-oracle/README.md) and resolve INI files with Nini. The dumps are committed under [fixtures/config](../fixtures/config/README.md). CI does not run the tool. The Rust tests always check the small cases. The two cases that open Tranquillity's shipped INI files run when `FERROAN_REF` points at the checkout and are skipped otherwise (P0.6 in [TASKS.md](../TASKS.md)).
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |
@@ -24,6 +28,7 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 | Parsing or encoding (packets, LLSD, XML, archives) | Tests against bytes captured from Tranquillity, plus malformed and oversized input. A round trip through our own encoder and decoder alone is not enough |
 | A grid service | Captured-traffic fixtures, then a run behind a test grid with C# regions |
 | Region behavior | A viewer check (Aurora scripted, Firestorm by hand), recorded with viewer version and steps |
+| Configuration | Resolved key/value sets from the Nini oracle, including the shipped region and grid examples when the reference checkout is present |
 | Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
 | Native code (planned physics and scripting crates) | `SAFETY` comments on every unsafe block, and fuzzing of the boundary |
 

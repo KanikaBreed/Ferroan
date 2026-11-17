@@ -23,6 +23,8 @@ The reference revisions used for porting are listed in [docs/REFERENCES.md](docs
 
 No code has been ported yet. The table lists the sources the plan draws on, so their terms are settled before the first port.
 
+`tools/config-oracle` calls the NuGet package `nini-core` 0.9.2.16 (X11, copyright Brent R. Matzelle, maintained by Sjofn LLC). `ferroan-config` reimplements that reader. Nini's source is not copied into this repository.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

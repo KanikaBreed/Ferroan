@@ -13,7 +13,12 @@
 //! `schema` builds the C# schema oracle and generates or verifies the SQLite
 //! fixtures. It needs the .NET SDK and the reference checkouts. CI does not
 //! run it.
+//!
+//! `config` builds the C# config oracle and generates or verifies the resolved
+//! INI fixtures. It needs the .NET SDK and the reference checkouts. CI does not
+//! run it.
 
+mod config_oracle;
 mod oracle;
 mod schema;
 
@@ -32,7 +37,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask oracle generate [fixture-dir]
        cargo xtask oracle verify [fixture-dir]
        cargo xtask schema generate [directory]
-       cargo xtask schema verify [directory]";
+       cargo xtask schema verify [directory]
+       cargo xtask config generate [directory]
+       cargo xtask config verify [directory]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -53,6 +60,12 @@ fn main() -> ExitCode {
         ["schema", "generate", directory] => schema::generate(Some(PathBuf::from(directory))),
         ["schema", "verify"] => schema::verify(None),
         ["schema", "verify", directory] => schema::verify(Some(PathBuf::from(directory))),
+        ["config", "generate"] => config_oracle::generate(None),
+        ["config", "generate", directory] => {
+            config_oracle::generate(Some(PathBuf::from(directory)))
+        }
+        ["config", "verify"] => config_oracle::verify(None),
+        ["config", "verify", directory] => config_oracle::verify(Some(PathBuf::from(directory))),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
