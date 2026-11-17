@@ -1,0 +1,27 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "keep": {
+      "t": "str",
+      "v": "yes"
+    },
+    "skip": {
+      "t": "null"
+    },
+    "after": {
+      "t": "str",
+      "v": "1"
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><keep>yes</keep><after>1</after></ServerResponse>",
+  "parsed": {
+    "keep": {
+      "t": "str",
+      "v": "yes"
+    },
+    "after": {
+      "t": "str",
+      "v": "1"
+    }
+  }
+}

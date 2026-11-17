@@ -1,0 +1,11 @@
+{
+  "kind": "query-parse",
+  "input": "a=hello%20world",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "hello world"
+    }
+  },
+  "built": "a=hello+world"
+}

@@ -1,0 +1,16 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "a": {
+      "t": "str",
+      "v": ""
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><a></a></ServerResponse>",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": ""
+    }
+  }
+}

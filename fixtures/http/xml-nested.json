@@ -1,0 +1,34 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "friend0": {
+      "t": "map",
+      "v": {
+        "Principal": {
+          "t": "str",
+          "v": "abc"
+        },
+        "Flags": {
+          "t": "str",
+          "v": "1"
+        }
+      }
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><friend0 type=\"List\"><Principal>abc</Principal><Flags>1</Flags></friend0></ServerResponse>",
+  "parsed": {
+    "friend0": {
+      "t": "map",
+      "v": {
+        "Principal": {
+          "t": "str",
+          "v": "abc"
+        },
+        "Flags": {
+          "t": "str",
+          "v": "1"
+        }
+      }
+    }
+  }
+}

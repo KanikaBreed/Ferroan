@@ -1,0 +1,10 @@
+{
+  "kind": "xml-parse",
+  "input": "<ServerResponse><Friends type=\"List\" /></ServerResponse>",
+  "parsed": {
+    "Friends": {
+      "t": "map",
+      "v": {}
+    }
+  }
+}

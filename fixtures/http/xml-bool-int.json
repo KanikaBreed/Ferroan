@@ -1,0 +1,24 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "ok": {
+      "t": "bool",
+      "v": true
+    },
+    "n": {
+      "t": "int",
+      "v": 1
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><ok>True</ok><n>1</n></ServerResponse>",
+  "parsed": {
+    "ok": {
+      "t": "str",
+      "v": "True"
+    },
+    "n": {
+      "t": "str",
+      "v": "1"
+    }
+  }
+}

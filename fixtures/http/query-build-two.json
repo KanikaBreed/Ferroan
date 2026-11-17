@@ -1,0 +1,14 @@
+{
+  "kind": "query-build",
+  "input": {
+    "a": {
+      "t": "str",
+      "v": "1"
+    },
+    "b": {
+      "t": "str",
+      "v": "2"
+    }
+  },
+  "built": "a=1&b=2"
+}

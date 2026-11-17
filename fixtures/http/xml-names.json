@@ -1,0 +1,64 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "a b": {
+      "t": "str",
+      "v": "1"
+    },
+    "a:b": {
+      "t": "str",
+      "v": "2"
+    },
+    "1abc": {
+      "t": "str",
+      "v": "3"
+    },
+    "xml": {
+      "t": "str",
+      "v": "4"
+    },
+    "_x0020_": {
+      "t": "str",
+      "v": "5"
+    },
+    "ok": {
+      "t": "str",
+      "v": "6"
+    },
+    "café": {
+      "t": "str",
+      "v": "7"
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><a_x0020_b>1</a_x0020_b><a_x003A_b>2</a_x003A_b><_x0031_abc>3</_x0031_abc><xml>4</xml><_x005F_x0020_>5</_x005F_x0020_><ok>6</ok><café>7</café></ServerResponse>",
+  "parsed": {
+    "a b": {
+      "t": "str",
+      "v": "1"
+    },
+    "a:b": {
+      "t": "str",
+      "v": "2"
+    },
+    "1abc": {
+      "t": "str",
+      "v": "3"
+    },
+    "xml": {
+      "t": "str",
+      "v": "4"
+    },
+    "_x0020_": {
+      "t": "str",
+      "v": "5"
+    },
+    "ok": {
+      "t": "str",
+      "v": "6"
+    },
+    "café": {
+      "t": "str",
+      "v": "7"
+    }
+  }
+}

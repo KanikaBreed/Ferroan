@@ -1,0 +1,24 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "Success": {
+      "t": "str",
+      "v": "true"
+    },
+    "Message": {
+      "t": "str",
+      "v": "hello"
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><Success>true</Success><Message>hello</Message></ServerResponse>",
+  "parsed": {
+    "Success": {
+      "t": "str",
+      "v": "true"
+    },
+    "Message": {
+      "t": "str",
+      "v": "hello"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "kind": "xml-parse",
+  "input": "<ServerResponse><a> a </a></ServerResponse>",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": " a "
+    }
+  }
+}

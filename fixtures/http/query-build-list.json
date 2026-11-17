@@ -1,0 +1,13 @@
+{
+  "kind": "query-build",
+  "input": {
+    "q": {
+      "t": "list",
+      "v": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  "built": "q[]=a&q[]=b"
+}

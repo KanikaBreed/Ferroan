@@ -1,0 +1,11 @@
+{
+  "kind": "query-parse",
+  "input": "a=x%26y",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "x&y"
+    }
+  },
+  "built": "a=x%26y"
+}

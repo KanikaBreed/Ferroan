@@ -1,0 +1,19 @@
+{
+  "kind": "query-parse",
+  "input": "a=%zz&b=%2&c=%2G",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "%zz"
+    },
+    "b": {
+      "t": "str",
+      "v": "%2"
+    },
+    "c": {
+      "t": "str",
+      "v": "%2G"
+    }
+  },
+  "built": "a=%25zz&b=%252&c=%252G"
+}

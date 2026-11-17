@@ -1,0 +1,19 @@
+{
+  "kind": "xml-parse",
+  "input": "<ServerResponse><group type=\"List\"><a>1</a></group><after>2</after></ServerResponse>",
+  "parsed": {
+    "group": {
+      "t": "map",
+      "v": {
+        "a": {
+          "t": "str",
+          "v": "1"
+        }
+      }
+    },
+    "after": {
+      "t": "str",
+      "v": "2"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "kind": "query-build",
+  "input": {
+    "blob": {
+      "t": "map",
+      "v": {
+        "id": {
+          "t": "uuid",
+          "v": "00112233-4455-6677-8899-aabbccddeeff"
+        },
+        "tags": {
+          "t": "list",
+          "v": [
+            "a",
+            "b"
+          ]
+        }
+      }
+    }
+  },
+  "built": "blob=%7b%22id%22%3a%2200112233-4455-6677-8899-aabbccddeeff%22%2c%22tags%22%3a%5b%22a%22%2c%22b%22%5d%7d"
+}
