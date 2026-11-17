@@ -2,7 +2,7 @@
 
 A .NET 10 console program that encodes and decodes fixtures with the pinned [libopenmetaverse](../../docs/REFERENCES.md) checkout. Rust tests use those bytes instead of checking an encoder against itself. The program is the C# exception in [D13](../../docs/DECISIONS.md): it has to run Tranquillity's own library. Nothing from that checkout is copied into this repository.
 
-LLSD and the scalar types come from `OpenMetaverse.StructuredData` and `OpenMetaverse.Types`. Texture entries and extra parameters come from the `OpenMetaverse` project (`TextureEntry` and `Primitive`). `SculptData.Invert` and `SculptData.Mirror` have no setters; the oracle writes the private type byte and then calls `GetExtraParamsBytes`.
+LLSD and the scalar types come from `OpenMetaverse.StructuredData` and `OpenMetaverse.Types`. Texture entries, extra parameters and shape quantizers come from the `OpenMetaverse` project (`TextureEntry` and `Primitive`). `SculptData.Invert` and `SculptData.Mirror` have no setters; the oracle writes the private type byte and then calls `GetExtraParamsBytes`. Permission folding comes from Tranquillity `OpenSim.Framework`. The oracle checks that the shared `PermissionMask` bits match OpenMetaverse before it writes them.
 
 `cargo xtask oracle` builds it. Build products go under `.scratch/reference-oracle/`, not into the reference checkout.
 

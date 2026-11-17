@@ -12,14 +12,19 @@ use std::fs;
 use std::path::PathBuf;
 
 use ferroan_types::{
-    Color4, DVec3, ExtraParams, FlexibleData, LightData, LightImage, Quat, SculptData,
-    TextureEntry, TextureFaceSet, TextureFaceView, Vec2, Vec3, Vec4, float_to_u16_bounds,
+    Color4, DVec3, ExtraParams, FlexibleData, LightData, LightImage, PERM_ALL, PERM_ALL_AND_EXPORT,
+    PERM_ALL_AND_EXPORT_NO_MOD, PERM_ALL_EFFECTIVE, PERM_COPY, PERM_DAMAGE, PERM_EXPORT,
+    PERM_FOLDED_COPY, PERM_FOLDED_EXPORT, PERM_FOLDED_MASK, PERM_FOLDED_MODIFY,
+    PERM_FOLDED_TRANSFER, PERM_FOLDING_SHIFT, PERM_MODIFY, PERM_MOVE, PERM_NONE, PERM_SLAM,
+    PERM_TRANSFER, PERM_UNFOLDED_MASK, Permissions, Quat, SculptData, ShapeParams, TextureEntry,
+    TextureFaceSet, TextureFaceView, Vec2, Vec3, Vec4, apply_folded_permissions,
+    apply_no_mod_folded_permissions, fix_and_fold_permissions, float_to_u16_bounds,
     float_to_u16_range, float_to_unit_u16, read_color4, read_color4_floats, read_dvec3,
     read_quaternion_full, read_quaternion_packed, read_quaternion_shorts, read_u16_value,
-    read_uuid, read_vec2, read_vec3, read_vec3_clamped, read_vec4, u16_to_float, write_color4,
-    write_color4_floats, write_dvec3, write_quaternion_full, write_quaternion_get_bytes,
-    write_quaternion_shorts, write_quaternion_to_bytes, write_u16, write_uuid, write_vec2,
-    write_vec3, write_vec3_clamped, write_vec4,
+    read_uuid, read_vec2, read_vec3, read_vec3_clamped, read_vec4, swap_nibbles, u16_to_float,
+    write_color4, write_color4_floats, write_dvec3, write_quaternion_full,
+    write_quaternion_get_bytes, write_quaternion_shorts, write_quaternion_to_bytes, write_u16,
+    write_uuid, write_vec2, write_vec3, write_vec3_clamped, write_vec4,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -301,6 +306,23 @@ fn every_byte_fixture_matches_openmetaverse() {
                 let params = case.get("params").unwrap_or(&Value::Null);
                 check_extra(&file, decoded, params, round_trip, id);
             }
+            "shape" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_shape(&file, decoded, params, round_trip, id);
+            }
+            "attachment-state" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_attachment(&file, decoded, params, id);
+            }
+            "permissions" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_permissions(&file, decoded, params, id);
+            }
+            "permission-fold" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_fold(&file, decoded, params, id);
+            }
+            "permission-masks" => check_masks(&file, decoded, id),
             other => panic!("{id}: unknown byte format {other}"),
         }
     }
@@ -627,6 +649,201 @@ fn extra_from_params(params: &Value) -> ExtraParams {
             texture: node["texture_id"].as_str().unwrap().parse().unwrap(),
             type_byte: node["type_byte"].as_u64().unwrap() as u8,
         }),
+    }
+}
+
+fn shape_from(node: &Value) -> ShapeParams {
+    ShapeParams {
+        path_curve: node["path_curve"].as_u64().unwrap() as u8,
+        profile_curve: node["profile_curve"].as_u64().unwrap() as u8,
+        path_begin: f32_node(&node["path_begin_bits"]),
+        path_end: f32_node(&node["path_end_bits"]),
+        path_scale_x: f32_node(&node["path_scale_x_bits"]),
+        path_scale_y: f32_node(&node["path_scale_y_bits"]),
+        path_shear_x: f32_node(&node["path_shear_x_bits"]),
+        path_shear_y: f32_node(&node["path_shear_y_bits"]),
+        path_twist: f32_node(&node["path_twist_bits"]),
+        path_twist_begin: f32_node(&node["path_twist_begin_bits"]),
+        path_radius_offset: f32_node(&node["path_radius_offset_bits"]),
+        path_taper_x: f32_node(&node["path_taper_x_bits"]),
+        path_taper_y: f32_node(&node["path_taper_y_bits"]),
+        path_revolutions: f32_node(&node["path_revolutions_bits"]),
+        path_skew: f32_node(&node["path_skew_bits"]),
+        profile_begin: f32_node(&node["profile_begin_bits"]),
+        profile_end: f32_node(&node["profile_end_bits"]),
+        profile_hollow: f32_node(&node["profile_hollow_bits"]),
+    }
+}
+
+fn assert_shape(got: &ShapeParams, node: &Value, id: &str) {
+    assert_eq!(
+        u64::from(got.path_curve),
+        node["path_curve"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(got.profile_curve),
+        node["profile_curve"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(ferroan_types::profile_curve(got.profile_curve)),
+        node["profile_shape"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(ferroan_types::profile_hole(got.profile_curve)),
+        node["profile_hole"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_f32(got.path_begin, &node["path_begin_bits"], id);
+    assert_f32(got.path_end, &node["path_end_bits"], id);
+    assert_f32(got.path_scale_x, &node["path_scale_x_bits"], id);
+    assert_f32(got.path_scale_y, &node["path_scale_y_bits"], id);
+    assert_f32(got.path_shear_x, &node["path_shear_x_bits"], id);
+    assert_f32(got.path_shear_y, &node["path_shear_y_bits"], id);
+    assert_f32(got.path_twist, &node["path_twist_bits"], id);
+    assert_f32(got.path_twist_begin, &node["path_twist_begin_bits"], id);
+    assert_f32(got.path_radius_offset, &node["path_radius_offset_bits"], id);
+    assert_f32(got.path_taper_x, &node["path_taper_x_bits"], id);
+    assert_f32(got.path_taper_y, &node["path_taper_y_bits"], id);
+    assert_f32(got.path_revolutions, &node["path_revolutions_bits"], id);
+    assert_f32(got.path_skew, &node["path_skew_bits"], id);
+    assert_f32(got.profile_begin, &node["profile_begin_bits"], id);
+    assert_f32(got.profile_end, &node["profile_end_bits"], id);
+    assert_f32(got.profile_hollow, &node["profile_hollow_bits"], id);
+}
+
+fn check_shape(file: &[u8], decoded: &Value, params: &Value, round_trip: bool, id: &str) {
+    let parsed = ShapeParams::from_bytes(file).unwrap_or_else(|err| panic!("{id}: {err}"));
+    assert_shape(&parsed, decoded, id);
+    let again = parsed.to_bytes();
+    assert_eq!(
+        hex_of(&again),
+        decoded["again_hex"].as_str().unwrap(),
+        "{id}"
+    );
+    if round_trip {
+        assert_eq!(again.as_slice(), file, "{id}");
+    }
+    if params.get("build").and_then(|value| value.as_bool()) == Some(true) {
+        assert_eq!(
+            shape_from(params).to_bytes().as_slice(),
+            file,
+            "{id} source"
+        );
+    }
+}
+
+fn check_attachment(file: &[u8], decoded: &Value, params: &Value, id: &str) {
+    assert_eq!(file.len(), 1, "{id}");
+    assert_eq!(
+        u64::from(file[0]),
+        decoded["state"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(swap_nibbles(file[0])),
+        decoded["attachment"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(swap_nibbles(swap_nibbles(file[0])), file[0], "{id}");
+    if params.get("build").and_then(|value| value.as_bool()) == Some(true) {
+        let point = params["attachment"].as_u64().unwrap() as u8;
+        assert_eq!(swap_nibbles(point), file[0], "{id} source");
+    }
+}
+
+fn check_permissions(file: &[u8], decoded: &Value, params: &Value, id: &str) {
+    let parsed = Permissions::from_bytes(file).unwrap_or_else(|err| panic!("{id}: {err}"));
+    assert_eq!(
+        u64::from(parsed.base),
+        decoded["base"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(parsed.owner),
+        decoded["owner"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(parsed.group),
+        decoded["group"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(parsed.everyone),
+        decoded["everyone"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        u64::from(parsed.next_owner),
+        decoded["next_owner"].as_u64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(parsed.to_bytes().as_slice(), file, "{id}");
+    if params.get("build").and_then(|value| value.as_bool()) == Some(true) {
+        let built = Permissions {
+            base: params["base"].as_u64().unwrap() as u32,
+            owner: params["owner"].as_u64().unwrap() as u32,
+            group: params["group"].as_u64().unwrap() as u32,
+            everyone: params["everyone"].as_u64().unwrap() as u32,
+            next_owner: params["next_owner"].as_u64().unwrap() as u32,
+        };
+        assert_eq!(built.to_bytes().as_slice(), file, "{id} source");
+    }
+}
+
+fn check_fold(file: &[u8], decoded: &Value, params: &Value, id: &str) {
+    assert_eq!(file.len(), 4, "{id}");
+    let result = u32::from_le_bytes(file.try_into().unwrap());
+    assert_eq!(
+        u64::from(result),
+        decoded["result"].as_u64().unwrap(),
+        "{id}"
+    );
+    let source = params["source"].as_u64().unwrap() as u32;
+    let target = params["target"].as_u64().unwrap() as u32;
+    let got = match params["op"].as_str().unwrap() {
+        "apply" => apply_folded_permissions(source, target),
+        "nomod" => apply_no_mod_folded_permissions(source, target),
+        "fix" => fix_and_fold_permissions(target),
+        other => panic!("{id}: unknown fold {other}"),
+    };
+    assert_eq!(got, result, "{id}");
+}
+
+fn check_masks(file: &[u8], decoded: &Value, id: &str) {
+    const MASKS: [u32; 19] = [
+        PERM_NONE,
+        PERM_FOLDED_TRANSFER,
+        PERM_FOLDED_MODIFY,
+        PERM_FOLDED_COPY,
+        PERM_FOLDED_EXPORT,
+        PERM_SLAM,
+        PERM_FOLDED_MASK,
+        PERM_FOLDING_SHIFT,
+        PERM_TRANSFER,
+        PERM_MODIFY,
+        PERM_COPY,
+        PERM_EXPORT,
+        PERM_MOVE,
+        PERM_DAMAGE,
+        PERM_ALL,
+        PERM_ALL_AND_EXPORT,
+        PERM_ALL_AND_EXPORT_NO_MOD,
+        PERM_ALL_EFFECTIVE,
+        PERM_UNFOLDED_MASK,
+    ];
+    let mut packed = Vec::with_capacity(MASKS.len() * 4);
+    for mask in MASKS {
+        packed.extend_from_slice(&mask.to_le_bytes());
+    }
+    assert_eq!(packed, file, "{id}");
+    let values = decoded["values"].as_array().unwrap();
+    assert_eq!(values.len(), MASKS.len(), "{id}");
+    for (mask, value) in MASKS.iter().zip(values) {
+        assert_eq!(u64::from(*mask), value.as_u64().unwrap(), "{id}");
     }
 }
 

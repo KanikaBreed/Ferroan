@@ -6,7 +6,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 | Crate | What it holds |
 | --- | --- |
-| `ferroan-types` | UUID, vectors, quaternions, colours, texture entries and extra parameters in OpenMetaverse's packet order. The Tranquillity revision constant stays |
+| `ferroan-types` | UUID, vectors, quaternions, colours, texture entries, extra parameters, prim shape fields and permission masks in OpenMetaverse and Tranquillity packet order. The Tranquillity revision constant stays |
 | `ferroan-db` | sqlx pools for SQLite, MySQL and PostgreSQL. Checks Tranquillity's `migrations` versions and refuses to start when they differ. Does not migrate |
 | `ferroan-config` | Tranquillity INI loading: Nini's parser, includes, and `${Section|key}` substitution. The region and grid loaders keep their different include order |
 | `ferroan-llsd` | LLSD in XML, binary and notation, matching OpenMetaverse. Maps keep insertion order. Dates are tick counts, because one `f64` cannot hold both the XML text and the binary `AddSeconds` result |
@@ -39,11 +39,10 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | Crate | Purpose | Phase |
 | --- | --- | --- |
 | `ferroan-protocol` | Packets generated from the viewer's `message_template.msg` | 0 |
-| `ferroan-types` | Prim shapes and permission masks, still to land in this crate | 0 |
 
 ## Where code comes from
 
-Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies later prim volumes ([D11](docs/DECISIONS.md)). Texture entries and extra parameters follow libopenmetaverse: Aurora's viewer packer does not emit the same bytes. Other C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md).
+Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies later prim volumes ([D11](docs/DECISIONS.md)). Texture entries, extra parameters and shape quantizers follow libopenmetaverse: Aurora's viewer packer does not emit the same bytes. Permission folding is ported from Tranquillity. Other C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md).
 
 ## Vectors and quaternions
 
