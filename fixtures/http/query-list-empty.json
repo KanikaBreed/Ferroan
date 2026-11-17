@@ -1,0 +1,14 @@
+{
+  "kind": "query-parse",
+  "input": "q[]=&q[]=b",
+  "parsed": {
+    "q": {
+      "t": "list",
+      "v": [
+        "",
+        "b"
+      ]
+    }
+  },
+  "built": "q[]=&q[]=b"
+}

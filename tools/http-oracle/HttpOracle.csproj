@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>Ferroan.HttpOracle</RootNamespace>
+    <AssemblyName>HttpOracle</AssemblyName>
+    <Description>Query-string and Robust XML fixtures from Tranquillity ServerUtils.</Description>
+    <AnalysisLevel>none</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(USERPROFILE)' != ''">$(USERPROFILE)/Git/reference</FerroanRef>
+  </PropertyGroup>
+
+  <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj')"
+           Text="Set FerroanRef (or FERROAN_REF) to the reference checkouts root. Missing OpenSim.Server.Base." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

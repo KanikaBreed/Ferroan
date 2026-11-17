@@ -1,0 +1,13 @@
+{
+  "kind": "query-parse",
+  "input": "a%5B%5D=x",
+  "parsed": {
+    "a": {
+      "t": "list",
+      "v": [
+        "x"
+      ]
+    }
+  },
+  "built": "a[]=x"
+}

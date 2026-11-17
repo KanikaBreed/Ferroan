@@ -1,0 +1,10 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "": {
+      "t": "str",
+      "v": "x"
+    }
+  },
+  "error": "ArgumentException"
+}

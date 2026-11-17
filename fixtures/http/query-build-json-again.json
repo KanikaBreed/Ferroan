@@ -1,0 +1,15 @@
+{
+  "kind": "query-build",
+  "input": {
+    "blob": {
+      "t": "map",
+      "v": {
+        "id": {
+          "t": "str",
+          "v": "two"
+        }
+      }
+    }
+  },
+  "built": "blob=%7b%22id%22%3a%22two%22%7d"
+}

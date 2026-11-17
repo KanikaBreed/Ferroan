@@ -1,0 +1,44 @@
+{
+  "kind": "xml-build",
+  "input": {
+    "one": {
+      "t": "map",
+      "v": {
+        "a": {
+          "t": "str",
+          "v": "1"
+        }
+      }
+    },
+    "two": {
+      "t": "map",
+      "v": {
+        "b": {
+          "t": "str",
+          "v": "2"
+        }
+      }
+    }
+  },
+  "built": "<?xml version=\"1.0\"?><ServerResponse><one type=\"List\"><a>1</a></one><two type=\"List\"><b>2</b></two></ServerResponse>",
+  "parsed": {
+    "one": {
+      "t": "map",
+      "v": {
+        "a": {
+          "t": "str",
+          "v": "1"
+        }
+      }
+    },
+    "two": {
+      "t": "map",
+      "v": {
+        "b": {
+          "t": "str",
+          "v": "2"
+        }
+      }
+    }
+  }
+}

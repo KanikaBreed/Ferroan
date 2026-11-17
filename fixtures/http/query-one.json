@@ -1,0 +1,11 @@
+{
+  "kind": "query-parse",
+  "input": "a=1",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "1"
+    }
+  },
+  "built": "a=1"
+}

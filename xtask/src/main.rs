@@ -17,8 +17,13 @@
 //! `config` builds the C# config oracle and generates or verifies the resolved
 //! INI fixtures. It needs the .NET SDK and the reference checkouts. CI does not
 //! run it.
+//!
+//! `http` builds the C# ServerUtils oracle and generates or verifies the
+//! query-string and Robust XML fixtures. It needs the .NET SDK and the
+//! reference checkouts. CI does not run it.
 
 mod config_oracle;
+mod http_oracle;
 mod oracle;
 mod schema;
 
@@ -39,7 +44,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask schema generate [directory]
        cargo xtask schema verify [directory]
        cargo xtask config generate [directory]
-       cargo xtask config verify [directory]";
+       cargo xtask config verify [directory]
+       cargo xtask http generate [directory]
+       cargo xtask http verify [directory]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -66,6 +73,10 @@ fn main() -> ExitCode {
         }
         ["config", "verify"] => config_oracle::verify(None),
         ["config", "verify", directory] => config_oracle::verify(Some(PathBuf::from(directory))),
+        ["http", "generate"] => http_oracle::generate(None),
+        ["http", "generate", directory] => http_oracle::generate(Some(PathBuf::from(directory))),
+        ["http", "verify"] => http_oracle::verify(None),
+        ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

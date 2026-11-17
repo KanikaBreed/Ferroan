@@ -1,0 +1,13 @@
+{
+  "kind": "query-parse",
+  "input": "a[]=1&a=2",
+  "parsed": {
+    "a": {
+      "t": "list",
+      "v": [
+        "1"
+      ]
+    }
+  },
+  "built": "a[]=1"
+}

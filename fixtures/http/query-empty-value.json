@@ -1,0 +1,15 @@
+{
+  "kind": "query-parse",
+  "input": "a=&b",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": ""
+    },
+    "b": {
+      "t": "str",
+      "v": ""
+    }
+  },
+  "built": "a&b"
+}

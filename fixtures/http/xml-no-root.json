@@ -1,0 +1,5 @@
+{
+  "kind": "xml-parse",
+  "input": "<other>a</other>",
+  "parsed": {}
+}

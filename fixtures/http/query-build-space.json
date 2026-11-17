@@ -1,0 +1,10 @@
+{
+  "kind": "query-build",
+  "input": {
+    "a": {
+      "t": "str",
+      "v": "hello world"
+    }
+  },
+  "built": "a=hello+world"
+}

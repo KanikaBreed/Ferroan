@@ -1,0 +1,13 @@
+{
+  "kind": "query-build",
+  "input": {
+    "a": {
+      "t": "str",
+      "v": "1"
+    },
+    "gone": {
+      "t": "null"
+    }
+  },
+  "error": "NullReferenceException"
+}

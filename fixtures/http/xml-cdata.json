@@ -1,0 +1,10 @@
+{
+  "kind": "xml-parse",
+  "input": "<ServerResponse><a><![CDATA[x<y]]></a></ServerResponse>",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "x<y"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "kind": "query-build",
+  "input": {
+    "ok": {
+      "t": "bool",
+      "v": true
+    },
+    "n": {
+      "t": "int",
+      "v": 1
+    }
+  },
+  "built": "ok=True&n=1"
+}

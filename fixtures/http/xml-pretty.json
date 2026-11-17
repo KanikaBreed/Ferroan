@@ -1,0 +1,14 @@
+{
+  "kind": "xml-parse",
+  "input": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <a>1</a>\n  <b>2</b>\n</ServerResponse>",
+  "parsed": {
+    "a": {
+      "t": "str",
+      "v": "1"
+    },
+    "b": {
+      "t": "str",
+      "v": "2"
+    }
+  }
+}
