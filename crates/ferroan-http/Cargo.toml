@@ -1,0 +1,23 @@
+[package]
+name = "ferroan-http"
+description = "Robust forms, XML replies and LLSD over HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+ferroan-llsd = { path = "../ferroan-llsd" }
+indexmap = "2.11.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+
+[dev-dependencies]
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+
+[lints]
+workspace = true

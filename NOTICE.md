@@ -27,6 +27,8 @@ The reference revisions used for porting are listed in [docs/REFERENCES.md](docs
 
 `tools/config-oracle` calls the NuGet package `nini-core` 0.9.2.16 (X11, copyright Brent R. Matzelle, maintained by Sjofn LLC). `ferroan-config` reimplements that reader. Nini's source is not copied into this repository.
 
+`crates/ferroan-http/src/query.rs` and `src/xml.rs` are ported from Tranquillity `Source/OpenSim.Server.Base/ServerUtils.cs` at `713857f10b8e91a639a967d4354a4682b080793c` (BSD-3-Clause). The files keep that notice. Percent-encoding and XML name escapes follow `HttpUtility` and `XmlConvert` as those methods call them; that .NET source is not copied. The HTTP server, client and LLSD framing are new Ferroan code.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

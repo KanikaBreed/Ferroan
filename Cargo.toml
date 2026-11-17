@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/ferroan-types", "crates/ferroan-db", "crates/ferroan-config", "crates/ferroan-llsd", "xtask"]
+members = [
+    "crates/ferroan-types",
+    "crates/ferroan-db",
+    "crates/ferroan-config",
+    "crates/ferroan-llsd",
+    "crates/ferroan-http",
+    "xtask",
+]
 resolver = "3"
 
 [workspace.package]
