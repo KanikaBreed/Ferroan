@@ -21,6 +21,10 @@ The command is the same on every platform. CI runs it on Linux, Windows and macO
 
 `cargo xtask config generate` and `verify` build [tools/config-oracle](../tools/config-oracle/README.md) and resolve INI files with Nini. The dumps are committed under [fixtures/config](../fixtures/config/README.md). CI does not run the tool. The Rust tests always check the small cases. The two cases that open Tranquillity's shipped INI files run when `FERROAN_REF` points at the checkout and are skipped otherwise (P0.6 in [TASKS.md](../TASKS.md)).
 
+## Asset fixtures
+
+`cargo xtask asset generate` and `verify` build [tools/asset-oracle](../tools/asset-oracle/README.md) and serialize `AssetBase` with Tranquillity's `ServerUtils.SerializeResult`. The documents are committed under [fixtures/asset](../fixtures/asset/README.md). CI does not run the tool. `ferroan-services` tests encode to those bytes and serve them from a copy of the AssetStore SQLite fixture. A Tranquillity region has not been pointed at `ferroan-robust`, and Aurora has not shown or uploaded a texture.
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |

@@ -47,6 +47,14 @@ impl std::fmt::Debug for Pool {
 }
 
 impl Pool {
+    /// The SQLite pool, when this connection is SQLite.
+    pub fn sqlite(&self) -> Option<&sqlx::sqlite::SqlitePool> {
+        match &self.inner {
+            Inner::Sqlite(pool) => Some(pool),
+            _ => None,
+        }
+    }
+
     /// Open `connection_string` and require every named store, plus the
     /// `migrations` meta row, to be at the version this build expects.
     ///

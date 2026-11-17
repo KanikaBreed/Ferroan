@@ -1,0 +1,26 @@
+[package]
+name = "ferroan-services"
+description = "Grid services. This crate currently holds the asset service."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+ferroan-config = { path = "../ferroan-config" }
+ferroan-db = { path = "../ferroan-db" }
+ferroan-http = { path = "../ferroan-http" }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

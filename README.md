@@ -4,7 +4,7 @@ A ground-up Rust rebuild of [OpenSim Tranquillity](https://github.com/OpenSim-NG
 
 Ferroan aims to run the same grids, viewers, content and scripts as Tranquillity, with everything in Rust except two native C++ libraries: [Jolt](https://github.com/jrouwe/JoltPhysics) for physics and Linden Lab's [SLua engine](https://github.com/secondlife/slua) for LSL and SLua scripts.
 
-**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions, colours, texture entries, extra parameters and prim shapes, plus Tranquillity permission masks), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder), `ferroan-http` (Robust forms, XML replies and LLSD over HTTP) and `ferroan-protocol` (LLUDP messages from libopenmetaverse's template, with framing and zero-coding). There is no region and no grid service yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
+**Status: foundations.** The workspace holds the plan, `ferroan-types` (OpenMetaverse packet bytes for UUIDs, vectors, quaternions, colours, texture entries, extra parameters and prim shapes, plus Tranquillity permission masks), `ferroan-db` (schema version checks on Tranquillity's databases), `ferroan-config` (Tranquillity's INI files), `ferroan-llsd` (LLSD in XML, binary and notation, checked against libopenmetaverse's encoder), `ferroan-http` (Robust forms, XML replies and LLSD over HTTP), `ferroan-protocol` (LLUDP messages from libopenmetaverse's template, with framing and zero-coding) and `ferroan-services` (the asset routes, served by `ferroan-robust`). There is no region yet: nothing here can host a world or talk to a viewer. See [TASKS.md](TASKS.md) for what is next.
 
 ## How it gets built
 
@@ -21,7 +21,7 @@ Details, effort and the gate that ends each phase are in the [plan](docs/PLAN.md
 
 ## Development
 
-Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy. `cargo xtask check` needs nothing else. The C# oracle (`cargo xtask oracle`), the schema fixtures (`cargo xtask schema`), the INI fixtures (`cargo xtask config`) and the HTTP fixtures (`cargo xtask http`) also need the .NET SDK 10 and the reference checkouts; CI does not run them.
+Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy. `cargo xtask check` needs nothing else. The C# oracle (`cargo xtask oracle`), the schema fixtures (`cargo xtask schema`), the INI fixtures (`cargo xtask config`), the HTTP fixtures (`cargo xtask http`) and the asset fixtures (`cargo xtask asset`) also need the .NET SDK 10 and the reference checkouts; CI does not run them.
 
 ```sh
 git clone https://github.com/KanikaBreed/ferroan.git

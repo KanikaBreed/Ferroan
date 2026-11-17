@@ -21,7 +21,12 @@
 //! `http` builds the C# ServerUtils oracle and generates or verifies the
 //! query-string and Robust XML fixtures. It needs the .NET SDK and the
 //! reference checkouts. CI does not run it.
+//!
+//! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
+//! XML fixtures. It needs the .NET SDK and the reference checkouts. CI does
+//! not run it.
 
+mod asset_oracle;
 mod config_oracle;
 mod http_oracle;
 mod oracle;
@@ -46,7 +51,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask config generate [directory]
        cargo xtask config verify [directory]
        cargo xtask http generate [directory]
-       cargo xtask http verify [directory]";
+       cargo xtask http verify [directory]
+       cargo xtask asset generate [directory]
+       cargo xtask asset verify [directory]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -77,6 +84,10 @@ fn main() -> ExitCode {
         ["http", "generate", directory] => http_oracle::generate(Some(PathBuf::from(directory))),
         ["http", "verify"] => http_oracle::verify(None),
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
+        ["asset", "generate"] => asset_oracle::generate(None),
+        ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
+        ["asset", "verify"] => asset_oracle::verify(None),
+        ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

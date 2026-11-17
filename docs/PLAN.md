@@ -2,7 +2,7 @@
 
 Ferroan rebuilds Tranquillity in Rust, phase by phase, on grids where the rest is still C#. Each phase ends at a gate: a check that has to pass before the next phase starts. Phases 3 and 4 run side by side after Phase 2, as do Phases 5 and 6.
 
-Effort is in person-months, estimated at 3,000 to 6,000 lines of C# ported per person-month. The Phase 0 pilot (task F08) replaces that rate with a measured one. The total is about 97 to 188 person-months (8 to 16 person-years). Because Ferroan is built by volunteers ([D5](DECISIONS.md)), calendar time depends on hours given: at 2.5 full-time equivalents, for example ten people at a quarter time each, it is about 3 to 6 years.
+Effort is in person-months, estimated at 3,000 to 6,000 lines of C# ported per person-month. The asset pilot below is the first measurement of that rate. The estimate stands: one service session is too small a sample to resize the phases. The total is about 97 to 188 person-months (8 to 16 person-years). Because Ferroan is built by volunteers ([D5](DECISIONS.md)), calendar time depends on hours given: at 2.5 full-time equivalents, for example ten people at a quarter time each, it is about 3 to 6 years.
 
 | Phase | Person-months | Gate |
 | --- | --- | --- |
@@ -14,6 +14,36 @@ Effort is in person-months, estimated at 3,000 to 6,000 lines of C# ported per p
 | 5. Region modules and content (beside 6) | 24 to 47 | OAR and IAR round trips match the C# server's, and the feature checklist reaches parity |
 | 6. Add-ons (beside 5) | 7 to 14 | Voice, search and offline IM work in Rust regions |
 | 7. Cut-over | 6 to 10 | Production grids run with no C# process |
+
+## Asset pilot measurement (17 November 2026)
+
+P0.9 followed the asset HTTP routes, the service get/store/delete/exists behaviour, and the SQLite queries behind them, at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`. Those eight files are 1,402 lines:
+
+| File | Lines |
+| --- | --- |
+| `Source/OpenSim.Server.Handlers/Asset/AssetServerConnector.cs` | 217 |
+| `Source/OpenSim.Server.Handlers/Asset/AssetServerDeleteHandler.cs` | 121 |
+| `Source/OpenSim.Server.Handlers/Asset/AssetServerGetHandler.cs` | 163 |
+| `Source/OpenSim.Server.Handlers/Asset/AssetServerPostHandler.cs` | 114 |
+| `Source/OpenSim.Server.Handlers/Asset/AssetsExistHandler.cs` | 79 |
+| `Source/OpenSim.Services.AssetService/AssetService.cs` | 210 |
+| `Source/OpenSim.Services.AssetService/AssetServiceBase.cs` | 99 |
+| `Source/OpenSim.Data.SQLite/SQLiteAssetData.cs` | 399 |
+
+Still inside those files, and left unimplemented: the connector console commands (`delete asset`, `dump asset`, `show asset`, from line 113 of the connector), the default asset loader, `Migration.Update`, `StoreAsset`'s update of a row that already exists (the service skips that call), and `FetchAssetMetadataSet`.
+
+Left out of the pilot: `MySQLAssetData.cs` (359 lines), `XAssetService.cs` (232) and `XAssetServiceBase.cs` (117). `AssetBase.cs` (380) is the type `XmlSerializer` writes. The Rust encoder matches those bytes.
+
+The worktree was created at 14:05 UTC and the fixture tests passed at 14:40 UTC the same day. That is about 35 minutes of wall-clock time for one session, and it is the clock on the machine, not a timed person-hour study. One calendar day, one service. Scaling those 1,402 lines up to a person-month would move the 3,000 to 6,000 band, and this sample does not justify that. The phase table stays as estimated.
+
+Bugs the C# fixtures caught while matching `XmlSerializer`:
+
+- Flag value 8 is not a valid `AssetFlags` value, and serialization throws. The named bits are 1 (`Maptile`), 2 (`Rewritable`) and 4 (`Collectable`). Value 7 is the text `Maptile Rewritable Collectable`.
+- Empty strings and empty byte arrays are self-closing elements with a space before the slash (`<Data />`).
+- CR, LF and tab stay raw characters in element text.
+- An empty array is one self-closing namespaced element, with no trailing newline.
+
+The region and Aurora checks for this pilot are still open. See [TASKS.md](../TASKS.md).
 
 ## What is Rust, native or dropped
 

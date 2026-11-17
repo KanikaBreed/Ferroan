@@ -382,6 +382,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-robust"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "ferroan-config",
+ "ferroan-services",
+ "tokio",
+]
+
+[[package]]
+name = "ferroan-services"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "ferroan-config",
+ "ferroan-db",
+ "ferroan-http",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "uuid",
+]
+
+[[package]]
 name = "ferroan-types"
 version = "0.1.0"
 dependencies = [

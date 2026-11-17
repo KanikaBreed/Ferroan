@@ -12,7 +12,9 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-llsd` | LLSD in XML, binary and notation, matching OpenMetaverse. Maps keep insertion order. Dates are tick counts, because one `f64` cannot hold both the XML text and the binary `AddSeconds` result |
 | `ferroan-http` | Robust form bodies, `<ServerResponse>` XML and LLSD over HTTP, on axum and reqwest |
 | `ferroan-protocol` | LLUDP messages generated from libopenmetaverse's `message_template.msg`, plus framing, zero-coding and appended acks. See [docs/PROTOCOL.md](docs/PROTOCOL.md) |
-| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config` and `http` |
+| `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
+| `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port` |
+| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http` and `asset` |
 
 ## Planned
 
@@ -20,7 +22,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 | Program | Replaces | Phase |
 | --- | --- | --- |
-| `ferroan-robust` | Robust, the grid services server | 1 |
+| `ferroan-robust` | The rest of Robust: inventory, accounts, presence, grid, login, hypergrid, money | 1 |
 | `ferroan-region` | OpenSim.exe, the region simulator | 2 |
 | `ferroan-tools` | OAR and IAR tools, migration helpers, admin utilities | 5 to 7 |
 
@@ -28,7 +30,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 | Crate | Purpose | Phase |
 | --- | --- | --- |
-| `ferroan-services` | Assets, inventory, accounts, presence, grid, login, hypergrid, money server | 1 |
+| `ferroan-services` | Inventory, accounts, presence, grid, login, hypergrid, money server. Assets are implemented | 1 |
 | `ferroan-scene` | Objects, prims, avatars, terrain, the frame loop | 2 |
 | `ferroan-client` | The LLUDP circuit, throttles, CAPS, the event queue | 2 |
 | `ferroan-modules` | Land, estates, groups, inventory transfer, map, dynamic textures | 5 |

@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetMetadata xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <FullID>
+    <Guid>22222222-3333-4444-5555-666666666666</Guid>
+  </FullID>
+  <ID>22222222-3333-4444-5555-666666666666</ID>
+  <Name>all</Name>
+  <Description>d</Description>
+  <CreationDate>0001-01-01T00:00:00</CreationDate>
+  <Type>0</Type>
+  <ContentType>image/x-j2c</ContentType>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID>creator</CreatorID>
+  <Flags>Maptile Rewritable Collectable</Flags>
+</AssetMetadata>

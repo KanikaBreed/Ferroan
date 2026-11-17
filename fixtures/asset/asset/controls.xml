@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetBase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Data>IA==</Data>
+  <FullID>
+    <Guid>55555555-6666-7777-8888-999999999999</Guid>
+  </FullID>
+  <ID>55555555-6666-7777-8888-999999999999</ID>
+  <Name>say "hi"</Name>
+  <Description>a
+b	&lt;</Description>
+  <Type>7</Type>
+  <UploadAttempts>0</UploadAttempts>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID>creator</CreatorID>
+  <Flags>Collectable</Flags>
+</AssetBase>

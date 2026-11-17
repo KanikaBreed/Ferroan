@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetMetadata xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <FullID>
+    <Guid>00112233-4455-6677-8899-aabbccddeeff</Guid>
+  </FullID>
+  <ID>00112233-4455-6677-8899-aabbccddeeff</ID>
+  <Name>Wood</Name>
+  <Description>a plank</Description>
+  <CreationDate>0001-01-01T00:00:00</CreationDate>
+  <Type>0</Type>
+  <ContentType>image/x-j2c</ContentType>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID>creator</CreatorID>
+  <Flags>Normal</Flags>
+</AssetMetadata>
