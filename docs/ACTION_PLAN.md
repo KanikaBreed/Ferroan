@@ -163,8 +163,9 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
      - **inventory:** the inventory skeleton and a folder fetch return the uploaded item.
   5. Captures: every run records UDP and HTTP. `ferroan-capture check`, then `redact`, then `replay`. The bots' text is synthetic, so the redacted session can be committed under `fixtures/captures/` with no person reading it first.
   6. Asset A/B: run the texture and inventory scenarios with `--assets csharp` and `--assets ferroan`, normalize the recorded asset traffic (dates, generated IDs), and require the same requests and replies. Write the differences to the report.
-  7. CI: add a Linux job that installs .NET SDK 10 (pin the action by SHA), builds Tranquillity at the pinned revision, and runs `cargo xtask live run all`. It also runs every `cargo xtask <oracle> verify`, which closes the "CI does not run the oracle" notes. It runs nightly, on `workflow_dispatch`, and on PRs that touch `tools/`, `xtask/`, `fixtures/` or a crate the scenarios use. Cache the Tranquillity build by revision.
-  8. Write `docs/LIVE.md` (how to run it, what each scenario checks, how to add one) and `docs/MANUAL_CHECKS.md` (the Firestorm checklist the maintainer runs at each phase gate, with the exact steps and what to look for).
+  7. CI: add a Linux job that installs .NET SDK 10 (pin the action by SHA). Tranquillity restores some packages from the OpenSim-NGC GitHub Packages feed (its `Docs/BUILDING.md`), so the job reads `GITHUB_ACTOR` and `GITHUB_TOKEN` for `nuget.config` from repository secrets the maintainer adds (`TRANQUILLITY_NUGET_USER`, `TRANQUILLITY_NUGET_TOKEN`, a token with `read:packages` only). If the secrets are absent, the job fails with a message naming them; it does not skip. The job builds Tranquillity at the pinned revision, and runs `cargo xtask live run all`. It also runs every `cargo xtask <oracle> verify`, which closes the "CI does not run the oracle" notes. It runs nightly, on `workflow_dispatch`, and on PRs that touch `tools/`, `xtask/`, `fixtures/` or a crate the scenarios use. Cache the Tranquillity build by revision.
+  8. Turn the manual recipe in `docs/LIVE.md` into the `live` commands, keep the file as the harness guide (how to run it, what each scenario checks, how to add one), and keep `docs/MANUAL_CHECKS.md` (the maintainer's Firestorm checklist) in step with what the harness covers.
+  9. Audit fixes from 17 November 2026: give `ferroan-robust` a listen-address setting (default unchanged, matching Tranquillity) and bind every harness process to `127.0.0.1`. Add a DECISIONS.md entry allowing `ring`, which `rustls` uses for TLS in `reqwest` and `sqlx`, as the crypto provider; no other native crate comes with it.
 - **Acceptance:**
   - `cargo xtask live run all` passes on Linux locally and in CI, from a clean `.scratch/`.
   - A redacted bot session is committed and `replay` passes on it. P0.5 moves to `DONE`, recording that the session came from `ferroan-bot`.
@@ -172,5 +173,13 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
   - A failing check fails the job; nothing is skipped silently. A scenario that cannot run says why in the report.
 
 ## After Phase 0
+
+### First login to a Ferroan region (P2.0)
+
+Right after P0.10, before Phase 1 is finished, build the smallest Ferroan region a viewer can enter. It runs on the C# grid services the maintainer already runs (D2), so it does not wait for Phase 1.
+
+- **Scope:** the LLUDP circuit and the region handshake, the seed capability and the event queue, terrain from the region's saved heightmap, the avatar standing at terrain height (no physics, Phase 3), appearance from the C# services, local chat, logout, and a teleport to and from a C# region next door.
+- **Acceptance:** the live harness's login, chat and teleport scenarios pass against the Ferroan region, and their reports match the same scenarios against the C# region. Then the maintainer logs in with Firestorm and follows the first-login section that this package adds to `docs/MANUAL_CHECKS.md`.
+- Split it into rows in TASKS.md before starting; it is more than two weeks of work.
 
 When the gate passes, write Phase 1's packages the same way, from the scope in [PLAN.md](PLAN.md), and add their rows to TASKS.md. Every package that changes behavior a viewer or region can see adds or extends a `ferroan-bot` scenario. Once Ferroan has its own region (Phase 2), each scenario runs against both the C# region and the Ferroan region, and the two reports must agree.
