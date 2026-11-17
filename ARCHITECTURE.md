@@ -6,7 +6,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 | Crate | What it holds |
 | --- | --- |
-| `ferroan-types` | Placeholder. Records the Tranquillity reference revision. Shared types land here in Phase 0 |
+| `ferroan-types` | UUID, vectors, quaternions and colours in OpenMetaverse's packet order. The Tranquillity revision constant stays |
 | `ferroan-db` | sqlx pools for SQLite, MySQL and PostgreSQL. Checks Tranquillity's `migrations` versions and refuses to start when they differ. Does not migrate |
 | `ferroan-config` | Tranquillity INI loading: Nini's parser, includes, and `${Section|key}` substitution. The region and grid loaders keep their different include order |
 | `ferroan-llsd` | LLSD in XML, binary and notation, matching OpenMetaverse. Maps keep insertion order. Dates are tick counts, because one `f64` cannot hold both the XML text and the binary `AddSeconds` result |
@@ -38,12 +38,16 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | Crate | Purpose | Phase |
 | --- | --- | --- |
 | `ferroan-protocol` | Packets generated from the viewer's `message_template.msg` | 0 |
-| `ferroan-types` | UUIDs, vectors, rotations, prim shapes, permissions | 0 |
+| `ferroan-types` | TextureEntry, extra parameters, prim shapes and permission masks, still to land in this crate | 0 |
 | `ferroan-http` | HTTP server and client for Robust's forms and CAPS | 0 |
 
 ## Where code comes from
 
 Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies TextureEntry, extra parameters and later prim volumes ([D11](docs/DECISIONS.md)). C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md).
+
+## Vectors and quaternions
+
+`ferroan-types` stores vectors and quaternions as `glam` 0.34 values (`Vec2`, `Vec3`, `DVec3`, `Vec4`, `Quat`), the same major version Aurora's `aurora-prim` uses. A `glam` value is not copied onto the wire: each field is written little-endian, which is what OpenMetaverse's `GetBytes` does. `Color4` is a plain struct. Its packet form is four quantized bytes, not a vector.
 
 ## Rules that shape the code
 

@@ -20,7 +20,8 @@ If a package turns out bigger than about two weeks of work, split it in TASKS.md
 ```text
 P0.1 oracle ──┬─> P0.2 llsd ──┐
               ├─> P0.3 types ─┼─> P0.4 protocol ──> P0.5 capture replay
-              │               │
+              │   P0.3b te    │
+              │   P0.3c shape │
 P0.6 config ──┤   P0.7 db ────┤
               └─> P0.8 http ──┴─> P0.9 asset service pilot
 ```
@@ -52,13 +53,29 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
 
 ## P0.3 `ferroan-types`
 
-**Goal:** the shared types every later crate uses.
+**Goal:** the shared scalar types every later crate uses. TextureEntry, extra parameters, prim shapes and permission masks are P0.3b and P0.3c, because each needs its own oracle fixtures and is a separate port.
 
-- **Sources:** `libopenmetaverse/OpenMetaverse.Types` (UUID, Vector3, Vector3d, Quaternion, Color4, Utils byte helpers), `libopenmetaverse/OpenMetaverse/Primitives` and Tranquillity's `Source/OpenSim.Framework/PrimitiveBaseShape.cs` (prim shape parameters), `PermissionMask` in `Source/OpenSim.Framework/Util.cs` and OpenMetaverse's permission flags. Reuse Aurora's `aurora-prim` `te.rs`, `extra.rs` and `pack.rs` for TextureEntry and extra parameters where they fit.
+- **Sources:** `libopenmetaverse/OpenMetaverse.Types` (UUID, Vector2, Vector3, Vector3d, Vector4, Quaternion, Color4, `Utils.FloatToUInt16`, `FloatToUnitUInt16`, `UInt16ToFloat`, `FloatZeroOneToByte`).
 - **Steps:**
   1. Decide on `glam` for vectors and quaternions, as Aurora's crates use it, or plain structs. Record the decision in ARCHITECTURE.md.
-  2. Port each type with its packet encoding: UUID byte order, the 12-byte packed quaternion, the 16-bit quantized values (`FloatToUInt16`), TextureEntry and extra parameters.
-- **Acceptance:** every encoding matches oracle fixtures both ways, and the placeholder constant stays.
+  2. Port each type with its packet encoding: UUID byte order, the 12-byte packed quaternion (`GetBytes` and `ToBytes`), quaternion shorts, the 16-bit quantized values (`FloatToUInt16`), and colour bytes.
+- **Acceptance:** every existing `family = bytes` fixture matches both ways, and the placeholder constant stays.
+
+## P0.3b TextureEntry and extra parameters
+
+**Goal:** the variable blobs object updates carry, in `ferroan-types`.
+
+- **Sources:** `libopenmetaverse/OpenMetaverse/Primitives/TextureEntry.cs` and `Primitive.cs` extra parameters. Reuse Aurora's `aurora-prim` `te.rs`, `extra.rs` and `pack.rs` where they match OpenMetaverse.
+- **Steps:** extend the oracle with TextureEntry and extra-parameter cases, then decode and re-encode those bytes.
+- **Acceptance:** the new fixtures match both ways. Until this lands, `ferroan-protocol` may carry the blobs as bytes.
+
+## P0.3c Prim shapes and permission masks
+
+**Goal:** prim shape parameters and the permission bit masks, in `ferroan-types`.
+
+- **Sources:** `libopenmetaverse/OpenMetaverse/Primitives` and Tranquillity's `Source/OpenSim.Framework/PrimitiveBaseShape.cs`, `PermissionMask` in `Source/OpenSim.Framework/Util.cs` and OpenMetaverse's `PermissionMask`.
+- **Steps:** extend the oracle, then match those encodings.
+- **Acceptance:** the new fixtures match both ways.
 
 ## P0.4 `ferroan-protocol`
 
