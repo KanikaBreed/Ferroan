@@ -1,0 +1,3 @@
+# XmlSerializer leaves a raw CR in element text. text=auto would turn that
+# CR+LF into LF and the fixture would no longer match the C# bytes.
+*.xml binary
