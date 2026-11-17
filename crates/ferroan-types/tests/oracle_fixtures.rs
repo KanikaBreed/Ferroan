@@ -12,15 +12,17 @@ use std::fs;
 use std::path::PathBuf;
 
 use ferroan_types::{
-    Color4, DVec3, Quat, Vec2, Vec3, Vec4, float_to_u16_bounds, float_to_u16_range,
-    float_to_unit_u16, read_color4, read_color4_floats, read_dvec3, read_quaternion_full,
-    read_quaternion_packed, read_quaternion_shorts, read_u16_value, read_uuid, read_vec2,
-    read_vec3, read_vec3_clamped, read_vec4, u16_to_float, write_color4, write_color4_floats,
-    write_dvec3, write_quaternion_full, write_quaternion_get_bytes, write_quaternion_shorts,
-    write_quaternion_to_bytes, write_u16, write_uuid, write_vec2, write_vec3, write_vec3_clamped,
-    write_vec4,
+    Color4, DVec3, ExtraParams, FlexibleData, LightData, LightImage, Quat, SculptData,
+    TextureEntry, TextureFaceSet, TextureFaceView, Vec2, Vec3, Vec4, float_to_u16_bounds,
+    float_to_u16_range, float_to_unit_u16, read_color4, read_color4_floats, read_dvec3,
+    read_quaternion_full, read_quaternion_packed, read_quaternion_shorts, read_u16_value,
+    read_uuid, read_vec2, read_vec3, read_vec3_clamped, read_vec4, u16_to_float, write_color4,
+    write_color4_floats, write_dvec3, write_quaternion_full, write_quaternion_get_bytes,
+    write_quaternion_shorts, write_quaternion_to_bytes, write_u16, write_uuid, write_vec2,
+    write_vec3, write_vec3_clamped, write_vec4,
 };
 use serde_json::Value;
+use uuid::Uuid;
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/oracle")
@@ -291,11 +293,341 @@ fn every_byte_fixture_matches_openmetaverse() {
                 let again = fill(2, |buf| write_u16(encoded, buf).unwrap());
                 assert_eq!(again, file, "{id}");
             }
+            "texture-entry" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_texture(&file, decoded, params, round_trip, id);
+            }
+            "extra-params" => {
+                let params = case.get("params").unwrap_or(&Value::Null);
+                check_extra(&file, decoded, params, round_trip, id);
+            }
             other => panic!("{id}: unknown byte format {other}"),
         }
     }
 
-    assert!(seen > 30, "saw {seen} byte fixtures");
+    assert!(seen > 50, "saw {seen} byte fixtures");
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn f32_node(node: &Value) -> f32 {
+    hex_f32(node.as_str().expect("f32 hex"))
+}
+
+fn opt_f32(node: &Value, key: &str) -> Option<f32> {
+    node.get(key).map(f32_node)
+}
+
+fn opt_uuid(node: &Value, key: &str) -> Option<Uuid> {
+    node.get(key)
+        .and_then(|value| value.as_str())
+        .map(|text| text.parse().expect("uuid"))
+}
+
+fn texture_set(node: &Value) -> TextureFaceSet {
+    let rgba = node.get("r_bits").map(|_| {
+        Color4::from_floats(
+            f32_node(&node["r_bits"]),
+            f32_node(&node["g_bits"]),
+            f32_node(&node["b_bits"]),
+            f32_node(&node["a_bits"]),
+        )
+    });
+    TextureFaceSet {
+        texture_id: opt_uuid(node, "texture_id"),
+        rgba,
+        repeat_u: opt_f32(node, "repeat_u_bits"),
+        repeat_v: opt_f32(node, "repeat_v_bits"),
+        offset_u: opt_f32(node, "offset_u_bits"),
+        offset_v: opt_f32(node, "offset_v_bits"),
+        rotation: opt_f32(node, "rotation_bits"),
+        glow: opt_f32(node, "glow_bits"),
+        bump: node.get("bump").and_then(|v| v.as_u64()).map(|n| n as u8),
+        shiny: node.get("shiny").and_then(|v| v.as_u64()).map(|n| n as u8),
+        fullbright: node.get("fullbright").and_then(|v| v.as_bool()),
+        media_flags: node.get("media").and_then(|v| v.as_bool()),
+        mapping: node
+            .get("mapping")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u8),
+        material_id: opt_uuid(node, "material_id"),
+    }
+}
+
+fn assert_view(view: &TextureFaceView, node: &Value, id: &str) {
+    assert_eq!(
+        view.texture_id.to_string(),
+        node["texture_id"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        view.material_id.to_string(),
+        node["material_id"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.rgba.r.to_bits()),
+        node["r_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.rgba.g.to_bits()),
+        node["g_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.rgba.b.to_bits()),
+        node["b_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.rgba.a.to_bits()),
+        node["a_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.repeat_u.to_bits()),
+        node["repeat_u_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.repeat_v.to_bits()),
+        node["repeat_v_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.offset_u.to_bits()),
+        node["offset_u_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.offset_v.to_bits()),
+        node["offset_v_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.rotation.to_bits()),
+        node["rotation_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        format!("{:08x}", view.glow.to_bits()),
+        node["glow_bits"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(i64::from(view.bump), node["bump"].as_i64().unwrap(), "{id}");
+    assert_eq!(
+        i64::from(view.shiny),
+        node["shiny"].as_i64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        view.fullbright,
+        node["fullbright"].as_bool().unwrap(),
+        "{id}"
+    );
+    assert_eq!(view.media_flags, node["media"].as_bool().unwrap(), "{id}");
+    assert_eq!(
+        i64::from(view.mapping),
+        node["mapping"].as_i64().unwrap(),
+        "{id}"
+    );
+}
+
+fn check_texture(file: &[u8], decoded: &Value, params: &Value, round_trip: bool, id: &str) {
+    let parsed = TextureEntry::from_bytes(file).unwrap_or_else(|err| panic!("{id}: {err}"));
+    match parsed.default_view() {
+        None => assert!(decoded["default"].is_null(), "{id}"),
+        Some(view) => assert_view(&view, &decoded["default"], id),
+    }
+    let faces = decoded["faces"].as_array().unwrap();
+    let mut present = [false; 45];
+    for face in faces {
+        let index = usize::try_from(face["index"].as_u64().unwrap()).unwrap();
+        present[index] = true;
+        let view = parsed
+            .face_view(index)
+            .unwrap_or_else(|| panic!("{id}: missing face {index}"));
+        assert_view(&view, face, id);
+    }
+    for (index, was_present) in present.iter().enumerate() {
+        if !was_present {
+            assert!(
+                parsed.face_view(index).is_none(),
+                "{id}: unexpected face {index}"
+            );
+        }
+    }
+    let again = parsed.to_bytes();
+    assert_eq!(
+        hex_of(&again),
+        decoded["again_hex"].as_str().unwrap(),
+        "{id}"
+    );
+    if round_trip {
+        assert_eq!(again, file, "{id}");
+    }
+    if params.get("build").and_then(|value| value.as_bool()) == Some(true) {
+        let mut built = TextureEntry::new(params["texture_id"].as_str().unwrap().parse().unwrap());
+        if let Some(defaults) = params.get("default") {
+            built.apply_default(&texture_set(defaults));
+        }
+        if let Some(faces) = params.get("faces").and_then(|value| value.as_array()) {
+            for face in faces {
+                let index = usize::try_from(face["index"].as_u64().unwrap()).unwrap();
+                built.apply_face(index, &texture_set(face)).unwrap();
+            }
+        }
+        let max_faces = usize::try_from(params["max_faces"].as_u64().unwrap()).unwrap();
+        assert_eq!(built.to_bytes_max(max_faces), file, "{id} source");
+    }
+}
+
+fn vec3_bits(node: &Value) -> Vec3 {
+    let bits = node.as_array().unwrap();
+    Vec3::new(f32_node(&bits[0]), f32_node(&bits[1]), f32_node(&bits[2]))
+}
+
+fn assert_f32(got: f32, node: &Value, id: &str) {
+    assert_eq!(
+        format!("{:08x}", got.to_bits()),
+        node.as_str().unwrap(),
+        "{id}"
+    );
+}
+
+fn check_extra(file: &[u8], decoded: &Value, params: &Value, round_trip: bool, id: &str) {
+    let parsed = ExtraParams::from_bytes(file).unwrap_or_else(|err| panic!("{id}: {err}"));
+    assert_flex(parsed.flexible, &decoded["flexible"], id);
+    assert_light(parsed.light, &decoded["light"], id);
+    assert_image(parsed.light_image, &decoded["light_image"], id);
+    assert_sculpt(parsed.sculpt, &decoded["sculpt"], id);
+    let again = parsed.to_bytes();
+    assert_eq!(
+        hex_of(&again),
+        decoded["again_hex"].as_str().unwrap(),
+        "{id}"
+    );
+    if round_trip {
+        assert_eq!(again, file, "{id}");
+    }
+    if params.get("build").and_then(|value| value.as_bool()) == Some(true) {
+        assert_eq!(extra_from_params(params).to_bytes(), file, "{id} source");
+    }
+}
+
+fn assert_flex(got: Option<FlexibleData>, node: &Value, id: &str) {
+    if node.is_null() {
+        assert!(got.is_none(), "{id}");
+        return;
+    }
+    let got = got.expect(id);
+    assert_eq!(
+        i64::from(got.softness),
+        node["softness"].as_i64().unwrap(),
+        "{id}"
+    );
+    assert_f32(got.tension, &node["tension_bits"], id);
+    assert_f32(got.drag, &node["drag_bits"], id);
+    assert_f32(got.gravity, &node["gravity_bits"], id);
+    assert_f32(got.wind, &node["wind_bits"], id);
+    assert_eq!(got.force, vec3_bits(&node["force_bits"]), "{id}");
+}
+
+fn assert_light(got: Option<LightData>, node: &Value, id: &str) {
+    if node.is_null() {
+        assert!(got.is_none(), "{id}");
+        return;
+    }
+    let got = got.expect(id);
+    assert_f32(got.color.r, &node["r_bits"], id);
+    assert_f32(got.color.g, &node["g_bits"], id);
+    assert_f32(got.color.b, &node["b_bits"], id);
+    assert_f32(got.color.a, &node["a_bits"], id);
+    assert_f32(got.intensity, &node["intensity_bits"], id);
+    assert_f32(got.radius, &node["radius_bits"], id);
+    assert_f32(got.cutoff, &node["cutoff_bits"], id);
+    assert_f32(got.falloff, &node["falloff_bits"], id);
+}
+
+fn assert_image(got: Option<LightImage>, node: &Value, id: &str) {
+    if node.is_null() {
+        assert!(got.is_none(), "{id}");
+        return;
+    }
+    let got = got.expect(id);
+    assert_eq!(
+        got.texture.to_string(),
+        node["texture_id"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(got.params, vec3_bits(&node["params_bits"]), "{id}");
+}
+
+fn assert_sculpt(got: Option<SculptData>, node: &Value, id: &str) {
+    if node.is_null() {
+        assert!(got.is_none(), "{id}");
+        return;
+    }
+    let got = got.expect(id);
+    assert_eq!(
+        got.texture.to_string(),
+        node["texture_id"].as_str().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        i64::from(got.type_byte),
+        node["type_byte"].as_i64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(
+        i64::from(got.sculpt_type()),
+        node["type"].as_i64().unwrap(),
+        "{id}"
+    );
+    assert_eq!(got.invert(), node["invert"].as_bool().unwrap(), "{id}");
+    assert_eq!(got.mirror(), node["mirror"].as_bool().unwrap(), "{id}");
+}
+
+fn extra_from_params(params: &Value) -> ExtraParams {
+    ExtraParams {
+        flexible: params.get("flexible").map(|node| FlexibleData {
+            softness: node["softness"].as_i64().unwrap() as i32,
+            tension: f32_node(&node["tension_bits"]),
+            drag: f32_node(&node["drag_bits"]),
+            gravity: f32_node(&node["gravity_bits"]),
+            wind: f32_node(&node["wind_bits"]),
+            force: vec3_bits(&node["force_bits"]),
+        }),
+        light: params.get("light").map(|node| LightData {
+            color: Color4::from_floats(
+                f32_node(&node["r_bits"]),
+                f32_node(&node["g_bits"]),
+                f32_node(&node["b_bits"]),
+                f32_node(&node["a_bits"]),
+            ),
+            intensity: f32_node(&node["intensity_bits"]),
+            radius: f32_node(&node["radius_bits"]),
+            cutoff: f32_node(&node["cutoff_bits"]),
+            falloff: f32_node(&node["falloff_bits"]),
+        }),
+        light_image: params.get("light_image").map(|node| LightImage {
+            texture: node["texture_id"].as_str().unwrap().parse().unwrap(),
+            params: vec3_bits(&node["params_bits"]),
+        }),
+        sculpt: params.get("sculpt").map(|node| SculptData {
+            texture: node["texture_id"].as_str().unwrap().parse().unwrap(),
+            type_byte: node["type_byte"].as_u64().unwrap() as u8,
+        }),
+    }
 }
 
 #[test]

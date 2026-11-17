@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Reflection;
 using System.Text.Json.Nodes;
 using OpenMetaverse;
 using OpenMetaverse.StructuredData;
@@ -238,6 +239,417 @@ internal static class Cases
         list.Add(U16("float-u16-unit-quarter", "unit", 0.25f, 0f, 0f, 0f));
         list.Add(U16("float-u16-unit-one", "unit", 1f, 0f, 0f, 0f));
         list.Add(U16("float-u16-unit-neg", "unit", -1f, 0f, 0f, 0f));
+        AddTextures(list);
+        AddExtra(list);
+    }
+
+    static void AddTextures(List<Fixture> list)
+    {
+        UUID def = UUID.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        UUID face = UUID.Parse("11223344-5566-7788-99aa-bbccddeeff00");
+        UUID other = UUID.Parse("aabbccdd-eeff-0011-2233-445566778899");
+        UUID mat = UUID.Parse("01020304-0506-0708-090a-0b0c0d0e0f10");
+        UUID mat2 = UUID.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+
+        list.Add(Texture("texture-default-only", def, 45, null, null));
+        list.Add(Texture("texture-one-face", def, 45, null, new[]
+        {
+            new FaceRecipe { Index = 0, Texture = face },
+        }));
+
+        var red = new Color4((byte)255, (byte)0, (byte)0, (byte)255);
+        list.Add(Texture("texture-shared", def, 45, null, new[]
+        {
+            new FaceRecipe { Index = 0, Texture = face },
+            new FaceRecipe { Index = 3, Texture = face },
+            new FaceRecipe { Index = 1, Rgba = red },
+            new FaceRecipe { Index = 4, Rgba = red },
+        }));
+
+        list.Add(Texture(
+            "texture-all-fields",
+            def,
+            45,
+            new FaceRecipe
+            {
+                Rgba = new Color4((byte)200, (byte)100, (byte)50, (byte)255),
+                RepeatU = 2f,
+                RepeatV = 0.5f,
+                OffsetU = 0.25f,
+                OffsetV = -0.5f,
+                Rotation = 1f,
+                Glow = 0.25f,
+                Bump = (int)Bumpiness.Bricks,
+                Shiny = (int)Shininess.Medium,
+                Fullbright = true,
+                Media = true,
+                Mapping = (int)MappingType.Planar,
+                Material = mat,
+            },
+            new[]
+            {
+                new FaceRecipe
+                {
+                    Index = 2,
+                    Texture = other,
+                    Rgba = new Color4(0.25f, 0.5f, 0.75f, 1f),
+                    RepeatU = 3f,
+                    RepeatV = 4f,
+                    OffsetU = 0.1f,
+                    OffsetV = -0.2f,
+                    Rotation = 2f,
+                    Glow = 0.5f,
+                    Bump = (int)Bumpiness.Woodgrain,
+                    Shiny = (int)Shininess.High,
+                    Fullbright = false,
+                    Media = false,
+                    Mapping = (int)MappingType.Spherical,
+                    Material = mat2,
+                },
+            }));
+
+        list.Add(Texture("texture-face-40", def, 45, null, new[]
+        {
+            new FaceRecipe { Index = 40, Texture = face },
+        }));
+        list.Add(Texture("texture-max-9", def, 9, null, new[]
+        {
+            new FaceRecipe { Index = 8, Texture = face },
+            new FaceRecipe { Index = 12, Texture = other },
+        }));
+        list.Add(Bytes("texture-short", "texture-entry", new byte[8], null));
+    }
+
+    static void AddExtra(List<Fixture> list)
+    {
+        UUID tex = UUID.Parse("11223344-5566-7788-99aa-bbccddeeff00");
+        var flex = new FlexRecipe
+        {
+            Softness = 3,
+            Tension = 2f,
+            Drag = 0.5f,
+            Gravity = 1f,
+            Wind = 0.8f,
+            Force = new Vector3(1f, -2f, 0.5f),
+        };
+        var light = new LightRecipe
+        {
+            Color = new Color4((byte)255, (byte)128, (byte)64, (byte)255),
+            Intensity = 0.5f,
+            Radius = 5f,
+            Cutoff = 1.25f,
+            Falloff = 0.25f,
+        };
+        var image = new LightImageRecipe
+        {
+            Texture = tex,
+            Params = new Vector3(0.5f, 1f, -1f),
+        };
+
+        list.Add(Extra("extra-none", null, null, null, null));
+        list.Add(Extra("extra-flexible", flex, null, null, null));
+        list.Add(Extra("extra-light", null, light, null, null));
+        list.Add(Extra("extra-light-image", null, null, image, null));
+        list.Add(Extra("extra-sculpt-sphere", null, null, null, new SculptRecipe { Texture = tex, TypeByte = (byte)SculptType.Sphere }));
+        list.Add(Extra("extra-sculpt-mesh", null, null, null, new SculptRecipe { Texture = tex, TypeByte = (byte)SculptType.Mesh }));
+        list.Add(Extra(
+            "extra-sculpt-flags",
+            null,
+            null,
+            null,
+            new SculptRecipe
+            {
+                Texture = tex,
+                TypeByte = (byte)(SculptType.Sphere | SculptType.Invert | SculptType.Mirror),
+            }));
+        list.Add(Extra(
+            "extra-sculpt-mesh-invert",
+            null,
+            null,
+            null,
+            new SculptRecipe { Texture = tex, TypeByte = (byte)(SculptType.Mesh | SculptType.Invert) }));
+        list.Add(Extra("extra-all", flex, light, image, new SculptRecipe { Texture = tex, TypeByte = (byte)SculptType.Sphere }));
+
+        byte[] unknown = WrapMany(
+            (0x70, new byte[] { 1, 2, 3, 4 }),
+            ((ushort)ExtraParamType.Flexible, flex.Build().GetBytes()));
+        list.Add(Bytes("extra-skip-unknown", "extra-params", unknown, null));
+    }
+
+    static Fixture Texture(string name, UUID texture, int maxFaces, FaceRecipe defaults, FaceRecipe[] faces)
+    {
+        var recipe = new JsonObject
+        {
+            ["build"] = true,
+            ["max_faces"] = maxFaces,
+            ["texture_id"] = texture.ToString(),
+        };
+        var entry = new Primitive.TextureEntry(texture);
+        if (defaults != null)
+        {
+            defaults.Apply(entry.DefaultTexture);
+            recipe["default"] = defaults.ToJson(false);
+        }
+
+        if (faces != null && faces.Length > 0)
+        {
+            var array = new JsonArray();
+            foreach (FaceRecipe face in faces)
+            {
+                face.Apply(entry.CreateFace((uint)face.Index.Value));
+                array.Add(face.ToJson(true));
+            }
+
+            recipe["faces"] = array;
+        }
+
+        return Bytes(name, "texture-entry", entry.GetBytes(maxFaces), recipe);
+    }
+
+    static Fixture Extra(
+        string name,
+        FlexRecipe flex,
+        LightRecipe light,
+        LightImageRecipe image,
+        SculptRecipe sculpt)
+    {
+        var prim = new Primitive();
+        var recipe = new JsonObject { ["build"] = true };
+        if (flex != null)
+        {
+            prim.Flexible = flex.Build();
+            recipe["flexible"] = flex.ToJson();
+        }
+
+        if (light != null)
+        {
+            prim.Light = light.Build();
+            recipe["light"] = light.ToJson();
+        }
+
+        if (image != null)
+        {
+            prim.LightMap = image.Build();
+            recipe["light_image"] = image.ToJson();
+        }
+
+        if (sculpt != null)
+        {
+            prim.Sculpt = sculpt.Build();
+            recipe["sculpt"] = sculpt.ToJson();
+        }
+
+        return Bytes(name, "extra-params", prim.GetExtraParamsBytes(), recipe);
+    }
+
+    static byte[] WrapMany(params (ushort type, byte[] payload)[] parts)
+    {
+        int size = 1;
+        foreach ((ushort _, byte[] payload) in parts)
+            size += 6 + payload.Length;
+        byte[] buf = new byte[size];
+        buf[0] = (byte)parts.Length;
+        int pos = 1;
+        foreach ((ushort type, byte[] payload) in parts)
+        {
+            Buffer.BlockCopy(Utils.UInt16ToBytes(type), 0, buf, pos, 2);
+            pos += 2;
+            Buffer.BlockCopy(Utils.UIntToBytes((uint)payload.Length), 0, buf, pos, 4);
+            pos += 4;
+            Buffer.BlockCopy(payload, 0, buf, pos, payload.Length);
+            pos += payload.Length;
+        }
+
+        return buf;
+    }
+
+    sealed class FaceRecipe
+    {
+        public int? Index;
+        public UUID? Texture;
+        public Color4? Rgba;
+        public float? RepeatU;
+        public float? RepeatV;
+        public float? OffsetU;
+        public float? OffsetV;
+        public float? Rotation;
+        public float? Glow;
+        public int? Bump;
+        public int? Shiny;
+        public bool? Fullbright;
+        public bool? Media;
+        public int? Mapping;
+        public UUID? Material;
+
+        public void Apply(Primitive.TextureEntryFace face)
+        {
+            if (Texture.HasValue) face.TextureID = Texture.Value;
+            if (Rgba.HasValue) face.RGBA = Rgba.Value;
+            if (RepeatU.HasValue) face.RepeatU = RepeatU.Value;
+            if (RepeatV.HasValue) face.RepeatV = RepeatV.Value;
+            if (OffsetU.HasValue) face.OffsetU = OffsetU.Value;
+            if (OffsetV.HasValue) face.OffsetV = OffsetV.Value;
+            if (Rotation.HasValue) face.Rotation = Rotation.Value;
+            if (Glow.HasValue) face.Glow = Glow.Value;
+            if (Bump.HasValue) face.Bump = (Bumpiness)Bump.Value;
+            if (Shiny.HasValue) face.Shiny = (Shininess)Shiny.Value;
+            if (Fullbright.HasValue) face.Fullbright = Fullbright.Value;
+            if (Media.HasValue) face.MediaFlags = Media.Value;
+            if (Mapping.HasValue) face.TexMapType = (MappingType)Mapping.Value;
+            if (Material.HasValue) face.MaterialID = Material.Value;
+        }
+
+        public JsonObject ToJson(bool includeIndex)
+        {
+            var node = new JsonObject();
+            if (includeIndex) node["index"] = Index.Value;
+            if (Texture.HasValue) node["texture_id"] = Texture.Value.ToString();
+            if (Rgba.HasValue)
+            {
+                node["r_bits"] = Codec.F32(Rgba.Value.R);
+                node["g_bits"] = Codec.F32(Rgba.Value.G);
+                node["b_bits"] = Codec.F32(Rgba.Value.B);
+                node["a_bits"] = Codec.F32(Rgba.Value.A);
+            }
+
+            if (RepeatU.HasValue) node["repeat_u_bits"] = Codec.F32(RepeatU.Value);
+            if (RepeatV.HasValue) node["repeat_v_bits"] = Codec.F32(RepeatV.Value);
+            if (OffsetU.HasValue) node["offset_u_bits"] = Codec.F32(OffsetU.Value);
+            if (OffsetV.HasValue) node["offset_v_bits"] = Codec.F32(OffsetV.Value);
+            if (Rotation.HasValue) node["rotation_bits"] = Codec.F32(Rotation.Value);
+            if (Glow.HasValue) node["glow_bits"] = Codec.F32(Glow.Value);
+            if (Bump.HasValue) node["bump"] = Bump.Value;
+            if (Shiny.HasValue) node["shiny"] = Shiny.Value;
+            if (Fullbright.HasValue) node["fullbright"] = Fullbright.Value;
+            if (Media.HasValue) node["media"] = Media.Value;
+            if (Mapping.HasValue) node["mapping"] = Mapping.Value;
+            if (Material.HasValue) node["material_id"] = Material.Value.ToString();
+            return node;
+        }
+    }
+
+    sealed class FlexRecipe
+    {
+        public int Softness;
+        public float Tension;
+        public float Drag;
+        public float Gravity;
+        public float Wind;
+        public Vector3 Force;
+
+        public Primitive.FlexibleData Build()
+        {
+            return new Primitive.FlexibleData
+            {
+                Softness = Softness,
+                Tension = Tension,
+                Drag = Drag,
+                Gravity = Gravity,
+                Wind = Wind,
+                Force = Force,
+            };
+        }
+
+        public JsonObject ToJson()
+        {
+            return new JsonObject
+            {
+                ["softness"] = Softness,
+                ["tension_bits"] = Codec.F32(Tension),
+                ["drag_bits"] = Codec.F32(Drag),
+                ["gravity_bits"] = Codec.F32(Gravity),
+                ["wind_bits"] = Codec.F32(Wind),
+                ["force_bits"] = new JsonArray { Codec.F32(Force.X), Codec.F32(Force.Y), Codec.F32(Force.Z) },
+            };
+        }
+    }
+
+    sealed class LightRecipe
+    {
+        public Color4 Color;
+        public float Intensity;
+        public float Radius;
+        public float Cutoff;
+        public float Falloff;
+
+        public Primitive.LightData Build()
+        {
+            return new Primitive.LightData
+            {
+                Color = Color,
+                Intensity = Intensity,
+                Radius = Radius,
+                Cutoff = Cutoff,
+                Falloff = Falloff,
+            };
+        }
+
+        public JsonObject ToJson()
+        {
+            return new JsonObject
+            {
+                ["r_bits"] = Codec.F32(Color.R),
+                ["g_bits"] = Codec.F32(Color.G),
+                ["b_bits"] = Codec.F32(Color.B),
+                ["a_bits"] = Codec.F32(Color.A),
+                ["intensity_bits"] = Codec.F32(Intensity),
+                ["radius_bits"] = Codec.F32(Radius),
+                ["cutoff_bits"] = Codec.F32(Cutoff),
+                ["falloff_bits"] = Codec.F32(Falloff),
+            };
+        }
+    }
+
+    sealed class LightImageRecipe
+    {
+        public UUID Texture;
+        public Vector3 Params;
+
+        public Primitive.LightImage Build()
+        {
+            return new Primitive.LightImage
+            {
+                LightTexture = Texture,
+                Params = Params,
+            };
+        }
+
+        public JsonObject ToJson()
+        {
+            return new JsonObject
+            {
+                ["texture_id"] = Texture.ToString(),
+                ["params_bits"] = new JsonArray { Codec.F32(Params.X), Codec.F32(Params.Y), Codec.F32(Params.Z) },
+            };
+        }
+    }
+
+    sealed class SculptRecipe
+    {
+        public UUID Texture;
+        public byte TypeByte;
+
+        public Primitive.SculptData Build()
+        {
+            var sculpt = new Primitive.SculptData { SculptTexture = Texture };
+            // Invert and Mirror have getters only. GetBytes writes this private byte.
+            FieldInfo field = typeof(Primitive.SculptData).GetField(
+                "type",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (field == null)
+                throw new InvalidOperationException("SculptData.type is not available");
+            field.SetValue(sculpt, TypeByte);
+            return sculpt;
+        }
+
+        public JsonObject ToJson()
+        {
+            return new JsonObject
+            {
+                ["texture_id"] = Texture.ToString(),
+                ["type_byte"] = (int)TypeByte,
+            };
+        }
     }
 
     static Fixture Clamped(string name, Vector3 value, float range)

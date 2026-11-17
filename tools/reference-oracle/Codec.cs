@@ -277,6 +277,10 @@ internal static class Codec
                 return Floats(payload, 4);
             case "float-u16":
                 return Quantized(payload, parms);
+            case "texture-entry":
+                return TextureEntryNode(payload);
+            case "extra-params":
+                return ExtraNode(payload);
             default:
                 throw new InvalidOperationException("unknown byte format: " + format);
         }
@@ -532,6 +536,17 @@ internal static class Codec
 
                 return Utils.UInt16ToBytes(again);
             }
+            case "texture-entry":
+            {
+                var entry = new Primitive.TextureEntry(payload, 0, payload.Length);
+                return entry.GetBytes();
+            }
+            case "extra-params":
+            {
+                var prim = new Primitive();
+                prim.SetExtraParamsFromBytes(payload, 0);
+                return prim.GetExtraParamsBytes();
+            }
             default:
                 throw new InvalidOperationException("unknown byte format: " + format);
         }
@@ -550,6 +565,113 @@ internal static class Codec
         if (node is null)
             throw new InvalidOperationException("missing parameter " + key);
         return node.GetValue<string>();
+    }
+
+    static JsonObject TextureEntryNode(byte[] payload)
+    {
+        var entry = new Primitive.TextureEntry(payload, 0, payload.Length);
+        JsonObject node = Type("texture-entry");
+        node["default"] = entry.DefaultTexture == null ? JsonNull() : FaceNode(entry.DefaultTexture);
+        var faces = new JsonArray();
+        for (int i = 0; i < Primitive.TextureEntry.MAX_FACES; i++)
+        {
+            if (entry.FaceTextures[i] == null)
+                continue;
+            JsonObject face = FaceNode(entry.FaceTextures[i]);
+            face["index"] = i;
+            faces.Add(face);
+        }
+
+        node["faces"] = faces;
+        node["again_hex"] = Convert.ToHexString(entry.GetBytes()).ToLowerInvariant();
+        return node;
+    }
+
+    static JsonObject FaceNode(Primitive.TextureEntryFace face)
+    {
+        JsonObject node = new JsonObject();
+        node["texture_id"] = face.TextureID.ToString();
+        node["material_id"] = face.MaterialID.ToString();
+        node["r_bits"] = F32(face.RGBA.R);
+        node["g_bits"] = F32(face.RGBA.G);
+        node["b_bits"] = F32(face.RGBA.B);
+        node["a_bits"] = F32(face.RGBA.A);
+        node["repeat_u_bits"] = F32(face.RepeatU);
+        node["repeat_v_bits"] = F32(face.RepeatV);
+        node["offset_u_bits"] = F32(face.OffsetU);
+        node["offset_v_bits"] = F32(face.OffsetV);
+        node["rotation_bits"] = F32(face.Rotation);
+        node["glow_bits"] = F32(face.Glow);
+        node["bump"] = (int)face.Bump;
+        node["shiny"] = (int)face.Shiny;
+        node["fullbright"] = face.Fullbright;
+        node["media"] = face.MediaFlags;
+        node["mapping"] = (int)face.TexMapType;
+        return node;
+    }
+
+    static JsonObject ExtraNode(byte[] payload)
+    {
+        var prim = new Primitive();
+        prim.SetExtraParamsFromBytes(payload, 0);
+        JsonObject node = Type("extra-params");
+        node["flexible"] = prim.Flexible == null ? JsonNull() : FlexNode(prim.Flexible);
+        node["light"] = prim.Light == null ? JsonNull() : LightNode(prim.Light);
+        node["light_image"] = prim.LightMap == null ? JsonNull() : LightImageNode(prim.LightMap);
+        node["sculpt"] = prim.Sculpt == null ? JsonNull() : SculptNode(prim.Sculpt);
+        node["again_hex"] = Convert.ToHexString(prim.GetExtraParamsBytes()).ToLowerInvariant();
+        return node;
+    }
+
+    static JsonObject FlexNode(Primitive.FlexibleData flex)
+    {
+        JsonObject node = new JsonObject();
+        node["softness"] = flex.Softness;
+        node["tension_bits"] = F32(flex.Tension);
+        node["drag_bits"] = F32(flex.Drag);
+        node["gravity_bits"] = F32(flex.Gravity);
+        node["wind_bits"] = F32(flex.Wind);
+        node["force_bits"] = new JsonArray { F32(flex.Force.X), F32(flex.Force.Y), F32(flex.Force.Z) };
+        return node;
+    }
+
+    static JsonObject LightNode(Primitive.LightData light)
+    {
+        JsonObject node = new JsonObject();
+        node["r_bits"] = F32(light.Color.R);
+        node["g_bits"] = F32(light.Color.G);
+        node["b_bits"] = F32(light.Color.B);
+        node["a_bits"] = F32(light.Color.A);
+        node["intensity_bits"] = F32(light.Intensity);
+        node["radius_bits"] = F32(light.Radius);
+        node["cutoff_bits"] = F32(light.Cutoff);
+        node["falloff_bits"] = F32(light.Falloff);
+        return node;
+    }
+
+    static JsonObject LightImageNode(Primitive.LightImage image)
+    {
+        JsonObject node = new JsonObject();
+        node["texture_id"] = image.LightTexture.ToString();
+        node["params_bits"] = new JsonArray { F32(image.Params.X), F32(image.Params.Y), F32(image.Params.Z) };
+        return node;
+    }
+
+    static JsonObject SculptNode(Primitive.SculptData sculpt)
+    {
+        OSDMap map = (OSDMap)sculpt.GetOSD();
+        JsonObject node = new JsonObject();
+        node["texture_id"] = sculpt.SculptTexture.ToString();
+        node["type_byte"] = map["type"].AsInteger();
+        node["type"] = (int)sculpt.Type;
+        node["invert"] = sculpt.Invert;
+        node["mirror"] = sculpt.Mirror;
+        return node;
+    }
+
+    static JsonNode JsonNull()
+    {
+        return JsonNode.Parse("null");
     }
 
     static JsonObject Type(string name)
