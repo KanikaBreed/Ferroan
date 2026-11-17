@@ -3,13 +3,18 @@
 
 //! Shared types for Ferroan.
 //!
-//! UUID, vector, quaternion and colour packet bytes match OpenMetaverse.
-//! TextureEntry, extra parameters, prim shapes and permission masks are not
-//! here yet.
+//! UUID, vector, quaternion, colour, texture-entry and extra-parameter bytes
+//! match OpenMetaverse. Prim shapes and permission masks are not here yet.
 
+mod extra;
+mod texture;
 mod wire;
 
+pub use extra::{ExtraParams, FlexibleData, LightData, LightImage, MAX_EXTRA_BYTES, SculptData};
 pub use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
+pub use texture::{
+    MAX_FACES, MAX_TEXTURE_BYTES, TextureEntry, TextureFaceSet, TextureFaceView, WHITE_TEXTURE,
+};
 pub use wire::{
     Color4, WireError, float_to_u16_bounds, float_to_u16_range, float_to_unit_u16,
     float_zero_one_to_byte, read_color4, read_color4_floats, read_dvec3, read_quaternion_full,

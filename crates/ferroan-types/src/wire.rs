@@ -48,11 +48,15 @@
 use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
 use uuid::Uuid;
 
-/// A read or write was shorter than the OpenMetaverse layout.
+/// A read or write was shorter than the OpenMetaverse layout, or a Ferroan
+/// size cap was hit. OpenMetaverse does not cap TextureEntry or extra-parameter
+/// blobs; the cap is recorded in the crate README.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WireError {
     #[error("need {need} bytes, got {got}")]
     Short { need: usize, got: usize },
+    #[error("limit of {limit} exceeded ({got})")]
+    Limit { limit: usize, got: usize },
 }
 
 /// RGBA in 0..1, the range `Color4` stores. The four-byte form is quantized.
@@ -81,7 +85,7 @@ impl Color4 {
     }
 }
 
-fn need(src: &[u8], n: usize) -> Result<(), WireError> {
+pub(crate) fn need(src: &[u8], n: usize) -> Result<(), WireError> {
     if src.len() < n {
         Err(WireError::Short {
             need: n,
@@ -92,19 +96,23 @@ fn need(src: &[u8], n: usize) -> Result<(), WireError> {
     }
 }
 
-fn put_f32(dest: &mut [u8], value: f32) {
+pub(crate) fn put_f32(dest: &mut [u8], value: f32) {
     dest[..4].copy_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn put_i16(dest: &mut [u8], value: i16) {
+    dest[..2].copy_from_slice(&value.to_le_bytes());
 }
 
 fn put_f64(dest: &mut [u8], value: f64) {
     dest[..8].copy_from_slice(&value.to_le_bytes());
 }
 
-fn put_u16(dest: &mut [u8], value: u16) {
+pub(crate) fn put_u16(dest: &mut [u8], value: u16) {
     dest[..2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn read_f32(src: &[u8]) -> f32 {
+pub(crate) fn read_f32(src: &[u8]) -> f32 {
     f32::from_le_bytes(src[..4].try_into().expect("four bytes"))
 }
 
@@ -112,7 +120,7 @@ fn read_f64(src: &[u8]) -> f64 {
     f64::from_le_bytes(src[..8].try_into().expect("eight bytes"))
 }
 
-fn read_u16(src: &[u8]) -> u16 {
+pub(crate) fn read_u16(src: &[u8]) -> u16 {
     u16::from_le_bytes(src[..2].try_into().expect("two bytes"))
 }
 
@@ -424,6 +432,10 @@ pub fn write_u16(value: u16, dest: &mut [u8]) -> Result<(), WireError> {
     need(dest, 2)?;
     put_u16(dest, value);
     Ok(())
+}
+
+pub(crate) fn read_i16(src: &[u8]) -> i16 {
+    i16::from_le_bytes(src[..2].try_into().expect("two bytes"))
 }
 
 pub fn read_u16_value(src: &[u8]) -> Result<u16, WireError> {

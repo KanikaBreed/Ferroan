@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-types"
-description = "UUIDs, vectors, quaternions and colours in OpenMetaverse's packet order"
+description = "UUIDs, vectors, quaternions, colours, texture entries and extra parameters in OpenMetaverse's packet order"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

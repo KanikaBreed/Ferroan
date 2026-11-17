@@ -2384,6 +2384,838 @@
         "type": "u16",
         "value": 0
       }
+    },
+    {
+      "id": "bytes/texture-default-only",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-default-only.bin",
+      "params": {
+        "build": true,
+        "max_faces": 45,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "00000000-0000-0000-0000-000000000000",
+          "r_bits": "3f800000",
+          "g_bits": "3f800000",
+          "b_bits": "3f800000",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "3f800000",
+          "repeat_v_bits": "3f800000",
+          "offset_u_bits": "00000000",
+          "offset_v_bits": "00000000",
+          "rotation_bits": "00000000",
+          "glow_bits": "00000000",
+          "bump": 0,
+          "shiny": 0,
+          "fullbright": false,
+          "media": false,
+          "mapping": 0
+        },
+        "faces": [],
+        "again_hex": "00112233445566778899aabbccddeeff0000000000000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/texture-one-face",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-one-face.bin",
+      "params": {
+        "build": true,
+        "max_faces": 45,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "faces": [
+          {
+            "index": 0,
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00"
+          }
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "00000000-0000-0000-0000-000000000000",
+          "r_bits": "3f800000",
+          "g_bits": "3f800000",
+          "b_bits": "3f800000",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "3f800000",
+          "repeat_v_bits": "3f800000",
+          "offset_u_bits": "00000000",
+          "offset_v_bits": "00000000",
+          "rotation_bits": "00000000",
+          "glow_bits": "00000000",
+          "bump": 0,
+          "shiny": 0,
+          "fullbright": false,
+          "media": false,
+          "mapping": 0
+        },
+        "faces": [
+          {
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "3f800000",
+            "b_bits": "3f800000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 0
+          }
+        ],
+        "again_hex": "00112233445566778899aabbccddeeff01112233445566778899aabbccddeeff000000000000000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/texture-shared",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-shared.bin",
+      "params": {
+        "build": true,
+        "max_faces": 45,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "faces": [
+          {
+            "index": 0,
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00"
+          },
+          {
+            "index": 3,
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00"
+          },
+          {
+            "index": 1,
+            "r_bits": "3f800000",
+            "g_bits": "00000000",
+            "b_bits": "00000000",
+            "a_bits": "3f800000"
+          },
+          {
+            "index": 4,
+            "r_bits": "3f800000",
+            "g_bits": "00000000",
+            "b_bits": "00000000",
+            "a_bits": "3f800000"
+          }
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "00000000-0000-0000-0000-000000000000",
+          "r_bits": "3f800000",
+          "g_bits": "3f800000",
+          "b_bits": "3f800000",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "3f800000",
+          "repeat_v_bits": "3f800000",
+          "offset_u_bits": "00000000",
+          "offset_v_bits": "00000000",
+          "rotation_bits": "00000000",
+          "glow_bits": "00000000",
+          "bump": 0,
+          "shiny": 0,
+          "fullbright": false,
+          "media": false,
+          "mapping": 0
+        },
+        "faces": [
+          {
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "3f800000",
+            "b_bits": "3f800000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 0
+          },
+          {
+            "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "00000000",
+            "b_bits": "00000000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 1
+          },
+          {
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "3f800000",
+            "b_bits": "3f800000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 3
+          },
+          {
+            "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "00000000",
+            "b_bits": "00000000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 4
+          }
+        ],
+        "again_hex": "00112233445566778899aabbccddeeff09112233445566778899aabbccddeeff0000000000001200ffff00000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/texture-all-fields",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-all-fields.bin",
+      "params": {
+        "build": true,
+        "max_faces": 45,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "default": {
+          "r_bits": "3f48c8ca",
+          "g_bits": "3ec8c8ca",
+          "b_bits": "3e48c8ca",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "40000000",
+          "repeat_v_bits": "3f000000",
+          "offset_u_bits": "3e800000",
+          "offset_v_bits": "bf000000",
+          "rotation_bits": "3f800000",
+          "glow_bits": "3e800000",
+          "bump": 5,
+          "shiny": 128,
+          "fullbright": true,
+          "media": true,
+          "mapping": 2,
+          "material_id": "01020304-0506-0708-090a-0b0c0d0e0f10"
+        },
+        "faces": [
+          {
+            "index": 2,
+            "texture_id": "aabbccdd-eeff-0011-2233-445566778899",
+            "r_bits": "3e800000",
+            "g_bits": "3f000000",
+            "b_bits": "3f400000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "40400000",
+            "repeat_v_bits": "40800000",
+            "offset_u_bits": "3dcccccd",
+            "offset_v_bits": "be4ccccd",
+            "rotation_bits": "40000000",
+            "glow_bits": "3f000000",
+            "bump": 3,
+            "shiny": 192,
+            "fullbright": false,
+            "media": false,
+            "mapping": 4,
+            "material_id": "ffeeddcc-bbaa-9988-7766-554433221100"
+          }
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "01020304-0506-0708-090a-0b0c0d0e0f10",
+          "r_bits": "3f48c8ca",
+          "g_bits": "3ec8c8ca",
+          "b_bits": "3e48c8ca",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "40000000",
+          "repeat_v_bits": "3f000000",
+          "offset_u_bits": "3e800100",
+          "offset_v_bits": "bf000100",
+          "rotation_bits": "3f7ffda0",
+          "glow_bits": "3e7cfcfe",
+          "bump": 5,
+          "shiny": 128,
+          "fullbright": true,
+          "media": true,
+          "mapping": 2
+        },
+        "faces": [
+          {
+            "texture_id": "aabbccdd-eeff-0011-2233-445566778899",
+            "material_id": "ffeeddcc-bbaa-9988-7766-554433221100",
+            "r_bits": "3e7cfcfe",
+            "g_bits": "3efeff00",
+            "b_bits": "3f3fbfc0",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "40400000",
+            "repeat_v_bits": "40800000",
+            "offset_u_bits": "3dccd19a",
+            "offset_v_bits": "be4cc99a",
+            "rotation_bits": "3ffffda0",
+            "glow_bits": "3efeff00",
+            "bump": 3,
+            "shiny": 192,
+            "fullbright": false,
+            "media": false,
+            "mapping": 4,
+            "index": 2
+          }
+        ],
+        "again_hex": "00112233445566778899aabbccddeeff04aabbccddeeff0011223344556677889900379bcd0004c080400000000000400400004040000000003f040000804000002004cd0c0000c00467e6005f1404be2800a504c300030404003f047f000102030405060708090a0b0c0d0e0f1004ffeeddccbbaa9988776655443322110000"
+      }
+    },
+    {
+      "id": "bytes/texture-face-40",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-face-40.bin",
+      "params": {
+        "build": true,
+        "max_faces": 45,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "faces": [
+          {
+            "index": 40,
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00"
+          }
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "00000000-0000-0000-0000-000000000000",
+          "r_bits": "3f800000",
+          "g_bits": "3f800000",
+          "b_bits": "3f800000",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "3f800000",
+          "repeat_v_bits": "3f800000",
+          "offset_u_bits": "00000000",
+          "offset_v_bits": "00000000",
+          "rotation_bits": "00000000",
+          "glow_bits": "00000000",
+          "bump": 0,
+          "shiny": 0,
+          "fullbright": false,
+          "media": false,
+          "mapping": 0
+        },
+        "faces": [
+          {
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "3f800000",
+            "b_bits": "3f800000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 40
+          }
+        ],
+        "again_hex": "00112233445566778899aabbccddeeffa08080808000112233445566778899aabbccddeeff000000000000000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/texture-max-9",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-max-9.bin",
+      "params": {
+        "build": true,
+        "max_faces": 9,
+        "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "faces": [
+          {
+            "index": 8,
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00"
+          },
+          {
+            "index": 12,
+            "texture_id": "aabbccdd-eeff-0011-2233-445566778899"
+          }
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "texture-entry",
+        "default": {
+          "texture_id": "00112233-4455-6677-8899-aabbccddeeff",
+          "material_id": "00000000-0000-0000-0000-000000000000",
+          "r_bits": "3f800000",
+          "g_bits": "3f800000",
+          "b_bits": "3f800000",
+          "a_bits": "3f800000",
+          "repeat_u_bits": "3f800000",
+          "repeat_v_bits": "3f800000",
+          "offset_u_bits": "00000000",
+          "offset_v_bits": "00000000",
+          "rotation_bits": "00000000",
+          "glow_bits": "00000000",
+          "bump": 0,
+          "shiny": 0,
+          "fullbright": false,
+          "media": false,
+          "mapping": 0
+        },
+        "faces": [
+          {
+            "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+            "material_id": "00000000-0000-0000-0000-000000000000",
+            "r_bits": "3f800000",
+            "g_bits": "3f800000",
+            "b_bits": "3f800000",
+            "a_bits": "3f800000",
+            "repeat_u_bits": "3f800000",
+            "repeat_v_bits": "3f800000",
+            "offset_u_bits": "00000000",
+            "offset_v_bits": "00000000",
+            "rotation_bits": "00000000",
+            "glow_bits": "00000000",
+            "bump": 0,
+            "shiny": 0,
+            "fullbright": false,
+            "media": false,
+            "mapping": 0,
+            "index": 8
+          }
+        ],
+        "again_hex": "00112233445566778899aabbccddeeff8200112233445566778899aabbccddeeff000000000000000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "bytes/texture-short",
+      "family": "bytes",
+      "format": "texture-entry",
+      "file": "bytes/texture-short.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "texture-entry",
+        "default": null,
+        "faces": [],
+        "again_hex": ""
+      }
+    },
+    {
+      "id": "bytes/extra-none",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-none.bin",
+      "params": {
+        "build": true
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": null,
+        "sculpt": null,
+        "again_hex": "00"
+      }
+    },
+    {
+      "id": "bytes/extra-flexible",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-flexible.bin",
+      "params": {
+        "build": true,
+        "flexible": {
+          "softness": 3,
+          "tension_bits": "40000000",
+          "drag_bits": "3f000000",
+          "gravity_bits": "3f800000",
+          "wind_bits": "3f4ccccd",
+          "force_bits": [
+            "3f800000",
+            "c0000000",
+            "3f000000"
+          ]
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": {
+          "softness": 3,
+          "tension_bits": "40000000",
+          "drag_bits": "3f000000",
+          "gravity_bits": "3f800000",
+          "wind_bits": "3f4ccccd",
+          "force_bits": [
+            "3f800000",
+            "c0000000",
+            "3f000000"
+          ]
+        },
+        "light": null,
+        "light_image": null,
+        "sculpt": null,
+        "again_hex": "0110001000000094856e080000803f000000c00000003f"
+      }
+    },
+    {
+      "id": "bytes/extra-light",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-light.bin",
+      "params": {
+        "build": true,
+        "light": {
+          "r_bits": "3f800000",
+          "g_bits": "3f008081",
+          "b_bits": "3e808081",
+          "a_bits": "3f800000",
+          "intensity_bits": "3f000000",
+          "radius_bits": "40a00000",
+          "cutoff_bits": "3fa00000",
+          "falloff_bits": "3e800000"
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": {
+          "r_bits": "3f800000",
+          "g_bits": "3f008081",
+          "b_bits": "3e808081",
+          "a_bits": "3f800000",
+          "intensity_bits": "3efeff00",
+          "radius_bits": "40a00000",
+          "cutoff_bits": "3fa00000",
+          "falloff_bits": "3e800000"
+        },
+        "light_image": null,
+        "sculpt": null,
+        "again_hex": "01200010000000ff80407f0000a0400000a03f0000803e"
+      }
+    },
+    {
+      "id": "bytes/extra-light-image",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-light-image.bin",
+      "params": {
+        "build": true,
+        "light_image": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "params_bits": [
+            "3f000000",
+            "3f800000",
+            "bf800000"
+          ]
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "params_bits": [
+            "3f000000",
+            "3f800000",
+            "bf800000"
+          ]
+        },
+        "sculpt": null,
+        "again_hex": "0140001c000000112233445566778899aabbccddeeff000000003f0000803f000080bf"
+      }
+    },
+    {
+      "id": "bytes/extra-sculpt-sphere",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-sculpt-sphere.bin",
+      "params": {
+        "build": true,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 1
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": null,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 1,
+          "type": 1,
+          "invert": false,
+          "mirror": false
+        },
+        "again_hex": "01300011000000112233445566778899aabbccddeeff0001"
+      }
+    },
+    {
+      "id": "bytes/extra-sculpt-mesh",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-sculpt-mesh.bin",
+      "params": {
+        "build": true,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 5
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": null,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 5,
+          "type": 5,
+          "invert": false,
+          "mirror": false
+        },
+        "again_hex": "01600011000000112233445566778899aabbccddeeff0005"
+      }
+    },
+    {
+      "id": "bytes/extra-sculpt-flags",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-sculpt-flags.bin",
+      "params": {
+        "build": true,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 193
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": null,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 193,
+          "type": 1,
+          "invert": true,
+          "mirror": true
+        },
+        "again_hex": "01300011000000112233445566778899aabbccddeeff00c1"
+      }
+    },
+    {
+      "id": "bytes/extra-sculpt-mesh-invert",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-sculpt-mesh-invert.bin",
+      "params": {
+        "build": true,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 69
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": null,
+        "light": null,
+        "light_image": null,
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 69,
+          "type": 5,
+          "invert": true,
+          "mirror": false
+        },
+        "again_hex": "01600011000000112233445566778899aabbccddeeff0045"
+      }
+    },
+    {
+      "id": "bytes/extra-all",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-all.bin",
+      "params": {
+        "build": true,
+        "flexible": {
+          "softness": 3,
+          "tension_bits": "40000000",
+          "drag_bits": "3f000000",
+          "gravity_bits": "3f800000",
+          "wind_bits": "3f4ccccd",
+          "force_bits": [
+            "3f800000",
+            "c0000000",
+            "3f000000"
+          ]
+        },
+        "light": {
+          "r_bits": "3f800000",
+          "g_bits": "3f008081",
+          "b_bits": "3e808081",
+          "a_bits": "3f800000",
+          "intensity_bits": "3f000000",
+          "radius_bits": "40a00000",
+          "cutoff_bits": "3fa00000",
+          "falloff_bits": "3e800000"
+        },
+        "light_image": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "params_bits": [
+            "3f000000",
+            "3f800000",
+            "bf800000"
+          ]
+        },
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 1
+        }
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": {
+          "softness": 3,
+          "tension_bits": "40000000",
+          "drag_bits": "3f000000",
+          "gravity_bits": "3f800000",
+          "wind_bits": "3f4ccccd",
+          "force_bits": [
+            "3f800000",
+            "c0000000",
+            "3f000000"
+          ]
+        },
+        "light": {
+          "r_bits": "3f800000",
+          "g_bits": "3f008081",
+          "b_bits": "3e808081",
+          "a_bits": "3f800000",
+          "intensity_bits": "3efeff00",
+          "radius_bits": "40a00000",
+          "cutoff_bits": "3fa00000",
+          "falloff_bits": "3e800000"
+        },
+        "light_image": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "params_bits": [
+            "3f000000",
+            "3f800000",
+            "bf800000"
+          ]
+        },
+        "sculpt": {
+          "texture_id": "11223344-5566-7788-99aa-bbccddeeff00",
+          "type_byte": 1,
+          "type": 1,
+          "invert": false,
+          "mirror": false
+        },
+        "again_hex": "0410001000000094856e080000803f000000c00000003f200010000000ff80407f0000a0400000a03f0000803e40001c000000112233445566778899aabbccddeeff000000003f0000803f000080bf300011000000112233445566778899aabbccddeeff0001"
+      }
+    },
+    {
+      "id": "bytes/extra-skip-unknown",
+      "family": "bytes",
+      "format": "extra-params",
+      "file": "bytes/extra-skip-unknown.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "extra-params",
+        "flexible": {
+          "softness": 3,
+          "tension_bits": "40000000",
+          "drag_bits": "3f000000",
+          "gravity_bits": "3f800000",
+          "wind_bits": "3f4ccccd",
+          "force_bits": [
+            "3f800000",
+            "c0000000",
+            "3f000000"
+          ]
+        },
+        "light": null,
+        "light_image": null,
+        "sculpt": null,
+        "again_hex": "0110001000000094856e080000803f000000c00000003f"
+      }
     }
   ]
 }

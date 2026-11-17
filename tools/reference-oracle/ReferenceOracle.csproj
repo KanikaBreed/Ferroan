@@ -29,5 +29,10 @@
       <Private>true</Private>
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
+    <!-- TextureEntry and extra parameters live in the client library, not in Types. -->
+    <ProjectReference Include="$(FerroanRef)/libopenmetaverse/OpenMetaverse/OpenMetaverse.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
   </ItemGroup>
 </Project>
