@@ -45,7 +45,7 @@ A passing build does not mean a viewer can log in or that a script behaves as it
 - docs/PLAN holds the phases and gates; docs/DECISIONS the settled decisions.
 - docs/PORTING holds the licence and attribution rules for ported code.
 
-The repository is private for now. CI runs the checks on Linux, Windows and macOS.
+The repository is public. CI runs the checks on Linux, Windows and macOS.
 
 ## Contributions
 

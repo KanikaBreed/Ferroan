@@ -6,7 +6,7 @@ Settled decisions. To change one, open a PR that edits this file and says why.
 | --- | --- | --- | --- |
 | D1 | Do the SLua engine plan in today's C# server first? | Yes. Run Linden's SLua engine in Tranquillity, and keep using C# until Ferroan is stable | Phase 4 reuses that work's C interface and conformance suite |
 | D2 | Mixed grids or one big switch | Dual support until the switch: Rust and C# pieces run on the same grid | Every phase keeps wire compatibility with the C# server |
-| D3 | Where the code lives | This repository, run by the team | Private for now |
+| D3 | Where the code lives | This repository, run by the team | Public since 17 November 2026 |
 | D4 | Licence | GPL-3.0-or-later for the project; each ported or copied file keeps its original notices and references | Changed from MPL-2.0 on 17 November 2026 so Aurora Viewer's Rust code can be reused. BSD, MPL-2.0, Apache-2.0, MIT and LGPL-2.1 sources may all be combined into a GPL-3.0 work. Ferroan code cannot flow back into Tranquillity's BSD/MPL tree ([PORTING.md](PORTING.md)) |
 | D5 | Team | Volunteers | Calendar time depends on hours given ([PLAN.md](PLAN.md)) |
 | D6 | Async runtime and HTTP stack | tokio for networking and services; axum and hyper for HTTP servers, reqwest as client. The region frame loop, Jolt and the SLua engine run on their own threads | tokio is the most widely used runtime, and axum, hyper, reqwest and sqlx build on it. A frame loop needs a fixed tick, and both native libraries expect a thread of their own |
