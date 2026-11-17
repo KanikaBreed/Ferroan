@@ -6,7 +6,7 @@ The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranqui
 
 All paths are scratch paths. Never build in `~/Git/reference`.
 
-1. Clone and build the pinned revision. The NuGet restore uses the OpenSim-NGC GitHub Packages feed; a machine that has built Tranquillity before has the packages cached, a clean machine or CI needs `GITHUB_ACTOR` and `GITHUB_TOKEN` (Tranquillity's `Docs/BUILDING.md`).
+1. Clone and build the pinned revision. The NuGet restore uses nuget.org only and needs no credentials: Tranquillity dropped its GitHub Packages feed in `a4ebd66006` (29 September 2026). Its `Docs/BUILDING.md` still describes the old feed and its `GITHUB_TOKEN`; ignore that part.
 
    ```sh
    W=~/Git/work/ferroan/tranquillity-live
