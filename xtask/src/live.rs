@@ -565,6 +565,7 @@ struct Started {
     public_port: u16,
     password: String,
     log: PathBuf,
+    tracked: crate::grid_state::Tracked,
 }
 
 #[cfg(target_os = "linux")]
@@ -574,6 +575,7 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
             "the harness is already up (pid {pid}); cargo xtask live down stops it"
         ));
     }
+    let _state = crate::grid_state::claim()?;
     let assets = if ferroan_assets {
         ensure_region_built()?;
         Some(crate::assets::start_persistent()?)
@@ -638,6 +640,7 @@ fn run_linux(scenario: &str) -> Result<String, String> {
             pid
         ));
     }
+    let _state = crate::grid_state::claim()?;
     let mut started = start_region(true, None, true)?;
     let outcome = run_scenarios(&mut started, scenario);
     let _ = stop_started(&mut started);
@@ -656,12 +659,7 @@ pub(crate) fn run_against_assets(asset_uri: &str, scenario: &str) -> Result<Stri
     if ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!("unknown scenario {scenario}"));
     }
-    if let Some(pid) = standalone_is_up()? {
-        return Err(format!(
-            "the region is already up (pid {}); cargo xtask live down stops it",
-            pid
-        ));
-    }
+    // The asset comparison owns the shared process-state claim already.
     let mut started = start_region(true, Some(asset_uri), true)?;
     let outcome = run_scenarios(&mut started, scenario);
     let _ = stop_started(&mut started);
@@ -677,6 +675,121 @@ pub(crate) fn run_against_assets(asset_uri: &str, scenario: &str) -> Result<Stri
 #[cfg(target_os = "linux")]
 pub(crate) fn ensure_region_built() -> Result<(), String> {
     build_linux().map(|_| ())
+}
+
+/// Use Cargo's artifact path, including configured target directories/profiles.
+#[cfg(target_os = "linux")]
+pub(crate) fn build_binary(name: &str) -> Result<PathBuf, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let log = repo_root()
+        .join(".scratch")
+        .join(format!("cargo-build-{name}.log"));
+    fs::create_dir_all(repo_root().join(".scratch"))
+        .map_err(|error| format!("could not create Cargo log directory: {error}"))?;
+    let stderr =
+        File::create(&log).map_err(|error| format!("could not create Cargo log: {error}"))?;
+    let mut child = Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            name,
+            "--bin",
+            name,
+            "--locked",
+            "--message-format=json",
+        ])
+        .current_dir(repo_root())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .map_err(|error| format!("could not build {name}: {error}"))?;
+    let mut messages = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .ok_or("Cargo stdout was not piped")?
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut messages);
+    if read.is_err() || messages.len() > 16 * 1024 * 1024 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("could not read Cargo artifacts within the 16 MiB bound".to_owned());
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not wait for Cargo: {error}"))?;
+    if !status.success() {
+        return Err(format!("cargo build {name} failed; see {}", log.display()));
+    }
+    artifact_executable(&messages, name)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn artifact_executable(messages: &[u8], name: &str) -> Result<PathBuf, String> {
+    if messages.len() > 16 * 1024 * 1024 {
+        return Err("Cargo artifact output exceeds 16 MiB".to_owned());
+    }
+    let mut executable = None;
+    for line in messages
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let value: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|error| format!("invalid Cargo artifact message: {error}"))?;
+        if value["reason"] == "compiler-artifact"
+            && value["target"]["name"] == name
+            && value["target"]["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+            && let Some(path) = value["executable"].as_str()
+        {
+            executable = Some(PathBuf::from(path));
+        }
+    }
+    executable.ok_or_else(|| format!("Cargo did not report an executable for {name}"))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_tracked(
+    command: &mut Command,
+    binary: &Path,
+    args: &[&str],
+    cwd: &Path,
+) -> Result<(std::process::Child, crate::grid_state::Tracked), String> {
+    let launch = crate::grid_state::prepare_spawn(binary, args, cwd)?;
+    launch.configure(command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            launch.cancel()?;
+            return Err(format!("could not start {}: {error}", binary.display()));
+        }
+    };
+    match launch.record(&child) {
+        Ok(tracked) => Ok((child, tracked)),
+        Err(error) => {
+            stop_child(&mut child);
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                launch.cancel()?;
+            }
+            Err(error)
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn is_sqlite_file(name: &str) -> bool {
+    [
+        ".db",
+        ".db-shm",
+        ".db-wal",
+        ".db-journal",
+        ".sqlite",
+        ".sqlite3",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
 }
 
 #[cfg(target_os = "linux")]
@@ -945,7 +1058,7 @@ fn stop_started(started: &mut Started) -> Result<(), String> {
         let _ = started.child.wait();
     }
     let _ = fs::remove_file(state_path());
-    Ok(())
+    started.tracked.forget()
 }
 
 #[cfg(target_os = "linux")]
@@ -954,12 +1067,7 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
-    if let Some(pid) = standalone_is_up()? {
-        return Err(format!(
-            "the region is already up (pid {}); cargo xtask live down stops it",
-            pid
-        ));
-    }
+    // Top-level callers claim process state before starting any child.
     let publish = publish_dir();
     require_under_scratch(&publish)?;
     copy_examples(&publish)?;
@@ -1010,18 +1118,20 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = run.join("region.log");
     println!("live: starting the region on 127.0.0.1:{public_port}");
-    let mut child = spawn_region(&binary, &publish, &config, &log, console)?;
+    let (mut child, tracked) = spawn_region(&binary, &publish, &config, &log, console)?;
     let waited = match wait_region(&mut child, &log, START_TIMEOUT) {
         Ok(waited) => waited,
         Err(error) => {
             stop_child(&mut child);
+            tracked.forget()?;
             return Err(error);
         }
     };
     match waited {
-        Waited::Ready => finish_start(child, &log, public_port, private_port, &password),
+        Waited::Ready => finish_start(child, tracked, &log, public_port, private_port, &password),
         Waited::Timeout => {
             stop_child(&mut child);
+            tracked.forget()?;
             Err(format!(
                 "the region did not enable logins\n{}",
                 log_tail(&log, &password)
@@ -1037,6 +1147,7 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
 #[cfg(target_os = "linux")]
 fn finish_start(
     mut child: std::process::Child,
+    tracked: crate::grid_state::Tracked,
     log: &Path,
     public_port: u16,
     private_port: u16,
@@ -1046,6 +1157,7 @@ fn finish_start(
     let checked = process_sockets(pid).and_then(|sockets| loopback_report(&sockets, public_port));
     if let Err(error) = checked {
         stop_child(&mut child);
+        tracked.forget()?;
         return Err(format!("{error}\n{}", log_tail(log, password)));
     }
     if let Err(error) = write_state(
@@ -1058,6 +1170,7 @@ fn finish_start(
         },
     ) {
         stop_child(&mut child);
+        tracked.forget()?;
         return Err(error);
     }
     let stdin = child.stdin.take();
@@ -1067,15 +1180,16 @@ fn finish_start(
         public_port,
         password: password.to_owned(),
         log: log.to_owned(),
+        tracked,
     })
 }
 
 #[cfg(target_os = "linux")]
 fn down_linux() -> Result<String, String> {
-    let grid_result = crate::grid_state::down();
-    let standalone_result = down_standalone();
-    grid_result?;
-    standalone_result?;
+    // An active controller owns standalone and asset children too. Do not
+    // bypass its refusal through the older standalone state below.
+    crate::grid_state::down()?;
+    down_standalone()?;
     Ok("live: down".to_string())
 }
 
@@ -1324,11 +1438,7 @@ fn delete_databases(publish: &Path) -> Result<(), String> {
             entry.map_err(|error| format!("could not read {}: {error}", publish.display()))?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".db")
-            || name.ends_with(".db-shm")
-            || name.ends_with(".db-wal")
-            || name.ends_with(".db-journal")
-        {
+        if is_sqlite_file(&name) {
             fs::remove_file(entry.path())
                 .map_err(|error| format!("could not remove {}: {error}", entry.path().display()))?;
         }
@@ -1343,7 +1453,7 @@ fn spawn_region(
     config: &Path,
     log: &Path,
     console: bool,
-) -> Result<std::process::Child, String> {
+) -> Result<(std::process::Child, crate::grid_state::Tracked), String> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
@@ -1356,28 +1466,26 @@ fn spawn_region(
     let err_file = log_file
         .try_clone()
         .map_err(|error| format!("could not open {}: {error}", log.display()))?;
+    let config_arg = config.to_str().ok_or("region config path is not UTF-8")?;
+    let mut args = vec!["--inidirectory", config_arg];
     let mut command = Command::new(binary);
-    command
-        .current_dir(publish)
-        .arg("--inidirectory")
-        .arg(config);
+    command.current_dir(publish);
     if console {
         // Foreground keeps the console prompt, so `live run` can create the
         // second account. `--console` defaults to local, which reads keys and
         // throws when stdin is a pipe, and that default is applied after the
         // ini. `basic` uses ReadLine. `--background` is what `live up` uses.
-        command.args(["--console", "basic"]).stdin(Stdio::piped());
+        args.extend(["--console", "basic"]);
+        command.stdin(Stdio::piped());
     } else {
-        command.arg("--background").stdin(Stdio::null());
+        args.push("--background");
+        command.stdin(Stdio::null());
     }
     command
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(err_file));
-    let child = command
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
-    Ok(child)
+    command.args(&args).process_group(0);
+    spawn_tracked(&mut command, binary, &args, publish)
 }
 
 enum Waited {
@@ -1558,9 +1666,37 @@ fn parse_process_start_time(stat: &str) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn stop_child(child: &mut std::process::Child) {
+    // This handle owns a child launched as its process-group leader. Unlike
+    // stop_pid (which validates a saved standalone region PID), this cleanup
+    // also serves GridServer and ferroan-robust startup failures. An unreaped
+    // child PID cannot be reused for an unrelated process.
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
     let pid = child.id();
-    let _ = stop_pid(pid);
-    let _ = child.wait();
+    let _ = Command::new("kill")
+        .args(["-TERM", &format!("-{pid}")])
+        .status();
+    let started = Instant::now();
+    while started.elapsed() < STOP_TIMEOUT {
+        match child.try_wait() {
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Ok(Some(_)) | Err(_) => return,
+        }
+    }
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{pid}")])
+        .status();
+    // Also target the owned child if signaling its group failed. Preserve its
+    // recorded identity if even KILL cannot finish it within this bound.
+    let _ = child.kill();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        match child.try_wait() {
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Ok(Some(_)) | Err(_) => return,
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1620,7 +1756,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn write_secret(path: &Path, text: &str) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1629,10 +1765,14 @@ pub(crate) fn write_secret(path: &Path, text: &str) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .open(path)
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("could not restrict {}: {error}", path.display()))?;
+    file.set_len(0)
+        .map_err(|error| format!("could not truncate {}: {error}", path.display()))?;
     file.write_all(text.as_bytes())
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
     Ok(())
@@ -1765,6 +1905,55 @@ fn output_tail(output: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn owned_child_cleanup_reaps_a_non_region_process_group() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("/bin/sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        stop_child(&mut child);
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(process_start_time(pid).is_none());
+        // Repeated cleanup of a reaped handle never signals a reused PID.
+        stop_child(&mut child);
+    }
+
+    #[test]
+    fn cargo_artifact_selects_the_built_binary_in_a_custom_target_directory() {
+        let messages = br#"{"reason":"compiler-artifact","target":{"name":"ferroan-robust","kind":["lib"]},"executable":null}
+{"reason":"compiler-artifact","target":{"name":"ferroan-robust","kind":["bin"]},"executable":"/custom/build/debug/ferroan-robust"}
+{"reason":"build-finished","success":true}
+"#;
+        assert_eq!(
+            artifact_executable(messages, "ferroan-robust").unwrap(),
+            PathBuf::from("/custom/build/debug/ferroan-robust")
+        );
+        assert!(artifact_executable(messages, "ferroan-region").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rewriting_a_secret_restricts_existing_permissions_before_writing() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = repo_root()
+            .join(".scratch")
+            .join(format!("secret-mode-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "old longer value").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_secret(&path, "new").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn the_region_ini_has_the_const_keys_and_the_report_omits_the_password() {

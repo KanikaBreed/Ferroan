@@ -61,6 +61,7 @@ struct Evidence {
 }
 
 fn select(records: &[Record]) -> Result<Evidence, String> {
+    let provenance = crate::arrival_fixtures::csharp_provenance(records)?;
     let mut trace = Vec::new();
     let mut order = Vec::new();
     let mut outgoing = Vec::new();
@@ -158,6 +159,7 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
     }
     let manifest = json!({
         "tranquillity": PIN,
+        "provenance": provenance,
         "source": "cargo xtask live run login grid",
         "redaction": "ferroan_protocol::scrub_datagram (P0.10d); no further field normalization",
         "outgoing_sequence": outgoing,
@@ -226,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn extractor_refuses_missing_csharp_evidence() {
+    fn extractor_refuses_a_trace_without_csharp_channel_evidence() {
         let records = read_capture(include_bytes!("../../fixtures/circuit/sequence.cap")).unwrap();
         let without_logout: Vec<_> = records
             .into_iter()
@@ -252,6 +254,14 @@ mod tests {
         );
         assert!(
             select(&without_logout)
+                .err()
+                .unwrap()
+                .contains("no C# AgentMovementComplete")
+        );
+        let mut with_csharp_arrival = crate::arrival_fixtures::tests::source_records();
+        with_csharp_arrival.extend(without_logout);
+        assert!(
+            select(&with_csharp_arrival)
                 .err()
                 .unwrap()
                 .contains("no logout-reply")

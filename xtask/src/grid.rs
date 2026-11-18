@@ -384,18 +384,20 @@ struct Grid {
     robust: Option<Proc>,
     home: Option<Proc>,
     neighbour: Option<Proc>,
-    proxies: Option<tokio::runtime::Runtime>,
+    proxies: Option<crate::live_proxy::Proxies>,
     passwords: Vec<String>,
     _state: crate::grid_state::Run,
 }
 
 #[cfg(target_os = "linux")]
 impl Grid {
-    fn stop(&mut self) {
+    fn stop(&mut self) -> Result<(), String> {
         for slot in [&mut self.home, &mut self.neighbour, &mut self.robust] {
             drop(slot.take());
         }
-        drop(self.proxies.take());
+        self.proxies
+            .take()
+            .map_or(Ok(()), |proxies| proxies.finish())
     }
 }
 
@@ -424,7 +426,9 @@ fn stop_child(child: &mut Child) {
 #[cfg(target_os = "linux")]
 impl Drop for Grid {
     fn drop(&mut self) {
-        self.stop();
+        if let Err(error) = self.stop() {
+            eprintln!("live: {error}");
+        }
     }
 }
 
@@ -600,7 +604,13 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &home_log,
         ferroan,
     );
-    grid.stop();
+    let cleanup = grid.stop();
+    if let Err(error) = &report
+        && let Err(cleanup) = &cleanup
+    {
+        return Err(format!("{error}\n{cleanup}"));
+    }
+    cleanup?;
     let report = report?;
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
     if ferroan {
@@ -667,38 +677,8 @@ fn run_bot(
 #[cfg(target_os = "linux")]
 fn start_proxies(
     binds: &[(SocketAddr, SocketAddr, PathBuf)],
-) -> Result<tokio::runtime::Runtime, String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("could not start tokio: {error}"))?;
-    runtime.block_on(async {
-        for (listen, upstream, path) in binds {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-            }
-            let listener = tokio::net::TcpListener::bind(*listen)
-                .await
-                .map_err(|error| format!("could not bind the proxy on {listen}: {error}"))?;
-            let upstream = *upstream;
-            let path = path.clone();
-            tokio::spawn(async move {
-                if let Err(error) = ferroan_capture::serve_on_with_timeout(
-                    listener,
-                    upstream,
-                    &path,
-                    Duration::from_secs(70),
-                )
-                .await
-                {
-                    eprintln!("live: grid proxy stopped: {error}");
-                }
-            });
-        }
-        Ok::<(), String>(())
-    })?;
-    Ok(runtime)
+) -> Result<crate::live_proxy::Proxies, String> {
+    crate::live_proxy::Proxies::start(binds).map(|(_, proxies)| proxies)
 }
 
 #[cfg(target_os = "linux")]
@@ -826,18 +806,7 @@ fn start_region(
     passwords: &[String],
 ) -> Result<Proc, String> {
     let binary = if spec.ferroan {
-        let output = Command::new("cargo")
-            .args(["build", "-p", "ferroan-region", "--locked"])
-            .current_dir(crate::repo_root())
-            .output()
-            .map_err(|error| format!("could not build ferroan-region: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "could not build ferroan-region\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        crate::repo_root().join("target/debug/ferroan-region")
+        live::build_binary("ferroan-region")?
     } else {
         publish.join("OpenSim.Server.RegionServer")
     };
@@ -916,15 +885,19 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
         .map_err(|error| format!("could not create {}: {error}", cwd.display()))?;
     // Plugin loading uses Assembly.LoadFrom with a path relative to the
     // working directory, and configDir() is that same directory. Link the
-    // published tree. Regions and Estates stay real directories: both regions
-    // would otherwise write one Regions.ini and one estate store.
+    // published assemblies/configuration, excluding mutable standalone data.
+    // SQLite opens relative connection strings in each region's own cwd.
     let entries = fs::read_dir(publish)
         .map_err(|error| format!("could not read {}: {error}", publish.display()))?;
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("could not read {}: {error}", publish.display()))?;
         let name = entry.file_name();
-        if name == "Regions" || name == "Estates" {
+        if matches!(
+            name.to_str(),
+            Some("Regions" | "Estates" | "assetcache" | "ScriptEngines")
+        ) || live::is_sqlite_file(&name.to_string_lossy())
+        {
             continue;
         }
         link_path(&cwd.join(name), &entry.path())?;
@@ -1132,6 +1105,52 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn regions_do_not_link_standalone_databases_or_sqlite_sidecars() {
+        let root = crate::repo_root()
+            .join(".scratch")
+            .join(format!("region-cwd-{}", uuid::Uuid::new_v4()));
+        let publish = root.join("publish");
+        for (directory, file) in [("inventory", "Libraries.xml"), ("assets", "AssetSets.xml")] {
+            fs::create_dir_all(publish.join(directory)).unwrap();
+            fs::write(publish.join(directory).join(file), b"test").unwrap();
+        }
+        fs::write(publish.join("RegionServerDefaults.ini"), b"test").unwrap();
+        let names = [
+            "OpenSim.db",
+            "OpenSim.db-wal",
+            "OpenSim.db-shm",
+            "OpenSim.db-journal",
+            "auth.db",
+            "inventory.db",
+        ];
+        for name in names {
+            fs::write(publish.join(name), b"standalone state").unwrap();
+        }
+        for region in ["home", "neighbour"] {
+            let cwd = root.join(region);
+            prepare_region_cwd(&cwd, &publish, &root).unwrap();
+            for name in names {
+                assert!(
+                    cwd.join(name).symlink_metadata().is_err(),
+                    "{region}/{name}"
+                );
+            }
+            fs::write(cwd.join("OpenSim.db"), region).unwrap();
+        }
+        assert_eq!(fs::read(root.join("home/OpenSim.db")).unwrap(), b"home");
+        assert_eq!(
+            fs::read(root.join("neighbour/OpenSim.db")).unwrap(),
+            b"neighbour"
+        );
+        assert_eq!(
+            fs::read(publish.join("OpenSim.db")).unwrap(),
+            b"standalone state"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn sample_region<'a>(capture: Option<&'a str>) -> RegionIni<'a> {
         RegionIni {

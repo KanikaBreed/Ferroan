@@ -13,6 +13,7 @@ cargo xtask live circuit-fixtures .scratch/live/grid/capture-udp.cap
 ```
 
 The generator validates the original selected packets with the existing codec
+and requires the matching login's exact pinned C# channel/version
 before applying exactly the P0.10d `scrub_datagram` identity folding. Agent and
 session UUIDs become UUIDs ending in `1` and `2`; the circuit code becomes `1`.
 The region name, estate owner, region ID, generated cache ID, texture UUIDs,

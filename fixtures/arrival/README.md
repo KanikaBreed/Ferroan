@@ -16,7 +16,8 @@ cargo xtask live arrival-fixtures .scratch/live/grid/capture-udp.cap
 original record indexes, envelopes and the decoded arrival fields.
 
 The generator checks the original datagrams before redaction and requires a
-matching agent, session and circuit code, the harness home region, and a reliable
+matching agent, session and circuit code, the harness home region, the exact
+pinned C# channel/version, and a reliable
 unencoded arrival after the request. It applies the existing P0.10d identity
 scrubber (agent/session UUIDs ending in 1/2, circuit code 1), then zeros only the
 arrival's timestamp bytes at offsets 74–77. Capture times are relative to the

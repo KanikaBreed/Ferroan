@@ -17,15 +17,11 @@ const EVENT_PATH: &str = "/CE/00000000-0000-4000-8000-000000000001";
 const SEED_PATH: &str = "/CAPS/000000000000400080000000000000020000/";
 
 pub fn generate(directory: &Path) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    File::open(directory.join("proxy-home.cap"))
-        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
-        .map_err(|error| format!("read CAPS capture: {error}"))?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("CAPS capture exceeds 64 MiB".to_string());
-    }
-    let records = read_capture(&bytes).map_err(|error| error.to_string())?;
-    let evidence = extract(&records)?;
+    let udp = read_records(&directory.join("capture-udp.cap"))?;
+    let provenance = crate::arrival_fixtures::csharp_provenance(&udp)?;
+    let records = read_records(&directory.join("proxy-home.cap"))?;
+    let mut evidence = extract(&records)?;
+    evidence.manifest["provenance"] = provenance;
     let target = crate::repo_root().join("fixtures/caps");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     for (name, bytes) in evidence.files {
@@ -43,6 +39,17 @@ pub fn generate(directory: &Path) -> Result<String, String> {
         "caps fixtures: C# seed, URI seed, errors, OPTIONS and held empty poll captured"
             .to_string(),
     )
+}
+
+fn read_records(path: &Path) -> Result<Vec<Record>, String> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|error| format!("read CAPS capture: {error}"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("CAPS capture exceeds 64 MiB".to_string());
+    }
+    read_capture(&bytes).map_err(|error| error.to_string())
 }
 
 struct Evidence {
@@ -254,6 +261,7 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
             "method": request.method, "path": if matches!(name, "empty-poll" | "events") { EVENT_PATH } else { SEED_PATH },
             "status": reply.status, "request_content_type": request.header("content-type"),
             "response_content_type": reply.header("content-type"), "elapsed_ms": elapsed,
+            "response_connection": reply.headers.get("connection"),
             "request_file": request_file, "response_file": response_file,
             "cors": cors,
         }));
@@ -284,9 +292,32 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         "source": "cargo xtask live run caps grid",
         "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
         "event_queue_url": EVENT_URL,
+        "event_queue_url_shape": event_url_shape(&event_url)?,
         "exchanges": selected,
     });
     Ok(Evidence { manifest, files })
+}
+
+fn event_url_shape(url: &str) -> Result<Value, String> {
+    let local = url
+        .strip_prefix("http://127.0.0.1:")
+        .ok_or("seed URL is not a local HTTP endpoint")?;
+    let (port, path) = local.split_once('/').ok_or("seed URL has no path")?;
+    if port.parse::<u16>().ok().is_none_or(|port| port == 0) {
+        return Err("seed URL has an invalid port".into());
+    }
+    let id = path.strip_prefix("CE/").ok_or("seed URL has no CE path")?;
+    let uuid = uuid::Uuid::parse_str(id).map_err(|_| "event path is not a UUID")?;
+    if uuid.to_string() != id {
+        return Err("event UUID is not lowercase hyphenated text".into());
+    }
+    Ok(json!({
+        "path_prefix": "/CE/",
+        "uuid_format": "hyphenated-lowercase",
+        "uuid_version": uuid.get_version_num(),
+        "uuid_variant": format!("{:?}", uuid.get_variant()),
+        "trailing_slash": path.ends_with('/'),
+    }))
 }
 
 struct Http {
@@ -416,6 +447,60 @@ impl Http {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generator_rejects_same_harness_rust_arrival_before_reading_http() {
+        use ferroan_protocol::msgs::AgentMovementComplete;
+        use ferroan_protocol::{Msg, build_packet, parse_packet};
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(format!("caps-provenance-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut records = crate::arrival_fixtures::tests::source_records();
+        let last = records.last_mut().unwrap();
+        let packet = parse_packet(&last.bytes).unwrap();
+        assert_eq!(packet.id, AgentMovementComplete::ID);
+        let mut movement = packet.decode::<AgentMovementComplete>().unwrap();
+        movement.sim_data.channel_version = b"Ferroan 0.1.0\0".to_vec();
+        build_packet(
+            &movement,
+            packet.sequence,
+            packet.reliable(),
+            false,
+            &[],
+            &mut last.bytes,
+        );
+        fs::write(
+            directory.join("capture-udp.cap"),
+            ferroan_capture::write_capture(&records).unwrap(),
+        )
+        .unwrap();
+        // No HTTP file exists. Reject provenance before parsing or emitting any
+        // fixture, even though agent, session, region and handle all match.
+        let result = generate(&directory);
+        fs::remove_dir_all(directory).unwrap();
+        assert!(result.unwrap_err().contains("pinned C# channel/version"));
+    }
+
+    #[test]
+    fn captured_event_url_shape_rejects_non_uuid_and_preserves_version() {
+        let shape =
+            event_url_shape("http://127.0.0.1:9000/CE/00000000-0000-4000-8000-000000000001")
+                .unwrap();
+        assert_eq!(shape["uuid_version"], 4);
+        assert_eq!(shape["uuid_variant"], "RFC4122");
+        let different =
+            event_url_shape("http://127.0.0.1:9000/CE/00000000-0000-1000-8000-000000000001")
+                .unwrap();
+        assert_eq!(different["uuid_version"], 1);
+        for url in [
+            "http://127.0.0.1:9000/CE/not-a-uuid",
+            "http://127.0.0.1:9000/CE/00000000-0000-4000-8000-000000000001/",
+            "http://127.0.0.1:0/CE/00000000-0000-4000-8000-000000000001",
+        ] {
+            assert!(event_url_shape(url).is_err());
+        }
+    }
 
     fn exchange(method: &str, path: &str, request_body: &str, response_body: &str) -> Vec<Record> {
         vec![

@@ -481,7 +481,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(query.status(), StatusCode::OK);
-        // Defaults, ordering and C# floating point formatting come from the capture.
+        // These fixtures retain captured values after identity normalization and
+        // serde_json reserialization. This compares our normalized JSON output;
+        // it does not establish the C# body's original whitespace/key order.
         assert_eq!(query.text().await.unwrap(), QUERY_RESPONSE.trim());
         let mut compressed = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         compressed.write_all(CREATE_REQUEST.as_bytes()).unwrap();

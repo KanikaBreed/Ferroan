@@ -10,8 +10,6 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
-use std::io::Write;
-#[cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
@@ -65,6 +63,7 @@ fn compare_linux() -> Result<String, String> {
             "the harness is already up (pid {pid}); run cargo xtask live down first"
         ));
     }
+    let _state = crate::grid_state::claim()?;
     live::ensure_region_built()?;
     let seed = seed_database()?;
     let csharp = run_side("csharp", &seed)?;
@@ -123,8 +122,9 @@ fn run_side(name: &str, seed: &Path) -> Result<SideReport, String> {
     let uri = format!("http://127.0.0.1:{proxy_port}");
     println!("live: assets {name} via {uri}");
     let report = live::run_against_assets(&uri, "assets");
-    drop(proxy);
+    let proxy_result = proxy.finish();
     stop_owned(&mut server);
+    proxy_result?;
     let report = report?;
     Ok(SideReport {
         report: format!("assets {name}:\n{report}"),
@@ -137,6 +137,7 @@ pub(crate) struct Owned {
     child: std::process::Child,
     stdin: Option<std::process::ChildStdin>,
     stop_on_drop: bool,
+    tracked: Option<crate::grid_state::Tracked>,
 }
 
 #[cfg(target_os = "linux")]
@@ -361,7 +362,7 @@ fn start_grid(database: &Path, port: u16, log: &Path, load: bool) -> Result<Owne
          StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
          ConnectionString = \"Data Source={db};Version=3;\"\n{loader}"
     );
-    write_secret(&ini_path, &ini)?;
+    live::write_secret(&ini_path, &ini)?;
     spawn_owned(
         &binary,
         &[
@@ -375,12 +376,13 @@ fn start_grid(database: &Path, port: u16, log: &Path, load: bool) -> Result<Owne
         binary.parent().unwrap_or(Path::new(".")),
         log,
         true,
+        true,
     )
 }
 
 #[cfg(target_os = "linux")]
 fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String> {
-    let binary = robust_binary()?;
+    let binary = live::build_binary("ferroan-robust")?;
     let run = live::scratch_run();
     let empty = run.join("grid-empty");
     fs::create_dir_all(&empty)
@@ -393,7 +395,7 @@ fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String>
          StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
          ConnectionString = \"Data Source={db};Version=3;\"\n"
     );
-    write_secret(&ini_path, &ini)?;
+    live::write_secret(&ini_path, &ini)?;
     spawn_owned(
         &binary,
         &[
@@ -405,31 +407,8 @@ fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String>
         &repo_root(),
         log,
         false,
+        true,
     )
-}
-
-#[cfg(target_os = "linux")]
-fn robust_binary() -> Result<PathBuf, String> {
-    let output = Command::new("cargo")
-        .args(["build", "-p", "ferroan-robust", "--locked"])
-        .current_dir(repo_root())
-        .output()
-        .map_err(|error| format!("could not build ferroan-robust: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cargo build -p ferroan-robust failed\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let debug = repo_root().join("target/debug/ferroan-robust");
-    let release = repo_root().join("target/release/ferroan-robust");
-    if debug.is_file() {
-        Ok(debug)
-    } else if release.is_file() {
-        Ok(release)
-    } else {
-        Err("ferroan-robust was not produced".to_string())
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -439,6 +418,7 @@ fn spawn_owned(
     cwd: &Path,
     log: &Path,
     pipe_stdin: bool,
+    track: bool,
 ) -> Result<Owned, String> {
     use std::os::unix::process::CommandExt;
     if let Some(parent) = log.parent() {
@@ -461,54 +441,50 @@ fn spawn_owned(
     } else {
         command.stdin(Stdio::null());
     }
-    let mut child = command
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
+    command.process_group(0);
+    let (mut child, tracked) = if track {
+        let (child, tracked) = live::spawn_tracked(&mut command, binary, args, cwd)?;
+        (child, Some(tracked))
+    } else {
+        (
+            command
+                .spawn()
+                .map_err(|error| format!("could not start {}: {error}", binary.display()))?,
+            None,
+        )
+    };
     let stdin = child.stdin.take();
     Ok(Owned {
         child,
         stdin,
         stop_on_drop: true,
+        tracked,
     })
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_proxy(upstream: SocketAddr, out: &Path) -> Result<(u16, tokio::runtime::Runtime), String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("could not start tokio: {error}"))?;
-    let path = out.to_path_buf();
-    let port = runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|error| format!("could not bind the asset proxy: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("could not read the asset proxy port: {error}"))?
-            .port();
-        tokio::spawn(async move {
-            if let Err(error) = ferroan_capture::serve_on_with_timeout(
-                listener,
-                upstream,
-                &path,
-                Duration::from_secs(70),
-            )
-            .await
-            {
-                eprintln!("live: asset proxy stopped: {error}");
-            }
-        });
-        Ok::<u16, String>(port)
-    })?;
-    Ok((port, runtime))
+fn spawn_proxy(
+    upstream: SocketAddr,
+    out: &Path,
+) -> Result<(u16, crate::live_proxy::Proxies), String> {
+    let (addresses, proxies) = crate::live_proxy::Proxies::start(&[(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        upstream,
+        out.to_path_buf(),
+    )])?;
+    Ok((
+        addresses.first().ok_or("asset proxy did not bind")?.port(),
+        proxies,
+    ))
 }
 
 #[cfg(target_os = "linux")]
 fn stop_owned(owned: &mut Owned) {
     owned.stop_on_drop = false;
     if matches!(owned.child.try_wait(), Ok(Some(_))) {
+        if let Some(tracked) = owned.tracked.take() {
+            let _ = tracked.forget();
+        }
         return;
     }
     let pid = owned.child.id();
@@ -527,25 +503,16 @@ fn stop_owned(owned: &mut Owned) {
             .status();
     }
     let _ = owned.child.wait();
+    if let Some(tracked) = owned.tracked.take()
+        && let Err(error) = tracked.forget()
+    {
+        eprintln!("live: asset process cleanup: {error}");
+    }
 }
 
 #[cfg(all(target_os = "linux", test))]
 fn pid_exists(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
-}
-
-#[cfg(target_os = "linux")]
-fn write_secret(path: &Path, text: &str) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
 #[cfg(target_os = "linux")]
@@ -741,6 +708,7 @@ mod tests {
             &repo_root(),
             &dir.join("child.log"),
             false,
+            false,
         )
         .unwrap();
         let pid = owned.pid();
@@ -761,6 +729,7 @@ mod tests {
             &["30"],
             &repo_root(),
             &dir.join("child.log"),
+            false,
             false,
         )
         .unwrap();

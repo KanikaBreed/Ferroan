@@ -52,8 +52,16 @@ impl Pending {
                 .ok_or("invalid pending grid launch path")?;
             let root = fs::canonicalize(crate::repo_root())
                 .map_err(|_| "could not resolve the worktree root")?;
-            if !Path::new(text).is_absolute() || !Path::new(text).starts_with(root) {
-                return Err("pending grid launch is outside this worktree".to_owned());
+            // Cargo may put the explicitly selected executable outside this
+            // worktree. The working directory, marker and exact identity still
+            // bind recovery to this launch, rather than to that shared binary.
+            if !Path::new(text).is_absolute()
+                || (key == "cwd" && !Path::new(text).starts_with(root))
+            {
+                return Err(
+                    "pending grid launch path is invalid or cwd is outside this worktree"
+                        .to_owned(),
+                );
             }
             Ok(text.to_owned())
         };
@@ -168,6 +176,20 @@ struct Store {
     path: PathBuf,
 }
 
+/// flock belongs to the open file description, which fork/try_clone share.
+/// Closing just our descriptor can leave another thread's child holding it
+/// until exec. Explicit unlock on *every* acquired-lock path releases it even
+/// while that inherited descriptor remains open.
+struct Lock(fs::File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.unlock() {
+            eprintln!("could not explicitly unlock grid process state: {error}");
+        }
+    }
+}
+
 fn store() -> Store {
     Store {
         path: crate::live::live_root().join("grid-state"),
@@ -175,7 +197,7 @@ fn store() -> Store {
 }
 
 impl Store {
-    fn lock(&self) -> Result<fs::File, String> {
+    fn lock(&self) -> Result<Lock, String> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("could not create grid state directory: {error}"))?;
@@ -187,10 +209,10 @@ impl Store {
             .truncate(false)
             .open(self.path.with_extension("lock"))
             .map_err(|error| format!("could not open grid state lock: {error}"))?;
-        file.try_lock().map_err(|_| {
-            "another grid command is active; interrupt it before cargo xtask live down".to_owned()
+        file.try_lock().map_err(|error| {
+            format!("another grid command is active or its lock could not be acquired: {error}; interrupt it before cargo xtask live down")
         })?;
-        Ok(file)
+        Ok(Lock(file))
     }
 
     fn read(&self) -> Result<Option<State>, String> {
@@ -447,7 +469,7 @@ impl Store {
 pub(crate) struct Run {
     store: Store,
     owner: Identity,
-    _lock: fs::File,
+    _lock: Lock,
 }
 
 impl Drop for Run {
@@ -459,9 +481,7 @@ impl Drop for Run {
         {
             let _ = fs::remove_file(&self.store.path);
         }
-        // Explicit unlock also releases any descriptor inherited briefly by
-        // another thread's child between fork and its close-on-exec step.
-        let _ = self._lock.unlock();
+        // The lock guard unlocks after this state cleanup on every drop path.
     }
 }
 
@@ -529,22 +549,26 @@ fn scan_pending_bounded(
     use std::os::unix::fs::MetadataExt;
 
     let uid = fs::metadata("/proc/self")
-        .map_err(|_| "could not identify controller uid during grid recovery")?
+        .map_err(|error| {
+            format!("could not identify controller uid during grid recovery: {error}")
+        })?
         .uid();
-    let entries = fs::read_dir("/proc")
-        .map_err(|_| "could not scan processes for the pending grid launch")?;
+    let entries = fs::read_dir("/proc").map_err(|error| {
+        format!("could not scan processes for the pending grid launch: {error}")
+    })?;
     let marker = format!("{SPAWN_MARKER}={}", pending.marker);
     let mut bytes_left = max_bytes;
     let mut found = Vec::new();
     let scan_deadline = Instant::now() + Duration::from_secs(5);
     for (index, entry) in entries.enumerate() {
-        if index >= max_entries || Instant::now() >= scan_deadline {
+        if index >= max_entries || Instant::now() >= scan_deadline || bytes_left == 0 {
             return Err(
-                "grid recovery process scan exceeded its entry or time limit; state preserved"
+                "grid recovery process scan exceeded its entry, time or byte limit; state preserved; inspect .scratch/live/grid-state and the documented recovery procedure"
                     .to_owned(),
             );
         }
-        let entry = entry.map_err(|_| "could not enumerate processes for grid recovery")?;
+        let entry = entry
+            .map_err(|error| format!("could not enumerate processes for grid recovery: {error}"))?;
         let Some(pid) = entry
             .file_name()
             .to_str()
@@ -555,30 +579,22 @@ fn scan_pending_bounded(
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => {
-                return Err(
-                    "could not inspect a process during grid recovery; state preserved".to_owned(),
-                );
+            Err(error) => {
+                if unrelated_process(pending, pid) {
+                    continue;
+                }
+                return Err(format!(
+                    "could not inspect candidate process {pid} during grid recovery: {error}; state preserved"
+                ));
             }
         };
         let start = crate::live::process_start_time(pid);
         if metadata.uid() != uid || start.is_none_or(|start| start < pending.after) {
             continue;
         }
-        let file =
-            match fs::File::open(entry.path().join("environ")) {
-                Ok(file) => file,
-                Err(_) if crate::live::process_start_time(pid).is_none() => continue,
-                Err(_) => return Err(
-                    "could not inspect a process environment during grid recovery; state preserved"
-                        .to_owned(),
-                ),
-            };
-        // Never log, persist or include environment contents in errors.
-        let environment = limited(file, MAX_STATE.min(bytes_left))?;
-        bytes_left = bytes_left
-            .checked_sub(environment.len())
-            .ok_or("grid recovery environment scan exceeded its byte limit; state preserved")?;
+        let Some(environment) = recovery_environment(pending, pid, &mut bytes_left)? else {
+            continue;
+        };
         if !environment
             .split(|byte| *byte == 0)
             .any(|entry| entry == marker.as_bytes())
@@ -593,7 +609,14 @@ fn scan_pending_bounded(
                     break;
                 }
                 _ if crate::live::process_start_time(pid).is_none() => break,
-                _ if Instant::now() >= deadline => return Err("a pending grid launch marker has a mismatched process identity; state preserved".to_owned()),
+                result if Instant::now() >= deadline => {
+                    let detail = result.err().unwrap_or_else(|| {
+                        "executable, argv, cwd or process group does not match".to_owned()
+                    });
+                    return Err(format!(
+                        "a pending grid launch marker has a mismatched process identity for pid {pid}: {detail}; state preserved"
+                    ));
+                }
                 _ => thread::sleep(Duration::from_millis(5)),
             }
         }
@@ -604,6 +627,76 @@ fn scan_pending_bounded(
         }
     }
     Ok(found)
+}
+
+/// Environment inspection is only evidence of a launch marker, never a source
+/// of log data. Inaccessible/oversized unrelated processes must not block all
+/// live commands; an indistinguishable possible child still fails closed.
+fn recovery_environment(
+    pending: &Pending,
+    pid: u32,
+    bytes_left: &mut usize,
+) -> Result<Option<Vec<u8>>, String> {
+    recovery_environment_with(pending, pid, bytes_left, |limit| {
+        fs::File::open(format!("/proc/{pid}/environ")).and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+    })
+}
+
+fn recovery_environment_with(
+    pending: &Pending,
+    pid: u32,
+    bytes_left: &mut usize,
+    mut read: impl FnMut(usize) -> std::io::Result<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, String> {
+    let deadline = Instant::now() + Duration::from_millis(100);
+    loop {
+        let limit = MAX_STATE.min(*bytes_left);
+        let failure = match read(limit) {
+            Ok(bytes) => {
+                *bytes_left = bytes_left.checked_sub(bytes.len()).ok_or(
+                    "grid recovery environment scan exceeded its byte limit; state preserved; inspect .scratch/live/grid-state and the documented recovery procedure",
+                )?;
+                if bytes.len() <= MAX_STATE {
+                    return Ok(Some(bytes));
+                }
+                "environment exceeds the 64 KiB per-process limit".to_owned()
+            }
+            Err(error) => format!("could not read environment: {error}"),
+        };
+        if crate::live::process_start_time(pid).is_none() || unrelated_process(pending, pid) {
+            return Ok(None);
+        }
+        // exec can temporarily make an otherwise matching child's /proc
+        // entries unavailable. Retry briefly without relaxing its identity.
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "could not inspect candidate process {pid} during grid recovery: {failure}; state preserved; inspect .scratch/live/grid-state and the documented recovery procedure"
+            ));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn unrelated_process(pending: &Pending, pid: u32) -> bool {
+    if let Ok(identity) = Identity::capture(pid)
+        && (identity.exe != pending.exe || identity.args != pending.args)
+    {
+        return true;
+    }
+    // Even if argv is unavailable during exec, known different location or
+    // process-group ownership is enough to exclude an unrelated process.
+    fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| {
+        exe.to_str()
+            .map(|exe| exe.strip_suffix(" (deleted)").unwrap_or(exe))
+            .is_some_and(|exe| exe != pending.exe)
+    }) || fs::read_link(format!("/proc/{pid}/cwd")).is_ok_and(|cwd| cwd != Path::new(&pending.cwd))
+        || read_limited(Path::new(&format!("/proc/{pid}/cmdline")), MAX_STATE)
+            .is_ok_and(|args| !args.is_empty() && fingerprint(&args) != pending.args)
+        || process_group(pid).is_some_and(|group| group != pid)
 }
 
 fn process_group(pid: u32) -> Option<u32> {
@@ -730,10 +823,27 @@ mod tests {
                     &crate::repo_root(),
                 )
                 .unwrap();
+            let ready = store
+                .path
+                .with_extension(format!("ready-{}", uuid::Uuid::new_v4()));
             let mut command = Self::command();
+            command.env("FERROAN_TEST_READY", &ready);
             launch.configure(&mut command);
-            let child = Self(command.spawn().unwrap());
+            let mut child = Self(command.spawn().unwrap());
+            child.wait_ready(&ready);
             (launch, child)
+        }
+
+        fn wait_ready(&mut self, ready: &Path) {
+            // spawn's exec handshake can precede /proc exposing the new argv
+            // and environment. This per-child handshake does not serialize
+            // independent tests and deliberately does not call Launch.record.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() {
+                assert!(self.0.try_wait().unwrap().is_none());
+                assert!(Instant::now() < deadline, "process fixture did not start");
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 
@@ -747,6 +857,9 @@ mod tests {
     #[test]
     #[ignore = "subprocess fixture for process ownership tests"]
     fn waiting_child() {
+        if let Some(path) = std::env::var_os("FERROAN_TEST_READY") {
+            fs::write(path, b"ready").unwrap();
+        }
         thread::sleep(Duration::from_secs(60));
     }
 
@@ -801,6 +914,147 @@ mod tests {
         drop(run);
         assert!(!store.path.exists());
         store.down().unwrap();
+    }
+
+    #[test]
+    fn explicit_unlock_releases_inherited_descriptors_on_success_and_error() {
+        let (_directory, store) = TestDir::store();
+        // A duplicate shares the same open file description as an inherited
+        // fork descriptor, without unsafe fork in this multithreaded test.
+        let file = store.lock().unwrap();
+        let duplicate = file.0.try_clone().unwrap();
+        drop(file);
+        let next = store.lock().expect("duplicate must not retain the lock");
+        drop(next);
+        drop(duplicate);
+
+        fn acquire_then_fail(
+            store: &Store,
+            duplicate: &mut Option<fs::File>,
+        ) -> Result<(), &'static str> {
+            let lock = store.lock().unwrap();
+            *duplicate = Some(lock.0.try_clone().unwrap());
+            Err("an early return after acquiring the lock")
+        }
+        let mut duplicate = None;
+        assert!(acquire_then_fail(&store, &mut duplicate).is_err());
+        assert!(store.lock().is_ok(), "error path must explicitly unlock");
+        drop(duplicate);
+
+        // Demonstrate the original failure mechanism with an unguarded File.
+        let plain = fs::File::open(store.path.with_extension("lock")).unwrap();
+        plain.try_lock().unwrap();
+        let inherited = plain.try_clone().unwrap();
+        drop(plain);
+        assert!(
+            store.lock().is_err(),
+            "plain drop leaves the shared lock held"
+        );
+        inherited.unlock().unwrap();
+        assert!(store.lock().is_ok());
+    }
+
+    #[test]
+    fn oversized_unrelated_environment_is_skipped_without_losing_pending_child() {
+        let (directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let (launch, mut marked) = TestChild::pending(&store);
+        let ready = directory.0.join("large-environment-ready");
+        let mut command = TestChild::command();
+        command
+            .current_dir(&directory.0)
+            .env("FERROAN_TEST_READY", &ready)
+            .env("FERROAN_TEST_LARGE_ENV", "x".repeat(MAX_STATE + 1024));
+        let mut unrelated = TestChild(command.spawn().unwrap());
+        unrelated.wait_ready(&ready);
+        let mut budget = MAX_SCAN_BYTES;
+        assert!(
+            recovery_environment(&launch.pending, unrelated.0.id(), &mut budget)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            budget < MAX_SCAN_BYTES,
+            "oversized reads still count against the scan bound"
+        );
+        let found = scan_pending(&launch.pending).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, marked.0.id());
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        marked.0.kill().unwrap();
+        marked.0.wait().unwrap();
+        launch.cancel().unwrap();
+        drop(run);
+    }
+
+    #[test]
+    fn unreadable_unrelated_environment_is_skipped_but_candidate_error_keeps_os_detail() {
+        let (directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let (launch, child) = TestChild::pending(&store);
+        let mut command = TestChild::command();
+        command.current_dir(&directory.0);
+        let unrelated = TestChild(command.spawn().unwrap());
+        let denied = |_| Err(std::io::Error::from_raw_os_error(13));
+        let mut budget = MAX_SCAN_BYTES;
+        assert!(
+            recovery_environment_with(&launch.pending, unrelated.0.id(), &mut budget, denied)
+                .unwrap()
+                .is_none()
+        );
+        let error = recovery_environment_with(&launch.pending, child.0.id(), &mut budget, denied)
+            .unwrap_err();
+        assert!(error.contains("os error 13"), "{error}");
+        assert!(error.contains("state preserved"));
+        assert!(store.read().unwrap().unwrap().pending.is_some());
+        drop(child);
+        launch.cancel().unwrap();
+        drop(run);
+    }
+
+    #[test]
+    fn explicit_external_executable_is_recovered_only_with_its_marker_and_worktree_cwd() {
+        let (_directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let binary = fs::canonicalize("/bin/sleep").unwrap();
+        assert!(!binary.starts_with(crate::repo_root()));
+        let launch = store
+            .prepare(&binary, &["60"], &crate::repo_root())
+            .unwrap();
+        let mut command = Command::new(&binary);
+        command
+            .arg("60")
+            .current_dir(crate::repo_root())
+            .process_group(0);
+        launch.configure(&mut command);
+        let mut child = TestChild(command.spawn().unwrap());
+        let marker = format!("{SPAWN_MARKER}={}", launch.pending.marker);
+        let environment = PathBuf::from(format!("/proc/{}/environ", child.0.id()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !read_limited(&environment, MAX_STATE).is_ok_and(|bytes| {
+            bytes
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == marker.as_bytes())
+        }) {
+            assert!(child.0.try_wait().unwrap().is_none());
+            assert!(
+                Instant::now() < deadline,
+                "external process fixture did not start"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(scan_pending(&launch.pending).unwrap()[0].pid, child.0.id());
+        let mut invalid = launch.pending.json();
+        invalid["cwd"] = json!("/");
+        assert!(Pending::parse(&invalid).is_err());
+        launch.record(&child.0).unwrap();
+        let mut state = store.read().unwrap().unwrap();
+        state.owner.start += 1;
+        store.write(&state).unwrap();
+        drop(run);
+        store.down().unwrap();
+        child.0.wait().unwrap();
+        assert!(!store.path.exists());
     }
 
     #[test]

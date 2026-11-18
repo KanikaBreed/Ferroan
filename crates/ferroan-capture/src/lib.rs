@@ -15,6 +15,7 @@ mod redact;
 
 pub use format::{Kind, Record, read_capture, read_complete_prefix, write_capture};
 pub use proxy::{
-    DEFAULT_REPLY_TIMEOUT, serve, serve_on, serve_on_with_timeout, serve_with_timeout,
+    DEFAULT_REPLY_TIMEOUT, ProxyStatus, serve, serve_on, serve_on_with_status,
+    serve_on_with_timeout, serve_with_timeout,
 };
 pub use redact::{check_udp, redact_records};

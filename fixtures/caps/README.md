@@ -52,12 +52,17 @@ other body byte and XML formatting:
 
 Body files have no added newline. `.body` files represent empty or deliberately
 malformed bodies; `.xml` files retain the actual request/response XML. The
-manifest retains method, normalized path, status, MIME types, CORS headers and
-elapsed milliseconds. Transport dates and other generated HTTP headers are
+manifest retains method, normalized path, status, MIME types, CORS headers,
+the captured Connection header, event URL shape and elapsed milliseconds.
+Transport dates and other generated HTTP headers are
 outside this comparison. Raw captures and real bearer URLs stay in `.scratch/`.
 The generator rejects ambiguous request/response pairing, mixed capability
 paths, compressed messages, unexpected bodies or MIME types, and missing
 required exchanges before writing fixtures.
+
+The sibling `capture-udp.cap` must contain the matching login sequence and the
+exact pinned Tranquillity channel/version. A Rust region using the same test
+account, name and UUID is rejected as a fixture source.
 
 The source behavior is in these files at the revision above:
 
@@ -68,7 +73,7 @@ The source behavior is in these files at the revision above:
   `SimpleStreamHandler.cs` and `PollServiceHttpRequest.cs` (HTTP defaults,
   OPTIONS handling and held-poll responses).
 
-The client tests compare seed and empty-poll responses with this independent
-C# evidence. The delivered-event test checks queue batch encoding using captured
+The client tests serve the production `CapsRegistry::router()` and compare seed
+and empty-poll responses with this independent C# evidence. The delivered-event test checks queue batch encoding using captured
 events as input; it does not establish that the Rust region implements
 crossings or produces those events. Viewer validation remains pending.
