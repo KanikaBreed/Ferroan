@@ -11,6 +11,7 @@ publish.workspace = true
 ferroan-bot = { path = "../tools/bot" }
 ferroan-capture = { path = "../crates/ferroan-capture" }
 ferroan-http = { path = "../crates/ferroan-http" }
+ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }
 serde_json = { version = "1", features = ["preserve_order"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

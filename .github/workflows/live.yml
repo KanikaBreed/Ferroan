@@ -89,6 +89,11 @@ jobs:
           cargo xtask live run all grid
       - name: Check login through Robust onto the Ferroan region
         run: cargo xtask live run login grid --region ferroan
+      - name: Check seed and held event polls against C# and Ferroan
+        run: |
+          set -euo pipefail
+          cargo xtask live run caps grid
+          cargo xtask live run caps grid --region ferroan
       - name: Compare C# and Ferroan asset services
         run: cargo xtask live assets
       - name: Check the persistent Ferroan asset setup

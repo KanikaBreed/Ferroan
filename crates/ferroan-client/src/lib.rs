@@ -3,12 +3,14 @@
 
 //! The region side of one LLUDP circuit, the seed capability and an event queue.
 //!
-//! Throttles are still planned. An empty event poll is answered at once.
+//! Throttles are still planned. Empty event polls wait for the C# hold deadline.
 
 mod caps;
 mod circuit;
+mod event_queue;
 mod handshake;
 
 pub use caps::{CapsError, CapsRegistry, CapsServer};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer};
+pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;

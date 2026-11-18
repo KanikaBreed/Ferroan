@@ -1,3 +1,31 @@
+//
+// Copyright (c) 2006-2016, openmetaverse.co
+// All rights reserved.
+//
+// - Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+// - Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+// - Neither the name of the openmetaverse.co nor the names
+//   of its contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
+// OSD string conversion follows OpenMetaverse.StructuredData/StructuredData.cs
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Copyright (c) 2026 the Aurora Viewer contributors
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -95,6 +123,32 @@ impl Budget {
 #[cfg(test)]
 mod budget_tests {
     use super::*;
+
+    #[test]
+    fn osd_capability_names_use_non_string_conversions() {
+        assert_eq!(Llsd::Boolean(false).to_osd_string(), "0");
+        assert_eq!(Llsd::Boolean(true).to_osd_string(), "1");
+        assert_eq!(Llsd::Integer(-17).to_osd_string(), "-17");
+        assert_eq!(Llsd::Real(f64::INFINITY).to_osd_string(), "∞");
+        assert_eq!(Llsd::Real(1e20).to_osd_string(), "1e+20");
+        assert_eq!(
+            Llsd::Uri("EventQueueGet".into()).to_osd_string(),
+            "EventQueueGet"
+        );
+        assert_eq!(
+            Llsd::Binary(b"EventQueueGet".to_vec()).to_osd_string(),
+            "RXZlbnRRdWV1ZUdldA=="
+        );
+        assert_eq!(Llsd::Date(0).to_osd_string(), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            Llsd::Uuid(Uuid::nil()).to_osd_string(),
+            Uuid::nil().to_string()
+        );
+        for value in [Llsd::Undef, Llsd::new_map(), Llsd::new_array()] {
+            assert!(value.to_osd_string().is_empty());
+        }
+        assert_eq!(Llsd::Boolean(false).to_string_value(), "");
+    }
 
     #[test]
     fn budget_grows_with_the_input_up_to_the_cap() {
@@ -314,6 +368,19 @@ impl Llsd {
             Llsd::Date(d) => number::format_date(*d),
             Llsd::Binary(b) => String::from_utf8_lossy(b).into_owned(),
             Llsd::Array(_) | Llsd::Map(_) => String::new(),
+        }
+    }
+
+    /// OpenMetaverse OSD.AsString conversion for capability-name lookup.
+    /// URI text is retained as supplied; absolute URI canonicalization is not
+    /// needed for a capability name, which is a relative URI.
+    pub fn to_osd_string(&self) -> String {
+        use base64::Engine;
+        match self {
+            Llsd::Boolean(value) => if *value { "1" } else { "0" }.to_owned(),
+            Llsd::Real(value) => number::format_real(*value),
+            Llsd::Binary(value) => base64::engine::general_purpose::STANDARD.encode(value),
+            _ => self.to_string_value(),
         }
     }
 

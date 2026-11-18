@@ -1,0 +1,89 @@
+{
+  "tranquillity": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "source": "cargo xtask live run caps grid",
+  "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
+  "event_queue_url": "http://192.0.2.1:9000/CE/00000000-0000-4000-8000-000000000001",
+  "exchanges": {
+    "seed": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 200,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed.request.xml",
+      "response_file": "seed.response.xml",
+      "cors": {}
+    },
+    "seed-uri": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 200,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 1,
+      "request_file": "seed-uri.request.xml",
+      "response_file": "seed-uri.response.xml",
+      "cors": {}
+    },
+    "seed-get": {
+      "method": "GET",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 404,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed-get.request.body",
+      "response_file": "seed-get.response.body",
+      "cors": {}
+    },
+    "seed-malformed": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 400,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed-malformed.request.body",
+      "response_file": "seed-malformed.response.body",
+      "cors": {}
+    },
+    "seed-options": {
+      "method": "OPTIONS",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 200,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed-options.request.body",
+      "response_file": "seed-options.response.body",
+      "cors": {
+        "access-control-allow-headers": "Content-Type",
+        "access-control-allow-methods": "GET, POST, DELETE, PUT, OPTIONS",
+        "access-control-allow-origin": "*"
+      }
+    },
+    "events": {
+      "method": "POST",
+      "path": "/CE/00000000-0000-4000-8000-000000000001",
+      "status": 200,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "application/xml",
+      "elapsed_ms": 899,
+      "request_file": "events.request.xml",
+      "response_file": "events.response.xml",
+      "cors": {}
+    },
+    "empty-poll": {
+      "method": "POST",
+      "path": "/CE/00000000-0000-4000-8000-000000000001",
+      "status": 502,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html",
+      "elapsed_ms": 58036,
+      "request_file": "empty-poll.request.xml",
+      "response_file": "empty-poll.response.body",
+      "cors": {}
+    }
+  }
+}

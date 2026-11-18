@@ -430,12 +430,14 @@ impl Drop for Grid {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
-    if ferroan && scenario != "login" {
+    if ferroan && !matches!(scenario, "login" | "caps") {
         return Err(
-            "the Ferroan grid region currently supports the login scenario only".to_string(),
+            "the Ferroan grid region currently supports login and caps scenarios".to_string(),
         );
     }
-    if scenario != "neighbour" && ferroan_bot::scenario::selection(scenario).is_none() {
+    if !matches!(scenario, "neighbour" | "caps")
+        && ferroan_bot::scenario::selection(scenario).is_none()
+    {
         return Err(format!(
             "unknown scenario {scenario}; expected all, neighbour or {}",
             ferroan_bot::scenario::NAMES.join(", ")
@@ -550,7 +552,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &estate,
         RegionStart {
             ferroan,
-            login_only: scenario == "login",
+            login_only: matches!(scenario, "login" | "caps"),
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
@@ -571,7 +573,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &estate,
         RegionStart {
             ferroan: false,
-            login_only: scenario == "login",
+            login_only: matches!(scenario, "login" | "caps"),
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
             x: NEIGHBOUR_X,

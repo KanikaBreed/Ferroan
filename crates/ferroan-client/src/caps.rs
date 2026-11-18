@@ -1,46 +1,59 @@
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+
+// Ported from BunchOfCaps/BunchOfCaps.cs (SeedCapRequest) and
+// EventQueue/EventQueueGetModule.cs in Source/OpenSim.Region.ClientStack.LindenCaps,
+// and Source/OpenSim.Framework.Servers.HttpServer/{BaseHttpServer,PollServiceHttpRequest}.cs,
+// plus OSHttpServer/HttpResponse.cs there (default MIME and error connection close),
+// OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The seed capability and one event queue.
-//!
-//! The seed follows Tranquillity `BunchOfCaps.SeedCapRequest`: a POST whose
-//! `Content-Type` is `application/llsd+xml`, with an LLSD array of names, gets
-//! an LLSD map. Anything else is 404 or 400, as that method does. The reply
-//! here includes only `EventQueueGet`. The other names the bot asks for are
-//! later rows. The activation wait (503) and the client check (403) are not
-//! done. CapsRegistry ties route lifetime to an accepted agent; it does not
-//! yet perform those activation or client-address checks.
-//!
-//! `EventQueueGetModule.GetEvents` puts queued messages in an LLSD map of
-//! `events` and `id`, with content type `application/xml`. An empty queue is
-//! `NoEvents`: 502 when the agent has a queue, otherwise 404, and the poll is
-//! held. This row asks for an empty event set and a new id, so a poll is
-//! answered at once with an empty `events` array, the next id, and informal
-//! LLSD XML (`application/llsd+xml`). Ids start at 1. Tranquillity draws the
-//! first id from `Random.Shared.Next(30000000)`.
-//!
-//! Read from
-//!   Source/OpenSim.Region.ClientStack.LindenCaps/BunchOfCaps/BunchOfCaps.cs
-//!   SeedCapRequest
-//!   Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs
-//!   GetEvents, NoEvents
-//!   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
-//! `EventQueueGetModule.cs` is unchanged from `713857f`. `SeedCapRequest` is
-//! unchanged; the file differs elsewhere.
+//! Seed discovery and bounded long-poll queues for one accepted agent.
+//! Seed method/type checks and OSD.AsString capability lookup follow C#.
+//! Activation waiting and client-address checks remain unimplemented; registry
+//! lifetime follows the accepted circuit. Empty polls hold 58 seconds then
+//! return 502, while removal wakes them with 404. Event delivery advances one
+//! id per batch. See event_queue for crossing-marker limitations and bounds.
 
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::event_queue::{EventQueue, EventQueueError, PollReply};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::StatusCode;
+use axum::extract::{Request, State};
+use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
-use ferroan_http::{llsd_from_http_body, llsd_response, read_body};
-use ferroan_llsd::Llsd;
+use axum::routing::any;
+use ferroan_http::read_body;
+use ferroan_llsd::{Llsd, from_xml, to_xml};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+const SEED_MIME: &str = "text/html;charset=UTF-8";
 
 /// Seed and poll bodies larger than this are refused. A seed is a short list
 /// of capability names.
@@ -64,7 +77,7 @@ pub enum CapsError {
 #[derive(Clone)]
 struct CapsState {
     event_queue_url: String,
-    next_id: Arc<AtomicI32>,
+    queue: EventQueue,
 }
 
 #[derive(Clone)]
@@ -124,7 +137,7 @@ impl CapsRegistry {
             seed_path: seed_path.to_owned(),
             state: CapsState {
                 event_queue_url: format!("{}{events_path}", self.base_url),
-                next_id: Arc::new(AtomicI32::new(1)),
+                queue: EventQueue::new(),
             },
             events_path,
         });
@@ -132,10 +145,28 @@ impl CapsRegistry {
     }
 
     pub fn clear(&self) {
-        *self
+        if let Some(active) = self
             .active
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = None;
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            active.state.queue.close();
+        }
+    }
+
+    /// Queue an event for the active agent, subject to event and queue bounds.
+    pub fn enqueue_event(&self, event: Llsd) -> Result<(), EventQueueError> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        active
+            .as_ref()
+            .ok_or(EventQueueError::Closed)?
+            .state
+            .queue
+            .enqueue(event)
     }
 
     /// Merge this fallback with the region's more specific simulation routes.
@@ -152,25 +183,19 @@ async fn registered_caps(State(registry): State<CapsRegistry>, request: Request)
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone();
-    let Some(active) = active else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let path = request.uri().path();
-    let is_seed = path == active.seed_path;
-    if !is_seed && path != active.events_path {
-        return StatusCode::NOT_FOUND.into_response();
+    // C# checks poll routes before the global OPTIONS handler.
+    if let Some(active) = active {
+        if request.uri().path() == active.events_path {
+            return poll(State(active.state), request).await;
+        }
+        if request.uri().path() == active.seed_path {
+            return seed(State(active.state), request).await;
+        }
     }
-    if request.method() != axum::http::Method::POST {
-        return (
-            StatusCode::METHOD_NOT_ALLOWED,
-            [(axum::http::header::ALLOW, "POST")],
-        )
-            .into_response();
-    }
-    if is_seed {
-        seed(State(active.state), request).await
+    if request.method() == Method::OPTIONS {
+        options()
     } else {
-        poll(State(active.state), request).await
+        response(StatusCode::NOT_FOUND, SEED_MIME, Vec::new())
     }
 }
 
@@ -180,11 +205,13 @@ async fn registered_caps(State(registry): State<CapsRegistry>, request: Request)
 pub struct CapsServer {
     seed_url: String,
     event_queue_url: String,
+    queue: EventQueue,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl Drop for CapsServer {
     fn drop(&mut self) {
+        self.queue.close();
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -201,25 +228,29 @@ impl CapsServer {
         let event_queue_url = format!("http://{local_addr}{events_path}");
         let state = CapsState {
             event_queue_url: event_queue_url.clone(),
-            next_id: Arc::new(AtomicI32::new(1)),
+            queue: EventQueue::new(),
         };
+        let queue = state.queue.clone();
         let app = Router::new()
-            .route("/seed", post(seed))
-            .route(&events_path, post(poll))
-            .layer(DefaultBodyLimit::max(SEED_BODY_LIMIT))
+            .route("/seed", any(seed))
+            .route(&events_path, any(poll))
             .with_state(state);
         let (shutdown, shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _ = axum::serve(listener, app)
+            if let Err(error) = axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.await;
                 })
-                .await;
+                .await
+            {
+                eprintln!("ferroan-client: CAPS server stopped: {error}");
+            }
         });
         tokio::task::yield_now().await;
         Ok(Self {
             seed_url,
             event_queue_url,
+            queue,
             shutdown: Some(shutdown),
         })
     }
@@ -233,6 +264,11 @@ impl CapsServer {
     pub fn event_queue_url(&self) -> &str {
         &self.event_queue_url
     }
+
+    /// Queue an LLSD event for the next poll.
+    pub fn enqueue_event(&self, event: Llsd) -> Result<(), EventQueueError> {
+        self.queue.enqueue(event)
+    }
 }
 
 fn is_seed_content_type(headers: &axum::http::HeaderMap) -> bool {
@@ -243,74 +279,81 @@ fn is_seed_content_type(headers: &axum::http::HeaderMap) -> bool {
 }
 
 async fn seed(State(state): State<CapsState>, request: Request) -> Response {
-    if !is_seed_content_type(request.headers()) {
-        return StatusCode::NOT_FOUND.into_response();
+    if request.method() == Method::OPTIONS {
+        return options();
+    }
+    if request.method() != Method::POST || !is_seed_content_type(request.headers()) {
+        return response(StatusCode::NOT_FOUND, SEED_MIME, Vec::new());
     }
     let bytes = match read_body(request.into_body(), SEED_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(error) => return error.into_response(),
     };
-    let value = match llsd_from_http_body(&bytes) {
-        Ok(value) => value,
-        Err(error) => return error.into_response(),
-    };
-    let Llsd::Array(names) = value else {
-        return (StatusCode::BAD_REQUEST, "seed body is not an LLSD array").into_response();
+    let names = match from_xml(&bytes) {
+        Ok(Llsd::Array(names)) => names,
+        _ => return response(StatusCode::BAD_REQUEST, SEED_MIME, Vec::new()),
     };
     let want = match wants_event_queue(&names) {
         Ok(want) => want,
-        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
+        Err(_) => return response(StatusCode::BAD_REQUEST, SEED_MIME, Vec::new()),
     };
     let mut map = Llsd::new_map();
     if want {
         map.insert("EventQueueGet", state.event_queue_url);
     }
-    match llsd_response(
-        &map,
-        Some("application/llsd+xml"),
-        Some("application/llsd+xml"),
-    ) {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
-    }
+    response(StatusCode::OK, SEED_MIME, to_xml(&map))
 }
 
 async fn poll(State(state): State<CapsState>, request: Request) -> Response {
-    let bytes = match read_body(request.into_body(), SEED_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
-        Err(error) => return error.into_response(),
-    };
-    if !bytes.is_empty() && !matches!(llsd_from_http_body(&bytes), Ok(Llsd::Map(_))) {
-        return (StatusCode::BAD_REQUEST, "event poll is not an LLSD map").into_response();
+    // C# ignores method, MIME, ack/done and even malformed poll bodies.
+    // Still bound the incoming bytes rather than accumulating an unlimited body.
+    if let Err(error) = read_body(request.into_body(), SEED_BODY_LIMIT).await {
+        return error.into_response();
     }
-    let Some(id) = next_event_id(&state.next_id) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let mut map = Llsd::new_map();
-    map.insert("events", Llsd::new_array());
-    map.insert("id", id);
-    match llsd_response(&map, None, None) {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
+    match state.queue.poll().await {
+        PollReply::Events(body) => response(StatusCode::OK, "application/xml", body),
+        PollReply::Empty => response(StatusCode::BAD_GATEWAY, "text/html", Vec::new()),
+        PollReply::Closed => response(StatusCode::NOT_FOUND, "text/html", Vec::new()),
+        // Explicit overload policy: at most four simultaneous polls per queue.
+        PollReply::Busy => response(StatusCode::SERVICE_UNAVAILABLE, "text/html", Vec::new()),
     }
 }
 
-/// `true` when the viewer asked for `EventQueueGet`.
-///
-/// Empty names are skipped, as `SeedCapRequest` skips an empty `AsString`.
-/// Other names are ignored: this server has no URL for them.
+fn response(status: StatusCode, mime: &'static str, body: Vec<u8>) -> Response {
+    let mut response = (status, [(header::CONTENT_TYPE, mime)], body).into_response();
+    if !status.is_success() {
+        response.headers_mut().insert(
+            header::CONNECTION,
+            axum::http::HeaderValue::from_static("close"),
+        );
+    }
+    response
+}
+
+fn options() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, SEED_MIME),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                "GET, POST, DELETE, PUT, OPTIONS",
+            ),
+            (header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type"),
+        ],
+    )
+        .into_response()
+}
+
+/// Empty OSD.AsString results and unknown capability names are ignored.
 fn wants_event_queue(names: &[Llsd]) -> Result<bool, &'static str> {
     if names.len() > MAX_SEED_NAMES {
         return Err("seed lists too many names");
     }
     let mut want = false;
     for name in names {
-        let Llsd::String(text) = name else {
-            continue;
-        };
-        if text.is_empty() {
-            continue;
-        }
+        let text = name.to_osd_string();
         if text.len() > MAX_SEED_NAME_LEN {
             return Err("seed name is too long");
         }
@@ -321,11 +364,6 @@ fn wants_event_queue(names: &[Llsd]) -> Result<bool, &'static str> {
     Ok(want)
 }
 
-fn next_event_id(next: &AtomicI32) -> Option<i32> {
-    let id = next.fetch_add(1, Ordering::Relaxed);
-    if id <= 0 { None } else { Some(id) }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -334,6 +372,66 @@ mod tests {
 
     use super::*;
     use crate::circuit::{CircuitExpect, CircuitServer};
+
+    #[tokio::test(start_paused = true)]
+    async fn held_empty_poll_matches_csharp_capture_and_ignores_poll_body() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/caps/manifest.json")).unwrap();
+        let fixture = &manifest["exchanges"]["empty-poll"];
+        assert!(fixture["elapsed_ms"].as_u64().unwrap() >= 58_000);
+        let state = CapsState {
+            event_queue_url: "http://example.invalid/CE/test".into(),
+            queue: EventQueue::new(),
+        };
+        // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(axum::body::Body::from("not LLSD"))
+            .unwrap();
+        let task = tokio::spawn(poll(State(state), request));
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::event_queue::HOLD - Duration::from_millis(1)).await;
+        assert!(!task.is_finished());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let response = task.await.unwrap();
+        assert_eq!(
+            u64::from(response.status().as_u16()),
+            fixture["status"].as_u64().unwrap()
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            fixture["response_content_type"].as_str().unwrap()
+        );
+        assert_eq!(response.headers()[header::CONNECTION], "close");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap()
+                .as_ref(),
+            include_bytes!("../../../fixtures/caps/empty-poll.response.body")
+        );
+    }
+
+    #[test]
+    fn seed_capability_lookup_uses_osd_as_string_and_ignores_unknown_types() {
+        assert!(wants_event_queue(&[Llsd::Uri("EventQueueGet".into())]).unwrap());
+        assert!(
+            !wants_event_queue(&[
+                Llsd::Binary(b"EventQueueGet".to_vec()),
+                Llsd::Boolean(true),
+                Llsd::Boolean(false),
+                Llsd::Integer(1),
+                Llsd::Real(1.0),
+                Llsd::Date(0),
+                Llsd::Uuid(Uuid::nil()),
+                Llsd::Undef,
+                Llsd::new_array(),
+                Llsd::new_map(),
+            ])
+            .unwrap()
+        );
+    }
 
     fn name_list<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<u8> {
         let mut array = Llsd::new_array();
@@ -360,14 +458,6 @@ mod tests {
             .map(str::to_owned);
         let bytes = response.bytes().await.unwrap().to_vec();
         (status, bytes, content_type)
-    }
-
-    fn event_id(bytes: &[u8]) -> i32 {
-        let value = from_xml(bytes).unwrap();
-        assert!(value.get("events").is_array());
-        assert_eq!(value.get("events").len(), 0);
-        assert!(value.has("id"));
-        value.get("id").as_i32()
     }
 
     #[tokio::test]
@@ -403,6 +493,7 @@ mod tests {
         let map = from_xml(&bytes).unwrap();
         let events = map.get("EventQueueGet").as_str().to_owned();
         assert!(events.starts_with(&format!("{base}CE/")));
+        registry.enqueue_event(Llsd::new_map()).unwrap();
         assert_eq!(
             post(&events, "application/llsd+xml", Vec::new()).await.0,
             200
@@ -431,48 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_seed_returns_event_queue_get_and_an_empty_poll_has_a_new_id() {
-        let server = CapsServer::bind().await.unwrap();
-        let (status, body, content_type) = post(
-            server.seed_url(),
-            "application/llsd+xml",
-            name_list([
-                "EventQueueGet",
-                "GetTexture",
-                "FetchInventoryDescendents2",
-                "FetchInventory2",
-                "NewFileAgentInventory",
-            ]),
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(content_type.as_deref(), Some("application/llsd+xml"));
-        let map = from_xml(&body).unwrap();
-        assert_eq!(map.get("EventQueueGet").as_str(), server.event_queue_url());
-        assert!(!map.has("GetTexture"));
-        assert_eq!(map.len(), 1);
-
-        let (status, body, _) =
-            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
-        assert_eq!(status, 200);
-        assert_eq!(event_id(&body), 1);
-
-        let mut ack = Llsd::new_map();
-        ack.insert("ack", 0);
-        ack.insert("done", false);
-        let (status, body, content_type) = post(
-            server.event_queue_url(),
-            "application/llsd+xml",
-            to_xml(&ack),
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(content_type.as_deref(), Some("application/llsd+xml"));
-        assert_eq!(event_id(&body), 2);
-    }
-
-    #[tokio::test]
-    async fn a_bad_seed_or_poll_is_refused() {
+    async fn a_bad_seed_is_refused() {
         let server = CapsServer::bind().await.unwrap();
         let (status, _, _) = post(
             server.seed_url(),
@@ -518,23 +568,7 @@ mod tests {
 
         let http = ferroan_bot::login::http_client().unwrap();
         let response = http.get(server.seed_url()).send().await.unwrap();
-        assert_eq!(response.status().as_u16(), 405);
-
-        let (status, body, _) =
-            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
-        assert_eq!(status, 200);
-        assert_eq!(event_id(&body), 1);
-        let (status, _, _) = post(
-            server.event_queue_url(),
-            "application/llsd+xml",
-            to_xml(&Llsd::new_array()),
-        )
-        .await;
-        assert_eq!(status, 400);
-        let (status, body, _) =
-            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
-        assert_eq!(status, 200);
-        assert_eq!(event_id(&body), 2);
+        assert_eq!(response.status().as_u16(), 404);
     }
 
     #[tokio::test]
@@ -571,11 +605,6 @@ mod tests {
             Some(caps.event_queue_url())
         );
         assert_eq!(session.caps().len(), 1);
-
-        let (status, body, _) =
-            post(caps.event_queue_url(), "application/llsd+xml", Vec::new()).await;
-        assert_eq!(status, 200);
-        assert_eq!(event_id(&body), 1);
 
         session.logout(Duration::from_secs(8)).await.unwrap();
         running.await.unwrap().unwrap();
