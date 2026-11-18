@@ -18,10 +18,12 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 
 | # | Item | Status |
 | --- | --- | --- |
-| Q1 | P2.0a: the LLUDP circuit in `ferroan-client` | READY |
+| Q1 | P2.0a: the LLUDP circuit in `ferroan-client` | DONE (#20) |
 | Q2 | P2.0b: seed capability and event queue | READY after Q1 |
 | Q3 | P2.0c: harness grid mode | READY after Q2 |
 | Q4 | P2.0d: login through C# Robust | READY after Q3 |
+
+Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 

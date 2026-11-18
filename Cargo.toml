@@ -9,6 +9,7 @@ members = [
     "crates/ferroan-services",
     "crates/ferroan-robust",
     "crates/ferroan-capture",
+    "crates/ferroan-client",
     "tools/bot",
     "xtask",
 ]
