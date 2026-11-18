@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 ferroan-bot = { path = "../tools/bot" }
 ferroan-capture = { path = "../crates/ferroan-capture" }
+ferroan-http = { path = "../crates/ferroan-http" }
+serde_json = { version = "1", features = ["preserve_order"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 uuid = { version = "1.27.0", features = ["v4"] }
 

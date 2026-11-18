@@ -41,7 +41,7 @@ P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, che
 | --- | --- |
 | Parsing or encoding (packets, LLSD, XML, archives) | Tests against bytes captured from Tranquillity, plus malformed and oversized input. A round trip through our own encoder and decoder alone is not enough |
 | A grid service | Captured-traffic fixtures, then a live-harness run with the C# region using the Rust service, compared with the C# service |
-| Region behavior | A `ferroan-bot` scenario in the live harness, run against the C# region (and against the Ferroan region once it exists). Firestorm by hand at the phase gate |
+| Region behavior | A `ferroan-bot` scenario in the live harness. `cargo xtask live run login grid --region ferroan` logs in through C# Robust onto the Rust region, requires `LogoutReply`, and compares its registration and simulation HTTP with C# captures. Other scenarios still use C# regions. Firestorm by hand at the phase gate |
 | Configuration | Resolved key/value sets from the Nini oracle, including the shipped region and grid examples when the reference checkout is present |
 | Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
 | Native code (planned physics and scripting crates) | `SAFETY` comments on every unsafe block, and fuzzing of the boundary |

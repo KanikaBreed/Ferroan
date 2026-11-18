@@ -1,0 +1,23 @@
+[package]
+name = "ferroan-region"
+description = "Region process using Tranquillity grid services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+ferroan-client = { path = "../ferroan-client" }
+ferroan-config = { path = "../ferroan-config" }
+ferroan-http = { path = "../ferroan-http" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
+[lints]
+workspace = true
