@@ -17,6 +17,70 @@ use serde_json::{Value, json};
 
 const MAX_STATE: usize = 64 * 1024;
 const MAX_PROCESSES: usize = 3;
+const SPAWN_MARKER: &str = "FERROAN_GRID_SPAWN_ID";
+const MAX_PROC_ENTRIES: usize = 32_768;
+const MAX_SCAN_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone)]
+struct Pending {
+    marker: String,
+    exe: String,
+    cwd: String,
+    args: u64,
+    after: u64,
+}
+
+impl Pending {
+    fn json(&self) -> Value {
+        json!({"marker":self.marker,"exe":self.exe,"cwd":self.cwd,"args":self.args,"after":self.after})
+    }
+
+    fn parse(value: &Value) -> Result<Self, String> {
+        let marker = value
+            .get("marker")
+            .and_then(Value::as_str)
+            .filter(|text| {
+                text.len() == 36 && uuid::Uuid::parse_str(text).is_ok_and(|id| !id.is_nil())
+            })
+            .ok_or("invalid pending grid launch marker")?
+            .to_owned();
+        let path = |key| -> Result<String, String> {
+            let text = value
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|text| text.len() <= 4096)
+                .ok_or("invalid pending grid launch path")?;
+            let root = fs::canonicalize(crate::repo_root())
+                .map_err(|_| "could not resolve the worktree root")?;
+            if !Path::new(text).is_absolute() || !Path::new(text).starts_with(root) {
+                return Err("pending grid launch is outside this worktree".to_owned());
+            }
+            Ok(text.to_owned())
+        };
+        Ok(Self {
+            marker,
+            exe: path("exe")?,
+            cwd: path("cwd")?,
+            args: value
+                .get("args")
+                .and_then(Value::as_u64)
+                .ok_or("invalid pending grid argv fingerprint")?,
+            after: value
+                .get("after")
+                .and_then(Value::as_u64)
+                .filter(|start| *start > 0)
+                .ok_or("invalid pending grid launch start bound")?,
+        })
+    }
+
+    fn matches(&self, identity: &Identity) -> bool {
+        identity.exe == self.exe
+            && identity.args == self.args
+            && fs::read_link(format!("/proc/{}/cwd", identity.pid))
+                .is_ok_and(|cwd| cwd == Path::new(&self.cwd))
+            && process_group(identity.pid) == Some(identity.pid)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Identity {
@@ -96,6 +160,7 @@ impl Identity {
 struct State {
     owner: Identity,
     processes: Vec<Identity>,
+    pending: Option<Pending>,
 }
 
 #[derive(Clone)]
@@ -153,14 +218,25 @@ impl Store {
             .iter()
             .map(Identity::parse)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(State { owner, processes }))
+        let pending = match value.get("pending") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(Pending::parse(value)?),
+        };
+        if pending.is_some() && processes.len() >= MAX_PROCESSES {
+            return Err("too many grid processes and pending launches".to_owned());
+        }
+        Ok(Some(State {
+            owner,
+            processes,
+            pending,
+        }))
     }
 
     fn write(&self, state: &State) -> Result<(), String> {
         if state.processes.len() > MAX_PROCESSES {
             return Err("too many grid processes".to_owned());
         }
-        let value = json!({"version":1,"owner":state.owner.json(),"processes":state.processes.iter().map(Identity::json).collect::<Vec<_>>()});
+        let value = json!({"version":1,"owner":state.owner.json(),"processes":state.processes.iter().map(Identity::json).collect::<Vec<_>>(),"pending":state.pending.as_ref().map(Pending::json)});
         let bytes =
             serde_json::to_vec(&value).map_err(|_| "could not serialize grid process state")?;
         if bytes.len() > MAX_STATE {
@@ -178,11 +254,17 @@ impl Store {
     }
 
     fn survivor(&self) -> Result<Option<u32>, String> {
-        let Some(state) = self.read()? else {
+        let Some(mut state) = self.read()? else {
             return Ok(None);
         };
         if state.owner.pid != std::process::id() && state.owner.live() {
             return Ok(Some(state.owner.pid));
+        }
+        if state.pending.is_some() && !state.owner.live() {
+            let _lock = self.lock()?;
+            state = self
+                .read_recovered()?
+                .ok_or("grid process state disappeared during recovery")?;
         }
         Ok(state
             .processes
@@ -193,7 +275,19 @@ impl Store {
 
     fn claim(&self) -> Result<Run, String> {
         let lock = self.lock()?;
-        if let Some(pid) = self.survivor()? {
+        let state = self.read_recovered()?;
+        let survivor = state.as_ref().and_then(|state| {
+            if state.owner.pid != std::process::id() && state.owner.live() {
+                Some(state.owner.pid)
+            } else {
+                state
+                    .processes
+                    .iter()
+                    .find(|identity| identity.live())
+                    .map(|identity| identity.pid)
+            }
+        });
+        if let Some(pid) = survivor {
             return Err(format!(
                 "grid process {pid} is still running; cargo xtask live down stops an interrupted run"
             ));
@@ -202,6 +296,7 @@ impl Store {
         self.write(&State {
             owner: owner.clone(),
             processes: Vec::new(),
+            pending: None,
         })?;
         Ok(Run {
             store: self.clone(),
@@ -210,13 +305,57 @@ impl Store {
         })
     }
 
-    fn record(&self, child: &Child) -> Result<Tracked, String> {
+    fn prepare(&self, binary: &Path, args: &[&str], cwd: &Path) -> Result<Launch, String> {
+        let mut state = self.read()?.ok_or("grid process state was not claimed")?;
+        if state.owner != Identity::capture(std::process::id())? {
+            return Err("grid process state belongs to another command".to_owned());
+        }
+        if state.pending.is_some() || state.processes.len() >= MAX_PROCESSES {
+            return Err("grid already has a pending launch or too many processes".to_owned());
+        }
+        let canonical = |path| -> Result<String, String> {
+            fs::canonicalize(path)
+                .map_err(|_| "could not resolve grid launch path")?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| "grid launch path is not UTF-8".to_owned())
+        };
+        let mut argv = binary.as_os_str().as_encoded_bytes().to_vec();
+        argv.push(0);
+        for arg in args {
+            if argv.len().saturating_add(arg.len()).saturating_add(1) > MAX_STATE {
+                return Err("grid launch arguments exceed size limit".to_owned());
+            }
+            argv.extend_from_slice(arg.as_bytes());
+            argv.push(0);
+        }
+        let pending = Pending {
+            marker: uuid::Uuid::new_v4().to_string(),
+            exe: canonical(binary)?,
+            cwd: canonical(cwd)?,
+            args: fingerprint(&argv),
+            after: state.owner.start,
+        };
+        Pending::parse(&pending.json())?;
+        state.pending = Some(pending.clone());
+        self.write(&state)?;
+        Ok(Launch {
+            store: self.clone(),
+            pending,
+        })
+    }
+
+    fn record(&self, child: &Child, pending: &Pending) -> Result<Tracked, String> {
         // spawn's exec handshake can finish before /proc exposes the new
         // argv. Keep the child owned while waiting for its identity to settle.
         let deadline = Instant::now() + Duration::from_secs(1);
         let identity = loop {
             match Identity::capture(child.id()) {
-                Ok(identity) => break identity,
+                Ok(identity) if pending.matches(&identity) => break identity,
+                Ok(_) if Instant::now() >= deadline => {
+                    return Err("grid launch identity did not match its intent".to_owned());
+                }
+                Ok(_) => thread::sleep(Duration::from_millis(5)),
                 Err(error) if Instant::now() >= deadline => return Err(error),
                 Err(_) => thread::sleep(Duration::from_millis(5)),
             }
@@ -228,7 +367,11 @@ impl Store {
         if state.owner != Identity::capture(std::process::id())? {
             return Err("grid process state belongs to another command".to_owned());
         }
+        if state.pending.as_ref().map(|intent| &intent.marker) != Some(&pending.marker) {
+            return Err("grid launch intent changed before its process was recorded".to_owned());
+        }
         state.processes.push(identity.clone());
+        state.pending = None;
         self.write(&state)?;
         Ok(Tracked {
             store: self.clone(),
@@ -249,7 +392,7 @@ impl Store {
 
     fn down(&self) -> Result<(), String> {
         let _lock = self.lock()?;
-        let Some(state) = self.read()? else {
+        let Some(state) = self.read_recovered()? else {
             return Ok(());
         };
         if state.owner.live() {
@@ -271,6 +414,34 @@ impl Store {
         fs::remove_file(&self.path)
             .map_err(|error| format!("could not remove grid process state: {error}"))
     }
+
+    /// Called only under the controller lock. A forked child keeps that lock
+    /// until exec closes its inherited descriptor, including after SIGKILL of
+    /// its parent. Thus recovery cannot race a child that has not exec'd yet.
+    fn read_recovered(&self) -> Result<Option<State>, String> {
+        let Some(mut state) = self.read()? else {
+            return Ok(None);
+        };
+        if !state.owner.live()
+            && let Some(pending) = &state.pending
+        {
+            let mut recovered = scan_pending(pending)?;
+            if recovered.is_empty() {
+                // /proc can briefly expose empty argv/environment at exec.
+                thread::sleep(Duration::from_millis(25));
+                recovered = scan_pending(pending)?;
+            }
+            if recovered.len() > 1 {
+                return Err(
+                    "multiple processes match one pending grid launch; state preserved".to_owned(),
+                );
+            }
+            state.processes.extend(recovered);
+            state.pending = None;
+            self.write(&state)?;
+        }
+        Ok(Some(state))
+    }
 }
 
 pub(crate) struct Run {
@@ -283,6 +454,7 @@ impl Drop for Run {
     fn drop(&mut self) {
         if let Ok(Some(state)) = self.store.read()
             && state.owner == self.owner
+            && state.pending.is_none()
             && !state.processes.iter().any(Identity::live)
         {
             let _ = fs::remove_file(&self.store.path);
@@ -298,6 +470,34 @@ pub(crate) struct Tracked {
     identity: Identity,
 }
 
+pub(crate) struct Launch {
+    store: Store,
+    pending: Pending,
+}
+
+impl Launch {
+    pub(crate) fn configure(&self, command: &mut Command) {
+        command.env(SPAWN_MARKER, &self.pending.marker);
+    }
+
+    pub(crate) fn record(&self, child: &Child) -> Result<Tracked, String> {
+        self.store.record(child, &self.pending)
+    }
+
+    // Only call before spawn, after spawn failed, or after the child was reaped.
+    // Dropping Launch deliberately leaves the intent available for recovery.
+    pub(crate) fn cancel(&self) -> Result<(), String> {
+        let mut state = self.store.read()?.ok_or("grid launch state disappeared")?;
+        if state.owner != Identity::capture(std::process::id())?
+            || state.pending.as_ref().map(|pending| &pending.marker) != Some(&self.pending.marker)
+        {
+            return Err("grid launch intent changed before cancellation".to_owned());
+        }
+        state.pending = None;
+        self.store.write(&state)
+    }
+}
+
 impl Tracked {
     pub(crate) fn forget(&self) -> Result<(), String> {
         self.store.forget(&self.identity)
@@ -307,14 +507,103 @@ impl Tracked {
 pub(crate) fn claim() -> Result<Run, String> {
     store().claim()
 }
-pub(crate) fn record(child: &Child) -> Result<Tracked, String> {
-    store().record(child)
+pub(crate) fn prepare_spawn(binary: &Path, args: &[&str], cwd: &Path) -> Result<Launch, String> {
+    store().prepare(binary, args, cwd)
 }
 pub(crate) fn survivor() -> Result<Option<u32>, String> {
     store().survivor()
 }
 pub(crate) fn down() -> Result<(), String> {
     store().down()
+}
+
+fn scan_pending(pending: &Pending) -> Result<Vec<Identity>, String> {
+    scan_pending_bounded(pending, MAX_PROC_ENTRIES, MAX_SCAN_BYTES)
+}
+
+fn scan_pending_bounded(
+    pending: &Pending,
+    max_entries: usize,
+    max_bytes: usize,
+) -> Result<Vec<Identity>, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = fs::metadata("/proc/self")
+        .map_err(|_| "could not identify controller uid during grid recovery")?
+        .uid();
+    let entries = fs::read_dir("/proc")
+        .map_err(|_| "could not scan processes for the pending grid launch")?;
+    let marker = format!("{SPAWN_MARKER}={}", pending.marker);
+    let mut bytes_left = max_bytes;
+    let mut found = Vec::new();
+    let scan_deadline = Instant::now() + Duration::from_secs(5);
+    for (index, entry) in entries.enumerate() {
+        if index >= max_entries || Instant::now() >= scan_deadline {
+            return Err(
+                "grid recovery process scan exceeded its entry or time limit; state preserved"
+                    .to_owned(),
+            );
+        }
+        let entry = entry.map_err(|_| "could not enumerate processes for grid recovery")?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|text| text.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                return Err(
+                    "could not inspect a process during grid recovery; state preserved".to_owned(),
+                );
+            }
+        };
+        let start = crate::live::process_start_time(pid);
+        if metadata.uid() != uid || start.is_none_or(|start| start < pending.after) {
+            continue;
+        }
+        let file =
+            match fs::File::open(entry.path().join("environ")) {
+                Ok(file) => file,
+                Err(_) if crate::live::process_start_time(pid).is_none() => continue,
+                Err(_) => return Err(
+                    "could not inspect a process environment during grid recovery; state preserved"
+                        .to_owned(),
+                ),
+            };
+        // Never log, persist or include environment contents in errors.
+        let environment = limited(file, MAX_STATE.min(bytes_left))?;
+        bytes_left = bytes_left
+            .checked_sub(environment.len())
+            .ok_or("grid recovery environment scan exceeded its byte limit; state preserved")?;
+        if !environment
+            .split(|byte| *byte == 0)
+            .any(|entry| entry == marker.as_bytes())
+        {
+            continue;
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match Identity::capture(pid) {
+                Ok(identity) if pending.matches(&identity) => {
+                    found.push(identity);
+                    break;
+                }
+                _ if crate::live::process_start_time(pid).is_none() => break,
+                _ if Instant::now() >= deadline => return Err("a pending grid launch marker has a mismatched process identity; state preserved".to_owned()),
+                _ => thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        if found.len() > 1 {
+            return Err(
+                "multiple processes match one pending grid launch; state preserved".to_owned(),
+            );
+        }
+    }
+    Ok(found)
 }
 
 fn process_group(pid: u32) -> Option<u32> {
@@ -331,18 +620,18 @@ fn stop_identity(identity: &Identity) -> Result<(), String> {
     if !identity.live() {
         return Ok(());
     }
-    if process_group(identity.pid) != Some(identity.pid) {
-        return Err(format!(
-            "grid process {} is no longer its group leader",
-            identity.pid
-        ));
-    }
     for (signal, wait) in [
         ("-TERM", Duration::from_secs(30)),
         ("-KILL", Duration::from_secs(5)),
     ] {
         if !identity.live() {
             return Ok(());
+        }
+        if process_group(identity.pid) != Some(identity.pid) {
+            return Err(format!(
+                "grid process {} is no longer its group leader",
+                identity.pid
+            ));
         }
         Command::new("kill")
             .args([signal, &format!("-{}", identity.pid)])
@@ -418,16 +707,33 @@ mod tests {
 
     impl TestChild {
         fn spawn() -> Self {
-            Self(
-                Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", "grid_state::tests::waiting_child", "--ignored"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .process_group(0)
-                    .spawn()
-                    .unwrap(),
-            )
+            Self(Self::command().spawn().unwrap())
+        }
+
+        fn command() -> Command {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "grid_state::tests::waiting_child", "--ignored"])
+                .current_dir(crate::repo_root())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0);
+            command
+        }
+
+        fn pending(store: &Store) -> (Launch, Self) {
+            let launch = store
+                .prepare(
+                    &std::env::current_exe().unwrap(),
+                    &["--exact", "grid_state::tests::waiting_child", "--ignored"],
+                    &crate::repo_root(),
+                )
+                .unwrap();
+            let mut command = Self::command();
+            launch.configure(&mut command);
+            let child = Self(command.spawn().unwrap());
+            (launch, child)
         }
     }
 
@@ -448,8 +754,8 @@ mod tests {
     fn interrupted_grid_processes_are_refused_on_restart_and_cleaned_by_down() {
         let (_directory, store) = TestDir::store();
         let run = store.claim().unwrap();
-        let mut child = TestChild::spawn();
-        store.record(&child.0).unwrap();
+        let (launch, mut child) = TestChild::pending(&store);
+        launch.record(&child.0).unwrap();
         let mut state = store.read().unwrap().unwrap();
         // Simulate the original controller having exited, while its child
         // remains. PID alone is insufficient: an old start token is dead.
@@ -469,8 +775,8 @@ mod tests {
         for mismatch in ["start", "exe", "argv"] {
             let (_directory, store) = TestDir::store();
             let run = store.claim().unwrap();
-            let mut child = TestChild::spawn();
-            store.record(&child.0).unwrap();
+            let (launch, mut child) = TestChild::pending(&store);
+            launch.record(&child.0).unwrap();
             let mut state = store.read().unwrap().unwrap();
             state.owner.start += 1;
             match mismatch {
@@ -495,6 +801,58 @@ mod tests {
         drop(run);
         assert!(!store.path.exists());
         store.down().unwrap();
+    }
+
+    #[test]
+    fn interrupted_spawn_before_record_is_recovered_without_touching_identical_unmarked_process() {
+        let (_directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let (_launch, mut marked) = TestChild::pending(&store);
+        let mut unrelated = TestChild::spawn();
+        let mut state = store.read().unwrap().unwrap();
+        assert!(state.processes.is_empty());
+        assert!(state.pending.is_some());
+        state.owner.start += 1;
+        store.write(&state).unwrap();
+        drop(run);
+        assert_eq!(store.survivor().unwrap(), Some(marked.0.id()));
+        assert!(store.read().unwrap().unwrap().pending.is_none());
+        assert!(store.claim().is_err());
+        store.down().unwrap();
+        marked.0.wait().unwrap();
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        assert!(!store.path.exists());
+    }
+
+    #[test]
+    fn pending_identity_mismatch_preserves_state_and_does_not_signal() {
+        let (_directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let (_launch, mut child) = TestChild::pending(&store);
+        let mut state = store.read().unwrap().unwrap();
+        state.pending.as_mut().unwrap().args ^= 1;
+        state.owner.start += 1;
+        store.write(&state).unwrap();
+        drop(run);
+        assert!(store.down().unwrap_err().contains("mismatched"));
+        assert!(store.read().unwrap().unwrap().pending.is_some());
+        assert!(child.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
+    fn pending_scan_limits_fail_closed_and_unspawned_intent_can_be_cleared() {
+        let (_directory, store) = TestDir::store();
+        let run = store.claim().unwrap();
+        let launch = store
+            .prepare(&std::env::current_exe().unwrap(), &[], &crate::repo_root())
+            .unwrap();
+        assert!(scan_pending_bounded(&launch.pending, 0, MAX_SCAN_BYTES).is_err());
+        assert!(scan_pending_bounded(&launch.pending, MAX_PROC_ENTRIES, 0).is_err());
+        assert!(store.read().unwrap().unwrap().pending.is_some());
+        launch.cancel().unwrap();
+        assert!(store.read().unwrap().unwrap().pending.is_none());
+        drop(run);
+        assert!(!store.path.exists());
     }
 
     #[test]

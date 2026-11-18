@@ -1025,15 +1025,23 @@ fn spawn_proc(
     } else {
         command.stdin(Stdio::null());
     }
-    let mut child = command
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
+    let launch = crate::grid_state::prepare_spawn(binary, args, cwd)?;
+    launch.configure(&mut command);
+    let mut child = match command.process_group(0).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            launch.cancel()?;
+            return Err(format!("could not start {}: {error}", binary.display()));
+        }
+    };
     let stdin = child.stdin.take();
-    let tracked = match crate::grid_state::record(&child) {
+    let tracked = match launch.record(&child) {
         Ok(tracked) => tracked,
         Err(error) => {
             stop_child(&mut child);
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                launch.cancel()?;
+            }
             return Err(error);
         }
     };
