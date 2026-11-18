@@ -23,7 +23,7 @@
 //!   SeedCapRequest
 //!   Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs
 //!   GetEvents, NoEvents
-//!   OpenSim-NGC/OpenSim-Tranquillity @ c85783e993736c172149d0bad63dc16ba910e62f
+//!   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 //! `EventQueueGetModule.cs` is unchanged from `713857f`. `SeedCapRequest` is
 //! unchanged; the file differs elsewhere.
 

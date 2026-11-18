@@ -43,6 +43,8 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 Aurora Viewer's `aurora-llsd` and `aurora-msg` become `ferroan-llsd` and `ferroan-protocol`, and `aurora-prim` supplies later prim volumes ([D11](docs/DECISIONS.md)). The message template Ferroan generates from is libopenmetaverse's, the one Tranquillity speaks. Texture entries, extra parameters and shape quantizers follow libopenmetaverse: Aurora's viewer packer does not emit the same bytes. Permission folding is ported from Tranquillity. Packet quaternions use OpenMetaverse `Quaternion.ToBytes`. Other C# code Aurora lacks is ported from libopenmetaverse and Tranquillity ([D12](docs/DECISIONS.md)). Revisions are pinned in [REFERENCES.md](docs/REFERENCES.md). The template differences are listed in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
+The current compatibility target is Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`. Its changes since `c85783e` leave the implemented Rust wire formats and migration catalog unchanged. The C# harness gains fixes for shared HTTP listener shutdown and unattended console defaults. The viewer asset capability's texture-as-material rejection, script fixes, and addin manifest corrections do not require changes to the implemented Rust services. Pin2 in [TASKS.md](TASKS.md) records the source review and validation.
+
 ## Vectors and quaternions
 
 `ferroan-types` stores vectors and quaternions as `glam` 0.34 values (`Vec2`, `Vec3`, `DVec3`, `Vec4`, `Quat`), the same major version Aurora's `aurora-prim` uses. A `glam` value is not copied onto the wire: each field is written little-endian, which is what OpenMetaverse's `GetBytes` does. `Color4` is a plain struct. Its packet form is four quantized bytes, not a vector.

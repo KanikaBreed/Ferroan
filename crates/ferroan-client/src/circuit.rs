@@ -15,7 +15,8 @@
 //!   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //!   SendRegionHandshake, SendLogoutPacket
 //!   OpenSim-NGC/OpenSim-Tranquillity @ 713857f10b8e91a639a967d4354a4682b080793c
-//! Those two files are unchanged at the pinned revision c85783e.
+//! The cited methods are unchanged at the pinned revision 8583218;
+//! LLClientView.cs has changes elsewhere.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr};

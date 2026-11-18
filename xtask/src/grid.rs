@@ -13,7 +13,7 @@
 //! do not collide. The bot logs in on Robust's own public address.
 //!
 //! The ini text follows GridServer.ini.example, Grid.ini and
-//! GridCommon.ini.example at Tranquillity `c85783e`. Nothing here edits
+//! GridCommon.ini.example at Tranquillity `8583218`. Nothing here edits
 //! those files.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]

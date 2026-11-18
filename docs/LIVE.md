@@ -34,7 +34,7 @@ Add the name to `NAMES` and the `selection` match in [tools/bot/src/scenario.rs]
 
 ## Manual recipe (Linux)
 
-The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The pin is now `c85783e993736c172149d0bad63dc16ba910e62f`, which contains both fixes. The harness sets `bind_ip_address` and starts the region once.
+The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The pin is now `858321883f5487a5d192d36ea9d7b90fa468310c`, which contains both fixes. The harness sets `bind_ip_address` and starts the region once.
 
 All paths are scratch paths. Never build in `~/Git/reference`.
 
@@ -43,7 +43,7 @@ All paths are scratch paths. Never build in `~/Git/reference`.
    ```sh
    W=~/Git/work/ferroan/tranquillity-live
    git clone --no-checkout ~/Git/reference/OpenSim-Tranquillity "$W"
-   git -C "$W" checkout --detach c85783e993736c172149d0bad63dc16ba910e62f
+   git -C "$W" checkout --detach 858321883f5487a5d192d36ea9d7b90fa468310c
    cd "$W"
    dotnet publish Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj -c Release -r linux-x64
    P="$W/Source/OpenSim.Server.RegionServer/bin/Release/net10.0/linux-x64/publish"
@@ -109,7 +109,7 @@ All paths are scratch paths. Never build in `~/Git/reference`.
 ## Gotchas found running the recipe
 
 1. **`[Const]` needs `BaseURL`, `PrivURL` and `PrivatePort`,** not only `BaseHostname` and `PublicPort`. Without them startup fails with `Expand key not found: BaseURL`.
-2. **`--background` cannot answer console prompts.** Any setting Tranquillity would ask for at first start must be in the configuration, or it dies with `Cannot see if a key has been pressed when ... console input has been redirected`. For the estate owner that includes `DefaultEstateOwnerUUID` (`OpenSimBase.SetUpEstateOwner` prompts for it when unset).
+2. **`--background` cannot answer console prompts.** At this pin, `ConsoleBase` takes and logs a prompt's default when standard input is redirected. A prompt without a default fails with an error naming the question and asking for a configuration value. This replaces the redirected-console key error seen at earlier pins. The harness still supplies the estate owner's settings, including `DefaultEstateOwnerUUID`, explicitly. `RemoteConsole` can still answer prompts over HTTP.
 3. **SQLite user columns.** At `713857f`, SQLite `UserAccount.migrations` stopped at version 3 and omitted `DisplayName` and `NameChanged`, so creating a user failed. At this pin, version 4 of that file adds both columns. PostgreSQL `UserAccount` is version 6 for the same columns. The harness starts the region once and does not alter the table.
 4. **HTTP listen address.** `[Network] bind_ip_address` is read by `RegionHttpServerFactory` and `GridHttpServerFactory`. Empty or unset means every interface. The harness sets `bind_ip_address = "127.0.0.1"`. The region's UDP port still follows `InternalAddress`.
 5. **Expected noise:** `Can't load experience service` (`Could not find a storage interface in the given module OpenSim.Data.SQLite.dll`). Tranquillity has no SQLite store for Experiences; the region runs without them.

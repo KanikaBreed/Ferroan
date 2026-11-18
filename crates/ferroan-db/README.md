@@ -4,7 +4,7 @@ sqlx pools for the three databases Tranquillity ships: SQLite, MySQL (MySqlConne
 
 `Pool::open` reads the `migrations` table and returns an error when a requested store is not at the version Tranquillity's migration resources reach from an empty database. The expected numbers are in `src/expected.rs`. They are not the same on each backend. The crate does not run migrations and does not create a missing SQLite file.
 
-The versions come from `Source/OpenSim.Data/Migration.cs` and the `Resources/*.migrations` files (plus SQLite's old-style `001_GridUserStore.sql`) in OpenSim-Tranquillity `c85783e993736c172149d0bad63dc16ba910e62f`. A test re-reads that checkout when `FERROAN_REF` (default `~/Git/reference`) is present and its `HEAD` is that revision. A checkout at another revision is skipped, so a stale local reference does not fail the suite. CI does not have the checkout; it uses the committed table and the SQLite files under `fixtures/db/sqlite/`.
+The versions come from `Source/OpenSim.Data/Migration.cs` and the `Resources/*.migrations` files (plus SQLite's old-style `001_GridUserStore.sql`) in OpenSim-Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`. A test re-reads that checkout when `FERROAN_REF` (default `~/Git/reference`) is present and its `HEAD` is that revision. A checkout at another revision is skipped, so a stale local reference does not fail the suite. CI does not have the checkout; it uses the committed table and the SQLite files under `fixtures/db/sqlite/`.
 
 ## Connection strings
 
