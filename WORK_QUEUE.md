@@ -48,4 +48,4 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 
 ## Waiting on the maintainer
 
-- G0: the Phase 0 Firestorm check, following [docs/MANUAL_CHECKS.md](docs/MANUAL_CHECKS.md). It may run at `c85783e` or at the new pin; the G0 row records which.
+- Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
