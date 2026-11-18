@@ -472,35 +472,44 @@ async fn enter(
 }
 
 async fn leave(session: &mut Session) -> Result<(), String> {
-    // LogoutReply is queued on the task throttle, then dropped if the agent
-    // closes before that queue is sent. The region also sends no further
-    // task packets while more than 50 are still unacked, and resends those
-    // after about a second (LLUDPClient's default RTO). A build fills that
-    // window, so the stall looks like silence. Wait through one resend
-    // interval with nothing new arriving before logging out.
-    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    // LogoutReply sits on the task throttle and is dropped when the agent
+    // closes if earlier packets are still queued. Idle traffic (viewer time
+    // about every 2.5s, stats every 3s) leaves gaps of a few hundred
+    // milliseconds, long enough for that queue to be empty. A build can
+    // stream object updates straight through a short wait, so keep reading
+    // until one of those gaps shows up.
+    let started = std::time::Instant::now();
+    let before = session.received();
+    let deadline = started + Duration::from_secs(8);
     let mut quiet_since = None;
     while std::time::Instant::now() < deadline {
-        let before = session.received();
+        let seen = session.received();
         session
             .drive(Duration::from_millis(200))
             .await
             .map_err(|error| error.to_string())?;
         while session.poll_inbox().is_some() {}
-        if session.received() == before {
+        if session.received() == seen {
             let since = quiet_since.unwrap_or_else(std::time::Instant::now);
             quiet_since = Some(since);
-            if since.elapsed() >= Duration::from_millis(1500) {
+            if since.elapsed() >= Duration::from_millis(400) {
                 break;
             }
         } else {
             quiet_since = None;
         }
     }
+    let quiet_ms = quiet_since.map_or(0, |since| since.elapsed().as_millis());
     session
         .logout(Duration::from_secs(20))
         .await
-        .map_err(|error| format!("logout: {error}"))
+        .map_err(|error| {
+            format!(
+                "logout: {error} (settled {}ms, quiet {quiet_ms}ms, {} datagrams)",
+                started.elapsed().as_millis(),
+                session.received() - before
+            )
+        })
 }
 
 fn avatar_position(
