@@ -36,7 +36,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
-| Q13 | P0.13: logs: stdout for containers, `LOGDIR` files, Tranquillity's remote console, and Loki | READY after Q12 |
+| Q13 | P0.13: logs: stdout for containers, `LOGDIR` files, Tranquillity's remote console, OpenTelemetry export, and Loki | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q13 |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
