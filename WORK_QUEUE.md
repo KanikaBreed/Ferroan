@@ -34,6 +34,9 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q14 | P2.0h: teleport inside the Ferroan region | READY after Q13 |
 | Q15 | P2.0i: teleport to the C# neighbour and back | READY after Q14 |
 | Q16 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q15 |
+| Q17 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q16 |
+| Q18 | P1.A2: `XAssetService` | READY after Q17 |
+| Q19 | P1.A3: FSAssets | READY after Q18 |
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -46,6 +49,8 @@ Q4: [PR #24](https://github.com/KanikaBreed/Ferroan/pull/24). Q5: [PR #25](https
 Q7 to Q9 were added on 18 November 2026 from a review of #20, #21 and #22. They come first because grid-mode results are not reliable until the proxy timeout is fixed, and later rows build on the circuit and the event queue. The findings were not verified. Confirm each one, and record any that are wrong in the row.
 
 Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). It comes after the event-queue fix, so that Ferrobot does not meet the immediate empty-poll answer.
+
+Q17 to Q19 were added on 18 November 2026: `ferroan-robust` is to support all three of Tranquillity's asset backends. They come after P2.0j, so that they run while the maintainer does G2.
 
 Q15: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
