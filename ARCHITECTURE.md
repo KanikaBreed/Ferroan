@@ -14,6 +14,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-protocol` | LLUDP messages generated from libopenmetaverse's `message_template.msg`, plus framing, zero-coding, appended acks and capture redaction. See [docs/PROTOCOL.md](docs/PROTOCOL.md) |
 | `ferroan-capture` | The capture file, the HTTP logging proxy, and redaction. UDP recording is the local Tranquillity patch in [docs/CAPTURES.md](docs/CAPTURES.md) |
 | `ferroan-bot` | Headless viewer in `tools/bot`: XML-RPC login, one LLUDP circuit, the seed capability, and the live-harness scenarios (login, walk, chat, build, teleport, texture, inventory). `cargo xtask live run all` passed against the local Tranquillity region. CI does not start that region yet |
+| `ferroan-client` | One LLUDP circuit on tokio: `UseCircuitCode`, `RegionHandshake`, the viewer's reply, movement, throttle and window, pings, and `LogoutReply`. Throttles, CAPS and the event queue are still planned |
 | `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
 | `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port`. `[Network] bind_ip_address` chooses the listen address; empty means `0.0.0.0`, the same default as Tranquillity with that key unset |
 | `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live` |
@@ -34,7 +35,6 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | --- | --- | --- |
 | `ferroan-services` | Inventory, accounts, presence, grid, login, hypergrid, money server. Assets are implemented | 1 |
 | `ferroan-scene` | Objects, prims, avatars, terrain, the frame loop | 2 |
-| `ferroan-client` | The LLUDP circuit, throttles, CAPS, the event queue | 2 |
 | `ferroan-modules` | Land, estates, groups, inventory transfer, map, dynamic textures | 5 |
 | `ferroan-physics` | The only crate that calls Jolt (native C++) | 3 |
 | `ferroan-scripting` | The only crate that calls Linden's SLua engine (native C++); the `ll`, `os` and `bot` functions | 4 |
