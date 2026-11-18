@@ -62,9 +62,10 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask live build
-       cargo xtask live up
+       cargo xtask live up [--assets ferroan]
        cargo xtask live down
        cargo xtask live run <scenario>|all [grid]
+       cargo xtask live run assets --running
        cargo xtask live assets";
 
 fn main() -> ExitCode {
@@ -101,10 +102,12 @@ fn main() -> ExitCode {
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
         ["live", "build"] => live::build(),
-        ["live", "up"] => live::up(),
+        ["live", "up"] => live::up(false),
+        ["live", "up", "--assets", "ferroan"] => live::up(true),
         ["live", "down"] => live::down(),
         ["live", "run", scenario] => live::run(scenario),
         ["live", "run", scenario, "grid"] => grid::run(scenario),
+        ["live", "run", "assets", "--running"] => live::run_running_assets(),
         ["live", "assets"] => assets::compare(),
         _ => {
             eprintln!("{USAGE}");

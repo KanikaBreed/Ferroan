@@ -6,13 +6,21 @@ Record each run in the gate's row in [TASKS.md](../TASKS.md): date, Firestorm ve
 
 ## Setting up Firestorm for a local grid
 
-1. Start the test region with `cargo xtask live up`. It prints the login URL (`http://127.0.0.1:<port>/`). The account is `Test User`. The password is in the run configuration under `.scratch/live/` and is not printed. This region uses its in-process asset service.
+1. Start the test region with `cargo xtask live up --assets ferroan` for G0, or `cargo xtask live up` for the C# asset-service comparison. It prints the login URL (`http://127.0.0.1:<port>/`). The account is `Test User`. The password is in the run configuration under `.scratch/live/` and is not printed.
 2. In Firestorm: Preferences > OpenSim > Grid Manager. Add the login URL (for example `http://127.0.0.1:9100/`), press Apply, and pick the grid on the login screen.
 3. Use a fresh Firestorm cache for each gate run: Preferences > Network & Files > Directories > Clear Cache, then restart. A warm cache hides texture and inventory faults.
 
 ## G0: Phase 0 gate
 
-Log in to the local C# region while its asset service is `ferroan-robust`. `cargo xtask live assets` runs texture and inventory against that service and against the C# service, then stops. `cargo xtask live up` leaves the region up on the in-process C# asset service. A region that stays up and points at `ferroan-robust` is not a harness command yet, so that Firestorm session is still set up by hand. Record the login URL and the Ferroan commit in the G0 row.
+Log in to the local C# region while its asset service is `ferroan-robust`. Start it with:
+
+```sh
+cargo xtask live build
+cargo xtask live up --assets ferroan
+cargo xtask live run assets --running
+```
+
+After the build, `live up --assets ferroan` seeds a copy of the C# asset store with library assets, starts `ferroan-robust`, and leaves the region pointed at it. It prints the login URL and the region and asset ports. `live run assets --running` checks texture upload, library texture fetch and inventory with `ferroan-bot`, leaving both services running for Firestorm. Use the printed login URL and the generated password from `.scratch/live/run/password`. Record the login URL, asset port and Ferroan commit in the G0 row. The maintainer's completed G0 run recorded there used the earlier manual setup; these commands are the setup for subsequent runs.
 
 | # | Step | Expected |
 | --- | --- | --- |
@@ -27,6 +35,8 @@ Log in to the local C# region while its asset service is `ferroan-robust`. `carg
 | 9 | Log out | Clean logout, no crash dialog |
 
 Notes worth recording even when the step passes: slow texture loads, textures that never sharpen, anything that looks different from the same steps on `cargo xtask live up` (in-process C# asset service).
+
+After the viewer has logged out, `cargo xtask live down` stops both the region and `ferroan-robust`. To run the C# comparison, stop this setup first and start `cargo xtask live up`. `cargo xtask live assets` separately compares the two services' captured texture and inventory HTTP and stops its processes when finished.
 
 ## Later gates
 

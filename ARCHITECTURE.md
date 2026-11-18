@@ -17,7 +17,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-client` | One LLUDP circuit on tokio: `UseCircuitCode`, `RegionHandshake`, the viewer's reply, movement, throttle and window, pings, and `LogoutReply`. The seed answers a POST of capability names with `EventQueueGet`. The event queue answers an empty poll at once with a new id. Throttles are still planned |
 | `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
 | `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port`. `[Network] bind_ip_address` chooses the listen address; empty means `0.0.0.0`, the same default as Tranquillity with that key unset |
-| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live`. `live run` starts one region. `live run … grid` starts GridServer and two neighbouring regions |
+| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live`. `live run` starts one region. `live run … grid` starts GridServer and two neighbouring regions. `live assets` compares C# and Ferroan asset HTTP. `live up --assets ferroan` leaves a C# region and `ferroan-robust` running on a seeded asset store; `live run assets --running` checks that setup and `live down` stops both |
 
 ## Planned
 

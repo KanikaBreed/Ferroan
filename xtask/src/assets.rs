@@ -60,6 +60,11 @@ fn compare_inner() -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn compare_linux() -> Result<String, String> {
+    if let Some(pid) = live::standalone_is_up()? {
+        return Err(format!(
+            "the harness is already up (pid {pid}); run cargo xtask live down first"
+        ));
+    }
     live::ensure_region_built()?;
     let seed = seed_database()?;
     let csharp = run_side("csharp", &seed)?;
@@ -111,24 +116,7 @@ fn run_side(name: &str, seed: &Path) -> Result<SideReport, String> {
     } else {
         return Err(format!("unknown asset side {name}"));
     };
-    let started = Instant::now();
-    loop {
-        if !pid_exists(server.child.id()) {
-            stop_owned(&mut server);
-            return Err(format!("the {name} asset service exited\n{}", tail(&log)));
-        }
-        if live::require_http_loopback(server.child.id(), port).is_ok() {
-            break;
-        }
-        if started.elapsed() > Duration::from_secs(60) {
-            stop_owned(&mut server);
-            return Err(format!(
-                "the {name} asset service did not listen on 127.0.0.1:{port}\n{}",
-                tail(&log)
-            ));
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
+    wait_service(&mut server, name, port, &log)?;
     let capture = run.join(format!("assets-{name}.cap"));
     let upstream = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let (proxy_port, proxy) = spawn_proxy(upstream, &capture)?;
@@ -145,9 +133,126 @@ fn run_side(name: &str, seed: &Path) -> Result<SideReport, String> {
 }
 
 #[cfg(target_os = "linux")]
-struct Owned {
+pub(crate) struct Owned {
     child: std::process::Child,
     stdin: Option<std::process::ChildStdin>,
+    stop_on_drop: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Owned {
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub(crate) fn detach(mut self) {
+        self.stop_on_drop = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Owned {
+    fn drop(&mut self) {
+        if self.stop_on_drop {
+            stop_owned(self);
+        }
+    }
+}
+
+/// The caller retains this guard until the region and its run state are ready.
+#[cfg(target_os = "linux")]
+pub(crate) fn start_persistent() -> Result<(Owned, u16), String> {
+    let seed = seed_database()?;
+    let run = live::scratch_run();
+    let database = run.join("assets-live.db");
+    // A prior run may have left WAL files beside the database. Replacing only
+    // its main file would mix the new seed with those old transactions.
+    for suffix in ["", "-wal", "-shm"] {
+        let path = run.join(format!("assets-live.db{suffix}"));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("could not remove {}: {error}", path.display())),
+        }
+    }
+    fs::copy(seed, &database)
+        .map_err(|error| format!("could not copy the asset database: {error}"))?;
+    let port = live::allocate_port()?;
+    let log = run.join("assets-live.log");
+    let mut server = start_robust(&database, port, &log)?;
+    wait_service(&mut server, "ferroan", port, &log)?;
+    Ok((server, port))
+}
+
+#[cfg(target_os = "linux")]
+fn wait_service(server: &mut Owned, name: &str, port: u16, log: &Path) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        if server
+            .child
+            .try_wait()
+            .map_err(|error| format!("could not check {name}: {error}"))?
+            .is_some()
+        {
+            return Err(format!("the {name} asset service exited\n{}", tail(log)));
+        }
+        if live::require_http_loopback(server.child.id(), port).is_ok() {
+            return Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            return Err(format!(
+                "the {name} asset service did not listen on 127.0.0.1:{port}\n{}",
+                tail(log)
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Only the recorded process from this worktree may be stopped by `live down`.
+#[cfg(target_os = "linux")]
+pub(crate) fn persistent_pid_live(pid: u32, start_time: u64) -> bool {
+    if live::process_start_time(pid) != Some(start_time) {
+        return false;
+    }
+    let Ok(bytes) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
+    let ini = live::scratch_run().join("robust.ini");
+    args.first().is_some_and(|arg| {
+        arg.rsplit(|byte| *byte == b'/').next() == Some(b"ferroan-robust".as_slice())
+    }) && args
+        .windows(2)
+        .any(|pair| pair[0] == b"--inimaster" && pair[1] == ini.as_os_str().as_encoded_bytes())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stop_persistent(pid: u32, start_time: u64) -> Result<(), String> {
+    if !persistent_pid_live(pid, start_time) {
+        return Ok(());
+    }
+    let _ = Command::new("kill")
+        .args(["-TERM", &format!("-{pid}")])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(100));
+    }
+    if persistent_pid_live(pid, start_time) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(100));
+    }
+    if persistent_pid_live(pid, start_time) {
+        Err(format!("asset service pid {pid} did not exit"))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -170,7 +275,13 @@ fn seed_database() -> Result<PathBuf, String> {
         if asset_present(&seed)? {
             break;
         }
-        if !pid_exists(server.child.id()) || started.elapsed() > Duration::from_secs(180) {
+        if server
+            .child
+            .try_wait()
+            .map_err(|error| format!("could not check the asset loader: {error}"))?
+            .is_some()
+            || started.elapsed() > Duration::from_secs(180)
+        {
             stop_owned(&mut server);
             return Err(format!(
                 "the asset loader did not store the library texture\n{}",
@@ -241,7 +352,7 @@ fn start_grid(database: &Path, port: u16, log: &Path, load: bool) -> Result<Owne
         "[Const]\n    BaseHostname = \"127.0.0.1\"\n    PublicPort = \"{port}\"\n    \
          PrivatePort = \"{port}\"\n\n[Startup]\n    RegistryLocation = \".\"\n    \
          ConsoleHistoryFileEnabled = false\n    \
-         EnableRobustSelfsignedCertSupport = false\n\n[Network]\n    port = {port}\n\n\
+         EnableRobustSelfsignedCertSupport = false\n\n[Network]\n    port = {port}\n    bind_ip_address = \"127.0.0.1\"\n\n\
          [ServiceList]\n    \
          AssetServiceConnector = \"{port}/OpenSim.Server.Handlers.dll:AssetServiceConnector\"\n\n\
          [DatabaseService]\n    StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
@@ -300,7 +411,7 @@ fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String>
 #[cfg(target_os = "linux")]
 fn robust_binary() -> Result<PathBuf, String> {
     let output = Command::new("cargo")
-        .args(["build", "-p", "ferroan-robust", "--offline"])
+        .args(["build", "-p", "ferroan-robust", "--locked"])
         .current_dir(repo_root())
         .output()
         .map_err(|error| format!("could not build ferroan-robust: {error}"))?;
@@ -355,7 +466,11 @@ fn spawn_owned(
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
     let stdin = child.stdin.take();
-    Ok(Owned { child, stdin })
+    Ok(Owned {
+        child,
+        stdin,
+        stop_on_drop: true,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -383,16 +498,21 @@ fn spawn_proxy(upstream: SocketAddr, out: &Path) -> Result<(u16, tokio::runtime:
 
 #[cfg(target_os = "linux")]
 fn stop_owned(owned: &mut Owned) {
+    owned.stop_on_drop = false;
+    if matches!(owned.child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     let pid = owned.child.id();
     drop(owned.stdin.take());
     let _ = Command::new("kill")
         .args(["-TERM", &format!("-{pid}")])
         .status();
     let started = Instant::now();
-    while pid_exists(pid) && started.elapsed() < Duration::from_secs(20) {
+    while matches!(owned.child.try_wait(), Ok(None)) && started.elapsed() < Duration::from_secs(20)
+    {
         thread::sleep(Duration::from_millis(200));
     }
-    if pid_exists(pid) {
+    if matches!(owned.child.try_wait(), Ok(None)) {
         let _ = Command::new("kill")
             .args(["-KILL", &format!("-{pid}")])
             .status();
@@ -400,7 +520,7 @@ fn stop_owned(owned: &mut Owned) {
     let _ = owned.child.wait();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn pid_exists(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -598,6 +718,50 @@ mod tests {
             canonical_http(&csharp).unwrap(),
             canonical_http(&ferroan).unwrap()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_start_drops_and_reaps_the_owned_process() {
+        let dir = repo_root()
+            .join(".scratch")
+            .join(format!("asset-process-test-{}", uuid::Uuid::new_v4()));
+        let owned = spawn_owned(
+            Path::new("/bin/sleep"),
+            &["30"],
+            &repo_root(),
+            &dir.join("child.log"),
+            false,
+        )
+        .unwrap();
+        let pid = owned.pid();
+        assert!(pid_exists(pid));
+        drop(owned);
+        assert!(!pid_exists(pid));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persistent_stop_refuses_an_unrelated_process_and_reused_identity() {
+        let dir = repo_root()
+            .join(".scratch")
+            .join(format!("asset-owner-test-{}", uuid::Uuid::new_v4()));
+        let mut owned = spawn_owned(
+            Path::new("/bin/sleep"),
+            &["30"],
+            &repo_root(),
+            &dir.join("child.log"),
+            false,
+        )
+        .unwrap();
+        let pid = owned.pid();
+        let start = live::process_start_time(pid).unwrap();
+        stop_persistent(pid, start).unwrap();
+        stop_persistent(pid, start + 1).unwrap();
+        assert!(owned.child.try_wait().unwrap().is_none());
+        drop(owned);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn capture(request: &[u8], response: &[u8]) -> Vec<u8> {

@@ -98,3 +98,13 @@ jobs:
           cargo xtask live build
           cargo xtask live run all
           cargo xtask live run all grid
+      - name: Compare C# and Ferroan asset services
+        run: cargo xtask live assets
+      - name: Check the persistent Ferroan asset setup
+        run: |
+          set -euo pipefail
+          cargo xtask live up --assets ferroan
+          cargo xtask live run assets --running
+      - name: Stop the persistent region and asset service
+        if: always()
+        run: cargo xtask live down

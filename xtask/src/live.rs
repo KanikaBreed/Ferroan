@@ -26,13 +26,25 @@ pub(crate) const REGION_UUID: &str = "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01";
 pub(crate) const CHAT_USER: &str = "8c4e1a70-2b59-4d6f-9e13-5a7c0d8b2f44";
 pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+const PASSWORD_BYTES: usize = 18;
 
 pub fn build() -> ExitCode {
     finish(build_inner())
 }
 
-pub fn up() -> ExitCode {
-    finish(up_inner())
+pub fn up(ferroan_assets: bool) -> ExitCode {
+    finish(up_inner(ferroan_assets))
+}
+
+pub fn run_running_assets() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    {
+        finish(run_running_assets_linux())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        finish(Err("cargo xtask live runs on Linux".to_string()))
+    }
 }
 
 pub fn down() -> ExitCode {
@@ -69,13 +81,14 @@ fn build_inner() -> Result<String, String> {
     }
 }
 
-fn up_inner() -> Result<String, String> {
+fn up_inner(ferroan_assets: bool) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        up_linux()
+        up_linux(ferroan_assets)
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = ferroan_assets;
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -139,6 +152,13 @@ struct RunState {
     pid: u32,
     public_port: u16,
     private_port: u16,
+    assets: Option<AssetState>,
+}
+
+struct AssetState {
+    pid: u32,
+    start_time: u64,
+    port: u16,
 }
 
 fn write_state(path: &Path, state: &RunState) -> Result<(), String> {
@@ -146,15 +166,25 @@ fn write_state(path: &Path, state: &RunState) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
-    let text = format!(
+    let mut text = format!(
         "pid={}\npublic_port={}\nprivate_port={}\n",
         state.pid, state.public_port, state.private_port
     );
-    fs::write(path, text).map_err(|error| format!("could not write {}: {error}", path.display()))
+    if let Some(asset) = &state.assets {
+        text.push_str(&format!(
+            "asset_pid={}\nasset_start_time={}\nasset_port={}\n",
+            asset.pid, asset.start_time, asset.port
+        ));
+    }
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, text)
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    fs::rename(&temporary, path)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
 fn read_state(path: &Path) -> Result<Option<RunState>, String> {
-    let text = match fs::read_to_string(path) {
+    let text = match read_bounded_text(path, 4096) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("could not read {}: {error}", path.display())),
@@ -162,6 +192,10 @@ fn read_state(path: &Path) -> Result<Option<RunState>, String> {
     let mut pid = None;
     let mut public_port = None;
     let mut private_port = None;
+    let mut asset_pid = None;
+    let mut asset_start_time = None;
+    let mut asset_port = None;
+    let mut has_assets = false;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -170,17 +204,67 @@ fn read_state(path: &Path) -> Result<Option<RunState>, String> {
             "pid" => pid = value.parse().ok(),
             "public_port" => public_port = value.parse().ok(),
             "private_port" => private_port = value.parse().ok(),
+            "asset_pid" => {
+                has_assets = true;
+                asset_pid = value.parse().ok();
+            }
+            "asset_start_time" => {
+                has_assets = true;
+                asset_start_time = value.parse().ok();
+            }
+            "asset_port" => {
+                has_assets = true;
+                asset_port = value.parse().ok();
+            }
             _ => {}
         }
     }
+    let assets = match (has_assets, asset_pid, asset_start_time, asset_port) {
+        (false, _, _, _) => None,
+        (true, Some(pid), Some(start_time), Some(port))
+            if pid > 1 && start_time > 0 && port > 0 =>
+        {
+            Some(AssetState {
+                pid,
+                start_time,
+                port,
+            })
+        }
+        _ => {
+            return Err(format!(
+                "{} has invalid asset process state",
+                path.display()
+            ));
+        }
+    };
     match (pid, public_port, private_port) {
-        (Some(pid), Some(public_port), Some(private_port)) => Ok(Some(RunState {
-            pid,
-            public_port,
-            private_port,
-        })),
+        (Some(pid), Some(public_port), Some(private_port))
+            if pid > 1 && public_port > 0 && private_port > 0 =>
+        {
+            Ok(Some(RunState {
+                pid,
+                public_port,
+                private_port,
+                assets,
+            }))
+        }
         _ => Err(format!("{} is missing pid or ports", path.display())),
     }
+}
+
+fn read_bounded_text(path: &Path, limit: usize) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_string(&mut text)?;
+    if text.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file exceeds its size limit",
+        ));
+    }
+    Ok(text)
 }
 
 fn region_server_ini(
@@ -471,9 +555,56 @@ struct Started {
 }
 
 #[cfg(target_os = "linux")]
-fn up_linux() -> Result<String, String> {
-    let started = start_region(false, None, false)?;
-    let report = up_report(started.public_port, &started.log);
+fn up_linux(ferroan_assets: bool) -> Result<String, String> {
+    if let Some(pid) = standalone_is_up()? {
+        return Err(format!(
+            "the harness is already up (pid {pid}); cargo xtask live down stops it"
+        ));
+    }
+    let assets = if ferroan_assets {
+        ensure_region_built()?;
+        Some(crate::assets::start_persistent()?)
+    } else {
+        None
+    };
+    let uri = assets
+        .as_ref()
+        .map(|(_, port)| format!("http://127.0.0.1:{port}"));
+    let mut started = start_region(false, uri.as_deref(), false)?;
+    let saved = (|| {
+        let mut report = up_report(started.public_port, &started.log);
+        if let Some((server, port)) = &assets {
+            let start_time = process_start_time(server.pid())
+                .ok_or("the asset service exited during region startup")?;
+            if !crate::assets::persistent_pid_live(server.pid(), start_time) {
+                return Err("the asset service does not belong to this run".to_string());
+            }
+            let mut state =
+                read_state(&state_path())?.ok_or("the region did not save run state")?;
+            state.assets = Some(AssetState {
+                pid: server.pid(),
+                start_time,
+                port: *port,
+            });
+            write_secret(&run_dir().join("password"), &started.password)?;
+            write_state(&state_path(), &state)?;
+            report.push_str(&format!(
+                "\nassets: ferroan\nasset_http_listen: 127.0.0.1:{port}"
+            ));
+        }
+        Ok(report)
+    })();
+    let report = match saved {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = stop_started(&mut started);
+            let _ = fs::remove_file(run_dir().join("password"));
+            return Err(error);
+        }
+    };
+    if let Some((server, _)) = assets {
+        server.detach();
+    }
     // Dropping Child does not kill the process. `live up` exits and init inherits it.
     drop(started.child);
     drop(started.stdin);
@@ -488,12 +619,10 @@ fn run_linux(scenario: &str) -> Result<String, String> {
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
-    if let Some(state) = read_state(&state_path())?
-        && region_pid_live(state.pid)
-    {
+    if let Some(pid) = standalone_is_up()? {
         return Err(format!(
             "the region is already up (pid {}); cargo xtask live down stops it",
-            state.pid
+            pid
         ));
     }
     let mut started = start_region(true, None, true)?;
@@ -514,12 +643,10 @@ pub(crate) fn run_against_assets(asset_uri: &str, scenario: &str) -> Result<Stri
     if ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!("unknown scenario {scenario}"));
     }
-    if let Some(state) = read_state(&state_path())?
-        && region_pid_live(state.pid)
-    {
+    if let Some(pid) = standalone_is_up()? {
         return Err(format!(
             "the region is already up (pid {}); cargo xtask live down stops it",
-            state.pid
+            pid
         ));
     }
     let mut started = start_region(true, Some(asset_uri), true)?;
@@ -627,6 +754,57 @@ pub(crate) fn finish_capture(
 fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcome, String> {
     let chat_password = generate_password()?;
     create_chat_user(started, &chat_password)?;
+    run_scenarios_with_accounts(
+        started.public_port,
+        &started.password,
+        &chat_password,
+        &started.log,
+        scenario,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn run_running_assets_linux() -> Result<String, String> {
+    let state =
+        read_state(&state_path())?.ok_or("run cargo xtask live up --assets ferroan first")?;
+    let assets = state
+        .assets
+        .as_ref()
+        .ok_or("this region was not started with --assets ferroan")?;
+    if !region_pid_live(state.pid)
+        || !crate::assets::persistent_pid_live(assets.pid, assets.start_time)
+    {
+        return Err("the saved region or asset service is no longer running; run cargo xtask live down first".to_string());
+    }
+    require_http_loopback(state.pid, state.public_port)?;
+    require_http_loopback(assets.pid, assets.port)?;
+    let path = run_dir().join("password");
+    let text = read_bounded_text(&path, PASSWORD_BYTES * 2)
+        .map_err(|error| format!("could not read the saved harness password: {error}"))?;
+    let password = saved_password(text.into_bytes())?;
+    // The assets selection only uses the owner account. It neither needs nor
+    // creates the second account used by the chat scenario.
+    let outcome = run_scenarios_with_accounts(
+        state.public_port,
+        &password,
+        "",
+        &run_dir().join("region.log"),
+        "assets",
+    )?;
+    Ok(format!(
+        "{}\nassets: running services kept up",
+        outcome.report
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn run_scenarios_with_accounts(
+    public_port: u16,
+    password: &str,
+    chat_password: &str,
+    log: &Path,
+    scenario: &str,
+) -> Result<ScenarioOutcome, String> {
     let texture = texture_bytes()?;
     let region_id = uuid::Uuid::parse_str(REGION_UUID)
         .map_err(|_| "the region uuid is not a uuid".to_string())?;
@@ -634,22 +812,22 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
         .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
     let http_trace = ferroan_bot::trace::HttpTrace::new();
     let harness = ferroan_bot::scenario::Harness {
-        login_uri: format!("http://127.0.0.1:{}/", started.public_port),
+        login_uri: format!("http://127.0.0.1:{public_port}/"),
         region_id,
         owner: ferroan_bot::scenario::Account {
             first_name: "Test".to_string(),
             last_name: "User".to_string(),
-            password: started.password.clone(),
+            password: password.to_owned(),
         },
         chat: ferroan_bot::scenario::Account {
             first_name: "Chat".to_string(),
             last_name: "Bot".to_string(),
-            password: chat_password.clone(),
+            password: chat_password.to_owned(),
         },
         texture,
         library_texture: library,
         http_trace: std::sync::Arc::clone(&http_trace),
-        region_log: started.log.clone(),
+        region_log: log.to_owned(),
         neighbour: None,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -660,7 +838,7 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
     Ok(ScenarioOutcome {
         report,
         http: http_trace.records(),
-        chat_password,
+        chat_password: chat_password.to_owned(),
     })
 }
 
@@ -748,12 +926,10 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
-    if let Some(state) = read_state(&state_path())?
-        && region_pid_live(state.pid)
-    {
+    if let Some(pid) = standalone_is_up()? {
         return Err(format!(
             "the region is already up (pid {}); cargo xtask live down stops it",
-            state.pid
+            pid
         ));
     }
     let publish = publish_dir();
@@ -807,7 +983,14 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
     let log = run.join("region.log");
     println!("live: starting the region on 127.0.0.1:{public_port}");
     let mut child = spawn_region(&binary, &publish, &config, &log, console)?;
-    match wait_region(&mut child, &log, START_TIMEOUT)? {
+    let waited = match wait_region(&mut child, &log, START_TIMEOUT) {
+        Ok(waited) => waited,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(error);
+        }
+    };
+    match waited {
         Waited::Ready => finish_start(child, &log, public_port, private_port, &password),
         Waited::Timeout => {
             stop_child(&mut child);
@@ -837,14 +1020,18 @@ fn finish_start(
         stop_child(&mut child);
         return Err(format!("{error}\n{}", log_tail(log, password)));
     }
-    write_state(
+    if let Err(error) = write_state(
         &state_path(),
         &RunState {
             pid,
             public_port,
             private_port,
+            assets: None,
         },
-    )?;
+    ) {
+        stop_child(&mut child);
+        return Err(error);
+    }
     let stdin = child.stdin.take();
     Ok(Started {
         child,
@@ -860,10 +1047,14 @@ fn down_linux() -> Result<String, String> {
     let Some(state) = read_state(&state_path())? else {
         return Ok("live: down".to_string());
     };
-    if region_pid_live(state.pid) {
-        stop_pid(state.pid)?;
-    }
+    let region_result = stop_pid(state.pid);
+    let asset_result = state.assets.as_ref().map_or(Ok(()), |asset| {
+        crate::assets::stop_persistent(asset.pid, asset.start_time)
+    });
+    region_result?;
+    asset_result?;
     let _ = fs::remove_file(state_path());
+    let _ = fs::remove_file(run_dir().join("password"));
     Ok("live: down".to_string())
 }
 
@@ -1043,10 +1234,17 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
 
 #[cfg(target_os = "linux")]
 pub(crate) fn standalone_is_up() -> Result<Option<u32>, String> {
-    match read_state(&state_path())? {
-        Some(state) if region_pid_live(state.pid) => Ok(Some(state.pid)),
-        _ => Ok(None),
+    if let Some(state) = read_state(&state_path())? {
+        if region_pid_live(state.pid) {
+            return Ok(Some(state.pid));
+        }
+        if let Some(asset) = state.assets
+            && crate::assets::persistent_pid_live(asset.pid, asset.start_time)
+        {
+            return Ok(Some(asset.pid));
+        }
     }
+    Ok(None)
 }
 
 fn copy_examples(publish: &Path) -> Result<(), String> {
@@ -1273,10 +1471,40 @@ fn socket_inodes(pid: u32) -> Result<std::collections::HashSet<u64>, String> {
 
 #[cfg(target_os = "linux")]
 fn region_pid_live(pid: u32) -> bool {
+    if process_start_time(pid).is_none() {
+        return false;
+    }
     let Ok(bytes) = fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
-    String::from_utf8_lossy(&bytes).contains("OpenSim.Server.RegionServer")
+    let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
+    let config = run_dir().join("config");
+    args.first().is_some_and(|arg| {
+        arg.rsplit(|byte| *byte == b'/').next() == Some(b"OpenSim.Server.RegionServer".as_slice())
+    }) && args.windows(2).any(|pair| {
+        pair[0] == b"--inidirectory" && pair[1] == config.as_os_str().as_encoded_bytes()
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
+    if pid <= 1 {
+        return None;
+    }
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_process_start_time(&stat)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_process_start_time(stat: &str) -> Option<u64> {
+    // The comm field can itself contain spaces and parentheses. Fields after
+    // its final ')' begin with state (3); starttime is field 22.
+    let (_, fields) = stat.rsplit_once(')')?;
+    let mut fields = fields.split_whitespace();
+    if matches!(fields.next()?, "Z" | "X") {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -1316,12 +1544,19 @@ fn stop_pid(pid: u32) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn generate_password() -> Result<String, String> {
-    let mut bytes = [0u8; 18];
+    let mut bytes = [0u8; PASSWORD_BYTES];
     let mut file = File::open("/dev/urandom")
         .map_err(|error| format!("could not read /dev/urandom: {error}"))?;
     std::io::Read::read_exact(&mut file, &mut bytes)
         .map_err(|error| format!("could not read /dev/urandom: {error}"))?;
     Ok(hex_encode(&bytes))
+}
+
+fn saved_password(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() != PASSWORD_BYTES * 2 || !bytes.iter().all(u8::is_ascii_hexdigit) {
+        return Err("the saved harness password is invalid".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "the saved harness password is invalid".to_string())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1596,6 +1831,7 @@ mod tests {
                 pid: 42,
                 public_port: 9100,
                 private_port: 9103,
+                assets: None,
             },
         )
         .unwrap();
@@ -1604,5 +1840,80 @@ mod tests {
         assert_eq!(state.public_port, 9100);
         assert_eq!(state.private_port, 9103);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persistent_state_requires_a_complete_safe_asset_identity() {
+        let dir = repo_root()
+            .join(".scratch")
+            .join(format!("state-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("state");
+        let state = RunState {
+            pid: 42,
+            public_port: 9100,
+            private_port: 9103,
+            assets: Some(AssetState {
+                pid: 43,
+                port: 9200,
+                start_time: 987654,
+            }),
+        };
+        write_state(&path, &state).unwrap();
+        let parsed = read_state(&path).unwrap().unwrap();
+        let asset = parsed.assets.unwrap();
+        assert_eq!(
+            (asset.pid, asset.port, asset.start_time),
+            (43, 9200, 987654)
+        );
+        for fields in [
+            "asset_pid=43\n",
+            "asset_pid=0\nasset_start_time=987654\nasset_port=9200\n",
+            "asset_pid=43\nasset_start_time=987654\nasset_port=65536\n",
+        ] {
+            fs::write(
+                &path,
+                format!("pid=42\npublic_port=9100\nprivate_port=9103\n{fields}"),
+            )
+            .unwrap();
+            assert!(read_state(&path).is_err());
+        }
+        fs::write(&path, "pid=0\npublic_port=9100\nprivate_port=9103\n").unwrap();
+        assert!(read_state(&path).is_err());
+        fs::write(&path, "x".repeat(4097)).unwrap();
+        assert!(read_state(&path).err().unwrap().contains("size limit"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn process_identity_handles_comm_parentheses_and_excludes_zombies() {
+        let tail = format!("{}987654 0", "0 ".repeat(18));
+        assert_eq!(
+            parse_process_start_time(&format!("42 (name ) with spaces) S {tail}")),
+            Some(987654)
+        );
+        assert_eq!(
+            parse_process_start_time(&format!("42 (name) Z {tail}")),
+            None
+        );
+        assert_eq!(parse_process_start_time("42 (broken) S 0"), None);
+    }
+
+    #[test]
+    fn a_generated_password_can_be_saved_and_invalid_secrets_are_not_reported() {
+        let password = hex_encode(&[0xab; PASSWORD_BYTES]);
+        assert_eq!(
+            saved_password(password.clone().into_bytes()).unwrap(),
+            password
+        );
+        for bytes in [
+            b"private-invalid-password".to_vec(),
+            vec![b'g'; PASSWORD_BYTES * 2],
+            vec![b'a'; PASSWORD_BYTES * 2 + 1],
+        ] {
+            assert_eq!(
+                saved_password(bytes).unwrap_err(),
+                "the saved harness password is invalid"
+            );
+        }
     }
 }
