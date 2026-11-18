@@ -658,6 +658,7 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
         texture,
         library_texture: library,
         http_trace: std::sync::Arc::clone(&http_trace),
+        region_log: started.log.clone(),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

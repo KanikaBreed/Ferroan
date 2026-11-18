@@ -5,6 +5,7 @@
 //! region. The caller starts and stops the region and supplies the accounts.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
@@ -38,6 +39,8 @@ pub struct Harness {
     pub library_texture: Uuid,
     /// HTTP exchanges recorded while [`run`] is in progress.
     pub http_trace: std::sync::Arc<crate::trace::HttpTrace>,
+    /// Region stdout. Logout is confirmed here when `LogoutReply` is dropped.
+    pub region_log: std::path::PathBuf,
 }
 
 /// The scenarios `all` runs, in order.
@@ -115,10 +118,10 @@ async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
     let (mut session, _) = enter(http, harness, &harness.owner).await?;
     let region = session.region_id().ok_or("the handshake set no region")?;
     if region != harness.region_id {
-        let _ = leave(&mut session).await;
+        let _ = leave(harness, &mut session, &harness.owner).await;
         return Err(format!("region {region}"));
     }
-    leave(&mut session).await?;
+    leave(harness, &mut session, &harness.owner).await?;
     Ok("login: pass".to_string())
 }
 
@@ -151,7 +154,7 @@ async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
         }
     }
     let Some(start) = start else {
-        let _ = leave(&mut session).await;
+        let _ = leave(harness, &mut session, &harness.owner).await;
         return Err("no AgentMovementComplete".to_string());
     };
     let _ = handle;
@@ -187,7 +190,7 @@ async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
     // before logout. LogoutReply sits on that same throttle.
     let stop = world::agent_update(agent, latest, facing, 0);
     let _ = session.send(&stop, false).await;
-    let logged_out = leave(&mut session).await;
+    let logged_out = leave(harness, &mut session, &harness.owner).await;
     if !moved {
         return Err(format!(
             "position stayed at {:.1},{:.1},{:.1} under forward control ({samples} position updates, local id {local_id:?})",
@@ -237,8 +240,8 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
             break;
         }
     }
-    let speaker_out = leave(&mut speaker).await;
-    let listener_out = leave(&mut listener).await;
+    let speaker_out = leave(harness, &mut speaker, &harness.owner).await;
+    let listener_out = leave(harness, &mut listener, &harness.chat).await;
     if !heard {
         return Err("the second bot did not hear the say on channel 0".to_string());
     }
@@ -315,8 +318,8 @@ async fn build_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
         .await
         .map_err(|error| error.to_string())?;
     wait_kill(&mut owner, &mut other, updated.local_id).await?;
-    leave(&mut owner).await?;
-    leave(&mut other).await?;
+    leave(harness, &mut owner, &harness.owner).await?;
+    leave(harness, &mut other, &harness.chat).await?;
     Ok("build: pass".to_string())
 }
 
@@ -341,7 +344,7 @@ async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<
         }
     }
     let (Some(start), Some(handle)) = (start, handle) else {
-        let _ = leave(&mut session).await;
+        let _ = leave(harness, &mut session, &harness.owner).await;
         return Err("no AgentMovementComplete".to_string());
     };
     let target = Vec3::new(40.0, 200.0, 30.0);
@@ -367,7 +370,7 @@ async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<
             }
         }
     }
-    let logged_out = leave(&mut session).await;
+    let logged_out = leave(harness, &mut session, &harness.owner).await;
     if let Some(reason) = failed {
         return Err(format!("teleport failed: {reason}"));
     }
@@ -395,7 +398,7 @@ async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     let uploaded = upload_texture(http, &session, folder, &harness.texture).await?;
     let fetched = fetch_texture(http, &session, uploaded).await?;
     if fetched != harness.texture {
-        let _ = leave(&mut session).await;
+        let _ = leave(harness, &mut session, &harness.owner).await;
         return Err(format!(
             "uploaded texture came back as {} bytes, sent {}",
             fetched.len(),
@@ -403,7 +406,7 @@ async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
         ));
     }
     let library = fetch_texture(http, &session, harness.library_texture).await?;
-    leave(&mut session).await?;
+    leave(harness, &mut session, &harness.owner).await?;
     if !world::is_j2c(&fetched) || !world::is_j2c(&library) {
         return Err("a fetched texture is not a JPEG 2000 codestream".to_string());
     }
@@ -418,13 +421,13 @@ async fn inventory_scenario(http: &reqwest::Client, harness: &Harness) -> Result
     let (mut session, login) = enter(http, harness, &harness.owner).await?;
     let root = login.inventory_root;
     if root.is_nil() {
-        let _ = leave(&mut session).await;
+        let _ = leave(harness, &mut session, &harness.owner).await;
         return Err("the login reply has no inventory root".to_string());
     }
     let folder = textures_folder(&login).ok_or("the login reply has no Textures folder")?;
     let item = upload_texture(http, &session, folder, &harness.texture).await?;
     let reply = fetch_folder(http, &session, folder, session.agent().agent_id).await?;
-    leave(&mut session).await?;
+    leave(harness, &mut session, &harness.owner).await?;
     if !llsd_has_uuid(&reply, folder) || !llsd_has_text(&reply, UPLOAD_NAME) {
         return Err("the folder fetch did not return the uploaded item".to_string());
     }
@@ -471,13 +474,13 @@ async fn enter(
     Ok((session, response))
 }
 
-async fn leave(session: &mut Session) -> Result<(), String> {
-    // LogoutReply sits on the task throttle and is dropped when the agent
-    // closes if earlier packets are still queued. Idle traffic (viewer time
-    // about every 2.5s, stats every 3s) leaves gaps of a few hundred
-    // milliseconds, long enough for that queue to be empty. A build can
-    // stream object updates straight through a short wait, so keep reading
-    // until one of those gaps shows up.
+async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> Result<(), String> {
+    // LogoutReply is queued on the task throttle. The outgoing loop sleeps
+    // while that queue is idle, and closing the agent then clears the queue,
+    // so the reply is often never sent. HandleLogout logs the request before
+    // that. An idle gap still gives the reply a chance to win the race.
+    let name = format!("{} {}", account.first_name, account.last_name);
+    let logged_before = logout_requests(&harness.region_log, &name)?;
     let started = std::time::Instant::now();
     let before = session.received();
     let deadline = started + Duration::from_secs(8);
@@ -499,17 +502,34 @@ async fn leave(session: &mut Session) -> Result<(), String> {
             quiet_since = None;
         }
     }
+    if session.logout(Duration::from_secs(2)).await.is_ok() {
+        return Ok(());
+    }
+    let log_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if logout_requests(&harness.region_log, &name)? > logged_before {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= log_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let quiet_ms = quiet_since.map_or(0, |since| since.elapsed().as_millis());
-    session
-        .logout(Duration::from_secs(20))
-        .await
-        .map_err(|error| {
-            format!(
-                "logout: {error} (settled {}ms, quiet {quiet_ms}ms, {} datagrams)",
-                started.elapsed().as_millis(),
-                session.received() - before
-            )
-        })
+    Err(format!(
+        "logout: timed out waiting for logout (settled {}ms, quiet {quiet_ms}ms, {} datagrams, no log line for {name})",
+        started.elapsed().as_millis(),
+        session.received() - before
+    ))
+}
+
+/// `HandleLogout` writes this before it queues `LogoutReply`.
+fn logout_requests(path: &Path, name: &str) -> Result<usize, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let needle = format!("Got a logout request for {name} ");
+    Ok(text.matches(&needle).count())
 }
 
 fn avatar_position(
@@ -886,6 +906,29 @@ fn near_vec(left: [f32; 3], right: [f32; 3], epsilon: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_logout_log_line_counts_only_that_avatar() {
+        let path = std::env::temp_dir().join(format!(
+            "ferroan-logout-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "[CLIENT]: Got a logout request for Test User in Ferroan Test\n\
+             [CLIENT]: Got a logout request for Chat Bot in Ferroan Test\n\
+             [CLIENT]: Got a logout request for Test User in Ferroan Test\n",
+        )
+        .unwrap();
+        assert_eq!(logout_requests(&path, "Test User").unwrap(), 2);
+        assert_eq!(logout_requests(&path, "Chat Bot").unwrap(), 1);
+        assert_eq!(logout_requests(&path, "Other User").unwrap(), 0);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn all_expands_and_a_single_name_does_not() {
