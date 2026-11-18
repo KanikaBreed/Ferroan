@@ -12,6 +12,8 @@ The circuit binds `127.0.0.1`. Reliable packets are resent until they are acked.
 
 The seed POST asks for `EventQueueGet`, `GetTexture`, `FetchInventoryDescendents2`, `FetchInventory2` and `NewFileAgentInventory`.
 
+Readiness requires that seed request to finish, the handshake reply, and a fresh reliable `AgentMovementComplete` matching the current circuit's peer, agent and session. On return to a retained circuit, prior arrival evidence is cleared and buffered old packets are drained within a fixed bound. A new handshake and a later arrival sequence must be received; a reordered arrival is accepted on its reliable resend. The timestamp is not used as a freshness token.
+
 A login reply over 8 MiB, or a seed reply over 1 MiB, is refused. At most 256 reliable packets stay unacked.
 
 ## Command

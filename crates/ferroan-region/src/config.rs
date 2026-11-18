@@ -29,6 +29,7 @@
 //   Source/OpenSim.ApplicationPlugins.LoadRegions/RegionLoaderFileSystem.cs
 //   Source/OpenSim.Server.RegionServer/OpenSimBase.cs (CreateRegion)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (map configuration)
+//   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (CompleteMovement)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -74,6 +75,8 @@ pub struct RegionConfig {
     pub grid_server_uri: String,
     pub estate_owner: Uuid,
     pub handshake: HandshakeConfig,
+    /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
+    pub channel_version: String,
     pub region_secret: Uuid,
 }
 
@@ -229,12 +232,24 @@ impl RegionConfig {
             grid_server_uri: grid_server_uri.to_owned(),
             estate_owner,
             handshake,
+            channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
         })
     }
 
     pub fn handle(&self) -> u64 {
         (u64::from(self.location[0]) * 256) << 32 | (u64::from(self.location[1]) * 256)
+    }
+
+    /// Until AgentUpdate and terrain are implemented, use the accepted login
+    /// position and CompleteMovement's initial zero-camera/zero-velocity fallback.
+    pub fn arrival(&self, position: [f32; 3]) -> ferroan_client::ArrivalConfig {
+        ferroan_client::ArrivalConfig {
+            position,
+            look_at: [0.99, 0.042, 0.0],
+            region_handle: self.handle(),
+            channel_version: self.channel_version.clone(),
+        }
     }
 }
 
@@ -365,6 +380,17 @@ mod tests {
         assert_eq!(region.udp_bind, "127.0.0.1:9100".parse().unwrap());
         assert_eq!(region.server_uri, "http://127.0.0.1:9100/");
         assert_eq!(region.size, [256, 256]);
+    }
+
+    #[test]
+    fn arrival_preserves_login_position_and_uses_region_identity() {
+        let mut region = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        region.channel_version = "Configured server identity".into();
+        let arrival = region.arrival([17.0, 29.0, 0.0]);
+        assert_eq!(arrival.position, [17.0, 29.0, 0.0]);
+        assert_eq!(arrival.look_at, [0.99, 0.042, 0.0]);
+        assert_eq!(arrival.region_handle, (256000u64 << 32) | 256256);
+        assert_eq!(arrival.channel_version, "Configured server identity");
     }
 
     #[test]

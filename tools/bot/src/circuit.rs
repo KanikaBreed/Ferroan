@@ -87,6 +87,13 @@ impl Circuit {
         self.sock.recv_from(buf).await
     }
 
+    pub(crate) fn try_recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(usize, SocketAddr), std::io::Error> {
+        self.sock.try_recv_from(buf)
+    }
+
     /// `try_send_to` only succeeds after the socket has been polled ready.
     async fn raw_send(&mut self) -> bool {
         if self.sock.writable().await.is_err() {

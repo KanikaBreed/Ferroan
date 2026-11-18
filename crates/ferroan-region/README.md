@@ -2,13 +2,15 @@
 
 This first region process logs a bot in through C# Robust. It reads Tranquillity's region configuration using `ferroan-config`, registers with the grid service, accepts `QUERYACCESS` and `POST /agent/...` simulation requests, and serves one LLUDP circuit and its seed capability. Robust remains the viewer's login server. SIGTERM or Ctrl-C deregisters the region before closing its HTTP listener.
 
+After a valid `CompleteAgentMovement`, the region sends one reliable `AgentMovementComplete` with the accepted agent/session IDs, `CreateAgent` start position, configured region handle, current Unix timestamp and `RegionConfig.channel_version` (initially `Ferroan` plus the package version). With no camera or velocity update yet, the look direction is C#'s `(0.99, 0.042, 0)` fallback. Until P2.0e, the login position is preserved without C#'s terrain or landing-point adjustment. The captured C# packet tests use its actual adjusted position and C# server identity to compare every byte. Terrain, avatar updates/appearance/animations, parcel data, god state, attachment rez and friend notifications from the rest of `CompleteMovement` remain assigned to later tasks.
+
 Run the local compatibility check with:
 
 ```sh
 cargo xtask live run login grid --region ferroan
 ```
 
-The harness starts C# Robust and a C# neighbour, using the Ferroan process for the home region. It checks login and requires a real `LogoutReply`. The register, access-query and agent-creation HTTP exchanges are compared with the C# baseline. See [the harness guide](../../docs/LIVE.md).
+The harness starts C# Robust and a C# neighbour, using the Ferroan process for the home region. Readiness requires the current circuit's handshake, seed and fresh reliable `AgentMovementComplete`; logout requires a real `LogoutReply`. The register, access-query and agent-creation HTTP exchanges are compared with the C# baseline. See [the harness guide](../../docs/LIVE.md).
 
 The process accepts `--inimaster FILE`, `--inifile FILE`, `--inidirectory DIR` and `--background`. Paths and includes are resolved from its working directory as the region loader does. The harness supplies the normal `RegionServer.ini` and `Regions.ini` files and copies the reference defaults into the working directory.
 

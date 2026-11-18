@@ -126,10 +126,15 @@ async fn serve(config: RegionConfig) -> Result<(), RunError> {
         "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
         config.name
     );
+    let circuit_config = config.clone();
     let mut circuits = tokio::spawn(async move {
         while let Some(agent) = agents.recv().await {
             match circuit
-                .serve_one(agent.expect, Duration::from_secs(300))
+                .serve_one_with_arrival(
+                    agent.expect,
+                    circuit_config.arrival(agent.start_pos),
+                    Duration::from_secs(300),
+                )
                 .await
             {
                 Ok(()) => println!("ferroan-region: LogoutReply sent"),

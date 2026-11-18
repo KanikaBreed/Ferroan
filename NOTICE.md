@@ -56,6 +56,10 @@ Their licence texts will be added when they become dependencies.
 
 Benthic's metaverse crates (AGPL-3.0-or-later) may be read for comparison but are not copied or depended on.
 
+## Login arrival
+
+Q10a's `crates/ferroan-client/src/arrival.rs` follows Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`, `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs`, `Scene.cs`, and `Source/OpenSim.Framework/Util.cs` at `858321883f5487a5d192d36ea9d7b90fa468310c`, plus libopenmetaverse `OpenMetaverse.Types/UtilsConversions.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. Both BSD notices are retained. The region configuration uses `ScenePresence.CompleteMovement`'s initial look fallback. Arrival capture extraction is original Ferroan code; fixtures come from the pinned C# server.
+
 ## Names
 
 OpenSimulator, Tranquillity, Aurora Viewer, Second Life, SLua and Linden Lab names identify sources and compatibility targets. Ferroan is independent and does not claim their endorsement. Second Life is a trademark of Linden Research, Inc.

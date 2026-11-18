@@ -5,11 +5,13 @@
 //!
 //! Throttles are still planned. Empty event polls wait for the C# hold deadline.
 
+mod arrival;
 mod caps;
 mod circuit;
 mod event_queue;
 mod handshake;
 
+pub use arrival::ArrivalConfig;
 pub use caps::{CapsError, CapsRegistry, CapsServer};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer};
 pub use event_queue::EventQueueError;

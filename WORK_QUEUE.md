@@ -33,7 +33,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q7 | P0.10g: harness fixes from the review of #22 | DONE (#29) |
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
-| Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | READY |
+| Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | IN PROGRESS (feat/login-arrival) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10a |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | READY after Q10a |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10b |
