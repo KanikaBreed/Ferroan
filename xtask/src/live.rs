@@ -1208,6 +1208,7 @@ pub(crate) fn require_listen(pid: u32, ip: Ipv4Addr, port: u16) -> Result<(), St
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn require_udp(pid: u32, ip: Ipv4Addr, port: u16) -> Result<(), String> {
     let sockets = process_sockets(pid)?;
     refuse_unspecified(&sockets)?;
@@ -1221,6 +1222,7 @@ pub(crate) fn require_udp(pid: u32, ip: Ipv4Addr, port: u16) -> Result<(), Strin
     }
 }
 
+#[cfg(target_os = "linux")]
 fn refuse_unspecified(sockets: &[ProcSock]) -> Result<(), String> {
     if sockets.iter().any(|socket| socket.local.is_unspecified()) {
         Err("a harness socket is bound to every interface".to_string())
@@ -1229,6 +1231,7 @@ fn refuse_unspecified(sockets: &[ProcSock]) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn process_sockets(pid: u32) -> Result<Vec<ProcSock>, String> {
     let inodes = socket_inodes(pid)?;
     let mut sockets = Vec::new();
