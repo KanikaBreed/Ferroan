@@ -8,7 +8,7 @@ Build a Rust virtual world server that replaces OpenSim Tranquillity piece by pi
 
 Tranquillity's `develop` branch, at the revision pinned in [REFERENCES.md](docs/REFERENCES.md), is the reference for observable behavior: packets, CAPS and LLSD payloads, Robust's HTTP and XML forms, region-to-region messages, OAR and IAR files, and script results. Before porting behavior, read the relevant C# files and record the revision (see [porting rules](docs/PORTING.md)). Use the clean, pinned checkouts listed in [REFERENCES.md](docs/REFERENCES.md); working checkouts with local changes are not references. Treat reference checkouts as read-only.
 
-Do not change a protocol, schema or file format to simplify the Rust side. If Tranquillity has a bug, reproduce its observable behavior only where viewers or other servers depend on it, and record the decision. Fixes that change behavior are separate, documented decisions.
+Do not change a protocol, schema or file format to simplify the Rust side. If Tranquillity has a bug, reproduce its observable behavior only where viewers or other servers depend on it, and record the decision. Fixes that change behavior are separate, documented decisions. Record every bug found in the reference in [TRANQUILLITY_BUGS.md](docs/TRANQUILLITY_BUGS.md). When its upstream fix arrives through a pin move, regenerate the fixtures that touch it against the fixed behavior.
 
 ## 2. Rust first, and native code
 
