@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
-| Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10c |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | IN PROGRESS (feat/ferrobot-harness-complete) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY after Q10 |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
