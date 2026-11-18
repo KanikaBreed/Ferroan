@@ -48,7 +48,7 @@ P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, che
 
 ## Containers and monitoring
 
-[D18](DECISIONS.md). `cargo xtask docker smoke` (P0.11) builds the images, starts the example grid with `docker compose`, and runs `ferroan-bot` and Ferrobot against it. The live harness reads each server's status and metrics during the scenarios (P0.12). For example, a region reports one root agent after a login and none after the logout. A row that adds a subsystem adds its metrics. Logs stream from each container's stdout and from Tranquillity's remote console, and each run's logs are searched for secrets (P0.13).
+[D18](DECISIONS.md). `cargo xtask docker smoke` (P0.11) builds the images, starts the example grid with `docker compose`, and runs `ferroan-bot` and Ferrobot against it. The live harness reads each server's status and metrics during the scenarios (P0.12). For example, a region reports one root agent after a login and none after the logout. A row that adds a subsystem adds its metrics. Logs reach stdout, `LOGDIR` files, OpenTelemetry and Tranquillity's remote console, and each run's logs are searched for secrets (P0.13).
 
 ## Honest status
 
