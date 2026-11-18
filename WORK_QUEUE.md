@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
-| Q10 | P0.10h: Ferrobot as the second test client in the live harness | IN PROGRESS (feat/ferrobot-harness-complete) |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | DONE (#41) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY after Q10 |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
@@ -103,6 +103,10 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10 retry outcome: the explicitly recorded third attempt, [44408547716 attempt 2](https://github.com/KanikaBreed/Ferroan/actions/runs/44408547716/attempts/2), passed the complete live job in 17m30s. All three Ferrobot modes met their required checks, with capture check/redact/replay at 432 UDP/16 HTTP (standalone), 454 UDP/27 HTTP (C# grid), and 174 UDP/16 HTTP (Rust region). TB5 remains an unresolved C# source defect; this successful run is not an upstream fix. Final status-only revision checks remain required before merge.
+
+- 2026-11-18, Q10 second live attempt [44408547716](https://github.com/KanikaBreed/Ferroan/actions/runs/44408547716), revision `8741cf4`: the same C# standalone logout check failed. The new capture diagnostics report `matching requests=5, replies=0; other requests=2, replies=1`; Ferrobot again waited ten seconds without a reply after the event queue closed. This confirms missing matching wire evidence rather than confusion with the companion's logout. The source-confirmed queue/shutdown race is TB5; the precise losing interleaving is not instrumented. A third and final attempt of this failed live job is explicitly requested; another occurrence blocks Q10 with a proposed C# fix, pin move and regenerated logout fixtures. No reference behavior or assertion is changed.
 
 - 2026-11-18, Q10 logout investigation: [TB5](docs/TRANQUILLITY_BUGS.md) records a source-confirmed C# race at `8583218`: logout queues `LogoutReply`, the flush hook is empty, and immediate client removal/shutdown can discard the queued packet before transmission. This fits the first live CI symptom but is not proved as that run's cause without its raw capture. The explicit local reproduction attempt passed all six checks and capture check/redact/replay (485 UDP/15 HTTP). The harness now reports identity-free matching/unrelated logout counts on failure and keeps unrelated circuits from resetting the selected circuit's request evidence; it still requires the actual matching reply after its request. One explicit CI retry follows this diagnostic change. Proposed upstream fix and pin/fixture follow-up are in TB5; no C# or Ferrobot checkout was changed and no external issue was filed.
 
