@@ -45,7 +45,7 @@ pub fn expected_version(backend: Backend, store: &str) -> Result<i32, DbError> {
         })
 }
 
-/// `OpenSim.Data.SQLite/Resources` at `713857f10b8e91a639a967d4354a4682b080793c`.
+/// `OpenSim.Data.SQLite/Resources` at `c85783e993736c172149d0bad63dc16ba910e62f`.
 const SQLITE: &[StoreVersion] = &[
     StoreVersion {
         name: "AgentPrefs",
@@ -93,7 +93,7 @@ const SQLITE: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "UserAccount",
-        version: 3,
+        version: 4,
     },
     StoreVersion {
         name: "UserProfiles",
@@ -269,7 +269,7 @@ const POSTGRES: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "UserAccount",
-        version: 5,
+        version: 6,
     },
     StoreVersion {
         name: "UserProfiles",
@@ -326,6 +326,24 @@ mod tests {
             eprintln!("reference checkout not found; migration catalog was not compared");
             return;
         };
+        let checkout = root.join("OpenSim-Tranquillity");
+        match checkout_head(&checkout) {
+            Some(head) if head == crate::TRANQUILLITY_REVISION => {}
+            Some(head) => {
+                eprintln!(
+                    "OpenSim-Tranquillity is at {head}, not {}; migration catalog was not compared",
+                    crate::TRANQUILLITY_REVISION
+                );
+                return;
+            }
+            None => {
+                eprintln!(
+                    "could not read the revision of {}; migration catalog was not compared",
+                    checkout.display()
+                );
+                return;
+            }
+        }
         let pairs = [
             (Backend::Sqlite, "OpenSim.Data.SQLite"),
             (Backend::Mysql, "OpenSim.Data.MySQL"),
@@ -346,6 +364,25 @@ mod tests {
                 .map(|store| (store.name.to_string(), store.version))
                 .collect();
             assert_eq!(found, expected, "{backend} at {}", dir.display());
+        }
+    }
+
+    fn checkout_head(checkout: &std::path::Path) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(checkout)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(output.stdout).ok()?;
+        let head = text.trim();
+        if head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            Some(head.to_string())
+        } else {
+            None
         }
     }
 

@@ -24,8 +24,10 @@ pub use service::{BodyLimit, FormBody, XmlResponse, form_router, read_body, xml_
 pub use value::{Field, FieldMap};
 pub use xml::{build_xml_response, parse_xml_response, parse_xml_response_limited};
 
-/// Tranquillity revision whose `ServerUtils` these encodings follow.
-pub const REFERENCE_TRANQUILLITY_REVISION: &str = "713857f10b8e91a639a967d4354a4682b080793c";
+/// Tranquillity revision of the committed `fixtures/http` documents.
+/// `query.rs` and `xml.rs` were ported from `713857f`; regenerating at this
+/// pin left those case bytes unchanged.
+pub const REFERENCE_TRANQUILLITY_REVISION: &str = "c85783e993736c172149d0bad63dc16ba910e62f";
 
 /// `ParseXmlResponse` sets `XmlReaderSettings.MaxCharactersInDocument` to this.
 pub const MAX_XML_CHARS: usize = 50_000_000;
