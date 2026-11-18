@@ -411,7 +411,7 @@ fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String>
 #[cfg(target_os = "linux")]
 fn robust_binary() -> Result<PathBuf, String> {
     let output = Command::new("cargo")
-        .args(["build", "-p", "ferroan-robust", "--offline"])
+        .args(["build", "-p", "ferroan-robust", "--locked"])
         .current_dir(repo_root())
         .output()
         .map_err(|error| format!("could not build ferroan-robust: {error}"))?;
