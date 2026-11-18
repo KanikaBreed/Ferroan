@@ -52,13 +52,13 @@ Check `git worktree list` before creating or reusing one. Put temporary logs in 
 
 Run `cargo xtask check` before handing off code. For documentation-only changes, `cargo xtask check --docs-only` is enough unless tooling or build files changed. See [testing](docs/TESTING.md).
 
-Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` scenarios in the live harness ([D15](docs/DECISIONS.md)), side-by-side runs against the C# server, archive round trips. Automate every check a program can make; Firestorm by hand is for phase gates. A build or a passing unit test does not prove a viewer can log in. Record viewer and live-grid checks as pending until someone has done them, never as passed.
+Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` scenarios in the live harness ([D15](docs/DECISIONS.md)), and Ferrobot sessions where a second client adds something ([D17](docs/DECISIONS.md)), side-by-side runs against the C# server, archive round trips. Automate every check a program can make; Firestorm by hand is for phase gates. A build or a passing unit test does not prove a viewer can log in. Record viewer and live-grid checks as pending until someone has done them, never as passed.
 
 ## 8. Tasks and documentation
 
 [TASKS.md](TASKS.md) is the task index. Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED` (with the next action). Update only the relevant rows, with evidence and an owner or branch.
 
-[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file.
+[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file. Those rules are the maintainer's standing authorization for the coder to open PRs for queue items and merge them with `gh pr merge --auto --squash` once the required checks pass.
 
 Keep commands runnable and paths real. Mark planned crates and features as planned. Update [ARCHITECTURE.md](ARCHITECTURE.md) and the relevant guides with each implementation change.
 

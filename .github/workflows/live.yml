@@ -1,19 +1,8 @@
 name: Live harness
 
 on:
+  # Every pull request: main requires this check before a merge.
   pull_request:
-    paths:
-      - .github/workflows/live.yml
-      - Cargo.toml
-      - Cargo.lock
-      - crates/**
-      - docs/LIVE.md
-      - docs/MANUAL_CHECKS.md
-      - docs/REFERENCES.md
-      - docs/TESTING.md
-      - fixtures/**
-      - tools/**
-      - xtask/**
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:

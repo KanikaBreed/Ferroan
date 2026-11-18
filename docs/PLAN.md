@@ -75,7 +75,7 @@ These crates were checked on 17 November 2026; versions move.
 ## Phase scope
 
 - **Phase 0:** see [TASKS.md](../TASKS.md).
-- **Phase 1:** assets (including FS assets), inventory, accounts, authentication, grid user, presence, grid, avatars, friends, offline IM, Groups V2, search, login over XML-RPC, hypergrid (gatekeeper, user agent, HG inventory and assets), and the money server. Each runs behind a C# grid as soon as it passes its fixtures.
+- **Phase 1:** assets (all three of Tranquillity's backends: `AssetService` on SQLite, MySQL and PostgreSQL, `XAssetService` and FSAssets on MySQL and PostgreSQL), inventory, accounts, authentication, grid user, presence, grid, avatars, friends, offline IM, Groups V2, search, login over XML-RPC, hypergrid (gatekeeper, user agent, HG inventory and assets), and the money server. Each runs behind a C# grid as soon as it passes its fixtures.
 - **Phase 2:** the LLUDP circuit, CAPS and the event queue, the scene, object and inventory updates, permissions, appearance and baking, teleports and crossings to and from C# regions, and loading OAR files with terrain-height standing only.
 - **Phase 3:** Jolt behind `ferroan-physics`, prim, sculpt and mesh shapes, the avatar controller, vehicles, buoyancy and collision events.
 - **Phase 4:** the SLua engine plan's C interface called from Rust, the 831 `ll`, `os` and `bot` functions, the scheduler, events, time slices, memory limits and state saving, and reading and writing portable script state, YEngine snapshots and the `<Variables>` form for hypergrid.
