@@ -63,6 +63,9 @@ use crate::live;
 #[path = "grid_capture.rs"]
 mod login_capture;
 
+#[path = "ferrobot_capture.rs"]
+pub(crate) mod ferrobot_capture;
+
 const HOME_NAME: &str = "Ferroan Test";
 const NEIGHBOUR_NAME: &str = "Ferroan Neighbour";
 const NEIGHBOUR_UUID: &str = "c3e1a9b4-6d27-4f80-91ab-5e8c0d2f7a33";
@@ -108,6 +111,7 @@ struct RegionIni<'a> {
     x: u32,
     y: u32,
     http_bind: Ipv4Addr,
+    udp_bind: Ipv4Addr,
     http_port: u16,
     regions_dir: &'a str,
     public_proxy: u16,
@@ -173,7 +177,7 @@ fn regions_ini(region: &RegionIni<'_>) -> String {
         r#"[{name}]
 RegionUUID = {uuid}
 Location = {x},{y}
-InternalAddress = {advertised}
+InternalAddress = {udp_bind}
 InternalPort = {port}
 AllowAlternatePorts = False
 ExternalHostName = {advertised}
@@ -183,6 +187,7 @@ ExternalHostName = {advertised}
         x = region.x,
         y = region.y,
         advertised = ADVERTISED,
+        udp_bind = region.udp_bind,
         port = region.http_port,
     )
 }
@@ -430,12 +435,13 @@ impl Drop for Grid {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
-    if ferroan && !matches!(scenario, "login" | "caps") {
+    if ferroan && !matches!(scenario, "login" | "caps" | "ferrobot") {
         return Err(
-            "the Ferroan grid region currently supports login and caps scenarios".to_string(),
+            "the Ferroan grid region currently supports login, caps and ferrobot scenarios"
+                .to_string(),
         );
     }
-    if !matches!(scenario, "neighbour" | "caps")
+    if !matches!(scenario, "neighbour" | "caps" | "ferrobot")
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -450,6 +456,11 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     }
     let state = crate::grid_state::claim()?;
     live::ensure_region_built()?;
+    let ferrobot_binary = if scenario == "ferrobot" {
+        Some(crate::ferrobot_build::build()?)
+    } else {
+        None
+    };
     let mut ports = Vec::new();
     for _ in 0..32 {
         if ports.len() == 6 {
@@ -514,6 +525,17 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             captures.neighbour.clone(),
         ),
     ])?);
+    let udp_relay = if ferroan && scenario == "ferrobot" {
+        Some(grid.proxies.as_ref().expect("proxies started").block_on(
+            ferrobot_capture::start_udp(
+                SocketAddr::from((ADVERTISED, home_port)),
+                SocketAddr::from((HOME_BIND, home_port)),
+                &root.join("capture-udp.cap"),
+            ),
+        )?)
+    } else {
+        None
+    };
     println!(
         "live: grid Robust on {ROBUST_BIND}:{robust_public} (private {robust_private}), proxies {public_proxy}/{private_proxy}"
     );
@@ -552,12 +574,17 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &estate,
         RegionStart {
             ferroan,
-            login_only: matches!(scenario, "login" | "caps"),
+            login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
             y: HOME_Y,
             http_bind: HOME_BIND,
+            udp_bind: if ferroan && scenario == "ferrobot" {
+                HOME_BIND
+            } else {
+                ADVERTISED
+            },
             http_port: home_port,
             public_proxy,
             private_proxy,
@@ -573,12 +600,13 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &estate,
         RegionStart {
             ferroan: false,
-            login_only: matches!(scenario, "login" | "caps"),
+            login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
             x: NEIGHBOUR_X,
             y: NEIGHBOUR_Y,
             http_bind: NEIGHBOUR_BIND,
+            udp_bind: ADVERTISED,
             http_port: neighbour_port,
             public_proxy,
             private_proxy,
@@ -592,18 +620,76 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         .expect("home region is started")
         .log
         .clone();
-    let report = run_bot(
-        scenario,
-        &format!("http://{ROBUST_BIND}:{robust_public}/"),
-        &estate,
-        &chat,
-        &home_log,
-        ferroan,
-    );
+    let report = if let Some(executable) = ferrobot_binary {
+        let harness = live::harness(
+            &format!("http://{ADVERTISED}:{public_proxy}/"),
+            &estate,
+            &chat,
+            &home_log,
+        )?;
+        let config = crate::ferrobot::Config {
+            executable,
+            root: root.join("ferrobot"),
+            region_name: HOME_NAME.to_string(),
+            ferroan,
+            udp_capture: root.join("capture-udp.cap"),
+            http_captures: vec![captures.robust_public.clone(), captures.home.clone()],
+        };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        runtime
+            .block_on(crate::ferrobot::run(&harness, &config))
+            .and_then(|lines| {
+                Ok(BotReport {
+                    lines,
+                    http: ferrobot_capture::http_records(&config.http_captures)?,
+                })
+            })
+    } else {
+        run_bot(
+            scenario,
+            &format!("http://{ROBUST_BIND}:{robust_public}/"),
+            &estate,
+            &chat,
+            &home_log,
+            ferroan,
+        )
+    };
+    let relay_result = if let Some(task) = udp_relay {
+        if task.is_finished() {
+            grid.proxies
+                .as_ref()
+                .expect("proxies started")
+                .block_on(task)
+                .map_err(|error| format!("UDP capture task stopped: {error}"))?
+        } else {
+            task.abort();
+            // Finish cancellation before reading the capture or stopping the
+            // runtime, so the relay has released its socket and output file.
+            let _ = grid
+                .proxies
+                .as_ref()
+                .expect("proxies started")
+                .block_on(task);
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
     grid.stop();
+    relay_result?;
     let report = report?;
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if ferroan {
+    if scenario == "ferrobot" {
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
+    } else if ferroan {
         let comparison = login_capture::compare(&root)?;
         Ok(format!(
             "{}\nlogout: LogoutReply\n{comparison}\n{proxy_report}",
@@ -665,7 +751,7 @@ fn run_bot(
 }
 
 #[cfg(target_os = "linux")]
-fn start_proxies(
+pub(crate) fn start_proxies(
     binds: &[(SocketAddr, SocketAddr, PathBuf)],
 ) -> Result<tokio::runtime::Runtime, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -810,6 +896,7 @@ struct RegionStart {
     x: u32,
     y: u32,
     http_bind: Ipv4Addr,
+    udp_bind: Ipv4Addr,
     http_port: u16,
     public_proxy: u16,
     private_proxy: u16,
@@ -869,6 +956,7 @@ fn start_region(
         x: spec.x,
         y: spec.y,
         http_bind: spec.http_bind,
+        udp_bind: spec.udp_bind,
         http_port: spec.http_port,
         regions_dir: &regions_text,
         public_proxy: spec.public_proxy,
@@ -906,7 +994,7 @@ fn start_region(
         passwords,
     )?;
     live::require_listen(proc.child.id(), region.http_bind, region.http_port)?;
-    live::require_udp(proc.child.id(), ADVERTISED, region.http_port)?;
+    live::require_udp(proc.child.id(), region.udp_bind, region.http_port)?;
     Ok(proc)
 }
 
@@ -1140,6 +1228,7 @@ mod tests {
             x: HOME_X,
             y: HOME_Y,
             http_bind: HOME_BIND,
+            udp_bind: ADVERTISED,
             http_port: 9000,
             regions_dir: "/tmp/ferroan-regions",
             public_proxy: 8002,

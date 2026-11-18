@@ -274,6 +274,7 @@ fn region_server_ini(
     private_port: u16,
     password: &str,
     asset_include: Option<&Path>,
+    http_bind: Ipv4Addr,
 ) -> Result<String, String> {
     let dir = regions_dir
         .to_str()
@@ -316,7 +317,7 @@ fn region_server_ini(
 
 [Network]
     http_listener_port = {public_port}
-    bind_ip_address = "127.0.0.1"
+    bind_ip_address = "{http_bind}"
 
 [Estates]
     DefaultEstateName = "Ferroan Test Estate"
@@ -457,14 +458,19 @@ fn parse_proc_net(text: &str, udp: bool) -> Vec<ProcSock> {
 }
 
 fn loopback_report(sockets: &[ProcSock], port: u16) -> Result<(), String> {
-    bound_report(sockets, port, true)
+    bound_report(sockets, port, true, Ipv4Addr::LOCALHOST)
 }
 
 fn http_loopback_report(sockets: &[ProcSock], port: u16) -> Result<(), String> {
-    bound_report(sockets, port, false)
+    bound_report(sockets, port, false, Ipv4Addr::LOCALHOST)
 }
 
-fn bound_report(sockets: &[ProcSock], port: u16, require_udp: bool) -> Result<(), String> {
+fn bound_report(
+    sockets: &[ProcSock],
+    port: u16,
+    require_udp: bool,
+    http_bind: Ipv4Addr,
+) -> Result<(), String> {
     let mut lines = Vec::new();
     let mut http = false;
     let mut udp = false;
@@ -483,10 +489,7 @@ fn bound_report(sockets: &[ProcSock], port: u16, require_udp: bool) -> Result<()
                 lines.join(", ")
             ));
         }
-        if socket.listening
-            && socket.local == IpAddr::V4(Ipv4Addr::LOCALHOST)
-            && socket.port == port
-        {
+        if socket.listening && socket.local == IpAddr::V4(http_bind) && socket.port == port {
             http = true;
         }
         if socket.udp && socket.local == IpAddr::V4(Ipv4Addr::LOCALHOST) && socket.port == port {
@@ -509,6 +512,7 @@ fn bound_report(sockets: &[ProcSock], port: u16, require_udp: bool) -> Result<()
 
 #[cfg(target_os = "linux")]
 fn build_linux() -> Result<String, String> {
+    let ferrobot = crate::ferrobot_build::build()?;
     let pin = read_pin()?;
     let reference = tranquillity_reference()?;
     require_clean_pin(&reference, &pin)?;
@@ -526,9 +530,10 @@ fn build_linux() -> Result<String, String> {
         && fs::read_to_string(&stamp).ok().as_deref() == Some(stamp_text.as_str())
     {
         return Ok(format!(
-            "live: build is current\nbinary: {}\ngrid: {}",
+            "live: build is current\nbinary: {}\ngrid: {}\nferrobot: {}",
             binary.display(),
-            grid.display()
+            grid.display(),
+            ferrobot.display()
         ));
     }
     println!("live: building Tranquillity {pin}");
@@ -552,9 +557,10 @@ fn build_linux() -> Result<String, String> {
     fs::write(&stamp, &stamp_text)
         .map_err(|error| format!("could not write {}: {error}", stamp.display()))?;
     Ok(format!(
-        "live: built {pin}\nbinary: {}\ngrid: {}",
+        "live: built {pin}\nbinary: {}\ngrid: {}\nferrobot: {}",
         binary.display(),
-        grid.display()
+        grid.display(),
+        ferrobot.display()
     ))
 }
 
@@ -565,6 +571,7 @@ struct Started {
     public_port: u16,
     password: String,
     log: PathBuf,
+    proxy: Option<tokio::runtime::Runtime>,
 }
 
 #[cfg(target_os = "linux")]
@@ -626,6 +633,9 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str) -> Result<String, String> {
+    if scenario == "ferrobot" {
+        return run_ferrobot();
+    }
     if ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!(
             "unknown scenario {scenario}; expected all or {}",
@@ -648,6 +658,44 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         &[&started.password, &outcome.chat_password],
     )?;
     Ok(format!("{}\n{capture}", outcome.report))
+}
+
+#[cfg(target_os = "linux")]
+fn run_ferrobot() -> Result<String, String> {
+    let executable = crate::ferrobot_build::build()?;
+    let mut started = start_region_with_proxy(true, None, true, true)?;
+    let outcome = (|| {
+        // The standalone region remains in its normal state file. Ferrobot
+        // uses the same identity-checked tracker as grid processes.
+        let _tracked = crate::grid_state::claim()?;
+        let chat_password = generate_password()?;
+        create_chat_user(&mut started, &chat_password)?;
+        let harness = harness(
+            &format!("http://127.0.0.1:{}/", started.public_port),
+            &started.password,
+            &chat_password,
+            &started.log,
+        )?;
+        let config = crate::ferrobot::Config {
+            executable,
+            root: run_dir().join("ferrobot"),
+            region_name: "Ferroan Test".to_string(),
+            ferroan: false,
+            udp_capture: capture_path(),
+            http_captures: vec![run_dir().join("ferrobot-http.cap")],
+        };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        let report = runtime.block_on(crate::ferrobot::run(&harness, &config))?;
+        let http = crate::grid::ferrobot_capture::http_records(&config.http_captures)?;
+        Ok::<_, String>((report, http, chat_password))
+    })();
+    let _ = stop_started(&mut started);
+    let (report, http, chat_password) = outcome?;
+    let capture = finish_capture(&capture_path(), &http, &[&started.password, &chat_password])?;
+    Ok(format!("{report}\n{capture}"))
 }
 
 /// Start the region with its asset service pointed at `asset_uri`.
@@ -945,11 +993,22 @@ fn stop_started(started: &mut Started) -> Result<(), String> {
         let _ = started.child.wait();
     }
     let _ = fs::remove_file(state_path());
+    drop(started.proxy.take());
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<Started, String> {
+    start_region_with_proxy(console, asset_uri, record, false)
+}
+
+#[cfg(target_os = "linux")]
+fn start_region_with_proxy(
+    console: bool,
+    asset_uri: Option<&str>,
+    record: bool,
+    proxy_http: bool,
+) -> Result<Started, String> {
     let binary = region_binary();
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
@@ -1004,11 +1063,25 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
         private_port,
         &password,
         asset_include,
+        if proxy_http {
+            Ipv4Addr::new(127, 0, 0, 2)
+        } else {
+            Ipv4Addr::LOCALHOST
+        },
     )?;
     write_secret(&config.join("RegionServer.ini"), &server_ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(public_port))
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = run.join("region.log");
+    let proxy = if proxy_http {
+        Some(crate::grid::start_proxies(&[(
+            std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, public_port)),
+            std::net::SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), public_port)),
+            run.join("ferrobot-http.cap"),
+        )])?)
+    } else {
+        None
+    };
     println!("live: starting the region on 127.0.0.1:{public_port}");
     let mut child = spawn_region(&binary, &publish, &config, &log, console)?;
     let waited = match wait_region(&mut child, &log, START_TIMEOUT) {
@@ -1019,7 +1092,18 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
         }
     };
     match waited {
-        Waited::Ready => finish_start(child, &log, public_port, private_port, &password),
+        Waited::Ready => {
+            let mut started = finish_start(
+                child,
+                &log,
+                public_port,
+                private_port,
+                &password,
+                proxy_http,
+            )?;
+            started.proxy = proxy;
+            Ok(started)
+        }
         Waited::Timeout => {
             stop_child(&mut child);
             Err(format!(
@@ -1041,9 +1125,16 @@ fn finish_start(
     public_port: u16,
     private_port: u16,
     password: &str,
+    proxy_http: bool,
 ) -> Result<Started, String> {
     let pid = child.id();
-    let checked = process_sockets(pid).and_then(|sockets| loopback_report(&sockets, public_port));
+    let checked = process_sockets(pid).and_then(|sockets| {
+        if proxy_http {
+            bound_report(&sockets, public_port, true, Ipv4Addr::new(127, 0, 0, 2))
+        } else {
+            loopback_report(&sockets, public_port)
+        }
+    });
     if let Err(error) = checked {
         stop_child(&mut child);
         return Err(format!("{error}\n{}", log_tail(log, password)));
@@ -1067,6 +1158,7 @@ fn finish_start(
         public_port,
         password: password.to_owned(),
         log: log.to_owned(),
+        proxy: None,
     })
 }
 
@@ -1775,6 +1867,7 @@ mod tests {
             9103,
             "0123456789abcdef",
             None,
+            Ipv4Addr::LOCALHOST,
         )
         .unwrap();
         assert!(ini.contains("BaseURL = http://${Const|BaseHostname}"));
@@ -1786,6 +1879,7 @@ mod tests {
             9103,
             "0123456789abcdef",
             None,
+            Ipv4Addr::LOCALHOST,
         )
         .unwrap();
         assert!(!quiet.contains("CaptureFile"));
@@ -1796,6 +1890,7 @@ mod tests {
             9103,
             "0123456789abcdef",
             Some(Path::new("/tmp/regions/AssetOverride.ini")),
+            Ipv4Addr::LOCALHOST,
         )
         .unwrap();
         assert!(pointed.contains("Include-Asset = \"/tmp/regions/AssetOverride.ini\""));
