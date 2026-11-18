@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (#36: IM capture suffix prerequisite) |
-| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | IN PROGRESS (fix/harness-followups) |
+| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10b |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
