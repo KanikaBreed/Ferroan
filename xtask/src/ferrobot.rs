@@ -647,6 +647,11 @@ fn http_parts(bytes: &[u8]) -> Option<(&str, &[u8])> {
 
 fn logout_evidence(records: &[Record], agent: Agent) -> Result<(), String> {
     let mut requested = false;
+    let mut matching_requests = 0;
+    let mut matching_replies = 0;
+    let mut other_requests = 0;
+    let mut other_replies = 0;
+    let mut completed = false;
     for record in records {
         if !matches!(record.kind, Kind::UdpIn | Kind::UdpOut) {
             continue;
@@ -656,21 +661,38 @@ fn logout_evidence(records: &[Record], agent: Agent) -> Result<(), String> {
             let value = packet
                 .decode::<LogoutRequest>()
                 .map_err(|_| "invalid captured logout request")?;
-            requested = value.agent_data.agent_id == agent.agent_id
-                && value.agent_data.session_id == agent.session_id;
+            if value.agent_data.agent_id == agent.agent_id
+                && value.agent_data.session_id == agent.session_id
+            {
+                matching_requests += 1;
+                requested = true;
+            } else {
+                other_requests += 1;
+            }
         }
-        if requested && record.kind == Kind::UdpOut && packet.id == LogoutReply::ID {
+        if record.kind == Kind::UdpOut && packet.id == LogoutReply::ID {
             let value = packet
                 .decode::<LogoutReply>()
                 .map_err(|_| "invalid captured logout reply")?;
             if value.agent_data.agent_id == agent.agent_id
                 && value.agent_data.session_id == agent.session_id
             {
-                return Ok(());
+                matching_replies += 1;
+                completed |= requested;
+            } else {
+                other_replies += 1;
             }
         }
     }
-    Err("Ferrobot SIGTERM has no matching captured LogoutRequest and LogoutReply".into())
+    if completed {
+        return Ok(());
+    }
+    // Counts diagnose missing wire evidence without printing any identities,
+    // credentials or packet contents. An unrelated circuit cannot reset the
+    // selected circuit's request or satisfy its reply requirement.
+    Err(format!(
+        "Ferrobot SIGTERM has no matching captured LogoutRequest and LogoutReply (matching requests={matching_requests}, replies={matching_replies}; other requests={other_requests}, replies={other_replies})"
+    ))
 }
 
 async fn companion(
@@ -907,6 +929,43 @@ mod tests {
             .filter(|record| !(45_000..60_000).contains(&record.time_ms))
             .collect();
         assert!(ping_evidence(&gap).is_err());
+    }
+
+    #[test]
+    fn logout_evidence_keeps_circuits_separate_and_reports_missing_wire_reply() {
+        let captured =
+            ferroan_capture::read_capture(include_bytes!("../../fixtures/circuit/sequence.cap"))
+                .unwrap();
+        let agent = Agent {
+            agent_id: Uuid::from_u128(1),
+            session_id: Uuid::from_u128(2),
+            circuit_code: 1,
+        };
+        let request = captured
+            .iter()
+            .find(|record| {
+                record.kind == Kind::UdpIn
+                    && parse_packet(&record.bytes).unwrap().id == LogoutRequest::ID
+            })
+            .unwrap()
+            .clone();
+        let reply = captured
+            .iter()
+            .find(|record| {
+                record.kind == Kind::UdpOut
+                    && parse_packet(&record.bytes).unwrap().id == LogoutReply::ID
+            })
+            .unwrap()
+            .clone();
+        assert!(logout_evidence(&[request.clone(), reply.clone()], agent).is_ok());
+        let error = logout_evidence(std::slice::from_ref(&request), agent).unwrap_err();
+        assert!(error.contains("matching requests=1, replies=0"));
+        assert!(!error.contains(&agent.agent_id.to_string()));
+        assert!(logout_evidence(&[reply.clone(), request.clone()], agent).is_err());
+        let other_request = datagram(Kind::UdpIn, 1, &LogoutRequest::default());
+        let other_reply = datagram(Kind::UdpOut, 2, &LogoutReply::default());
+        assert!(logout_evidence(&[request.clone(), other_reply], agent).is_err());
+        assert!(logout_evidence(&[request, other_request, reply], agent).is_ok());
     }
 
     fn http_record(kind: Kind, time_ms: u64, text: &str) -> Record {
