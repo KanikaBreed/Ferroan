@@ -37,7 +37,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (C# logout fix coming; see below) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
-| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | IN PROGRESS (fix/harness-evidence) |
+| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
@@ -97,6 +97,8 @@ Q10 BLOCKED again (18 November 2026, #36, `feat/ferrobot-harness-resume`): the r
 Q10c was added on 18 November 2026 from the second Q10 blocker (#36). The four bytes are `ImprovedInstantMessage`'s `EstateBlock`, which Linden's viewer template defines and libopenmetaverse's lacks, so TB4 is a gap in Ferroan's template, not a Tranquillity bug. Q10 then resumes from `789fe59`.
 
 Q10d to Q10f were added on 18 November 2026 from a review of #25 to #37 at `ebda8a9` (four reviewers: region, client stack, harness, test evidence). No high-severity defect was found, and every fixture checked came from C#. They come before Q11 because the harness fixes keep later CI honest, the resend and inactivity fixes matter for G2 on a real network, and P0.11's containers need the configurable control-plane trust in Q10f. Q10d waits for Q10 so it does not collide with the Ferrobot harness work. Confirm each finding first, as with Q7 to Q9.
+
+Q10d: [PR #44](https://github.com/KanikaBreed/Ferroan/pull/44), taken independently after the manager's Q10 hold in #43. All thirteen findings were confirmed and addressed. [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899638) passed Linux 2m37s, Windows 4m35s and macOS 1m26s; [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899822) passed in 9m44s. Recovery passed 200 consecutive default-parallel runs in 218 seconds. TASKS.md records test names, captures, startup interruption, database isolation and asset checks. Firestorm remains pending. Q10 and #41 remain held for the upstream fix.
 
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
