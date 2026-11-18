@@ -47,13 +47,17 @@ The return teleport requires a fresh `RegionHandshake` and `AgentMovementComplet
 
 ## Login onto the Ferroan region
 
-For the first Ferroan region login, run `cargo xtask live run login grid --region ferroan`. Robust and the neighbour remain C#; only the home region is Ferroan. This command currently accepts only `login`. The bot requires `LogoutReply`, with no C# log-line fallback. The harness compares the region's registration and Robust's `QueryAccess`/`CreateAgent` requests and replies with scrubbed C# fixtures. The region still uses P2.0b's seed and immediate empty event queue; terrain and appearance are later tasks.
+For the first Ferroan region login, run `cargo xtask live run login grid --region ferroan`. Robust and the neighbour remain C#; only the home region is Ferroan. The bot requires `LogoutReply`, with no C# log-line fallback. The harness compares the region's registration and Robust's `QueryAccess`/`CreateAgent` requests and replies with scrubbed C# fixtures. The seed advertises `EventQueueGet`, with Tranquillity's 58-second empty-poll hold and 502 response; terrain and appearance are later tasks.
 
 The dedicated login baseline disables map generation for both C# and Rust using `[Map] GenerateMaptiles = false` and a zero static map UUID. This C# setting produces zero map image IDs during registration. It leaves map rendering outside this login task. The normal `all grid` scenarios retain their existing map configuration. The process's supported configuration and current bounds are in [ferroan-region](../crates/ferroan-region/README.md).
 
 `cargo xtask live login-fixtures <capture-dir>` regenerates the scrubbed control-plane fixtures from a local C# login capture directory. Use only test accounts on the harness grid. The generator validates required exchange shapes, bounds decompression, and substitutes generated identities and test endpoints; raw captures stay in `.scratch/`. The fixture README records the source revision and substitutions.
 
 `cargo xtask live circuit-fixtures <udp-capture>` extracts C# circuit evidence into `fixtures/circuit`: the immediate and established ACKs, handshake and logout reply, plus their sequence context. Run a C# login in grid mode first and use its UDP capture. The generator checks each datagram's re-encoding and applies the existing P0.10d identity scrubber; it refuses a capture missing required evidence. Tests compare actual region-side sends with these bytes, retaining reliability, zero coding and sequence allocation rules.
+
+`cargo xtask live run caps grid` checks the C# seed and event queue, and `cargo xtask live run caps grid --region ferroan` repeats the probe with Ferroan as the home region. The probe requests `EventQueueGet` by string and URI, checks malformed and non-POST seed requests, drains startup events, and requires an empty 502 response after the hold. It keeps the UDP session active throughout. Both run in live CI; `caps` is a dedicated probe rather than part of `all`.
+
+`cargo xtask live caps-fixtures <capture-dir>` extracts the seed and event-poll HTTP from a C# probe run into `fixtures/caps`. Its manifest records response status, content type and elapsed time. Generated capability URLs and identities are substituted; response bytes otherwise stay as captured. Raw captures remain under `.scratch/`.
 
 ## Adding a scenario
 

@@ -107,6 +107,12 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         return Err("the texture does not start with a JPEG 2000 codestream".to_string());
     }
     let http = login::http_client().map_err(|error| error.to_string())?;
+    if name == "caps" {
+        let (mut session, login) = enter(&http, harness, &harness.owner).await?;
+        let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
+        leave(harness, &mut session, &harness.owner).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
     if name == "neighbour" {
         let line = teleport_neighbour(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));

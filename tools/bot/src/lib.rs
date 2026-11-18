@@ -9,6 +9,7 @@
 
 mod body;
 pub mod caps;
+mod caps_probe;
 pub mod circuit;
 pub mod login;
 pub mod scenario;

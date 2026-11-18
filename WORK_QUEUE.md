@@ -32,7 +32,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q6 | P2.0d: login through C# Robust | DONE (#26) |
 | Q7 | P0.10g: harness fixes from the review of #22 | DONE (#29) |
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
-| Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | READY after Q8 |
+| Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | IN PROGRESS (fix/event-queue-review) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
@@ -76,6 +76,8 @@ Q7 to Q9 were added on 18 November 2026 from a review of #20, #21 and #22. They 
 
 Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). Q11 to Q13 ([D18](docs/DECISIONS.md)) were added the same day, so the remaining P2.0 work and Phase 1 run with containers, monitoring and logs in place. It comes after the event-queue fix, so that Ferrobot does not meet the immediate empty-poll answer.
 
+Q9 review at `8583218`: the hold, ordinary empty-poll id behavior, seed parse errors and URI name conversion are confirmed. Two review statements need qualification: seed `OPTIONS` is intercepted with 200/CORS before the non-POST guard, and C# itself uses unchecked signed id arithmetic with negative-id handling. Its crossing re-registration markers can change the id even when their batch produces no events; ordinary empty polls do not. Seed success uses the HTTP default `text/html;charset=UTF-8`, successful event batches use `application/xml`, and empty 502 replies use `text/html`. Crossing queue reuse remains with its later item.
+
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
@@ -89,6 +91,8 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 - 2026-11-18, Q7 documentation review: the last paragraph of `crates/ferroan-capture/README.md` still says no session capture is committed, although `fixtures/captures/session.cap` exists. Several oracle/session paragraphs in `docs/TESTING.md` describe CI before the live job was added. Proposed fix: a documentation consistency pass against the current workflows; these historical claims were not rewritten as part of Q7.
 
 - 2026-11-18, Q8 reliability extraction: the bot's existing `Circuit::take_dropped` queue accumulates exhausted sequence IDs until drained, and `Session` currently does not drain it. Q8 shares retry accounting while preserving this caller behavior. Proposed follow-up: bound or consume the bot's dropped-ID notification queue and test a long loss-heavy session.
+
+- 2026-11-18, Q9 source review: the shared LLSD XML decoder predates this item and accepts `base16`, unpadded base64, and malformed binary text (invalid base64 becomes empty bytes). Pinned libopenmetaverse `OpenMetaverse.StructuredData/LLSD/XmlLLSD.cs` rejects unsupported encodings and malformed base64. For example, `<llsd><array><binary>!</binary></array></llsd>` reaches the Rust seed as an array but C# returns 400. Proposed follow-up: capture malformed LLSD cases in the oracle and align `crates/ferroan-llsd/src/xml_llsd.rs::decode_binary`, checking all callers. Q9 changes seed error mapping and name conversion without rewriting the shared parser.
 
 ## Waiting on the maintainer
 
