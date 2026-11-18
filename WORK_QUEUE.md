@@ -32,7 +32,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q6 | P2.0d: login through C# Robust | DONE (#26) |
 | Q7 | P0.10g: harness fixes from the review of #22 | DONE (#29) |
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
-| Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | IN PROGRESS (fix/event-queue-review) |
+| Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
