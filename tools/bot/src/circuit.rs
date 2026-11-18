@@ -245,6 +245,7 @@ impl Circuit {
             let count = self.pending_acks.len().min(ACKS_PER_PACKET);
             let ids: Vec<u32> = self.pending_acks.drain(..count).collect();
             let message = PacketAck {
+                omitted_trailing_blocks: 0,
                 packets: ids
                     .into_iter()
                     .map(|id| msgs::packet_ack::Packets { id })

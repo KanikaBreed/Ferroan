@@ -7,8 +7,11 @@
 // Quaternion packing follows OpenMetaverse Quaternion.ToBytes / FromBytes
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // originally the Second Life message codecs (LGPL-2.1).
+// Eight trailing message layouts follow Second Life viewer
+//   scripts/messages/message_template.msg @ ff75ab037607d8fe305f43f8b1f43126693ba2db
+//   Copyright (c) Linden Research, Inc., originally LGPL 2.1.
 
-//! LLUDP messages generated from libopenmetaverse's `message_template.msg`.
+//! LLUDP messages generated from libopenmetaverse's template plus eight viewer tails.
 //!
 //! Framing and zero-coding follow Tranquillity's send path and OpenMetaverse's
 //! `Header` / `Helpers.ZeroDecode`. See `docs/PROTOCOL.md`.

@@ -1,3 +1,28 @@
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -11,7 +36,7 @@
 //   OpenMetaverse/Helpers.cs ZeroDecode
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs ZeroEncode
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
-//   OpenSim-NGC/OpenSim-Tranquillity @ 713857f10b8e91a639a967d4354a4682b080793c
+//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 
 using System.Globalization;
 using System.Reflection;
@@ -23,6 +48,7 @@ namespace Ferroan.ReferenceOracle;
 
 internal sealed class TemplateMessage
 {
+    public string Header;
     public string Name;
     public string Frequency;
     public uint Number;
@@ -46,7 +72,7 @@ internal sealed class TemplateField
 }
 
 /// <summary>Deterministic LLUDP datagrams for every template message.</summary>
-internal static class PacketCases
+internal static partial class PacketCases
 {
     const byte Reliable = 0x40;
     const byte Zerocoded = 0x80;
@@ -132,12 +158,13 @@ internal static class PacketCases
         Console.WriteLine(
             "packets: " + template.Count + " messages, " + matched + " match OpenMetaverse classes, "
             + decoded + " of those decode with BuildPacket, " + withoutClass + " have no class");
+        AddExtensions(list);
     }
 
-    internal static byte[] EncodeNamed(string name)
+    internal static byte[] EncodeNamed(string name, bool extended = false)
     {
         Load();
-        TemplateMessage message = template.FirstOrDefault(item => item.Name == name);
+        TemplateMessage message = (extended ? extendedTemplate : template).FirstOrDefault(item => item.Name == name);
         if (message == null)
         {
             throw new InvalidOperationException("unknown message " + name);
@@ -177,12 +204,10 @@ internal static class PacketCases
         string reference = Path.Combine(referenceRoot, "libopenmetaverse", "data", "message_template.msg");
         byte[] committedBytes = File.ReadAllBytes(committed);
         byte[] referenceBytes = File.ReadAllBytes(reference);
-        if (!committedBytes.AsSpan().SequenceEqual(referenceBytes))
-        {
-            throw new InvalidOperationException("message_template.msg does not match the pinned libopenmetaverse checkout");
-        }
-
-        template = Parse(File.ReadAllText(committed));
+        template = Parse(System.Text.Encoding.UTF8.GetString(referenceBytes));
+        extendedTemplate = Parse(System.Text.Encoding.UTF8.GetString(committedBytes));
+        CheckExtensionValidation();
+        ValidateExtensions(template, extendedTemplate);
         if (template.Count != 478)
         {
             throw new InvalidOperationException("expected 478 messages, parsed " + template.Count);
@@ -213,6 +238,8 @@ internal static class PacketCases
         {
             i++;
         }
+        if (string.Join(" ", tokens.Take(i)) != "version 2.0")
+            throw new InvalidOperationException("expected message template version 2.0");
 
         var messages = new List<TemplateMessage>();
         while (i < tokens.Count)
@@ -223,6 +250,7 @@ internal static class PacketCases
             }
 
             i++;
+            int headerStart = i;
             var message = new TemplateMessage
             {
                 Name = tokens[i],
@@ -235,6 +263,7 @@ internal static class PacketCases
             {
                 i++;
             }
+            message.Header = string.Join(" ", tokens.Skip(headerStart).Take(i - headerStart));
 
             while (tokens[i] == "{")
             {

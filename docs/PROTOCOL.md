@@ -1,14 +1,14 @@
 # LLUDP messages
 
-Ferroan speaks the same datagrams as Tranquillity. This note records which message template the generator uses, every place that template differs from Aurora Viewer's, and how a datagram is framed.
+Ferroan follows Tranquillity's observable datagrams. This note records the generator's template sources, the eight appended viewer layouts needed beyond libopenmetaverse, and the framing and fixture checks.
 
 ## Which template
 
-The generator reads `crates/ferroan-protocol/message_template.msg`. That file is a byte-for-byte copy of libopenmetaverse `data/message_template.msg` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` (478 messages). The copy has no added header: the reference oracle refuses to run when the two files differ, and the template parser treats `//` as a comment only after the first column of real tokens. Provenance is in this file, in [NOTICE.md](../NOTICE.md) and in the crate headers.
+The generator reads [crates/ferroan-protocol/message_template.msg](../crates/ferroan-protocol/message_template.msg). Its base is libopenmetaverse `data/message_template.msg` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`: all 478 messages, their numbers, flags and existing fields remain. Eight messages append the blocks listed below from Linden's [scripts/messages/message_template.msg](https://github.com/secondlife/viewer/blob/ff75ab037607d8fe305f43f8b1f43126693ba2db/scripts/messages/message_template.msg) at `ff75ab037607d8fe305f43f8b1f43126693ba2db`. No other viewer message or layout change is imported. The oracle validates this exact set of appended layouts against the pinned libopenmetaverse base; it no longer requires the whole extended file to be byte-identical to that base. Provenance and licences are recorded in [NOTICE.md](../NOTICE.md) and the crate headers.
 
-Aurora Viewer `crates/aurora-msg/message_template.msg` at `48cb76e830a13965ac080128bb874afedda86d69` has 483 messages. It is the Second Life viewer template. Ferroan does not generate from it. A region has to understand what Tranquillity understands, and Tranquillity links libopenmetaverse.
+Aurora Viewer `crates/aurora-msg/message_template.msg` at `48cb76e830a13965ac080128bb874afedda86d69` has 483 messages. Its differences from the libopenmetaverse base are summarized below. Ferroan does not import that whole template. Tranquillity links libopenmetaverse but also writes some packets directly, so its wire layout can include viewer blocks missing from the linked library's generated classes.
 
-The codec is adapted from Aurora `crates/aurora-msg` at that revision. Where the two templates or the two encoders disagree, the bytes follow libopenmetaverse and Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`.
+The codec is adapted from Aurora `crates/aurora-msg` at that revision. The behavior reference is Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`, together with its pinned libopenmetaverse implementation. A template-only comparison does not replace checking actual C# sends.
 
 ## Messages only Aurora has
 
@@ -36,22 +36,45 @@ On the 478 shared messages, frequency, number, trust and zero-coding agree. Thre
 
 The flag is a viewer annotation. It does not change the message number or the body. Ferroan follows libopenmetaverse and does not treat the messages as deprecated. `OpenCircuit` is `UDPBlackListed` in both templates.
 
-## Blocks Aurora adds
+## Appended viewer blocks
 
-On eight shared messages Aurora appends blocks that libopenmetaverse does not have. The blocks already in libopenmetaverse are the same. Ferroan generates the libopenmetaverse layout and does not emit the extra blocks. A datagram that carries them does not re-encode to the same bytes: the decoder stops at the libopenmetaverse blocks, and the encoder writes only those.
+These eight layouts come from the pinned Linden viewer template above and are also present in the pinned Aurora template. The libopenmetaverse prefix is unchanged. Ferroan models their fields and preserves whether each trailing block was actually present. The four zero bytes in Tranquillity's `ImprovedInstantMessage` are `EstateBlock.EstateID`, not padding or a C# bug; dropping them caused the Q10 capture failure.
 
-| Message | Aurora blocks that libopenmetaverse lacks |
+| Message | Blocks appended to the libopenmetaverse layout |
 | --- | --- |
 | `AlertMessage` | `AgentInfo` Variable: `AgentID` LLUUID |
 | `AvatarAppearance` | `AttachmentBlock` Variable: `ID` LLUUID, `AttachmentPoint` U8 |
 | `ChildAgentUpdate` | `AgentInventoryHost` Variable: `InventoryHost` Variable 1 |
 | `ImprovedInstantMessage` | `EstateBlock` Single: `EstateID` U32. `MetaData` Variable: `Data` Variable 2 |
 | `InviteGroupResponse` | `GroupData` Single: `GroupLimit` S32 |
-| `RegionInfo` | `RegionInfo5` Variable: six chat-range and offset F32 fields and `ChatFlags` U32. `CombatSettings` Variable: `CombatFlags` U32, `OnDeath` U8, four F32 fields |
+| `RegionInfo` | `RegionInfo5` Variable: `ChatWhisperRange`, `ChatNormalRange`, `ChatShoutRange`, `ChatWhisperOffset`, `ChatNormalOffset`, `ChatShoutOffset` F32; `ChatFlags` U32. `CombatSettings` Variable: `CombatFlags` U32, `OnDeath` U8; `DamageThrottle`, `RegenerationRate`, `InvulnerabilyTime`, `DamageLimit` F32 (the spelling is the viewer template's) |
 | `SimStatus` | `SimFlags` Single: `Flags` U64 |
 | `TransferInventory` | `ValidationBlock` Single: `NeedsValidation` BOOL, `EstateID` U32 |
 
-A trailing variable block whose count byte is absent decodes as zero blocks. That is how an older simulator omits `RegionHandshake`'s `RegionInfo4`, and the codec keeps it (`Reader::block_count`). OpenMetaverse throws if the count byte is missing. The fixtures always include the count. A truncated fixed field at the very end of the body is zero-filled up to 64 bytes (`Reader::take`); a short read earlier than that is an error. Complete fixtures do not hit the fill.
+### Sender and reader audit
+
+The audit covers Tranquillity's `Source/` at `858321883f5487a5d192d36ea9d7b90fa468310c`, and the generated readers in libopenmetaverse `OpenMetaverse/_Packets_.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. A count described as absent is not an explicit count of zero.
+
+| Message | What the pinned C# server emits | C# reader behavior | Current Ferroan runtime sender |
+| --- | --- | --- | --- |
+| `AlertMessage` | `LLClientView.SendAlertMessage` uses `AlertMessagePacket`. `AlertInfo` has its count (0 or 1 in these overloads); the added `AgentInfo` count is absent. Commented-out `AgentInfo` assignments are not a send path. | The library reads through `AlertInfo`, leaving any `AgentInfo` suffix unread. No Tranquillity UDP handler for this message. | None |
+| `AvatarAppearance` | `LLClientView.SendAppearance` writes `AppearanceData` count 0 for the historical path or 1 for a baked appearance, then `AppearanceHover` count 1 and its vector. It stops there: no `AttachmentBlock` count. | The library reads through `AppearanceHover` and does not consume attachment blocks. No Tranquillity UDP handler for this message. | None |
+| `ChildAgentUpdate` | No UDP sender found in Tranquillity. Its HTTP simulation agent-update path is a different format. No claim that it emits an `AgentInventoryHost` count. | The library has a reader through the existing `AgentInfo` block, ignoring any inventory-host suffix. No Tranquillity UDP handler. | None |
+| `ImprovedInstantMessage` | `LLClientView.SendInstantMessage` manually writes the prefix, then `EstateID = 0` as four little-endian bytes. It omits the `MetaData` count. The actual packet is reliable and unencoded even though the template marks it Zerocoded. | The library stops after `MessageBlock.BinaryBucket`. Tranquillity's `HandlerImprovedInstantMessage` consumes only that prefix and does not inspect either appended block. | None; Q10's preserved harness candidate is not part of the shipped sender set |
+| `InviteGroupResponse` | No UDP sender found; no emitted `GroupData` is claimed. | No generated library packet class and no Tranquillity UDP handler. | None |
+| `RegionInfo` | `LLClientView.SendRegionInfoToEstateMenu` uses `RegionInfoPacket`, with the existing `RegionInfo3` count explicitly 0. Neither `RegionInfo5` nor `CombatSettings` has a count byte. | The library reads through `RegionInfo3`, ignoring the appended blocks. No Tranquillity handler for this message (`RequestRegionInfo` and `GodUpdateRegionInfo` are separate messages). | None (`RegionHandshake.RegionInfo` is a block in a different message) |
+| `SimStatus` | No UDP sender found. The `/simstatus` HTTP endpoint is unrelated; no emitted `SimFlags` is claimed. | No generated library packet class and no Tranquillity UDP handler. | None |
+| `TransferInventory` | No UDP sender found; no emitted `ValidationBlock` is claimed. | No generated library packet class and no Tranquillity UDP handler. | None |
+
+The send methods and IM handler are in [LLClientView.cs](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/858321883f5487a5d192d36ea9d7b90fa468310c/Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs). The five library readers above are in [_Packets_.cs](https://github.com/OpenSim-NGC/libopenmetaverse/blob/a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b/OpenMetaverse/_Packets_.cs). They do not require the input to end after their known blocks, so they tolerate the suffix without exposing its values. Their `ToBytes` methods write only the libopenmetaverse prefix. The absence of a server sender or handler was checked across `Source/`, not inferred from a missing method in `LLClientView` alone. Local reference histories contain no later relevant fixes beyond these pins.
+
+### Preserving an absent suffix
+
+Generated messages with an optional trailing block sequence expose `omitted_trailing_blocks`. This records how many whole blocks at the end were absent. An absent Variable count and an explicitly encoded count of zero both decode to an empty collection, but have different omission metadata and therefore different re-encoded bytes. An entirely absent appended Single block is recorded the same way. Appended ACKs remain outside the message body and cannot be mistaken for a trailing block.
+
+The encoder restricts omission to the allowed trailing sequence. New appended blocks default to absent, except `ImprovedInstantMessage`: its default emits `EstateBlock` with zero and omits `MetaData`, matching the C# server. Existing blocks retain their normal default emission. A caller adding suffix contents must also select the corresponding presence. None of the eight has a current Ferroan runtime sender; the defaults and explicit presence settings are codec behavior, not an implementation of the missing services.
+
+This presence tracking also keeps an older `RegionHandshake` without a `RegionInfo4` count byte unchanged on replay. The old implementation decoded that missing count as zero but re-encoded a zero byte, which was not lossless. The existing `Reader::take` behavior is unchanged: a fixed-field read of up to 64 bytes at the exact end returns zero-filled bytes, while a partially available field returns an error. Whole-block absence is tracked separately.
 
 ## Message numbers
 
@@ -85,7 +108,7 @@ Zero-coding covers the message number and the body. The 6-byte header and the ac
 
 The extra header sits before the message number. Tranquillity writes `extra_len` 0. Aurora's parser reads the message number first and then skips extra bytes after it. Ferroan skips extra before the number, which matches `Header.ToBytes` when the length is 0. `reencode_datagram` rejects a non-empty extra. A non-zero extra combined with zero-coding is not claimed: C# zero-codes everything after the 6-byte header, including the extra, and this crate zero-codes only the message number and body.
 
-Appended acks stay in wire order. OpenMetaverse `Header.FromBytes` stores them reversed, so `FromBytes` then `ToBytes` swaps the ack bytes. Ferroan does not. Acks are a set for `Acknowledge`; the order does not change which packets are retired. Do not use that C# round trip as the ack oracle. The fixtures have no acks.
+Appended acks stay in wire order. OpenMetaverse `Header.FromBytes` stores them reversed, so `FromBytes` then `ToBytes` swaps the ack bytes. Ferroan does not. Acks are a set for `Acknowledge`; the order does not change which packets are retired. Do not use that C# round trip as the ack oracle. The generated oracle packet fixtures have no acks.
 
 `build_raw` appends as many caller-supplied acks as fit:
 
@@ -111,7 +134,7 @@ A variable block is a count byte and then that many blocks. A multiple block is 
 
 ## Fixtures
 
-`cargo xtask oracle generate` writes one datagram per template message under `fixtures/oracle/packet/`. The family is `packet`, the format is `datagram`, and the id is `packet/{Name}`. Each body is filled the same way:
+`cargo xtask oracle generate` retains the 478 libopenmetaverse datagrams under `fixtures/oracle/packet/` byte-for-byte and adds eight extended datagrams under `fixtures/oracle/packet-extension/`. The original family is `packet`, the format is `datagram`, and the id is `packet/{Name}`. Each body is filled the same way:
 
 | Field | Value |
 | --- | --- |
@@ -133,7 +156,7 @@ A variable block is a count byte and then that many blocks. A multiple block is 
 
 The header is sequence 0, reliable, extra length 0, no acks. Zero-coding is applied when the template says so, and the coded form is kept when it is not larger than the raw form.
 
-387 messages have an `OpenMetaverse.Packets.{Name}Packet` class. For each of those, the generic encoder's datagram equals `ToBytes` plus the same zero-coding. 385 of them also survive `Packet.BuildPacket`. Two do not, and that is an OpenMetaverse decoder bug, not a byte mismatch: the constructor allocates a fixed-count block as an array of nulls, and `FromBytes` fills the elements only when the length is not already the template count.
+387 messages have an `OpenMetaverse.Packets.{Name}Packet` class. For each original `packet` fixture, the generic encoder's datagram equals `ToBytes` plus the same zero-coding. These comparisons are unchanged by the extensions. 385 of them also survive `Packet.BuildPacket`. Two do not, and that is an OpenMetaverse decoder bug, not a byte mismatch: the constructor allocates a fixed-count block as an array of nulls, and `FromBytes` fills the elements only when the length is not already the template count.
 
 - `TestMessage.NeighborBlock` is `new NeighborBlockBlock[4]`.
 - `ViewerStats.NetStats` is `new NetStatsBlock[2]`.
@@ -142,7 +165,11 @@ The header is sequence 0, reliable, extra length 0, no acks. Zero-coding is appl
 
 The other 91 messages have no generated class. They use the same layout rules. The check that those rules match OpenMetaverse is the 387 class comparisons. The messages are `AddCircuitCode`, `NeighborList`, `AvatarTextureUpdate`, `SimulatorMapUpdate`, `SimulatorSetMap`, `SubscribeLoad`, `UnsubscribeLoad`, `SimulatorReady`, `SimulatorPresentAtLocation`, `SimulatorLoad`, `SimulatorShutdownRequest`, `RegionPresenceRequestByRegionID`, `RegionPresenceRequestByHandle`, `RegionPresenceResponse`, `UpdateSimulator`, `LogDwellTime`, `FeatureDisabled`, `LogFailedMoneyTransaction`, `UserReportInternal`, `SetSimStatusInDatabase`, `SetSimPresenceInDatabase`, `AvatarPickerRequestBackend`, `DirFindQueryBackend`, `DirPlacesQueryBackend`, `DirClassifiedQueryBackend`, `DirLandQueryBackend`, `DirPopularQueryBackend`, `GroupNoticeAdd`, `DataHomeLocationRequest`, `DataHomeLocationReply`, `NearestLandingRegionRequest`, `NearestLandingRegionReply`, `NearestLandingRegionUpdated`, `TeleportLandingStatusChanged`, `KickUserAck`, `SystemKickUser`, `AvatarPropertiesRequestBackend`, `RequestParcelTransfer`, `UpdateParcel`, `RemoveParcel`, `MergeParcel`, `LogParcelChanges`, `CheckParcelSales`, `ParcelSales`, `StartAuction`, `ConfirmAuctionStart`, `CompleteAuction`, `CancelAuction`, `CheckParcelAuctions`, `ParcelAuctions`, `ChatPass`, `EdgeDataPacket`, `SimStatus`, `AtomicPassObject`, `KillChildAgents`, `DataServerLogout`, `RequestInventoryAsset`, `InventoryAssetResponse`, `TransferInventory`, `TransferInventoryAck`, `FormFriendship`, `EventLocationRequest`, `EventLocationReply`, `MoneyTransferBackend`, `SetStartLocation`, `NetTest`, `SetCPURatio`, `SimCrashed`, `NameValuePair`, `RemoveNameValuePair`, `UpdateAttachment`, `RemoveAttachment`, `EmailMessageRequest`, `EmailMessageReply`, `InternalScriptMail`, `ScriptDataRequest`, `ScriptDataReply`, `InviteGroupResponse`, `TallyVotes`, `LogTextMessage`, `CreateTrustedCircuit`, `DenyTrustedCircuit`, `RequestTrustedCircuit`, `ParcelRename`, `SystemMessage`, `RpcChannelRequest`, `RpcChannelReply`, `RpcScriptRequestInbound`, `RpcScriptRequestInboundForward`, `RpcScriptReplyInbound` and `ScriptMailRegistration`.
 
-`crates/ferroan-protocol/tests/oracle_fixtures.rs` calls `reencode_datagram` on every packet fixture and requires the same bytes, and requires 478 of them. The ordinary CI jobs run those Rust tests. `cargo xtask oracle verify` encodes each message again with the C# tool and compares; the [Linux live workflow](../.github/workflows/live.yml) runs that command with the pinned references and .NET SDK.
+The eight `packet-extension` fixtures populate the appended blocks using the same field values. Their manifest records the viewer pin, appended block names and original raw-prefix length before zero-coding. Each extended raw prefix must equal its original libopenmetaverse fixture. Five of these messages have library classes; three do not, as the audit records. The appended bytes are template-generated layout evidence, not evidence that a C# server sent those values.
+
+`crates/ferroan-protocol/tests/oracle_fixtures.rs` calls `reencode_datagram` on every original and extended fixture, requiring identical bytes, exactly 478 original cases and eight extension cases. It also checks each extended body's original prefix. The ordinary CI jobs run those Rust tests. `cargo xtask oracle verify` encodes each case again with the C# tool and compares; the [Linux live workflow](../.github/workflows/live.yml) runs that command with the pinned references and .NET SDK.
+
+The separate [trailing-block capture](../fixtures/trailing/README.md) contains an actual 191-byte C# `ImprovedInstantMessage`: its 187-byte library prefix is followed by four zero bytes for `EstateBlock`, with no `MetaData` count. `cargo xtask live trailing-fixtures <udp-capture>` requires the private raw capture to round-trip losslessly before replacing identities, timestamp and text directly at their existing lengths. The test `captured_csharp_im_keeps_estate_block_and_omits_metadata_count` checks the recorded suffix, its presence metadata and complete byte-for-byte re-encoding. This captured evidence is separate from the generic oracle's extension fixtures.
 
 Malformed datagrams return `DecodeError`. The unit tests cover a short header, an ack count that runs past the buffer, a zero-expansion bomb, and a zero run whose count is 0. `protocol-fuzz` reads stdin, truncates to 4096 bytes and calls `reencode_datagram`. `cargo xtask check` compiles it. It is not a coverage-guided fuzzer.
 
@@ -152,4 +179,4 @@ Malformed datagrams return `DecodeError`. The unit tests cover a short header, a
 
 ## Not claimed
 
-No viewer has been shown a datagram from this crate. The comparison is against libopenmetaverse's encoder and Tranquillity's zero-coding, on Linux. A Windows oracle run was not done. Message splitting, resends, throttles and the reliable-ack policy of `SendPacketFinal` are not in this crate. A non-empty extra header is rejected rather than re-encoded.
+The oracle compares against libopenmetaverse's encoder and Tranquillity's zero-coding on Linux; a Windows oracle run was not done. Captured datagrams add C# send-path evidence, while the bot and region live scenarios are recorded in [LIVE.md](LIVE.md). Firestorm validation remains pending. The shared `reliability` module supplies bounded resend accounting, but message splitting, throttles and the complete `SendPacketFinal` policy are not implemented here. A non-empty extra header is rejected rather than re-encoded.

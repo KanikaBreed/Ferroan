@@ -1,4 +1,10 @@
 // Linden Lab development message templates
+// Base: OpenSim-NGC/libopenmetaverse data/message_template.msg
+//   @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
+// Eight trailing-block extensions: secondlife/viewer scripts/messages/message_template.msg
+//   @ ff75ab037607d8fe305f43f8b1f43126693ba2db.
+// Copyright (c) Linden Research, Inc.; originally LGPL 2.1.
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors, GPL-3.0-or-later.
 
 version 2.0
 
@@ -2847,6 +2853,10 @@ version 2.0
 		{	Message			Variable	1	}
 		{	ExtraParams		Variable	1	}
 	}
+    {
+        AgentInfo Variable
+        {   AgentID LLUUID  }
+    }
 }
 
 // Send an AlertMessage to the named agent.
@@ -2999,6 +3009,25 @@ version 2.0
 		RegionInfo3		Variable
 		{	RegionFlagsExtended	U64			}
 	}
+    {
+        RegionInfo5 Variable
+        {   ChatWhisperRange    F32 }
+        {   ChatNormalRange     F32 }
+        {   ChatShoutRange      F32 }
+        {   ChatWhisperOffset   F32 }
+        {   ChatNormalOffset    F32 }
+        {   ChatShoutOffset     F32 }
+        {   ChatFlags           U32 }
+    }
+    {
+        CombatSettings Variable
+        {   CombatFlags         U32 }
+        {   OnDeath             U8  }
+        {   DamageThrottle      F32 }
+        {   RegenerationRate    F32 }
+        {   InvulnerabilyTime   F32 }
+        {   DamageLimit         F32 }
+    }
 }
 
 // GodUpdateRegionInfo
@@ -3597,6 +3626,11 @@ version 2.0
 		AppearanceHover		Variable
 		{	HoverHeight	LLVector3	}
 	}
+    {
+        AttachmentBlock Variable
+        {   ID              LLUUID  }
+        {   AttachmentPoint U8      }
+    }
 }
 
 // AvatarSitResponse - response to a request to sit on an object
@@ -5277,6 +5311,10 @@ version 2.0
 		{	CanAcceptAgents		BOOL	}
 		{	CanAcceptTasks		BOOL	}
 	}
+    {
+        SimFlags Single
+        {   Flags   U64 }
+    }
 }
 
 // Child Agent Update - agents send child agents to neighboring simulators.
@@ -5355,6 +5393,10 @@ version 2.0
 		AgentInfo				Variable
 		{	Flags					U32	}
 	}
+    {
+        AgentInventoryHost Variable
+        {   InventoryHost   Variable 1  }   //String
+    }
 }
 
 // ChildAgentAlive
@@ -5656,6 +5698,14 @@ version 2.0
 		{	Message			Variable	2	}
 		{	BinaryBucket	Variable	2	}
 	}
+    {
+        EstateBlock Single
+        {   EstateID    U32 }
+    }
+    {
+        MetaData Variable
+        {   Data    Variable    2   }
+    }
 }
 
 // RetrieveInstantMessages - used to get instant messages that
@@ -6591,6 +6641,11 @@ version 2.0
 		{	InventoryID		LLUUID	}
 		{	Type			S8	}
 	}
+    {
+        ValidationBlock Single
+        {   NeedsValidation BOOL    }
+        {   EstateID        U32     }
+    }
 }
 
 // dataserver -> sim
@@ -7674,6 +7729,10 @@ version 2.0
 		{	RoleID		LLUUID	}
 		{	MembershipFee S32	}
 	}
+    {
+        GroupData Single
+        {   GroupLimit  S32 }   // Extra block for the agent's group limit
+    }
 }
 
 // GroupProfileRequest

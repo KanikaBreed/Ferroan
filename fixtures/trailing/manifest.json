@@ -1,0 +1,12 @@
+{
+  "tranquillity": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "source": "cargo xtask live run ferrobot (preserved Q10 candidate, C# standalone)",
+  "source_file": "Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs::SendInstantMessage",
+  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)",
+  "selected_record": 427,
+  "original_length": 191,
+  "libopenmetaverse_prefix_length": 187,
+  "estate_id": 0,
+  "metadata_count_present": false,
+  "redaction": "Direct in-place replacement, no serializer: UUIDs at offsets 10,43,63,93 to 1; session at 26 to 2; timestamp at 109 to 0; non-NUL name/message bytes to x. Length, header, other fields and suffix unchanged. Raw capture passed lossless check first."
+}

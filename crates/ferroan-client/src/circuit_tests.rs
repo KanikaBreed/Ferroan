@@ -163,6 +163,7 @@ async fn unacknowledged_arrival_retries_the_original_timestamp_and_stops_on_ack(
     expected_retry[0] |= ferroan_protocol::PacketFlags::RESENT;
     assert_eq!(io.sent.lock().unwrap()[1], expected_retry);
     let ack = PacketAck {
+        omitted_trailing_blocks: 0,
         packets: vec![packet_ack::Packets { id: 1 }],
     };
     let request = wire(&ack, 2, &[]);

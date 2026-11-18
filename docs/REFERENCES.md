@@ -11,6 +11,7 @@ To move a pin, open a PR that changes this file and says why, and check what cha
 | `Aurora-Viewer` | [Aurora-Viewer/Aurora-Viewer](https://github.com/Aurora-Viewer/Aurora-Viewer) `main` | `48cb76e830a13965ac080128bb874afedda86d69` | GPL-3.0-or-later | Rust crates to reuse (`aurora-llsd`, `aurora-msg`, `aurora-prim`); the viewer side of the protocol (`aurora-net`); the viewer used for login checks |
 | `slua` | [secondlife/slua](https://github.com/secondlife/slua) | `a02d459aa0cb64a4c2b3dd4d841e67ba4a01d9b1` | MIT | Linden Lab's script engine (Phase 4, and the SLua work in Tranquillity) |
 | `Ferrobot` | [BlackBox-Roleplay-Systems/Ferrobot](https://github.com/BlackBox-Roleplay-Systems/Ferrobot) `main` | `9cc7ab284c78b7f17ae209039e8a3405a12620b6` | GPL-3.0 | Planned second test client ([D17](DECISIONS.md)), run as a separate process against test regions. P0.10h harness integration is blocked and not shipped. Not a behavior reference and not a porting source |
+| `~/Git/viewer` (committed source only) | [secondlife/viewer](https://github.com/secondlife/viewer) | `ff75ab037607d8fe305f43f8b1f43126693ba2db` | LGPL-2.1 | Eight trailing message layouts from `scripts/messages/message_template.msg`, used under GPL-3.0-or-later as LGPL-2.1 section 3 permits. Message numbers, flags and existing blocks remain from libopenmetaverse |
 
 Other checkouts the maintainers have, read for context only:
 
@@ -18,7 +19,6 @@ Other checkouts the maintainers have, read for context only:
 | --- | --- | --- |
 | `~/Git/opensim` | [opensim/opensim](https://github.com/opensim/opensim) | Core OpenSimulator, for history and differences from Tranquillity |
 | `~/Git/libremetaverse` | [cinderblocks/libremetaverse](https://github.com/cinderblocks/libremetaverse) | A newer OpenMetaverse fork (BSD-3-Clause); compare when libopenmetaverse is unclear |
-| `~/Git/viewer` | [secondlife/viewer](https://github.com/secondlife/viewer) | Linden's viewer (LGPL-2.1): the message template's origin and viewer behavior |
 | `~/Git/phoenix-firestorm` | [FirestormViewer/phoenix-firestorm](https://github.com/FirestormViewer/phoenix-firestorm) | Firestorm (LGPL-2.1): the viewer most residents use |
 | `~/Git/dcs-srs-rust` | KanikaBreed/dcs-srs-rust | Workflow patterns: the check script, CI, and a C# oracle that verifies Rust-encoded fixtures |
 

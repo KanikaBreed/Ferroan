@@ -34,7 +34,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
-| Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | READY |
+| Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10c |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY after Q10 |
@@ -103,6 +103,8 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10c final CI: Linux [run 44402778694](https://github.com/KanikaBreed/Ferroan/actions/runs/44402778694) failed after 2m8s in the unchanged `grid_state::tests::interrupted_spawn_before_record_is_recovered_without_touching_identical_unmarked_process`: `/proc` recovery returned `could not inspect a process environment during grid recovery; state preserved`. The same implementation passed Linux 3m5s and the live job 9m49s in the preceding run; only task evidence and README text changed. `scan_pending_bounded` aborts on an environment-open error for any still-live same-UID process newer than its controller, before checking launch identity. The CI error omits the OS error, so its precise cause is not proven. This is separate from Q10c's protocol change; Q10d already covers recovery scan limits, and should also investigate unrelated unreadable process environments. One explicit CI retry is requested after recording this intermittent failure; no test is disabled and no recovery policy is changed here. Three occurrences of the same failure block the item.
 
 - 2026-11-18, Q10b CI (no item: fixed in #37): the first Windows check on `e77dde1` failed Clippy 1.100's `needless_range_loop` in the unchanged `ferroan-types::texture::paint` helper ([run 44329492971](https://github.com/KanikaBreed/Ferroan/actions/runs/44329492971), Windows 2m30s). Local stable was 1.97.1. The minimal iterator conversion preserves the same selected faces and values; existing texture fixtures validate it. This required-check repair is recorded explicitly; no flaky retry or lint suppression was used.
 

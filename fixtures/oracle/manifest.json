@@ -12984,6 +12984,224 @@
         "length": 104,
         "flags": 64
       }
+    },
+    {
+      "id": "packet-extension/AlertMessage",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/AlertMessage.bin",
+      "params": {
+        "name": "AlertMessage",
+        "frequency": "Low",
+        "number": 134,
+        "has_class": true,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 23,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "AgentInfo"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "AlertMessage",
+        "length": 40,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/AvatarAppearance",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/AvatarAppearance.bin",
+      "params": {
+        "name": "AvatarAppearance",
+        "frequency": "Low",
+        "number": 158,
+        "has_class": true,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 57,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "AttachmentBlock"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "AvatarAppearance",
+        "length": 75,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/ChildAgentUpdate",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/ChildAgentUpdate.bin",
+      "params": {
+        "name": "ChildAgentUpdate",
+        "frequency": "High",
+        "number": 25,
+        "has_class": true,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 316,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "AgentInventoryHost"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "ChildAgentUpdate",
+        "length": 302,
+        "flags": 192
+      }
+    },
+    {
+      "id": "packet-extension/ImprovedInstantMessage",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/ImprovedInstantMessage.bin",
+      "params": {
+        "name": "ImprovedInstantMessage",
+        "frequency": "Low",
+        "number": 254,
+        "has_class": true,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 127,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "EstateBlock",
+          "MetaData"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "ImprovedInstantMessage",
+        "length": 137,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/InviteGroupResponse",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/InviteGroupResponse.bin",
+      "params": {
+        "name": "InviteGroupResponse",
+        "frequency": "Low",
+        "number": 350,
+        "has_class": false,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 78,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "GroupData"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "InviteGroupResponse",
+        "length": 82,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/RegionInfo",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/RegionInfo.bin",
+      "params": {
+        "name": "RegionInfo",
+        "frequency": "Low",
+        "number": 142,
+        "has_class": true,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 126,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "RegionInfo5",
+          "CombatSettings"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "RegionInfo",
+        "length": 177,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/SimStatus",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/SimStatus.bin",
+      "params": {
+        "name": "SimStatus",
+        "frequency": "Medium",
+        "number": 12,
+        "has_class": false,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 10,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "SimFlags"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "SimStatus",
+        "length": 18,
+        "flags": 64
+      }
+    },
+    {
+      "id": "packet-extension/TransferInventory",
+      "family": "packet-extension",
+      "format": "datagram",
+      "file": "packet-extension/TransferInventory.bin",
+      "params": {
+        "name": "TransferInventory",
+        "frequency": "Low",
+        "number": 295,
+        "has_class": false,
+        "viewer": "ff75ab037607d8fe305f43f8b1f43126693ba2db",
+        "viewer_source": "scripts/messages/message_template.msg",
+        "libopenmetaverse_comparison": "raw-prefix-before-zerocoding",
+        "libopenmetaverse_prefix_bytes": 76,
+        "extension_source": "template-generated; not a captured C# sender",
+        "appended_blocks": [
+          "ValidationBlock"
+        ]
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "packet",
+        "name": "TransferInventory",
+        "length": 81,
+        "flags": 64
+      }
     }
   ]
 }

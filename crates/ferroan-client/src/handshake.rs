@@ -135,6 +135,7 @@ impl HandshakeConfig {
             self.terrain_textures
         };
         RegionHandshake {
+            omitted_trailing_blocks: 0,
             region_info: region_handshake::RegionInfo {
                 region_flags: self.region_flags,
                 sim_access: self.sim_access,

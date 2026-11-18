@@ -42,6 +42,7 @@ mod http_oracle;
 mod live;
 mod oracle;
 mod schema;
+mod trailing_fixtures;
 
 use std::env;
 use std::ffi::OsString;
@@ -75,6 +76,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live login-fixtures <capture-dir>
        cargo xtask live circuit-fixtures <udp-capture>
        cargo xtask live arrival-fixtures <udp-capture>
+       cargo xtask live trailing-fixtures <udp-capture>
        cargo xtask live run assets --running
        cargo xtask live assets";
 
@@ -127,6 +129,9 @@ fn main() -> ExitCode {
         }
         ["live", "arrival-fixtures", capture] => {
             live::finish(arrival_fixtures::generate(Path::new(capture)))
+        }
+        ["live", "trailing-fixtures", capture] => {
+            live::finish(trailing_fixtures::generate(Path::new(capture)))
         }
         ["live", "run", "assets", "--running"] => live::run_running_assets(),
         ["live", "assets"] => assets::compare(),
