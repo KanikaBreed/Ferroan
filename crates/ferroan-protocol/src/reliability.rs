@@ -1,0 +1,303 @@
+// Copyright (c) 2026 the Aurora Viewer contributors
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Adapted from Aurora Viewer crates/aurora-net/src/circuit.rs
+//   Aurora-Viewer/Aurora-Viewer @ 48cb76e830a13965ac080128bb874afedda86d69
+// Extracted from Ferroan's bot circuit: sequence allocation, bounded duplicate
+// history and reliable-packet resend accounting, without networking or framing.
+//
+// Compared with Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+//   (HandleUnacked, ResendUnacked) and UnackedPacketCollection.cs
+//   (GetExpiredPackets), OpenSim-NGC/OpenSim-Tranquillity
+//   @ 858321883f5487a5d192d36ea9d7b90fa468310c.
+// C# retries until its client inactivity timeout, without a retry-count cutoff.
+// The bounded retry policies here are Ferroan/Aurora policies, not that C# limit.
+
+//! Shared LLUDP reliability state. Callers retain their own ack scheduling,
+//! packet framing, transport errors and decisions about retry exhaustion.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
+
+pub const MAX_UNACKED: usize = 256;
+pub const DEDUPE_WINDOW: usize = 2048;
+
+/// Sequence allocation for ordinary datagrams. Out-of-band server acknowledgments
+/// can bypass this counter without consuming the next ordinary sequence.
+pub struct SequenceCounter {
+    next: u32,
+}
+
+impl Default for SequenceCounter {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
+impl SequenceCounter {
+    pub fn new(first: u32) -> Self {
+        Self { next: first }
+    }
+
+    pub fn take(&mut self) -> u32 {
+        let sequence = self.next;
+        self.next = self.next.wrapping_add(1);
+        sequence
+    }
+
+    pub fn peek(&self) -> u32 {
+        self.next
+    }
+}
+
+#[derive(Default)]
+pub struct RecentSequences {
+    order: VecDeque<u32>,
+    seen: HashSet<u32>,
+}
+
+impl RecentSequences {
+    pub fn contains(&self, sequence: u32) -> bool {
+        self.seen.contains(&sequence)
+    }
+
+    /// Remember a decoded packet, returning false when it was already recorded.
+    /// Callers decide whether the resend flag is required for duplicate rejection.
+    pub fn note(&mut self, sequence: u32) -> bool {
+        if self.seen.contains(&sequence) {
+            return false;
+        }
+        if self.order.len() >= DEDUPE_WINDOW
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        self.order.push_back(sequence);
+        self.seen.insert(sequence);
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resend {
+    /// Fixed timeout, or the caller's current RTT-derived timeout when None.
+    pub timeout: Option<Duration>,
+    pub max_retries: u8,
+}
+
+impl Resend {
+    pub const DEFAULT: Self = Self {
+        timeout: None,
+        max_retries: 4,
+    };
+    /// Aurora's login UseCircuitCode policy, from llstartup.cpp.
+    pub const LOGIN_USE_CIRCUIT_CODE: Self = Self {
+        timeout: Some(Duration::from_secs(5)),
+        max_retries: 3,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("reliable window is full ({count} unacked)")]
+pub struct WindowFull {
+    pub count: usize,
+}
+
+struct Unacked<T> {
+    payload: T,
+    sent: Instant,
+    retries: u8,
+    policy: Resend,
+}
+
+pub struct ReliableWindow<T> {
+    packets: HashMap<u32, Unacked<T>>,
+}
+
+impl<T> Default for ReliableWindow<T> {
+    fn default() -> Self {
+        Self {
+            packets: HashMap::new(),
+        }
+    }
+}
+
+pub struct ResendBatch<T> {
+    pub resend: Vec<(u32, T)>,
+    /// Exhausted packets are removed before this batch is returned, freeing slots.
+    pub dropped: Vec<u32>,
+}
+
+impl<T> ReliableWindow<T> {
+    pub fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.packets.is_empty()
+    }
+
+    pub fn contains(&self, sequence: u32) -> bool {
+        self.packets.contains_key(&sequence)
+    }
+
+    pub fn retry_count(&self, sequence: u32) -> Option<u8> {
+        self.packets.get(&sequence).map(|packet| packet.retries)
+    }
+
+    pub fn insert(
+        &mut self,
+        sequence: u32,
+        payload: T,
+        now: Instant,
+        policy: Resend,
+    ) -> Result<(), WindowFull> {
+        if self.packets.len() >= MAX_UNACKED && !self.packets.contains_key(&sequence) {
+            return Err(WindowFull {
+                count: self.packets.len(),
+            });
+        }
+        self.packets.insert(
+            sequence,
+            Unacked {
+                payload,
+                sent: now,
+                retries: 0,
+                policy,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn acknowledge(&mut self, sequences: impl IntoIterator<Item = u32>) {
+        for sequence in sequences {
+            self.packets.remove(&sequence);
+        }
+    }
+
+    pub fn oldest_or(&self, fallback: u32) -> u32 {
+        self.packets.keys().min().copied().unwrap_or(fallback)
+    }
+
+    /// Includes the expiry of packets at their retry limit so they cannot remain
+    /// permanently in a full window after the final resend.
+    pub fn time_until_due(&self, now: Instant, fallback: Duration) -> Duration {
+        self.packets
+            .values()
+            .map(|packet| {
+                packet
+                    .policy
+                    .timeout
+                    .unwrap_or(fallback)
+                    .saturating_sub(now.saturating_duration_since(packet.sent))
+            })
+            .min()
+            .unwrap_or(Duration::MAX)
+    }
+}
+
+impl<T: Clone> ReliableWindow<T> {
+    /// Update accounting before the caller attempts each send, matching the bot's
+    /// bounded best-effort policy even if its UDP send fails.
+    pub fn poll(&mut self, now: Instant, fallback: Duration) -> ResendBatch<T> {
+        let mut batch = ResendBatch {
+            resend: Vec::new(),
+            dropped: Vec::new(),
+        };
+        for (&sequence, packet) in &mut self.packets {
+            if now.saturating_duration_since(packet.sent)
+                < packet.policy.timeout.unwrap_or(fallback)
+            {
+                continue;
+            }
+            if packet.retries >= packet.policy.max_retries {
+                batch.dropped.push(sequence);
+            } else {
+                packet.retries += 1;
+                packet.sent = now;
+                batch.resend.push((sequence, packet.payload.clone()));
+            }
+        }
+        self.acknowledge(batch.dropped.iter().copied());
+        batch
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequence_allocation_wraps_without_consuming_unallocated_acks() {
+        let mut sequence = SequenceCounter::new(u32::MAX);
+        assert_eq!(sequence.peek(), u32::MAX);
+        assert_eq!(sequence.take(), u32::MAX);
+        assert_eq!(sequence.peek(), 0);
+        assert_eq!(sequence.take(), 0);
+        assert_eq!(sequence.take(), 1);
+    }
+
+    #[test]
+    fn duplicate_history_is_bounded_without_refreshing_repeated_sequences() {
+        let mut recent = RecentSequences::default();
+        for sequence in 0..DEDUPE_WINDOW as u32 {
+            assert!(recent.note(sequence));
+        }
+        assert!(!recent.note(0));
+        assert!(recent.note(DEDUPE_WINDOW as u32));
+        assert!(!recent.contains(0));
+        assert!(recent.contains(1));
+        assert_eq!(recent.order.len(), DEDUPE_WINDOW);
+        assert_eq!(recent.seen.len(), DEDUPE_WINDOW);
+    }
+
+    #[test]
+    fn exhausted_retries_free_a_full_window_and_acknowledged_packets_do_not_resend() {
+        let now = Instant::now();
+        let step = Duration::from_millis(200);
+        let policy = Resend {
+            timeout: Some(step),
+            max_retries: 4,
+        };
+        let mut window = ReliableWindow::default();
+        for sequence in 0..MAX_UNACKED as u32 {
+            window.insert(sequence, vec![1, 2, 3], now, policy).unwrap();
+        }
+        assert_eq!(
+            window.insert(999, vec![], now, policy).unwrap_err().count,
+            MAX_UNACKED
+        );
+        window.acknowledge([0]);
+        for retry in 1..=4 {
+            let batch = window.poll(now + step * retry, step);
+            assert_eq!(batch.resend.len(), MAX_UNACKED - 1);
+            assert!(batch.dropped.is_empty());
+            assert_eq!(window.retry_count(1), Some(retry as u8));
+        }
+        assert_eq!(window.time_until_due(now + step * 4, step), step);
+        let batch = window.poll(now + step * 5, step);
+        assert!(batch.resend.is_empty());
+        assert_eq!(batch.dropped.len(), MAX_UNACKED - 1);
+        assert!(window.is_empty());
+        window.insert(999, vec![], now, policy).unwrap();
+        assert_eq!(window.oldest_or(1000), 999);
+    }
+
+    #[test]
+    fn fixed_login_policy_and_dynamic_rtt_policy_keep_separate_deadlines() {
+        let now = Instant::now();
+        let mut window = ReliableWindow::default();
+        window
+            .insert(1, (), now, Resend::LOGIN_USE_CIRCUIT_CODE)
+            .unwrap();
+        window.insert(2, (), now, Resend::DEFAULT).unwrap();
+        let batch = window.poll(now + Duration::from_secs(4), Duration::from_secs(1));
+        assert_eq!(batch.resend, vec![(2, ())]);
+        assert_eq!(window.retry_count(1), Some(0));
+        assert_eq!(
+            window.time_until_due(now + Duration::from_secs(4), Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+    }
+}

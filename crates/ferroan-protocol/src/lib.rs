@@ -17,6 +17,7 @@ use glam::{DVec3, Quat, Vec3, Vec4};
 use uuid::Uuid;
 
 pub mod packet;
+pub mod reliability;
 
 pub use packet::{IncomingPacket, PacketFlags, build_packet, parse_packet};
 

@@ -7,6 +7,8 @@
 
 mod caps;
 mod circuit;
+mod handshake;
 
 pub use caps::{CapsError, CapsRegistry, CapsServer};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer};
+pub use handshake::HandshakeConfig;

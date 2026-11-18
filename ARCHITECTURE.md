@@ -22,6 +22,8 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 
 The harness's grid controller records process identities for interrupted-run cleanup by `live down`. Grid and asset capture proxies bound replies at 70 seconds to cover C#'s 58-second event polls and explicitly close their single-exchange connections. Bot return teleports require fresh region evidence; diagnostic log tails redact secrets before truncation. Shared harness construction, example copying, redaction and run-root helpers keep standalone and grid behavior aligned.
 
+The bot and region circuit share bounded sequence, duplicate-history and retry-window accounting in `ferroan-protocol::reliability`; each keeps its own ACK timing and retry policy. The region's immediate `UseCircuitCode` ACK has sequence zero; established ACKs use ordinary sequence numbers. Its handshake announces configured region name/type/owner and typed region settings matching C#'s fresh-region defaults. Datagram errors do not tear down the listener. Exhausted retries release their window entries, and logout sends C#'s reliable, zero-coded reply without waiting for an ACK.
+
 ## Planned
 
 ### Programs

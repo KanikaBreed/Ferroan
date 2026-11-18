@@ -32,6 +32,7 @@
 
 mod asset_oracle;
 mod assets;
+mod circuit_fixtures;
 mod config_oracle;
 mod grid;
 mod grid_state;
@@ -68,6 +69,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run <scenario>|all [grid]
        cargo xtask live run login grid --region ferroan
        cargo xtask live login-fixtures <capture-dir>
+       cargo xtask live circuit-fixtures <udp-capture>
        cargo xtask live run assets --running
        cargo xtask live assets";
 
@@ -112,6 +114,9 @@ fn main() -> ExitCode {
         ["live", "run", scenario, "grid"] => grid::run(scenario),
         ["live", "run", scenario, "grid", "--region", "ferroan"] => grid::run_ferroan(scenario),
         ["live", "login-fixtures", directory] => grid::login_fixtures(Path::new(directory)),
+        ["live", "circuit-fixtures", capture] => {
+            live::finish(circuit_fixtures::generate(Path::new(capture)))
+        }
         ["live", "run", "assets", "--running"] => live::run_running_assets(),
         ["live", "assets"] => assets::compare(),
         _ => {

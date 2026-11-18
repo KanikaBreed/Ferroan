@@ -2612,6 +2612,7 @@ dependencies = [
  "ferroan-bot",
  "ferroan-capture",
  "ferroan-http",
+ "ferroan-protocol",
  "flate2",
  "serde_json",
  "tokio",
