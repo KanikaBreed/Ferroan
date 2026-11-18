@@ -50,6 +50,8 @@ P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, che
 
 [D18](DECISIONS.md). `cargo xtask docker smoke` (P0.11) builds the images, starts the example grid with `docker compose`, and runs `ferroan-bot` and Ferrobot against it. The live harness reads each server's status and metrics during the scenarios (P0.12). For example, a region reports one root agent after a login and none after the logout. A row that adds a subsystem adds its metrics. Logs reach stdout, `LOGDIR` files, OpenTelemetry and Tranquillity's remote console, and each run's logs are searched for secrets (P0.13).
 
+For harness changes in P0.10g, run `cargo xtask live run all grid` three consecutive times locally and once in CI. Interrupt a separate grid run after both regions have started, verify another start refuses its surviving processes, then use `cargo xtask live down` and verify those processes exit. Unit tests cover reply holds beyond the former proxy and bot timeouts, stale return-hop evidence, destination changes after opening a circuit, process ownership mismatches, and passwords spanning a log-tail cut.
+
 ## Honest status
 
 A compile check proves the code builds. It does not prove a viewer can log in, a script behaves as it did in C#, or a grid stays up. Record those as pending until someone has seen them work, with the revision, viewer or grid, and result. A passing live-harness run is evidence of protocol behavior seen by `ferroan-bot`; it is not evidence that Firestorm renders the result, which the phase-gate check covers.

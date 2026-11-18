@@ -116,7 +116,7 @@ fn run_inner(scenario: &str) -> Result<String, String> {
     }
 }
 
-fn live_root() -> PathBuf {
+pub(crate) fn live_root() -> PathBuf {
     repo_root().join(".scratch").join("live")
 }
 
@@ -357,12 +357,25 @@ fn up_report(port: u16, log: &Path) -> String {
     )
 }
 
-fn redact(text: &str, password: &str) -> String {
-    if password.is_empty() {
-        text.to_string()
-    } else {
-        text.replace(password, "<redacted>")
+pub(crate) fn redact_secrets(text: &str, passwords: &[&str]) -> String {
+    let mut passwords = passwords.to_vec();
+    passwords.sort_by_key(|password| std::cmp::Reverse(password.len()));
+    let mut out = text.to_owned();
+    for password in passwords {
+        if !password.is_empty() {
+            out = out.replace(password, "<redacted>");
+        }
     }
+    out
+}
+
+fn redacted_tail(text: &str, passwords: &[&str]) -> String {
+    let text = redact_secrets(text, passwords);
+    let mut start = text.len().saturating_sub(4000);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_owned()
 }
 
 fn pinned_tranquillity(markdown: &str) -> Result<String, String> {
@@ -805,14 +818,38 @@ fn run_scenarios_with_accounts(
     log: &Path,
     scenario: &str,
 ) -> Result<ScenarioOutcome, String> {
+    let harness = harness(
+        &format!("http://127.0.0.1:{public_port}/"),
+        password,
+        chat_password,
+        log,
+    )?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not start tokio: {error}"))?;
+    let report = runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?;
+    Ok(ScenarioOutcome {
+        report,
+        http: harness.http_trace.records(),
+        chat_password: chat_password.to_owned(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn harness(
+    login_uri: &str,
+    password: &str,
+    chat_password: &str,
+    log: &Path,
+) -> Result<ferroan_bot::scenario::Harness, String> {
     let texture = texture_bytes()?;
     let region_id = uuid::Uuid::parse_str(REGION_UUID)
         .map_err(|_| "the region uuid is not a uuid".to_string())?;
     let library = uuid::Uuid::parse_str("2a4880b6-b7a3-690a-2049-bfbe38eafb9f")
         .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
-    let http_trace = ferroan_bot::trace::HttpTrace::new();
-    let harness = ferroan_bot::scenario::Harness {
-        login_uri: format!("http://127.0.0.1:{public_port}/"),
+    Ok(ferroan_bot::scenario::Harness {
+        login_uri: login_uri.to_owned(),
         region_id,
         owner: ferroan_bot::scenario::Account {
             first_name: "Test".to_string(),
@@ -826,20 +863,10 @@ fn run_scenarios_with_accounts(
         },
         texture,
         library_texture: library,
-        http_trace: std::sync::Arc::clone(&http_trace),
+        http_trace: ferroan_bot::trace::HttpTrace::new(),
         region_log: log.to_owned(),
         require_logout_reply: false,
         neighbour: None,
-    };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("could not start tokio: {error}"))?;
-    let report = runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?;
-    Ok(ScenarioOutcome {
-        report,
-        http: http_trace.records(),
-        chat_password: chat_password.to_owned(),
     })
 }
 
@@ -897,7 +924,7 @@ fn create_chat_user(started: &mut Started, password: &str) -> Result<(), String>
         if Instant::now() >= deadline {
             return Err(format!(
                 "create user did not finish\n{}",
-                redact(&log_tail(&started.log, password), &started.password)
+                log_tail_secrets(&started.log, &[password, &started.password])
             ));
         }
         thread::sleep(Duration::from_millis(200));
@@ -1045,8 +1072,17 @@ fn finish_start(
 
 #[cfg(target_os = "linux")]
 fn down_linux() -> Result<String, String> {
+    let grid_result = crate::grid_state::down();
+    let standalone_result = down_standalone();
+    grid_result?;
+    standalone_result?;
+    Ok("live: down".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn down_standalone() -> Result<(), String> {
     let Some(state) = read_state(&state_path())? else {
-        return Ok("live: down".to_string());
+        return Ok(());
     };
     let region_result = stop_pid(state.pid);
     let asset_result = state.assets.as_ref().map_or(Ok(()), |asset| {
@@ -1056,7 +1092,7 @@ fn down_linux() -> Result<String, String> {
     asset_result?;
     let _ = fs::remove_file(state_path());
     let _ = fs::remove_file(run_dir().join("password"));
-    Ok("live: down".to_string())
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1235,6 +1271,9 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
 
 #[cfg(target_os = "linux")]
 pub(crate) fn standalone_is_up() -> Result<Option<u32>, String> {
+    if let Some(pid) = crate::grid_state::survivor()? {
+        return Ok(Some(pid));
+    }
     if let Some(state) = read_state(&state_path())? {
         if region_pid_live(state.pid) {
             return Ok(Some(state.pid));
@@ -1249,25 +1288,31 @@ pub(crate) fn standalone_is_up() -> Result<Option<u32>, String> {
 }
 
 fn copy_examples(publish: &Path) -> Result<(), String> {
-    let include = publish.join("config-include");
     for name in ["StandaloneCommon.ini", "FlotsamCache.ini", "GridCommon.ini"] {
-        let dest = include.join(name);
-        if dest.is_file() {
-            continue;
-        }
-        let source = include.join(format!("{name}.example"));
+        let source = publish
+            .join("config-include")
+            .join(format!("{name}.example"));
         if name == "GridCommon.ini" && !source.is_file() {
             continue;
         }
-        fs::copy(&source, &dest).map_err(|error| {
-            format!(
-                "could not copy {} to {}: {error}",
-                source.display(),
-                dest.display()
-            )
-        })?;
+        copy_example(publish, name)?;
     }
     Ok(())
+}
+
+pub(crate) fn copy_example(publish: &Path, name: &str) -> Result<(), String> {
+    let dest = publish.join("config-include").join(name);
+    if dest.is_file() {
+        return Ok(());
+    }
+    let source = dest.with_file_name(format!("{name}.example"));
+    fs::copy(&source, &dest).map(|_| ()).map_err(|error| {
+        format!(
+            "could not copy {} to {}: {error}",
+            source.display(),
+            dest.display()
+        )
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1385,12 +1430,15 @@ pub(crate) fn log_contains(path: &Path, needle: &str) -> Result<bool, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn log_tail(path: &Path, password: &str) -> String {
-    let Ok(bytes) = fs::read(path) else {
-        return format!("(no log at {})", path.display());
+    log_tail_secrets(path, &[password])
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn log_tail_secrets(path: &Path, passwords: &[&str]) -> String {
+    let Ok(text) = read_bounded_text(path, 64 * 1024 * 1024) else {
+        return format!("(log unavailable or over 64 MiB at {})", path.display());
     };
-    let start = bytes.len().saturating_sub(4000);
-    let text = String::from_utf8_lossy(&bytes[start..]);
-    redact(&text, password)
+    redacted_tail(&text, passwords)
 }
 
 #[cfg(target_os = "linux")]
@@ -1764,9 +1812,34 @@ mod tests {
         assert!(report.contains("login: http://127.0.0.1:9100/"));
         assert!(!report.contains("0123456789abcdef"));
         assert_eq!(
-            redact("password 0123456789abcdef done", "0123456789abcdef"),
+            redact_secrets("password 0123456789abcdef done", &["0123456789abcdef"]),
             "password <redacted> done"
         );
+    }
+
+    #[test]
+    fn passwords_across_the_log_tail_cut_are_redacted_before_slicing() {
+        let password = "synthetic-password-crossing-the-cut";
+        let other = "second-synthetic-secret";
+        // The old last-4000-bytes slice starts halfway through the password.
+        let text = format!(
+            "{}{}{}{}",
+            "prefix".repeat(1000),
+            password,
+            "x".repeat(3950),
+            other
+        );
+        let raw_tail = &text[text.len() - 4000..];
+        assert!(!raw_tail.contains(password));
+        assert!(raw_tail.contains("crossing-the-cut"));
+        let tail = redacted_tail(&text, &[password, other]);
+        assert!(!tail.contains("crossing-the-cut"));
+        assert!(!tail.contains(other));
+        assert!(tail.contains("<redacted>"));
+        assert!(tail.len() <= 4000);
+        let unicode = redacted_tail(&"€".repeat(2000), &[]);
+        assert!(unicode.len() <= 4000);
+        assert!(!unicode.contains('\u{fffd}'));
     }
 
     #[test]

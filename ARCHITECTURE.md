@@ -20,6 +20,8 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-region` | One 256 metre region registered with C# Robust. Reads the region INI files through `ferroan-config`, registers/deregisters over the grid HTTP service, and accepts local `QueryAccess`/`CreateAgent` calls. Robust handles viewer login. One accepted agent uses `ferroan-client` on the configured UDP/HTTP listeners; logout releases the circuit and seed. Terrain, appearance and simulation remain planned. See [the crate guide](crates/ferroan-region/README.md) |
 | `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live`. `live run` starts one region. `live run … grid` starts GridServer and two neighbouring regions. `live assets` compares C# and Ferroan asset HTTP. `live up --assets ferroan` leaves a C# region and `ferroan-robust` running on a seeded asset store; `live run assets --running` checks that setup and `live down` stops both |
 
+The harness's grid controller records process identities for interrupted-run cleanup by `live down`. Grid and asset capture proxies bound replies at 70 seconds to cover C#'s 58-second event polls and explicitly close their single-exchange connections. Bot return teleports require fresh region evidence; diagnostic log tails redact secrets before truncation. Shared harness construction, example copying, redaction and run-root helpers keep standalone and grid behavior aligned.
+
 ## Planned
 
 ### Programs

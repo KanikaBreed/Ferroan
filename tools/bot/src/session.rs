@@ -197,8 +197,9 @@ impl Session {
 
     /// Send `CompleteAgentMovement` again on a circuit the region kept.
     ///
-    /// The seed is posted again. A `RegionHandshake` that arrives afterwards
-    /// still gets a reply, from this call or from a later [`Self::drive`].
+    /// The seed is posted again, and readiness requires a fresh
+    /// `RegionHandshake`. Packets and identity from the previous visit cannot
+    /// establish that the return hop reached this region.
     pub async fn resume_as_root(
         &mut self,
         http: &reqwest::Client,
@@ -206,33 +207,10 @@ impl Session {
         timeout: Duration,
     ) -> Result<(), SessionError> {
         self.handshake_sent = false;
-        let http = http.clone();
-        let seed = seed.to_owned();
-        let mut seed_task = if seed.is_empty() {
-            None
-        } else {
-            Some(tokio::spawn(async move {
-                caps::request_seed(&http, &seed).await
-            }))
-        };
-        let mut seed_done = seed_task.is_none();
+        self.region_id = None;
+        self.inbox.clear();
         self.send_movement_followup().await?;
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            self.pump_once(Duration::from_millis(50)).await?;
-            if !seed_done && seed_task.as_ref().is_some_and(|task| task.is_finished()) {
-                let Some(task) = seed_task.take() else {
-                    return Err(SessionError::SeedTask);
-                };
-                let joined = task.await.map_err(|_| SessionError::SeedTask)?;
-                self.caps = joined?;
-                seed_done = true;
-            }
-            if seed_done {
-                return Ok(());
-            }
-        }
-        Err(SessionError::Timeout("seed"))
+        self.run_until_ready(http, seed, timeout).await
     }
 
     /// `LogoutRequest`, then wait for `LogoutReply`.
@@ -561,6 +539,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_requires_fresh_region_evidence_even_after_seed_success() {
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut session = Session::connect(sim.local_addr().unwrap(), agent())
+            .await
+            .unwrap();
+        session.region_id = Some(Uuid::from_u128(9));
+        session.handshake_sent = true;
+        session.movement_sent = true;
+        let mut stale = Vec::new();
+        build_packet(
+            &msgs::AgentMovementComplete::default(),
+            42,
+            false,
+            false,
+            &[],
+            &mut stale,
+        );
+        session.inbox.push_back(parse_packet(&stale).unwrap());
+        let hit = std::sync::Arc::new(AtomicBool::new(false));
+        let seed = serve_seed(hit.clone()).await;
+        let http = crate::login::http_client().unwrap();
+        let result = session
+            .resume_as_root(&http, &seed, Duration::from_millis(300))
+            .await;
+        assert!(hit.load(Ordering::SeqCst), "the seed request completed");
+        assert!(matches!(result, Err(SessionError::Timeout("handshake"))));
+        assert_eq!(session.region_id(), None);
+        assert!(session.poll_inbox().is_none());
+    }
+
+    #[tokio::test]
     async fn resume_as_root_sends_complete_agent_movement_again() {
         let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let sim_addr = sim.local_addr().unwrap();
@@ -601,7 +610,7 @@ mod tests {
                     movement += 1;
                     if movement == 2 {
                         let mut handshake = RegionHandshake::default();
-                        handshake.region_info2.region_id = Uuid::from_u128(9);
+                        handshake.region_info2.region_id = Uuid::from_u128(10);
                         send_msg(&sim, from, &mut seq, &handshake, true).await;
                     }
                 }
@@ -631,6 +640,7 @@ mod tests {
             .await
             .unwrap();
         assert!(again.load(Ordering::SeqCst));
+        assert_eq!(session.region_id(), Some(Uuid::from_u128(10)));
         session.drive(Duration::from_millis(800)).await.unwrap();
         let (seen, movement) = region.await.unwrap();
         assert!(
