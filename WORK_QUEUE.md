@@ -36,32 +36,33 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
-| Q13 | P2.0e: terrain from the C# region store | READY after Q12 |
-| Q14 | P2.0f: appearance from the C# avatar service | READY after Q13 |
-| Q15 | P2.0g: local chat | READY after Q14 |
-| Q16 | P2.0h: teleport inside the Ferroan region | READY after Q15 |
-| Q17 | P2.0i: teleport to the C# neighbour and back | READY after Q16 |
-| Q18 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q17 |
-| Q19 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q18 |
-| Q20 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | READY after Q19 |
-| Q21 | P1.A2: `XAssetService` | READY after Q20 |
-| Q22 | P1.A3: FSAssets | READY after Q21 |
-| Q23 | P1.1: user accounts | READY after Q22 |
-| Q24 | P1.2: authentication and authorization | READY after Q23 |
-| Q25 | P1.3: grid user, presence and agent preferences | READY after Q24 |
-| Q26 | P1.4: avatars and baked textures | READY after Q25 |
-| Q27 | P1.5: inventory and the library | READY after Q26 |
-| Q28 | P1.6: grid service | READY after Q27 |
-| Q29 | P1.7: map tiles | READY after Q28 |
-| Q30 | P1.8: friends and the mute list | READY after Q29 |
-| Q31 | P1.9: offline IM | READY after Q30 |
-| Q32 | P1.10: Groups V2 | READY after Q31 |
-| Q33 | P1.11: profiles and search | READY after Q32 |
-| Q34 | P1.12: estates and Experiences over Robust | READY after Q33 |
-| Q35 | P1.13: login | READY after Q34 |
-| Q36 | P1.14: hypergrid (split first) | READY after Q35 |
-| Q37 | P1.15: money server | READY after Q36 |
-| Q38 | P1.16: all-Rust Robust in the harness | READY after Q37 |
+| Q13 | P0.13: logs: stdout for containers, `LOGDIR` files, Tranquillity's remote console, and Loki | READY after Q12 |
+| Q14 | P2.0e: terrain from the C# region store | READY after Q13 |
+| Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
+| Q16 | P2.0g: local chat | READY after Q15 |
+| Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
+| Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
+| Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
+| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q19 |
+| Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | READY after Q20 |
+| Q22 | P1.A2: `XAssetService` | READY after Q21 |
+| Q23 | P1.A3: FSAssets | READY after Q22 |
+| Q24 | P1.1: user accounts | READY after Q23 |
+| Q25 | P1.2: authentication and authorization | READY after Q24 |
+| Q26 | P1.3: grid user, presence and agent preferences | READY after Q25 |
+| Q27 | P1.4: avatars and baked textures | READY after Q26 |
+| Q28 | P1.5: inventory and the library | READY after Q27 |
+| Q29 | P1.6: grid service | READY after Q28 |
+| Q30 | P1.7: map tiles | READY after Q29 |
+| Q31 | P1.8: friends and the mute list | READY after Q30 |
+| Q32 | P1.9: offline IM | READY after Q31 |
+| Q33 | P1.10: Groups V2 | READY after Q32 |
+| Q34 | P1.11: profiles and search | READY after Q33 |
+| Q35 | P1.12: estates and Experiences over Robust | READY after Q34 |
+| Q36 | P1.13: login | READY after Q35 |
+| Q37 | P1.14: hypergrid (split first) | READY after Q36 |
+| Q38 | P1.15: money server | READY after Q37 |
+| Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -73,11 +74,11 @@ Q4: [PR #24](https://github.com/KanikaBreed/Ferroan/pull/24). Q5: [PR #25](https
 
 Q7 to Q9 were added on 18 November 2026 from a review of #20, #21 and #22. They come first because grid-mode results are not reliable until the proxy timeout is fixed, and later rows build on the circuit and the event queue. The findings were not verified. Confirm each one, and record any that are wrong in the row.
 
-Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). Q11 and Q12 ([D18](docs/DECISIONS.md)) were added the same day, so the remaining P2.0 work and Phase 1 run with containers and monitoring in place. It comes after the event-queue fix, so that Ferrobot does not meet the immediate empty-poll answer.
+Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). Q11 to Q13 ([D18](docs/DECISIONS.md)) were added the same day, so the remaining P2.0 work and Phase 1 run with containers, monitoring and logs in place. It comes after the event-queue fix, so that Ferrobot does not meet the immediate empty-poll answer.
 
-Q19 to Q38 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q38.
+Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
-Q17: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
+Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
