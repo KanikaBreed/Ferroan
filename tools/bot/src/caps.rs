@@ -55,15 +55,21 @@ pub async fn request_seed(
         return Err(CapsError::Url);
     }
     let names = Llsd::Array(SEED_CAPS.iter().map(|name| Llsd::from(*name)).collect());
+    let body = to_xml(&names);
     let response = http
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/llsd+xml")
         .header(reqwest::header::ACCEPT, "application/llsd+xml")
-        .body(to_xml(&names))
+        .body(body.clone())
         .send()
         .await
         .map_err(|error| CapsError::Http(error.without_url().to_string()))?;
     let status = response.status();
+    let response_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     if !status.is_success() {
         return Err(CapsError::Status(status.as_u16()));
     }
@@ -79,6 +85,16 @@ pub async fn request_seed(
             });
         }
     };
+    crate::trace::note_exchange(crate::trace::Exchange {
+        method: "POST",
+        url: seed,
+        request_type: Some("application/llsd+xml"),
+        accept: Some("application/llsd+xml"),
+        request_body: &body,
+        status: status.as_u16(),
+        response_type: response_type.as_deref(),
+        response_body: &bytes,
+    });
     let value = from_xml(&bytes).map_err(|error| CapsError::Llsd(error.to_string()))?;
     let Some(map) = value.as_map() else {
         return Err(CapsError::Malformed);

@@ -14,7 +14,7 @@ record: kind u8 | time_ms u64 little-endian | len u32 little-endian | bytes
 | HTTP request | 3 | The HTTP/1.1 request, headers and body. At most 1 MiB |
 | HTTP response | 4 | The HTTP/1.1 response, headers and body. At most 1 MiB |
 
-`time_ms` is Unix time in milliseconds. The socket address is not stored. A capture holds at most 1,000,000 records. Commit only a redacted file, under `fixtures/captures/`. No session is in the tree yet. The unit tests build a synthetic `UseCircuitCode` datagram. That datagram is not a session.
+`time_ms` is Unix time in milliseconds. The socket address is not stored. A capture holds at most 1,000,000 records. Commit only a redacted file, under `fixtures/captures/`. `fixtures/captures/session.cap` is the redacted `cargo xtask live run all` session. The unit tests also build a synthetic `UseCircuitCode` datagram. That datagram is not a session.
 
 ## UDP
 
@@ -82,20 +82,12 @@ cargo run -p ferroan-capture -- redact --in /tmp/session.cap --out fixtures/capt
 
 Object UUIDs stay, including `SourceID`, which is an agent id on some chat and an object id on others. Chat `Message` text stays, so read the redacted file before committing it. An object `Name` becomes `Redacted`. `OwnerID` and `LastOwnerID` become the agent placeholder. The placeholders are fixed values. They are not a hash of the original.
 
-HTTP `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` values become `Redacted`. Other header lines, and a body whose `Content-Type` contains text, xml, json, form or llsd, have dotted IPv4 addresses replaced with `127.0.0.1`. An XML-RPC `<string>` that follows `<name>password</name>`, or the same shape for passwd, token, secret, first, last, firstname, lastname, session or session_id, becomes `Redacted`. A body with another content type is copied unchanged. A missing `Content-Type` is treated as text.
+HTTP `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` values become `Redacted`. Other header lines, and a body whose `Content-Type` contains text, xml, json, form or llsd, have dotted IPv4 addresses replaced with `127.0.0.1`. An XML-RPC `<string>`, `<int>` or `<i4>` that follows `<name>password</name>`, or the same shape for passwd, token, secret, first, last, firstname, lastname, session, session_id, secure_session_id, agent_id, circuit_code or seed_capability, becomes `Redacted`. An LLSD `<uuid>` or `<string>` that follows `<key>owner_id</key>`, or the same shape for agent_id, creator_id, last_owner_id, session_id or secure_session_id, becomes `Redacted`. An `asset_id` stays. A body with another content type is copied unchanged. A missing `Content-Type` is treated as text.
 
 The committed UDP bytes are the encoding of the scrubbed message. They round-trip through `reencode_datagram`. They are not the original datagram. The equality that matters for the wire is the `check` on the raw file, done before `redact`.
 
-## The session still to record
+## The committed session
 
-No Aurora session has been recorded. The next session is a local Tranquillity region with SQLite, a test account, and the patch applied:
+`fixtures/captures/session.cap` is a redacted `cargo xtask live run all`. The bot logged in, walked, said `ferroan harness chat`, rezzed a prim, teleported, uploaded a texture, fetched the library kelp texture and fetched inventory, then logged out. Both bots' `UseCircuitCode` packets carry circuit code 1 and the session and agent placeholders. The raw file was checked with `ferroan-capture check` before redaction; that file is not in Git. `the_harness_session_replays` runs `replay` on the committed bytes.
 
-1. Apply the patch to a scratch build and set `CaptureFile`.
-2. Point the region's service URLs at `ferroan-capture http-proxy` when those calls should be kept.
-3. Log in with Aurora. Record the viewer revision.
-4. Walk, chat, rez a prim, edit that prim, teleport within the region, and log out.
-5. Run `check` on the raw capture and keep that result.
-6. Run `redact`. Read the chat text. Commit only the redacted file under `fixtures/captures/`.
-7. Run `replay` on the committed file. A message that fails becomes a task. It is not dropped quietly.
-
-Until that file exists, P0.5 has no captured-traffic fixture. The synthetic `UseCircuitCode` test shows the scrub and the round trip. It does not stand in for the session.
+A later session can replace it. Record with `CaptureFile` on a scratch build, run `check` on the raw file, run `redact`, read the chat text, and commit only the redacted file. A message that fails `replay` becomes a task. It is not dropped quietly.

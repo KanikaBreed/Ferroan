@@ -13,6 +13,6 @@ mod format;
 mod proxy;
 mod redact;
 
-pub use format::{Kind, Record, read_capture, write_capture};
-pub use proxy::serve;
+pub use format::{Kind, Record, read_capture, read_complete_prefix, write_capture};
+pub use proxy::{serve, serve_on};
 pub use redact::{check_udp, redact_records};

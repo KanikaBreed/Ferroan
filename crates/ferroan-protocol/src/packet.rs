@@ -250,13 +250,16 @@ pub fn build_raw(
 }
 
 /// Decode a datagram and encode it again with the same sequence, flags and
-/// acks. Zero-coding is reapplied from the template, not from the wire flag.
+/// acks. Zero-coding follows the flag on the datagram. Tranquillity sets
+/// that flag on some messages the template marks Unencoded.
 pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let parsed = parse_packet(data)?;
     if !parsed.extra.is_empty() {
         return Err(DecodeError::Malformed("extra header is not re-encoded"));
     }
-    let info = crate::message_info(parsed.id).ok_or(DecodeError::Malformed("unknown message"))?;
+    if crate::message_info(parsed.id).is_none() {
+        return Err(DecodeError::Malformed("unknown message"));
+    }
     let body = crate::reencode_body(parsed.id, &parsed.body)?;
     let mut payload = Vec::with_capacity(4 + body.len());
     parsed.id.encode(&mut payload);
@@ -264,7 +267,7 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut out = Vec::new();
     build_raw(
         &payload,
-        info.zerocoded,
+        parsed.flags & PacketFlags::ZEROCODED != 0,
         parsed.sequence,
         parsed.reliable(),
         parsed.resent(),
@@ -281,7 +284,9 @@ pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if !parsed.extra.is_empty() {
         return Err(DecodeError::Malformed("extra header is not re-encoded"));
     }
-    let info = crate::message_info(parsed.id).ok_or(DecodeError::Malformed("unknown message"))?;
+    if crate::message_info(parsed.id).is_none() {
+        return Err(DecodeError::Malformed("unknown message"));
+    }
     let body = crate::scrub_body(parsed.id, &parsed.body)?;
     let mut payload = Vec::with_capacity(4 + body.len());
     parsed.id.encode(&mut payload);
@@ -289,7 +294,7 @@ pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut out = Vec::new();
     build_raw(
         &payload,
-        info.zerocoded,
+        parsed.flags & PacketFlags::ZEROCODED != 0,
         parsed.sequence,
         parsed.reliable(),
         parsed.resent(),
@@ -340,6 +345,30 @@ mod tests {
         let p = parse_packet(&buf).unwrap();
         let back: RequestImage = p.decode().unwrap();
         assert_eq!(back, o);
+    }
+
+    #[test]
+    fn a_message_zerocoded_off_template_round_trips() {
+        // message_template.msg marks this Unencoded. LLClientView.terseUpdateHeader
+        // still sets MSG_RELIABLE | MSG_ZEROCODED ("zero code is not as spec").
+        // SendViewerTime sets Header.Zerocoded on SimulatorViewerTimeMessage too.
+        const {
+            assert!(!ImprovedTerseObjectUpdate::ZEROCODED);
+        };
+        let message = ImprovedTerseObjectUpdate::default();
+        let mut raw = Vec::new();
+        build_packet(&message, 15, true, false, &[], &mut raw);
+        assert_eq!(raw[0] & PacketFlags::ZEROCODED, 0);
+        let parsed = parse_packet(&raw).unwrap();
+        let mut payload = Vec::new();
+        parsed.id.encode(&mut payload);
+        payload.extend_from_slice(&parsed.body);
+        let mut coded = Vec::new();
+        build_raw(&payload, true, 15, true, false, &[], &mut coded);
+        assert_ne!(coded[0] & PacketFlags::ZEROCODED, 0);
+        assert_ne!(coded, raw);
+        assert_eq!(reencode_datagram(&coded).unwrap(), coded);
+        assert_eq!(reencode_datagram(&raw).unwrap(), raw);
     }
 
     /// RegionHandshake gates the whole region (the simulator sends terrain

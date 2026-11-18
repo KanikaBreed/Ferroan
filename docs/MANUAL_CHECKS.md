@@ -6,13 +6,13 @@ Record each run in the gate's row in [TASKS.md](../TASKS.md): date, Firestorm ve
 
 ## Setting up Firestorm for a local grid
 
-1. Start the test region with `cargo xtask live up` (until P0.10 lands, follow the manual recipe in [LIVE.md](LIVE.md)). Note the login URL and the test account it prints.
+1. Start the test region with `cargo xtask live up`. It prints the login URL (`http://127.0.0.1:<port>/`). The account is `Test User`. The password is in the run configuration under `.scratch/live/` and is not printed. This region uses its in-process asset service.
 2. In Firestorm: Preferences > OpenSim > Grid Manager. Add the login URL (for example `http://127.0.0.1:9100/`), press Apply, and pick the grid on the login screen.
 3. Use a fresh Firestorm cache for each gate run: Preferences > Network & Files > Directories > Clear Cache, then restart. A warm cache hides texture and inventory faults.
 
 ## G0: Phase 0 gate
 
-The C# region runs with Ferroan's asset service (`cargo xtask live up --assets ferroan`).
+Log in to the local C# region while its asset service is `ferroan-robust`. `cargo xtask live assets` runs texture and inventory against that service and against the C# service, then stops. `cargo xtask live up` leaves the region up on the in-process C# asset service. A region that stays up and points at `ferroan-robust` is not a harness command yet, so that Firestorm session is still set up by hand. Record the login URL and the Ferroan commit in the G0 row.
 
 | # | Step | Expected |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ The C# region runs with Ferroan's asset service (`cargo xtask live up --assets f
 | 8 | Walk, fly, say something in local chat, teleport within the region (map, double click) | All work as they do on your usual Tranquillity region |
 | 9 | Log out | Clean logout, no crash dialog |
 
-Notes worth recording even when the step passes: slow texture loads, textures that never sharpen, anything that looks different from the same steps with the C# asset service (`--assets csharp`).
+Notes worth recording even when the step passes: slow texture loads, textures that never sharpen, anything that looks different from the same steps on `cargo xtask live up` (in-process C# asset service).
 
 ## Later gates
 

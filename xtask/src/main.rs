@@ -31,6 +31,7 @@
 //! CI does not run it yet.
 
 mod asset_oracle;
+mod assets;
 mod config_oracle;
 mod http_oracle;
 mod live;
@@ -62,7 +63,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live build
        cargo xtask live up
        cargo xtask live down
-       cargo xtask live run <scenario>|all";
+       cargo xtask live run <scenario>|all
+       cargo xtask live assets";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -101,6 +103,7 @@ fn main() -> ExitCode {
         ["live", "up"] => live::up(),
         ["live", "down"] => live::down(),
         ["live", "run", scenario] => live::run(scenario),
+        ["live", "assets"] => assets::compare(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

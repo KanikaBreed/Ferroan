@@ -294,6 +294,16 @@ fn same_authority(from: &str, to: &str) -> bool {
         && from_url.port_or_known_default() == to_url.port_or_known_default()
 }
 
+fn header_text(
+    headers: &reqwest::header::HeaderMap,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
 /// POST `login_to_simulator`. An `indeterminate` reply with `next_url` is
 /// followed at most five times, and only when the next URL is the same host
 /// and port. Any other redirect stops the login.
@@ -308,12 +318,13 @@ pub async fn login(
         let response = http
             .post(&uri)
             .header(reqwest::header::CONTENT_TYPE, "text/xml")
-            .body(body)
+            .body(body.clone())
             .send()
             .await
             .map_err(|error| LoginError::Http(error.without_url().to_string()))?;
         let status = response.status();
         let at = response.url().clone();
+        let response_type = header_text(response.headers(), reqwest::header::CONTENT_TYPE);
         if !status.is_success() {
             return Err(LoginError::Status(status.as_u16()));
         }
@@ -329,6 +340,16 @@ pub async fn login(
                 });
             }
         };
+        crate::trace::note_exchange(crate::trace::Exchange {
+            method: "POST",
+            url: uri.as_str(),
+            request_type: Some("text/xml"),
+            accept: None,
+            request_body: body.as_bytes(),
+            status: status.as_u16(),
+            response_type: response_type.as_deref(),
+            response_body: &bytes,
+        });
         let value = xmlrpc::parse_response(&bytes)?;
         match value["login"].to_string_value().as_str() {
             "true" => return parse_success(value),

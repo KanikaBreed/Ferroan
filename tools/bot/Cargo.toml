@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+ferroan-capture = { path = "../../crates/ferroan-capture" }
 ferroan-llsd = { path = "../../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../../crates/ferroan-protocol" }
 glam = "0.34.1"

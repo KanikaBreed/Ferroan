@@ -127,6 +127,14 @@ fn region_binary() -> PathBuf {
     publish_dir().join("OpenSim.Server.RegionServer")
 }
 
+fn grid_publish_dir() -> PathBuf {
+    source_dir().join("Source/OpenSim.Server.GridServer/bin/Release/net10.0/linux-x64/publish")
+}
+
+fn grid_binary() -> PathBuf {
+    grid_publish_dir().join("OpenSim.Server.GridServer")
+}
+
 fn state_path() -> PathBuf {
     run_dir().join("state")
 }
@@ -181,20 +189,41 @@ fn read_state(path: &Path) -> Result<Option<RunState>, String> {
 
 fn region_server_ini(
     regions_dir: &Path,
+    capture_file: Option<&Path>,
     public_port: u16,
     private_port: u16,
     password: &str,
+    asset_include: Option<&Path>,
 ) -> Result<String, String> {
     let dir = regions_dir
         .to_str()
         .ok_or("regions directory is not utf-8")?;
-    if dir.contains(['"', '\n', '\r']) || password.contains(['"', '\n', '\r']) {
+    let capture = match capture_file {
+        Some(path) => Some(path.to_str().ok_or("capture path is not utf-8")?),
+        None => None,
+    };
+    if dir.contains(['"', '\n', '\r'])
+        || capture.is_some_and(|value| value.contains(['"', '\n', '\r']))
+        || password.contains(['"', '\n', '\r'])
+    {
         return Err("a configuration value contains a quote or a line break".to_string());
     }
     if password.is_empty() || public_port == 0 || private_port == 0 || public_port == private_port {
         return Err("the region needs two different ports and a password".to_string());
     }
-    Ok(format!(
+    // Standalone.ini is included after this file, and it sets
+    // LocalGridAssetService. A later include is the setting that wins.
+    let asset_include = match asset_include {
+        Some(path) => {
+            let path = path.to_str().ok_or("asset override path is not utf-8")?;
+            if path.contains(['"', '\n', '\r']) {
+                return Err("the asset override path contains a quote or a line break".to_string());
+            }
+            format!("\n    Include-Asset = \"{path}\"")
+        }
+        None => String::new(),
+    };
+    let mut ini = format!(
         r#"[Const]
     BaseHostname = "127.0.0.1"
     BaseURL = http://${{Const|BaseHostname}}
@@ -216,9 +245,15 @@ fn region_server_ini(
     DefaultEstateOwnerPassword = "{password}"
 
 [Architecture]
-    Include-Architecture = "config-include/Standalone.ini"
+    Include-Architecture = "config-include/Standalone.ini"{asset_include}
 "#
-    ))
+    );
+    if let Some(capture) = capture {
+        ini.push_str(&format!(
+            "\n[ClientStack.LindenUDP]\n    CaptureFile = \"{capture}\"\n"
+        ));
+    }
+    Ok(ini)
 }
 
 fn regions_ini(public_port: u16) -> String {
@@ -333,6 +368,14 @@ fn parse_proc_net(text: &str, udp: bool) -> Vec<ProcSock> {
 }
 
 fn loopback_report(sockets: &[ProcSock], port: u16) -> Result<(), String> {
+    bound_report(sockets, port, true)
+}
+
+fn http_loopback_report(sockets: &[ProcSock], port: u16) -> Result<(), String> {
+    bound_report(sockets, port, false)
+}
+
+fn bound_report(sockets: &[ProcSock], port: u16, require_udp: bool) -> Result<(), String> {
     let mut lines = Vec::new();
     let mut http = false;
     let mut udp = false;
@@ -361,9 +404,10 @@ fn loopback_report(sockets: &[ProcSock], port: u16) -> Result<(), String> {
             udp = true;
         }
     }
-    if !http || !udp {
+    if !http || (require_udp && !udp) {
+        let expected = if require_udp { "TCP and UDP" } else { "TCP" };
         return Err(format!(
-            "expected TCP and UDP on 127.0.0.1:{port}, saw {}",
+            "expected {expected} on 127.0.0.1:{port}, saw {}",
             if lines.is_empty() {
                 "no sockets".to_string()
             } else {
@@ -383,27 +427,49 @@ fn build_linux() -> Result<String, String> {
     let capture = repo_root().join("tools/capture/tranquillity-capture.patch");
     let listen = repo_root().join("tools/live/tranquillity-listen.patch");
     let stamp_text = format!(
-        "pin={pin}\ncapture={}\nlisten={}\n",
+        "pin={pin}\ncapture={}\nlisten={}\ngrid=self-contained\n",
         file_hash(&capture)?,
         file_hash(&listen)?
     );
     let binary = region_binary();
+    let grid = grid_binary();
     let stamp = live_root().join("stamp");
-    if binary.is_file() && fs::read_to_string(&stamp).ok().as_deref() == Some(stamp_text.as_str()) {
+    if binary.is_file()
+        && grid.is_file()
+        && fs::read_to_string(&stamp).ok().as_deref() == Some(stamp_text.as_str())
+    {
         return Ok(format!(
-            "live: build is current\nbinary: {}",
-            binary.display()
+            "live: build is current\nbinary: {}\ngrid: {}",
+            binary.display(),
+            grid.display()
         ));
     }
     println!("live: building Tranquillity {pin}");
     reset_source(&src, &pin)?;
     git_apply(&src, &capture)?;
     git_apply(&src, &listen)?;
-    publish(&src)?;
+    publish(
+        &src,
+        "Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj",
+        &binary,
+        false,
+    )?;
+    // GridServer references Microsoft.AspNetCore.App. The installed runtime is
+    // Microsoft.NETCore.App only, so the publish bundles the ASP.NET runtime.
+    publish(
+        &src,
+        "Source/OpenSim.Server.GridServer/OpenSim.Server.GridServer.csproj",
+        &grid,
+        true,
+    )?;
     copy_examples(&publish_dir())?;
     fs::write(&stamp, &stamp_text)
         .map_err(|error| format!("could not write {}: {error}", stamp.display()))?;
-    Ok(format!("live: built {pin}\nbinary: {}", binary.display()))
+    Ok(format!(
+        "live: built {pin}\nbinary: {}\ngrid: {}",
+        binary.display(),
+        grid.display()
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -418,7 +484,7 @@ struct Started {
 
 #[cfg(target_os = "linux")]
 fn up_linux() -> Result<String, String> {
-    let started = start_region(false)?;
+    let started = start_region(false, None, false)?;
     let report = up_report(started.public_port, &started.log, started.altered);
     // Dropping Child does not kill the process. `live up` exits and init inherits it.
     drop(started.child);
@@ -442,14 +508,132 @@ fn run_linux(scenario: &str) -> Result<String, String> {
             state.pid
         ));
     }
-    let mut started = start_region(true)?;
-    let result = run_scenarios(&mut started, scenario);
+    let mut started = start_region(true, None, true)?;
+    let outcome = run_scenarios(&mut started, scenario);
     let _ = stop_started(&mut started);
-    result
+    let outcome = outcome?;
+    let capture = finish_capture(
+        &capture_path(),
+        &outcome.http,
+        &[&started.password, &outcome.chat_password],
+    )?;
+    Ok(format!("{}\n{capture}", outcome.report))
+}
+
+/// Start the region with its asset service pointed at `asset_uri`.
+#[cfg(target_os = "linux")]
+pub(crate) fn run_against_assets(asset_uri: &str, scenario: &str) -> Result<String, String> {
+    if ferroan_bot::scenario::selection(scenario).is_none() {
+        return Err(format!("unknown scenario {scenario}"));
+    }
+    if let Some(state) = read_state(&state_path())?
+        && region_pid_live(state.pid)
+    {
+        return Err(format!(
+            "the region is already up (pid {}); cargo xtask live down stops it",
+            state.pid
+        ));
+    }
+    let mut started = start_region(true, Some(asset_uri), true)?;
+    let outcome = run_scenarios(&mut started, scenario);
+    let _ = stop_started(&mut started);
+    let outcome = outcome?;
+    let capture = finish_capture(
+        &capture_path(),
+        &outcome.http,
+        &[&started.password, &outcome.chat_password],
+    )?;
+    Ok(format!("{}\n{capture}", outcome.report))
 }
 
 #[cfg(target_os = "linux")]
-fn run_scenarios(started: &mut Started, scenario: &str) -> Result<String, String> {
+pub(crate) fn ensure_region_built() -> Result<(), String> {
+    build_linux().map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn grid_server_binary() -> PathBuf {
+    grid_binary()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn asset_set_path() -> PathBuf {
+    source_dir().join("Source/OpenSim.Services.InventoryService/AppData/assets/AssetSets.xml")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn scratch_run() -> PathBuf {
+    run_dir()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn allocate_port() -> Result<u16, String> {
+    free_port()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn require_http_loopback(pid: u32, port: u16) -> Result<(), String> {
+    let sockets = process_sockets(pid)?;
+    http_loopback_report(&sockets, port)
+}
+
+#[cfg(target_os = "linux")]
+struct ScenarioOutcome {
+    report: String,
+    http: Vec<ferroan_capture::Record>,
+    chat_password: String,
+}
+
+#[cfg(target_os = "linux")]
+fn capture_path() -> PathBuf {
+    run_dir().join("capture-udp.cap")
+}
+
+#[cfg(target_os = "linux")]
+fn finish_capture(
+    udp_path: &Path,
+    http: &[ferroan_capture::Record],
+    passwords: &[&str],
+) -> Result<String, String> {
+    use ferroan_capture::{Kind, check_udp, read_complete_prefix, write_capture};
+    let bytes = fs::read(udp_path)
+        .map_err(|error| format!("could not read {}: {error}", udp_path.display()))?;
+    let mut records = read_complete_prefix(&bytes).map_err(|error| error.to_string())?;
+    let udp = records
+        .iter()
+        .filter(|record| matches!(record.kind, Kind::UdpIn | Kind::UdpOut))
+        .count();
+    if udp == 0 {
+        return Err("the region wrote no UDP records".to_string());
+    }
+    let http_count = http.len();
+    if http_count == 0 {
+        return Err("the bot recorded no HTTP exchanges".to_string());
+    }
+    records.extend(http.iter().cloned());
+    records.sort_by_key(|record| record.time_ms);
+    check_udp(&records).map_err(|error| format!("capture check failed: {error}"))?;
+    let redacted = ferroan_capture::redact_records(&records)
+        .map_err(|error| format!("redact failed: {error}"))?;
+    let bytes = write_capture(&redacted).map_err(|error| error.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+    for password in passwords {
+        if !password.is_empty() && text.contains(password) {
+            return Err("the redacted capture still contains a password".to_string());
+        }
+    }
+    let redacted_path = run_dir().join("capture.redacted.cap");
+    fs::write(&redacted_path, &bytes)
+        .map_err(|error| format!("could not write {}: {error}", redacted_path.display()))?;
+    check_udp(&redacted).map_err(|error| format!("capture replay failed: {error}"))?;
+    Ok(format!(
+        "capture: {udp} udp, {http_count} http, check passed, redact passed, replay passed\nredacted: {}",
+        redacted_path.display()
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcome, String> {
     let chat_password = generate_password()?;
     create_chat_user(started, &chat_password)?;
     let texture = texture_bytes()?;
@@ -457,6 +641,7 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<String, String
         .map_err(|_| "the region uuid is not a uuid".to_string())?;
     let library = uuid::Uuid::parse_str("2a4880b6-b7a3-690a-2049-bfbe38eafb9f")
         .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
+    let http_trace = ferroan_bot::trace::HttpTrace::new();
     let harness = ferroan_bot::scenario::Harness {
         login_uri: format!("http://127.0.0.1:{}/", started.public_port),
         region_id,
@@ -468,16 +653,22 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<String, String
         chat: ferroan_bot::scenario::Account {
             first_name: "Chat".to_string(),
             last_name: "Bot".to_string(),
-            password: chat_password,
+            password: chat_password.clone(),
         },
         texture,
         library_texture: library,
+        http_trace: std::sync::Arc::clone(&http_trace),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
-    runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))
+    let report = runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?;
+    Ok(ScenarioOutcome {
+        report,
+        http: http_trace.records(),
+        chat_password,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -559,7 +750,7 @@ fn stop_started(started: &mut Started) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_region(console: bool) -> Result<Started, String> {
+fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<Started, String> {
     let binary = region_binary();
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
@@ -587,7 +778,37 @@ fn start_region(console: bool) -> Result<Started, String> {
         .map_err(|error| format!("could not create {}: {error}", regions.display()))?;
     fs::create_dir_all(&config)
         .map_err(|error| format!("could not create {}: {error}", config.display()))?;
-    let server_ini = region_server_ini(&regions, public_port, private_port, &password)?;
+    let capture = capture_path();
+    // The override must sit outside the ini directory. Files in that directory
+    // are loaded before Standalone.ini is pulled in by Include-Architecture,
+    // and Standalone.ini sets LocalGridAssetService back to the local service.
+    let _ = fs::remove_file(config.join("AssetOverride.ini"));
+    let asset_override = run.join("AssetOverride.ini");
+    let asset_include = if let Some(uri) = asset_uri {
+        if uri.contains(['"', '\n', '\r']) {
+            return Err("the asset service URL contains a quote or a line break".to_string());
+        }
+        // Included after Standalone.ini, which would otherwise keep the
+        // in-process asset service. Nini replaces keys from a later file.
+        let body = format!(
+            "[AssetService]\n    \
+             LocalGridAssetService = \"OpenSim.Services.Connectors.dll:AssetServicesConnector\"\n    \
+             AssetServerURI = \"{uri}\"\n"
+        );
+        write_secret(&asset_override, &body)?;
+        Some(asset_override.as_path())
+    } else {
+        let _ = fs::remove_file(&asset_override);
+        None
+    };
+    let server_ini = region_server_ini(
+        &regions,
+        record.then_some(capture.as_path()),
+        public_port,
+        private_port,
+        &password,
+        asset_include,
+    )?;
     write_secret(&config.join("RegionServer.ini"), &server_ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(public_port))
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
@@ -831,27 +1052,39 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn publish(src: &Path) -> Result<(), String> {
+fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Result<(), String> {
     require_under_scratch(src)?;
+    // SDK 10.0.114 ships no PrunePackageData directory. GridServer's
+    // FrameworkReference to Microsoft.AspNetCore.App then fails restore with
+    // NETSDK1226. This is the SDK's own bypass. The project files stay untouched.
+    let mut args = vec![
+        "publish",
+        project,
+        "-c",
+        "Release",
+        "-r",
+        "linux-x64",
+        "--nologo",
+        "-p:AllowMissingPrunePackageData=true",
+    ];
+    if self_contained {
+        args.push("--self-contained");
+        args.push("true");
+    }
     let output = Command::new("dotnet")
-        .args([
-            "publish",
-            "Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj",
-            "-c",
-            "Release",
-            "-r",
-            "linux-x64",
-            "--nologo",
-        ])
+        .args(&args)
         .current_dir(src)
         .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .env("DOTNET_NOLOGO", "1")
         .output()
         .map_err(|error| format!("could not run dotnet: {error}"))?;
-    if output.status.success() && region_binary().is_file() {
+    if output.status.success() && binary.is_file() {
         Ok(())
     } else {
-        Err(format!("dotnet publish failed\n{}", output_tail(&output)))
+        Err(format!(
+            "dotnet publish {project} failed\n{}",
+            output_tail(&output)
+        ))
     }
 }
 
@@ -1313,9 +1546,40 @@ mod tests {
 
     #[test]
     fn the_region_ini_has_the_const_keys_and_the_report_omits_the_password() {
-        let ini =
-            region_server_ini(Path::new("/tmp/regions"), 9100, 9103, "0123456789abcdef").unwrap();
+        let ini = region_server_ini(
+            Path::new("/tmp/regions"),
+            Some(Path::new("/tmp/regions/capture-udp.cap")),
+            9100,
+            9103,
+            "0123456789abcdef",
+            None,
+        )
+        .unwrap();
         assert!(ini.contains("BaseURL = http://${Const|BaseHostname}"));
+        assert!(ini.contains("CaptureFile = \"/tmp/regions/capture-udp.cap\""));
+        let quiet = region_server_ini(
+            Path::new("/tmp/regions"),
+            None,
+            9100,
+            9103,
+            "0123456789abcdef",
+            None,
+        )
+        .unwrap();
+        assert!(!quiet.contains("CaptureFile"));
+        let pointed = region_server_ini(
+            Path::new("/tmp/regions"),
+            None,
+            9100,
+            9103,
+            "0123456789abcdef",
+            Some(Path::new("/tmp/regions/AssetOverride.ini")),
+        )
+        .unwrap();
+        assert!(pointed.contains("Include-Asset = \"/tmp/regions/AssetOverride.ini\""));
+        assert!(
+            pointed.find("Include-Architecture").unwrap() < pointed.find("Include-Asset").unwrap()
+        );
         assert!(ini.contains("PrivURL = ${Const|BaseURL}"));
         assert!(ini.contains("PrivatePort = \"9103\""));
         assert!(ini.contains(ESTATE_OWNER));
@@ -1369,6 +1633,9 @@ mod tests {
         let mut sockets = parse_proc_net(&tcp, false);
         sockets.extend(parse_proc_net(&udp, true));
         assert!(loopback_report(&sockets, 0x238c).is_ok());
+        let tcp_only = parse_proc_net(&tcp, false);
+        assert!(http_loopback_report(&tcp_only, 0x238c).is_ok());
+        assert!(loopback_report(&tcp_only, 0x238c).is_err());
     }
 
     #[test]

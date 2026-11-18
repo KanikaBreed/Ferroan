@@ -81,6 +81,8 @@ Zero-coding covers the message number and the body. The 6-byte header and the ac
 
 `Packet.ToBytes` sets the zerocoded flag and writes the body raw. Encoding happens in `LLUDPServer.ZeroEncode`. The send path keeps the coded form when `coded length <= raw length`. Ferroan does the same. Acks are appended after that decision, so the trailer is never coded.
 
+`reencode_datagram` follows the zerocode flag on the datagram, not the template bit. Tranquillity sets the flag on messages the template marks Unencoded: `LLClientView.SendViewerTime` sets `Header.Zerocoded` on `SimulatorViewerTimeMessage`, and `terseUpdateHeader` is `MSG_RELIABLE | MSG_ZEROCODED` for `ImprovedTerseObjectUpdate` with the comment "zero code is not as spec". A capture round-trip has to reproduce those bytes. Packets this crate sends still take the flag from the template.
+
 The extra header sits before the message number. Tranquillity writes `extra_len` 0. Aurora's parser reads the message number first and then skips extra bytes after it. Ferroan skips extra before the number, which matches `Header.ToBytes` when the length is 0. `reencode_datagram` rejects a non-empty extra. A non-zero extra combined with zero-coding is not claimed: C# zero-codes everything after the 6-byte header, including the extra, and this crate zero-codes only the message number and body.
 
 Appended acks stay in wire order. OpenMetaverse `Header.FromBytes` stores them reversed, so `FromBytes` then `ToBytes` swaps the ack bytes. Ferroan does not. Acks are a set for `Acknowledge`; the order does not change which packets are retired. Do not use that C# round trip as the ack oracle. The fixtures have no acks.

@@ -125,6 +125,52 @@ pub fn read_capture(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
     Ok(records)
 }
 
+/// Read every complete record and ignore a torn tail.
+///
+/// The region is stopped with `SIGTERM`. A write that was cut off is not a
+/// record, and it must not hide the records that were flushed before it.
+pub fn read_complete_prefix(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
+    if bytes.len() < MAGIC.len() {
+        return Err(FormatError::Short);
+    }
+    if &bytes[..MAGIC.len()] != MAGIC {
+        return Err(FormatError::Magic);
+    }
+    let mut i = MAGIC.len();
+    let mut records = Vec::new();
+    while i < bytes.len() {
+        if records.len() == MAX_RECORDS {
+            return Err(FormatError::Count);
+        }
+        if bytes.len() - i < 13 {
+            break;
+        }
+        let kind = match Kind::from_u8(bytes[i]) {
+            Some(kind) => kind,
+            None => return Err(FormatError::Kind(bytes[i])),
+        };
+        let time_ms = u64::from_le_bytes(bytes[i + 1..i + 9].try_into().expect("8 bytes"));
+        let len = u32::from_le_bytes(bytes[i + 9..i + 13].try_into().expect("4 bytes")) as usize;
+        if len > kind.max_len() {
+            return Err(FormatError::Length);
+        }
+        let start = i + 13;
+        let Some(end) = start.checked_add(len) else {
+            break;
+        };
+        if end > bytes.len() {
+            break;
+        }
+        records.push(Record {
+            kind,
+            time_ms,
+            bytes: bytes[start..end].to_vec(),
+        });
+        i = end;
+    }
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +190,18 @@ mod tests {
     fn a_short_file_and_a_bad_magic_are_errors() {
         assert_eq!(read_capture(b"FERRO").unwrap_err(), FormatError::Short);
         assert_eq!(read_capture(b"FERROCAP0").unwrap_err(), FormatError::Magic);
+    }
+
+    #[test]
+    fn a_torn_tail_is_dropped_and_the_complete_record_stays() {
+        let records = vec![Record {
+            kind: Kind::UdpIn,
+            time_ms: 9,
+            bytes: vec![9, 8, 7],
+        }];
+        let mut bytes = write_capture(&records).unwrap();
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(read_capture(&bytes).unwrap_err(), FormatError::Truncated);
+        assert_eq!(read_complete_prefix(&bytes).unwrap(), records);
     }
 }
