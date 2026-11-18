@@ -52,7 +52,7 @@ Check `git worktree list` before creating or reusing one. Put temporary logs in 
 
 Run `cargo xtask check` before handing off code. For documentation-only changes, `cargo xtask check --docs-only` is enough unless tooling or build files changed. See [testing](docs/TESTING.md).
 
-Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` scenarios in the live harness ([D15](docs/DECISIONS.md)), side-by-side runs against the C# server, archive round trips. Automate every check a program can make; Firestorm by hand is for phase gates. A build or a passing unit test does not prove a viewer can log in. Record viewer and live-grid checks as pending until someone has done them, never as passed.
+Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` scenarios in the live harness ([D15](docs/DECISIONS.md)), and Ferrobot sessions where a second client adds something ([D17](docs/DECISIONS.md)), side-by-side runs against the C# server, archive round trips. Automate every check a program can make; Firestorm by hand is for phase gates. A build or a passing unit test does not prove a viewer can log in. Record viewer and live-grid checks as pending until someone has done them, never as passed.
 
 ## 8. Tasks and documentation
 

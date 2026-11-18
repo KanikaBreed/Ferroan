@@ -27,12 +27,13 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q7 | P0.10g: harness fixes from the review of #22 | READY after Q6 |
 | Q8 | P2.0a2: circuit fixes from the review of #20 | READY after Q7 |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | READY after Q8 |
-| Q10 | P2.0e: terrain from the C# region store | READY after Q9 |
-| Q11 | P2.0f: appearance from the C# avatar service | READY after Q10 |
-| Q12 | P2.0g: local chat | READY after Q11 |
-| Q13 | P2.0h: teleport inside the Ferroan region | READY after Q12 |
-| Q14 | P2.0i: teleport to the C# neighbour and back | READY after Q13 |
-| Q15 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q14 |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
+| Q11 | P2.0e: terrain from the C# region store | READY after Q10 |
+| Q12 | P2.0f: appearance from the C# avatar service | READY after Q11 |
+| Q13 | P2.0g: local chat | READY after Q12 |
+| Q14 | P2.0h: teleport inside the Ferroan region | READY after Q13 |
+| Q15 | P2.0i: teleport to the C# neighbour and back | READY after Q14 |
+| Q16 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q15 |
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -44,7 +45,9 @@ Q4: [PR #24](https://github.com/KanikaBreed/Ferroan/pull/24). Q5: [PR #25](https
 
 Q7 to Q9 were added on 18 November 2026 from a review of #20, #21 and #22. They come first because grid-mode results are not reliable until the proxy timeout is fixed, and later rows build on the circuit and the event queue. The findings were not verified. Confirm each one, and record any that are wrong in the row.
 
-Q14: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
+Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). It comes after the event-queue fix, so that Ferrobot does not meet the immediate empty-poll answer.
+
+Q15: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
