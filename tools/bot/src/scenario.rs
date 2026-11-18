@@ -29,6 +29,17 @@ pub struct Account {
     pub password: String,
 }
 
+/// A region next to the one [`Harness::region_id`] names.
+///
+/// `x` and `y` are map tiles. The handle is [`region_handle`].
+pub struct Neighbour {
+    pub region_id: Uuid,
+    pub x: u32,
+    pub y: u32,
+    pub home_x: u32,
+    pub home_y: u32,
+}
+
 /// What `live run` knows about the region. Passwords stay out of `Debug`.
 pub struct Harness {
     pub login_uri: String,
@@ -41,6 +52,14 @@ pub struct Harness {
     pub http_trace: std::sync::Arc<crate::trace::HttpTrace>,
     /// Region stdout. Logout is confirmed here when `LogoutReply` is dropped.
     pub region_log: std::path::PathBuf,
+    /// Set by grid mode. Standalone leaves this empty, and `all` then stays
+    /// the seven names in [`NAMES`].
+    pub neighbour: Option<Neighbour>,
+}
+
+/// Region handle from map tiles, as `Util.RegionGridLocToHandle` packs it.
+pub fn region_handle(x: u32, y: u32) -> u64 {
+    (u64::from(x) << 40) | (u64::from(y) << 8)
 }
 
 /// The scenarios `all` runs, in order.
@@ -82,16 +101,20 @@ pub async fn run(name: &str, harness: &Harness) -> Result<String, String> {
 }
 
 async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
+    if !world::is_j2c(&harness.texture) {
+        return Err("the texture does not start with a JPEG 2000 codestream".to_string());
+    }
+    let http = login::http_client().map_err(|error| error.to_string())?;
+    if name == "neighbour" {
+        let line = teleport_neighbour(&http, harness).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
     let Some(names) = selection(name) else {
         return Err(format!(
             "unknown scenario {name}; expected all or {}",
             NAMES.join(", ")
         ));
     };
-    if !world::is_j2c(&harness.texture) {
-        return Err("the texture does not start with a JPEG 2000 codestream".to_string());
-    }
-    let http = login::http_client().map_err(|error| error.to_string())?;
     let mut lines = Vec::new();
     for scenario in names {
         match *scenario {
@@ -109,6 +132,15 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
             lines.push(format!("{scenario}: fail ({error})"));
             lines.join("\n")
         })?;
+    }
+    if name == "all" && harness.neighbour.is_some() {
+        teleport_neighbour(&http, harness)
+            .await
+            .map(|line| lines.push(line))
+            .map_err(|error| {
+                lines.push(format!("teleport neighbour: fail ({error})"));
+                lines.join("\n")
+            })?;
     }
     lines.push("live: run passed".to_string());
     Ok(lines.join("\n"))
@@ -321,6 +353,392 @@ async fn build_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
     leave(harness, &mut owner, &harness.owner).await?;
     leave(harness, &mut other, &harness.chat).await?;
     Ok("build: pass".to_string())
+}
+
+const CROSS: Duration = Duration::from_secs(45);
+const ARRIVE_AT: Vec3 = Vec3::new(128.0, 128.0, 30.0);
+
+async fn teleport_neighbour(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let neighbour = harness
+        .neighbour
+        .as_ref()
+        .ok_or("neighbour teleport needs a grid-mode harness")?;
+    let (session, _) = enter(http, harness, &harness.owner).await?;
+    // Circuits the source region kept as children. The return hop reuses
+    // one instead of sending a second UseCircuitCode.
+    let mut parked: Vec<Session> = Vec::new();
+    let away = match cross_to(
+        http,
+        session,
+        region_handle(neighbour.x, neighbour.y),
+        &mut parked,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => return Err(error),
+    };
+    if away.region_id() != Some(neighbour.region_id) {
+        return Err(format!(
+            "landed in {:?}, expected {}",
+            away.region_id(),
+            neighbour.region_id
+        ));
+    }
+    let home = cross_to(
+        http,
+        away,
+        region_handle(neighbour.home_x, neighbour.home_y),
+        &mut parked,
+    )
+    .await?;
+    if home.region_id() != Some(harness.region_id) {
+        return Err(format!(
+            "returned to {:?}, expected {}",
+            home.region_id(),
+            harness.region_id
+        ));
+    }
+    let mut home = home;
+    leave(harness, &mut home, &harness.owner).await?;
+    // Child circuits stay open until the regions are stopped. LogoutRequest
+    // on them would close an agent that is no longer root there.
+    drop(parked);
+    Ok(format!(
+        "teleport neighbour: pass ({},{} and back)",
+        neighbour.x, neighbour.y
+    ))
+}
+
+/// `TeleportLocationRequest`, then the destination circuit.
+///
+/// The bot polls the source event queue. A destination we have not seen
+/// is opened with `UseCircuitCode` when `EnableSimulator` or
+/// `TeleportFinish` names `handle`. `CompleteAgentMovement` waits until
+/// `TeleportFinish`. The hop is done when the destination sends
+/// `AgentMovementComplete`. The source circuit is parked: Tranquillity
+/// keeps that child, and a later hop to the same address sends
+/// `CompleteAgentMovement` on it instead of a second `UseCircuitCode`.
+/// A UDP `TeleportFinish` is accepted as well. Nothing is logged out here.
+async fn cross_to(
+    http: &reqwest::Client,
+    mut from: Session,
+    handle: u64,
+    parked: &mut Vec<Session>,
+) -> Result<Session, String> {
+    let eq_url = from.caps().get("EventQueueGet").cloned();
+    let request = world::teleport_to(from.agent(), handle, ARRIVE_AT);
+    from.send(&request, true)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let deadline = std::time::Instant::now() + CROSS;
+    let mut ack = None;
+    let mut dest: Option<Dest> = None;
+    let mut pending_seed: Option<(SocketAddr, String)> = None;
+    let mut next: Option<Session> = None;
+    let mut failed = None;
+    let mut polling = eq_url.is_some();
+    let mut poll = AbortPoll::default();
+    if let Some(url) = &eq_url {
+        poll.spawn(http, url, ack);
+    }
+
+    while failed.is_none() && !crossing_ready(&dest) && std::time::Instant::now() < deadline {
+        from.drive(STEP).await.map_err(|error| error.to_string())?;
+        drive_parked(parked).await;
+        if let Some(session) = next.as_mut() {
+            session
+                .drive(STEP)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        note_udp(&mut from, handle, &mut dest, &mut pending_seed, &mut failed);
+        if poll.is_finished() {
+            let task = poll.take().expect("is_finished means a task is present");
+            match task.await {
+                Ok(Ok(batch)) => {
+                    ack = Some(batch.id);
+                    for event in batch.events {
+                        if let Some(hint) = crate::caps::crossing_hint(&event.message, &event.body)
+                        {
+                            apply_hint(&mut dest, &mut pending_seed, &hint, handle);
+                        }
+                    }
+                }
+                Ok(Err(crate::caps::EqPollError::Retry)) => {}
+                Ok(Err(crate::caps::EqPollError::Stop)) => polling = false,
+                Ok(Err(crate::caps::EqPollError::Fatal(text))) => return Err(text),
+                Err(_) => return Err("event queue poll stopped".to_string()),
+            }
+            if polling && let Some(url) = &eq_url {
+                poll.spawn(http, url, ack);
+            }
+        }
+        open_destination(&mut next, &dest, from.agent(), parked).await?;
+    }
+    drop(poll);
+
+    if let Some(reason) = failed {
+        return Err(format!("teleport failed: {reason}"));
+    }
+    let Some(dest) = dest.filter(|dest| dest.finish) else {
+        return Err(format!("no TeleportFinish for handle {handle}"));
+    };
+    if dest.seed.is_empty() {
+        return Err("TeleportFinish has no seed capability".to_string());
+    }
+    let Some(mut next) = next else {
+        return Err("no circuit for the destination".to_string());
+    };
+    if next.movement_sent() {
+        // Packets from the earlier visit are not this arrival.
+        while next.poll_inbox().is_some() {}
+        next.resume_as_root(http, &dest.seed, HANDSHAKE)
+            .await
+            .map_err(|error| error.to_string())?;
+    } else {
+        next.run_until_ready(http, &dest.seed, HANDSHAKE)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    // `CompleteAgentMovement` is sent before this returns.
+    // Tranquillity V2 is still inside `UpdateAgent` until the destination
+    // has made this avatar root, and the proxy gives that call 5 seconds.
+    // Starting the return hop before `AgentMovementComplete` aborts it.
+    wait_for_arrival(&mut from, &mut next, deadline).await?;
+    parked.push(from);
+    Ok(next)
+}
+
+/// Keep child circuits answering pings. A dead socket is dropped so the
+/// next hop can open a new one.
+async fn drive_parked(parked: &mut Vec<Session>) {
+    let mut index = 0;
+    while index < parked.len() {
+        if parked[index].drive(STEP).await.is_err() {
+            parked.swap_remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+/// The destination is in the scene when `AgentMovementComplete` arrives.
+/// A `TeleportFailed` on the source circuit is the hop failing.
+async fn wait_for_arrival(
+    from: &mut Session,
+    next: &mut Session,
+    deadline: std::time::Instant,
+) -> Result<(), String> {
+    let mut source_open = true;
+    loop {
+        let failed = take_failure(from, source_open);
+        let mut arrived = false;
+        while let Some(packet) = next.poll_inbox() {
+            if packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID {
+                arrived = true;
+            }
+        }
+        if let Some(reason) = failed {
+            return Err(format!("teleport failed: {reason}"));
+        }
+        if arrived {
+            // The destination sets the root flag at the start of MakeRoot and
+            // only then sends this packet. The source's UpdateAgent polls that
+            // flag every 250ms. Wait out that poll before the return hop,
+            // which would mark the same presence as a child again.
+            let settle = std::time::Instant::now() + Duration::from_secs(1);
+            while std::time::Instant::now() < settle {
+                let was_open = source_open;
+                if source_open && from.drive(STEP).await.is_err() {
+                    source_open = false;
+                }
+                next.drive(STEP).await.map_err(|error| error.to_string())?;
+                if let Some(reason) = take_failure(from, was_open) {
+                    return Err(format!("teleport failed: {reason}"));
+                }
+            }
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("no AgentMovementComplete on the destination".to_string());
+        }
+        if source_open && from.drive(STEP).await.is_err() {
+            source_open = false;
+        }
+        next.drive(STEP).await.map_err(|error| error.to_string())?;
+    }
+}
+
+struct Dest {
+    addr: SocketAddr,
+    seed: String,
+    finish: bool,
+}
+
+fn take_failure(session: &mut Session, open: bool) -> Option<String> {
+    if !open {
+        return None;
+    }
+    let mut failed = None;
+    while let Some(packet) = session.poll_inbox() {
+        if let Some(reason) = world::teleport_failure(&packet) {
+            failed = Some(reason);
+        }
+    }
+    failed
+}
+
+fn crossing_ready(dest: &Option<Dest>) -> bool {
+    dest.as_ref()
+        .is_some_and(|dest| dest.finish && !dest.seed.is_empty())
+}
+
+fn note_udp(
+    session: &mut Session,
+    handle: u64,
+    dest: &mut Option<Dest>,
+    pending_seed: &mut Option<(SocketAddr, String)>,
+    failed: &mut Option<String>,
+) {
+    while let Some(packet) = session.poll_inbox() {
+        if let Some(reason) = world::teleport_failure(&packet) {
+            *failed = Some(reason);
+        }
+        if let Some(arrival) = world::teleport_arrival(&packet) {
+            let hint = crate::caps::CrossingHint {
+                ip: arrival.sim_ip,
+                port: arrival.sim_port,
+                handle: Some(arrival.region_handle),
+                seed: if arrival.seed_capability.is_empty() {
+                    None
+                } else {
+                    Some(arrival.seed_capability)
+                },
+                finish: true,
+            };
+            apply_hint(dest, pending_seed, &hint, handle);
+        }
+    }
+}
+
+/// Remember a destination only when its handle is the one we requested.
+/// A seed that arrives first is kept until that handle is known.
+fn apply_hint(
+    dest: &mut Option<Dest>,
+    pending_seed: &mut Option<(SocketAddr, String)>,
+    hint: &crate::caps::CrossingHint,
+    wanted: u64,
+) {
+    let addr = SocketAddr::from((std::net::Ipv4Addr::from(hint.ip), hint.port));
+    if let Some(handle) = hint.handle {
+        if handle != wanted {
+            return;
+        }
+        let remembered = pending_seed
+            .as_ref()
+            .filter(|(pending, _)| *pending == addr)
+            .map(|(_, seed)| seed.clone());
+        if remembered.is_some() {
+            *pending_seed = None;
+        }
+        let seed = hint
+            .seed
+            .clone()
+            .filter(|seed| !seed.is_empty())
+            .or(remembered)
+            .unwrap_or_default();
+        if let Some(existing) = dest.as_mut().filter(|existing| existing.addr == addr) {
+            if !seed.is_empty() {
+                existing.seed = seed;
+            }
+            existing.finish |= hint.finish;
+            return;
+        }
+        if dest.as_ref().is_some_and(|existing| existing.finish) {
+            return;
+        }
+        *dest = Some(Dest {
+            addr,
+            seed,
+            finish: hint.finish,
+        });
+        return;
+    }
+    let Some(seed) = hint.seed.clone().filter(|seed| !seed.is_empty()) else {
+        return;
+    };
+    if let Some(existing) = dest.as_mut().filter(|dest| dest.addr == addr) {
+        existing.seed = seed;
+    } else {
+        *pending_seed = Some((addr, seed));
+    }
+}
+
+async fn open_destination(
+    next: &mut Option<Session>,
+    dest: &Option<Dest>,
+    agent: Agent,
+    parked: &mut Vec<Session>,
+) -> Result<(), String> {
+    let Some(dest) = dest else {
+        return Ok(());
+    };
+    if next.is_some() {
+        return Ok(());
+    }
+    if let Some(index) = parked
+        .iter()
+        .position(|session| session.sim_addr() == dest.addr)
+    {
+        *next = Some(parked.swap_remove(index));
+        return Ok(());
+    }
+    *next = Some(
+        Session::connect(dest.addr, agent)
+            .await
+            .map_err(|error| error.to_string())?,
+    );
+    Ok(())
+}
+
+/// One event-queue poll. Drop aborts it, including on an early return.
+#[derive(Default)]
+struct AbortPoll {
+    task: Option<tokio::task::JoinHandle<Result<crate::caps::EqBatch, crate::caps::EqPollError>>>,
+}
+
+impl Drop for AbortPoll {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl AbortPoll {
+    fn spawn(&mut self, http: &reqwest::Client, url: &str, ack: Option<i32>) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        let http = http.clone();
+        let url = url.to_owned();
+        self.task = Some(tokio::spawn(async move {
+            crate::caps::poll_event_queue(&http, &url, ack).await
+        }));
+    }
+
+    fn is_finished(&self) -> bool {
+        self.task.as_ref().is_some_and(|task| task.is_finished())
+    }
+
+    fn take(
+        &mut self,
+    ) -> Option<tokio::task::JoinHandle<Result<crate::caps::EqBatch, crate::caps::EqPollError>>>
+    {
+        self.task.take()
+    }
 }
 
 async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
@@ -906,6 +1324,7 @@ fn near_vec(left: [f32; 3], right: [f32; 3], epsilon: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn a_logout_log_line_counts_only_that_avatar() {
@@ -936,6 +1355,139 @@ mod tests {
         assert_eq!(selection("login").unwrap(), &["login"]);
         assert_eq!(selection("assets").unwrap(), &["texture", "inventory"]);
         assert!(selection("capture").is_none());
+        assert!(selection("neighbour").is_none());
+    }
+
+    #[test]
+    fn event_queue_names_the_neighbour_before_teleport_finish() {
+        let handle = region_handle(1001, 1000);
+        let handle_b64 = base64::engine::general_purpose::STANDARD.encode(handle.to_be_bytes());
+        let ip_b64 = base64::engine::general_purpose::STANDARD.encode([127, 0, 0, 1]);
+        let doc = format!(
+            "<llsd><map>\
+             <key>events</key><array>\
+             <map><key>message</key><string>EnableSimulator</string><key>body</key><map>\
+             <key>SimulatorInfo</key><array><map>\
+             <key>Handle</key><binary>{handle_b64}</binary>\
+             <key>IP</key><binary>{ip_b64}</binary>\
+             <key>Port</key><integer>39405</integer>\
+             </map></array></map></map>\
+             <map><key>message</key><string>EstablishAgentCommunication</string><key>body</key><map>\
+             <key>agent-id</key><uuid>4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55</uuid>\
+             <key>sim-ip-and-port</key><string>127.0.0.1:39405</string>\
+             <key>seed-capability</key><string>http://127.0.0.1:39405/CAPS/seed</string>\
+             </map></map>\
+             <map><key>message</key><string>TeleportFinish</string><key>body</key><map>\
+             <key>Info</key><array><map>\
+             <key>SimIP</key><binary>{ip_b64}</binary>\
+             <key>SimPort</key><integer>39405</integer>\
+             <key>RegionHandle</key><binary>{handle_b64}</binary>\
+             <key>SeedCapability</key><string>http://127.0.0.1:39405/CAPS/seed</string>\
+             </map></array></map></map>\
+             </array>\
+             <key>id</key><integer>7</integer>\
+             </map></llsd>"
+        );
+        let batch = crate::caps::parse_event_queue(doc.as_bytes()).unwrap();
+        assert_eq!(batch.id, 7);
+        assert_eq!(batch.events.len(), 3);
+        let enable =
+            crate::caps::crossing_hint(&batch.events[0].message, &batch.events[0].body).unwrap();
+        assert_eq!(enable.ip, [127, 0, 0, 1]);
+        assert_eq!(enable.port, 39405);
+        assert_eq!(enable.handle, Some(handle));
+        assert!(!enable.finish);
+        let establish =
+            crate::caps::crossing_hint(&batch.events[1].message, &batch.events[1].body).unwrap();
+        assert_eq!(establish.handle, None);
+        assert_eq!(
+            establish.seed.as_deref(),
+            Some("http://127.0.0.1:39405/CAPS/seed")
+        );
+        let finish =
+            crate::caps::crossing_hint(&batch.events[2].message, &batch.events[2].body).unwrap();
+        assert!(finish.finish);
+        assert_eq!(finish.handle, Some(handle));
+
+        let mut dest = None;
+        let mut pending = None;
+        apply_hint(&mut dest, &mut pending, &establish, handle);
+        assert!(dest.is_none());
+        assert!(pending.is_some());
+        apply_hint(&mut dest, &mut pending, &enable, handle);
+        let opened = dest.as_ref().unwrap();
+        assert_eq!(opened.addr, "127.0.0.1:39405".parse().unwrap());
+        assert_eq!(opened.seed, "http://127.0.0.1:39405/CAPS/seed");
+        assert!(!opened.finish);
+        assert!(pending.is_none());
+        apply_hint(&mut dest, &mut pending, &finish, handle);
+        assert!(crossing_ready(&dest));
+
+        let other = region_handle(1002, 1000);
+        let mut ignored = crate::caps::CrossingHint {
+            handle: Some(other),
+            finish: false,
+            seed: None,
+            ..enable
+        };
+        ignored.ip = [127, 0, 0, 2];
+        ignored.port = 9;
+        apply_hint(&mut dest, &mut pending, &ignored, handle);
+        assert_eq!(
+            dest.as_ref().unwrap().addr,
+            "127.0.0.1:39405".parse().unwrap()
+        );
+        assert!(crate::caps::crossing_hint("ParcelProperties", &batch.events[0].body).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_return_hop_reuses_a_parked_circuit() {
+        let home = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let home_addr = home.local_addr().unwrap();
+        let agent = Agent {
+            agent_id: Uuid::from_u128(1),
+            session_id: Uuid::from_u128(2),
+            circuit_code: 42,
+        };
+        let parked_session = Session::connect(home_addr, agent).await.unwrap();
+        let local = parked_session.local_addr().unwrap();
+        let mut parked = vec![parked_session];
+        let mut next = None;
+        let dest = Some(Dest {
+            addr: home_addr,
+            seed: "http://127.0.0.1/seed".to_string(),
+            finish: true,
+        });
+        open_destination(&mut next, &dest, agent, &mut parked)
+            .await
+            .unwrap();
+        assert!(parked.is_empty());
+        let next = next.expect("parked session");
+        assert_eq!(next.local_addr().unwrap(), local);
+        assert_eq!(next.sim_addr(), home_addr);
+
+        let other = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let other_addr = other.local_addr().unwrap();
+        let mut fresh = None;
+        let dest = Some(Dest {
+            addr: other_addr,
+            seed: String::new(),
+            finish: false,
+        });
+        let mut parked = Vec::new();
+        open_destination(&mut fresh, &dest, agent, &mut parked)
+            .await
+            .unwrap();
+        let fresh = fresh.expect("new circuit");
+        assert_ne!(fresh.local_addr().unwrap(), local);
+        assert!(!fresh.movement_sent());
+    }
+
+    #[test]
+    fn region_handle_packs_map_tiles() {
+        // Util.RegionGridLocToHandle: X << 40 | Y << 8.
+        assert_eq!(region_handle(1000, 1000), (1000_u64 << 40) | (1000 << 8));
+        assert_eq!(region_handle(1001, 1000), (1001_u64 << 40) | (1000 << 8));
     }
 
     #[test]

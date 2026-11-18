@@ -14,7 +14,7 @@ use ferroan_protocol::msgs::{
     AgentMovementComplete, AgentUpdate, ChatFromSimulator, ChatFromViewer, DeRezObject,
     ImprovedTerseObjectUpdate, KillObject, MultipleObjectUpdate, ObjectAdd, ObjectName,
     ObjectProperties, ObjectPropertiesFamily, ObjectUpdate, RequestObjectPropertiesFamily,
-    TeleportFailed, TeleportLocal, TeleportLocationRequest,
+    TeleportFailed, TeleportFinish, TeleportLocal, TeleportLocationRequest,
 };
 use ferroan_protocol::{IncomingPacket, Msg, field_str, str_field};
 use glam::{Quat, Vec3};
@@ -297,6 +297,29 @@ pub fn teleport_landed(packet: &IncomingPacket) -> Option<Vec3> {
         .decode::<TeleportLocal>()
         .ok()
         .map(|reply| reply.info.position)
+}
+
+/// Where `TeleportFinish` tells the viewer to open the next circuit.
+///
+/// `seed_capability` is the variable block, decoded as a UTF-8 string.
+pub struct TeleportArrival {
+    pub sim_ip: [u8; 4],
+    pub sim_port: u16,
+    pub region_handle: u64,
+    pub seed_capability: String,
+}
+
+pub fn teleport_arrival(packet: &IncomingPacket) -> Option<TeleportArrival> {
+    if packet.id != TeleportFinish::ID {
+        return None;
+    }
+    let reply = packet.decode::<TeleportFinish>().ok()?;
+    Some(TeleportArrival {
+        sim_ip: reply.info.sim_ip,
+        sim_port: reply.info.sim_port,
+        region_handle: reply.info.region_handle,
+        seed_capability: field_str(&reply.info.seed_capability),
+    })
 }
 
 pub fn position_in_object_data(data: &[u8]) -> Option<Vec3> {

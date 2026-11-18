@@ -28,11 +28,12 @@
 //!
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
-//! CI does not run it yet.
+//! The live CI job runs standalone and grid mode.
 
 mod asset_oracle;
 mod assets;
 mod config_oracle;
+mod grid;
 mod http_oracle;
 mod live;
 mod oracle;
@@ -63,7 +64,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live build
        cargo xtask live up
        cargo xtask live down
-       cargo xtask live run <scenario>|all
+       cargo xtask live run <scenario>|all [grid]
        cargo xtask live assets";
 
 fn main() -> ExitCode {
@@ -103,6 +104,7 @@ fn main() -> ExitCode {
         ["live", "up"] => live::up(),
         ["live", "down"] => live::down(),
         ["live", "run", scenario] => live::run(scenario),
+        ["live", "run", scenario, "grid"] => grid::run(scenario),
         ["live", "assets"] => assets::compare(),
         _ => {
             eprintln!("{USAGE}");

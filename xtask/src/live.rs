@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 use crate::repo_root;
 
 const READY: &str = "INITIALIZATION COMPLETE FOR Ferroan Test - LOGINS ENABLED";
-const ESTATE_OWNER: &str = "4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55";
-const REGION_UUID: &str = "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01";
-const CHAT_USER: &str = "8c4e1a70-2b59-4d6f-9e13-5a7c0d8b2f44";
-const START_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const ESTATE_OWNER: &str = "4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55";
+pub(crate) const REGION_UUID: &str = "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01";
+pub(crate) const CHAT_USER: &str = "8c4e1a70-2b59-4d6f-9e13-5a7c0d8b2f44";
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn build() -> ExitCode {
@@ -43,7 +43,7 @@ pub fn run(scenario: &str) -> ExitCode {
     finish(run_inner(scenario))
 }
 
-fn finish(result: Result<String, String>) -> ExitCode {
+pub(crate) fn finish(result: Result<String, String>) -> ExitCode {
     match result {
         Ok(message) => {
             if !message.is_empty() {
@@ -107,7 +107,7 @@ fn live_root() -> PathBuf {
     repo_root().join(".scratch").join("live")
 }
 
-fn source_dir() -> PathBuf {
+pub(crate) fn source_dir() -> PathBuf {
     live_root().join("src")
 }
 
@@ -115,7 +115,7 @@ fn run_dir() -> PathBuf {
     live_root().join("run")
 }
 
-fn publish_dir() -> PathBuf {
+pub(crate) fn publish_dir() -> PathBuf {
     source_dir().join("Source/OpenSim.Server.RegionServer/bin/Release/net10.0/linux-x64/publish")
 }
 
@@ -578,7 +578,7 @@ fn capture_path() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn finish_capture(
+pub(crate) fn finish_capture(
     udp_path: &Path,
     http: &[ferroan_capture::Record],
     passwords: &[&str],
@@ -610,7 +610,10 @@ fn finish_capture(
             return Err("the redacted capture still contains a password".to_string());
         }
     }
-    let redacted_path = run_dir().join("capture.redacted.cap");
+    let redacted_path = udp_path
+        .parent()
+        .unwrap_or(udp_path)
+        .join("capture.redacted.cap");
     fs::write(&redacted_path, &bytes)
         .map_err(|error| format!("could not write {}: {error}", redacted_path.display()))?;
     check_udp(&redacted).map_err(|error| format!("capture replay failed: {error}"))?;
@@ -647,6 +650,7 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
         library_texture: library,
         http_trace: std::sync::Arc::clone(&http_trace),
         region_log: started.log.clone(),
+        neighbour: None,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -661,7 +665,7 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
 }
 
 #[cfg(target_os = "linux")]
-fn texture_bytes() -> Result<Vec<u8>, String> {
+pub(crate) fn texture_bytes() -> Result<Vec<u8>, String> {
     let path = source_dir().join(
         "Source/OpenSim.Services.InventoryService/AppData/assets/TexturesAssetSet/rainbow.j2c",
     );
@@ -1038,14 +1042,24 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn standalone_is_up() -> Result<Option<u32>, String> {
+    match read_state(&state_path())? {
+        Some(state) if region_pid_live(state.pid) => Ok(Some(state.pid)),
+        _ => Ok(None),
+    }
+}
+
 fn copy_examples(publish: &Path) -> Result<(), String> {
     let include = publish.join("config-include");
-    for name in ["StandaloneCommon.ini", "FlotsamCache.ini"] {
+    for name in ["StandaloneCommon.ini", "FlotsamCache.ini", "GridCommon.ini"] {
         let dest = include.join(name);
         if dest.is_file() {
             continue;
         }
         let source = include.join(format!("{name}.example"));
+        if name == "GridCommon.ini" && !source.is_file() {
+            continue;
+        }
         fs::copy(&source, &dest).map_err(|error| {
             format!(
                 "could not copy {} to {}: {error}",
@@ -1157,7 +1171,7 @@ fn wait_region(
 }
 
 #[cfg(target_os = "linux")]
-fn log_contains(path: &Path, needle: &str) -> Result<bool, String> {
+pub(crate) fn log_contains(path: &Path, needle: &str) -> Result<bool, String> {
     match fs::read(path) {
         Ok(bytes) => {
             if bytes.len() > 32 * 1024 * 1024 {
@@ -1171,7 +1185,7 @@ fn log_contains(path: &Path, needle: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn log_tail(path: &Path, password: &str) -> String {
+pub(crate) fn log_tail(path: &Path, password: &str) -> String {
     let Ok(bytes) = fs::read(path) else {
         return format!("(no log at {})", path.display());
     };
@@ -1181,6 +1195,40 @@ fn log_tail(path: &Path, password: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn require_listen(pid: u32, ip: Ipv4Addr, port: u16) -> Result<(), String> {
+    let sockets = process_sockets(pid)?;
+    refuse_unspecified(&sockets)?;
+    if sockets
+        .iter()
+        .any(|socket| socket.listening && socket.local == IpAddr::V4(ip) && socket.port == port)
+    {
+        Ok(())
+    } else {
+        Err(format!("expected a TCP listen on {ip}:{port}"))
+    }
+}
+
+pub(crate) fn require_udp(pid: u32, ip: Ipv4Addr, port: u16) -> Result<(), String> {
+    let sockets = process_sockets(pid)?;
+    refuse_unspecified(&sockets)?;
+    if sockets
+        .iter()
+        .any(|socket| socket.udp && socket.local == IpAddr::V4(ip) && socket.port == port)
+    {
+        Ok(())
+    } else {
+        Err(format!("expected UDP on {ip}:{port}"))
+    }
+}
+
+fn refuse_unspecified(sockets: &[ProcSock]) -> Result<(), String> {
+    if sockets.iter().any(|socket| socket.local.is_unspecified()) {
+        Err("a harness socket is bound to every interface".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 fn process_sockets(pid: u32) -> Result<Vec<ProcSock>, String> {
     let inodes = socket_inodes(pid)?;
     let mut sockets = Vec::new();
@@ -1264,7 +1312,7 @@ fn stop_pid(pid: u32) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn generate_password() -> Result<String, String> {
+pub(crate) fn generate_password() -> Result<String, String> {
     let mut bytes = [0u8; 18];
     let mut file = File::open("/dev/urandom")
         .map_err(|error| format!("could not read /dev/urandom: {error}"))?;
@@ -1284,7 +1332,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn write_secret(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_secret(path: &Path, text: &str) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt;
 
     if let Some(parent) = path.parent() {
@@ -1304,7 +1352,7 @@ fn write_secret(path: &Path, text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn free_port() -> Result<u16, String> {
+pub(crate) fn free_port() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("could not bind a local port: {error}"))?;
     listener
