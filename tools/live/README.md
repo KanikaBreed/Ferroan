@@ -4,6 +4,8 @@
 
 `cargo xtask live` builds Tranquillity in `.scratch/live/` and starts it. The scratch tree is never a reference checkout.
 
+`live build` also builds the pinned Ferrobot in `.scratch/`, using a clean pinned reference checkout as the source of a scratch clone when available. `live run ferrobot`, `live run ferrobot grid` and `live run ferrobot grid --region ferroan` drive that separate client through its signed loopback HTTP API. Each checks a 120-second session and captured logout; C# runs also check chat and IM with `ferroan-bot`. Generated credentials remain in scratch files. See [the Ferrobot checks](../../docs/LIVE.md#ferrobot).
+
 One patch is applied only there, at the revision in [docs/REFERENCES.md](../../docs/REFERENCES.md):
 
 - [../capture/tranquillity-capture.patch](../capture/tranquillity-capture.patch) records raw UDP when `[ClientStack.LindenUDP] CaptureFile` is set. `live build` applies it. `live run` sets `CaptureFile`, records the bot's HTTP beside it, then runs `check`, `redact` and `replay`. `live up` does not set `CaptureFile`.

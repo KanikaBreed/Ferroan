@@ -4,6 +4,8 @@ The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranqui
 
 `cargo xtask live build` clones the pinned revision, applies the capture patch in [tools/live/README.md](../tools/live/README.md), and publishes the region server and a self-contained GridServer. `cargo xtask live up` starts the region on `127.0.0.1` and prints the login URL. Add `--assets ferroan` to start `ferroan-robust` on a seeded asset store and point the region at it. `cargo xtask live down` stops the region and its asset process. `cargo xtask live run <scenario>|all` builds if needed, runs the scenarios, records UDP and HTTP, and runs `check`, then `redact`, then `replay`. A failing check fails the run. `cargo xtask live run <scenario>|all|neighbour grid` starts GridServer and two neighbouring regions instead of one standalone region. `cargo xtask live assets` runs texture and inventory against the C# asset service and against `ferroan-robust`, then compares the normalized HTTP. Plain `live up` uses the in-process asset service. Neither `live up` mode records a capture.
 
+`cargo xtask live build` also builds the Ferrobot revision pinned in [REFERENCES.md](REFERENCES.md), with `cargo build --locked`. A clean reference checkout at that revision supplies a scratch clone; otherwise the harness fetches the pinned revision from its public repository. Source and build output stay under `.scratch/`. Ferrobot remains a separate executable, with no dependency from a Ferroan crate and no vendored code.
+
 ## Scenarios
 
 `all` runs these, in order. Each line is the report the command prints when the check passes.
@@ -19,6 +21,20 @@ The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranqui
 | inventory | `inventory: pass`. The skeleton and a folder fetch include the uploaded item |
 
 `assets` is texture and inventory, used by `cargo xtask live assets`.
+
+## Ferrobot
+
+Run the second client with:
+
+```sh
+cargo xtask live run ferrobot
+cargo xtask live run ferrobot grid
+cargo xtask live run ferrobot grid --region ferroan
+```
+
+The harness starts Ferrobot for its test account and drives its signed HTTP API on `127.0.0.1`. Generated account credentials and `FERRO_SHARED_SECRET` remain under `.scratch/`. It checks arrival, a 120-second session with pings and event-queue polls, local chat in both directions with `ferroan-bot`, an IM received by Ferrobot, and SIGTERM logout with a captured `LogoutReply`. The Ferroan-region variant checks login, staying connected and logout; chat and IM remain pending until their region behavior is implemented. CI runs all three variants.
+
+Ferrobot's region traffic is captured through the existing HTTP proxies and the C# UDP capture patch. The Rust-region variant uses a bounded local UDP relay to record its traffic without modifying the server. The harness checks, redacts and replays these captures. API responses and process logs are bounded; generated secrets are removed from any failure diagnostics. Ferrobot is included in the saved process identities, so `live down` can recover an interrupted run.
 
 ## Keeping the Ferroan asset service up
 
