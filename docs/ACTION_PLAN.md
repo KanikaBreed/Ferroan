@@ -178,8 +178,8 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
 
 Right after P0.10, before Phase 1 is finished, build the smallest Ferroan region a viewer can enter. It runs on the C# grid services the maintainer already runs (D2), so it does not wait for Phase 1.
 
-- **Scope:** the LLUDP circuit and the region handshake, the seed capability and the event queue, terrain from the region's saved heightmap, the avatar standing at terrain height (no physics, Phase 3), appearance from the C# services, local chat, logout, and a teleport to and from a C# region next door.
+- **Scope:** a grid mode for the live harness (C# Robust and two C# regions as separate processes), the LLUDP circuit and the region handshake, the seed capability and the event queue, login through C# Robust (the region registers with the C# grid service and accepts the agent the login service sends it; it is not a login server), terrain from the heightmap a C# region saved, the avatar standing at terrain height (no physics, Phase 3), appearance from the C# avatar service, local chat, logout, a teleport inside the region, and a teleport to and from a C# region next door.
 - **Acceptance:** the live harness's login, chat and teleport scenarios pass against the Ferroan region, and their reports match the same scenarios against the C# region. Then the maintainer logs in with Firestorm and follows the first-login section that this package adds to `docs/MANUAL_CHECKS.md`.
-- Split it into rows in TASKS.md before starting; it is more than two weeks of work.
+- The rows are P2.0a to P2.0j and G2 in TASKS.md.
 
 When the gate passes, write Phase 1's packages the same way, from the scope in [PLAN.md](PLAN.md), and add their rows to TASKS.md. Every package that changes behavior a viewer or region can see adds or extends a `ferroan-bot` scenario. Once Ferroan has its own region (Phase 2), each scenario runs against both the C# region and the Ferroan region, and the two reports must agree.
