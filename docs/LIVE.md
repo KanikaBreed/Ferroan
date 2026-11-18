@@ -1,8 +1,36 @@
 # Live harness
 
-The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. Until `cargo xtask live` exists, this file is the manual recipe it automates. The recipe below was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service.
+The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. It is Linux-only. Run state, the scratch Tranquillity tree and the generated password stay under `.scratch/live/`. The password is not printed. The reference checkout is only read. Set `FERROAN_REF` when that checkout is not `~/Git/reference`.
+
+`cargo xtask live build` clones the pinned revision, applies the patches in [tools/live/README.md](../tools/live/README.md), and publishes the region server and a self-contained GridServer. `cargo xtask live up` starts the region on `127.0.0.1` and prints the login URL. `cargo xtask live down` stops it. `cargo xtask live run <scenario>|all` builds if needed, runs the scenarios, records UDP and HTTP, and runs `check`, then `redact`, then `replay`. A failing check fails the run. `cargo xtask live assets` runs texture and inventory against the C# asset service and against `ferroan-robust`, then compares the normalized HTTP. `live up` uses the in-process asset service and does not record a capture.
+
+## Scenarios
+
+`all` runs these, in order. Each line is the report the command prints when the check passes.
+
+| Name | Pass line |
+| --- | --- |
+| login | `login: pass` |
+| walk | `walk: pass` with the start and end position |
+| chat | `chat: pass`. A second account, `Chat Bot`, hears `ferroan harness chat` |
+| build | `build: pass`. A prim is rezzed, changed and deleted |
+| teleport | `teleport: pass` with the landing position |
+| texture | `texture: pass` with the uploaded size and the library texture size. Both are JPEG 2000 |
+| inventory | `inventory: pass`. The skeleton and a folder fetch include the uploaded item |
+
+`assets` is texture and inventory, used by `cargo xtask live assets`.
+
+## Adding a scenario
+
+Add the name to `NAMES` and the `selection` match in [tools/bot/src/scenario.rs](../tools/bot/src/scenario.rs), and implement the check there. The function returns the report line, or an error whose text is the failure. `cargo xtask live run <name>` runs that one scenario. `all` runs every name in `NAMES`. The new scenario's captured chat must be synthetic. Do not put a password, a session id or a circuit code into the message text. The redacted session committed under `fixtures/captures/` is produced by `live run all`.
+
+## What CI runs
+
+[`.github/workflows/live.yml`](../.github/workflows/live.yml) is the Linux job. It installs .NET SDK 10.0.114 with `actions/setup-dotnet` pinned by commit, installs `sqlite3`, and clones the pinned Tranquillity and libopenmetaverse checkouts into `FERROAN_REF`. It restores from nuget.org only and has no secrets. It runs every `cargo xtask` oracle `verify`, then `cargo xtask live build` and `cargo xtask live run all`. The Tranquillity publish is cached by the pin and the harness patches. The job runs nightly, on `workflow_dispatch`, and on pull requests that touch the harness. The ordinary CI job does not start Tranquillity.
 
 ## Manual recipe (Linux)
+
+The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. The pin is still `713857f`, so the harness still applies the SQLite column workaround and the listen patch. Those go away when the pin moves to a revision that contains both fixes.
 
 All paths are scratch paths. Never build in `~/Git/reference`.
 

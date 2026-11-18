@@ -71,6 +71,7 @@ pub struct Session {
     region_id: Option<Uuid>,
     inbox: VecDeque<IncomingPacket>,
     last_ping: Instant,
+    received: u64,
 }
 
 impl Session {
@@ -95,6 +96,7 @@ impl Session {
             region_id: None,
             inbox: VecDeque::new(),
             last_ping: Instant::now(),
+            received: 0,
         })
     }
 
@@ -136,6 +138,11 @@ impl Session {
     /// The next packet that was not part of the handshake, if one is waiting.
     pub fn poll_inbox(&mut self) -> Option<IncomingPacket> {
         self.inbox.pop_front()
+    }
+
+    /// Datagrams received from the region since connect.
+    pub fn received(&self) -> u64 {
+        self.received
     }
 
     /// Send `UseCircuitCode`'s follow-up once it is acked, answer the
@@ -231,6 +238,7 @@ impl Session {
         if from != self.circuit.addr {
             return Ok(());
         }
+        self.received += 1;
         let Ok(packet) = parse_packet(&buf[..len]) else {
             return Ok(());
         };
