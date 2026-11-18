@@ -29,4 +29,4 @@ pub use pool::{Pool, open_sqlite_file};
 
 /// Tranquillity `develop` revision whose migration resources this crate expects.
 /// The pin is the `OpenSim-Tranquillity` row in `docs/REFERENCES.md`.
-pub const TRANQUILLITY_REVISION: &str = "c85783e993736c172149d0bad63dc16ba910e62f";
+pub const TRANQUILLITY_REVISION: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";

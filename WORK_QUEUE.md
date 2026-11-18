@@ -21,7 +21,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q1 | P2.0a: the LLUDP circuit in `ferroan-client` | DONE (#20) |
 | Q2 | P2.0b: seed capability and event queue | DONE (#21) |
 | Q3 | P2.0c: harness grid mode | DONE (#22) |
-| Q4 | Pin2: move the Tranquillity pin to `develop` `8583218` | READY |
+| Q4 | Pin2: move the Tranquillity pin to `develop` `8583218` | IN PROGRESS (chore/pin2-coder) |
 | Q5 | P0.10f: fix `live assets` and add `live up --assets ferroan` | READY after Q4 |
 | Q6 | P2.0d: login through C# Robust | READY after Q5 |
 | Q7 | P2.0b2: the event queue as Tranquillity answers it | READY after Q6 |

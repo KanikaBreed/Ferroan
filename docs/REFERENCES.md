@@ -6,7 +6,7 @@ To move a pin, open a PR that changes this file and says why, and check what cha
 
 | Checkout | Repository | Revision | Licence | Use |
 | --- | --- | --- | --- | --- |
-| `OpenSim-Tranquillity` | [OpenSim-NGC/OpenSim-Tranquillity](https://github.com/OpenSim-NGC/OpenSim-Tranquillity) `develop` | `c85783e993736c172149d0bad63dc16ba910e62f` | BSD-3-Clause, MPL-2.0, Apache-2.0, MIT per file | The behavior reference; porting source; the server that captures and oracles run |
+| `OpenSim-Tranquillity` | [OpenSim-NGC/OpenSim-Tranquillity](https://github.com/OpenSim-NGC/OpenSim-Tranquillity) `develop` | `858321883f5487a5d192d36ea9d7b90fa468310c` | BSD-3-Clause, MPL-2.0, Apache-2.0, MIT per file | The behavior reference; porting source; the server that captures and oracles run |
 | `libopenmetaverse` | [OpenSim-NGC/libopenmetaverse](https://github.com/OpenSim-NGC/libopenmetaverse) | `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` | BSD-3-Clause | The OpenMetaverse build Tranquillity ships (NuGet `UtopiaSkye.OpenMetaverse` 1.2.9). Porting source for types and server-side helpers; byte-level oracle for packets and LLSD |
 | `Aurora-Viewer` | [Aurora-Viewer/Aurora-Viewer](https://github.com/Aurora-Viewer/Aurora-Viewer) `main` | `48cb76e830a13965ac080128bb874afedda86d69` | GPL-3.0-or-later | Rust crates to reuse (`aurora-llsd`, `aurora-msg`, `aurora-prim`); the viewer side of the protocol (`aurora-net`); the viewer used for login checks |
 | `slua` | [secondlife/slua](https://github.com/secondlife/slua) | `a02d459aa0cb64a4c2b3dd4d841e67ba4a01d9b1` | MIT | Linden Lab's script engine (Phase 4, and the SLua work in Tranquillity) |
