@@ -1,0 +1,295 @@
+{
+  "tranquillity": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "source": "cargo xtask live run login grid",
+  "redaction": "ferroan_protocol::scrub_datagram (P0.10d); no further field normalization",
+  "outgoing_sequence": [
+    {
+      "record": 1,
+      "message": "PacketAck",
+      "sequence": 0,
+      "flags": 0,
+      "appended_acks": []
+    },
+    {
+      "record": 5,
+      "message": "RegionHandshake",
+      "sequence": 1,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 7,
+      "message": "AgentMovementComplete",
+      "sequence": 2,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 10,
+      "message": "ParcelOverlay",
+      "sequence": 3,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 11,
+      "message": "ObjectUpdate",
+      "sequence": 4,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 13,
+      "message": "AvatarAppearance",
+      "sequence": 5,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 14,
+      "message": "AvatarAnimation",
+      "sequence": 6,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 18,
+      "message": "ParcelOverlay",
+      "sequence": 7,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 20,
+      "message": "ParcelOverlay",
+      "sequence": 8,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 22,
+      "message": "ParcelOverlay",
+      "sequence": 9,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 24,
+      "message": "LayerData",
+      "sequence": 10,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 26,
+      "message": "LayerData",
+      "sequence": 11,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 28,
+      "message": "LayerData",
+      "sequence": 12,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 30,
+      "message": "LayerData",
+      "sequence": 13,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 32,
+      "message": "PacketAck",
+      "sequence": 14,
+      "flags": 0,
+      "appended_acks": []
+    },
+    {
+      "record": 33,
+      "message": "LayerData",
+      "sequence": 15,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 35,
+      "message": "LayerData",
+      "sequence": 16,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 37,
+      "message": "LayerData",
+      "sequence": 17,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 39,
+      "message": "LayerData",
+      "sequence": 18,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 41,
+      "message": "LayerData",
+      "sequence": 19,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 43,
+      "message": "LayerData",
+      "sequence": 20,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 44,
+      "message": "SimStats",
+      "sequence": 21,
+      "flags": 0,
+      "appended_acks": []
+    },
+    {
+      "record": 46,
+      "message": "LayerData",
+      "sequence": 22,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 47,
+      "message": "SimulatorViewerTimeMessage",
+      "sequence": 23,
+      "flags": 128,
+      "appended_acks": []
+    },
+    {
+      "record": 49,
+      "message": "ImprovedTerseObjectUpdate",
+      "sequence": 24,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 52,
+      "message": "LogoutReply",
+      "sequence": 25,
+      "flags": 192,
+      "appended_acks": []
+    },
+    {
+      "record": 54,
+      "message": "KickUser",
+      "sequence": 26,
+      "flags": 64,
+      "appended_acks": []
+    },
+    {
+      "record": 55,
+      "message": "KillObject",
+      "sequence": 27,
+      "flags": 64,
+      "appended_acks": []
+    }
+  ],
+  "selected_records": [
+    {
+      "record": 0,
+      "message": "UseCircuitCode",
+      "direction": "in"
+    },
+    {
+      "record": 1,
+      "message": "PacketAck",
+      "direction": "out"
+    },
+    {
+      "record": 5,
+      "message": "RegionHandshake",
+      "direction": "out"
+    },
+    {
+      "record": 32,
+      "message": "PacketAck",
+      "direction": "out"
+    },
+    {
+      "record": 51,
+      "message": "LogoutRequest",
+      "direction": "in"
+    },
+    {
+      "record": 52,
+      "message": "LogoutReply",
+      "direction": "out"
+    }
+  ],
+  "handshake_configuration": {
+    "sim_name": [
+      70,
+      101,
+      114,
+      114,
+      111,
+      97,
+      110,
+      32,
+      84,
+      101,
+      115,
+      116,
+      0
+    ],
+    "sim_access": 13,
+    "sim_owner": "4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55",
+    "estate_manager": true,
+    "region_flags": 336625702,
+    "water_height": 20.0,
+    "billable_factor": 0.0,
+    "cache_id": "00795643-ab6b-490f-a9dc-3a0ccf4b9ca1",
+    "region_id": "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01",
+    "product_name": [],
+    "cpu_class_id": 9,
+    "cpu_ratio": 1,
+    "colo_name": [],
+    "product_sku": [],
+    "terrain_base": [
+      "00000000-0000-0000-0000-000000000000",
+      "00000000-0000-0000-0000-000000000000",
+      "00000000-0000-0000-0000-000000000000",
+      "00000000-0000-0000-0000-000000000000"
+    ],
+    "terrain_detail": [
+      "b8d3965a-ad78-bf43-699b-bff8eca6c975",
+      "abb783e6-3e93-26c0-248a-247666855da3",
+      "179cdabd-398a-9b6b-1391-4dc333ba321f",
+      "beb169c7-11ea-fff2-efe5-0f24dc881df2"
+    ],
+    "terrain_start_heights": [
+      10.0,
+      10.0,
+      10.0,
+      10.0
+    ],
+    "terrain_height_ranges": [
+      60.0,
+      60.0,
+      60.0,
+      60.0
+    ],
+    "region_flags_extended": [
+      336625702
+    ],
+    "region_protocols": [
+      9223372036854775808
+    ]
+  }
+}

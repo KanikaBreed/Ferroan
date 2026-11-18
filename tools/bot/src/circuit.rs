@@ -10,45 +10,21 @@
 
 //! One reliable UDP circuit to a region.
 
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use ferroan_protocol::msgs::{self, PacketAck};
 use ferroan_protocol::packet::{self, PacketFlags};
+use ferroan_protocol::reliability::{RecentSequences, ReliableWindow, SequenceCounter};
 use ferroan_protocol::{Msg, Writer};
 use tokio::net::UdpSocket;
 
-const MAX_RESENDS: u8 = 4;
-const DEDUPE_WINDOW: usize = 2048;
 const ACK_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-/// Reliable packets waiting for an ack. Past this, a send is refused.
-pub const MAX_UNACKED: usize = 256;
+pub use ferroan_protocol::reliability::{MAX_UNACKED, Resend};
 /// Ack ids waiting to be sent. The oldest is dropped past this.
 const MAX_PENDING_ACKS: usize = 4096;
 /// One PacketAck message lists at most this many ids (the viewer's flush).
 const ACKS_PER_PACKET: usize = 250;
-
-/// How a reliable packet is resent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resend {
-    /// Fixed resend timeout. `None` uses three round trips, clamped.
-    pub timeout: Option<Duration>,
-    /// Resends before the packet is given up.
-    pub max_retries: u8,
-}
-
-impl Resend {
-    pub const DEFAULT: Resend = Resend {
-        timeout: None,
-        max_retries: MAX_RESENDS,
-    };
-    /// Login `UseCircuitCode` (llstartup.cpp: 3 retries, 5 seconds).
-    pub const LOGIN_USE_CIRCUIT_CODE: Resend = Resend {
-        timeout: Some(Duration::from_secs(5)),
-        max_retries: 3,
-    };
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CircuitError {
@@ -58,23 +34,20 @@ pub enum CircuitError {
     TooLarge { got: usize, limit: usize },
 }
 
-struct Unacked {
+#[derive(Clone)]
+struct ReliablePayload {
     payload: Vec<u8>,
     zerocoded: bool,
-    sent: Instant,
-    retries: u8,
-    policy: Resend,
 }
 
 pub struct Circuit {
     sock: UdpSocket,
     pub addr: SocketAddr,
-    next_seq: u32,
-    unacked: HashMap<u32, Unacked>,
+    sequences: SequenceCounter,
+    unacked: ReliableWindow<ReliablePayload>,
     pending_acks: Vec<u32>,
     last_ack_flush: Instant,
-    recent: VecDeque<u32>,
-    recent_set: HashSet<u32>,
+    recent: RecentSequences,
     rtt: Duration,
     ping_id: u8,
     ping_sent: Option<(u8, Instant)>,
@@ -93,12 +66,11 @@ impl Circuit {
         Self {
             sock,
             addr: sim,
-            next_seq: 1,
-            unacked: HashMap::new(),
+            sequences: SequenceCounter::default(),
+            unacked: ReliableWindow::default(),
             pending_acks: Vec::new(),
             last_ack_flush: Instant::now(),
-            recent: VecDeque::with_capacity(DEDUPE_WINDOW),
-            recent_set: HashSet::with_capacity(DEDUPE_WINDOW),
+            recent: RecentSequences::default(),
             rtt: Duration::from_millis(300),
             ping_id: 0,
             ping_sent: None,
@@ -113,12 +85,6 @@ impl Circuit {
 
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), std::io::Error> {
         self.sock.recv_from(buf).await
-    }
-
-    fn alloc_seq(&mut self) -> u32 {
-        let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        seq
     }
 
     /// `try_send_to` only succeeds after the socket has been polled ready.
@@ -161,7 +127,7 @@ impl Circuit {
             });
         }
         let zerocoded = M::ZEROCODED;
-        let seq = self.alloc_seq();
+        let seq = self.sequences.take();
         let mut buf = std::mem::take(&mut self.buf);
         let appended = packet::build_raw(
             &payload,
@@ -176,22 +142,20 @@ impl Circuit {
         self.buf = buf;
         self.raw_send().await;
         if let Some(policy) = reliable {
-            self.unacked.insert(
-                seq,
-                Unacked {
-                    payload,
-                    zerocoded,
-                    sent: Instant::now(),
-                    retries: 0,
+            self.unacked
+                .insert(
+                    seq,
+                    ReliablePayload { payload, zerocoded },
+                    Instant::now(),
                     policy,
-                },
-            );
+                )
+                .map_err(|error| CircuitError::TooManyUnacked(error.count))?;
         }
         Ok(seq)
     }
 
     pub fn is_unacked(&self, seq: u32) -> bool {
-        self.unacked.contains_key(&seq)
+        self.unacked.contains(seq)
     }
 
     pub fn unacked_count(&self) -> usize {
@@ -203,7 +167,7 @@ impl Circuit {
     /// A new packet is acked only from [`Circuit::accept`], after it decoded.
     pub fn on_receive(&mut self, flags: u8, seq: u32, acks: &[u32]) -> bool {
         self.ack_received(acks.iter().copied());
-        if flags & PacketFlags::RESENT != 0 && self.recent_set.contains(&seq) {
+        if flags & PacketFlags::RESENT != 0 && self.recent.contains(seq) {
             if flags & PacketFlags::RELIABLE != 0 {
                 self.push_ack(seq);
             }
@@ -218,16 +182,7 @@ impl Circuit {
         if flags & PacketFlags::RELIABLE != 0 {
             self.push_ack(seq);
         }
-        if self.recent_set.contains(&seq) {
-            return;
-        }
-        if self.recent.len() >= DEDUPE_WINDOW
-            && let Some(old) = self.recent.pop_front()
-        {
-            self.recent_set.remove(&old);
-        }
-        self.recent.push_back(seq);
-        self.recent_set.insert(seq);
+        self.recent.note(seq);
     }
 
     fn push_ack(&mut self, seq: u32) {
@@ -242,39 +197,19 @@ impl Circuit {
     }
 
     pub fn ack_received(&mut self, ids: impl IntoIterator<Item = u32>) {
-        for id in ids {
-            self.unacked.remove(&id);
-        }
+        self.unacked.acknowledge(ids);
     }
 
     /// Resend timed-out reliable packets and flush acks that have waited.
     pub async fn tick(&mut self) {
-        let now = Instant::now();
+        self.tick_at(Instant::now()).await;
+    }
+
+    async fn tick_at(&mut self, now: Instant) {
         let ping_timeout = (self.rtt * 3).clamp(Duration::from_millis(500), Duration::from_secs(3));
-        let mut to_resend = Vec::new();
-        let mut to_drop = Vec::new();
-        for (seq, unacked) in &self.unacked {
-            let timeout = unacked.policy.timeout.unwrap_or(ping_timeout);
-            if now.saturating_duration_since(unacked.sent) > timeout {
-                if unacked.retries >= unacked.policy.max_retries {
-                    to_drop.push(*seq);
-                } else {
-                    to_resend.push(*seq);
-                }
-            }
-        }
-        for seq in to_drop {
-            self.unacked.remove(&seq);
-            self.dropped.push(seq);
-        }
-        for seq in to_resend {
-            let Some(unacked) = self.unacked.get_mut(&seq) else {
-                continue;
-            };
-            unacked.retries += 1;
-            unacked.sent = now;
-            let payload = unacked.payload.clone();
-            let zerocoded = unacked.zerocoded;
+        let batch = self.unacked.poll(now, ping_timeout);
+        self.dropped.extend(batch.dropped);
+        for (seq, ReliablePayload { payload, zerocoded }) in batch.resend {
             let mut buf = std::mem::take(&mut self.buf);
             packet::build_raw(&payload, zerocoded, seq, true, true, &[], &mut buf);
             self.buf = buf;
@@ -301,7 +236,7 @@ impl Circuit {
             let mut writer = Writer::new();
             PacketAck::ID.encode(&mut writer.buf);
             message.encode_body(&mut writer);
-            let seq = self.alloc_seq();
+            let seq = self.sequences.take();
             let mut buf = std::mem::take(&mut self.buf);
             packet::build_raw(&writer.buf, false, seq, false, false, &[], &mut buf);
             self.buf = buf;
@@ -313,7 +248,7 @@ impl Circuit {
     pub fn next_ping(&mut self) -> (u8, u32) {
         self.ping_id = self.ping_id.wrapping_add(1);
         self.ping_sent = Some((self.ping_id, Instant::now()));
-        let oldest = self.unacked.keys().min().copied().unwrap_or(self.next_seq);
+        let oldest = self.unacked.oldest_or(self.sequences.peek());
         (self.ping_id, oldest)
     }
 
@@ -379,15 +314,13 @@ mod tests {
             .await
             .unwrap();
         let other = c.send(&message, true).await.unwrap();
-        for unacked in c.unacked.values_mut() {
-            unacked.sent -= Duration::from_secs(4);
-        }
-        c.tick().await;
-        assert_eq!(c.unacked[&login].retries, 0);
-        assert_eq!(c.unacked[&other].retries, 1);
-        for _ in 0..4 {
-            c.unacked.get_mut(&login).unwrap().sent -= Duration::from_secs(6);
-            c.tick().await;
+        let now = Instant::now();
+        c.tick_at(now + Duration::from_secs(4)).await;
+        assert_eq!(c.unacked.retry_count(login), Some(0));
+        assert_eq!(c.unacked.retry_count(other), Some(1));
+        c.ack_received([other]);
+        for retry in 1..=4 {
+            c.tick_at(now + Duration::from_secs(4 + 6 * retry)).await;
         }
         assert!(!c.is_unacked(login));
         assert_eq!(c.take_dropped(), vec![login]);
@@ -409,8 +342,7 @@ mod tests {
         assert_eq!(first.sequence, seq);
         assert!(first.reliable());
         assert!(!first.resent());
-        c.unacked.get_mut(&seq).unwrap().sent -= Duration::from_secs(6);
-        c.tick().await;
+        c.tick_at(Instant::now() + Duration::from_secs(6)).await;
         let (n, _) = peer.recv_from(&mut buf).await.unwrap();
         let resent = parse_packet(&buf[..n]).unwrap();
         assert_eq!(resent.sequence, seq);

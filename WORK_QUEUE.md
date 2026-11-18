@@ -31,7 +31,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q5 | P0.10f: fix `live assets` and add `live up --assets ferroan` | DONE (#25) |
 | Q6 | P2.0d: login through C# Robust | DONE (#26) |
 | Q7 | P0.10g: harness fixes from the review of #22 | DONE (#29) |
-| Q8 | P2.0a2: circuit fixes from the review of #20 | READY after Q7 |
+| Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | READY after Q8 |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
@@ -87,6 +87,8 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 - 2026-11-18, revisiting #26 during Q7: the final documentation revision's live CI failed twice in the unchanged C# grid baseline, first on presence verification and then on a texture upload (HTTP 500). [Attempt 1](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/1), [attempt 2](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/2), and the unchanged [passing attempt 3](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/3) are recorded in #26. Q7 confirms that the capture proxy advertised persistent HTTP connections but closed after one exchange. Q7 corrects that proxy behavior along with its timeout; the historical failures' precise cause is unproven.
 
 - 2026-11-18, Q7 documentation review: the last paragraph of `crates/ferroan-capture/README.md` still says no session capture is committed, although `fixtures/captures/session.cap` exists. Several oracle/session paragraphs in `docs/TESTING.md` describe CI before the live job was added. Proposed fix: a documentation consistency pass against the current workflows; these historical claims were not rewritten as part of Q7.
+
+- 2026-11-18, Q8 reliability extraction: the bot's existing `Circuit::take_dropped` queue accumulates exhausted sequence IDs until drained, and `Session` currently does not drain it. Q8 shares retry accounting while preserving this caller behavior. Proposed follow-up: bound or consume the bot's dropped-ID notification queue and test a long loss-heavy session.
 
 ## Waiting on the maintainer
 

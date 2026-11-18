@@ -40,6 +40,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+use ferroan_client::HandshakeConfig;
 use ferroan_config::{Config, RegionLoad};
 use uuid::Uuid;
 
@@ -72,6 +73,7 @@ pub struct RegionConfig {
     pub server_uri: String,
     pub grid_server_uri: String,
     pub estate_owner: Uuid,
+    pub handshake: HandshakeConfig,
     pub region_secret: Uuid,
 }
 
@@ -197,6 +199,23 @@ impl RegionConfig {
         let grid_server_uri = required(server, "GridService", "GridServerURI")?;
         check_uri(grid_server_uri)
             .map_err(|reason| value("GridService", "GridServerURI", reason))?;
+        let estate_owner = uuid(
+            server,
+            "Estates",
+            "DefaultEstateOwnerUUID",
+            Some(Uuid::nil()),
+        )?;
+        let product_name = regions.get(name, "RegionType").unwrap_or("");
+        if product_name.len() > 4096 {
+            return Err(value(name, "RegionType", "exceeds 4096 bytes"));
+        }
+        // RegionSettings and EstateSettings are not INI sections in C#.
+        // Until their stores are implemented this region uses fresh settings;
+        // only the genuine RegionInfo/estate-owner INI fields override them.
+        let mut handshake = HandshakeConfig::for_region(id);
+        handshake.sim_name = name.to_owned();
+        handshake.product_name = product_name.to_owned();
+        handshake.estate_owner = estate_owner;
         Ok(Self {
             id,
             name: name.to_owned(),
@@ -208,12 +227,8 @@ impl RegionConfig {
             external_host: external_host.to_owned(),
             server_uri,
             grid_server_uri: grid_server_uri.to_owned(),
-            estate_owner: uuid(
-                server,
-                "Estates",
-                "DefaultEstateOwnerUUID",
-                Some(Uuid::nil()),
-            )?,
+            estate_owner,
+            handshake,
             region_secret: Uuid::new_v4(),
         })
     }
@@ -350,6 +365,32 @@ mod tests {
         assert_eq!(region.udp_bind, "127.0.0.1:9100".parse().unwrap());
         assert_eq!(region.server_uri, "http://127.0.0.1:9100/");
         assert_eq!(region.size, [256, 256]);
+    }
+
+    #[test]
+    fn handshake_uses_region_identity_type_and_configured_estate_owner() {
+        let mut server = server();
+        server.set(
+            "Estates",
+            "DefaultEstateOwnerUUID",
+            "00000000-0000-0000-0000-000000000003",
+        );
+        let mut regions = regions();
+        regions.set("Ferroan Test", "RegionType", "Configured Region Type");
+        let config = RegionConfig::from_configs(&server, &regions).unwrap();
+        let packet = config.handshake.build(true, false);
+        assert_eq!(packet.region_info.sim_name, b"Ferroan Test\0");
+        assert_eq!(
+            packet.region_info3.product_name,
+            b"Configured Region Type\0"
+        );
+        assert_eq!(packet.region_info2.region_id, config.id);
+        assert_eq!(packet.region_info.sim_owner, config.estate_owner);
+        assert!(!packet.region_info.cache_id.is_nil());
+        assert_eq!(
+            packet.region_info.cache_id,
+            config.clone().handshake.cache_id
+        );
     }
 
     #[test]

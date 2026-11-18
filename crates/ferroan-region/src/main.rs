@@ -96,7 +96,9 @@ async fn serve(config: RegionConfig) -> Result<(), RunError> {
     let mut shutdown = tokio::spawn(shutdown_signal()?);
     // Bind both sockets before advertising the region. Early viewer datagrams
     // remain in the socket until Robust supplies the matching circuit.
-    let circuit = CircuitServer::bind_at(config.udp_bind).await?;
+    let circuit = CircuitServer::bind_at(config.udp_bind)
+        .await?
+        .with_handshake(config.handshake.clone());
     let listener = TcpListener::bind(config.http_bind).await?;
     let caps = CapsRegistry::new(&config.server_uri)?;
     let (accepted, mut agents) = mpsc::channel(1);

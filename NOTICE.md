@@ -41,6 +41,8 @@ The reference revisions used for porting are listed in [docs/REFERENCES.md](docs
 
 Q7's harness provenance: `xtask/src/grid.rs` adapts the configuration in Tranquillity's `Source/OpenSim.Server.GridServer/AppData/GridServer.ini.example`, `Source/OpenSim.Server.RegionServer/AppData/config-include/Grid.ini` and `GridCommon.ini.example` at `858321883f5487a5d192d36ea9d7b90fa468310c`, under the repository's OpenSimulator BSD notice. The process and capture orchestration are new Ferroan code. `tools/bot/src/caps.rs` also follows `Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs` and `EventQueueGetHandlers.cs` at that pin (BSD-3-Clause); its header retains their notice alongside the existing Aurora provenance.
 
+Q8's `crates/ferroan-client/src/circuit.rs` follows `Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs` and `LLClientView.cs` at Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c` and retains their BSD notice. `handshake.rs` also follows `LLUDPZeroEncoder.cs`, `Source/OpenSim.Framework/Util.cs`, `RegionSettings.cs`, `EstateSettings.cs`, and `Source/OpenSim.Region.Framework/Scenes/Scene.cs`, with flag definitions from libopenmetaverse `OpenMetaverse/Simulator.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`; both original BSD notices are retained. `crates/ferroan-protocol/src/reliability.rs` extracts the Aurora-derived bot state with its existing GPL notices and revision, while preserving separate caller policies. Capture extraction and injected-error tests are original Ferroan code.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

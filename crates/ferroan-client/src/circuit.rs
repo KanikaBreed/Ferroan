@@ -1,47 +1,68 @@
-// Copyright (c) 2026 Ferroan contributors
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Ported to Rust for Ferroan from
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+//     (PacketReceived, HandleUseCircuitCode, SendAckImmediate, SendAcks,
+//      CompletePing, SendPacketFinal, LogoutHandler)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
+//     (SendLogoutPacket, CloseWithoutChecks)
+//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+// Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One viewer circuit on a tokio UDP socket.
-//!
-//! The order follows Tranquillity's receive path. `UseCircuitCode` is acked
-//! before the agent is checked, and `RegionHandshake` is sent once when the
-//! agent matches. A resend is acked again and does not send a second
-//! handshake. Viewer pings get `CompletePingCheck`. `LogoutRequest` gets
-//! `LogoutReply`.
-//!
-//! Read from
-//!   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
-//!   HandleUseCircuitCode, SendAckImmediate, CompletePing
-//!   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//!   SendRegionHandshake, SendLogoutPacket
-//!   OpenSim-NGC/OpenSim-Tranquillity @ 713857f10b8e91a639a967d4354a4682b080793c
-//! The cited methods are unchanged at the pinned revision 8583218;
-//! LLClientView.cs has changes elsewhere.
+//! Initial UseCircuitCode ACKs bypass the ordinary sequence counter.
+//! Established ACKs are queued. Shared reliability state removes exhausted
+//! packets; C# itself retries until its inactivity timeout.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant};
-
+use crate::HandshakeConfig;
 use ferroan_protocol::msgs::{
     AgentHeightWidth, AgentThrottle, CompleteAgentMovement, CompletePingCheck, LogoutReply,
-    LogoutRequest, PacketAck, RegionHandshake, RegionHandshakeReply, StartPingCheck,
-    UseCircuitCode, logout_reply, packet_ack,
+    LogoutRequest, PacketAck, RegionHandshakeReply, StartPingCheck, UseCircuitCode, logout_reply,
+    packet_ack,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
-use ferroan_protocol::{IncomingPacket, Msg, MsgId, Writer};
+use ferroan_protocol::reliability::{
+    MAX_UNACKED, RecentSequences, ReliableWindow, Resend, SequenceCounter,
+};
+use ferroan_protocol::{IncomingPacket, Msg, Writer};
+use std::collections::VecDeque;
+use std::future::Future;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
-/// How often an unacked reliable packet is sent again.
 const RESEND_AFTER: Duration = Duration::from_millis(200);
-/// Resends of one reliable packet, then it is left until an ack or logout.
 const MAX_RESENDS: u8 = 4;
-/// Reliable sequences remembered so a resend is not handled twice.
-const DEDUPE_LIMIT: usize = 2048;
-/// Reliable packets waiting for an ack.
-const MAX_UNACKED: usize = 256;
+const ACK_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_PENDING_ACKS: usize = 4096;
+const ACKS_PER_PACKET: usize = 255;
 
-/// The agent this circuit will accept, and the region id to announce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CircuitExpect {
     pub agent_id: Uuid,
@@ -53,109 +74,96 @@ pub struct CircuitExpect {
 #[derive(Debug, thiserror::Error)]
 pub enum CircuitError {
     #[error("udp: {0}")]
-    Udp(#[from] std::io::Error),
+    Udp(#[from] io::Error),
     #[error("timed out waiting for logout")]
     Timeout,
     #[error("reliable window is full ({0} unacked)")]
     TooManyUnacked(usize),
+    #[error("packet exceeds the datagram limit")]
+    TooLarge,
 }
 
-struct Unacked {
-    payload: Vec<u8>,
+// This private boundary permits deterministic peer-error tests without
+// depending on OS-specific ICMP timing. It adds no alternative transport.
+trait DatagramIo: Sync {
+    fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> impl Future<Output = io::Result<(usize, SocketAddr)>> + Send;
+    fn send_to(&self, buf: &[u8], to: SocketAddr)
+    -> impl Future<Output = io::Result<usize>> + Send;
+}
+impl DatagramIo for UdpSocket {
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        UdpSocket::recv_from(self, buf).await
+    }
+    async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        UdpSocket::send_to(self, buf, to).await
+    }
+}
+#[derive(Clone)]
+struct Payload {
+    bytes: Vec<u8>,
     zerocoded: bool,
-    sent: Instant,
-    retries: u8,
 }
-
 struct State {
-    next_seq: u32,
+    sequence: SequenceCounter,
     peer: Option<SocketAddr>,
-    unacked: HashMap<u32, Unacked>,
-    recent: VecDeque<u32>,
-    recent_set: HashSet<u32>,
+    unacked: ReliableWindow<Payload>,
+    recent: RecentSequences,
+    pending_acks: VecDeque<u32>,
+    ack_at: Instant,
+    bytes_since_ack: usize,
+    handshake: HandshakeConfig,
 }
-
 impl State {
-    fn new() -> Self {
+    fn new(handshake: HandshakeConfig) -> Self {
         Self {
-            next_seq: 1,
+            sequence: SequenceCounter::default(),
             peer: None,
-            unacked: HashMap::new(),
-            recent: VecDeque::new(),
-            recent_set: HashSet::new(),
+            unacked: ReliableWindow::default(),
+            recent: RecentSequences::default(),
+            pending_acks: VecDeque::new(),
+            ack_at: Instant::now() + ACK_INTERVAL,
+            bytes_since_ack: 0,
+            handshake,
         }
     }
-
-    fn time_until_resend(&self) -> Duration {
+    fn time_until_work(&self) -> Duration {
         let now = Instant::now();
-        let mut soonest: Option<Duration> = None;
-        for item in self.unacked.values() {
-            if item.retries >= MAX_RESENDS {
-                continue;
-            }
-            let elapsed = now.saturating_duration_since(item.sent);
-            let remain = RESEND_AFTER.saturating_sub(elapsed);
-            soonest = Some(match soonest {
-                Some(so_far) => so_far.min(remain),
-                None => remain,
-            });
+        let resend = self.unacked.time_until_due(now, RESEND_AFTER);
+        if self.pending_acks.is_empty() {
+            resend
+        } else {
+            resend.min(self.ack_at.saturating_duration_since(now))
         }
-        soonest.unwrap_or(Duration::MAX)
     }
-
-    async fn resend_due(&mut self, sock: &UdpSocket) -> Result<(), CircuitError> {
+    async fn maintain(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
         let Some(peer) = self.peer else {
             return Ok(());
         };
-        let now = Instant::now();
-        let due: Vec<u32> = self
-            .unacked
-            .iter()
-            .filter_map(|(&seq, item)| {
-                (item.retries < MAX_RESENDS
-                    && now.saturating_duration_since(item.sent) >= RESEND_AFTER)
-                    .then_some(seq)
-            })
-            .collect();
-        for seq in due {
-            let Some(item) = self.unacked.get_mut(&seq) else {
-                continue;
-            };
-            item.retries += 1;
-            item.sent = now;
-            let payload = item.payload.clone();
-            let zerocoded = item.zerocoded;
-            let mut out = Vec::new();
-            packet::build_raw(&payload, zerocoded, seq, true, true, &[], &mut out);
-            sock.send_to(&out, peer).await?;
+        let batch = self.unacked.poll(Instant::now(), RESEND_AFTER);
+        for (seq, payload) in batch.resend {
+            let mut bytes = Vec::new();
+            packet::build_raw(
+                &payload.bytes,
+                payload.zerocoded,
+                seq,
+                true,
+                true,
+                &[],
+                &mut bytes,
+            );
+            let _ = sock.send_to(&bytes, peer).await;
+        }
+        if Instant::now() >= self.ack_at {
+            self.flush_acks(sock, peer).await?;
         }
         Ok(())
     }
-
-    fn apply_ack_ids(&mut self, ids: impl IntoIterator<Item = u32>) {
-        for id in ids {
-            self.unacked.remove(&id);
-        }
-    }
-
-    /// `true` the first time `sequence` is seen.
-    fn note(&mut self, sequence: u32) -> bool {
-        if self.recent_set.contains(&sequence) {
-            return false;
-        }
-        if self.recent.len() >= DEDUPE_LIMIT
-            && let Some(old) = self.recent.pop_front()
-        {
-            self.recent_set.remove(&old);
-        }
-        self.recent.push_back(sequence);
-        self.recent_set.insert(sequence);
-        true
-    }
-
     async fn send_message<M: Msg>(
         &mut self,
-        sock: &UdpSocket,
+        sock: &impl DatagramIo,
         to: SocketAddr,
         message: &M,
         reliable: bool,
@@ -166,285 +174,259 @@ impl State {
         let mut writer = Writer::new();
         M::ID.encode(&mut writer.buf);
         message.encode_body(&mut writer);
-        let payload = writer.buf;
-        let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let mut out = Vec::new();
-        packet::build_raw(&payload, M::ZEROCODED, seq, reliable, false, &[], &mut out);
-        sock.send_to(&out, to).await?;
+        if writer.buf.len() + packet::HEADER_SIZE > MAX_DATAGRAM {
+            return Err(CircuitError::TooLarge);
+        }
+        let payload = Payload {
+            bytes: writer.buf,
+            zerocoded: M::ZEROCODED,
+        };
+        let seq = self.sequence.take();
+        let mut bytes = Vec::new();
+        packet::build_raw(
+            &payload.bytes,
+            payload.zerocoded,
+            seq,
+            reliable,
+            false,
+            &[],
+            &mut bytes,
+        );
+        // Like OpenSimUDPBase, retain the listener after a peer send error.
+        // Reliable packets still enter the retry window when sending fails.
+        let _ = sock.send_to(&bytes, to).await;
         if reliable {
-            self.unacked.insert(
-                seq,
-                Unacked {
+            self.unacked
+                .insert(
+                    seq,
                     payload,
-                    zerocoded: M::ZEROCODED,
-                    sent: Instant::now(),
-                    retries: 0,
-                },
-            );
+                    Instant::now(),
+                    Resend {
+                        timeout: Some(RESEND_AFTER),
+                        max_retries: MAX_RESENDS,
+                    },
+                )
+                .map_err(|error| CircuitError::TooManyUnacked(error.count))?;
         }
         Ok(())
     }
-
-    async fn send_ack(
-        &mut self,
-        sock: &UdpSocket,
-        to: SocketAddr,
-        sequence: u32,
-    ) -> Result<(), CircuitError> {
-        let mut ack = PacketAck::default();
-        ack.packets.push(packet_ack::Packets { id: sequence });
-        // Unreliable, matching SendAckImmediate. A lost ack is the viewer's resend.
-        self.send_message(sock, to, &ack, false).await
+    async fn immediate_ack(sock: &impl DatagramIo, to: SocketAddr, sequence: u32) {
+        let ack = PacketAck {
+            packets: vec![packet_ack::Packets { id: sequence }],
+        };
+        let mut bytes = Vec::new();
+        // SendAckImmediate bypasses CurrentSequence: the default header is zero.
+        packet::build_packet(&ack, 0, false, false, &[], &mut bytes);
+        let _ = sock.send_to(&bytes, to).await;
     }
-
+    async fn flush_acks(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+    ) -> Result<(), CircuitError> {
+        while !self.pending_acks.is_empty() {
+            let n = self.pending_acks.len().min(ACKS_PER_PACKET);
+            let ack = PacketAck {
+                packets: self
+                    .pending_acks
+                    .drain(..n)
+                    .map(|id| packet_ack::Packets { id })
+                    .collect(),
+            };
+            self.send_message(sock, to, &ack, false).await?;
+        }
+        self.ack_at = Instant::now() + ACK_INTERVAL;
+        Ok(())
+    }
     async fn handle(
         &mut self,
-        sock: &UdpSocket,
+        sock: &impl DatagramIo,
         from: SocketAddr,
         expect: &CircuitExpect,
         packet: &IncomingPacket,
+        wire_len: usize,
     ) -> Result<bool, CircuitError> {
         if self.peer.is_some_and(|peer| peer != from) {
             return Ok(false);
         }
         if self.peer.is_none() {
-            return self.try_open(sock, from, expect, packet).await;
-        }
-        self.apply_ack_ids(packet.acks.iter().copied());
-        if packet.id == PacketAck::ID
-            && let Ok(ack) = packet.decode::<PacketAck>()
-        {
-            self.apply_ack_ids(ack.packets.iter().map(|block| block.id));
-        }
-        if packet.reliable() {
-            let fresh = self.note(packet.sequence);
-            self.send_ack(sock, from, packet.sequence).await?;
-            if !fresh {
+            if packet.id != UseCircuitCode::ID {
                 return Ok(false);
             }
-        }
-        if packet.id == PacketAck::ID || packet.id == UseCircuitCode::ID {
-            return Ok(false);
-        }
-        self.on_established(sock, from, expect, packet).await
-    }
-
-    async fn try_open(
-        &mut self,
-        sock: &UdpSocket,
-        from: SocketAddr,
-        expect: &CircuitExpect,
-        packet: &IncomingPacket,
-    ) -> Result<bool, CircuitError> {
-        if packet.id != UseCircuitCode::ID {
-            return Ok(false);
-        }
-        // Ack even when the agent is refused, so the viewer stops resending.
-        if packet.reliable() {
-            self.send_ack(sock, from, packet.sequence).await?;
-        }
-        let Ok(code) = packet.decode::<UseCircuitCode>() else {
-            return Ok(false);
-        };
-        if code.circuit_code.code != expect.circuit_code
-            || code.circuit_code.id != expect.agent_id
-            || code.circuit_code.session_id != expect.session_id
-        {
-            return Ok(false);
-        }
-        // The refused packet was not recorded. This viewer also starts at sequence 1.
-        self.peer = Some(from);
-        if packet.reliable() {
-            self.note(packet.sequence);
-        }
-        self.send_handshake(sock, from, expect).await?;
-        Ok(false)
-    }
-
-    async fn send_handshake(
-        &mut self,
-        sock: &UdpSocket,
-        to: SocketAddr,
-        expect: &CircuitExpect,
-    ) -> Result<(), CircuitError> {
-        let mut handshake = RegionHandshake::default();
-        handshake.region_info2.region_id = expect.region_id;
-        // LLClientView.SendRegionHandshake always writes these two.
-        handshake.region_info3.cpu_class_id = 9;
-        handshake.region_info3.cpu_ratio = 1;
-        self.send_message(sock, to, &handshake, true).await
-    }
-
-    async fn on_established(
-        &mut self,
-        sock: &UdpSocket,
-        from: SocketAddr,
-        expect: &CircuitExpect,
-        packet: &IncomingPacket,
-    ) -> Result<bool, CircuitError> {
-        if packet.id == StartPingCheck::ID {
-            let Ok(ping) = packet.decode::<StartPingCheck>() else {
+            Self::immediate_ack(sock, from, packet.sequence).await;
+            let Ok(code) = packet.decode::<UseCircuitCode>() else {
                 return Ok(false);
             };
-            let mut reply = CompletePingCheck::default();
-            reply.ping_id.ping_id = ping.ping_id.ping_id;
-            self.send_message(sock, from, &reply, false).await?;
-            return Ok(false);
-        }
-        if packet.id == LogoutRequest::ID {
-            let Ok(request) = packet.decode::<LogoutRequest>() else {
-                return Ok(false);
-            };
-            if request.agent_data.agent_id != expect.agent_id
-                || request.agent_data.session_id != expect.session_id
+            if code.circuit_code.code != expect.circuit_code
+                || !same_agent(code.circuit_code.id, code.circuit_code.session_id, expect)
             {
                 return Ok(false);
             }
+            self.peer = Some(from);
+            if packet.reliable() {
+                self.recent.note(packet.sequence);
+            }
+            let handshake = self
+                .handshake
+                .build(self.handshake.estate_owner == expect.agent_id, false);
+            self.send_message(sock, from, &handshake, true).await?;
+            return Ok(false);
+        }
+        // C# validates agent/session IDs before applying appended ACKs.
+        // Movement, throttle and height callbacks remain planned; their former
+        // discarded circuit-code checks are removed instead of claiming support.
+        if !valid_packet_ids(packet, expect) {
+            return Ok(false);
+        }
+        self.unacked.acknowledge(packet.acks.iter().copied());
+        if packet.id == PacketAck::ID {
+            if let Ok(ack) = packet.decode::<PacketAck>() {
+                self.unacked
+                    .acknowledge(ack.packets.iter().map(|block| block.id));
+            }
+            return Ok(false);
+        }
+        if packet.reliable() {
+            if self.pending_acks.len() == MAX_PENDING_ACKS {
+                self.pending_acks.pop_front();
+            }
+            self.pending_acks.push_back(packet.sequence);
+            self.bytes_since_ack = self.bytes_since_ack.saturating_add(wire_len);
+            if self.bytes_since_ack > packet::MTU * 2 {
+                self.bytes_since_ack -= packet::MTU * 2;
+                self.flush_acks(sock, from).await?;
+            }
+            if !self.recent.note(packet.sequence) {
+                return Ok(false);
+            }
+        }
+        if packet.id == StartPingCheck::ID {
+            if let Ok(ping) = packet.decode::<StartPingCheck>() {
+                let mut reply = CompletePingCheck::default();
+                reply.ping_id.ping_id = ping.ping_id.ping_id;
+                self.send_message(sock, from, &reply, false).await?;
+            }
+        } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
             reply.agent_data.session_id = expect.session_id;
-            // The template says the block is present even when the list is empty.
             reply.inventory_data.push(logout_reply::InventoryData {
                 item_id: Uuid::nil(),
             });
             self.send_message(sock, from, &reply, true).await?;
+            // LogoutHandler sends a reliable reply then CloseWithoutChecks
+            // flushes and closes; it does not wait for an acknowledgement.
             return Ok(true);
-        }
-        if is_session_packet(packet.id) {
-            let _accepted = session_packet(packet, expect);
         }
         Ok(false)
     }
 }
-
-fn is_session_packet(id: MsgId) -> bool {
-    id == RegionHandshakeReply::ID
-        || id == CompleteAgentMovement::ID
-        || id == AgentThrottle::ID
-        || id == AgentHeightWidth::ID
-}
-
 fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool {
     agent_id == expect.agent_id && session_id == expect.session_id
 }
-
-fn same_circuit(
-    agent_id: Uuid,
-    session_id: Uuid,
-    circuit_code: u32,
-    expect: &CircuitExpect,
-) -> bool {
-    same_agent(agent_id, session_id, expect) && circuit_code == expect.circuit_code
-}
-
-/// Decode a viewer packet this circuit accepts. A mismatch is ignored.
-fn session_packet(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
-    if packet.id == RegionHandshakeReply::ID {
-        return packet
-            .decode::<RegionHandshakeReply>()
-            .is_ok_and(|message| {
+fn valid_packet_ids(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
+    macro_rules! check {
+        ($message:ty) => {
+            packet.decode::<$message>().is_ok_and(|message| {
                 same_agent(
                     message.agent_data.agent_id,
                     message.agent_data.session_id,
                     expect,
                 )
-            });
+            })
+        };
     }
-    if packet.id == CompleteAgentMovement::ID {
-        return packet
-            .decode::<CompleteAgentMovement>()
-            .is_ok_and(|message| {
-                same_circuit(
-                    message.agent_data.agent_id,
-                    message.agent_data.session_id,
-                    message.agent_data.circuit_code,
-                    expect,
-                )
-            });
+    if packet.id == RegionHandshakeReply::ID {
+        check!(RegionHandshakeReply)
+    } else if packet.id == CompleteAgentMovement::ID {
+        check!(CompleteAgentMovement)
+    } else if packet.id == AgentThrottle::ID {
+        check!(AgentThrottle)
+    } else if packet.id == AgentHeightWidth::ID {
+        check!(AgentHeightWidth)
+    } else if packet.id == LogoutRequest::ID {
+        check!(LogoutRequest)
+    } else {
+        true
     }
-    if packet.id == AgentThrottle::ID {
-        return packet.decode::<AgentThrottle>().is_ok_and(|message| {
-            same_circuit(
-                message.agent_data.agent_id,
-                message.agent_data.session_id,
-                message.agent_data.circuit_code,
-                expect,
-            )
-        });
-    }
-    if packet.id == AgentHeightWidth::ID {
-        return packet.decode::<AgentHeightWidth>().is_ok_and(|message| {
-            same_circuit(
-                message.agent_data.agent_id,
-                message.agent_data.session_id,
-                message.agent_data.circuit_code,
-                expect,
-            )
-        });
-    }
-    false
 }
-
-/// A UDP socket bound to `127.0.0.1`. [`CircuitServer::serve_one`] runs one circuit.
+/// One UDP listener with the region settings to announce.
 pub struct CircuitServer {
     socket: UdpSocket,
+    handshake: HandshakeConfig,
 }
-
 impl CircuitServer {
-    /// Bind `127.0.0.1` on a free port.
     pub async fn bind() -> Result<Self, CircuitError> {
         Self::bind_at(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
     }
-
-    /// Bind the region's configured UDP address before accepting an agent.
     pub async fn bind_at(address: SocketAddr) -> Result<Self, CircuitError> {
-        let socket = UdpSocket::bind(address).await?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket: UdpSocket::bind(address).await?,
+            handshake: HandshakeConfig::for_region(Uuid::nil()),
+        })
     }
-
+    pub fn with_handshake(mut self, handshake: HandshakeConfig) -> Self {
+        self.handshake = handshake;
+        self
+    }
     pub fn local_addr(&self) -> Result<SocketAddr, CircuitError> {
         Ok(self.socket.local_addr()?)
     }
-
-    /// Serve the viewer that presents `expect`, until `LogoutReply` is sent.
-    ///
-    /// Datagrams from any other address are ignored once the circuit is open.
-    /// `timeout` covers the whole exchange, including logout.
+    /// Serve one authorized viewer until LogoutReply. Datagram errors are
+    /// tolerated within the circuit's bounded lifetime.
     pub async fn serve_one(
         &self,
         expect: CircuitExpect,
         timeout: Duration,
     ) -> Result<(), CircuitError> {
-        let sock = &self.socket;
-        let mut state = State::new();
-        let deadline = Instant::now() + timeout;
-        let mut buf = [0u8; MAX_DATAGRAM];
-        loop {
-            state.resend_due(sock).await?;
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(CircuitError::Timeout);
-            }
-            let wait = remaining.min(state.time_until_resend());
-            if wait.is_zero() {
+        let mut handshake = self.handshake.clone();
+        if handshake.region_id.is_nil() {
+            handshake.region_id = expect.region_id;
+        }
+        serve_socket(&self.socket, expect, handshake, timeout).await
+    }
+}
+async fn serve_socket(
+    sock: &impl DatagramIo,
+    expect: CircuitExpect,
+    handshake: HandshakeConfig,
+    timeout: Duration,
+) -> Result<(), CircuitError> {
+    let mut state = State::new(handshake);
+    let deadline = Instant::now() + timeout;
+    let mut buf = [0u8; MAX_DATAGRAM];
+    loop {
+        state.maintain(sock).await?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(CircuitError::Timeout);
+        }
+        let wait = remaining.min(state.time_until_work());
+        if wait.is_zero() {
+            continue;
+        }
+        let (len, from) = match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
+            Ok(Ok(received)) => received,
+            Ok(Err(_)) => {
+                // Includes Windows WSAECONNRESET; back off to avoid spinning
+                // on a persistently failing socket until the bounded deadline.
+                tokio::time::sleep(Duration::from_millis(1)).await;
                 continue;
             }
-            let received = match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
-                Ok(Ok(value)) => value,
-                Ok(Err(error)) => return Err(error.into()),
-                Err(_) => continue,
-            };
-            let (len, from) = received;
-            let Ok(packet) = packet::parse_packet(&buf[..len]) else {
-                continue;
-            };
-            if state.handle(sock, from, &expect, &packet).await? {
-                return Ok(());
-            }
+            Err(_) => continue,
+        };
+        let Ok(packet) = packet::parse_packet(&buf[..len]) else {
+            continue;
+        };
+        if state.handle(sock, from, &expect, &packet, len).await? {
+            return Ok(());
         }
     }
 }
+
+#[cfg(test)]
+#[path = "circuit_tests.rs"]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

@@ -53,6 +53,8 @@ The dedicated login baseline disables map generation for both C# and Rust using 
 
 `cargo xtask live login-fixtures <capture-dir>` regenerates the scrubbed control-plane fixtures from a local C# login capture directory. Use only test accounts on the harness grid. The generator validates required exchange shapes, bounds decompression, and substitutes generated identities and test endpoints; raw captures stay in `.scratch/`. The fixture README records the source revision and substitutions.
 
+`cargo xtask live circuit-fixtures <udp-capture>` extracts C# circuit evidence into `fixtures/circuit`: the immediate and established ACKs, handshake and logout reply, plus their sequence context. Run a C# login in grid mode first and use its UDP capture. The generator checks each datagram's re-encoding and applies the existing P0.10d identity scrubber; it refuses a capture missing required evidence. Tests compare actual region-side sends with these bytes, retaining reliability, zero coding and sequence allocation rules.
+
 ## Adding a scenario
 
 Add the name to `NAMES` and the `selection` match in [tools/bot/src/scenario.rs](../tools/bot/src/scenario.rs), and implement the check there. The function returns the report line, or an error whose text is the failure. `cargo xtask live run <name>` runs that one scenario. `all` runs every name in `NAMES`. The new scenario's captured chat must be synthetic. Do not put a password, a session id or a circuit code into the message text. The redacted session committed under `fixtures/captures/` is produced by `live run all`.
