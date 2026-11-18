@@ -13,7 +13,7 @@ The coder works unattended, through the queue, as far as it can get. The maintai
 5. Merge with `gh pr merge --auto --squash`. `main` requires the Linux, Windows, macOS and live checks, so the PR lands only when they pass. Never use `--admin` and never bypass the protection. If a check fails, fix the cause. After three attempts at the same failure, set the item to `BLOCKED`.
 6. If an item is wrong, too big or blocked, set it to `BLOCKED`, add the reason and a proposed fix or split under it, and open that change as its own PR. Do not change an item's scope yourself. Then go on to the next item that can be taken, skipping items that depend on the blocked one.
 7. Gates (`G0`, `G1`, `G2` …) are the maintainer's Firestorm checks. Never mark one. Items that depend on a gate wait, and the rest go on.
-8. Write anything you find that is not your item (a flaky test, a C# bug, a gap in a row) under "Found while working" below, with the date. The manager turns it into items. A flaky check is never retried silently: record it there.
+8. Write anything you find that is not your item (a flaky test, a C# bug, a gap in a row) under "Found while working" below, with the date. A C# bug also gets a row in [docs/TRANQUILLITY_BUGS.md](docs/TRANQUILLITY_BUGS.md). The manager turns it into items. A flaky check is never retried silently: record it there.
 9. Stop only when no item can be taken, and say why.
 
 Only the manager adds, removes, reorders or rewrites items. The coder changes only the Status column, the notes under an item, and "Found while working".

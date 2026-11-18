@@ -66,5 +66,6 @@ Textures, sounds, fonts, avatar definitions and default content have their own l
 - Record any new source origin in [NOTICE.md](../NOTICE.md).
 - Note the source revisions in the PR.
 - Because of the freeze ([D7](DECISIONS.md)), check the C# history since the pinned revision for bug fixes, and carry them over.
+- Record a bug found in the C# in [TRANQUILLITY_BUGS.md](TRANQUILLITY_BUGS.md). A pin move that brings in its fix regenerates the affected fixtures against the fixed behavior, changes Ferroan to match, and moves the row to Fixed.
 
 Ferroan code is GPL, so it cannot be copied back into Tranquillity's BSD/MPL tree. Fixes found while porting go to Tranquillity as separate C# changes.
