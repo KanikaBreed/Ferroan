@@ -10,6 +10,8 @@ The code is adapted from Aurora Viewer `crates/aurora-net` at `48cb76e830a13965a
 
 The circuit binds `127.0.0.1`. Reliable packets are resent until they are acked. `UseCircuitCode` uses the viewer's login policy (3 resends, 5 seconds). After that ack the bot sends `CompleteAgentMovement`, one `AgentThrottle` (the 6_000 kb/s group, which is 1.5 times Aurora's 4_000 kb/s setting) and `AgentHeightWidth` (1080 by 1920). `RegionHandshake` is answered with flags `0x7`: self appearance, send all cacheable objects, and an empty object cache. `StartPingCheck` is answered. `LogoutRequest` waits for `LogoutReply`.
 
+Exhausted sends are reported through `Circuit::take_dropped`, which drains a FIFO of at most 4096 sequence IDs. If it is not drained, a new notification evicts the oldest one. Retry-window entries are still released and new sends continue. The loss regression test expires 32,768 packets over 128 windows using an injected clock and checks both bounds and continued sending.
+
 The seed POST asks for `EventQueueGet`, `GetTexture`, `FetchInventoryDescendents2`, `FetchInventory2` and `NewFileAgentInventory`.
 
 Readiness requires that seed request to finish, the handshake reply, and a fresh reliable `AgentMovementComplete` matching the current circuit's peer, agent and session. On return to a retained circuit, prior arrival evidence is cleared and buffered old packets are drained within a fixed bound. A new handshake and a later arrival sequence must be received; a reordered arrival is accepted on its reliable resend. The timestamp is not used as a freshness token.
@@ -24,7 +26,7 @@ ferroan-bot login --uri http://127.0.0.1:9100/ --user "Test User" --start last -
 
 The password is `--password` or `FERROAN_BOT_PASSWORD`. The command prints `login: true`, the agent id and the simulator address. It does not print the password, the session id, the circuit code or the seed URL. `--circuit` is the handshake and a logout.
 
-`cargo xtask live run <scenario>|all` starts the local region, runs one or all of `login`, `walk`, `chat`, `build`, `teleport`, `texture` and `inventory`, and stops the region. The report is one line per scenario. A passing `all` run has logged into the harness region. This command does not start a region by itself. CI does not run the harness yet.
+`cargo xtask live run <scenario>|all` starts the local region, runs one or all of `login`, `walk`, `chat`, `build`, `teleport`, `texture` and `inventory`, and stops the region. The report is one line per scenario. A passing `all` run has logged into the harness region. The standalone `ferroan-bot` executable needs an existing region; the xtask owns server startup and cleanup. The [Linux live workflow](../../.github/workflows/live.yml) runs `all` against standalone and grid C# servers, plus strict Rust-region login, CAPS probes and asset checks.
 
 ## Tests
 

@@ -18,7 +18,7 @@ Ferroan must work on grids where the rest is still Tranquillity ([D2](DECISIONS.
 
 ## How it is checked
 
-- **Captured traffic.** Record C# sessions on a test grid, redact them, and replay them against the Rust piece. The recorder and the file format are in [CAPTURES.md](CAPTURES.md). Responses must match apart from fields known to vary, such as timestamps and session IDs. No session file is committed yet.
+- **Captured traffic.** Record C# sessions on a test grid, redact them, and replay them against the Rust piece. The recorder and the file format are in [CAPTURES.md](CAPTURES.md). Responses must match apart from fields known to vary, such as timestamps and session IDs. The redacted [session.cap](../fixtures/captures/session.cap) is committed, with focused circuit, arrival, CAPS and login fixtures under `fixtures/`.
 - **Side by side.** Run each Rust service behind a live test grid with C# regions, with a switch back to C#.
 - **Viewers.** Scripted Aurora logins and actions, and checks by hand in Firestorm.
 - **Archives.** Load OAR and IAR files into both servers, save them again, and compare.

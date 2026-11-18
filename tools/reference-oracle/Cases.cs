@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.Reflection;
+using System.Text;
 using System.Text.Json.Nodes;
 using OpenMetaverse;
 using OpenMetaverse.StructuredData;
@@ -117,6 +118,53 @@ internal static class Cases
         list.Add(Llsd("xml-formal", "map-nested", NestedMap()));
         list.Add(Llsd("binary-raw", "map-nested", NestedMap()));
         list.Add(Llsd("notation-header", "map-nested", NestedMap()));
+        AddXmlBinaryInputs(list);
+    }
+
+    // Literal XML is necessary here: serializing an OSD binary would repair
+    // the malformed input before the reference decoder ever saw it.
+    static void AddXmlBinaryInputs(List<Fixture> list)
+    {
+        var inputs = new (string Name, string Binary)[]
+        {
+            ("valid-default", "<binary>AQID</binary>"),
+            ("valid-padded", "<binary encoding=\"base64\">AQ==</binary>"),
+            ("valid-empty", "<binary></binary>"),
+            ("valid-self-closing", "<binary/>"),
+            ("valid-ascii-whitespace", "<binary> A Q = = \t\r\n</binary>"),
+            ("valid-outer-unicode-space", "<binary>\u00a0AQ==\u00a0</binary>"),
+            ("valid-whitespace-only", "<binary> \t\r\n</binary>"),
+            ("valid-nonzero-pad-bits-one", "<binary>AR==</binary>"),
+            ("valid-nonzero-pad-bits-two", "<binary>AQJ=</binary>"),
+            ("base16", "<binary encoding=\"base16\">4142</binary>"),
+            ("unpadded-one", "<binary>AQ</binary>"),
+            ("unpadded-two", "<binary>AQI</binary>"),
+            ("malformed", "<binary>!</binary>"),
+            ("bad-padding", "<binary>A===</binary>"),
+            ("excess-padding", "<binary>AQ===</binary>"),
+            ("interior-padding", "<binary>A=Q=</binary>"),
+            ("urlsafe", "<binary>_-8=</binary>"),
+            ("unknown-encoding", "<binary encoding=\"base32\">AQ==</binary>"),
+            ("uppercase-encoding", "<binary encoding=\"BASE64\">AQ==</binary>"),
+            ("empty-encoding", "<binary encoding=\"\">AQ==</binary>"),
+            ("unsupported-empty", "<binary encoding=\"base16\"></binary>"),
+            ("unsupported-self-closing", "<binary encoding=\"base16\"/>"),
+            ("interior-unicode-space", "<binary>A\u00a0Q==</binary>"),
+        };
+        foreach (var (name, binary) in inputs)
+        {
+            byte[] payload = Encoding.UTF8.GetBytes("<llsd><array>" + binary + "</array></llsd>");
+            list.Add(new Fixture
+            {
+                Id = "llsd/xml/binary-input-" + name,
+                Family = "llsd",
+                Format = "xml",
+                File = "llsd/xml/binary-input-" + name + ".bin",
+                Payload = payload,
+                Decoded = Codec.Decode("llsd", "xml", payload, null),
+                RoundTrip = Codec.RoundTrips("llsd", "xml", payload, null),
+            });
+        }
     }
 
     static void Add(List<Fixture> list, string name, Func<OSD> make)

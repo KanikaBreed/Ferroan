@@ -80,4 +80,4 @@ The profile byte keeps the hole in the high nibble and the curve in the low nibb
 
 Tranquillity's `PermissionMask` includes OpenMetaverse's bits at the same values. The oracle refuses to generate if `None`, `Transfer`, `Modify`, `Copy`, `Export`, `Move`, `Damage` or `All` differ. `All` does not include `Export`. The folded low bits, `Slam` and the named combinations are Tranquillity's. `ApplyFoldedPermissions` leaves the target alone when the folded source is `0` or every folded bit.
 
-A viewer has not been shown these bytes. The comparison is the committed oracle fixtures. CI does not run the C# oracle.
+The direct byte comparison uses the committed oracle fixtures in Rust tests on all three CI platforms. The [Linux live workflow](../../.github/workflows/live.yml) additionally runs `cargo xtask oracle verify` against the pinned C# implementation. Fixture success alone is not a viewer check.

@@ -21,7 +21,7 @@ Details, effort and the gate that ends each phase are in the [plan](docs/PLAN.md
 
 ## Development
 
-Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy. `cargo xtask check` needs nothing else. The C# oracle (`cargo xtask oracle`), the schema fixtures (`cargo xtask schema`), the INI fixtures (`cargo xtask config`), the HTTP fixtures (`cargo xtask http`) and the asset fixtures (`cargo xtask asset`) also need the .NET SDK 10 and the reference checkouts; CI does not run them.
+Install [Rust through rustup](https://rustup.rs). The checked-in toolchain file selects stable Rust with rustfmt and clippy. `cargo xtask check` uses the committed fixtures and needs no .NET SDK or reference checkouts; the bundled SQLite dependency needs a C compiler. The C# oracle (`cargo xtask oracle`), the schema fixtures (`cargo xtask schema`), the INI fixtures (`cargo xtask config`), the HTTP fixtures (`cargo xtask http`) and the asset fixtures (`cargo xtask asset`) also need the .NET SDK 10 and the reference checkouts. The [Linux live workflow](.github/workflows/live.yml) runs all five `verify` commands; the ordinary Linux, Windows and macOS jobs run `cargo xtask check`.
 
 ```sh
 git clone https://github.com/KanikaBreed/Ferroan.git

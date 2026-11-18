@@ -10,6 +10,7 @@
 
 //! One reliable UDP circuit to a region.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,8 @@ const ACK_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 pub use ferroan_protocol::reliability::{MAX_UNACKED, Resend};
 /// Ack ids waiting to be sent. The oldest is dropped past this.
 const MAX_PENDING_ACKS: usize = 4096;
+/// Exhaustion notifications retained even when a session never drains them.
+const MAX_DROPPED_NOTIFICATIONS: usize = 4096;
 /// One PacketAck message lists at most this many ids (the viewer's flush).
 const ACKS_PER_PACKET: usize = 250;
 
@@ -52,7 +55,7 @@ pub struct Circuit {
     ping_id: u8,
     ping_sent: Option<(u8, Instant)>,
     buf: Vec<u8>,
-    dropped: Vec<u32>,
+    dropped: VecDeque<u32>,
 }
 
 impl Circuit {
@@ -75,7 +78,7 @@ impl Circuit {
             ping_id: 0,
             ping_sent: None,
             buf: Vec::with_capacity(1500),
-            dropped: Vec::new(),
+            dropped: VecDeque::new(),
         }
     }
 
@@ -199,8 +202,10 @@ impl Circuit {
         self.pending_acks.push(seq);
     }
 
+    /// Drain retained exhaustion notifications, oldest first. At most 4096
+    /// are retained; a consumer that falls behind loses the oldest notices.
     pub fn take_dropped(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.dropped)
+        self.dropped.drain(..).collect()
     }
 
     pub fn ack_received(&mut self, ids: impl IntoIterator<Item = u32>) {
@@ -215,7 +220,12 @@ impl Circuit {
     async fn tick_at(&mut self, now: Instant) {
         let ping_timeout = (self.rtt * 3).clamp(Duration::from_millis(500), Duration::from_secs(3));
         let batch = self.unacked.poll(now, ping_timeout);
-        self.dropped.extend(batch.dropped);
+        for sequence in batch.dropped {
+            if self.dropped.len() == MAX_DROPPED_NOTIFICATIONS {
+                self.dropped.pop_front();
+            }
+            self.dropped.push_back(sequence);
+        }
         for (seq, ReliablePayload { payload, zerocoded }) in batch.resend {
             let mut buf = std::mem::take(&mut self.buf);
             packet::build_raw(&payload, zerocoded, seq, true, true, &[], &mut buf);
@@ -361,5 +371,61 @@ mod tests {
         let incoming = parse_packet(&buf[..n]).unwrap();
         assert!(c.on_receive(incoming.flags, incoming.sequence, &incoming.acks));
         assert!(!c.is_unacked(seq));
+    }
+
+    #[tokio::test]
+    async fn a_long_session_with_total_ack_loss_bounds_notifications_and_keeps_sending() {
+        // A real loopback peer accepts datagrams but never acknowledges them.
+        // Advance the existing retry clock instead of sleeping through more
+        // than an hour's deadlines. Like Session, do not drain notifications
+        // while the circuit repeatedly fills and exhausts its reliable window.
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = Circuit::bind(peer.local_addr().unwrap()).await.unwrap();
+        let message = UseCircuitCode::default();
+        let mut clock = Instant::now();
+        let mut last_sequence = 0;
+        let windows = 8 * MAX_DROPPED_NOTIFICATIONS / MAX_UNACKED;
+        for _ in 0..windows {
+            for _ in 0..MAX_UNACKED {
+                last_sequence = c.send(&message, true).await.unwrap();
+            }
+            assert_eq!(c.unacked_count(), MAX_UNACKED);
+            for _ in 0..=Resend::DEFAULT.max_retries {
+                clock += Duration::from_secs(10);
+                c.tick_at(clock).await;
+                assert!(c.dropped.len() <= MAX_DROPPED_NOTIFICATIONS);
+                assert!(c.dropped.capacity() <= MAX_DROPPED_NOTIFICATIONS);
+            }
+            assert_eq!(
+                c.unacked_count(),
+                0,
+                "exhaustion must free the reliable window"
+            );
+        }
+        assert_eq!(c.dropped.len(), MAX_DROPPED_NOTIFICATIONS);
+        let mut retained = c.take_dropped();
+        retained.sort_unstable(); // A retry batch follows the window's hash order.
+        let first_retained = last_sequence + 1 - MAX_DROPPED_NOTIFICATIONS as u32;
+        assert_eq!(
+            retained,
+            (first_retained..=last_sequence).collect::<Vec<_>>()
+        );
+        assert!(c.take_dropped().is_empty());
+
+        // Recovery after loss still accepts acknowledgments and does not add
+        // spurious exhaustion notifications for an acknowledged packet.
+        let recovered = c.send(&message, true).await.unwrap();
+        c.ack_received([recovered]);
+        clock += Duration::from_secs(60);
+        c.tick_at(clock).await;
+        assert_eq!(c.unacked_count(), 0);
+        assert!(c.take_dropped().is_empty());
+
+        let lost_again = c.send(&message, true).await.unwrap();
+        for _ in 0..=Resend::DEFAULT.max_retries {
+            clock += Duration::from_secs(10);
+            c.tick_at(clock).await;
+        }
+        assert_eq!(c.take_dropped(), vec![lost_again]);
     }
 }

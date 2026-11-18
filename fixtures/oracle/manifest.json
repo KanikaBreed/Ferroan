@@ -1788,6 +1788,296 @@
       }
     },
     {
+      "id": "llsd/xml/binary-input-valid-default",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-default.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQID"
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-padded",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-padded.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQ=="
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-empty.bin",
+      "round_trip": true,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-self-closing",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-self-closing.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-ascii-whitespace",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-ascii-whitespace.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQ=="
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-outer-unicode-space",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-outer-unicode-space.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQ=="
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-whitespace-only",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-whitespace-only.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-nonzero-pad-bits-one",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-nonzero-pad-bits-one.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQ=="
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-valid-nonzero-pad-bits-two",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-valid-nonzero-pad-bits-two.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": "AQI="
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-base16",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-base16.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-unpadded-one",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-unpadded-one.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-unpadded-two",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-unpadded-two.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-malformed",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-malformed.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-bad-padding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-bad-padding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-excess-padding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-excess-padding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-interior-padding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-interior-padding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-urlsafe",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-urlsafe.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-unknown-encoding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-unknown-encoding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-uppercase-encoding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-uppercase-encoding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-empty-encoding",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-empty-encoding.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-unsupported-empty",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-unsupported-empty.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-unsupported-self-closing",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-unsupported-self-closing.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "array",
+        "value": [
+          {
+            "type": "binary",
+            "base64": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "llsd/xml/binary-input-interior-unicode-space",
+      "family": "llsd",
+      "format": "xml",
+      "file": "llsd/xml/binary-input-interior-unicode-space.bin",
+      "round_trip": false,
+      "decoded": {
+        "type": "undef"
+      }
+    },
+    {
       "id": "bytes/uuid-zero",
       "family": "bytes",
       "format": "uuid",

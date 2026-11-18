@@ -11,6 +11,6 @@ cargo xtask config verify
 
 `generate` runs every case twice, refuses to continue if the two runs differ, and writes `fixtures/config/`. `verify` resolves again and compares those committed files byte for byte.
 
-The region and grid sequences follow `ConfigurationLoader.cs` and `GridServerConfigSource.cs` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`. The region directory filter here uses `ToLowerInvariant`. Tranquillity uses the current culture's `ToLower()`. The shipped names are ASCII, so the two agree.
+The region and grid sequences follow `ConfigurationLoader.cs` and `GridServerConfigSource.cs` at the Tranquillity revision in [docs/REFERENCES.md](../../docs/REFERENCES.md), also recorded in the generated manifest. The region directory filter here uses `ToLowerInvariant`. Tranquillity uses the current culture's `ToLower()`. The shipped names are ASCII, so the two agree.
 
-CI does not run this tool. The committed fixtures are what `ferroan-config`'s tests read. The two cases that open the shipped INI files run only when the reference checkout is present.
+The [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask config verify`, including the shipped INI cases. Ordinary CI runs `ferroan-config`'s tests against the committed fixtures; its two Rust cases that require the reference checkout are skipped there. Run the Rust tests locally with the pinned reference present to include those comparisons.

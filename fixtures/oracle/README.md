@@ -14,9 +14,11 @@ Bytes produced by `cargo xtask oracle generate` from the libopenmetaverse revisi
 | `cases[].round_trip` | False when decoding these bytes and encoding again does not restore them |
 | `cases[].decoded` | The value OpenMetaverse produced by reading the payload |
 
-`decoded.type` is `undef`, `boolean`, `integer`, `real` (`bits` is the IEEE hex), `string`, `uuid`, `date`, `uri`, `binary`, `array`, `map` (pairs in wire order), or `decode-error` when the C# parser rejects what its own encoder wrote. Byte fixtures use `f32`, `f64`, `quaternion`, `color4`, `u16`, `u16x4` or `vector3-clamped`. Packet fixtures use `packet`, with `name`, `length` and `flags`.
+`decoded.type` is `undef`, `boolean`, `integer`, `real` (`bits` is the IEEE hex), `string`, `uuid`, `date`, `uri`, `binary`, `array`, `map` (pairs in wire order), or `decode-error` when the C# parser throws. A C# entry point that catches errors may instead return `undef`. Byte fixtures use `f32`, `f64`, `quaternion`, `color4`, `u16`, `u16x4` or `vector3-clamped`. Packet fixtures use `packet`, with `name`, `length` and `flags`.
 
 LLSD cases cover undef, booleans, integers, reals (including negative zero, NaN and infinities), strings, UUIDs, dates, URIs, binary, empty and nested maps and arrays, in XML, binary and notation. `xml-formal`, `binary-raw` and `notation-header` are one nested map each, so the non-default switches are in the set. Byte cases cover UUID order, vectors, the 12-byte quaternion, quaternion shorts, colour bytes and `FloatToUInt16`.
+
+XML binary cases also supply deliberate parser inputs rather than encoder output: malformed or unpadded base64, unsupported and case-sensitive encoding names, whitespace and padding edges, and explicit-empty versus self-closing elements. Their expected values come from the pinned C# decoder. The [CAPS fixtures](../caps/README.md) separately check the seed's HTTP responses for representative cases.
 
 The integer `1234843`, the real `947835.234` and the UUID `97f4aeca-88a1-42a1-b385-b97b18abb255` are the vectors published in `OpenMetaverse.Tests/BinaryLLSDTests.cs`. The tool refuses to generate if the linked library does not reproduce them.
 

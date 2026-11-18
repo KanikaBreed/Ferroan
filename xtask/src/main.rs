@@ -8,23 +8,23 @@
 //! `--docs-only` it stops after the Markdown check.
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
-//! `verify`. CI does not run it.
+//! `verify`. The Linux live workflow runs `verify` against pinned references.
 //!
 //! `schema` builds the C# schema oracle and generates or verifies the SQLite
-//! fixtures. It needs the .NET SDK and the reference checkouts. CI does not
-//! run it.
+//! fixtures. The Linux live workflow runs `verify` with the .NET SDK and
+//! reference checkouts.
 //!
 //! `config` builds the C# config oracle and generates or verifies the resolved
-//! INI fixtures. It needs the .NET SDK and the reference checkouts. CI does not
-//! run it.
+//! INI fixtures. The Linux live workflow runs `verify` with the .NET SDK and
+//! reference checkouts.
 //!
 //! `http` builds the C# ServerUtils oracle and generates or verifies the
 //! query-string and Robust XML fixtures. It needs the .NET SDK and the
-//! reference checkouts. CI does not run it.
+//! reference checkouts. The Linux live workflow runs `verify`.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
-//! XML fixtures. It needs the .NET SDK and the reference checkouts. CI does
-//! not run it.
+//! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
+//! live workflow runs `verify`.
 //!
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.

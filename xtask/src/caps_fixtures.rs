@@ -72,6 +72,22 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
                 ("POST", b"<llsd><array><string>EventQueueGet</string></array></llsd>") => "seed",
                 ("POST", b"<llsd><array><uri>EventQueueGet</uri></array></llsd>") => "seed-uri",
                 ("POST", b"not LLSD XML") => "seed-malformed",
+                ("POST", b"<llsd><array><binary>!</binary></array></llsd>") => {
+                    "seed-binary-invalid"
+                }
+                ("POST", b"<llsd><array><binary>YQ</binary></array></llsd>") => {
+                    "seed-binary-unpadded"
+                }
+                (
+                    "POST",
+                    b"<llsd><array><binary encoding=\"base16\">61</binary></array></llsd>",
+                ) => "seed-binary-base16",
+                ("POST", b"<llsd><array><binary encoding=\"base16\"></binary></array></llsd>") => {
+                    "seed-binary-empty-base16"
+                }
+                ("POST", b"<llsd><array><binary encoding=\"base16\"/></array></llsd>") => {
+                    "seed-binary-selfclosing-base16"
+                }
                 ("GET", _) => "seed-get",
                 ("OPTIONS", _) => "seed-options",
                 _ => continue,
@@ -154,6 +170,11 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         let expected_status = match name {
             "seed-get" => 404,
             "seed-malformed" => 400,
+            name if name.starts_with("seed-binary-")
+                && name != "seed-binary-selfclosing-base16" =>
+            {
+                400
+            }
             "empty-poll" => 502,
             _ => 200,
         };
@@ -190,10 +211,12 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
             let text = std::str::from_utf8(&reply.body).map_err(|_| "seed body is not UTF-8")?;
             response = text.replace(url, EVENT_URL).into_bytes();
         }
-        if matches!(
-            name,
-            "empty-poll" | "seed-get" | "seed-malformed" | "seed-options"
-        ) && !response.is_empty()
+        if (expected_status == 400
+            || matches!(
+                name,
+                "empty-poll" | "seed-get" | "seed-malformed" | "seed-options"
+            ))
+            && !response.is_empty()
         {
             return Err(format!("captured {name} has a nonempty response"));
         }
@@ -243,6 +266,11 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         "seed-uri",
         "seed-get",
         "seed-malformed",
+        "seed-binary-invalid",
+        "seed-binary-unpadded",
+        "seed-binary-base16",
+        "seed-binary-empty-base16",
+        "seed-binary-selfclosing-base16",
         "seed-options",
         "events",
         "empty-poll",

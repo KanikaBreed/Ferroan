@@ -37,12 +37,12 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
 **Goal:** a small .NET tool that produces and checks fixtures with the exact C# code Tranquillity uses, so Rust is tested against the real encoder, not against itself.
 
 - **Sources:** `libopenmetaverse` (OpenMetaverse, OpenMetaverse.StructuredData, OpenMetaverse.Types), `OpenSim-Tranquillity` (for Robust's XML helpers in `Source/OpenSim.Server.Base/ServerUtils.cs` later). Pattern to follow: `~/Git/dcs-srs-rust/tools/reference-fixtures` (its Python driver becomes an `xtask` here, per [D13](DECISIONS.md)).
-- **Output:** `tools/reference-oracle/` (.NET 10 console project referencing the reference checkout's projects by path, never copying them), `cargo xtask oracle build|generate|verify` to build and run it, fixtures under `fixtures/oracle/`. The oracle is the one C# program in this repository, allowed by D13 because it must run Tranquillity's own C# code.
+- **Output:** `tools/reference-oracle/` (.NET 10 console project referencing the reference checkout's projects by path, never copying them), `cargo xtask oracle build|generate|verify` to build and run it, fixtures under `fixtures/oracle/`. This is one of the C# oracle exceptions allowed by D13 because they must run the reference code.
 - **Modes:** `generate` writes fixtures (a JSON manifest plus binary payloads); `verify` reads bytes Rust produced and decodes them with C#, reporting any field that differs.
 - **Acceptance:**
   - The tool builds against the pinned `libopenmetaverse` with a path set by an environment variable (`FERROAN_REF`, default `~/Git/reference`).
   - Fixtures are deterministic: two runs produce identical files.
-  - CI does not need .NET; the generated fixtures are committed, and `cargo xtask oracle verify` is a manual step until a Linux CI job is added (note it in TASKS.md).
+  - Ordinary CI tests the committed fixtures without .NET. The Linux live workflow installs .NET and the pinned references and runs `cargo xtask oracle verify`.
 
 ## P0.2 `ferroan-llsd`
 
@@ -161,9 +161,9 @@ P0.1, P0.6 and P0.7 can start at once. P0.5's recording half can start at once t
      - **teleport:** a teleport within the region lands at the target.
      - **texture:** a texture shipped with Tranquillity (`Source/OpenSim.Services.InventoryService/AppData/assets/TexturesAssetSet/`) is uploaded, then fetched back through the texture capability byte for byte. A library texture is fetched too. Both start with a valid JPEG 2000 codestream header.
      - **inventory:** the inventory skeleton and a folder fetch return the uploaded item.
-  5. Captures: every run records UDP and HTTP. `ferroan-capture check`, then `redact`, then `replay`. The bots' text is synthetic, so the redacted session can be committed under `fixtures/captures/` with no person reading it first.
+  5. Captures: standalone and C# grid scenario runs record UDP and HTTP. `ferroan-capture check`, then `redact`, then `replay`. Review the redacted evidence before committing it under `fixtures/`: synthetic chat is known, but fields outside the scrubber's rules still need checking. Raw captures stay under `.scratch/`.
   6. Asset A/B: `cargo xtask live assets` runs the texture and inventory scenarios against the C# GridServer and against `ferroan-robust`, each behind `ferroan-capture http-proxy`. It drops dates, folds generated IDs, compares binary bodies by length and hash, and requires the same requests and replies. The region stays standalone; a later include points `LocalGridAssetService` at the proxy. The command starts and stops the region.
-  7. CI: add a Linux job that installs .NET SDK 10 (pin the action by SHA). Tranquillity restores from nuget.org only (its GitHub Packages feed was removed in `a4ebd66006`), so the job needs no secrets; do not add any. The job builds Tranquillity at the pinned revision, and runs `cargo xtask live run all`. It also runs every `cargo xtask <oracle> verify`, which closes the "CI does not run the oracle" notes. It runs nightly, on `workflow_dispatch`, and on PRs that touch `tools/`, `xtask/`, `fixtures/` or a crate the scenarios use. Cache the Tranquillity build by revision.
+  7. CI: the [Linux live workflow](../.github/workflows/live.yml) installs .NET SDK 10 with the action pinned by SHA. Tranquillity restores from nuget.org only (its GitHub Packages feed was removed in `a4ebd66006`), so the job needs no grid credentials. It builds the pinned C# servers, verifies all five oracles, and runs standalone/grid scenarios, Rust-region login, CAPS probes and asset checks. It runs nightly, on `workflow_dispatch`, and on every PR, with no path filter. The C# build cache key includes the references, capture patch and live builder.
   8. Turn the manual recipe in `docs/LIVE.md` into the `live` commands, keep the file as the harness guide (how to run it, what each scenario checks, how to add one), and keep `docs/MANUAL_CHECKS.md` (the maintainer's Firestorm checklist) in step with what the harness covers.
   9. Audit fixes from 17 November 2026: give `ferroan-robust` a listen-address setting (default unchanged, matching Tranquillity) and bind every harness process to `127.0.0.1`. Add a DECISIONS.md entry allowing `ring`, which `rustls` uses for TLS in `reqwest` and `sqlx`, as the crypto provider; no other native crate comes with it.
 - **Acceptance:**
