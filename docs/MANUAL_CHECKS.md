@@ -1,6 +1,6 @@
 # Manual checks
 
-Everything a program can check is checked by the live harness ([D15](DECISIONS.md), [TESTING.md](TESTING.md)). This file is what a person checks by hand with Firestorm at each phase gate: what the bot cannot see, mostly what the viewer draws and how it feels to use.
+Everything a program can check is checked by the live harness ([D15](DECISIONS.md), [TESTING.md](TESTING.md)). `cargo xtask live run all` already checks login, walk, chat, build, teleport, a texture upload and fetch, and inventory. `cargo xtask live assets` compares that texture and inventory HTTP with `ferroan-robust`. This file is what a person checks by hand with Firestorm at each phase gate: what the bot cannot see, mostly what the viewer draws and how it feels to use.
 
 Record each run in the gate's row in [TASKS.md](../TASKS.md): date, Firestorm version and build (Help > About Firestorm), the Ferroan commit, the Tranquillity revision, and a pass, fail or note for every step. A failed step gets a bug report ([BUG_REPORTING.md](BUG_REPORTING.md)) with the viewer log.
 

@@ -1,0 +1,99 @@
+name: Live harness
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/live.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - docs/LIVE.md
+      - docs/MANUAL_CHECKS.md
+      - docs/REFERENCES.md
+      - docs/TESTING.md
+      - fixtures/**
+      - tools/**
+      - xtask/**
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: live (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        run: rustup show
+      - name: Set up .NET SDK 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.114
+      - name: Install sqlite3
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Check out the pinned references
+        run: |
+          set -euo pipefail
+          pin() {
+            awk -v name="$1" -F'|' '
+              index($0, "`" name "`") {
+                for (i = 1; i <= NF; i++) {
+                  if ($i ~ /[0-9a-f]{40}/) {
+                    gsub(/[^0-9a-f]/, "", $i)
+                    print $i
+                    exit
+                  }
+                }
+              }
+            ' docs/REFERENCES.md
+          }
+          clone_at() {
+            local url="$1" dest="$2" rev="$3"
+            rm -rf "$dest"
+            mkdir -p "$(dirname "$dest")"
+            git init -b main "$dest"
+            git -C "$dest" remote add origin "$url"
+            git -C "$dest" fetch --depth 1 origin "$rev"
+            git -C "$dest" checkout --detach "$rev"
+          }
+          tranq="$(pin OpenSim-Tranquillity)"
+          meta="$(pin libopenmetaverse)"
+          test -n "$tranq" && test -n "$meta"
+          root="${RUNNER_TEMP}/ferroan-ref"
+          clone_at https://github.com/OpenSim-NGC/OpenSim-Tranquillity.git \
+            "$root/OpenSim-Tranquillity" "$tranq"
+          clone_at https://github.com/OpenSim-NGC/libopenmetaverse.git \
+            "$root/libopenmetaverse" "$meta"
+          echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
+      - name: Restore the Tranquillity build
+        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            .scratch/live/stamp
+            .scratch/live/src
+          key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'tools/live/tranquillity-listen.patch', 'xtask/src/live.rs') }}
+      - name: Verify the oracles
+        run: |
+          set -euo pipefail
+          cargo xtask oracle verify
+          cargo xtask schema verify
+          cargo xtask config verify
+          cargo xtask http verify
+          cargo xtask asset verify
+      - name: Run the live harness
+        run: |
+          set -euo pipefail
+          cargo xtask live build
+          cargo xtask live run all
