@@ -1,6 +1,6 @@
 # Agent instructions
 
-These instructions apply to this repository. Read this file, [ARCHITECTURE.md](ARCHITECTURE.md), [docs/PLAN.md](docs/PLAN.md), [docs/DECISIONS.md](docs/DECISIONS.md) and the relevant entries in [TASKS.md](TASKS.md) before work. Follow the user's authorized scope and higher-priority tool instructions. [HUMANS.md](HUMANS.md) explains the contributor workflow.
+These instructions apply to this repository. Read this file, [ARCHITECTURE.md](ARCHITECTURE.md), [docs/PLAN.md](docs/PLAN.md), [docs/DECISIONS.md](docs/DECISIONS.md) the relevant entries in [TASKS.md](TASKS.md) and [WORK_QUEUE.md](WORK_QUEUE.md) before work. Follow the user's authorized scope and higher-priority tool instructions. [HUMANS.md](HUMANS.md) explains the contributor workflow.
 
 ## 1. Product and reference behavior
 
@@ -57,6 +57,8 @@ Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` sc
 ## 8. Tasks and documentation
 
 [TASKS.md](TASKS.md) is the task index. Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED` (with the next action). Update only the relevant rows, with evidence and an owner or branch.
+
+[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file.
 
 Keep commands runnable and paths real. Mark planned crates and features as planned. Update [ARCHITECTURE.md](ARCHITECTURE.md) and the relevant guides with each implementation change.
 
