@@ -58,7 +58,7 @@ Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` sc
 
 [TASKS.md](TASKS.md) is the task index. Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED` (with the next action). Update only the relevant rows, with evidence and an owner or branch.
 
-[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file.
+[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file. Those rules are the maintainer's standing authorization for the coder to open PRs for queue items and merge them with `gh pr merge --auto --squash` once the required checks pass.
 
 Keep commands runnable and paths real. Mark planned crates and features as planned. Update [ARCHITECTURE.md](ARCHITECTURE.md) and the relevant guides with each implementation change.
 
