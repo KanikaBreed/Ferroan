@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 const MAX_STATE: usize = 64 * 1024;
-const MAX_PROCESSES: usize = 3;
+// Robust, two regions, and the optional external Ferrobot test client.
+const MAX_PROCESSES: usize = 4;
 const SPAWN_MARKER: &str = "FERROAN_GRID_SPAWN_ID";
 const MAX_PROC_ENTRIES: usize = 32_768;
 const MAX_SCAN_BYTES: usize = 16 * 1024 * 1024;
