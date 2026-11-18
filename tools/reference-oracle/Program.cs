@@ -268,6 +268,10 @@ internal static class Program
                         + payload.Length + " bytes, oracle " + rebuilt.Payload.Length + " bytes, first mismatch at "
                         + FirstMismatch(payload, rebuilt.Payload) + ").");
                 }
+                else if (!JsonNode.DeepEquals(rebuilt.Params, parms))
+                {
+                    problems.Add(id + ": parameters differ from the oracle, including source/comparison metadata.");
+                }
             }
         }
 
@@ -291,7 +295,8 @@ internal static class Program
             return 1;
         }
 
-        Console.WriteLine("verify: " + cases.Count + " fixtures match OpenMetaverse" + (semantic ? " (fields only)" : "") + ".");
+        Console.WriteLine("verify: " + cases.Count + " fixtures match the reference oracle"
+            + (semantic ? " (fields only)" : " (viewer extensions use the recorded raw-prefix comparison)") + ".");
         return 0;
     }
 

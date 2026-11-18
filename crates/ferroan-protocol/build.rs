@@ -7,6 +7,11 @@
 // The template this reads is libopenmetaverse/data/message_template.msg
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // originally the Second Life message template (LGPL-2.1).
+// Eight trailing-block extensions follow Second Life viewer
+//   scripts/messages/message_template.msg @ ff75ab037607d8fe305f43f8b1f43126693ba2db
+//   Copyright (c) Linden Research, Inc., originally LGPL 2.1.
+// Default IM suffix presence follows LLClientView.SendInstantMessage in
+//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c.
 
 //! Generates typed message structs and codecs from `message_template.msg`.
 
@@ -49,6 +54,32 @@ struct Message {
     zerocoded: bool,
     deprecated: bool,
     blocks: Vec<Block>,
+}
+
+/// Only these suffixes supplement the pinned libopenmetaverse template.
+fn viewer_extensions(name: &str) -> usize {
+    match name {
+        "ImprovedInstantMessage" | "RegionInfo" => 2,
+        "AlertMessage"
+        | "AvatarAppearance"
+        | "ChildAgentUpdate"
+        | "InviteGroupResponse"
+        | "SimStatus"
+        | "TransferInventory" => 1,
+        _ => 0,
+    }
+}
+
+fn optional_suffix(m: &Message) -> usize {
+    let extensions = viewer_extensions(&m.name);
+    m.blocks
+        .iter()
+        .enumerate()
+        .rev()
+        .take_while(|(index, block)| {
+            *index >= m.blocks.len() - extensions || matches!(block.kind, BlockKind::Variable)
+        })
+        .count()
 }
 
 fn tokenize(src: &str) -> Vec<String> {
@@ -253,6 +284,8 @@ fn generate(msgs: &[Message]) -> String {
     s.push_str("// @generated from message_template.msg by build.rs. Do not edit.\n\n");
 
     for m in msgs {
+        let optional = optional_suffix(m);
+        let optional_start = m.blocks.len() - optional;
         let modname = snake(&m.name);
         let id = match m.freq.as_str() {
             "High" => format!("MsgId::High({})", m.number),
@@ -338,7 +371,7 @@ fn generate(msgs: &[Message]) -> String {
         let _ = writeln!(s, "}}");
 
         // message struct
-        let _ = writeln!(s, "#[derive(Debug, Clone, Default, PartialEq)]");
+        let _ = writeln!(s, "#[derive(Debug, Clone, PartialEq)]");
         let _ = writeln!(s, "pub struct {} {{", m.name);
         for b in &m.blocks {
             let f = snake(&b.name);
@@ -351,15 +384,53 @@ fn generate(msgs: &[Message]) -> String {
                 }
             }
         }
+        if optional != 0 {
+            let _ = writeln!(
+                s,
+                "    /// Number of wholly absent blocks at the end of the body. Values above {optional} are clamped; required blocks are always encoded."
+            );
+            let _ = writeln!(
+                s,
+                "    /// Set to zero to emit every block, including empty Variable count bytes. Decoding preserves this distinction."
+            );
+            let _ = writeln!(s, "    pub omitted_trailing_blocks: usize,");
+        }
         let _ = writeln!(s, "}}");
+        let _ = writeln!(
+            s,
+            "impl Default for {} {{ fn default() -> Self {{ Self {{",
+            m.name
+        );
+        for b in &m.blocks {
+            let _ = writeln!(s, "    {}: Default::default(),", snake(&b.name));
+        }
+        if optional != 0 {
+            // LLClientView.SendInstantMessage writes EstateBlock's zero U32,
+            // then ends the body without a MetaData count. Other senders omit
+            // their viewer-only extensions entirely at the pinned revision.
+            let omitted = if m.name == "ImprovedInstantMessage" {
+                1
+            } else {
+                viewer_extensions(&m.name)
+            };
+            let _ = writeln!(s, "    omitted_trailing_blocks: {omitted},");
+        }
+        let _ = writeln!(s, "}} }} }}");
         let _ = writeln!(s, "impl crate::Msg for {} {{", m.name);
         let _ = writeln!(s, "    const NAME: &'static str = \"{}\";", m.name);
         let _ = writeln!(s, "    const ID: MsgId = {id};");
         let _ = writeln!(s, "    const ZEROCODED: bool = {};", m.zerocoded);
         let _ = writeln!(s, "    const TRUSTED: bool = {};", m.trusted);
         let _ = writeln!(s, "    fn encode_body(&self, w: &mut Writer) {{");
-        for b in &m.blocks {
+        for (index, b) in m.blocks.iter().enumerate() {
             let f = snake(&b.name);
+            if index >= optional_start {
+                let remaining = m.blocks.len() - index;
+                let _ = writeln!(
+                    s,
+                    "        if self.omitted_trailing_blocks.min({optional}) >= {remaining} {{ return; }}"
+                );
+            }
             match b.kind {
                 BlockKind::Single => {
                     let _ = writeln!(s, "        self.{f}.encode(w);");
@@ -384,28 +455,70 @@ fn generate(msgs: &[Message]) -> String {
             s,
             "    fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {{"
         );
-        let _ = writeln!(s, "        Ok(Self {{");
-        for b in &m.blocks {
+        if optional != 0 {
+            let _ = writeln!(s, "        let mut omitted_trailing_blocks = 0;");
+        }
+        for (index, b) in m.blocks.iter().enumerate() {
             let f = snake(&b.name);
+            let _ = writeln!(s, "        let {f} = {{");
+            if index >= optional_start {
+                let _ = writeln!(
+                    s,
+                    "            if r.remaining() == 0 {{ omitted_trailing_blocks += 1; Default::default() }} else {{"
+                );
+            }
             match b.kind {
                 BlockKind::Single => {
-                    let _ = writeln!(s, "            {f}: {modname}::{}::decode(r)?,", b.name);
+                    if index >= optional_start {
+                        // All viewer-only Singles are fixed-width. Reject a
+                        // partial block instead of applying Reader's legacy
+                        // zero fill to a missing field inside that block.
+                        let minimum: usize = b
+                            .vars
+                            .iter()
+                            .map(|v| match v.ty {
+                                VarType::Simple(_, "bool" | "u8" | "i8") => 1,
+                                VarType::Simple(_, "u32" | "i32") => 4,
+                                VarType::Simple(_, "u64" | "i64") => 8,
+                                _ => panic!(
+                                    "unexpected optional Single layout {}.{}",
+                                    m.name, b.name
+                                ),
+                            })
+                            .sum();
+                        let _ = writeln!(
+                            s,
+                            "            if r.remaining() < {minimum} {{ return Err(DecodeError::Eof); }}"
+                        );
+                    }
+                    let _ = writeln!(s, "            {modname}::{}::decode(r)?", b.name);
                 }
                 BlockKind::Multiple(n) => {
                     let _ = writeln!(
                         s,
-                        "            {f}: {{ let mut v = Vec::with_capacity({n}); for _ in 0..{n} {{ v.push({modname}::{}::decode(r)?); }} v }},",
+                        "            {{ let mut v = Vec::with_capacity({n}); for _ in 0..{n} {{ v.push({modname}::{}::decode(r)?); }} v }}",
                         b.name
                     );
                 }
                 BlockKind::Variable => {
                     let _ = writeln!(
                         s,
-                        "            {f}: {{ let n = r.block_count()?; let mut v = Vec::with_capacity(n); for _ in 0..n {{ v.push({modname}::{}::decode(r)?); }} v }},",
+                        "            {{ let n = r.block_count()?; let mut v = Vec::with_capacity(n); for _ in 0..n {{ v.push({modname}::{}::decode(r)?); }} v }}",
                         b.name
                     );
                 }
             }
+            if index >= optional_start {
+                let _ = writeln!(s, "            }}");
+            }
+            let _ = writeln!(s, "        }};");
+        }
+        let _ = writeln!(s, "        Ok(Self {{");
+        for b in &m.blocks {
+            let _ = writeln!(s, "            {},", snake(&b.name));
+        }
+        if optional != 0 {
+            let _ = writeln!(s, "            omitted_trailing_blocks,");
         }
         let _ = writeln!(s, "        }})");
         let _ = writeln!(s, "    }}");

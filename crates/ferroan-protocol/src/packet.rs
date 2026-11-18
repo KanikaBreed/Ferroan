@@ -406,10 +406,12 @@ mod tests {
         RegionHandshake::ID.encode(&mut body.buf);
         m.encode_body(&mut body);
         assert_eq!(body.buf.pop(), Some(0));
+        m.omitted_trailing_blocks = 1;
         build_raw(&body.buf, true, 4, true, true, &[], &mut buf);
         let p = parse_packet(&buf).unwrap();
         assert!(p.resent());
         assert_eq!(p.decode::<RegionHandshake>().unwrap(), m);
+        assert_eq!(reencode_datagram(&buf).unwrap(), buf);
     }
 
     #[test]

@@ -89,7 +89,7 @@ internal static class Codec
                 return Canon(DecodeLlsd(format, payload));
             if (family == "bytes")
                 return DecodeBytes(format, payload, parms ?? new JsonObject());
-            if (family == "packet")
+            if (family is "packet" or "packet-extension")
                 return DecodePacket(payload, parms ?? new JsonObject());
             throw new InvalidOperationException("unknown family: " + family);
         }
@@ -429,7 +429,7 @@ internal static class Codec
                 return EncodeLlsd(format, value).AsSpan().SequenceEqual(payload);
             }
 
-            if (family == "packet")
+            if (family is "packet" or "packet-extension")
             {
                 JsonObject packetParms = parms ?? new JsonObject();
                 string name = packetParms["name"]?.GetValue<string>();
@@ -438,12 +438,13 @@ internal static class Codec
                     return false;
                 }
 
-                if (!PacketCases.EncodeNamed(name).AsSpan().SequenceEqual(payload))
+                bool extended = family == "packet-extension";
+                if (!PacketCases.EncodeNamed(name, extended).AsSpan().SequenceEqual(payload))
                 {
                     return false;
                 }
 
-                return PacketCases.MatchesClass(name, payload);
+                return PacketCases.MatchesClass(name, extended ? PacketCases.EncodeNamed(name) : payload);
             }
 
             return ReencodeBytes(format, payload, parms ?? new JsonObject()).AsSpan().SequenceEqual(payload);

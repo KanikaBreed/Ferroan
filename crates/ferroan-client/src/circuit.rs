@@ -219,6 +219,7 @@ impl State {
     }
     async fn immediate_ack(sock: &impl DatagramIo, to: SocketAddr, sequence: u32) {
         let ack = PacketAck {
+            omitted_trailing_blocks: 0,
             packets: vec![packet_ack::Packets { id: sequence }],
         };
         let mut bytes = Vec::new();
@@ -234,6 +235,7 @@ impl State {
         while !self.pending_acks.is_empty() {
             let n = self.pending_acks.len().min(ACKS_PER_PACKET);
             let ack = PacketAck {
+                omitted_trailing_blocks: 0,
                 packets: self
                     .pending_acks
                     .drain(..n)
