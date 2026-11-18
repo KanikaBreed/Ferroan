@@ -5,20 +5,33 @@
 //! through `ferroan-capture http-proxy`. Texture and inventory must pass on
 //! both, and the normalized asset HTTP must match.
 
+#[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "linux", test))]
 use ferroan_capture::{Kind, read_complete_prefix};
 
+#[cfg(target_os = "linux")]
 use crate::live;
+#[cfg(target_os = "linux")]
 use crate::repo_root;
 
+#[cfg(target_os = "linux")]
 const KELP: &str = "2a4880b6-b7a3-690a-2049-bfbe38eafb9f";
 
 pub fn compare() -> ExitCode {
@@ -41,7 +54,7 @@ fn compare_inner() -> Result<String, String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Err("cargo xtask live runs on Linux".to_string())
+        Err("cargo xtask live assets runs on Linux".to_string())
     }
 }
 
@@ -417,6 +430,7 @@ fn tail(path: &Path) -> String {
 }
 
 /// Method, path and body of each asset exchange, with generated ids folded.
+#[cfg(any(target_os = "linux", test))]
 pub fn canonical_http(bytes: &[u8]) -> Result<String, String> {
     let records = read_complete_prefix(bytes).map_err(|error| error.to_string())?;
     let mut ids = BTreeMap::new();
@@ -450,6 +464,7 @@ pub fn canonical_http(bytes: &[u8]) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn split_message(bytes: &[u8]) -> (String, Vec<u8>) {
     let Some(at) = find_crlf_crlf(bytes) else {
         return (
@@ -466,15 +481,18 @@ fn split_message(bytes: &[u8]) -> (String, Vec<u8>) {
     (start, bytes[at + 4..].to_vec())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn find_crlf_crlf(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn status_code(bytes: &[u8]) -> String {
     let (start, _) = split_message(bytes);
     start.split_whitespace().nth(1).unwrap_or("?").to_string()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn fold_body(body: &[u8], ids: &mut BTreeMap<String, String>, next: &mut u32) -> String {
     match String::from_utf8(body.to_vec()) {
         Ok(text) => fold_ids(&text, ids, next),
@@ -482,6 +500,7 @@ fn fold_body(body: &[u8], ids: &mut BTreeMap<String, String>, next: &mut u32) ->
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn fold_ids(text: &str, ids: &mut BTreeMap<String, String>, next: &mut u32) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -505,6 +524,7 @@ fn fold_ids(text: &str, ids: &mut BTreeMap<String, String>, next: &mut u32) -> S
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn uuid_at(bytes: &[u8], start: usize) -> bool {
     if start > 0 && bytes[start - 1].is_ascii_hexdigit() {
         return false;
@@ -535,6 +555,7 @@ fn uuid_at(bytes: &[u8], start: usize) -> bool {
         .is_some_and(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn digest(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -544,6 +565,7 @@ fn digest(bytes: &[u8]) -> u64 {
     hash
 }
 
+#[cfg(target_os = "linux")]
 fn first_difference(left: &str, right: &str) -> String {
     for (index, (one, other)) in left.lines().zip(right.lines()).enumerate() {
         if one != other {
