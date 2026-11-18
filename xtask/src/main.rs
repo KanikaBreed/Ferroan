@@ -36,8 +36,6 @@ mod assets;
 mod caps_fixtures;
 mod circuit_fixtures;
 mod config_oracle;
-mod ferrobot;
-mod ferrobot_build;
 mod grid;
 mod grid_state;
 mod http_oracle;
@@ -73,7 +71,6 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run <scenario>|all [grid]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]
-       cargo xtask live run ferrobot [grid [--region ferroan]]
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
        cargo xtask live circuit-fixtures <udp-capture>

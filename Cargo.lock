@@ -2617,9 +2617,7 @@ dependencies = [
  "ferroan-llsd",
  "ferroan-protocol",
  "flate2",
- "reqwest",
  "serde_json",
- "sha1",
  "tokio",
  "uuid",
 ]

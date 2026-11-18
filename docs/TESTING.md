@@ -52,8 +52,6 @@ P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, che
 | Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
 | Native code (planned physics and scripting crates) | `SAFETY` comments on every unsafe block, and fuzzing of the boundary |
 
-Q10's second-client checks run through `cargo xtask live run ferrobot`, repeated in `grid` and `grid --region ferroan` modes. Each checks the external client's signed API and captured traffic, including 120 seconds connected, pings, event polls and a real `LogoutReply` after SIGTERM. C# runs also require chat in both directions and an IM received by Ferrobot. The Rust region lists chat and IM as pending. Ferrobot's own dependency graph is built separately from the pinned scratch clone; it is not linked into Ferroan.
-
 ## Containers and monitoring
 
 [D18](DECISIONS.md). `cargo xtask docker smoke` (P0.11) builds the images, starts the example grid with `docker compose`, and runs `ferroan-bot` and Ferrobot against it. The live harness reads each server's status and metrics during the scenarios (P0.12). For example, a region reports one root agent after a login and none after the logout. A row that adds a subsystem adds its metrics. Logs reach stdout, `LOGDIR` files, OpenTelemetry and Tranquillity's remote console, and each run's logs are searched for secrets (P0.13).
