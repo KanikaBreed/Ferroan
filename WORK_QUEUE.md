@@ -37,7 +37,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (C# logout fix coming; see below) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
-| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY |
+| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | IN PROGRESS (fix/harness-evidence) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
