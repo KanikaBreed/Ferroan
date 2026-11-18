@@ -37,7 +37,10 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | READY |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10c |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
-| Q11 | P0.11: container images and the example compose grid | READY after Q10b |
+| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY after Q10 |
+| Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
+| Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
+| Q11 | P0.11: container images and the example compose grid | READY after Q10f |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q13 |
@@ -90,6 +93,8 @@ Q10a and Q10b were added on 18 November 2026 from the Q10 blocker and "Found whi
 Q10 BLOCKED again (18 November 2026, #36, `feat/ferrobot-harness-resume`): the resumed harness reaches the C# standalone IM check, then the mandatory capture check fails: `record 442 (udp out) does not re-encode: the encoded bytes differ`. Raw UDP record 427 is `ImprovedInstantMessage`, 191 bytes; re-encoding yields 187 identical prefix bytes and drops four trailing zero bytes. At the pin, `LLClientView.SendInstantMessage` appends that undocumented `EstateBlock` after `BinaryBucket`, while the pinned message template ends at `BinaryBucket` (TB4). This is a shared protocol/capture prerequisite, not a Ferrobot bug. No packet was filtered or canonicalized to hide the discrepancy; no retry is claimed. Proposed fix: the manager adds a prerequisite deciding and implementing bounded preservation of this observed suffix in lossless capture/replay (with a C# fixture), or takes an upstream fix through a pin move and regenerates affected fixtures. Then resume Q10's implementation preserved at `789fe59` / local branch `wip/ferrobot-harness-arrival-ready`, with `.scratch/q10-arrival-ready.patch` in the existing worktree. The initial Rust-region diagnostic passed arrival, 120 seconds and SIGTERM logout after Q10a; full Q10 acceptance remains pending. Q10b can proceed independently; Q11 waits on Q10.
 
 Q10c was added on 18 November 2026 from the second Q10 blocker (#36). The four bytes are `ImprovedInstantMessage`'s `EstateBlock`, which Linden's viewer template defines and libopenmetaverse's lacks, so TB4 is a gap in Ferroan's template, not a Tranquillity bug. Q10 then resumes from `789fe59`.
+
+Q10d to Q10f were added on 18 November 2026 from a review of #25 to #37 at `ebda8a9` (four reviewers: region, client stack, harness, test evidence). No high-severity defect was found, and every fixture checked came from C#. They come before Q11 because the harness fixes keep later CI honest, the resend and inactivity fixes matter for G2 on a real network, and P0.11's containers need the configurable control-plane trust in Q10f. Q10d waits for Q10 so it does not collide with the Ferrobot harness work. Confirm each finding first, as with Q7 to Q9.
 
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
