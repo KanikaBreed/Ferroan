@@ -1,0 +1,17 @@
+# ferroan-region
+
+This first region process logs a bot in through C# Robust. It reads Tranquillity's region configuration using `ferroan-config`, registers with the grid service, accepts `QUERYACCESS` and `POST /agent/...` simulation requests, and serves one LLUDP circuit and its seed capability. Robust remains the viewer's login server. SIGTERM or Ctrl-C deregisters the region before closing its HTTP listener.
+
+Run the local compatibility check with:
+
+```sh
+cargo xtask live run login grid --region ferroan
+```
+
+The harness starts C# Robust and a C# neighbour, using the Ferroan process for the home region. It checks login and requires a real `LogoutReply`. The register, access-query and agent-creation HTTP exchanges are compared with the C# baseline. See [the harness guide](../../docs/LIVE.md).
+
+The process accepts `--inimaster FILE`, `--inifile FILE`, `--inidirectory DIR` and `--background`. Paths and includes are resolved from its working directory as the region loader does. The harness supplies the normal `RegionServer.ini` and `Regions.ini` files and copies the reference defaults into the working directory.
+
+Current limits: one 256 metre region, one active login, and a five-minute circuit lifetime. Simulation bodies are limited to 1 MiB before and after gzip decompression. The local login boundary admits agent creation from loopback and rejects viewer shard headers; broader trusted-host policy, estate/presence authorization and region crossings remain planned. It does not serve `login_to_simulator`, terrain, appearance, physics, or object updates. The seed retains P2.0b's immediate empty event queue behavior until P2.0b2.
+
+For this login comparison, both C# and Rust disable map generation (`[Map] GenerateMaptiles = false`) and use a zero static map UUID, which is a supported C# configuration. Registration then advertises zero map image IDs without fabricating map assets. TLS listeners, variable-size regions and interactive configuration are refused. This is a local test region; viewer validation remains a separate maintainer gate.

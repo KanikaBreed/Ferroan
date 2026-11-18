@@ -8,5 +8,5 @@
 mod caps;
 mod circuit;
 
-pub use caps::{CapsError, CapsServer};
+pub use caps::{CapsError, CapsRegistry, CapsServer};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer};

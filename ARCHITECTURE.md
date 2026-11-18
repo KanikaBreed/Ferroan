@@ -17,6 +17,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-client` | One LLUDP circuit on tokio: `UseCircuitCode`, `RegionHandshake`, the viewer's reply, movement, throttle and window, pings, and `LogoutReply`. The seed answers a POST of capability names with `EventQueueGet`. The event queue answers an empty poll at once with a new id. Throttles are still planned |
 | `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
 | `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port`. `[Network] bind_ip_address` chooses the listen address; empty means `0.0.0.0`, the same default as Tranquillity with that key unset |
+| `ferroan-region` | One 256 metre region registered with C# Robust. Reads the region INI files through `ferroan-config`, registers/deregisters over the grid HTTP service, and accepts local `QueryAccess`/`CreateAgent` calls. Robust handles viewer login. One accepted agent uses `ferroan-client` on the configured UDP/HTTP listeners; logout releases the circuit and seed. Terrain, appearance and simulation remain planned. See [the crate guide](crates/ferroan-region/README.md) |
 | `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live`. `live run` starts one region. `live run … grid` starts GridServer and two neighbouring regions. `live assets` compares C# and Ferroan asset HTTP. `live up --assets ferroan` leaves a C# region and `ferroan-robust` running on a seeded asset store; `live run assets --running` checks that setup and `live down` stops both |
 
 ## Planned
@@ -26,7 +27,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | Program | Replaces | Phase |
 | --- | --- | --- |
 | `ferroan-robust` | The rest of Robust: inventory, accounts, presence, grid, login, hypergrid, money | 1 |
-| `ferroan-region` | OpenSim.exe, the region simulator | 2 |
+| `ferroan-region` | The rest of the region simulator beyond grid login and one circuit | 2 |
 | `ferroan-tools` | OAR and IAR tools, migration helpers, admin utilities | 5 to 7 |
 
 ### Server crates

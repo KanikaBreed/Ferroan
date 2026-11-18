@@ -8,7 +8,8 @@
 //! an LLSD map. Anything else is 404 or 400, as that method does. The reply
 //! here includes only `EventQueueGet`. The other names the bot asks for are
 //! later rows. The activation wait (503) and the client check (403) are not
-//! done: this listener is not tied to an agent yet.
+//! done. CapsRegistry ties route lifetime to an accepted agent; it does not
+//! yet perform those activation or client-address checks.
 //!
 //! `EventQueueGetModule.GetEvents` puts queued messages in an LLSD map of
 //! `events` and `id`, with content type `application/xml`. An empty queue is
@@ -27,8 +28,8 @@
 //! `EventQueueGetModule.cs` is unchanged from `713857f`. `SeedCapRequest` is
 //! unchanged; the file differs elsewhere.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -54,12 +55,123 @@ const MAX_SEED_NAME_LEN: usize = 128;
 pub enum CapsError {
     #[error("caps listen: {0}")]
     Bind(#[from] std::io::Error),
+    #[error("invalid capability base URL or seed path")]
+    InvalidAddress,
+    #[error("this region already has an active capability session")]
+    Occupied,
 }
 
 #[derive(Clone)]
 struct CapsState {
     event_queue_url: String,
     next_id: Arc<AtomicI32>,
+}
+
+#[derive(Clone)]
+struct RegisteredCaps {
+    seed_path: String,
+    events_path: String,
+    state: CapsState,
+}
+
+/// One agent's capabilities on the region HTTP listener.
+///
+/// Registration uses the seed path supplied by Robust during CreateAgent.
+/// The owning circuit removes the routes when the agent leaves. The existing
+/// seed and event-queue behavior is shared with [`CapsServer`].
+#[derive(Clone)]
+pub struct CapsRegistry {
+    base_url: String,
+    active: Arc<Mutex<Option<RegisteredCaps>>>,
+}
+
+impl CapsRegistry {
+    pub fn new(base_url: &str) -> Result<Self, CapsError> {
+        let uri: axum::http::Uri = base_url.parse().map_err(|_| CapsError::InvalidAddress)?;
+        if base_url.len() > 2048
+            || !matches!(uri.scheme_str(), Some("http" | "https"))
+            || uri.authority().is_none()
+            || uri.path() != "/"
+            || uri.query().is_some()
+        {
+            return Err(CapsError::InvalidAddress);
+        }
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            active: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    pub fn register(&self, seed_path: &str) -> Result<(), CapsError> {
+        if seed_path.len() > 512
+            || !seed_path.starts_with("/CAPS/")
+            || !seed_path.ends_with("0000/")
+            || !seed_path
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-'))
+        {
+            return Err(CapsError::InvalidAddress);
+        }
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if active.is_some() {
+            return Err(CapsError::Occupied);
+        }
+        let events_path = format!("/CE/{}", Uuid::new_v4());
+        *active = Some(RegisteredCaps {
+            seed_path: seed_path.to_owned(),
+            state: CapsState {
+                event_queue_url: format!("{}{events_path}", self.base_url),
+                next_id: Arc::new(AtomicI32::new(1)),
+            },
+            events_path,
+        });
+        Ok(())
+    }
+
+    pub fn clear(&self) {
+        *self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
+
+    /// Merge this fallback with the region's more specific simulation routes.
+    pub fn router(&self) -> Router {
+        Router::new()
+            .fallback(registered_caps)
+            .with_state(self.clone())
+    }
+}
+
+async fn registered_caps(State(registry): State<CapsRegistry>, request: Request) -> Response {
+    let active = registry
+        .active
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    let Some(active) = active else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let path = request.uri().path();
+    let is_seed = path == active.seed_path;
+    if !is_seed && path != active.events_path {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if request.method() != axum::http::Method::POST {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(axum::http::header::ALLOW, "POST")],
+        )
+            .into_response();
+    }
+    if is_seed {
+        seed(State(active.state), request).await
+    } else {
+        poll(State(active.state), request).await
+    }
 }
 
 /// HTTP seed and event queue on `127.0.0.1`.
@@ -256,6 +368,66 @@ mod tests {
         assert_eq!(value.get("events").len(), 0);
         assert!(value.has("id"));
         value.get("id").as_i32()
+    }
+
+    #[tokio::test]
+    async fn registered_seed_uses_the_region_listener_and_expires_with_the_agent() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let registry = CapsRegistry::new(&base).unwrap();
+        let app = registry.router();
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let path = format!("/CAPS/{}0000/", Uuid::from_u128(10));
+        let seed_url = format!("{}{}", base.trim_end_matches('/'), path);
+        assert_eq!(
+            post(
+                &seed_url,
+                "application/llsd+xml",
+                name_list(["EventQueueGet"])
+            )
+            .await
+            .0,
+            404
+        );
+        registry.register(&path).unwrap();
+        assert!(matches!(registry.register(&path), Err(CapsError::Occupied)));
+        let (status, bytes, _) = post(
+            &seed_url,
+            "application/llsd+xml",
+            name_list(["EventQueueGet"]),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let map = from_xml(&bytes).unwrap();
+        let events = map.get("EventQueueGet").as_str().to_owned();
+        assert!(events.starts_with(&format!("{base}CE/")));
+        assert_eq!(
+            post(&events, "application/llsd+xml", Vec::new()).await.0,
+            200
+        );
+        registry.clear();
+        assert_eq!(
+            post(&seed_url, "application/llsd+xml", Vec::new()).await.0,
+            404
+        );
+        assert_eq!(
+            post(&events, "application/llsd+xml", Vec::new()).await.0,
+            404
+        );
+        registry.register(&path).unwrap();
+        assert_eq!(
+            post(
+                &seed_url,
+                "application/llsd+xml",
+                name_list(["EventQueueGet"])
+            )
+            .await
+            .0,
+            200
+        );
+        serving.abort();
     }
 
     #[tokio::test]

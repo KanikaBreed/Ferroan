@@ -828,6 +828,7 @@ fn run_scenarios_with_accounts(
         library_texture: library,
         http_trace: std::sync::Arc::clone(&http_trace),
         region_log: log.to_owned(),
+        require_logout_reply: false,
         neighbour: None,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()

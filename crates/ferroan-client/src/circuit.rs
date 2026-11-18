@@ -394,7 +394,12 @@ pub struct CircuitServer {
 impl CircuitServer {
     /// Bind `127.0.0.1` on a free port.
     pub async fn bind() -> Result<Self, CircuitError> {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        Self::bind_at(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
+    }
+
+    /// Bind the region's configured UDP address before accepting an agent.
+    pub async fn bind_at(address: SocketAddr) -> Result<Self, CircuitError> {
+        let socket = UdpSocket::bind(address).await?;
         Ok(Self { socket })
     }
 
@@ -407,16 +412,16 @@ impl CircuitServer {
     /// Datagrams from any other address are ignored once the circuit is open.
     /// `timeout` covers the whole exchange, including logout.
     pub async fn serve_one(
-        self,
+        &self,
         expect: CircuitExpect,
         timeout: Duration,
     ) -> Result<(), CircuitError> {
-        let sock = self.socket;
+        let sock = &self.socket;
         let mut state = State::new();
         let deadline = Instant::now() + timeout;
         let mut buf = [0u8; MAX_DATAGRAM];
         loop {
-            state.resend_due(&sock).await?;
+            state.resend_due(sock).await?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(CircuitError::Timeout);
@@ -434,7 +439,7 @@ impl CircuitServer {
             let Ok(packet) = packet::parse_packet(&buf[..len]) else {
                 continue;
             };
-            if state.handle(&sock, from, &expect, &packet).await? {
+            if state.handle(sock, from, &expect, &packet).await? {
                 return Ok(());
             }
         }

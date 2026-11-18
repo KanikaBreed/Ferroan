@@ -1,5 +1,7 @@
 # Live harness
 
+`cargo xtask live run login grid --region ferroan` uses the Rust home-region process with C# Robust and a C# neighbour. It requires an actual `LogoutReply` and compares registration and agent-creation traffic with the C# fixtures. The dedicated login baseline disables map generation in both implementations; other scenarios still use C# regions. `cargo xtask live login-fixtures <capture-dir>` extracts scrubbed control-plane fixtures from a local C# login run. See [the region guide](../../crates/ferroan-region/README.md) for the current limits.
+
 `cargo xtask live` builds Tranquillity in `.scratch/live/` and starts it. The scratch tree is never a reference checkout.
 
 One patch is applied only there, at the revision in [docs/REFERENCES.md](../../docs/REFERENCES.md):

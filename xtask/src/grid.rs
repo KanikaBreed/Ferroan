@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 
 use crate::live;
 
+#[path = "grid_capture.rs"]
+mod login_capture;
+
 const HOME_NAME: &str = "Ferroan Test";
 const NEIGHBOUR_NAME: &str = "Ferroan Neighbour";
 const NEIGHBOUR_UUID: &str = "c3e1a9b4-6d27-4f80-91ab-5e8c0d2f7a33";
@@ -41,17 +44,25 @@ const ROBUST_BIND: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 4);
 const PROMPT: &str = "GridServer>";
 
 pub fn run(scenario: &str) -> std::process::ExitCode {
-    live::finish(run_inner(scenario))
+    live::finish(run_inner(scenario, false))
 }
 
-fn run_inner(scenario: &str) -> Result<String, String> {
+pub fn run_ferroan(scenario: &str) -> std::process::ExitCode {
+    live::finish(run_inner(scenario, true))
+}
+
+pub fn login_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(login_capture::generate(directory))
+}
+
+fn run_inner(scenario: &str, ferroan: bool) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(scenario)
+        run_linux(scenario, ferroan)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = scenario;
+        let _ = (scenario, ferroan);
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -375,7 +386,12 @@ impl Drop for Grid {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(scenario: &str) -> Result<String, String> {
+fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
+    if ferroan && scenario != "login" {
+        return Err(
+            "the Ferroan grid region currently supports the login scenario only".to_string(),
+        );
+    }
     if scenario != "neighbour" && ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!(
             "unknown scenario {scenario}; expected all, neighbour or {}",
@@ -488,6 +504,8 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         &source,
         &estate,
         RegionStart {
+            ferroan,
+            login_only: scenario == "login",
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
@@ -507,6 +525,8 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         &source,
         &estate,
         RegionStart {
+            ferroan: false,
+            login_only: scenario == "login",
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
             x: NEIGHBOUR_X,
@@ -531,16 +551,25 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         &estate,
         &chat,
         &home_log,
+        ferroan,
     );
     grid.stop();
     let report = report?;
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    let capture = live::finish_capture(
-        &root.join("capture-udp.cap"),
-        &report.http,
-        &[&estate, &chat],
-    )?;
-    Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
+    if ferroan {
+        let comparison = login_capture::compare(&root)?;
+        Ok(format!(
+            "{}\nlogout: LogoutReply\n{comparison}\n{proxy_report}",
+            report.lines
+        ))
+    } else {
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -564,6 +593,7 @@ fn run_bot(
     estate: &str,
     chat: &str,
     region_log: &Path,
+    strict_logout: bool,
 ) -> Result<BotReport, String> {
     let region_id = uuid::Uuid::parse_str(live::REGION_UUID)
         .map_err(|_| "the region uuid is not a uuid".to_string())?;
@@ -589,6 +619,7 @@ fn run_bot(
         library_texture: library,
         http_trace: std::sync::Arc::clone(&http_trace),
         region_log: region_log.to_path_buf(),
+        require_logout_reply: strict_logout,
         neighbour: Some(ferroan_bot::scenario::Neighbour {
             region_id: neighbour_id,
             x: NEIGHBOUR_X,
@@ -738,6 +769,8 @@ fn create_account(
 
 #[cfg(target_os = "linux")]
 struct RegionStart {
+    ferroan: bool,
+    login_only: bool,
     name: &'static str,
     uuid: &'static str,
     x: u32,
@@ -758,7 +791,22 @@ fn start_region(
     spec: RegionStart,
     passwords: &[String],
 ) -> Result<Proc, String> {
-    let binary = publish.join("OpenSim.Server.RegionServer");
+    let binary = if spec.ferroan {
+        let output = Command::new("cargo")
+            .args(["build", "-p", "ferroan-region", "--locked"])
+            .current_dir(crate::repo_root())
+            .output()
+            .map_err(|error| format!("could not build ferroan-region: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "could not build ferroan-region\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        crate::repo_root().join("target/debug/ferroan-region")
+    } else {
+        publish.join("OpenSim.Server.RegionServer")
+    };
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
@@ -794,7 +842,12 @@ fn start_region(
         password,
         capture: capture_text.as_deref(),
     };
-    let ini = region_server_ini(&region)?;
+    let mut ini = region_server_ini(&region)?;
+    if spec.login_only {
+        // Scene.RegisterRegionWithGrid skips map generation in this supported
+        // configuration. Q6 checks login, before Ferroan has terrain/maps.
+        ini.push_str("\n[Map]\n    GenerateMaptiles = false\n    MaptileStaticUUID = 00000000-0000-0000-0000-000000000000\n");
+    }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(&region))
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;

@@ -52,6 +52,8 @@ pub struct Harness {
     pub http_trace: std::sync::Arc<crate::trace::HttpTrace>,
     /// Region stdout. Logout is confirmed here when `LogoutReply` is dropped.
     pub region_log: std::path::PathBuf,
+    /// Require the viewer's wire acknowledgement; do not accept a server log.
+    pub require_logout_reply: bool,
     /// Set by grid mode. Standalone leaves this empty, and `all` then stays
     /// the seven names in [`NAMES`].
     pub neighbour: Option<Neighbour>,
@@ -922,6 +924,9 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
     }
     if session.logout(Duration::from_secs(2)).await.is_ok() {
         return Ok(());
+    }
+    if harness.require_logout_reply {
+        return Err("logout: timed out waiting for LogoutReply".to_string());
     }
     let log_deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {

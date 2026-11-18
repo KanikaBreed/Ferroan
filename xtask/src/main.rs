@@ -65,6 +65,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live up [--assets ferroan]
        cargo xtask live down
        cargo xtask live run <scenario>|all [grid]
+       cargo xtask live run login grid --region ferroan
+       cargo xtask live login-fixtures <capture-dir>
        cargo xtask live run assets --running
        cargo xtask live assets";
 
@@ -107,6 +109,8 @@ fn main() -> ExitCode {
         ["live", "down"] => live::down(),
         ["live", "run", scenario] => live::run(scenario),
         ["live", "run", scenario, "grid"] => grid::run(scenario),
+        ["live", "run", scenario, "grid", "--region", "ferroan"] => grid::run_ferroan(scenario),
+        ["live", "login-fixtures", directory] => grid::login_fixtures(Path::new(directory)),
         ["live", "run", "assets", "--running"] => live::run_running_assets(),
         ["live", "assets"] => assets::compare(),
         _ => {
