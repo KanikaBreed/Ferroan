@@ -24,6 +24,8 @@ The harness's grid controller records process identities for interrupted-run cle
 
 The bot and region circuit share bounded sequence, duplicate-history and retry-window accounting in `ferroan-protocol::reliability`; each keeps its own ACK timing and retry policy. The region's immediate `UseCircuitCode` ACK has sequence zero; established ACKs use ordinary sequence numbers. Its handshake announces configured region name/type/owner and typed region settings matching C#'s fresh-region defaults. A valid `CompleteAgentMovement` triggers reliable `AgentMovementComplete`, using the accepted login position and region identity. Bot readiness requires a fresh arrival on the current circuit alongside handshake and seed completion. Terrain adjustment remains planned. Datagram errors do not tear down the listener. Exhausted retries release their window entries, and logout sends C#'s reliable, zero-coded reply without waiting for an ACK.
 
+Ferrobot is the external second test client from [D17](docs/DECISIONS.md). The harness builds its pinned revision in scratch, starts it with isolated test credentials, drives its signed loopback HTTP API, and records region UDP and HTTP. Its dedicated standalone and grid scenarios require fresh arrival, a 120-second session with ping replies and completed event-queue polls, chat both ways, an incoming IM and SIGTERM logout. The Ferroan-region variant checks arrival, the session and logout; chat and IM remain pending. Ferrobot is tracked for interrupted-run cleanup and is not a dependency of any Ferroan crate. Validation results are recorded in [TASKS.md](TASKS.md).
+
 ## Planned
 
 ### Programs

@@ -59,12 +59,15 @@ jobs:
           }
           tranq="$(pin OpenSim-Tranquillity)"
           meta="$(pin libopenmetaverse)"
-          test -n "$tranq" && test -n "$meta"
+          ferrobot="$(pin Ferrobot)"
+          test -n "$tranq" && test -n "$meta" && test -n "$ferrobot"
           root="${RUNNER_TEMP}/ferroan-ref"
           clone_at https://github.com/OpenSim-NGC/OpenSim-Tranquillity.git \
             "$root/OpenSim-Tranquillity" "$tranq"
           clone_at https://github.com/OpenSim-NGC/libopenmetaverse.git \
             "$root/libopenmetaverse" "$meta"
+          clone_at https://github.com/BlackBox-Roleplay-Systems/Ferrobot.git \
+            "$root/Ferrobot" "$ferrobot"
           echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
       - name: Restore the Tranquillity build
         uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
@@ -94,6 +97,12 @@ jobs:
           set -euo pipefail
           cargo xtask live run caps grid
           cargo xtask live run caps grid --region ferroan
+      - name: Check Ferrobot in standalone and mixed grids
+        run: |
+          set -euo pipefail
+          cargo xtask live run ferrobot
+          cargo xtask live run ferrobot grid
+          cargo xtask live run ferrobot grid --region ferroan
       - name: Compare C# and Ferroan asset services
         run: cargo xtask live assets
       - name: Check the persistent Ferroan asset setup

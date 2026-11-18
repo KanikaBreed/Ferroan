@@ -1,14 +1,18 @@
 # Live harness
 
-`cargo xtask live run login grid --region ferroan` uses the Rust home-region process with C# Robust and a C# neighbour. It requires an actual `LogoutReply` and compares registration and agent-creation traffic with the C# fixtures. The dedicated login baseline disables map generation in both implementations; other scenarios still use C# regions. `cargo xtask live login-fixtures <capture-dir>` extracts scrubbed control-plane fixtures from a local C# login run. See [the region guide](../../crates/ferroan-region/README.md) for the current limits.
+`cargo xtask live run login grid --region ferroan` uses the Rust home-region process with C# Robust and a C# neighbour. It requires fresh arrival and an actual `LogoutReply`, and compares registration and agent-creation traffic with the C# fixtures. The dedicated login baseline disables map generation in both implementations. The CAPS probe and Ferrobot login/session/logout subset also support the Rust home region; other scenario behavior uses C# regions. `cargo xtask live login-fixtures <capture-dir>` extracts scrubbed control-plane fixtures from a local C# login run. See [the region guide](../../crates/ferroan-region/README.md) for the current limits.
 
 `cargo xtask live build` builds Tranquillity in `.scratch/live/`; `cargo xtask live up` or `cargo xtask live run <scenario>` starts it. The scratch tree is never a reference checkout.
 
-One patch is applied only there, at the revision in [docs/REFERENCES.md](../../docs/REFERENCES.md):
+`live build` also builds pinned Ferrobot with `cargo build --locked` in `.scratch/`, using a clean matching `FERROAN_REF/Ferrobot` checkout as the source of a scratch clone when available, otherwise the public repository. `live run ferrobot`, `live run ferrobot grid` and `live run ferrobot grid --region ferroan` drive that separate client through its signed loopback HTTP API. Each checks fresh arrival, 120 seconds with captured ping replies and completed event polls, and captured logout after SIGTERM. C# runs also check chat both ways and IM with `ferroan-bot`; Rust chat and IM remain pending. Generated account credentials and the API secret stay in private scratch files. See [the Ferrobot checks](../../docs/LIVE.md#ferrobot).
+
+One patch is applied only to the Tranquillity scratch tree, at the revision in [docs/REFERENCES.md](../../docs/REFERENCES.md):
 
 - [../capture/tranquillity-capture.patch](../capture/tranquillity-capture.patch) records raw UDP when `[ClientStack.LindenUDP] CaptureFile` is set. `live build` applies it. `live run` sets `CaptureFile`, records the bot's HTTP beside it, then runs `check`, `redact` and `replay`. `live up` does not set `CaptureFile`.
 
-The region ini sets `[Network] bind_ip_address = "127.0.0.1"`. An empty value means every interface, which is Tranquillity's default. The harness does not alter SQLite. At this pin, `UserAccount.migrations` version 4 adds `DisplayName` and `NameChanged`, and the region is started once. The manual recipe is in [docs/LIVE.md](../../docs/LIVE.md).
+Ferrobot's HTTP is captured by proxies, including a standalone region proxy. C# records its UDP through the same patch; the Rust-region run uses a bounded loopback UDP relay. Both paths preserve the raw datagrams for `check`, then `redact` and `replay`. Ferrobot's process identity is saved for interrupted-run cleanup with `live down`.
+
+The region ini normally sets `[Network] bind_ip_address = "127.0.0.1"`; proxied runs bind the server to another loopback address and advertise the proxy. An empty value means every interface, which is Tranquillity's default. The harness does not alter SQLite. At this pin, `UserAccount.migrations` version 4 adds `DisplayName` and `NameChanged`, and the region is started once. The manual recipe is in [docs/LIVE.md](../../docs/LIVE.md).
 
 `live build` also publishes GridServer, self-contained, because that project references `Microsoft.AspNetCore.App` and the harness machine has only `Microsoft.NETCore.App`. `cargo xtask live assets` starts that server, and `ferroan-robust`, behind `ferroan-capture http-proxy`, and compares the texture and inventory HTTP. Its C# asset-service ini sets `[Network] bind_ip_address = "127.0.0.1"`, so the service passes the loopback socket check.
 
