@@ -34,7 +34,8 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
-| Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (#36: IM capture suffix prerequisite) |
+| Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | READY |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10c |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | READY after Q10a |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10b |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
@@ -88,6 +89,8 @@ Q10a and Q10b were added on 18 November 2026 from the Q10 blocker and "Found whi
 
 Q10 BLOCKED again (18 November 2026, #36, `feat/ferrobot-harness-resume`): the resumed harness reaches the C# standalone IM check, then the mandatory capture check fails: `record 442 (udp out) does not re-encode: the encoded bytes differ`. Raw UDP record 427 is `ImprovedInstantMessage`, 191 bytes; re-encoding yields 187 identical prefix bytes and drops four trailing zero bytes. At the pin, `LLClientView.SendInstantMessage` appends that undocumented `EstateBlock` after `BinaryBucket`, while the pinned message template ends at `BinaryBucket` (TB4). This is a shared protocol/capture prerequisite, not a Ferrobot bug. No packet was filtered or canonicalized to hide the discrepancy; no retry is claimed. Proposed fix: the manager adds a prerequisite deciding and implementing bounded preservation of this observed suffix in lossless capture/replay (with a C# fixture), or takes an upstream fix through a pin move and regenerates affected fixtures. Then resume Q10's implementation preserved at `789fe59` / local branch `wip/ferrobot-harness-arrival-ready`, with `.scratch/q10-arrival-ready.patch` in the existing worktree. The initial Rust-region diagnostic passed arrival, 120 seconds and SIGTERM logout after Q10a; full Q10 acceptance remains pending. Q10b can proceed independently; Q11 waits on Q10.
 
+Q10c was added on 18 November 2026 from the second Q10 blocker (#36). The four bytes are `ImprovedInstantMessage`'s `EstateBlock`, which Linden's viewer template defines and libopenmetaverse's lacks, so TB4 is a gap in Ferroan's template, not a Tranquillity bug. Q10 then resumes from `789fe59`.
+
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
@@ -96,7 +99,7 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 
 ## Found while working
 
-- 2026-11-18, resumed Q10: Tranquillity `LLClientView.SendInstantMessage` at `8583218` appends four zero bytes beyond the pinned `ImprovedInstantMessage` template. Ferrobot receives the IM, but Ferroan's generated re-encoder drops the suffix and the mandatory lossless capture check fails deterministically on the preserved packet. Recorded as TB4 in [TRANQUILLITY_BUGS.md](docs/TRANQUILLITY_BUGS.md); proposed protocol/capture prerequisite is under Q10 above. No external issue was filed and no C# or Ferrobot checkout was changed.
+- 2026-11-18, resumed Q10 (queued as Q10c, P0.10j; not a C# bug, see Q10c): Tranquillity `LLClientView.SendInstantMessage` at `8583218` appends four zero bytes beyond the pinned `ImprovedInstantMessage` template. Ferrobot receives the IM, but Ferroan's generated re-encoder drops the suffix and the mandatory lossless capture check fails deterministically on the preserved packet. Recorded as TB4 in [TRANQUILLITY_BUGS.md](docs/TRANQUILLITY_BUGS.md); proposed protocol/capture prerequisite is under Q10 above. No external issue was filed and no C# or Ferrobot checkout was changed.
 
 - 2026-11-18, Q10 (queued as Q10a, P2.0d2): P2.0d's passing bot login check proves handshake and seed completion but not viewer arrival. The second client's stricter readiness exposed the missing `AgentMovementComplete`; see the Q10 blocker and proposed prerequisite above. Existing viewer gates remain pending.
 
