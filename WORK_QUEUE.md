@@ -106,6 +106,8 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 
 ## Found while working
 
+- 2026-11-18, Q10d first CI: [run 44421488081](https://github.com/KanikaBreed/Ferroan/actions/runs/44421488081) rejected the new proxy counter's `AtomicU64::fetch_update` under newer Rust's deprecation warning (Linux 1m18s, macOS 42s, Windows 2m18s; local stable is 1.97.1). The counter now uses an equivalent saturating compare-and-swap loop supported by both compilers. No lint is suppressed; this is a code repair before a fresh CI run, not a flaky retry.
+
 - 2026-11-18, Q10d local validation: the first repeated `grid_state` run exposed a readiness race in the new oversized-environment regression fixture: immediately after spawning a child, `/proc/<pid>/environ` could still be empty. The fixture now waits for an explicit child-ready handshake before checking the environment. This does not serialize tests or change production recovery. The failed run is retained in `.scratch/q10d-grid-state-stress/run-1.log`; the 200-run count restarts after the correction.
 
 - 2026-11-18, Q10d integration validation: the first standalone run passed, then grid mode failed with one newly counted HTTP proxy exchange failure. The previous wrapper discarded the exchange error; diagnostics now retain its message alongside the count before another run. No failure is ignored. A preliminary recovery stress run also encountered `ENOENT` while spawning its own test executable during a concurrent Cargo rebuild (run 64, `.scratch/q10d-grid-state-stress-fixed/run-64.log`). Final stress validation uses a private copy of the exact compiled test binary with the default parallel runner; tests remain enabled and parallel.

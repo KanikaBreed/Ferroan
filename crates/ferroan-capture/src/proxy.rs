@@ -69,12 +69,18 @@ impl ProxyStatus {
     }
 
     fn failed(&self) {
-        let _ = self
-            .0
-            .failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                Some(count.saturating_add(1))
-            });
+        let mut count = self.0.failures.load(Ordering::Acquire);
+        while count < u64::MAX {
+            match self.0.failures.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
     }
 
     /// Stop accepting, finish accepted exchanges, and reject any lost evidence.
