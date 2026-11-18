@@ -97,3 +97,4 @@ jobs:
           set -euo pipefail
           cargo xtask live build
           cargo xtask live run all
+          cargo xtask live run all grid

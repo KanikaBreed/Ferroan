@@ -13,11 +13,11 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | `ferroan-http` | Robust form bodies, `<ServerResponse>` XML and LLSD over HTTP, on axum and reqwest |
 | `ferroan-protocol` | LLUDP messages generated from libopenmetaverse's `message_template.msg`, plus framing, zero-coding, appended acks and capture redaction. See [docs/PROTOCOL.md](docs/PROTOCOL.md) |
 | `ferroan-capture` | The capture file, the HTTP logging proxy, and redaction. UDP recording is the local Tranquillity patch in [docs/CAPTURES.md](docs/CAPTURES.md) |
-| `ferroan-bot` | Headless viewer in `tools/bot`: XML-RPC login, one LLUDP circuit, the seed capability, and the live-harness scenarios (login, walk, chat, build, teleport, texture, inventory). `cargo xtask live run all` passed against the local Tranquillity region. CI does not start that region yet |
+| `ferroan-bot` | Headless viewer in `tools/bot`: XML-RPC login, one LLUDP circuit, the seed capability, and the live-harness scenarios (login, walk, chat, build, teleport, texture, inventory). When the harness supplies a neighbour, `all` also teleports there and back. That crossing reads the source event queue. The first hop opens the destination with `UseCircuitCode`, and `CompleteAgentMovement` waits for `TeleportFinish`. The return sends `CompleteAgentMovement` on the circuit the source region kept. `cargo xtask live run all` runs against one Tranquillity region. `cargo xtask live run all grid` runs against GridServer and two regions |
 | `ferroan-client` | One LLUDP circuit on tokio: `UseCircuitCode`, `RegionHandshake`, the viewer's reply, movement, throttle and window, pings, and `LogoutReply`. The seed answers a POST of capability names with `EventQueueGet`. The event queue answers an empty poll at once with a new id. Throttles are still planned |
 | `ferroan-services` | The asset service: the Robust asset routes and a SQLite store. Inventory and the other services are still planned |
 | `ferroan-robust` | The grid-services process. This build serves the asset service on `[Network] port`. `[Network] bind_ip_address` chooses the listen address; empty means `0.0.0.0`, the same default as Tranquillity with that key unset |
-| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live` |
+| `xtask` | Repository tasks: `cargo xtask check`, `oracle`, `schema`, `config`, `http`, `asset` and `live`. `live run` starts one region. `live run … grid` starts GridServer and two neighbouring regions |
 
 ## Planned
 

@@ -112,6 +112,19 @@ impl Session {
         self.circuit.local_addr()
     }
 
+    /// The region address `UseCircuitCode` was sent to.
+    pub fn sim_addr(&self) -> SocketAddr {
+        self.circuit.addr
+    }
+
+    /// `CompleteAgentMovement` has already been sent on this circuit.
+    ///
+    /// A region that kept the circuit as a child must see that message
+    /// again. A second `UseCircuitCode` closes the child.
+    pub fn movement_sent(&self) -> bool {
+        self.movement_sent
+    }
+
     pub fn agent(&self) -> Agent {
         self.agent
     }
@@ -182,6 +195,46 @@ impl Session {
         Err(SessionError::Timeout("handshake"))
     }
 
+    /// Send `CompleteAgentMovement` again on a circuit the region kept.
+    ///
+    /// The seed is posted again. A `RegionHandshake` that arrives afterwards
+    /// still gets a reply, from this call or from a later [`Self::drive`].
+    pub async fn resume_as_root(
+        &mut self,
+        http: &reqwest::Client,
+        seed: &str,
+        timeout: Duration,
+    ) -> Result<(), SessionError> {
+        self.handshake_sent = false;
+        let http = http.clone();
+        let seed = seed.to_owned();
+        let mut seed_task = if seed.is_empty() {
+            None
+        } else {
+            Some(tokio::spawn(async move {
+                caps::request_seed(&http, &seed).await
+            }))
+        };
+        let mut seed_done = seed_task.is_none();
+        self.send_movement_followup().await?;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.pump_once(Duration::from_millis(50)).await?;
+            if !seed_done && seed_task.as_ref().is_some_and(|task| task.is_finished()) {
+                let Some(task) = seed_task.take() else {
+                    return Err(SessionError::SeedTask);
+                };
+                let joined = task.await.map_err(|_| SessionError::SeedTask)?;
+                self.caps = joined?;
+                seed_done = true;
+            }
+            if seed_done {
+                return Ok(());
+            }
+        }
+        Err(SessionError::Timeout("seed"))
+    }
+
     /// `LogoutRequest`, then wait for `LogoutReply`.
     pub async fn logout(&mut self, timeout: Duration) -> Result<(), SessionError> {
         let mut message = LogoutRequest::default();
@@ -202,6 +255,10 @@ impl Session {
         if self.movement_sent || self.circuit.is_unacked(self.ucc_seq) {
             return Ok(());
         }
+        self.send_movement_followup().await
+    }
+
+    async fn send_movement_followup(&mut self) -> Result<(), SessionError> {
         let mut movement = CompleteAgentMovement::default();
         movement.agent_data.agent_id = self.agent.agent_id;
         movement.agent_data.session_id = self.agent.session_id;
@@ -501,5 +558,91 @@ mod tests {
                 "missing {name} in {seen:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn resume_as_root_sends_complete_agent_movement_again() {
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sim_addr = sim.local_addr().unwrap();
+        let hit = std::sync::Arc::new(AtomicBool::new(false));
+        let seed = serve_seed(hit).await;
+        let region = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut seq = 1u32;
+            let mut handshake_sent = false;
+            let mut movement = 0u32;
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while Instant::now() < deadline {
+                let Ok(Ok((len, from))) =
+                    tokio::time::timeout(Duration::from_millis(200), sim.recv_from(&mut buf)).await
+                else {
+                    continue;
+                };
+                let Ok(packet) = parse_packet(&buf[..len]) else {
+                    continue;
+                };
+                let name = message_info(packet.id).map(|info| info.name).unwrap_or("");
+                seen.push(name.to_owned());
+                if packet.reliable() {
+                    let mut ack = PacketAck::default();
+                    ack.packets.push(msgs::packet_ack::Packets {
+                        id: packet.sequence,
+                    });
+                    send_msg(&sim, from, &mut seq, &ack, false).await;
+                }
+                if name == "UseCircuitCode" && !handshake_sent {
+                    let mut handshake = RegionHandshake::default();
+                    handshake.region_info2.region_id = Uuid::from_u128(9);
+                    send_msg(&sim, from, &mut seq, &handshake, true).await;
+                    handshake_sent = true;
+                }
+                if name == "CompleteAgentMovement" {
+                    movement += 1;
+                    if movement == 2 {
+                        let mut handshake = RegionHandshake::default();
+                        handshake.region_info2.region_id = Uuid::from_u128(9);
+                        send_msg(&sim, from, &mut seq, &handshake, true).await;
+                    }
+                }
+                if seen
+                    .iter()
+                    .filter(|got| got.as_str() == "RegionHandshakeReply")
+                    .count()
+                    >= 2
+                {
+                    break;
+                }
+            }
+            (seen, movement)
+        });
+        let http = crate::login::http_client().unwrap();
+        let mut session = Session::connect(sim_addr, agent()).await.unwrap();
+        assert_eq!(session.sim_addr(), sim_addr);
+        session
+            .run_until_ready(&http, &seed, Duration::from_secs(8))
+            .await
+            .unwrap();
+        assert!(session.movement_sent());
+        let again = std::sync::Arc::new(AtomicBool::new(false));
+        let seed_again = serve_seed(again.clone()).await;
+        session
+            .resume_as_root(&http, &seed_again, Duration::from_secs(8))
+            .await
+            .unwrap();
+        assert!(again.load(Ordering::SeqCst));
+        session.drive(Duration::from_millis(800)).await.unwrap();
+        let (seen, movement) = region.await.unwrap();
+        assert!(
+            movement >= 2,
+            "CompleteAgentMovement count {movement} in {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .filter(|got| got.as_str() == "RegionHandshakeReply")
+                .count()
+                >= 2,
+            "expected a second handshake reply in {seen:?}"
+        );
     }
 }
