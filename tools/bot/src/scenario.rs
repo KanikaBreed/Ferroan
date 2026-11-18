@@ -472,10 +472,13 @@ async fn enter(
 }
 
 async fn leave(session: &mut Session) -> Result<(), String> {
-    // LogoutReply is queued on the task throttle. The region then drops
-    // that queue if the agent closes before the packet is sent. A walk
-    // fills the throttle, so wait until the burst eases.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    // LogoutReply is queued on the task throttle, then dropped if the agent
+    // closes before that queue is sent. The region also sends no further
+    // task packets while more than 50 are still unacked, and resends those
+    // after about a second (LLUDPClient's default RTO). A build fills that
+    // window, so the stall looks like silence. Wait through one resend
+    // interval with nothing new arriving before logging out.
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
     let mut quiet_since = None;
     while std::time::Instant::now() < deadline {
         let before = session.received();
@@ -487,7 +490,7 @@ async fn leave(session: &mut Session) -> Result<(), String> {
         if session.received() == before {
             let since = quiet_since.unwrap_or_else(std::time::Instant::now);
             quiet_since = Some(since);
-            if since.elapsed() >= Duration::from_millis(400) {
+            if since.elapsed() >= Duration::from_millis(1500) {
                 break;
             }
         } else {
