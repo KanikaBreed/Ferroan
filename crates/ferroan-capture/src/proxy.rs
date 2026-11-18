@@ -18,11 +18,14 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::format::{Kind, Record, write_capture};
@@ -32,6 +35,96 @@ const BODY_CAP: usize = 1_048_576;
 const IO_WAIT: Duration = Duration::from_secs(5);
 pub const DEFAULT_REPLY_TIMEOUT: Duration = Duration::from_secs(70);
 const MAX_REPLY_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_EXCHANGES: usize = 256;
+const MAX_INTERIM_RESPONSES: usize = 16;
+const MAX_FINISH_TIMEOUT: Duration = Duration::from_secs(320);
+
+/// Retained evidence for one proxy, even if its serving task has returned.
+/// Use a fresh status per server and call `finish` before dropping its runtime.
+#[derive(Clone, Default)]
+pub struct ProxyStatus(Arc<StatusInner>);
+
+#[derive(Default)]
+struct StatusInner {
+    failures: AtomicU64,
+    stopping: AtomicBool,
+    finished: AtomicBool,
+    stop: Notify,
+}
+
+impl ProxyStatus {
+    pub fn failures(&self) -> u64 {
+        self.0.failures.load(Ordering::Acquire)
+    }
+
+    pub fn ensure_success(&self) -> io::Result<()> {
+        let failures = self.failures();
+        if failures == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "HTTP proxy recorded {failures} failure(s)"
+            )))
+        }
+    }
+
+    fn failed(&self) {
+        let mut count = self.0.failures.load(Ordering::Acquire);
+        while count < u64::MAX {
+            match self.0.failures.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
+    }
+
+    /// Stop accepting, finish accepted exchanges, and reject any lost evidence.
+    /// A bounded timeout is also a failure; callers must then stop the runtime.
+    pub async fn finish(&self, wait: Duration) -> io::Result<()> {
+        if wait.is_zero() || wait > MAX_FINISH_TIMEOUT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "proxy finish timeout must be greater than zero and at most 320 seconds",
+            ));
+        }
+        self.0.stopping.store(true, Ordering::Release);
+        self.0.stop.notify_one();
+        if timeout(wait, async {
+            while !self.0.finished.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            self.failed();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "HTTP proxy did not finish accepted exchanges",
+            ));
+        }
+        self.ensure_success()
+    }
+}
+
+struct RunGuard {
+    status: ProxyStatus,
+    completed: bool,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.status.failed();
+        }
+        self.status.0.finished.store(true, Ordering::Release);
+    }
+}
 
 pub async fn serve(listen: SocketAddr, upstream: SocketAddr, path: &Path) -> io::Result<()> {
     serve_with_timeout(listen, upstream, path, DEFAULT_REPLY_TIMEOUT).await
@@ -60,6 +153,43 @@ pub async fn serve_on_with_timeout(
     path: &Path,
     reply_timeout: Duration,
 ) -> io::Result<()> {
+    serve_on_with_status(
+        listener,
+        upstream,
+        path,
+        reply_timeout,
+        ProxyStatus::default(),
+    )
+    .await
+}
+
+/// Serve with retained failure evidence and a graceful, bounded finish handle.
+pub async fn serve_on_with_status(
+    listener: TcpListener,
+    upstream: SocketAddr,
+    path: &Path,
+    reply_timeout: Duration,
+    status: ProxyStatus,
+) -> io::Result<()> {
+    let mut guard = RunGuard {
+        status: status.clone(),
+        completed: false,
+    };
+    let result = serve_inner(listener, upstream, path, reply_timeout, &status).await;
+    if result.is_err() && status.failures() == 0 {
+        status.failed();
+    }
+    guard.completed = true;
+    result
+}
+
+async fn serve_inner(
+    listener: TcpListener,
+    upstream: SocketAddr,
+    path: &Path,
+    reply_timeout: Duration,
+    status: &ProxyStatus,
+) -> io::Result<()> {
     validate_timeout(reply_timeout)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -70,14 +200,49 @@ pub async fn serve_on_with_timeout(
     let capture = Arc::new(Capture {
         file: Mutex::new(file),
     });
+    let mut exchanges = JoinSet::new();
     loop {
-        let (client, _) = listener.accept().await?;
-        let capture = Arc::clone(&capture);
-        tokio::spawn(async move {
-            if let Err(error) = forward(client, upstream, capture, reply_timeout).await {
-                eprintln!("ferroan-capture: {error}");
+        if status.0.stopping.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::select! {
+            biased;
+            result = exchanges.join_next(), if !exchanges.is_empty() => {
+                check_exchange(result, status)?;
             }
-        });
+            _ = status.0.stop.notified() => {}
+            accepted = listener.accept(), if exchanges.len() < MAX_EXCHANGES => {
+                let (client, _) = accepted?;
+                let capture = Arc::clone(&capture);
+                let status = status.clone();
+                exchanges.spawn(async move {
+                    let result = forward(client, upstream, capture, reply_timeout).await;
+                    if result.is_err() { status.failed(); }
+                    result
+                });
+            }
+        }
+    }
+    drop(listener);
+    while let Some(result) = exchanges.join_next().await {
+        check_exchange(Some(result), status)?;
+    }
+    status.ensure_success()
+}
+
+fn check_exchange(
+    result: Option<Result<io::Result<()>, tokio::task::JoinError>>,
+    status: &ProxyStatus,
+) -> io::Result<()> {
+    match result {
+        Some(Ok(result)) => result,
+        Some(Err(_)) => {
+            status.failed();
+            Err(io::Error::other(
+                "HTTP proxy exchange task did not complete",
+            ))
+        }
+        None => Ok(()),
     }
 }
 
@@ -118,7 +283,11 @@ async fn forward(
     capture: Arc<Capture>,
     reply_timeout: Duration,
 ) -> io::Result<()> {
-    let request = read_message(&mut client, true, IO_WAIT).await?;
+    let Some(request) = read_message_or_unused(&mut client, true, IO_WAIT).await? else {
+        // A connection pool may preconnect and close without sending HTTP.
+        // No exchange began, so neither a capture nor a failure is warranted.
+        return Ok(());
+    };
     capture.push(Kind::HttpRequest, &request)?;
     let mut server = timeout(IO_WAIT, TcpStream::connect(upstream))
         .await
@@ -166,23 +335,60 @@ async fn read_message(
     request: bool,
     wait: Duration,
 ) -> io::Result<Vec<u8>> {
-    timeout(wait, read_message_inner(stream, request))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTP message timed out"))?
+    read_message_or_unused(stream, request, wait)
+        .await?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no HTTP request was sent"))
 }
 
-async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result<Vec<u8>> {
+struct ReadProgress {
+    stage: &'static str,
+    received: usize,
+    expected: Option<usize>,
+}
+
+async fn read_message_or_unused(
+    stream: &mut TcpStream,
+    request: bool,
+    wait: Duration,
+) -> io::Result<Option<Vec<u8>>> {
+    let mut progress = ReadProgress {
+        stage: "headers",
+        received: 0,
+        expected: None,
+    };
+    let result = timeout(wait, read_message_inner(stream, request, &mut progress))
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "HTTP message timed out",
+            ))
+        });
+    result.map_err(|error| {
+        let direction = if request { "request" } else { "response" };
+        let expected = progress
+            .expected
+            .map(|count| format!(", expected {count}"))
+            .unwrap_or_default();
+        io::Error::new(
+            error.kind(),
+            format!(
+                "HTTP {direction} {}: {error} (received {} bytes{expected})",
+                progress.stage, progress.received
+            ),
+        )
+    })
+}
+
+async fn read_message_inner(
+    stream: &mut TcpStream,
+    request: bool,
+    progress: &mut ReadProgress,
+) -> io::Result<Option<Vec<u8>>> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
+    let mut interim = 0;
     let head_end = loop {
-        if buf.len() > HEADER_CAP {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "headers are too large",
-            ));
-        }
-        let n = read_some(stream, &mut tmp).await?;
-        buf.extend_from_slice(&tmp[..n]);
         if let Some(at) = find_bytes(&buf, b"\r\n\r\n") {
             if at + 4 > HEADER_CAP {
                 return Err(io::Error::new(
@@ -190,8 +396,39 @@ async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result
                     "headers are too large",
                 ));
             }
+            if !request && (100..200).contains(&response_status(&buf[..at])?) {
+                interim += 1;
+                if interim > MAX_INTERIM_RESPONSES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "too many interim HTTP responses",
+                    ));
+                }
+                // Interim responses have no body. Keep any bytes already read
+                // from the final response, including when both arrived at once.
+                buf.drain(..at + 4);
+                continue;
+            }
             break at + 4;
         }
+        if buf.len() > HEADER_CAP {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "headers are too large",
+            ));
+        }
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            if request && buf.is_empty() {
+                return Ok(None);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            ));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        progress.received += n;
     };
     if header_has(&buf[..head_end], "transfer-encoding:") {
         return Err(io::Error::new(
@@ -200,6 +437,9 @@ async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result
         ));
     }
     let body_len = content_length(&buf[..head_end]);
+    progress.stage = "body";
+    progress.received = buf.len() - head_end;
+    progress.expected = body_len;
     match body_len {
         Some(len) if len > BODY_CAP => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -209,6 +449,7 @@ async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result
             while buf.len() < head_end + len {
                 let n = read_some(stream, &mut tmp).await?;
                 buf.extend_from_slice(&tmp[..n]);
+                progress.received += n;
                 if buf.len() > head_end + BODY_CAP {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -217,9 +458,9 @@ async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result
                 }
             }
             buf.truncate(head_end + len);
-            Ok(buf)
+            Ok(Some(buf))
         }
-        None if request => Ok(buf[..head_end].to_vec()),
+        None if request => Ok(Some(buf[..head_end].to_vec())),
         None => {
             loop {
                 if buf.len() > head_end + BODY_CAP {
@@ -230,13 +471,37 @@ async fn read_message_inner(stream: &mut TcpStream, request: bool) -> io::Result
                 }
                 match stream.read(&mut tmp).await {
                     Ok(0) => break,
-                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        progress.received += n;
+                    }
                     Err(error) => return Err(error),
                 }
             }
-            Ok(buf)
+            Ok(Some(buf))
         }
     }
+}
+
+fn response_status(head: &[u8]) -> io::Result<u16> {
+    let line = head.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let mut fields = line.split(|byte| *byte == b' ');
+    let version = fields.next().unwrap_or_default();
+    let code = fields.next().unwrap_or_default();
+    if !matches!(version, b"HTTP/1.0" | b"HTTP/1.1")
+        || code.len() != 3
+        || !code.iter().all(u8::is_ascii_digit)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid HTTP response status",
+        ));
+    }
+    Ok(
+        u16::from(code[0] - b'0') * 100
+            + u16::from(code[1] - b'0') * 10
+            + u16::from(code[2] - b'0'),
+    )
 }
 
 async fn read_some(stream: &mut TcpStream, tmp: &mut [u8]) -> io::Result<usize> {
@@ -302,7 +567,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn held_reply_survives_the_previous_five_second_limit() {
+    async fn production_default_allows_a_held_reply() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/caps/manifest.json")).unwrap();
+        let captured_hold = Duration::from_millis(
+            fixture["exchanges"]["empty-poll"]["elapsed_ms"]
+                .as_u64()
+                .unwrap(),
+        );
+        assert!(
+            DEFAULT_REPLY_TIMEOUT > captured_hold,
+            "production proxy deadline must exceed the captured C# hold ({captured_hold:?})"
+        );
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -317,11 +593,10 @@ mod tests {
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let (capture, path) = capture_file();
-        let forwarding = tokio::spawn(async move {
-            let (client, _) = listener.accept().await.unwrap();
-            forward(client, upstream_addr, capture, Duration::from_secs(7)).await
-        });
+        let (_, path) = capture_file();
+        let capture_path = path.clone();
+        let forwarding =
+            tokio::spawn(async move { serve_on(listener, upstream_addr, &capture_path).await });
         let mut client = TcpStream::connect(address).await.unwrap();
         client
             .write_all(
@@ -335,12 +610,304 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway"));
-        forwarding.await.unwrap().unwrap();
         server.await.unwrap();
         let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(records.len(), 2);
         assert!(records[1].bytes.starts_with(b"HTTP/1.1 502 Bad Gateway"));
+        assert!(!forwarding.is_finished());
+        forwarding.abort();
+        assert!(forwarding.await.unwrap_err().is_cancelled());
         std::fs::remove_file(path).unwrap();
+    }
+
+    async fn tracked_proxy(
+        upstream: SocketAddr,
+        wait: Duration,
+    ) -> (
+        SocketAddr,
+        ProxyStatus,
+        tokio::task::JoinHandle<io::Result<()>>,
+        std::path::PathBuf,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_, path) = capture_file();
+        let status = ProxyStatus::default();
+        let child_status = status.clone();
+        let child_path = path.clone();
+        let task = tokio::spawn(async move {
+            serve_on_with_status(listener, upstream, &child_path, wait, child_status).await
+        });
+        (address, status, task, path)
+    }
+
+    async fn request(address: SocketAddr) -> Vec<u8> {
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"GET /test HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        timeout(IO_WAIT, client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn an_unused_connection_is_not_an_exchange_and_later_requests_work() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            let request = read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            assert!(request.starts_with(b"GET /test "));
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+        let mut unused = TcpStream::connect(address).await.unwrap();
+        unused.shutdown().await.unwrap();
+        let mut bytes = Vec::new();
+        timeout(IO_WAIT, unused.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(bytes.is_empty());
+        assert!(request(address).await.starts_with(b"HTTP/1.1 200 OK"));
+        status.finish(IO_WAIT).await.unwrap();
+        task.await.unwrap().unwrap();
+        server.await.unwrap();
+        assert_eq!(status.failures(), 0);
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "unused socket must not create capture records"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn partial_request_eof_is_a_failure_with_stage_and_size_only() {
+        for (bytes, stage) in [
+            (
+                b"GET /private".as_slice(),
+                "headers: connection closed (received 12 bytes)",
+            ),
+            (
+                b"POST /private HTTP/1.1\r\nContent-Length: 8\r\n\r\npart".as_slice(),
+                "body: connection closed (received 4 bytes, expected 8)",
+            ),
+        ] {
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (address, status, task, path) =
+                tracked_proxy(upstream.local_addr().unwrap(), DEFAULT_REPLY_TIMEOUT).await;
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(bytes).await.unwrap();
+            client.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            timeout(IO_WAIT, client.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            let error = task.await.unwrap().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            assert_eq!(error.to_string(), format!("HTTP request {stage}"));
+            assert!(!error.to_string().contains("private"));
+            assert_eq!(status.failures(), 1);
+            assert!(status.finish(IO_WAIT).await.is_err());
+            assert!(
+                read_capture(&std::fs::read(&path).unwrap())
+                    .unwrap()
+                    .is_empty()
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_idle_socket_without_eof_still_times_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let error = read_message_or_unused(&mut socket, true, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            error.to_string(),
+            "HTTP request headers: HTTP message timed out (received 0 bytes)"
+        );
+    }
+
+    #[tokio::test]
+    async fn interim_responses_keep_the_final_response_in_the_same_or_later_read() {
+        for split in [false, true] {
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream.local_addr().unwrap();
+            let final_response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong";
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                read_message(&mut socket, true, IO_WAIT).await.unwrap();
+                let interim = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </style.css>\r\n\r\n";
+                if split {
+                    socket.write_all(interim).await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    socket.write_all(final_response).await.unwrap();
+                } else {
+                    socket
+                        .write_all(&[interim.as_slice(), final_response.as_slice()].concat())
+                        .await
+                        .unwrap();
+                }
+            });
+            let (address, status, task, path) =
+                tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+            let response = request(address).await;
+            assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+            assert!(response.ends_with(b"pong"));
+            status.finish(IO_WAIT).await.unwrap();
+            task.await.unwrap().unwrap();
+            server.await.unwrap();
+            assert_eq!(status.failures(), 0);
+            let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(records.len(), 2);
+            assert_eq!(records[1].bytes, final_response);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_exchanges_are_counted_and_fail_the_serving_task_and_finish() {
+        for (reply, stall, kind) in [
+            (Vec::new(), true, io::ErrorKind::TimedOut),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".to_vec(),
+                false,
+                io::ErrorKind::InvalidData,
+            ),
+            (
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    BODY_CAP + 1
+                )
+                .into_bytes(),
+                false,
+                io::ErrorKind::InvalidData,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\npart".to_vec(),
+                false,
+                io::ErrorKind::UnexpectedEof,
+            ),
+            (
+                b"HTTP/1.1 100 Continue\r\n\r\n".to_vec(),
+                false,
+                io::ErrorKind::UnexpectedEof,
+            ),
+            (
+                b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(MAX_INTERIM_RESPONSES + 1),
+                false,
+                io::ErrorKind::InvalidData,
+            ),
+        ] {
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                read_message(&mut socket, true, IO_WAIT).await.unwrap();
+                socket.write_all(&reply).await.unwrap();
+                if stall {
+                    let _ = socket.read(&mut [0]).await;
+                }
+            });
+            let (address, status, task, path) =
+                tracked_proxy(upstream_addr, Duration::from_millis(100)).await;
+            assert!(request(address).await.is_empty());
+            assert_eq!(task.await.unwrap().unwrap_err().kind(), kind);
+            assert_eq!(status.failures(), 1);
+            assert!(status.ensure_success().is_err());
+            assert!(status.finish(IO_WAIT).await.is_err());
+            server.await.unwrap();
+            let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].kind, Kind::HttpRequest);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_waits_for_in_flight_evidence() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            seen_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+        let client = tokio::spawn(request(address));
+        seen_rx.await.unwrap();
+        let finishing_status = status.clone();
+        let finish = tokio::spawn(async move { finishing_status.finish(IO_WAIT).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!finish.is_finished());
+        release_tx.send(()).unwrap();
+        assert!(client.await.unwrap().starts_with(b"HTTP/1.1 200 OK"));
+        finish.await.unwrap().unwrap();
+        task.await.unwrap().unwrap();
+        server.await.unwrap();
+        assert_eq!(status.failures(), 0);
+        assert_eq!(
+            read_capture(&std::fs::read(&path).unwrap()).unwrap().len(),
+            2
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fatal_output_errors_and_finish_timeouts_remain_failures() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = listener.local_addr().unwrap();
+        let status = ProxyStatus::default();
+        assert!(
+            serve_on_with_status(
+                listener,
+                upstream,
+                Path::new(env!("CARGO_MANIFEST_DIR")),
+                DEFAULT_REPLY_TIMEOUT,
+                status.clone()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(status.failures(), 1);
+        assert!(status.finish(IO_WAIT).await.is_err());
+        let not_running = ProxyStatus::default();
+        assert_eq!(
+            not_running
+                .finish(Duration::from_millis(20))
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(not_running.failures(), 1);
     }
 
     #[tokio::test]

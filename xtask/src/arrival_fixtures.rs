@@ -18,6 +18,20 @@ use serde_json::{Value, json};
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
 const PIN: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";
 const HOME_HANDLE: u64 = (256_000u64 << 32) | 256_000;
+// LLClientView.MoveAgentIntoRegion carries Scene.GetSimulatorVersion(), including
+// the pinned C# build version. The Rust harness uses the same region name/UUID.
+const CSHARP_CHANNEL: &[u8] =
+    b"OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)\0";
+
+pub(crate) fn csharp_provenance(records: &[Record]) -> Result<Value, String> {
+    let (_, manifest) = select(records)?;
+    Ok(json!({
+        "marker": "AgentMovementComplete.SimData.ChannelVersion",
+        "channel_version": String::from_utf8_lossy(CSHARP_CHANNEL).trim_end_matches('\0'),
+        "region_handle": manifest["arrival"]["region_handle"],
+        "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival",
+    }))
+}
 
 pub fn generate(path: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();
@@ -123,6 +137,9 @@ fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
             {
                 return Err("arrival identity does not match the captured circuit".to_string());
             }
+            if movement.sim_data.channel_version != CSHARP_CHANNEL {
+                return Err("arrival lacks the pinned C# channel/version marker".to_string());
+            }
             if movement.data.region_handle != HOME_HANDLE
                 || !packet.reliable()
                 || packet.resent()
@@ -182,11 +199,11 @@ fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ferroan_protocol::build_packet;
 
-    fn source_records() -> Vec<Record> {
+    pub(crate) fn source_records() -> Vec<Record> {
         let mut records =
             read_capture(include_bytes!("../../fixtures/arrival/sequence.cap")).unwrap();
         let owner = crate::live::ESTATE_OWNER.parse().unwrap();
@@ -303,5 +320,37 @@ mod tests {
                 "home-region"
             }));
         }
+    }
+
+    #[test]
+    fn matching_harness_identity_cannot_substitute_a_rust_or_missing_channel() {
+        for channel in [
+            b"Ferroan 0.1.0\0".as_slice(),
+            b"",
+            b"OpenSim-NGC Tranquillity other pin\0",
+        ] {
+            let mut records = source_records();
+            let record = records.last_mut().unwrap();
+            let packet = parse_packet(&record.bytes).unwrap();
+            let mut arrival = packet.decode::<AgentMovementComplete>().unwrap();
+            arrival.sim_data.channel_version = channel.to_vec();
+            build_packet(
+                &arrival,
+                packet.sequence,
+                packet.reliable(),
+                false,
+                &[],
+                &mut record.bytes,
+            );
+            assert!(
+                csharp_provenance(&records)
+                    .unwrap_err()
+                    .contains("pinned C# channel/version")
+            );
+        }
+        assert_eq!(
+            csharp_provenance(&source_records()).unwrap()["region_handle"],
+            HOME_HANDLE
+        );
     }
 }

@@ -3,6 +3,13 @@
   "source": "cargo xtask live run caps grid",
   "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
   "event_queue_url": "http://192.0.2.1:9000/CE/00000000-0000-4000-8000-000000000001",
+  "event_queue_url_shape": {
+    "path_prefix": "/CE/",
+    "uuid_format": "hyphenated-lowercase",
+    "uuid_version": 4,
+    "uuid_variant": "RFC4122",
+    "trailing_slash": false
+  },
   "exchanges": {
     "seed": {
       "method": "POST",
@@ -10,7 +17,8 @@
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed.request.xml",
       "response_file": "seed.response.xml",
       "cors": {}
@@ -21,7 +29,8 @@
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed-uri.request.xml",
       "response_file": "seed-uri.response.xml",
       "cors": {}
@@ -33,6 +42,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed-get.request.body",
       "response_file": "seed-get.response.body",
       "cors": {}
@@ -43,7 +53,8 @@
       "status": 400,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 0,
+      "elapsed_ms": 1,
+      "response_connection": "close",
       "request_file": "seed-malformed.request.body",
       "response_file": "seed-malformed.response.body",
       "cors": {}
@@ -55,6 +66,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 1,
+      "response_connection": "close",
       "request_file": "seed-options.request.body",
       "response_file": "seed-options.response.body",
       "cors": {
@@ -70,6 +82,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 1,
+      "response_connection": "close",
       "request_file": "seed-binary-invalid.request.body",
       "response_file": "seed-binary-invalid.response.body",
       "cors": {}
@@ -80,7 +93,8 @@
       "status": 400,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed-binary-unpadded.request.body",
       "response_file": "seed-binary-unpadded.response.body",
       "cors": {}
@@ -92,6 +106,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed-binary-base16.request.body",
       "response_file": "seed-binary-base16.response.body",
       "cors": {}
@@ -103,6 +118,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 1,
+      "response_connection": "close",
       "request_file": "seed-binary-empty-base16.request.body",
       "response_file": "seed-binary-empty-base16.response.body",
       "cors": {}
@@ -114,6 +130,7 @@
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
       "elapsed_ms": 0,
+      "response_connection": "close",
       "request_file": "seed-binary-selfclosing-base16.request.body",
       "response_file": "seed-binary-selfclosing-base16.response.body",
       "cors": {}
@@ -124,7 +141,8 @@
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "application/xml",
-      "elapsed_ms": 943,
+      "elapsed_ms": 912,
+      "response_connection": "Keep-Alive",
       "request_file": "events.request.xml",
       "response_file": "events.response.xml",
       "cors": {}
@@ -135,10 +153,17 @@
       "status": 502,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html",
-      "elapsed_ms": 58038,
+      "elapsed_ms": 58055,
+      "response_connection": "close",
       "request_file": "empty-poll.request.xml",
       "response_file": "empty-poll.response.body",
       "cors": {}
     }
+  },
+  "provenance": {
+    "marker": "AgentMovementComplete.SimData.ChannelVersion",
+    "channel_version": "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)",
+    "region_handle": 1099511628032000,
+    "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival"
   }
 }

@@ -53,6 +53,8 @@ cargo run -p ferroan-capture -- http-proxy \
 
 `--upstream` is `http://` followed by an IP and port. A name is not resolved. `https://` is rejected: this proxy does not intercept TLS. A request or response that uses `Transfer-Encoding` is refused. A request without `Content-Length` is stored with an empty body. A response without `Content-Length` is read until the server closes, up to 1 MiB.
 
+An exchange failure makes the CLI exit unsuccessfully and fails a harness run. Errors include the request/response phase and byte counts, without printing message contents. A clean TCP close before any request bytes is an unused connection and records no exchange; partial HTTP headers or bodies still fail. Up to 16 interim `1xx` responses are skipped before the final response under the same reply deadline. Harness shutdown drains accepted exchanges and checks their failure counts before reporting success.
+
 ## Replay before redaction
 
 On the raw file, before anything is replaced:

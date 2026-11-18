@@ -380,6 +380,7 @@ name = "ferroan-capture"
 version = "0.1.0"
 dependencies = [
  "ferroan-protocol",
+ "serde_json",
  "thiserror",
  "tokio",
  "uuid",

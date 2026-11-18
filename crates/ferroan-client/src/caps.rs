@@ -378,7 +378,12 @@ mod tests {
         let manifest: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/caps/manifest.json")).unwrap();
         let fixture = &manifest["exchanges"]["empty-poll"];
-        assert!(fixture["elapsed_ms"].as_u64().unwrap() >= 58_000);
+        let elapsed = Duration::from_millis(fixture["elapsed_ms"].as_u64().unwrap());
+        // The capture includes scheduling/transport overhead. Its whole seconds
+        // establish the expected deadline independently of the production HOLD.
+        let captured_hold = Duration::from_secs(elapsed.as_secs());
+        assert!(elapsed - captured_hold <= Duration::from_millis(250));
+        assert_eq!(crate::event_queue::HOLD, captured_hold);
         let state = CapsState {
             event_queue_url: "http://example.invalid/CE/test".into(),
             queue: EventQueue::new(),
@@ -391,7 +396,7 @@ mod tests {
             .unwrap();
         let task = tokio::spawn(poll(State(state), request));
         tokio::task::yield_now().await;
-        tokio::time::advance(crate::event_queue::HOLD - Duration::from_millis(1)).await;
+        tokio::time::advance(captured_hold - Duration::from_millis(1)).await;
         assert!(!task.is_finished());
         tokio::time::advance(Duration::from_millis(1)).await;
         let response = task.await.unwrap();
@@ -403,7 +408,10 @@ mod tests {
             response.headers()[header::CONTENT_TYPE],
             fixture["response_content_type"].as_str().unwrap()
         );
-        assert_eq!(response.headers()[header::CONNECTION], "close");
+        assert_eq!(
+            response.headers()[header::CONNECTION],
+            fixture["response_connection"].as_str().unwrap()
+        );
         assert_eq!(
             axum::body::to_bytes(response.into_body(), 1024)
                 .await
@@ -569,42 +577,6 @@ mod tests {
         let http = ferroan_bot::login::http_client().unwrap();
         let response = http.get(server.seed_url()).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 404);
-    }
-
-    #[tokio::test]
-    async fn binary_seed_requests_match_captured_csharp_replies() {
-        let server = CapsServer::bind().await.unwrap();
-        let directory =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/caps");
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
-                .unwrap();
-        for name in [
-            "seed-binary-invalid",
-            "seed-binary-unpadded",
-            "seed-binary-base16",
-            "seed-binary-empty-base16",
-            "seed-binary-selfclosing-base16",
-        ] {
-            let fixture = &manifest["exchanges"][name];
-            let request =
-                std::fs::read(directory.join(fixture["request_file"].as_str().unwrap())).unwrap();
-            let expected =
-                std::fs::read(directory.join(fixture["response_file"].as_str().unwrap())).unwrap();
-            let (status, body, mime) =
-                post(server.seed_url(), "application/llsd+xml", request).await;
-            assert_eq!(
-                u64::from(status),
-                fixture["status"].as_u64().unwrap(),
-                "{name}"
-            );
-            assert_eq!(body, expected, "{name}");
-            assert_eq!(
-                mime.as_deref(),
-                fixture["response_content_type"].as_str(),
-                "{name}"
-            );
-        }
     }
 
     #[tokio::test]

@@ -37,7 +37,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (C# logout fix coming; see below) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
-| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | READY |
+| Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
@@ -98,6 +98,8 @@ Q10c was added on 18 November 2026 from the second Q10 blocker (#36). The four b
 
 Q10d to Q10f were added on 18 November 2026 from a review of #25 to #37 at `ebda8a9` (four reviewers: region, client stack, harness, test evidence). No high-severity defect was found, and every fixture checked came from C#. They come before Q11 because the harness fixes keep later CI honest, the resend and inactivity fixes matter for G2 on a real network, and P0.11's containers need the configurable control-plane trust in Q10f. Q10d waits for Q10 so it does not collide with the Ferrobot harness work. Confirm each finding first, as with Q7 to Q9.
 
+Q10d: [PR #44](https://github.com/KanikaBreed/Ferroan/pull/44), taken independently after the manager's Q10 hold in #43. All thirteen findings were confirmed and addressed. [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899638) passed Linux 2m37s, Windows 4m35s and macOS 1m26s; [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899822) passed in 9m44s. Recovery passed 200 consecutive default-parallel runs in 218 seconds. TASKS.md records test names, captures, startup interruption, database isolation and asset checks. Firestorm remains pending. Q10 and #41 remain held for the upstream fix.
+
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
@@ -105,6 +107,18 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10d first CI: [run 44421488081](https://github.com/KanikaBreed/Ferroan/actions/runs/44421488081) rejected the new proxy counter's `AtomicU64::fetch_update` under newer Rust's deprecation warning (Linux 1m18s, macOS 42s, Windows 2m18s; local stable is 1.97.1). The counter now uses an equivalent saturating compare-and-swap loop supported by both compilers. No lint is suppressed; this is a code repair before a fresh CI run, not a flaky retry.
+
+- 2026-11-18, Q10d local validation: the first repeated `grid_state` run exposed a readiness race in the new oversized-environment regression fixture: immediately after spawning a child, `/proc/<pid>/environ` could still be empty. The fixture now waits for an explicit child-ready handshake before checking the environment. This does not serialize tests or change production recovery. The failed run is retained in `.scratch/q10d-grid-state-stress/run-1.log`; the 200-run count restarts after the correction.
+
+- 2026-11-18, Q10d integration validation: the first standalone run passed, then grid mode failed with one newly counted HTTP proxy exchange failure. The previous wrapper discarded the exchange error; diagnostics now retain its message alongside the count before another run. No failure is ignored. A preliminary recovery stress run also encountered `ENOENT` while spawning its own test executable during a concurrent Cargo rebuild (run 64, `.scratch/q10d-grid-state-stress-fixed/run-64.log`). Final stress validation uses a private copy of the exact compiled test binary with the default parallel runner; tests remain enabled and parallel.
+
+- 2026-11-18, Q10d recovery stress fixture: copied-binary run 77 exposed the same post-spawn `/proc` visibility window in the new injected-permission-error case. All recovery test children now signal readiness before tests inspect their identity, still before recording the launch; interrupted-spawn recovery remains tested. Production classification is unchanged by this fixture correction. The log remains in `.scratch/q10d-grid-state-stress-final/run-77.log`, and final validation restarts the 200-run count.
+
+- 2026-11-18, Q10d proxy validation, second grid run: the home proxy reported `connection closed` before recording a request; all 40 captured requests had complete responses. Stopping that listener then caused the return crossing to fail with connection refused. The bot cancels its outstanding poll when the destination becomes ready. The proxy must distinguish a clean TCP close before any HTTP request bytes from a truncated HTTP exchange; tests cover both, while partial headers/bodies and failed responses still fail the run. The second capture is retained in `.scratch/q10d-grid-second-capture/`; the next full grid run validates that distinction.
+
+Q10d validation follow-up: after distinguishing unused zero-byte connections from HTTP exchanges, standalone followed by full grid passed (717/852 UDP records, 32/34 HTTP records; check/redact/replay passed), including neighbour and return teleports. The three region databases are regular files with distinct inodes. The final recovery stress run passed 200/200 in 218 seconds (2,200 checks, default parallel runner); earlier failed test setups remain recorded above. No failed exchange or partial request is suppressed.
 
 - 2026-11-18, Q10c final CI: Linux [run 44402778694](https://github.com/KanikaBreed/Ferroan/actions/runs/44402778694) failed after 2m8s in the unchanged `grid_state::tests::interrupted_spawn_before_record_is_recovered_without_touching_identical_unmarked_process`: `/proc` recovery returned `could not inspect a process environment during grid recovery; state preserved`. The same implementation passed Linux 3m5s and the live job 9m49s in the preceding run; only task evidence and README text changed. `scan_pending_bounded` aborts on an environment-open error for any still-live same-UID process newer than its controller, before checking launch identity. The CI error omits the OS error, so its precise cause is not proven. This is separate from Q10c's protocol change; Q10d already covers recovery scan limits, and should also investigate unrelated unreadable process environments. One explicit CI retry is requested after recording this intermittent failure; no test is disabled and no recovery policy is changed here. Three occurrences of the same failure block the item.
 

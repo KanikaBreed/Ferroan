@@ -40,6 +40,7 @@ mod grid;
 mod grid_state;
 mod http_oracle;
 mod live;
+mod live_proxy;
 mod oracle;
 mod schema;
 mod trailing_fixtures;
