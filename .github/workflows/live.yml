@@ -83,7 +83,7 @@ jobs:
           path: |
             .scratch/live/stamp
             .scratch/live/src
-          key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'tools/live/tranquillity-listen.patch', 'xtask/src/live.rs') }}
+          key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
       - name: Verify the oracles
         run: |
           set -euo pipefail

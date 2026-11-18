@@ -26,10 +26,6 @@ const REGION_UUID: &str = "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01";
 const CHAT_USER: &str = "8c4e1a70-2b59-4d6f-9e13-5a7c0d8b2f44";
 const START_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
-const ALTERS: &[&str] = &[
-    "ALTER TABLE UserAccounts ADD COLUMN DisplayName VARCHAR(31) NULL;",
-    "ALTER TABLE UserAccounts ADD COLUMN NameChanged INTEGER NULL DEFAULT 0;",
-];
 
 pub fn build() -> ExitCode {
     finish(build_inner())
@@ -236,6 +232,7 @@ fn region_server_ini(
 
 [Network]
     http_listener_port = {public_port}
+    bind_ip_address = "127.0.0.1"
 
 [Estates]
     DefaultEstateName = "Ferroan Test Estate"
@@ -269,14 +266,9 @@ ExternalHostName = 127.0.0.1
     )
 }
 
-fn up_report(port: u16, log: &Path, altered: bool) -> String {
-    let sqlite = if altered {
-        "\nsqlite: added DisplayName and NameChanged"
-    } else {
-        ""
-    };
+fn up_report(port: u16, log: &Path) -> String {
     format!(
-        "live: up\nlogin: http://127.0.0.1:{port}/\nhttp_listen: 127.0.0.1:{port}\nlog: {}{sqlite}",
+        "live: up\nlogin: http://127.0.0.1:{port}/\nhttp_listen: 127.0.0.1:{port}\nlog: {}",
         log.display()
     )
 }
@@ -425,11 +417,9 @@ fn build_linux() -> Result<String, String> {
     require_clean_pin(&reference, &pin)?;
     let src = prepare_source(&reference, &pin)?;
     let capture = repo_root().join("tools/capture/tranquillity-capture.patch");
-    let listen = repo_root().join("tools/live/tranquillity-listen.patch");
     let stamp_text = format!(
-        "pin={pin}\ncapture={}\nlisten={}\ngrid=self-contained\n",
-        file_hash(&capture)?,
-        file_hash(&listen)?
+        "pin={pin}\ncapture={}\ngrid=self-contained\n",
+        file_hash(&capture)?
     );
     let binary = region_binary();
     let grid = grid_binary();
@@ -447,7 +437,6 @@ fn build_linux() -> Result<String, String> {
     println!("live: building Tranquillity {pin}");
     reset_source(&src, &pin)?;
     git_apply(&src, &capture)?;
-    git_apply(&src, &listen)?;
     publish(
         &src,
         "Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj",
@@ -479,13 +468,12 @@ struct Started {
     public_port: u16,
     password: String,
     log: PathBuf,
-    altered: bool,
 }
 
 #[cfg(target_os = "linux")]
 fn up_linux() -> Result<String, String> {
     let started = start_region(false, None, false)?;
-    let report = up_report(started.public_port, &started.log, started.altered);
+    let report = up_report(started.public_port, &started.log);
     // Dropping Child does not kill the process. `live up` exits and init inherits it.
     drop(started.child);
     drop(started.stdin);
@@ -764,7 +752,6 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
             state.pid
         ));
     }
-    command_ok("sqlite3", &["-version"])?;
     let publish = publish_dir();
     require_under_scratch(&publish)?;
     copy_examples(&publish)?;
@@ -813,48 +800,11 @@ fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<
     write_secret(&config.join("RegionServer.ini"), &server_ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(public_port))
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
-    let first_log = run.join("region-first.log");
-    println!("live: starting the region on 127.0.0.1:{public_port}");
-    let mut first = spawn_region(&binary, &publish, &config, &first_log, console)?;
-    match wait_region(&mut first, &first_log, START_TIMEOUT)? {
-        Waited::Ready => {
-            return finish_start(
-                first,
-                &first_log,
-                public_port,
-                private_port,
-                false,
-                &password,
-            );
-        }
-        Waited::Timeout => {
-            stop_child(&mut first);
-            return Err(format!(
-                "the first start did not finish\n{}",
-                log_tail(&first_log, &password)
-            ));
-        }
-        Waited::Exited(_) => {}
-    }
-    let database = publish.join("userprofiles.db");
-    if !database.is_file() {
-        return Err(format!(
-            "the first start exited without userprofiles.db\n{}",
-            log_tail(&first_log, &password)
-        ));
-    }
-    let altered = add_missing_columns(&database)?;
-    if !altered {
-        return Err(format!(
-            "the first start exited and the user columns were already present\n{}",
-            log_tail(&first_log, &password)
-        ));
-    }
-    println!("live: added the SQLite user columns; starting again");
     let log = run.join("region.log");
+    println!("live: starting the region on 127.0.0.1:{public_port}");
     let mut child = spawn_region(&binary, &publish, &config, &log, console)?;
     match wait_region(&mut child, &log, START_TIMEOUT)? {
-        Waited::Ready => finish_start(child, &log, public_port, private_port, true, &password),
+        Waited::Ready => finish_start(child, &log, public_port, private_port, &password),
         Waited::Timeout => {
             stop_child(&mut child);
             Err(format!(
@@ -875,7 +825,6 @@ fn finish_start(
     log: &Path,
     public_port: u16,
     private_port: u16,
-    altered: bool,
     password: &str,
 ) -> Result<Started, String> {
     let pid = child.id();
@@ -899,7 +848,6 @@ fn finish_start(
         public_port,
         password: password.to_owned(),
         log: log.to_owned(),
-        altered,
     })
 }
 
@@ -1233,46 +1181,6 @@ fn log_tail(path: &Path, password: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn add_missing_columns(database: &Path) -> Result<bool, String> {
-    let names = sqlite(
-        database,
-        "SELECT name FROM pragma_table_info('UserAccounts');",
-    )?;
-    let mut added = false;
-    for sql in ALTERS {
-        let column = if sql.contains("DisplayName") {
-            "DisplayName"
-        } else {
-            "NameChanged"
-        };
-        if names.lines().any(|name| name.trim() == column) {
-            continue;
-        }
-        sqlite(database, sql)?;
-        added = true;
-    }
-    Ok(added)
-}
-
-#[cfg(target_os = "linux")]
-fn sqlite(database: &Path, sql: &str) -> Result<String, String> {
-    let output = Command::new("sqlite3")
-        .arg(database)
-        .arg(sql)
-        .output()
-        .map_err(|error| format!("could not run sqlite3: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        Err(format!(
-            "sqlite3 failed on {}\n{}",
-            database.display(),
-            output_tail(&output)
-        ))
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn process_sockets(pid: u32) -> Result<Vec<ProcSock>, String> {
     let inodes = socket_inodes(pid)?;
     let mut sockets = Vec::new();
@@ -1492,19 +1400,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn command_ok(program: &str, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| format!("could not run {program}: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} failed\n{}", output_tail(&output)))
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn output_tail(output: &Output) -> String {
     let mut text = String::new();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1535,15 +1430,6 @@ fn output_tail(output: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_sqlite_workaround_does_not_touch_migrations() {
-        assert_eq!(ALTERS.len(), 2);
-        for sql in ALTERS {
-            assert!(sql.starts_with("ALTER TABLE UserAccounts ADD COLUMN "));
-            assert!(!sql.to_ascii_lowercase().contains("migration"));
-        }
-    }
 
     #[test]
     fn the_region_ini_has_the_const_keys_and_the_report_omits_the_password() {
@@ -1583,12 +1469,12 @@ mod tests {
         );
         assert!(ini.contains("PrivURL = ${Const|BaseURL}"));
         assert!(ini.contains("PrivatePort = \"9103\""));
+        assert!(ini.contains("bind_ip_address = \"127.0.0.1\""));
         assert!(ini.contains(ESTATE_OWNER));
         assert!(ini.contains("DefaultEstateOwnerPassword = \"0123456789abcdef\""));
         assert!(ini.contains("regionload_regionsdir = \"/tmp/regions\""));
-        let report = up_report(9100, Path::new(".scratch/live/run/region.log"), true);
+        let report = up_report(9100, Path::new(".scratch/live/run/region.log"));
         assert!(report.contains("login: http://127.0.0.1:9100/"));
-        assert!(report.contains("sqlite: added DisplayName and NameChanged"));
         assert!(!report.contains("0123456789abcdef"));
         assert_eq!(
             redact("password 0123456789abcdef done", "0123456789abcdef"),

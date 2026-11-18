@@ -65,7 +65,18 @@ static class Program
         Directory.CreateDirectory(scratch);
         int count = WriteTree(scratch, revision);
         if (Directory.Exists(directory))
+        {
+            // README.md and .gitattributes are not generated. The attributes
+            // file keeps the XML as binary so a raw CR in element text survives
+            // checkout.
+            foreach (string name in new[] { "README.md", ".gitattributes" })
+            {
+                string source = Path.Combine(directory, name);
+                if (File.Exists(source))
+                    File.Copy(source, Path.Combine(scratch, name));
+            }
             Directory.Delete(directory, true);
+        }
         Directory.Move(scratch, directory);
         Console.WriteLine("generate: " + count + " asset xml documents");
     }
