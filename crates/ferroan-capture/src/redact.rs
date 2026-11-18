@@ -155,8 +155,22 @@ fn redact_text(body: &[u8]) -> Vec<u8> {
         "lastname",
         "session",
         "session_id",
+        "secure_session_id",
+        "agent_id",
+        "circuit_code",
+        "seed_capability",
     ] {
         text = redact_named_value(&text, name);
+    }
+    for key in [
+        "owner_id",
+        "agent_id",
+        "creator_id",
+        "last_owner_id",
+        "session_id",
+        "secure_session_id",
+    ] {
+        text = redact_llsd_key(&text, key);
     }
     text.into_bytes()
 }
@@ -172,7 +186,7 @@ fn redact_named_value(text: &str, name: &str) -> String {
         out.push_str(&rest[..at + needle.len()]);
         rest = &rest[at + needle.len()..];
         lower_rest = &lower_rest[at + needle.len()..];
-        if let Some(value_at) = find_string_element(lower_rest) {
+        if let Some(value_at) = find_scalar_element(lower_rest) {
             let (start, end) = value_at;
             out.push_str(&rest[..start]);
             out.push_str("Redacted");
@@ -184,13 +198,69 @@ fn redact_named_value(text: &str, name: &str) -> String {
     out
 }
 
-fn find_string_element(lower: &str) -> Option<(usize, usize)> {
-    let start_tag = "<string>";
-    let end_tag = "</string>";
-    let start = lower.find(start_tag)?;
+/// The next `<string>`, `<int>` or `<i4>` before another `<name>`.
+fn find_scalar_element(lower: &str) -> Option<(usize, usize)> {
+    let limit = lower.find("<name>").unwrap_or(lower.len());
+    let window = &lower[..limit];
+    let mut best: Option<(usize, &str, &str)> = None;
+    for (start_tag, end_tag) in [
+        ("<string>", "</string>"),
+        ("<int>", "</int>"),
+        ("<i4>", "</i4>"),
+    ] {
+        if let Some(start) = window.find(start_tag)
+            && best.is_none_or(|(at, _, _)| start < at)
+        {
+            best = Some((start, start_tag, end_tag));
+        }
+    }
+    let (start, start_tag, end_tag) = best?;
     let from = start + start_tag.len();
-    let end = lower[from..].find(end_tag)? + from;
+    let end = window[from..].find(end_tag)? + from;
     Some((from, end))
+}
+
+/// `<key>owner_id</key>` followed by `<uuid>` or `<string>` before the next key.
+fn redact_llsd_key(text: &str, key: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let needle = format!("<key>{key}</key>");
+    let mut out = String::new();
+    let mut rest = text;
+    let mut lower_rest = lower.as_str();
+    while let Some(at) = lower_rest.find(&needle) {
+        out.push_str(&rest[..at + needle.len()]);
+        rest = &rest[at + needle.len()..];
+        lower_rest = &lower_rest[at + needle.len()..];
+        if let Some((from, end)) = llsd_value(lower_rest) {
+            out.push_str(&rest[..from]);
+            out.push_str("Redacted");
+            rest = &rest[end..];
+            lower_rest = &lower_rest[end..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn llsd_value(lower: &str) -> Option<(usize, usize)> {
+    let limit = lower.find("<key>").unwrap_or(lower.len());
+    let window = &lower[..limit];
+    let mut best: Option<(usize, usize)> = None;
+    for start_tag in ["<uuid>", "<string>"] {
+        let Some(start) = window.find(start_tag) else {
+            continue;
+        };
+        let end_tag = start_tag.replace('<', "</");
+        let from = start + start_tag.len();
+        let Some(end) = window[from..].find(end_tag.as_str()) else {
+            continue;
+        };
+        let end = end + from;
+        if best.is_none_or(|(at, _)| start < at) {
+            best = Some((from, end));
+        }
+    }
+    best
 }
 
 fn redact_ipv4(text: &str) -> String {
@@ -253,7 +323,7 @@ fn find_subsequence(hay: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use ferroan_protocol::msgs::UseCircuitCode;
-    use ferroan_protocol::{packet, reencode_datagram};
+    use ferroan_protocol::{Msg, packet, reencode_datagram};
     use uuid::Uuid;
 
     use crate::format::{Kind, write_capture};
@@ -314,5 +384,53 @@ Content-Type: text/xml\r\n\
         assert!(!text.contains(">Ada<"));
         assert!(text.contains("127.0.0.1"));
         assert!(text.contains("Authorization: Redacted"));
+    }
+
+    #[test]
+    fn login_identity_and_an_inventory_owner_are_removed() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n\
+<member><name>agent_id</name><value><string>11111111-1111-1111-1111-111111111111</string></value></member>\
+<member><name>circuit_code</name><value><int>42</int></value></member>\
+<key>owner_id</key><uuid>22222222-2222-2222-2222-222222222222</uuid>\
+<key>asset_id</key><uuid>33333333-3333-3333-3333-333333333333</uuid>";
+        let records = vec![Record {
+            kind: Kind::HttpResponse,
+            time_ms: 3,
+            bytes: raw.to_vec(),
+        }];
+        let text = String::from_utf8(redact_records(&records).unwrap()[0].bytes.clone()).unwrap();
+        assert!(!text.contains("11111111-1111-1111-1111-111111111111"));
+        assert!(!text.contains(">42<"));
+        assert!(!text.contains("22222222-2222-2222-2222-222222222222"));
+        assert!(text.contains("33333333-3333-3333-3333-333333333333"));
+    }
+
+    #[test]
+    fn the_harness_session_replays() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/captures/session.cap");
+        let bytes = std::fs::read(&path).unwrap();
+        let records = crate::read_capture(&bytes).unwrap();
+        check_udp(&records).unwrap();
+        let chat = b"ferroan harness chat";
+        assert!(bytes.windows(chat.len()).any(|window| window == chat));
+        let mut circuits = 0;
+        for record in &records {
+            if !matches!(record.kind, Kind::UdpIn | Kind::UdpOut) {
+                continue;
+            }
+            let packet = ferroan_protocol::parse_packet(&record.bytes).unwrap();
+            if packet.id != ferroan_protocol::msgs::UseCircuitCode::ID {
+                continue;
+            }
+            let message = packet
+                .decode::<ferroan_protocol::msgs::UseCircuitCode>()
+                .unwrap();
+            assert_eq!(message.circuit_code.code, 1);
+            assert_eq!(message.circuit_code.session_id, uuid::Uuid::from_u128(2));
+            assert_eq!(message.circuit_code.id, uuid::Uuid::from_u128(1));
+            circuits += 1;
+        }
+        assert!(circuits >= 2, "both bots send UseCircuitCode");
     }
 }

@@ -36,6 +36,8 @@ pub struct Harness {
     pub chat: Account,
     pub texture: Vec<u8>,
     pub library_texture: Uuid,
+    /// HTTP exchanges recorded while [`run`] is in progress.
+    pub http_trace: std::sync::Arc<crate::trace::HttpTrace>,
 }
 
 /// The scenarios `all` runs, in order.
@@ -52,6 +54,8 @@ pub const NAMES: &[&str] = &[
 pub fn selection(name: &str) -> Option<&'static [&'static str]> {
     if name == "all" {
         Some(NAMES)
+    } else if name == "assets" {
+        Some(&NAMES[5..7])
     } else if NAMES.contains(&name) {
         Some(match name {
             "login" => &NAMES[0..1],
@@ -71,6 +75,10 @@ pub fn selection(name: &str) -> Option<&'static [&'static str]> {
 /// Run the named scenario, or every scenario when `name` is `all`.
 /// The returned text is the report. An error is a report that failed.
 pub async fn run(name: &str, harness: &Harness) -> Result<String, String> {
+    harness.http_trace.scope(run_traced(name, harness)).await
+}
+
+async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     let Some(names) = selection(name) else {
         return Err(format!(
             "unknown scenario {name}; expected all or {}",
@@ -706,15 +714,17 @@ async fn fetch_folder(
 }
 
 async fn post_llsd(http: &reqwest::Client, url: &str, body: &Llsd) -> Result<Llsd, String> {
+    let xml = to_xml(body);
     let response = http
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/llsd+xml")
         .header(reqwest::header::ACCEPT, "application/llsd+xml")
-        .body(to_xml(body))
+        .body(xml.clone())
         .send()
         .await
         .map_err(|error| error.without_url().to_string())?;
     let status = response.status();
+    let response_type = content_type(&response);
     let bytes = response
         .bytes()
         .await
@@ -722,6 +732,16 @@ async fn post_llsd(http: &reqwest::Client, url: &str, body: &Llsd) -> Result<Lls
     if bytes.len() > BODY_LIMIT {
         return Err(format!("cap reply is {} bytes", bytes.len()));
     }
+    crate::trace::note_exchange(crate::trace::Exchange {
+        method: "POST",
+        url,
+        request_type: Some("application/llsd+xml"),
+        accept: Some("application/llsd+xml"),
+        request_body: &xml,
+        status: status.as_u16(),
+        response_type: response_type.as_deref(),
+        response_body: &bytes,
+    });
     if !status.is_success() {
         return Err(format!("cap status {}", status.as_u16()));
     }
@@ -737,6 +757,7 @@ async fn post_bytes_llsd(http: &reqwest::Client, url: &str, body: &[u8]) -> Resu
         .await
         .map_err(|error| error.without_url().to_string())?;
     let status = response.status();
+    let response_type = content_type(&response);
     let bytes = response
         .bytes()
         .await
@@ -744,6 +765,16 @@ async fn post_bytes_llsd(http: &reqwest::Client, url: &str, body: &[u8]) -> Resu
     if bytes.len() > BODY_LIMIT {
         return Err(format!("upload reply is {} bytes", bytes.len()));
     }
+    crate::trace::note_exchange(crate::trace::Exchange {
+        method: "POST",
+        url,
+        request_type: Some("application/octet-stream"),
+        accept: None,
+        request_body: body,
+        status: status.as_u16(),
+        response_type: response_type.as_deref(),
+        response_body: &bytes,
+    });
     if !status.is_success() {
         return Err(format!("upload status {}", status.as_u16()));
     }
@@ -757,6 +788,7 @@ async fn get_bytes(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String>
         .await
         .map_err(|error| error.without_url().to_string())?;
     let status = response.status();
+    let response_type = content_type(&response);
     let bytes = response
         .bytes()
         .await
@@ -764,10 +796,28 @@ async fn get_bytes(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String>
     if bytes.len() > BODY_LIMIT {
         return Err(format!("texture reply is {} bytes", bytes.len()));
     }
+    crate::trace::note_exchange(crate::trace::Exchange {
+        method: "GET",
+        url,
+        request_type: None,
+        accept: None,
+        request_body: b"",
+        status: status.as_u16(),
+        response_type: response_type.as_deref(),
+        response_body: &bytes,
+    });
     if !status.is_success() {
         return Err(format!("texture status {}", status.as_u16()));
     }
     Ok(bytes.to_vec())
+}
+
+fn content_type(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 fn llsd_has_text(value: &Llsd, needle: &str) -> bool {
@@ -803,6 +853,7 @@ mod tests {
     fn all_expands_and_a_single_name_does_not() {
         assert_eq!(selection("all").unwrap().len(), 7);
         assert_eq!(selection("login").unwrap(), &["login"]);
+        assert_eq!(selection("assets").unwrap(), &["texture", "inventory"]);
         assert!(selection("capture").is_none());
     }
 

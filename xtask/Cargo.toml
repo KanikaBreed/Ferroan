@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 ferroan-bot = { path = "../tools/bot" }
+ferroan-capture = { path = "../crates/ferroan-capture" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 uuid = { version = "1.27.0", features = ["v4"] }
 

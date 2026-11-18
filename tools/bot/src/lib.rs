@@ -14,6 +14,7 @@ pub mod login;
 pub mod scenario;
 pub mod session;
 pub mod throttle;
+pub mod trace;
 mod world;
 mod xmlrpc;
 
