@@ -22,7 +22,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q2 | P2.0b: seed capability and event queue | DONE (#21) |
 | Q3 | P2.0c: harness grid mode | DONE (#22) |
 | Q4 | Pin2: move the Tranquillity pin to `develop` `8583218` | DONE (#24) |
-| Q5 | P0.10f: fix `live assets` and add `live up --assets ferroan` | IN PROGRESS (feat/live-assets) |
+| Q5 | P0.10f: fix `live assets` and add `live up --assets ferroan` | DONE (#25) |
 | Q6 | P2.0d: login through C# Robust | READY after Q5 |
 | Q7 | P2.0b2: the event queue as Tranquillity answers it | READY after Q6 |
 | Q8 | P2.0e: terrain from the C# region store | READY after Q7 |
