@@ -15,7 +15,7 @@ cargo xtask oracle verify some/dir   # same check for bytes Rust wrote in that s
 
 `FERROAN_REF` is the reference checkouts root. It defaults to `~/Git/reference` (`HOME` or `USERPROFILE`). The checkout's `libopenmetaverse` revision must match `docs/REFERENCES.md`, and the checkout must be clean before and after the build.
 
-The tool forces `Utils.EnUsCulture` before it calls OpenMetaverse. Integer and date text follow that culture; reals already do. It refuses to run on a big-endian machine because the packed types are little-endian. CI does not run this command. The generated fixtures are committed, and `cargo xtask oracle verify` stays a manual step until a Linux CI job is added.
+The tool forces `Utils.EnUsCulture` before it calls OpenMetaverse. Integer and date text follow that culture; reals already do. It refuses to run on a big-endian machine because the packed types are little-endian. The generated fixtures are committed. The [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask oracle verify`; ordinary CI uses the committed bytes in Rust tests without building this tool.
 
 `verify` decodes each payload with OpenMetaverse and compares the value with `manifest.json`. It also encodes the same inputs again and fails if the file bytes differ. `--semantic` on the console program skips the byte compare and reports only field differences. A payload over 16 MiB is rejected.
 

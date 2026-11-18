@@ -52,6 +52,23 @@ pub(crate) async fn run(
         200,
         "OPTIONS seed",
     )?;
+    for (binary, status) in [
+        ("<binary>!</binary>", 400),
+        ("<binary>YQ</binary>", 400),
+        ("<binary encoding=\"base16\">61</binary>", 400),
+        ("<binary encoding=\"base16\"></binary>", 400),
+        ("<binary encoding=\"base16\"/>", 200),
+    ] {
+        let body = format!("<llsd><array>{binary}</array></llsd>");
+        let reply = exchange(http, session, "POST", seed, body.as_bytes()).await?;
+        require_status(&reply, status, "binary seed")?;
+        if status == 400 && !reply.body.is_empty() {
+            return Err("caps: rejected binary seed has a nonempty body".to_owned());
+        }
+        if status == 200 && from_xml(&reply.body).ok() != Some(Llsd::new_map()) {
+            return Err("caps: empty binary unexpectedly selected a capability".to_owned());
+        }
+    }
 
     let mut ack = None;
     let mut delivered = 0;
@@ -73,7 +90,7 @@ pub(crate) async fn run(
                 return Err("caps: empty poll returned a nonempty body".to_string());
             }
             return Ok(format!(
-                "caps seed: pass (string, URI, GET, malformed, OPTIONS)\ncaps empty poll: pass (502, {}ms, {})\ncaps event batches: {delivered}",
+                "caps seed: pass (string, URI, GET, malformed, OPTIONS)\ncaps binary seed: pass (invalid, unpadded, base16, explicit empty, self-closing)\ncaps empty poll: pass (502, {}ms, {})\ncaps event batches: {delivered}",
                 poll.elapsed.as_millis(),
                 poll.content_type
             ));

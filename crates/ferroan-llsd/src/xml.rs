@@ -35,6 +35,8 @@ pub struct Element {
     pub name: String,
     pub attrs: Vec<(String, String)>,
     pub children: Vec<Node>,
+    /// Whether the source used `/>`, distinct from an empty start/end pair.
+    pub self_closing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +179,7 @@ impl<'a> Parser<'a> {
                         return Err(self.err("expected '>' after '/'"));
                     }
                     self.pos += 1;
+                    el.self_closing = true;
                     return Ok(el);
                 }
                 Some(b'>') => {

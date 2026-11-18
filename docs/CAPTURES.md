@@ -14,7 +14,7 @@ record: kind u8 | time_ms u64 little-endian | len u32 little-endian | bytes
 | HTTP request | 3 | The HTTP/1.1 request, headers and body. At most 1 MiB |
 | HTTP response | 4 | The HTTP/1.1 response, headers and body. At most 1 MiB |
 
-`time_ms` is Unix time in milliseconds. The socket address is not stored. A capture holds at most 1,000,000 records. Commit only a redacted file, under `fixtures/captures/`. `fixtures/captures/session.cap` is the redacted `cargo xtask live run all` session. The unit tests also build a synthetic `UseCircuitCode` datagram. That datagram is not a session.
+`time_ms` is Unix time in milliseconds. The socket address is not stored. A capture holds at most 1,000,000 records. Commit only reviewed, redacted evidence under `fixtures/`; full sessions belong in `fixtures/captures/`, and focused packet/HTTP evidence has its own fixture directories. `fixtures/captures/session.cap` is the redacted `cargo xtask live run all` session. The unit tests also build a synthetic `UseCircuitCode` datagram. That datagram is not a session.
 
 ## UDP
 
@@ -38,7 +38,7 @@ Then set the key in the region's INI and start that build:
     CaptureFile = /tmp/session.cap
 ```
 
-`dotnet build` of `Source/OpenSim.Region.ClientStack.LindenUDP/OpenSim.Region.ClientStack.LindenUDP.csproj` with this patch applied succeeded on Linux (0 warnings, 0 errors) against that revision. A region process has not been started with `CaptureFile` set.
+`cargo xtask live build` applies the patch and builds the pinned C# server in `.scratch/live/`. The [Linux live workflow](../.github/workflows/live.yml) starts those regions with `CaptureFile` set, runs standalone and grid scenarios, and requires the resulting UDP captures to pass check, redaction and replay. The committed session below is also replayed by the ordinary CI jobs.
 
 ## HTTP
 

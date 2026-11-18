@@ -12,7 +12,8 @@ cargo xtask live caps-fixtures .scratch/live/grid
 The dedicated `caps` scenario logs in as a generated local test account and
 keeps its UDP session alive while probing HTTP. It requests only EventQueueGet
 from the seed, repeats that request with an LLSD URI entry, checks a GET,
-malformed POST and OPTIONS, drains startup events, and waits for an empty poll.
+malformed POST and OPTIONS, probes LLSD binary parsing, drains startup events,
+and waits for an empty poll.
 It is separate from `all`, so ordinary scenarios do not gain a 58-second wait.
 The same probe runs against Rust with
 `cargo xtask live run caps grid --region ferroan`.
@@ -24,13 +25,20 @@ returns 200 with the three recorded CORS headers; it is handled before the
 seed's POST-only guard. A URI entry naming EventQueueGet returns the same seed
 map as a string entry.
 
-The empty poll took **58,036 ms**, measured between the capture proxy's request
-and response records. It returned 502, `text/html`, and zero body bytes.
-Two preceding nonempty batches were observed with `application/xml`. The
-`events.response.xml` fixture preserves the second batch: EnableSimulator and
-EstablishAgentCommunication for the C# neighbour. Its event id is **9,969,931**;
-the next empty poll acknowledges that id. Event ids are kept unchanged so the
-capture documents the nontrivial initial counter and its progression.
+The binary seed requests distinguish invalid base64 (`!`), unpadded base64,
+unsupported `base16` with text, unsupported `base16` with an explicit empty
+element, and a self-closing `base16` element. The first four return 400 with
+empty bodies. C# accepts the self-closing element before inspecting its encoding;
+that request returns 200 and an empty capability map. These are captured HTTP
+results, in addition to the decoder oracle cases.
+
+The manifest records the empty poll's elapsed milliseconds, measured between
+the capture proxy's request and response records. It returned 502 after the
+58-second hold, with `text/html` and zero body bytes. The selected nonempty
+`events.response.xml` batch uses `application/xml` and contains EnableSimulator
+and EstablishAgentCommunication for the C# neighbour. Its event id is preserved
+in the response; the next empty poll acknowledges that id. Event ids are kept
+unchanged so the capture documents the initial counter and its progression.
 
 The generator changes only these identity/endpoint values, preserving every
 other body byte and XML formatting:

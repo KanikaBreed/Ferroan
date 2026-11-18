@@ -10,7 +10,7 @@ The generator and the packet codec were adapted from Aurora Viewer `crates/auror
 
 ## Fixtures
 
-`tests/oracle_fixtures.rs` re-encodes every `family = packet` file under `fixtures/oracle` and requires the same bytes. There are 478 of them. `cargo xtask oracle generate` writes them and checks each class packet against `Packet.ToBytes`. `cargo xtask oracle verify` repeats that check. CI does not run either command.
+`tests/oracle_fixtures.rs` re-encodes every `family = packet` file under `fixtures/oracle` and requires the same bytes. There are 478 of them. `cargo xtask oracle generate` writes them and checks each class packet against `Packet.ToBytes`. `cargo xtask oracle verify` repeats that check in the [Linux live workflow](../../.github/workflows/live.yml). Ordinary CI runs the Rust fixture tests; fixture generation remains an explicit update step.
 
 387 messages have an OpenMetaverse packet class and match `ToBytes`. `TestMessage` and `ViewerStats` then throw inside `BuildPacket` because a fixed-count block is left as nulls. The oracle does not require `BuildPacket`. The other 91 messages have no class. They use the same encoder, which the class matches justify.
 

@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (#36: IM capture suffix prerequisite) |
-| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | READY after Q10a |
+| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10b |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
@@ -95,6 +95,10 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10b CI: the first Windows check on `e77dde1` failed Clippy 1.100's `needless_range_loop` in the unchanged `ferroan-types::texture::paint` helper ([run 44329492971](https://github.com/KanikaBreed/Ferroan/actions/runs/44329492971), Windows 2m30s). Local stable was 1.97.1. The minimal iterator conversion preserves the same selected faces and values; existing texture fixtures validate it. This required-check repair is recorded explicitly; no flaky retry or lint suppression was used.
+
+- 2026-11-18, Q10b documentation audit: TB1 said Ferroan refuses unnamed asset flags, but `crates/ferroan-services/src/asset/xml.rs::flags_text` currently emits decimal text when bits outside 1/2/4 are set. The C# oracle records `XmlSerializer` rejection for those values. TB1's Ferroan column is corrected; no asset behavior changed in Q10b. Proposed follow-up: verify the full asset route against a C# capture and resolve this discrepancy in the asset pilot gaps task (P1.A1), with the required compatibility decision.
 
 - 2026-11-18, resumed Q10: Tranquillity `LLClientView.SendInstantMessage` at `8583218` appends four zero bytes beyond the pinned `ImprovedInstantMessage` template. Ferrobot receives the IM, but Ferroan's generated re-encoder drops the suffix and the mandatory lossless capture check fails deterministically on the preserved packet. Recorded as TB4 in [TRANQUILLITY_BUGS.md](docs/TRANQUILLITY_BUGS.md); proposed protocol/capture prerequisite is under Q10 above. No external issue was filed and no C# or Ferrobot checkout was changed.
 

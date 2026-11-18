@@ -9,4 +9,4 @@ cargo xtask http generate
 cargo xtask http verify
 ```
 
-CI does not run it. The Rust tests compare `ferroan-http` with the committed files.
+The [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask http verify`. Ordinary CI runs the Rust tests comparing `ferroan-http` with the committed files.

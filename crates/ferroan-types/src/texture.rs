@@ -940,14 +940,11 @@ fn paint<T: Copy>(
     write: impl Fn(&mut TextureFace, T),
 ) {
     let count = size.min(MAX_FACES);
-    for index in 0..count {
+    for (index, slot) in entry.faces.iter_mut().enumerate().take(count) {
         if bits & (1u64 << index) == 0 {
             continue;
         }
-        if entry.faces[index].is_none() {
-            entry.faces[index] = Some(TextureFace::child());
-        }
-        let face = entry.faces[index].as_mut().expect("face");
+        let face = slot.get_or_insert_with(TextureFace::child);
         write(face, value);
         face.attributes |= attr;
     }
