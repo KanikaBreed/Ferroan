@@ -14,8 +14,6 @@ ferroan-http = { path = "../crates/ferroan-http" }
 ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }
 serde_json = { version = "1", features = ["preserve_order"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
-sha1 = "0.10.6"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 uuid = { version = "1.27.0", features = ["v4"] }
