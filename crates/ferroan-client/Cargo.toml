@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-client"
-description = "One region-side LLUDP circuit"
+description = "Region-side LLUDP circuit, seed capability and event queue"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+axum = "0.8"
+ferroan-http = { path = "../ferroan-http" }
+ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-protocol = { path = "../ferroan-protocol" }
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["net", "time"] }

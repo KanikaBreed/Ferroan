@@ -364,7 +364,10 @@ dependencies = [
 name = "ferroan-client"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "ferroan-bot",
+ "ferroan-http",
+ "ferroan-llsd",
  "ferroan-protocol",
  "thiserror",
  "tokio",

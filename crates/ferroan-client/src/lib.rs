@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The region side of one LLUDP circuit.
+//! The region side of one LLUDP circuit, the seed capability and an event queue.
 //!
-//! Throttles, CAPS and the event queue are later rows.
+//! Throttles are still planned. An empty event poll is answered at once.
 
+mod caps;
 mod circuit;
 
+pub use caps::{CapsError, CapsServer};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer};
