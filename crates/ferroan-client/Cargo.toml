@@ -18,6 +18,7 @@ uuid = { version = "1.27.0", features = ["v4"] }
 
 [dev-dependencies]
 ferroan-bot = { path = "../../tools/bot" }
+ferroan-capture = { path = "../ferroan-capture" }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "test-util"] }
 

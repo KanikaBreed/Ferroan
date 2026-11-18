@@ -28,7 +28,8 @@
 //     (PacketReceived, HandleUseCircuitCode, SendAckImmediate, SendAcks,
 //      CompletePing, SendPacketFinal, LogoutHandler)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (SendLogoutPacket, CloseWithoutChecks)
+//     (SendLogoutPacket, CloseWithoutChecks, HandleCompleteAgentMovement)
+//   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (MakeRootAgent)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
@@ -38,7 +39,7 @@
 //! Established ACKs are queued. Shared reliability state removes exhausted
 //! packets; C# itself retries until its inactivity timeout.
 
-use crate::HandshakeConfig;
+use crate::{ArrivalConfig, HandshakeConfig};
 use ferroan_protocol::msgs::{
     AgentHeightWidth, AgentThrottle, CompleteAgentMovement, CompletePingCheck, LogoutReply,
     LogoutRequest, PacketAck, RegionHandshakeReply, StartPingCheck, UseCircuitCode, logout_reply,
@@ -53,7 +54,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
@@ -81,6 +82,8 @@ pub enum CircuitError {
     TooManyUnacked(usize),
     #[error("packet exceeds the datagram limit")]
     TooLarge,
+    #[error("arrival position or look-at is not finite")]
+    InvalidArrival,
 }
 
 // This private boundary permits deterministic peer-error tests without
@@ -115,9 +118,11 @@ struct State {
     ack_at: Instant,
     bytes_since_ack: usize,
     handshake: HandshakeConfig,
+    arrival: ArrivalConfig,
+    arrived: bool,
 }
 impl State {
-    fn new(handshake: HandshakeConfig) -> Self {
+    fn new(handshake: HandshakeConfig, arrival: ArrivalConfig) -> Self {
         Self {
             sequence: SequenceCounter::default(),
             peer: None,
@@ -127,6 +132,8 @@ impl State {
             ack_at: Instant::now() + ACK_INTERVAL,
             bytes_since_ack: 0,
             handshake,
+            arrival,
+            arrived: false,
         }
     }
     fn time_until_work(&self) -> Duration {
@@ -273,8 +280,8 @@ impl State {
             return Ok(false);
         }
         // C# validates agent/session IDs before applying appended ACKs.
-        // Movement, throttle and height callbacks remain planned; their former
-        // discarded circuit-code checks are removed instead of claiming support.
+        // Throttle and height callbacks remain planned. Arrival's circuit-code
+        // gate is applied in the movement callback after normal ACK handling.
         if !valid_packet_ids(packet, expect) {
             return Ok(false);
         }
@@ -300,7 +307,22 @@ impl State {
                 return Ok(false);
             }
         }
-        if packet.id == StartPingCheck::ID {
+        if packet.id == CompleteAgentMovement::ID {
+            // LLClientView invokes CompleteMovement only for this circuit.
+            // ScenePresence.MakeRootAgent suppresses a second root arrival.
+            if !self.arrived
+                && let Ok(movement) = packet.decode::<CompleteAgentMovement>()
+                && movement.agent_data.circuit_code == expect.circuit_code
+            {
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+                let reply = self.arrival.build(expect, timestamp);
+                self.send_message(sock, from, &reply, true).await?;
+                self.arrived = true;
+            }
+        } else if packet.id == StartPingCheck::ID {
             if let Ok(ping) = packet.decode::<StartPingCheck>() {
                 let mut reply = CompletePingCheck::default();
                 reply.ping_id.ping_id = ping.ping_id.ping_id;
@@ -374,25 +396,43 @@ impl CircuitServer {
     }
     /// Serve one authorized viewer until LogoutReply. Datagram errors are
     /// tolerated within the circuit's bounded lifetime.
+    #[cfg(test)]
     pub async fn serve_one(
         &self,
         expect: CircuitExpect,
         timeout: Duration,
     ) -> Result<(), CircuitError> {
+        self.serve_one_with_arrival(expect, ArrivalConfig::default(), timeout)
+            .await
+    }
+
+    /// Serve an accepted login with its actual start position and the region's
+    /// current handle and channel/version. Sends arrival once after the viewer
+    /// completes movement; later scene traffic remains with its task.
+    pub async fn serve_one_with_arrival(
+        &self,
+        expect: CircuitExpect,
+        arrival: ArrivalConfig,
+        timeout: Duration,
+    ) -> Result<(), CircuitError> {
+        if !arrival.valid() {
+            return Err(CircuitError::InvalidArrival);
+        }
         let mut handshake = self.handshake.clone();
         if handshake.region_id.is_nil() {
             handshake.region_id = expect.region_id;
         }
-        serve_socket(&self.socket, expect, handshake, timeout).await
+        serve_socket(&self.socket, expect, handshake, arrival, timeout).await
     }
 }
 async fn serve_socket(
     sock: &impl DatagramIo,
     expect: CircuitExpect,
     handshake: HandshakeConfig,
+    arrival: ArrivalConfig,
     timeout: Duration,
 ) -> Result<(), CircuitError> {
-    let mut state = State::new(handshake);
+    let mut state = State::new(handshake, arrival);
     let deadline = Instant::now() + timeout;
     let mut buf = [0u8; MAX_DATAGRAM];
     loop {

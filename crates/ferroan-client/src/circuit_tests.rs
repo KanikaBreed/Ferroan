@@ -13,6 +13,183 @@ const ESTABLISHED_ACK: &[u8] =
     include_bytes!("../../../fixtures/circuit/packet-ack-established.bin");
 const HANDSHAKE: &[u8] = include_bytes!("../../../fixtures/circuit/region-handshake.bin");
 const LOGOUT: &[u8] = include_bytes!("../../../fixtures/circuit/logout-reply.bin");
+const ARRIVAL: &[u8] = include_bytes!("../../../fixtures/arrival/agent-movement-complete.bin");
+
+fn movement(expect: CircuitExpect, sequence: u32, acks: &[u32]) -> Vec<u8> {
+    let mut message = CompleteAgentMovement::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.agent_data.circuit_code = expect.circuit_code;
+    wire(&message, sequence, acks)
+}
+
+#[tokio::test]
+async fn complete_movement_send_path_matches_captured_csharp_arrival() {
+    let config = ArrivalConfig {
+        // Preserve C#'s exact terrain-adjusted Z (one ULP above literal25.96).
+        position: [128.0, 128.0, f32::from_bits(0x41cf_ae15)],
+        look_at: [0.99, 0.042, 0.0],
+        region_handle: 1_099_511_628_032_000,
+        channel_version:
+            "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)".into(),
+    };
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), config);
+    let io = FakeIo::default();
+    let captured =
+        ferroan_capture::read_capture(include_bytes!("../../../fixtures/arrival/sequence.cap"))
+            .unwrap();
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+    for record in captured
+        .iter()
+        .filter(|record| record.kind == ferroan_capture::Kind::UdpIn)
+    {
+        let packet = parse_packet(&record.bytes).unwrap();
+        state
+            .handle(&io, peer(), &expect, &packet, record.bytes.len())
+            .await
+            .unwrap();
+    }
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+    let sent = io.sent.lock().unwrap();
+    let mut arrival = sent
+        .iter()
+        .find(|bytes| {
+            parse_packet(bytes).unwrap().id == ferroan_protocol::msgs::AgentMovementComplete::ID
+        })
+        .unwrap()
+        .clone();
+    let packet = parse_packet(&arrival).unwrap();
+    let message = packet
+        .decode::<ferroan_protocol::msgs::AgentMovementComplete>()
+        .unwrap();
+    assert!(packet.reliable());
+    assert_eq!(packet.flags, ferroan_protocol::PacketFlags::RELIABLE);
+    assert!((before..=after).contains(&message.data.timestamp));
+    assert!(state.unacked.contains(packet.sequence));
+    // The capture and expected agent use P0.10d identity folding. Only the
+    // run's Unix timestamp changes here; preserve every other wire byte.
+    arrival[74..78].fill(0);
+    assert_eq!(arrival, ARRIVAL);
+}
+
+#[tokio::test]
+async fn arrival_requires_current_identity_and_circuit_then_sends_only_once() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    for (index, wrong) in [
+        CircuitExpect {
+            agent_id: Uuid::from_u128(99),
+            ..expect
+        },
+        CircuitExpect {
+            session_id: Uuid::from_u128(99),
+            ..expect
+        },
+        CircuitExpect {
+            circuit_code: 99,
+            ..expect
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = movement(wrong, index as u32 + 1, &[]);
+        state
+            .handle(
+                &io,
+                peer(),
+                &expect,
+                &parse_packet(&request).unwrap(),
+                request.len(),
+            )
+            .await
+            .unwrap();
+        assert!(!state.arrived);
+        assert!(io.sent.lock().unwrap().is_empty());
+    }
+    // Only the wrong-code packet passes the C# agent/session validation and
+    // gets ACKed; the callback declines its movement request.
+    assert_eq!(
+        state.pending_acks.iter().copied().collect::<Vec<_>>(),
+        vec![3]
+    );
+    for sequence in [4, 4, 5] {
+        let request = movement(expect, sequence, &[]);
+        state
+            .handle(
+                &io,
+                peer(),
+                &expect,
+                &parse_packet(&request).unwrap(),
+                request.len(),
+            )
+            .await
+            .unwrap();
+    }
+    assert!(state.arrived);
+    assert_eq!(io.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn unacknowledged_arrival_retries_the_original_timestamp_and_stops_on_ack() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let request = movement(expect, 1, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
+    let initial = io.sent.lock().unwrap()[0].clone();
+    tokio::time::sleep(RESEND_AFTER + Duration::from_millis(10)).await;
+    state.maintain(&io).await.unwrap();
+    let mut expected_retry = initial;
+    expected_retry[0] |= ferroan_protocol::PacketFlags::RESENT;
+    assert_eq!(io.sent.lock().unwrap()[1], expected_retry);
+    let ack = PacketAck {
+        packets: vec![packet_ack::Packets { id: 1 }],
+    };
+    let request = wire(&ack, 2, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
+    assert!(state.unacked.is_empty());
+    tokio::time::sleep(RESEND_AFTER + Duration::from_millis(10)).await;
+    state.maintain(&io).await.unwrap();
+    assert_eq!(
+        io.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|bytes| parse_packet(bytes).unwrap().id
+                == ferroan_protocol::msgs::AgentMovementComplete::ID)
+            .count(),
+        2
+    );
+}
 
 #[derive(Default)]
 struct FakeIo {
@@ -97,7 +274,7 @@ async fn initial_ack_and_configured_handshake_match_csharp_datagrams() {
     let io = FakeIo::default();
     let config = captured_config();
     let expect = identity(config.estate_owner);
-    let mut state = State::new(config);
+    let mut state = State::new(config, ArrivalConfig::default());
     let request = use_circuit(expect);
     assert!(
         !state
@@ -123,7 +300,7 @@ async fn initial_ack_and_configured_handshake_match_csharp_datagrams() {
 async fn queued_ack_matches_csharp_bytes_and_consumes_a_sequence() {
     let captured = parse_packet(ESTABLISHED_ACK).unwrap();
     let ack = captured.decode::<PacketAck>().unwrap();
-    let mut state = State::new(captured_config());
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
     state.sequence = SequenceCounter::new(captured.sequence);
     state
         .pending_acks
@@ -140,7 +317,7 @@ async fn queued_ack_matches_csharp_bytes_and_consumes_a_sequence() {
 async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
     let captured = parse_packet(LOGOUT).unwrap();
     let expect = identity(Uuid::from_u128(1));
-    let mut state = State::new(captured_config());
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
     state.peer = Some(peer());
     state.sequence = SequenceCounter::new(captured.sequence);
     let io = FakeIo::default();
@@ -168,7 +345,13 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
         .extend([Ok(use_circuit(expect)), Ok(logout(expect, &[]))]);
     tokio::time::timeout(
         Duration::from_secs(1),
-        serve_socket(&io, expect, captured_config(), Duration::from_secs(5)),
+        serve_socket(
+            &io,
+            expect,
+            captured_config(),
+            ArrivalConfig::default(),
+            Duration::from_secs(5),
+        ),
     )
     .await
     .expect("logout must not wait for an ACK")
@@ -199,9 +382,15 @@ async fn receive_and_send_peer_errors_do_not_end_the_circuit() {
         Some(io::ErrorKind::ConnectionReset),
         Some(io::ErrorKind::ConnectionRefused),
     ]);
-    serve_socket(&io, expect, captured_config(), Duration::from_secs(1))
-        .await
-        .unwrap();
+    serve_socket(
+        &io,
+        expect,
+        captured_config(),
+        ArrivalConfig::default(),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
     let sent = io.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     let reply = parse_packet(&sent[0]).unwrap();
@@ -218,7 +407,7 @@ async fn failed_reliable_send_is_retained_and_retried() {
         .extend([None, Some(io::ErrorKind::ConnectionRefused)]);
     let config = captured_config();
     let expect = identity(config.estate_owner);
-    let mut state = State::new(config);
+    let mut state = State::new(config, ArrivalConfig::default());
     let request = use_circuit(expect);
     state
         .handle(
@@ -254,7 +443,7 @@ async fn failed_reliable_send_is_retained_and_retried() {
 async fn wrong_agent_or_session_cannot_acknowledge_the_window() {
     let io = FakeIo::default();
     let expect = identity(Uuid::from_u128(1));
-    let mut state = State::new(captured_config());
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
     let request = use_circuit(expect);
     state
         .handle(

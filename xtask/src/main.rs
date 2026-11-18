@@ -30,6 +30,7 @@
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
 //! The live CI job runs standalone and grid mode.
 
+mod arrival_fixtures;
 mod asset_oracle;
 mod assets;
 mod caps_fixtures;
@@ -73,6 +74,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
        cargo xtask live circuit-fixtures <udp-capture>
+       cargo xtask live arrival-fixtures <udp-capture>
        cargo xtask live run assets --running
        cargo xtask live assets";
 
@@ -122,6 +124,9 @@ fn main() -> ExitCode {
         ["live", "login-fixtures", directory] => grid::login_fixtures(Path::new(directory)),
         ["live", "circuit-fixtures", capture] => {
             live::finish(circuit_fixtures::generate(Path::new(capture)))
+        }
+        ["live", "arrival-fixtures", capture] => {
+            live::finish(arrival_fixtures::generate(Path::new(capture)))
         }
         ["live", "run", "assets", "--running"] => live::run_running_assets(),
         ["live", "assets"] => assets::compare(),

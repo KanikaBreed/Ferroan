@@ -47,6 +47,8 @@ The return teleport requires a fresh `RegionHandshake` and `AgentMovementComplet
 
 ## Login onto the Ferroan region
 
+Readiness on both C# and Rust requires a fresh reliable `AgentMovementComplete` for the current circuit, in addition to its handshake and seed. `cargo xtask live arrival-fixtures <udp-capture>` extracts the request/reply and manifest in [fixtures/arrival](../fixtures/arrival/README.md) from a C# login capture. It folds test identities and the wall-clock timestamp; the captured position, look direction, region handle and channel/version remain intact. The Rust region preserves the `CreateAgent` start position until terrain is implemented and advertises its own server version.
+
 For the first Ferroan region login, run `cargo xtask live run login grid --region ferroan`. Robust and the neighbour remain C#; only the home region is Ferroan. The bot requires `LogoutReply`, with no C# log-line fallback. The harness compares the region's registration and Robust's `QueryAccess`/`CreateAgent` requests and replies with scrubbed C# fixtures. The seed advertises `EventQueueGet`, with Tranquillity's 58-second empty-poll hold and 502 response; terrain and appearance are later tasks.
 
 The dedicated login baseline disables map generation for both C# and Rust using `[Map] GenerateMaptiles = false` and a zero static map UUID. This C# setting produces zero map image IDs during registration. It leaves map rendering outside this login task. The normal `all grid` scenarios retain their existing map configuration. The process's supported configuration and current bounds are in [ferroan-region](../crates/ferroan-region/README.md).
