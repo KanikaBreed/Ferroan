@@ -455,7 +455,15 @@ async fn cross_to(
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        note_udp(&mut from, handle, &mut dest, &mut pending_seed, &mut failed);
+        let opened = next.as_ref().map(Session::sim_addr);
+        note_udp(
+            &mut from,
+            handle,
+            &mut dest,
+            &mut pending_seed,
+            &mut failed,
+            opened,
+        )?;
         if poll.is_finished() {
             let task = poll.take().expect("is_finished means a task is present");
             match task.await {
@@ -464,7 +472,7 @@ async fn cross_to(
                     for event in batch.events {
                         if let Some(hint) = crate::caps::crossing_hint(&event.message, &event.body)
                         {
-                            apply_hint(&mut dest, &mut pending_seed, &hint, handle);
+                            apply_hint(&mut dest, &mut pending_seed, &hint, handle, opened)?;
                         }
                     }
                 }
@@ -494,8 +502,6 @@ async fn cross_to(
         return Err("no circuit for the destination".to_string());
     };
     if next.movement_sent() {
-        // Packets from the earlier visit are not this arrival.
-        while next.poll_inbox().is_some() {}
         next.resume_as_root(http, &dest.seed, HANDSHAKE)
             .await
             .map_err(|error| error.to_string())?;
@@ -506,7 +512,7 @@ async fn cross_to(
     }
     // `CompleteAgentMovement` is sent before this returns.
     // Tranquillity V2 is still inside `UpdateAgent` until the destination
-    // has made this avatar root, and the proxy gives that call 5 seconds.
+    // has made this avatar root.
     // Starting the return hop before `AgentMovementComplete` aborts it.
     wait_for_arrival(&mut from, &mut next, deadline).await?;
     parked.push(from);
@@ -547,9 +553,12 @@ async fn wait_for_arrival(
         }
         if arrived {
             // The destination sets the root flag at the start of MakeRoot and
-            // only then sends this packet. The source's UpdateAgent polls that
-            // flag every 250ms. Wait out that poll before the return hop,
-            // which would mark the same presence as a child again.
+            // only then sends this packet. Scene.IncomingUpdateChildAgent polls
+            // that flag every 250ms before replying to the source's UpdateAgent.
+            // An immediate return can make the presence a child again before
+            // that poll observes root. Retain this bounded grace for that C#
+            // race even with a proxy timeout long enough for event queues.
+            // Source: Scene.cs / ScenePresence.cs, Tranquillity 8583218.
             let settle = std::time::Instant::now() + Duration::from_secs(1);
             while std::time::Instant::now() < settle {
                 let was_open = source_open;
@@ -603,7 +612,8 @@ fn note_udp(
     dest: &mut Option<Dest>,
     pending_seed: &mut Option<(SocketAddr, String)>,
     failed: &mut Option<String>,
-) {
+    opened: Option<SocketAddr>,
+) -> Result<(), String> {
     while let Some(packet) = session.poll_inbox() {
         if let Some(reason) = world::teleport_failure(&packet) {
             *failed = Some(reason);
@@ -620,9 +630,10 @@ fn note_udp(
                 },
                 finish: true,
             };
-            apply_hint(dest, pending_seed, &hint, handle);
+            apply_hint(dest, pending_seed, &hint, handle, opened)?;
         }
     }
+    Ok(())
 }
 
 /// Remember a destination only when its handle is the one we requested.
@@ -632,11 +643,15 @@ fn apply_hint(
     pending_seed: &mut Option<(SocketAddr, String)>,
     hint: &crate::caps::CrossingHint,
     wanted: u64,
-) {
+    opened: Option<SocketAddr>,
+) -> Result<(), String> {
     let addr = SocketAddr::from((std::net::Ipv4Addr::from(hint.ip), hint.port));
     if let Some(handle) = hint.handle {
         if handle != wanted {
-            return;
+            return Ok(());
+        }
+        if opened.is_some_and(|opened| opened != addr) {
+            return Err("destination hint changed after its circuit was opened".to_string());
         }
         let remembered = pending_seed
             .as_ref()
@@ -656,26 +671,27 @@ fn apply_hint(
                 existing.seed = seed;
             }
             existing.finish |= hint.finish;
-            return;
+            return Ok(());
         }
         if dest.as_ref().is_some_and(|existing| existing.finish) {
-            return;
+            return Ok(());
         }
         *dest = Some(Dest {
             addr,
             seed,
             finish: hint.finish,
         });
-        return;
+        return Ok(());
     }
     let Some(seed) = hint.seed.clone().filter(|seed| !seed.is_empty()) else {
-        return;
+        return Ok(());
     };
     if let Some(existing) = dest.as_mut().filter(|dest| dest.addr == addr) {
         existing.seed = seed;
     } else {
         *pending_seed = Some((addr, seed));
     }
+    Ok(())
 }
 
 async fn open_destination(
@@ -687,7 +703,10 @@ async fn open_destination(
     let Some(dest) = dest else {
         return Ok(());
     };
-    if next.is_some() {
+    if let Some(next) = next {
+        if next.sim_addr() != dest.addr {
+            return Err("destination differs from its open circuit".to_string());
+        }
         return Ok(());
     }
     if let Some(index) = parked
@@ -1416,16 +1435,16 @@ mod tests {
 
         let mut dest = None;
         let mut pending = None;
-        apply_hint(&mut dest, &mut pending, &establish, handle);
+        apply_hint(&mut dest, &mut pending, &establish, handle, None).unwrap();
         assert!(dest.is_none());
         assert!(pending.is_some());
-        apply_hint(&mut dest, &mut pending, &enable, handle);
+        apply_hint(&mut dest, &mut pending, &enable, handle, None).unwrap();
         let opened = dest.as_ref().unwrap();
         assert_eq!(opened.addr, "127.0.0.1:39405".parse().unwrap());
         assert_eq!(opened.seed, "http://127.0.0.1:39405/CAPS/seed");
         assert!(!opened.finish);
         assert!(pending.is_none());
-        apply_hint(&mut dest, &mut pending, &finish, handle);
+        apply_hint(&mut dest, &mut pending, &finish, handle, None).unwrap();
         assert!(crossing_ready(&dest));
 
         let other = region_handle(1002, 1000);
@@ -1437,12 +1456,64 @@ mod tests {
         };
         ignored.ip = [127, 0, 0, 2];
         ignored.port = 9;
-        apply_hint(&mut dest, &mut pending, &ignored, handle);
+        apply_hint(&mut dest, &mut pending, &ignored, handle, None).unwrap();
         assert_eq!(
             dest.as_ref().unwrap().addr,
             "127.0.0.1:39405".parse().unwrap()
         );
         assert!(crate::caps::crossing_hint("ParcelProperties", &batch.events[0].body).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_destination_hint_cannot_retarget_an_open_circuit() {
+        let first = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let second = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let first_addr = first.local_addr().unwrap();
+        let second_addr = second.local_addr().unwrap();
+        let handle = region_handle(1001, 1000);
+        let mut hint = crate::caps::CrossingHint {
+            ip: [127, 0, 0, 1],
+            port: first_addr.port(),
+            handle: Some(handle),
+            seed: None,
+            finish: false,
+        };
+        let mut dest = None;
+        let mut pending = None;
+        apply_hint(&mut dest, &mut pending, &hint, handle, None).unwrap();
+        let agent = Agent {
+            agent_id: Uuid::from_u128(1),
+            session_id: Uuid::from_u128(2),
+            circuit_code: 42,
+        };
+        let mut next = None;
+        open_destination(&mut next, &dest, agent, &mut Vec::new())
+            .await
+            .unwrap();
+        hint.port = second_addr.port();
+        hint.seed = Some("http://127.0.0.1/new-seed".to_string());
+        hint.finish = true;
+        assert!(
+            apply_hint(
+                &mut dest,
+                &mut pending,
+                &hint,
+                handle,
+                next.as_ref().map(Session::sim_addr)
+            )
+            .is_err()
+        );
+        assert_eq!(dest.as_ref().unwrap().addr, first_addr);
+        assert_eq!(next.as_ref().unwrap().sim_addr(), first_addr);
+        assert!(!crossing_ready(&dest));
+
+        // The circuit-opening boundary also rejects inconsistent state.
+        dest.as_mut().unwrap().addr = second_addr;
+        assert!(
+            open_destination(&mut next, &dest, agent, &mut Vec::new())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

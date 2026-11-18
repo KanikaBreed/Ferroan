@@ -7,6 +7,36 @@
 // The POST is the viewer's seed request: an LLSD array of names, answered
 // with a map of URLs. The viewer's full list and its retry loop are not
 // included.
+//
+// Event queue reply and crossing-event interpretation follows
+//   Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs
+//   Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetHandlers.cs
+//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+// Original source notice:
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! The seed capability.
 
@@ -144,8 +174,9 @@ pub enum EqPollError {
 
 /// POST one event-queue poll. The first poll sends `done` and no `ack`.
 ///
-/// A held poll that the capture proxy closes, and a 502 from
-/// `EventQueueGetModule.NoEvents`, are [`EqPollError::Retry`].
+/// A failed transport and a 502 from `EventQueueGetModule.NoEvents` are
+/// [`EqPollError::Retry`]. The per-request limit outlasts Tranquillity's
+/// 58-second held poll and overrides the HTTP client's shorter default.
 pub async fn poll_event_queue(
     http: &reqwest::Client,
     url: &str,
@@ -166,7 +197,7 @@ pub async fn poll_event_queue(
     let xml = to_xml(&request);
     let response = match http
         .post(parsed)
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(65))
         .header(reqwest::header::CONTENT_TYPE, "application/llsd+xml")
         .header(reqwest::header::ACCEPT, "application/llsd+xml")
         .body(xml.clone())
@@ -201,8 +232,7 @@ pub async fn poll_event_queue(
         response_type: response_type.as_deref(),
         response_body: &bytes,
     });
-    // NoEvents is 502 once the region gives up the long poll. The capture
-    // proxy closes the connection first, which arrives above as Retry.
+    // NoEvents is 502 once the region gives up the long poll.
     if status == 502 || status == 408 || status == 503 {
         return Err(EqPollError::Retry);
     }
@@ -314,4 +344,36 @@ fn split_host_port(text: &str) -> Option<([u8; 4], u16)> {
         return None;
     }
     Some((ip.octets(), port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn held_event_poll_outlasts_the_old_eight_second_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 8192];
+            let _ = stream.read(&mut request).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(9)).await;
+            let body = b"<llsd><map><key>events</key><array><map><key>message</key><string>TeleportFinish</string><key>body</key><map /></map></array><key>id</key><integer>7</integer></map></llsd>";
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        });
+        let http = crate::login::http_client().unwrap();
+        let batch = poll_event_queue(&http, &format!("http://{address}/events"), None)
+            .await
+            .unwrap();
+        assert_eq!(batch.id, 7);
+        assert_eq!(batch.events[0].message, "TeleportFinish");
+        server.await.unwrap();
+    }
 }

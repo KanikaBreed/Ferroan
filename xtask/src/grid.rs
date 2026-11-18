@@ -1,4 +1,37 @@
-// Copyright (c) 2026 Ferroan contributors
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY EXPRESS OR
+// IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+// IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+// OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+// ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Configuration adapted for Ferroan from
+//   Source/OpenSim.Server.GridServer/AppData/GridServer.ini.example
+//   Source/OpenSim.Server.RegionServer/AppData/config-include/Grid.ini
+//   Source/OpenSim.Server.RegionServer/AppData/config-include/GridCommon.ini.example
+//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+// The configuration files carry the repository's OpenSimulator BSD notice above.
+// Process management and capture orchestration are new Ferroan code.
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Grid mode: `cargo xtask live run <scenario>|all|neighbour grid`.
@@ -324,10 +357,7 @@ fn contains_secret(bytes: &[u8], secret: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn grid_root() -> PathBuf {
-    live::source_dir()
-        .parent()
-        .map(|live_root| live_root.join("grid"))
-        .unwrap_or_else(|| live::source_dir().join("grid"))
+    live::live_root().join("grid")
 }
 
 #[cfg(target_os = "linux")]
@@ -335,6 +365,18 @@ struct Proc {
     child: Child,
     stdin: Option<ChildStdin>,
     log: PathBuf,
+    tracked: crate::grid_state::Tracked,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Proc {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        stop_child(&mut self.child);
+        if let Err(error) = self.tracked.forget() {
+            eprintln!("live: grid process cleanup: {error}");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -344,22 +386,23 @@ struct Grid {
     neighbour: Option<Proc>,
     proxies: Option<tokio::runtime::Runtime>,
     passwords: Vec<String>,
+    _state: crate::grid_state::Run,
 }
 
 #[cfg(target_os = "linux")]
 impl Grid {
     fn stop(&mut self) {
         for slot in [&mut self.home, &mut self.neighbour, &mut self.robust] {
-            if let Some(mut proc) = slot.take() {
-                drop(proc.stdin.take());
-                stop_child(&mut proc.child);
-            }
+            drop(slot.take());
         }
         drop(self.proxies.take());
     }
 }
 
 fn stop_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     let pid = child.id();
     let _ = Command::new("kill")
         .args(["-TERM", &format!("-{pid}")])
@@ -400,9 +443,10 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     }
     if let Some(pid) = live::standalone_is_up()? {
         return Err(format!(
-            "the standalone region is already up (pid {pid}); cargo xtask live down stops it"
+            "the harness is already up (pid {pid}); cargo xtask live down stops an interrupted run"
         ));
     }
+    let state = crate::grid_state::claim()?;
     live::ensure_region_built()?;
     let mut ports = Vec::new();
     for _ in 0..32 {
@@ -438,6 +482,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         neighbour: None,
         proxies: None,
         passwords: vec![estate.clone(), chat.clone()],
+        _state: state,
     };
     let captures = ProxyPaths {
         robust_private: root.join("proxy-robust-private.cap"),
@@ -495,7 +540,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &grid.passwords,
     )?;
     let publish = live::publish_dir();
-    ensure_grid_common(&publish)?;
+    live::copy_example(&publish, "GridCommon.ini")?;
     let source = live::source_dir();
     println!("live: grid region {HOME_NAME} on {HOME_BIND}:{home_port}");
     grid.home = Some(start_region(
@@ -595,39 +640,17 @@ fn run_bot(
     region_log: &Path,
     strict_logout: bool,
 ) -> Result<BotReport, String> {
-    let region_id = uuid::Uuid::parse_str(live::REGION_UUID)
-        .map_err(|_| "the region uuid is not a uuid".to_string())?;
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
-    let library = uuid::Uuid::parse_str("2a4880b6-b7a3-690a-2049-bfbe38eafb9f")
-        .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
-    let http_trace = ferroan_bot::trace::HttpTrace::new();
-    let harness = ferroan_bot::scenario::Harness {
-        login_uri: login_uri.to_string(),
-        region_id,
-        owner: ferroan_bot::scenario::Account {
-            first_name: "Test".to_string(),
-            last_name: "User".to_string(),
-            password: estate.to_string(),
-        },
-        chat: ferroan_bot::scenario::Account {
-            first_name: "Chat".to_string(),
-            last_name: "Bot".to_string(),
-            password: chat.to_string(),
-        },
-        texture: live::texture_bytes()?,
-        library_texture: library,
-        http_trace: std::sync::Arc::clone(&http_trace),
-        region_log: region_log.to_path_buf(),
-        require_logout_reply: strict_logout,
-        neighbour: Some(ferroan_bot::scenario::Neighbour {
-            region_id: neighbour_id,
-            x: NEIGHBOUR_X,
-            y: NEIGHBOUR_Y,
-            home_x: HOME_X,
-            home_y: HOME_Y,
-        }),
-    };
+    let mut harness = live::harness(login_uri, estate, chat, region_log)?;
+    harness.require_logout_reply = strict_logout;
+    harness.neighbour = Some(ferroan_bot::scenario::Neighbour {
+        region_id: neighbour_id,
+        x: NEIGHBOUR_X,
+        y: NEIGHBOUR_Y,
+        home_x: HOME_X,
+        home_y: HOME_Y,
+    });
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -635,7 +658,7 @@ fn run_bot(
     let lines = runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?;
     Ok(BotReport {
         lines,
-        http: http_trace.records(),
+        http: harness.http_trace.records(),
     })
 }
 
@@ -659,7 +682,16 @@ fn start_proxies(
             let upstream = *upstream;
             let path = path.clone();
             tokio::spawn(async move {
-                let _ = ferroan_capture::serve_on(listener, upstream, &path).await;
+                if let Err(error) = ferroan_capture::serve_on_with_timeout(
+                    listener,
+                    upstream,
+                    &path,
+                    Duration::from_secs(70),
+                )
+                .await
+                {
+                    eprintln!("live: grid proxy stopped: {error}");
+                }
             });
         }
         Ok::<(), String>(())
@@ -965,22 +997,6 @@ fn link_path(link: &Path, target: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_grid_common(publish: &Path) -> Result<(), String> {
-    let dest = publish.join("config-include/GridCommon.ini");
-    if dest.is_file() {
-        return Ok(());
-    }
-    let source = dest.with_file_name("GridCommon.ini.example");
-    fs::copy(&source, &dest).map(|_| ()).map_err(|error| {
-        format!(
-            "could not copy {} to {}: {error}",
-            source.display(),
-            dest.display()
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
 fn spawn_proc(
     binary: &Path,
     args: &[&str],
@@ -1014,10 +1030,18 @@ fn spawn_proc(
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
     let stdin = child.stdin.take();
+    let tracked = match crate::grid_state::record(&child) {
+        Ok(tracked) => tracked,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(error);
+        }
+    };
     Ok(Proc {
         child,
         stdin,
         log: log.to_path_buf(),
+        tracked,
     })
 }
 
@@ -1057,7 +1081,8 @@ fn wait_log(
 
 #[cfg(target_os = "linux")]
 fn tail(log: &Path, passwords: &[String]) -> String {
-    redact(&live::log_tail(log, ""), passwords)
+    let passwords: Vec<_> = passwords.iter().map(String::as_str).collect();
+    live::log_tail_secrets(log, &passwords)
 }
 
 #[cfg(target_os = "linux")]
@@ -1092,16 +1117,6 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
         }
     }
     count_http_requests(&bytes).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn redact(text: &str, passwords: &[String]) -> String {
-    let mut out = text.to_string();
-    for password in passwords {
-        if !password.is_empty() {
-            out = out.replace(password, "<redacted>");
-        }
-    }
-    out
 }
 
 #[cfg(test)]

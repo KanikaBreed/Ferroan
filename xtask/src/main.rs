@@ -34,6 +34,7 @@ mod asset_oracle;
 mod assets;
 mod config_oracle;
 mod grid;
+mod grid_state;
 mod http_oracle;
 mod live;
 mod oracle;

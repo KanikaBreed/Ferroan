@@ -489,7 +489,16 @@ fn spawn_proxy(upstream: SocketAddr, out: &Path) -> Result<(u16, tokio::runtime:
             .map_err(|error| format!("could not read the asset proxy port: {error}"))?
             .port();
         tokio::spawn(async move {
-            let _ = ferroan_capture::serve_on(listener, upstream, &path).await;
+            if let Err(error) = ferroan_capture::serve_on_with_timeout(
+                listener,
+                upstream,
+                &path,
+                Duration::from_secs(70),
+            )
+            .await
+            {
+                eprintln!("live: asset proxy stopped: {error}");
+            }
         });
         Ok::<u16, String>(port)
     })?;
