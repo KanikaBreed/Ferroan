@@ -63,9 +63,9 @@ jobs:
             local url="$1" dest="$2" rev="$3"
             rm -rf "$dest"
             mkdir -p "$(dirname "$dest")"
-            git init -b main "$dest"
-            git -C "$dest" remote add origin "$url"
-            git -C "$dest" fetch --depth 1 origin "$rev"
+            # Full history. Nerdbank.GitVersioning, which libopenmetaverse
+            # uses, refuses a shallow clone when it computes version height.
+            git clone "$url" "$dest"
             git -C "$dest" checkout --detach "$rev"
           }
           tranq="$(pin OpenSim-Tranquillity)"
