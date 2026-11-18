@@ -34,4 +34,4 @@ The filesystem default-asset loader, FSAssets (`XAssetService`), the `show asset
 
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 
-No viewer was pointed at this crate. CI does not run the C# oracle.
+Ordinary CI compares the committed asset XML and SQLite fixtures in Rust tests. The [Linux live workflow](../../.github/workflows/live.yml) runs the C# asset oracle, compares texture and inventory traffic against both services, and checks a persistent C# region using `ferroan-robust`. The maintainer's Firestorm asset check is recorded under G0 in [TASKS.md](../../TASKS.md).

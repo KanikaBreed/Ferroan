@@ -10,7 +10,7 @@ To move a pin, open a PR that changes this file and says why, and check what cha
 | `libopenmetaverse` | [OpenSim-NGC/libopenmetaverse](https://github.com/OpenSim-NGC/libopenmetaverse) | `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` | BSD-3-Clause | The OpenMetaverse build Tranquillity ships (NuGet `UtopiaSkye.OpenMetaverse` 1.2.9). Porting source for types and server-side helpers; byte-level oracle for packets and LLSD |
 | `Aurora-Viewer` | [Aurora-Viewer/Aurora-Viewer](https://github.com/Aurora-Viewer/Aurora-Viewer) `main` | `48cb76e830a13965ac080128bb874afedda86d69` | GPL-3.0-or-later | Rust crates to reuse (`aurora-llsd`, `aurora-msg`, `aurora-prim`); the viewer side of the protocol (`aurora-net`); the viewer used for login checks |
 | `slua` | [secondlife/slua](https://github.com/secondlife/slua) | `a02d459aa0cb64a4c2b3dd4d841e67ba4a01d9b1` | MIT | Linden Lab's script engine (Phase 4, and the SLua work in Tranquillity) |
-| `Ferrobot` | [BlackBox-Roleplay-Systems/Ferrobot](https://github.com/BlackBox-Roleplay-Systems/Ferrobot) `main` | `9cc7ab284c78b7f17ae209039e8a3405a12620b6` | GPL-3.0 | The second test client ([D17](DECISIONS.md)): a Rust bot run as a separate process against test regions. Not a behavior reference and not a porting source |
+| `Ferrobot` | [BlackBox-Roleplay-Systems/Ferrobot](https://github.com/BlackBox-Roleplay-Systems/Ferrobot) `main` | `9cc7ab284c78b7f17ae209039e8a3405a12620b6` | GPL-3.0 | Planned second test client ([D17](DECISIONS.md)), run as a separate process against test regions. P0.10h harness integration is blocked and not shipped. Not a behavior reference and not a porting source |
 
 Other checkouts the maintainers have, read for context only:
 

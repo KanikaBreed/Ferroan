@@ -30,6 +30,6 @@ Nini's source is not in this repository. `tools/config-oracle` calls the `nini-c
 
 ## Shipped files
 
-`region-shipped` and `grid-shipped` resolve the example INI files in the pinned checkout. CI has no checkout, so those two cases are skipped unless `FERROAN_REF` (default `~/Git/reference`) points at one. The committed dumps are what a machine with the checkout checks. The example files contain published placeholder passwords (`ConsolePass` is `secret`, and similar). They are not live credentials.
+`region-shipped` and `grid-shipped` resolve the example INI files in the pinned checkout. Ordinary CI has no checkout, so those two Rust cases are skipped there; local Rust tests include them when `FERROAN_REF` (default `~/Git/reference`) points at the reference. The [Linux live workflow](../../.github/workflows/live.yml) verifies all config fixtures through the C# oracle with the pinned checkout present. The example files contain published placeholder passwords (`ConsolePass` is `secret`, and similar). They are not live credentials.
 
 Regenerate with `cargo xtask config generate`. That needs the .NET SDK 10 and does not write into the reference tree.

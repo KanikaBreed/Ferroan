@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10a |
-| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | READY after Q10a |
+| Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | IN PROGRESS (fix/harness-followups) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10b |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
@@ -93,6 +93,8 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10b documentation audit: TB1 said Ferroan refuses unnamed asset flags, but `crates/ferroan-services/src/asset/xml.rs::flags_text` currently emits decimal text when bits outside 1/2/4 are set. The C# oracle records `XmlSerializer` rejection for those values. TB1's Ferroan column is corrected; no asset behavior changed in Q10b. Proposed follow-up: verify the full asset route against a C# capture and resolve this discrepancy in the asset pilot gaps task (P1.A1), with the required compatibility decision.
 
 - 2026-11-18, Q10 (queued as Q10a, P2.0d2): P2.0d's passing bot login check proves handshake and seed completion but not viewer arrival. The second client's stricter readiness exposed the missing `AgentMovementComplete`; see the Q10 blocker and proposed prerequisite above. Existing viewer gates remain pending.
 

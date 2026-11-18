@@ -572,6 +572,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn binary_seed_requests_match_captured_csharp_replies() {
+        let server = CapsServer::bind().await.unwrap();
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/caps");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
+                .unwrap();
+        for name in [
+            "seed-binary-invalid",
+            "seed-binary-unpadded",
+            "seed-binary-base16",
+            "seed-binary-empty-base16",
+            "seed-binary-selfclosing-base16",
+        ] {
+            let fixture = &manifest["exchanges"][name];
+            let request =
+                std::fs::read(directory.join(fixture["request_file"].as_str().unwrap())).unwrap();
+            let expected =
+                std::fs::read(directory.join(fixture["response_file"].as_str().unwrap())).unwrap();
+            let (status, body, mime) =
+                post(server.seed_url(), "application/llsd+xml", request).await;
+            assert_eq!(
+                u64::from(status),
+                fixture["status"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(body, expected, "{name}");
+            assert_eq!(
+                mime.as_deref(),
+                fixture["response_content_type"].as_str(),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn the_bot_fetches_the_seed_during_the_handshake() {
         let caps = CapsServer::bind().await.unwrap();
         let circuit = CircuitServer::bind().await.unwrap();

@@ -1,3 +1,31 @@
+// Copyright (c) 2006-2016, openmetaverse.co
+// Copyright (c) OpenSimulator Contributors, http://opensimulator.org/
+// All rights reserved.
+//
+// - Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+// - Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+// - Neither the name of the openmetaverse.co nor the names
+//   of its contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+// XML binary decoding follows OpenMetaverse.StructuredData/LLSD/XmlLLSD.cs
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
+//
 // Copyright (c) 2026 the Aurora Viewer contributors
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -14,17 +42,29 @@ use crate::{Llsd, LlsdError, Map};
 use base64::Engine;
 use uuid::Uuid;
 
-fn decode_binary(el: &Element) -> Vec<u8> {
-    let txt: String = el.text().chars().filter(|c| !c.is_whitespace()).collect();
-    match el.attr("encoding").unwrap_or("base64") {
-        "base16" => (0..txt.len() / 2)
-            .filter_map(|i| u8::from_str_radix(txt.get(i * 2..i * 2 + 2)?, 16).ok())
-            .collect(),
-        _ => base64::engine::general_purpose::STANDARD
-            .decode(txt.as_bytes())
-            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(txt.as_bytes()))
-            .unwrap_or_default(),
+fn decode_binary(el: &Element) -> Result<Vec<u8>, LlsdError> {
+    // ParseLLSDXmlElement checks IsEmptyElement before examining encoding.
+    if el.self_closing {
+        return Ok(Vec::new());
     }
+    if el.attr("encoding").is_some_and(|value| value != "base64") {
+        return Err(LlsdError::InvalidBinary("unsupported encoding"));
+    }
+    // ReadString().Trim() accepts Unicode whitespace at the edges, whereas
+    // Convert.FromBase64String ignores only these four ASCII characters inside.
+    let text = el.text();
+    let compact: Vec<u8> = text
+        .trim()
+        .bytes()
+        .filter(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+        .collect();
+    // .NET requires padding but accepts nonzero unused bits in the last sextet.
+    let config = base64::engine::general_purpose::GeneralPurposeConfig::new()
+        .with_decode_allow_trailing_bits(true);
+    let engine = base64::engine::GeneralPurpose::new(&base64::alphabet::STANDARD, config);
+    engine
+        .decode(compact)
+        .map_err(|_| LlsdError::InvalidBinary("invalid base64"))
 }
 
 /// Convert a parsed XML value element (e.g. `<map>`) into LLSD.
@@ -65,7 +105,7 @@ pub fn from_xml_element(el: &Element) -> Result<Llsd, LlsdError> {
         "uuid" => Llsd::Uuid(Uuid::parse_str(text().trim()).unwrap_or(Uuid::nil())),
         "date" => Llsd::Date(parse_date(&text())),
         "uri" => Llsd::Uri(text()),
-        "binary" => Llsd::Binary(decode_binary(el)),
+        "binary" => Llsd::Binary(decode_binary(el)?),
         "array" => {
             let mut a = Vec::new();
             for c in el.elements() {
@@ -97,6 +137,9 @@ pub fn from_xml_element(el: &Element) -> Result<Llsd, LlsdError> {
 /// `XmlTextReader` throw. `DeserializeLLSDXml` catches that and returns
 /// undef. Infinity is written as the single byte 0x1E, which is one of
 /// those bytes, so it comes back as undef too.
+/// Invalid binary values likewise invalidate the entire document, including
+/// when nested in an array or map. Other existing structural errors remain
+/// errors in this API; the C# public decoder catches all parsing exceptions.
 pub fn from_xml(src: &[u8]) -> Result<Llsd, LlsdError> {
     if src
         .iter()
@@ -105,7 +148,10 @@ pub fn from_xml(src: &[u8]) -> Result<Llsd, LlsdError> {
         return Ok(Llsd::Undef);
     }
     let root = xml::parse(src)?;
-    from_xml_element(&root)
+    match from_xml_element(&root) {
+        Err(LlsdError::InvalidBinary(_)) => Ok(Llsd::Undef),
+        result => result,
+    }
 }
 
 fn write_value(v: &Llsd, out: &mut String) {
@@ -277,6 +323,19 @@ fn write_pretty(v: &Llsd, level: usize, out: &mut String) {
 mod tests {
     use super::*;
     use crate::llsd_map;
+
+    #[test]
+    fn invalid_binary_propagates_before_public_undef_mapping() {
+        let doc = b"<llsd><map><key>nested</key><array><binary>!</binary></array></map></llsd>";
+        let root = xml::parse(doc).unwrap();
+        assert!(matches!(
+            from_xml_element(&root),
+            Err(LlsdError::InvalidBinary("invalid base64"))
+        ));
+        assert_eq!(from_xml(doc).unwrap(), Llsd::Undef);
+        // The binary change does not alter the API's other structural errors.
+        assert!(from_xml(b"<llsd><map><integer>1</integer></map></llsd>").is_err());
+    }
 
     #[test]
     fn roundtrip() {

@@ -61,6 +61,8 @@ pub enum LlsdError {
     Xml(#[from] xml::XmlError),
     #[error("invalid llsd: {0}")]
     Invalid(&'static str),
+    #[error("invalid XML LLSD binary: {0}")]
+    InvalidBinary(&'static str),
     #[error("unexpected end of data")]
     Eof,
     #[error("parsed llsd larger than its budget")]

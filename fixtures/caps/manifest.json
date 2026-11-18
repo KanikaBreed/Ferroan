@@ -10,7 +10,7 @@
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 0,
+      "elapsed_ms": 1,
       "request_file": "seed.request.xml",
       "response_file": "seed.response.xml",
       "cors": {}
@@ -54,7 +54,7 @@
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html;charset=UTF-8",
-      "elapsed_ms": 0,
+      "elapsed_ms": 1,
       "request_file": "seed-options.request.body",
       "response_file": "seed-options.response.body",
       "cors": {
@@ -63,13 +63,68 @@
         "access-control-allow-origin": "*"
       }
     },
+    "seed-binary-invalid": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 400,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 1,
+      "request_file": "seed-binary-invalid.request.body",
+      "response_file": "seed-binary-invalid.response.body",
+      "cors": {}
+    },
+    "seed-binary-unpadded": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 400,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 1,
+      "request_file": "seed-binary-unpadded.request.body",
+      "response_file": "seed-binary-unpadded.response.body",
+      "cors": {}
+    },
+    "seed-binary-base16": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 400,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed-binary-base16.request.body",
+      "response_file": "seed-binary-base16.response.body",
+      "cors": {}
+    },
+    "seed-binary-empty-base16": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 400,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 1,
+      "request_file": "seed-binary-empty-base16.request.body",
+      "response_file": "seed-binary-empty-base16.response.body",
+      "cors": {}
+    },
+    "seed-binary-selfclosing-base16": {
+      "method": "POST",
+      "path": "/CAPS/000000000000400080000000000000020000/",
+      "status": 200,
+      "request_content_type": "application/llsd+xml",
+      "response_content_type": "text/html;charset=UTF-8",
+      "elapsed_ms": 0,
+      "request_file": "seed-binary-selfclosing-base16.request.body",
+      "response_file": "seed-binary-selfclosing-base16.response.body",
+      "cors": {}
+    },
     "events": {
       "method": "POST",
       "path": "/CE/00000000-0000-4000-8000-000000000001",
       "status": 200,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "application/xml",
-      "elapsed_ms": 899,
+      "elapsed_ms": 943,
       "request_file": "events.request.xml",
       "response_file": "events.response.xml",
       "cors": {}
@@ -80,7 +135,7 @@
       "status": 502,
       "request_content_type": "application/llsd+xml",
       "response_content_type": "text/html",
-      "elapsed_ms": 58036,
+      "elapsed_ms": 58038,
       "request_file": "empty-poll.request.xml",
       "response_file": "empty-poll.response.body",
       "cors": {}

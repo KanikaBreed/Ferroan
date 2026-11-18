@@ -13,7 +13,7 @@ Bugs found in the C# reference while porting or testing Ferroan. Each one gets a
 
 | # | Found | C# file (revision) | What goes wrong | Who depends on it | Ferroan does | Upstream |
 | --- | --- | --- | --- | --- | --- | --- |
-| TB1 | 17 Nov 2026, P0.9 asset oracle | `Source/OpenSim.Framework/AssetBase.cs` `AssetFlags` (`713857f`, unchanged at `8583218`) | `XmlSerializer` throws when an asset's flags hold a value with no named bit, such as 8. The named bits are 1, 2 and 4 | Not known. A stored `asset_flags` of 8 would make the asset service fail to serialize that asset | Matches: refuses the same values | Not reported yet |
+| TB1 | 17 Nov 2026, P0.9 asset oracle | `Source/OpenSim.Framework/AssetBase.cs` `AssetFlags` (`713857f`, unchanged at `8583218`) | `XmlSerializer` throws when an asset's flags hold a value with no named bit, such as 8. The named bits are 1, 2 and 4 | Not known. A stored `asset_flags` of 8 would make the asset service fail to serialize that asset | The oracle records the C# rejection, but current asset XML `flags_text` emits decimal text for unnamed bits. This discrepancy was found in Q10b; behavior correction awaits an asset task | Not reported yet |
 
 ## Fixed
 
