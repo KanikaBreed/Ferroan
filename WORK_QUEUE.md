@@ -33,7 +33,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q7 | P0.10g: harness fixes from the review of #22 | DONE (#29) |
 | Q8 | P2.0a2: circuit fixes from the review of #20 | DONE (#31) |
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
-| Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q9 |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10 |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
@@ -78,6 +78,10 @@ Q10 was added on 18 November 2026 ([D17](docs/DECISIONS.md)). Q11 to Q13 ([D18](
 
 Q9 review at `8583218`: the hold, ordinary empty-poll id behavior, seed parse errors and URI name conversion are confirmed. Two review statements need qualification: seed `OPTIONS` is intercepted with 200/CORS before the non-POST guard, and C# itself uses unchecked signed id arithmetic with negative-id handling. Its crossing re-registration markers can change the id even when their batch produces no events; ordinary empty polls do not. Seed success uses the HTTP default `text/html;charset=UTF-8`, successful event batches use `application/xml`, and empty 502 replies use `text/html`. Crossing queue reuse remains with its later item.
 
+Q10 BLOCKED (18 November 2026, `feat/ferrobot-harness`): P2.0d does not yet send `AgentMovementComplete`. At pinned Ferrobot `9cc7ab284c78b7f17ae209039e8a3405a12620b6`, `crates/client/src/network/mod.rs::on_arrival` marks the client online only after that packet; `crates/ferrobot/src/api/mod.rs` refuses signed commands before then. Ferroan `860c704` validates the viewer's `CompleteAgentMovement` but never emits the arrival reply, and its bot's `run_until_ready` currently accepts the handshake without arrival. A local diagnostic with an unmerged Q10 candidate built the pinned client successfully, then failed the 45-second login check with `Ferrobot API reports no bot connected yet`. UDP capture showed one circuit open, one movement request, one handshake and reply, eight ping exchanges, and zero arrival replies. This is a missing server prerequisite, not a Ferrobot bug; no client workaround or external issue was made. Partial harness work is preserved locally, with diagnostic logs/captures under the task worktree's `.scratch/`; it is not shipped by this status-only change.
+
+Proposed Q10 fix: the manager adds a prerequisite for the Rust region to send the reliable arrival packet from Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs::MoveAgentIntoRegion` and its login call path at `858321883f5487a5d192d36ea9d7b90fa468310c`, carrying the actual agent/session, position/look, region handle, timestamp and channel/version. Require captured C# byte evidence and fresh `AgentMovementComplete` in `ferroan-bot` readiness. Requeue Q10 afterward. Q11–Q39 are currently ineligible through their ordered dependency on Q10; no item is skipped into implementation.
+
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
@@ -85,6 +89,8 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-18, Q10: P2.0d's passing bot login check proves handshake and seed completion but not viewer arrival. The second client's stricter readiness exposed the missing `AgentMovementComplete`; see the Q10 blocker and proposed prerequisite above. Existing viewer gates remain pending.
 
 - 2026-11-18, revisiting #26 during Q7: the final documentation revision's live CI failed twice in the unchanged C# grid baseline, first on presence verification and then on a texture upload (HTTP 500). [Attempt 1](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/1), [attempt 2](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/2), and the unchanged [passing attempt 3](https://github.com/KanikaBreed/Ferroan/actions/runs/44263666135/attempts/3) are recorded in #26. Q7 confirms that the capture proxy advertised persistent HTTP connections but closed after one exchange. Q7 corrects that proxy behavior along with its timeout; the historical failures' precise cause is unproven.
 
