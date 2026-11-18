@@ -2,7 +2,7 @@
 
 The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. It is Linux-only. Run state, the scratch Tranquillity tree and the generated password stay under `.scratch/live/`. The password is not printed. The reference checkout is only read. Set `FERROAN_REF` when that checkout is not `~/Git/reference`.
 
-`cargo xtask live build` clones the pinned revision, applies the capture patch in [tools/live/README.md](../tools/live/README.md), and publishes the region server and a self-contained GridServer. `cargo xtask live up` starts the region on `127.0.0.1` and prints the login URL. `cargo xtask live down` stops it. `cargo xtask live run <scenario>|all` builds if needed, runs the scenarios, records UDP and HTTP, and runs `check`, then `redact`, then `replay`. A failing check fails the run. `cargo xtask live run <scenario>|all|neighbour grid` starts GridServer and two neighbouring regions instead of one standalone region. `cargo xtask live assets` runs texture and inventory against the C# asset service and against `ferroan-robust`, then compares the normalized HTTP. `live up` uses the in-process asset service and does not record a capture.
+`cargo xtask live build` clones the pinned revision, applies the capture patch in [tools/live/README.md](../tools/live/README.md), and publishes the region server and a self-contained GridServer. `cargo xtask live up` starts the region on `127.0.0.1` and prints the login URL. Add `--assets ferroan` to start `ferroan-robust` on a seeded asset store and point the region at it. `cargo xtask live down` stops the region and its asset process. `cargo xtask live run <scenario>|all` builds if needed, runs the scenarios, records UDP and HTTP, and runs `check`, then `redact`, then `replay`. A failing check fails the run. `cargo xtask live run <scenario>|all|neighbour grid` starts GridServer and two neighbouring regions instead of one standalone region. `cargo xtask live assets` runs texture and inventory against the C# asset service and against `ferroan-robust`, then compares the normalized HTTP. Plain `live up` uses the in-process asset service. Neither `live up` mode records a capture.
 
 ## Scenarios
 
@@ -20,6 +20,21 @@ The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranqui
 
 `assets` is texture and inventory, used by `cargo xtask live assets`.
 
+## Keeping the Ferroan asset service up
+
+```sh
+cargo xtask live build
+cargo xtask live up --assets ferroan
+cargo xtask live run assets --running
+cargo xtask live down
+```
+
+After the build, `live up --assets ferroan` prepares library assets with Tranquillity's filesystem loader, copies the seeded SQLite store for `ferroan-robust`, and starts the asset service and region on loopback. The region's `Include-Asset` override selects the Rust service after `Standalone.ini` is loaded. The command prints the login URL and both service ports and leaves the processes running. The account is `Test User`; its generated password stays in `.scratch/live/run/password`.
+
+`live run assets --running` uses that existing region and the saved credentials to check a texture upload, a library texture fetch, and inventory through `ferroan-bot`. It leaves both services running. Use this before the [Firestorm G0 checks](MANUAL_CHECKS.md); run `live down` after the viewer logs out. The normal `live run` commands start their own regions and require the persistent setup to be stopped first.
+
+`live assets` is the separate C#/Rust comparison: it starts each asset service in turn, runs the same texture and inventory scenarios, and requires their normalized HTTP to match. The C# asset-service configuration explicitly sets `[Network] bind_ip_address = "127.0.0.1"`; an unset address binds every interface and fails the harness's loopback check.
+
 ## Grid mode
 
 `cargo xtask live run all grid` starts Tranquillity GridServer (Robust) and two regions, `Ferroan Test` at 1000,1000 and `Ferroan Neighbour` at 1001,1000. The regions use the shipped `Grid.ini` and a copy of `GridCommon.ini.example` left unchanged. Each region has its own working directory, so the relative SQLite files in `SQLiteStandalone.ini` stay separate. Robust listens on `127.0.0.4`. Each region listens for HTTP on `127.0.0.2` or `127.0.0.3` and advertises `127.0.0.1` at the same port, where a `ferroan-capture` proxy is bound. UDP stays on `127.0.0.1`. The bot logs in through Robust's own public port. The same scenarios as standalone run, then a teleport to the neighbour and back prints `teleport neighbour: pass (1001,1000 and back)`. The bot polls the source region's `EventQueueGet`. The first hop opens the destination with `UseCircuitCode` when `EnableSimulator` names that handle, and sends `CompleteAgentMovement` only after `TeleportFinish`. The source circuit stays open. The return hop sends `CompleteAgentMovement` on that circuit instead of a second `UseCircuitCode`. The hop waits for the destination's `AgentMovementComplete` before the return trip. `neighbour` runs only that teleport. The run fails unless the Robust private proxy and at least one region proxy recorded an HTTP request. Standalone `live up` and `live run` are unchanged.
@@ -30,7 +45,7 @@ Add the name to `NAMES` and the `selection` match in [tools/bot/src/scenario.rs]
 
 ## What CI runs
 
-[`.github/workflows/live.yml`](../.github/workflows/live.yml) is the Linux job. It installs .NET SDK 10.0.114 with `actions/setup-dotnet` pinned by commit, installs `sqlite3`, and clones the pinned Tranquillity and libopenmetaverse checkouts into `FERROAN_REF`. It restores from nuget.org only and has no secrets. It runs every `cargo xtask` oracle `verify`, then `cargo xtask live build`, `cargo xtask live run all` and `cargo xtask live run all grid`. The Tranquillity publish is cached by the pin, the capture patch and the harness source. The job runs nightly, on `workflow_dispatch`, and on pull requests that touch the harness. The ordinary CI job does not start Tranquillity.
+[`.github/workflows/live.yml`](../.github/workflows/live.yml) is the Linux job. It installs .NET SDK 10.0.114 with `actions/setup-dotnet` pinned by commit, installs `sqlite3`, and clones the pinned Tranquillity and libopenmetaverse checkouts into `FERROAN_REF`. It restores from nuget.org only and has no secrets. It runs every `cargo xtask` oracle `verify`, then `cargo xtask live build`, `cargo xtask live run all`, `cargo xtask live run all grid` and `cargo xtask live assets`. It also starts `live up --assets ferroan` and checks it with `live run assets --running`. A final `live down` step runs even if an earlier step fails. The Tranquillity publish is cached by the pin, the capture patch and the harness source. The job runs nightly, on `workflow_dispatch`, and on pull requests that touch the harness. The ordinary CI job does not start Tranquillity.
 
 ## Manual recipe (Linux)
 
