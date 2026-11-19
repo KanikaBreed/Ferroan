@@ -27,6 +27,9 @@ pub enum HttpError {
     Unsupported(&'static str),
     #[error("http: {0}")]
     Transport(String),
+    /// Final response status only. Never attach the request URL or reply body.
+    #[error("http: unsuccessful response status {status}")]
+    Status { status: u16 },
 }
 
 impl IntoResponse for HttpError {

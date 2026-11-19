@@ -1,0 +1,20 @@
+{
+  "caller": "grid-register",
+  "request": {
+    "method": "POST",
+    "path": "/grid",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "SCOPEID=00000000-0000-0000-0000-000000000000\u0026VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=register\u0026uuid=00000000-0000-4000-8000-000000000002\u0026locX=256000\u0026locY=256000\u0026sizeX=256\u0026sizeY=256\u0026regionName=Fixture\u002BRegion\u0026serverIP=192.0.2.1\u0026serverHttpPort=9000\u0026serverURI=http%3a%2f%2f192.0.2.1%3a9000%2f\u0026serverPort=9000\u0026regionMapTexture=00000000-0000-0000-0000-000000000000\u0026parcelMapTexture=00000000-0000-0000-0000-000000000000\u0026access=0\u0026regionSecret\u0026owner_uuid=00000000-0000-0000-0000-000000000000\u0026Token"
+  },
+  "injected_response": {
+    "status": 500,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003CResult\u003ESuccess\u003C/Result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "string",
+    "value": "",
+    "accepted": true
+  }
+}

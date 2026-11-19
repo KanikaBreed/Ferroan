@@ -63,8 +63,6 @@ pub enum GridError {
     InvalidReply,
     #[error("reported position or look direction is not finite")]
     InvalidPosition,
-    #[error("region service HTTP request failed")]
-    Transport(#[from] reqwest::Error),
 }
 
 #[derive(Clone)]
@@ -219,8 +217,10 @@ fn parse_vector(text: &str) -> Option<[f32; 3]> {
     parts.next().is_none().then_some(values)
 }
 
-// EnsureSuccessStatusCode in SynchronousRestFormsRequester is essential here:
-// an error response containing an otherwise valid UserID must not admit an agent.
+/// Presence and GridUser connectors call
+/// `SynchronousRestFormsRequester.MakeRequest`, which calls
+/// `EnsureSuccessStatusCode`. A non-2xx body must not admit an agent or
+/// confirm a logout. Grid register and deregister do not use this function.
 async fn service_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, GridError> {
     service_form_within(endpoint, fields, std::time::Duration::from_secs(30)).await
 }
@@ -230,35 +230,12 @@ async fn service_form_within(
     fields: &FieldMap,
     timeout: std::time::Duration,
 ) -> Result<FieldMap, GridError> {
-    let body = ferroan_http::build_query_string(fields)?;
-    let mut response = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()?
-        .post(endpoint)
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded",
-        )
-        .body(body)
-        .send()
-        .await?
-        .error_for_status()?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        let got = bytes.len().saturating_add(chunk.len());
-        if got > MAX_SERVICE_REPLY {
-            return Err(ferroan_http::HttpError::Limit {
-                what: "service reply",
-                limit: MAX_SERVICE_REPLY,
-                got,
-            }
-            .into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| ferroan_http::HttpError::Xml("reply is not utf-8"))?;
-    Ok(ferroan_http::parse_xml_response(text)?)
+    Ok(ferroan_http::post_form_with(
+        endpoint,
+        fields,
+        ferroan_http::FormOptions::checked(timeout, MAX_SERVICE_REPLY),
+    )
+    .await?)
 }
 
 fn service_fields(method: &str) -> FieldMap {
@@ -327,14 +304,30 @@ impl GridClient {
     }
 
     pub async fn register(&self, config: &RegionConfig) -> Result<(), GridError> {
-        check_result(&ferroan_http::post_form(&self.endpoint, &registration_fields(config)).await?)
+        // GridServicesConnector.RegisterRegion calls
+        // SynchronousRestFormsRequester.MakePostRequest, which does not check
+        // the HTTP status (TB10).
+        check_result(&grid_form(&self.endpoint, &registration_fields(config)).await?)
     }
 
     pub async fn deregister(&self, region_id: Uuid) -> Result<(), GridError> {
-        check_result(
-            &ferroan_http::post_form(&self.endpoint, &deregistration_fields(region_id)).await?,
-        )
+        // GridServicesConnector.DeregisterRegion calls
+        // SynchronousRestFormsRequester.MakePostRequest (TB10).
+        check_result(&grid_form(&self.endpoint, &deregistration_fields(region_id)).await?)
     }
+}
+
+/// `MakePostRequest`: parse the XML reply even when the status is not 2xx.
+async fn grid_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, ferroan_http::HttpError> {
+    ferroan_http::post_form_with(
+        endpoint,
+        fields,
+        ferroan_http::FormOptions::unchecked(
+            std::time::Duration::from_secs(30),
+            ferroan_http::MAX_XML_CHARS,
+        ),
+    )
+    .await
 }
 
 /// The insertion order is GridServicesConnector followed by GridRegion.
@@ -662,13 +655,17 @@ mod tests {
             PresenceClient::new(&base)
                 .verify(agent, Uuid::from_u128(2))
                 .await,
-            Err(GridError::Transport(_))
+            Err(GridError::Http(ferroan_http::HttpError::Status {
+                status: 500
+            }))
         ));
         assert!(matches!(
             GridUserClient::new(&base)
                 .logged_out(agent, Uuid::from_u128(3), [0.; 3], [0.; 3])
                 .await,
-            Err(GridError::Transport(_))
+            Err(GridError::Http(ferroan_http::HttpError::Status {
+                status: 500
+            }))
         ));
         serving.abort();
     }
@@ -727,5 +724,352 @@ mod tests {
         )
         .unwrap();
         assert!(check_result(&fields).is_ok());
+    }
+
+    fn status_fixture(caller: &str, status: u16) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../fixtures/http-status/{caller}-{status}.json"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Serves one injected status and records the request body.
+    async fn serve_injected(
+        fixture: &serde_json::Value,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<String>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use std::sync::{Arc, Mutex};
+        let status = fixture["injected_response"]["status"].as_u64().unwrap() as u16;
+        let body = fixture["injected_response"]["body"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mime = fixture["injected_response"]["content_type"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let seen = Arc::new(Mutex::new(String::new()));
+        let record = seen.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, request: String| {
+            let record = record.clone();
+            let body = body.clone();
+            let mime = mime.clone();
+            async move {
+                *record.lock().unwrap() = format!("{} {request}", uri.path());
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, mime)],
+                    body,
+                )
+            }
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        (base, seen, serving)
+    }
+
+    fn assert_status_result(
+        caller: &str,
+        status: u16,
+        accepted: bool,
+        result: Result<(), GridError>,
+    ) {
+        match result {
+            Ok(()) => assert!(accepted, "{caller} {status} accepted a result C# rejected"),
+            Err(GridError::Http(ferroan_http::HttpError::Status { status: observed })) => {
+                assert!(!accepted, "{caller} {status} rejected a result C# accepted");
+                assert_eq!(observed, status, "{caller}");
+            }
+            other => panic!("{caller} {status}: {other:?}"),
+        }
+    }
+
+    async fn each_status(caller: &str, mut call: impl AsyncFnMut(&str, u16, &serde_json::Value)) {
+        for status in [200, 201, 302, 500] {
+            let fixture = status_fixture(caller, status);
+            assert_eq!(fixture["caller"], caller);
+            assert_eq!(fixture["injected_response"]["status"], status);
+            assert!(fixture["injected_response"]["location"].is_null());
+            call(caller, status, &fixture).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn grid_register_matches_csharp_unchecked_status() {
+        each_status("grid-register", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let agent = "00000000-0000-4000-8000-000000000001";
+            let region = "00000000-0000-4000-8000-000000000002";
+            let server = ferroan_config::Config::parse(&format!(
+                "[Network]\nhttp_listener_port=9000\nbind_ip_address=127.0.0.2\n\
+                 [GridService]\nGridServerURI={base}\n\
+                 [PresenceService]\nPresenceServerURI={base}\n\
+                 [GridUserService]\nGridUserServerURI={base}\n\
+                 [Estates]\nDefaultEstateOwnerUUID={agent}\n\
+                 [Map]\nGenerateMaptiles=false\n"
+            ))
+            .unwrap();
+            let regions = ferroan_config::Config::parse(&format!(
+                "[Fixture Region]\nRegionUUID={region}\nLocation=1000,1000\n\
+                 InternalAddress=127.0.0.1\nInternalPort=9000\nExternalHostName=192.0.2.1\n"
+            ))
+            .unwrap();
+            let result = GridClient::new(&RegionConfig::from_configs(&server, &regions).unwrap())
+                .register(&RegionConfig::from_configs(&server, &regions).unwrap())
+                .await;
+            serving.abort();
+            let recorded = seen.lock().unwrap().clone();
+            assert!(recorded.starts_with("/grid "), "{recorded}");
+            assert!(recorded.contains("METHOD=register"), "{recorded}");
+            assert_eq!(fixture["outcome"]["value"], "");
+            assert_status_result(
+                caller,
+                status,
+                fixture["outcome"]["accepted"].as_bool().unwrap(),
+                result,
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn grid_deregister_matches_csharp_unchecked_status() {
+        each_status("grid-deregister", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+            let server = ferroan_config::Config::parse(&format!(
+                "[Network]\nhttp_listener_port=9000\nbind_ip_address=127.0.0.2\n\
+                 [GridService]\nGridServerURI={base}\n\
+                 [PresenceService]\nPresenceServerURI={base}\n\
+                 [GridUserService]\nGridUserServerURI={base}\n\
+                 [Estates]\nDefaultEstateOwnerUUID=00000000-0000-4000-8000-000000000001\n\
+                 [Map]\nGenerateMaptiles=false\n"
+            ))
+            .unwrap();
+            let regions = ferroan_config::Config::parse(
+                "[Fixture Region]\nRegionUUID=00000000-0000-4000-8000-000000000002\n\
+                 Location=1000,1000\nInternalAddress=127.0.0.1\nInternalPort=9000\n\
+                 ExternalHostName=192.0.2.1\n",
+            )
+            .unwrap();
+            let result = GridClient::new(&RegionConfig::from_configs(&server, &regions).unwrap())
+                .deregister(region)
+                .await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/grid {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            assert_eq!(fixture["outcome"]["value"], true);
+            assert_status_result(caller, status, true, result);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn presence_getagent_matches_csharp_checked_status() {
+        each_status("presence-getagent", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+            let session = "00000000-0000-4000-8000-000000000004".parse().unwrap();
+            let result = PresenceClient::new(&base).verify(agent, session).await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/presence {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            let accepted = fixture["outcome"]["accepted"].as_bool().unwrap();
+            match result {
+                Ok(true) => assert!(accepted),
+                Err(GridError::Http(ferroan_http::HttpError::Status { status: observed })) => {
+                    assert!(!accepted);
+                    assert!(fixture["outcome"]["value"].is_null());
+                    assert_eq!(observed, status, "{caller}");
+                }
+                other => panic!("{caller} {status}: {other:?}"),
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn presence_getagents_matches_csharp_checked_status() {
+        // Ferroan has no GetAgents caller. The shared client is the checked
+        // helper that method uses. C# catches the status failure and returns
+        // an empty array; a status error here is that failure, not success.
+        each_status("presence-getagents", async |caller, status, fixture| {
+            let (base, _seen, serving) = serve_injected(fixture).await;
+            let fields =
+                ferroan_http::parse_query_string(fixture["request"]["body"].as_str().unwrap())
+                    .unwrap();
+            let result = ferroan_http::post_form_with(
+                &format!("{base}/presence"),
+                &fields,
+                ferroan_http::FormOptions::checked(
+                    std::time::Duration::from_secs(5),
+                    MAX_SERVICE_REPLY,
+                ),
+            )
+            .await;
+            serving.abort();
+            let accepted = fixture["outcome"]["accepted"].as_bool().unwrap();
+            match result {
+                Ok(reply) => {
+                    assert!(accepted, "{caller} {status}");
+                    let Field::Map(presence) = &reply["presence0"] else {
+                        panic!("{caller} {status}: {reply:?}");
+                    };
+                    assert_eq!(
+                        presence.get("UserID"),
+                        Some(&Field::Str("00000000-0000-4000-8000-000000000001".into()))
+                    );
+                }
+                Err(ferroan_http::HttpError::Status { status: observed }) => {
+                    assert!(!accepted);
+                    assert_eq!(fixture["outcome"]["value"].as_array().unwrap().len(), 0);
+                    assert_eq!(observed, status);
+                }
+                other => panic!("{caller} {status}: {other:?}"),
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn presence_logout_matches_csharp_checked_status() {
+        each_status("presence-logout", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let session = "00000000-0000-4000-8000-000000000004".parse().unwrap();
+            let result = PresenceClient::new(&base).logout(session).await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/presence {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            assert_eq!(fixture["outcome"]["value"], fixture["outcome"]["accepted"]);
+            assert_status_result(
+                caller,
+                status,
+                fixture["outcome"]["accepted"].as_bool().unwrap(),
+                result,
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn presence_report_matches_csharp_checked_status() {
+        each_status("presence-report", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let session = "00000000-0000-4000-8000-000000000004".parse().unwrap();
+            let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+            let result = PresenceClient::new(&base)
+                .report_agent(session, region)
+                .await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/presence {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            assert_status_result(
+                caller,
+                status,
+                fixture["outcome"]["value"].as_bool().unwrap(),
+                result,
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn griduser_loggedout_matches_csharp_checked_status() {
+        each_status("griduser-loggedout", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+            let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+            let result = GridUserClient::new(&base)
+                .logged_out(agent, region, [128., 128., 25.], [0.; 3])
+                .await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/griduser {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            assert_status_result(
+                caller,
+                status,
+                fixture["outcome"]["value"].as_bool().unwrap(),
+                result,
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn griduser_setposition_matches_csharp_checked_status() {
+        each_status("griduser-setposition", async |caller, status, fixture| {
+            let (base, seen, serving) = serve_injected(fixture).await;
+            let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+            let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+            let result = GridUserClient::new(&base)
+                .set_last_position(agent, region, [128., 128., 25.], [0.; 3])
+                .await;
+            serving.abort();
+            assert_eq!(
+                seen.lock().unwrap().as_str(),
+                format!("/griduser {}", fixture["request"]["body"].as_str().unwrap())
+            );
+            assert_status_result(
+                caller,
+                status,
+                fixture["outcome"]["value"].as_bool().unwrap(),
+                result,
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn griduser_getgriduserinfo_matches_csharp_checked_status() {
+        each_status(
+            "griduser-getgriduserinfo",
+            async |caller, status, fixture| {
+                let (base, seen, serving) = serve_injected(fixture).await;
+                let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+                let result = GridUserClient::new(&base).location(agent).await;
+                serving.abort();
+                assert_eq!(
+                    seen.lock().unwrap().as_str(),
+                    format!("/griduser {}", fixture["request"]["body"].as_str().unwrap())
+                );
+                let accepted = fixture["outcome"]["accepted"].as_bool().unwrap();
+                match result {
+                    Ok(Some(location)) => {
+                        assert!(accepted, "{caller}");
+                        assert!(location.online);
+                        assert_eq!(
+                            location.region_id,
+                            "00000000-0000-4000-8000-000000000002"
+                                .parse::<Uuid>()
+                                .unwrap()
+                        );
+                        assert_eq!(location.position, [128., 128., 25.]);
+                    }
+                    Err(GridError::Http(ferroan_http::HttpError::Status { status: observed })) => {
+                        assert!(!accepted);
+                        assert!(fixture["outcome"]["value"].is_null());
+                        assert_eq!(observed, status, "{caller}");
+                    }
+                    Ok(None) => {
+                        panic!("{caller} {status}: C# returned a user and Rust returned none")
+                    }
+                    Err(error) => panic!("{caller} {status}: {error}"),
+                }
+            },
+        )
+        .await;
     }
 }

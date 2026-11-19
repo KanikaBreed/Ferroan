@@ -1,0 +1,20 @@
+{
+  "caller": "griduser-loggedout",
+  "request": {
+    "method": "POST",
+    "path": "/griduser",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=loggedout\u0026UserID=00000000-0000-4000-8000-000000000001\u0026RegionID=00000000-0000-4000-8000-000000000002\u0026Position=%3c128%2c\u002B128%2c\u002B25%3e\u0026LookAt=%3c0%2c\u002B0%2c\u002B0%3e"
+  },
+  "injected_response": {
+    "status": 201,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003ESuccess\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "bool",
+    "value": true,
+    "accepted": true
+  }
+}

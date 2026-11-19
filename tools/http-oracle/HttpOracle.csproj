@@ -20,9 +20,15 @@
   <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
     <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj')"
            Text="Set FerroanRef (or FERROAN_REF) to the reference checkouts root. Missing OpenSim.Server.Base." />
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Services.Connectors/OpenSim.Services.Connectors.csproj')"
+           Text="Set FerroanRef (or FERROAN_REF) to the reference checkouts root. Missing OpenSim.Services.Connectors." />
   </Target>
 
   <ItemGroup>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Services.Connectors/OpenSim.Services.Connectors.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj">
       <Private>true</Private>
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>

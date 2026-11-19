@@ -23,7 +23,7 @@ The command is the same on every platform. [Ordinary CI](../.github/workflows/ci
 
 ## HTTP fixtures
 
-`cargo xtask http generate` and `verify` build [tools/http-oracle](../tools/http-oracle/README.md) and call Tranquillity's query-string and XML helpers. The committed `fixtures/http` files are read by `ferroan-http` tests on all three CI platforms; the Linux live workflow runs `http verify` against the pinned C# source.
+`cargo xtask http generate` and `verify` build [tools/http-oracle](../tools/http-oracle/README.md) and call Tranquillity's query-string and XML helpers. The committed `fixtures/http` files are read by `ferroan-http` tests on all three CI platforms; the Linux live workflow runs `http verify` against the pinned C# source. `cargo xtask http status-verify` runs the same live job against the 36 connector status fixtures in [fixtures/http-status](../fixtures/http-status/README.md).
 
 ## Asset fixtures
 

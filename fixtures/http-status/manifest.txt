@@ -1,0 +1,40 @@
+format 1
+revision 40432e0f83d3802434f898a4e28687bd977d5cf5
+source real Tranquillity connectors; controlled loopback HTTP status injection
+
+grid-register-200
+grid-register-201
+grid-register-302
+grid-register-500
+grid-deregister-200
+grid-deregister-201
+grid-deregister-302
+grid-deregister-500
+presence-getagent-200
+presence-getagent-201
+presence-getagent-302
+presence-getagent-500
+presence-getagents-200
+presence-getagents-201
+presence-getagents-302
+presence-getagents-500
+presence-logout-200
+presence-logout-201
+presence-logout-302
+presence-logout-500
+presence-report-200
+presence-report-201
+presence-report-302
+presence-report-500
+griduser-loggedout-200
+griduser-loggedout-201
+griduser-loggedout-302
+griduser-loggedout-500
+griduser-setposition-200
+griduser-setposition-201
+griduser-setposition-302
+griduser-setposition-500
+griduser-getgriduserinfo-200
+griduser-getgriduserinfo-201
+griduser-getgriduserinfo-302
+griduser-getgriduserinfo-500

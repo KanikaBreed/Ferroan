@@ -1,0 +1,20 @@
+{
+  "caller": "presence-logout",
+  "request": {
+    "method": "POST",
+    "path": "/presence",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logout\u0026SessionID=00000000-0000-4000-8000-000000000004"
+  },
+  "injected_response": {
+    "status": 302,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003ESuccess\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "bool",
+    "value": false,
+    "accepted": false
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "caller": "griduser-getgriduserinfo",
+  "request": {
+    "method": "POST",
+    "path": "/griduser",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getgriduserinfo\u0026UserID=00000000-0000-4000-8000-000000000001"
+  },
+  "injected_response": {
+    "status": 201,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CUserID\u003E00000000-0000-4000-8000-000000000001\u003C/UserID\u003E\u003COnline\u003ETrue\u003C/Online\u003E\u003CLastRegionID\u003E00000000-0000-4000-8000-000000000002\u003C/LastRegionID\u003E\u003CLastPosition\u003E\u0026lt;128, 128, 25\u0026gt;\u003C/LastPosition\u003E\u003CLastLookAt\u003E\u0026lt;0, 0, 0\u0026gt;\u003C/LastLookAt\u003E\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "griduser",
+    "value": {
+      "user_id": "00000000-0000-4000-8000-000000000001",
+      "online": true,
+      "last_region_id": "00000000-0000-4000-8000-000000000002",
+      "last_position": "\u003C128, 128, 25\u003E"
+    },
+    "accepted": true
+  }
+}

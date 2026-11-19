@@ -31,4 +31,6 @@ A body that matches none of those is JSON in Tranquillity. `ferroan-llsd` has no
 
 ## HTTP
 
-`form_router` is an axum `POST` that reads a form body and writes `text/xml`. `post_form` and `post_llsd_xml` are the reqwest client. Ordinary CI compares the committed oracle fixtures in Rust tests; the [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask http verify` against C# and exercises these helpers through the asset and region-login checks. Viewer-gate evidence belongs in [TASKS.md](../../TASKS.md).
+`form_router` is an axum `POST` that reads a form body and writes `text/xml`. `post_form` and `post_llsd_xml` are the reqwest client. Ordinary CI compares the committed oracle fixtures in Rust tests; the [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask http verify` and `cargo xtask http status-verify` against C# and exercises these helpers through the asset and region-login checks. Viewer-gate evidence belongs in [TASKS.md](../../TASKS.md).
+
+`post_form` follows `SynchronousRestFormsRequester.MakePostRequest` at Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`: the XML body is parsed whatever the HTTP status is. Callers that follow `MakeRequest` pass `FormOptions::checked`. A checked call returns `HttpError::Status` with the numeric code and does not read the body. The error text excludes the URL and the body. `WebUtil.cs` is not copied. The 36 cases under [fixtures/http-status](../../fixtures/http-status/README.md) record both policies.

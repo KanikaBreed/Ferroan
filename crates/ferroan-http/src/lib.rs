@@ -16,7 +16,9 @@ mod service;
 mod value;
 mod xml;
 
-pub use client::{post_form, post_llsd_xml};
+pub use client::{
+    FormOptions, FormStatusPolicy, post_form, post_form_with, post_form_with_client, post_llsd_xml,
+};
 pub use error::HttpError;
 pub use llsd_http::{LlsdBody, llsd_from_http_body, llsd_response, llsd_response_status};
 pub use query::{build_query_string, parse_query_string, parse_query_string_limited};
