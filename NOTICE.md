@@ -45,6 +45,8 @@ Q8's `crates/ferroan-client/src/circuit.rs` follows `Source/OpenSim.Region.Clien
 
 Q9's `crates/ferroan-client/src/caps.rs` and event queue follow Tranquillity `Source/OpenSim.Region.ClientStack.LindenCaps/BunchOfCaps/BunchOfCaps.cs`, `EventQueue/EventQueueGetModule.cs`, `Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs`, `PollServiceRequestManager.cs`, `PollServiceHttpRequest.cs`, `SimpleStreamHandler.cs` and `OSHttpServer/HttpResponse.cs` at `858321883f5487a5d192d36ea9d7b90fa468310c` (BSD-3-Clause). The files retain the source notices. Seed names use `OSD.AsString` conversion from libopenmetaverse `OpenMetaverse.StructuredData/StructuredData.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`; the LLSD helper retains that BSD notice. The harness probes, capture extraction and fixture comparisons are original Ferroan code.
 
+Q10e's circuit timers additionally port `Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs` (constructor and `UpdateRoundTrip`) and `LLUDPServer.cs` (ping, resend and inactivity scheduling), with pause/resume handlers from `LLClientView.cs`, at Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`. Region configuration follows their constructor keys; re-login replacement follows `Source/OpenSim.Region.Framework/Scenes/Scene.cs::NewUserConnection`. These files retain the source BSD notice. `UnackedPacketCollection.cs` was read to verify numeric ordering; no C# implementation was copied into the shared Aurora-derived reliable window.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

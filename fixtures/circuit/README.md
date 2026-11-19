@@ -22,19 +22,28 @@ captured from this public test configuration. Original packet sequence numbers,
 reliability/zero-coding flags and appended ACKs are preserved. No additional
 normalization is used to make the Rust comparison pass.
 
-`sequence.cap` contains the selected inbound and outbound evidence in original
+`sequence.cap` contains the complete scrubbed UDP evidence in original
 order, with capture timestamps intact. `manifest.json` records each selected
 packet's original record index, every outgoing packet's envelope (including
-unrelated packet types omitted from `sequence.cap`), and the handshake settings.
+unrelated packet types), and the handshake settings.
 The individual `.bin` files contain complete LLUDP datagrams:
 
 - `packet-ack.bin`: immediate `UseCircuitCode` ACK, sequence 0, unreliable.
 - `region-handshake.bin`: first normal outbound packet, sequence 1, reliable
   and zero-coded, with one RegionInfo4 block.
-- `packet-ack-established.bin`: ordinary queued ACK, sequence 14, unreliable;
+- `packet-ack-established.bin`: ordinary queued ACK, sequence 23, unreliable;
   established ACKs participate in the outbound sequence.
 - `logout-reply.bin`: sequence 25, reliable and zero-coded, with one nil
   inventory item UUID.
+- `kick-user.bin`: sequence 26, with the captured reason
+  `The simulator is going down.`. This is the shutdown path's notice,
+  not an ordinary logout response. The manifest records the reason.
+
+The fresh 55-datagram capture has no `KillObject`; the earlier selected trace's
+manifest showed one after shutdown. `Scene.RemoveClient` broadcasts it for the
+avatar's local ID. That scene/avatar behavior remains assigned to P2.0f.
+The generator retains these tail packets when present and removes obsolete
+optional tail files when a later capture has none.
 
 The relevant source methods are `LLUDPServer.SendAckImmediate`,
 `LLUDPServer.SendAcks`, `LLUDPServer.LogoutHandler`,
@@ -43,11 +52,16 @@ The relevant source methods are `LLUDPServer.SendAckImmediate`,
 `Source/OpenSim.Region.ClientStack.LindenUDP/` at the revision above. The
 `LogoutReplyPacket` constructor in `OpenMetaverse/_Packets_.cs` at
 `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` sets reliable and zero-coded flags.
-The C# close path flushes queued packets and shuts the client down without
-waiting for a logout ACK.
+The C# close path does not wait for a logout ACK. `Scene.Close` sends the
+captured kick reason when the simulator shuts down; ordinary
+`Scene.CloseAgent(false)` does not call `Kick`.
 
-Server serializer tests supply the captured configuration and captured envelope
-sequence when checking full bytes. Circuit flow tests separately verify that
-the immediate ACK does not advance the next normal sequence. The Rust region
-does not yet emit all intervening C# scene packets, so its logout sequence is
-not expected to equal 25 during an ordinary login session.
+Server tests supply the captured configuration. The initial ACK and handshake
+match complete captured datagrams. Established ACK and logout tests drive all
+captured inbound packets through the circuit, without seeding its counter or
+ACK queue. They flush ACKs at the recorded batch boundary, compare every wire
+byte except the four outbound sequence bytes, and independently assert Rust's
+consecutive sequence allocation. The Rust region does not emit C#'s intervening
+terrain/appearance/world packets yet, so its ACK/logout sequences are 3/4
+rather than 23/25. Arrival's separate capture still matches the full datagram
+after its documented identity and timestamp folding.

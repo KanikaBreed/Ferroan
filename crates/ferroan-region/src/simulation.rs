@@ -27,6 +27,7 @@
 //   AgentHandlers.cs and Utils.cs, Source/OpenSim.Framework/AgentCircuitData.cs,
 //   EntityTransferContext.cs, VersionInfo.cs and CapsUtil.cs, and
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Simulation/LocalSimulationConnector.cs
+//   and Source/OpenSim.Region.Framework/Scenes/Scene.cs (NewUserConnection)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: bounded local login admission, one active circuit, gzip limits.
 // Copyright (c) 2026 Ferroan contributors
@@ -38,10 +39,7 @@
 use std::{
     io::Read,
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -55,7 +53,7 @@ use axum::{
 use ferroan_client::{CapsRegistry, CircuitExpect};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 const MAX_BODY: usize = 1024 * 1024;
@@ -81,7 +79,13 @@ pub struct SimulationState {
     region_id: Uuid,
     caps: CapsRegistry,
     sender: mpsc::Sender<AcceptedAgent>,
-    occupied: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<ActiveSession>>>,
+}
+
+struct ActiveSession {
+    agent_id: Uuid,
+    generation: Uuid,
+    cancel: oneshot::Sender<()>,
 }
 
 /// Keeps the accepted seed and circuit reserved until logout, timeout or failure.
@@ -93,18 +97,37 @@ pub struct AcceptedAgent {
     pub start_pos: [f32; 3],
     pub first_name: String,
     pub last_name: String,
+    cancelled: oneshot::Receiver<()>,
     _lease: SessionLease,
 }
 
+impl AcceptedAgent {
+    /// Completes when a new login replaces this circuit. The dispatcher must
+    /// drop the old UDP-serving future before starting the replacement.
+    pub async fn replaced(&mut self) {
+        let _ = (&mut self.cancelled).await;
+    }
+}
+
 struct SessionLease {
-    occupied: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<ActiveSession>>>,
+    generation: Uuid,
     caps: CapsRegistry,
 }
 
 impl Drop for SessionLease {
     fn drop(&mut self) {
-        self.caps.clear();
-        self.occupied.store(false, Ordering::Release);
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|session| session.generation == self.generation)
+        {
+            self.caps.clear();
+            *active = None;
+        }
     }
 }
 
@@ -114,7 +137,7 @@ impl SimulationState {
             region_id,
             caps,
             sender,
-            occupied: Arc::new(AtomicBool::new(false)),
+            active: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -126,20 +149,40 @@ impl SimulationState {
     }
 
     fn accept(&self, fields: AgentFields) -> Result<(), &'static str> {
-        if self
-            .occupied
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|session| session.agent_id != fields.agent_id)
         {
             return Err("Region already has an active login");
         }
+        // Reserve before replacing anything: backpressure or a stopped
+        // dispatcher must leave the current session and capabilities intact.
+        let permit = self
+            .sender
+            .try_reserve()
+            .map_err(|_| "Region is not accepting logins")?;
+        if let Some(previous) = active.take() {
+            let _ = previous.cancel.send(());
+            self.caps.clear();
+        }
         let path = format!("/CAPS/{}0000/", fields.caps_path);
         if self.caps.register(&path).is_err() {
-            self.occupied.store(false, Ordering::Release);
             return Err("Could not create seed capability");
         }
+        let generation = Uuid::new_v4();
+        let (cancel, cancelled) = oneshot::channel();
+        *active = Some(ActiveSession {
+            agent_id: fields.agent_id,
+            generation,
+            cancel,
+        });
         let lease = SessionLease {
-            occupied: self.occupied.clone(),
+            active: self.active.clone(),
+            generation,
             caps: self.caps.clone(),
         };
         let accepted = AcceptedAgent {
@@ -154,11 +197,14 @@ impl SimulationState {
             start_pos: fields.start_pos,
             first_name: fields.first_name,
             last_name: fields.last_name,
+            cancelled,
             _lease: lease,
         };
-        self.sender
-            .try_send(accepted)
-            .map_err(|_| "Region is not accepting logins")
+        // A receiver dropped after reservation may drop this lease in send().
+        // Release the admission lock first so that cleanup cannot deadlock.
+        drop(active);
+        permit.send(accepted);
+        Ok(())
     }
 }
 
@@ -500,7 +546,7 @@ mod tests {
         assert_eq!(answer["your_ip"], "127.0.0.1");
         answer["your_ip"] = Value::String("192.0.2.1".into());
         assert_eq!(answer.to_string(), CREATE_RESPONSE.trim());
-        let accepted = receiver.recv().await.unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
         assert_eq!(
             accepted.expect,
             CircuitExpect {
@@ -522,9 +568,56 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.text().await.unwrap().contains("EventQueueGet"));
+
+        // Replay the captured CreateAgent schema with a fresh session for the
+        // same avatar. Its old lease remains alive while the new seed is used.
+        let mut next_args = args.clone();
+        let next_session = Uuid::from_u128(101);
+        let next_caps = Uuid::from_u128(102).to_string();
+        next_args.insert("session_id".into(), json!(next_session.to_string()));
+        next_args.insert(
+            "secure_session_id".into(),
+            json!(Uuid::from_u128(103).to_string()),
+        );
+        next_args.insert("circuit_code".into(), json!("43"));
+        next_args.insert("caps_path".into(), json!(next_caps));
+        let response = client
+            .post(format!("{base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(Value::Object(next_args).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(answer["success"], true);
+        tokio::time::timeout(std::time::Duration::from_secs(1), accepted.replaced())
+            .await
+            .unwrap();
+        let replacement = receiver.recv().await.unwrap();
+        assert_eq!(replacement.expect.agent_id, agent);
+        assert_eq!(replacement.expect.session_id, next_session);
+        assert_eq!(replacement.expect.circuit_code, 43);
         drop(accepted);
         assert_eq!(
             client.post(&seed).send().await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let next_seed = format!("{base}/CAPS/{next_caps}0000/");
+        assert_eq!(
+            client
+                .post(&next_seed)
+                .header("content-type", "application/llsd+xml")
+                .body("<llsd><array><string>EventQueueGet</string></array></llsd>")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        drop(replacement);
+        assert_eq!(
+            client.post(&next_seed).send().await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
         task.abort();
@@ -556,22 +649,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_lease_preserves_active_login_and_cleans_closed_queue() {
+    async fn admission_lease_replaces_same_agent_and_cleans_closed_queue() {
         let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
         let state = SimulationState::new(Uuid::from_u128(5), caps.clone(), sender);
         state.accept(synthetic_agent()).unwrap();
-        let accepted = receiver.recv().await.unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
         assert_eq!(accepted.expect.circuit_code, 42);
-        assert!(state.accept(synthetic_agent()).is_err());
+        let mut other = synthetic_agent();
+        other.agent_id = Uuid::from_u128(6);
+        assert!(state.accept(other).is_err());
         assert!(caps.register("/CAPS/occupied0000/").is_err());
+        let mut next = synthetic_agent();
+        next.session_id = Uuid::from_u128(7);
+        next.circuit_code = 43;
+        next.caps_path = Uuid::from_u128(8).to_string();
+        state.accept(next).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), accepted.replaced())
+            .await
+            .unwrap();
+        let replacement = receiver.recv().await.unwrap();
+        assert_eq!(replacement.expect.session_id, Uuid::from_u128(7));
+        assert_eq!(replacement.expect.circuit_code, 43);
         drop(accepted);
+        // An old generation's cleanup must not release the new reservation.
+        assert!(caps.register("/CAPS/still-occupied0000/").is_err());
+        assert!(state.active.lock().unwrap().is_some());
+        drop(replacement);
+        assert!(state.active.lock().unwrap().is_none());
         state.accept(synthetic_agent()).unwrap();
         drop(receiver.recv().await.unwrap());
         drop(receiver);
         assert!(state.accept(synthetic_agent()).is_err());
-        assert!(!state.occupied.load(Ordering::Acquire));
+        assert!(state.active.lock().unwrap().is_none());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_or_closed_dispatch_queue_preserves_the_current_login() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state = SimulationState::new(Uuid::from_u128(5), caps.clone(), sender);
+        state.accept(synthetic_agent()).unwrap();
+        // First login is still queued; reserving a replacement must fail
+        // without changing its capabilities or sending a cancellation.
+        assert_eq!(
+            state.accept(synthetic_agent()),
+            Err("Region is not accepting logins")
+        );
+        let mut accepted = receiver.recv().await.unwrap();
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(caps.register("/CAPS/still-active0000/").is_err());
+        receiver.close();
+        assert_eq!(
+            state.accept(synthetic_agent()),
+            Err("Region is not accepting logins")
+        );
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(caps.register("/CAPS/still-active0000/").is_err());
+        drop(accepted);
+        caps.register("/CAPS/after-drop0000/").unwrap();
     }
 
     #[test]

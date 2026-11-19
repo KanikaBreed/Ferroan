@@ -38,7 +38,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (C# logout fix coming; see below) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
-| Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | READY after Q10d |
+| Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
@@ -99,6 +99,8 @@ Q10c was added on 18 November 2026 from the second Q10 blocker (#36). The four b
 Q10d to Q10f were added on 18 November 2026 from a review of #25 to #37 at `ebda8a9` (four reviewers: region, client stack, harness, test evidence). No high-severity defect was found, and every fixture checked came from C#. They come before Q11 because the harness fixes keep later CI honest, the resend and inactivity fixes matter for G2 on a real network, and P0.11's containers need the configurable control-plane trust in Q10f. Q10d waits for Q10 so it does not collide with the Ferrobot harness work. Confirm each finding first, as with Q7 to Q9.
 
 Q10d: [PR #44](https://github.com/KanikaBreed/Ferroan/pull/44), taken independently after the manager's Q10 hold in #43. All thirteen findings were confirmed and addressed. [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899638) passed Linux 2m37s, Windows 4m35s and macOS 1m26s; [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899822) passed in 9m44s. Recovery passed 200 consecutive default-parallel runs in 218 seconds. TASKS.md records test names, captures, startup interruption, database isolation and asset checks. Firestorm remains pending. Q10 and #41 remain held for the upstream fix.
+
+Q10e review qualifications at `8583218`: finding 4's `KickUser` is a simulator-shutdown artifact, confirmed by the fresh C# capture's reason `The simulator is going down.` and `Scene.Close`; ordinary `CloseAgent(false)` does not call `Kick`. No ordinary-logout kick is added. `KillObject` needs the avatar local ID and scene broadcast path in P2.0f. Finding 5 is incorrect: `UnackedPacketCollection` uses a `SortedDictionary<uint, OutgoingPacket>` and selects its first numeric key. Ferroan already matches that ordering, which is retained with wraparound coverage. Findings 1–3 and 6 are confirmed.
 
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 

@@ -26,9 +26,13 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
 //     (PacketReceived, HandleUseCircuitCode, SendAckImmediate, SendAcks,
-//      CompletePing, SendPacketFinal, LogoutHandler)
+//      CompletePing, SendPing, HandleUnacked, OutgoingPacketHandler,
+//      SendPacketFinal, LogoutHandler)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
+//     (constructor, UpdateRoundTrip)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (SendLogoutPacket, CloseWithoutChecks, HandleCompleteAgentMovement)
+//     (SendLogoutPacket, CloseWithoutChecks, HandleCompleteAgentMovement,
+//      HandleAgentPause, HandleAgentResume)
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (MakeRootAgent)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
@@ -36,33 +40,68 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Initial UseCircuitCode ACKs bypass the ordinary sequence counter.
-//! Established ACKs are queued. Shared reliability state removes exhausted
-//! packets; C# itself retries until its inactivity timeout.
+//! Established ACKs are queued. Reliable packets remain until acknowledgment or
+//! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
 use crate::{ArrivalConfig, HandshakeConfig};
 use ferroan_protocol::msgs::{
-    AgentHeightWidth, AgentThrottle, CompleteAgentMovement, CompletePingCheck, LogoutReply,
-    LogoutRequest, PacketAck, RegionHandshakeReply, StartPingCheck, UseCircuitCode, logout_reply,
-    packet_ack,
+    AgentHeightWidth, AgentPause, AgentResume, AgentThrottle, CompleteAgentMovement,
+    CompletePingCheck, LogoutReply, LogoutRequest, PacketAck, RegionHandshakeReply, StartPingCheck,
+    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
-    MAX_UNACKED, RecentSequences, ReliableWindow, Resend, SequenceCounter,
+    MAX_UNACKED, RecentSequences, ReliableWindow, SequenceCounter,
 };
 use ferroan_protocol::{IncomingPacket, Msg, Writer};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
+use tokio::time::Instant;
 use uuid::Uuid;
 
-const RESEND_AFTER: Duration = Duration::from_millis(200);
-const MAX_RESENDS: u8 = 4;
+const RESEND_AFTER: Duration = Duration::from_millis(1000);
+const RESEND_INTERVAL: Duration = Duration::from_millis(100);
+const PING_INTERVAL: Duration = Duration::from_secs(5);
 const ACK_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_PENDING_ACKS: usize = 4096;
 const ACKS_PER_PACKET: usize = 255;
+
+/// `[ClientStack.LindenUDP]` timing values. RTO settings use milliseconds in
+/// Tranquillity configuration; inactivity settings use seconds. Zero RTO values
+/// select the C# defaults before this configuration is constructed.
+#[derive(Debug, Clone, Copy)]
+pub struct CircuitTiming {
+    pub default_rto: Duration,
+    pub max_rto: Duration,
+    pub ack_timeout: Duration,
+    pub paused_ack_timeout: Duration,
+}
+impl Default for CircuitTiming {
+    fn default() -> Self {
+        Self {
+            default_rto: RESEND_AFTER,
+            max_rto: Duration::from_secs(3),
+            ack_timeout: Duration::from_secs(60),
+            paused_ack_timeout: Duration::from_secs(300),
+        }
+    }
+}
+impl CircuitTiming {
+    pub fn valid(self) -> bool {
+        [
+            self.default_rto,
+            self.max_rto,
+            self.ack_timeout,
+            self.paused_ack_timeout,
+        ]
+        .into_iter()
+        .all(|value| !value.is_zero() && value <= Duration::from_millis(i32::MAX as u64))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CircuitExpect {
@@ -76,7 +115,7 @@ pub struct CircuitExpect {
 pub enum CircuitError {
     #[error("udp: {0}")]
     Udp(#[from] io::Error),
-    #[error("timed out waiting for logout")]
+    #[error("circuit inactivity timeout")]
     Timeout,
     #[error("reliable window is full ({0} unacked)")]
     TooManyUnacked(usize),
@@ -84,6 +123,8 @@ pub enum CircuitError {
     TooLarge,
     #[error("arrival position or look-at is not finite")]
     InvalidArrival,
+    #[error("circuit timing must be positive and fit the C# millisecond clock")]
+    InvalidTiming,
 }
 
 // This private boundary permits deterministic peer-error tests without
@@ -120,52 +161,115 @@ struct State {
     handshake: HandshakeConfig,
     arrival: ArrivalConfig,
     arrived: bool,
+    timing: CircuitTiming,
+    rto: Duration,
+    resend_at: Instant,
+    ping_at: Instant,
+    ping_sequence: u8,
+    last_ping: Option<Instant>,
+    ping_ms: u32,
+    last_received: Instant,
+    paused: bool,
 }
 impl State {
+    #[cfg(test)]
     fn new(handshake: HandshakeConfig, arrival: ArrivalConfig) -> Self {
+        Self::with_timing(handshake, arrival, CircuitTiming::default())
+    }
+    fn with_timing(
+        handshake: HandshakeConfig,
+        arrival: ArrivalConfig,
+        timing: CircuitTiming,
+    ) -> Self {
+        let now = Instant::now();
         Self {
             sequence: SequenceCounter::default(),
             peer: None,
             unacked: ReliableWindow::default(),
             recent: RecentSequences::default(),
             pending_acks: VecDeque::new(),
-            ack_at: Instant::now() + ACK_INTERVAL,
+            ack_at: now + ACK_INTERVAL,
             bytes_since_ack: 0,
             handshake,
             arrival,
             arrived: false,
+            timing,
+            rto: timing.default_rto,
+            resend_at: now + RESEND_INTERVAL,
+            ping_at: now + PING_INTERVAL,
+            ping_sequence: 0,
+            last_ping: None,
+            ping_ms: 20,
+            last_received: now,
+            paused: false,
         }
     }
     fn time_until_work(&self) -> Duration {
         let now = Instant::now();
-        let resend = self.unacked.time_until_due(now, RESEND_AFTER);
-        if self.pending_acks.is_empty() {
-            resend
-        } else {
-            resend.min(self.ack_at.saturating_duration_since(now))
+        let mut wait = self.resend_at.saturating_duration_since(now);
+        if self.peer.is_some() {
+            wait = wait.min(self.ping_at.saturating_duration_since(now));
+            if !self.pending_acks.is_empty() {
+                wait = wait.min(self.ack_at.saturating_duration_since(now));
+            }
         }
+        wait
     }
     async fn maintain(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
+        let now = Instant::now();
+        if now >= self.resend_at {
+            self.resend_at = now + RESEND_INTERVAL;
+            let timeout = if self.paused {
+                self.timing.paused_ack_timeout
+            } else {
+                self.timing.ack_timeout
+            };
+            if now.duration_since(self.last_received) > timeout {
+                return Err(CircuitError::Timeout);
+            }
+            if let Some(peer) = self.peer {
+                let batch = self.unacked.poll(now.into_std(), self.rto);
+                for (seq, payload) in batch.resend {
+                    let mut bytes = Vec::new();
+                    packet::build_raw(
+                        &payload.bytes,
+                        payload.zerocoded,
+                        seq,
+                        true,
+                        true,
+                        &[],
+                        &mut bytes,
+                    );
+                    let _ = sock.send_to(&bytes, peer).await;
+                }
+            }
+        }
         let Some(peer) = self.peer else {
             return Ok(());
         };
-        let batch = self.unacked.poll(Instant::now(), RESEND_AFTER);
-        for (seq, payload) in batch.resend {
-            let mut bytes = Vec::new();
-            packet::build_raw(
-                &payload.bytes,
-                payload.zerocoded,
-                seq,
-                true,
-                true,
-                &[],
-                &mut bytes,
-            );
-            let _ = sock.send_to(&bytes, peer).await;
-        }
         if Instant::now() >= self.ack_at {
             self.flush_acks(sock, peer).await?;
         }
+        if now >= self.ping_at {
+            self.ping_at = now + PING_INTERVAL;
+            self.send_ping(sock, peer).await?;
+        }
+        Ok(())
+    }
+    async fn send_ping(
+        &mut self,
+        sock: &impl DatagramIo,
+        peer: SocketAddr,
+    ) -> Result<(), CircuitError> {
+        let ping = StartPingCheck {
+            ping_id: start_ping_check::PingID {
+                ping_id: self.ping_sequence,
+                oldest_unacked: self.unacked.oldest_or(0),
+            },
+        };
+        self.ping_sequence = self.ping_sequence.wrapping_add(1);
+        self.send_message(sock, peer, &ping, false).await?;
+        self.last_ping = Some(Instant::now());
         Ok(())
     }
     async fn send_message<M: Msg>(
@@ -204,15 +308,7 @@ impl State {
         let _ = sock.send_to(&bytes, to).await;
         if reliable {
             self.unacked
-                .insert(
-                    seq,
-                    payload,
-                    Instant::now(),
-                    Resend {
-                        timeout: Some(RESEND_AFTER),
-                        max_retries: MAX_RESENDS,
-                    },
-                )
+                .insert_until_ack(seq, payload, Instant::now().into_std())
                 .map_err(|error| CircuitError::TooManyUnacked(error.count))?;
         }
         Ok(())
@@ -272,6 +368,7 @@ impl State {
                 return Ok(false);
             }
             self.peer = Some(from);
+            self.last_received = Instant::now();
             if packet.reliable() {
                 self.recent.note(packet.sequence);
             }
@@ -281,7 +378,9 @@ impl State {
             self.send_message(sock, from, &handshake, true).await?;
             return Ok(false);
         }
-        // C# validates agent/session IDs before applying appended ACKs.
+        // C# refreshes the mapped endpoint's inactivity clock before ID
+        // validation, then validates agent/session IDs before applying ACKs.
+        self.last_received = Instant::now();
         // Throttle and height callbacks remain planned. Arrival's circuit-code
         // gate is applied in the movement callback after normal ACK handling.
         if !valid_packet_ids(packet, expect) {
@@ -324,6 +423,26 @@ impl State {
                 self.send_message(sock, from, &reply, true).await?;
                 self.arrived = true;
             }
+        } else if packet.id == AgentPause::ID {
+            self.paused = true;
+        } else if packet.id == AgentResume::ID {
+            self.paused = false;
+            self.send_ping(sock, from).await?;
+        } else if packet.id == CompletePingCheck::ID {
+            if packet.decode::<CompletePingCheck>().is_ok()
+                && let Some(sent) = self.last_ping
+            {
+                // Pinned C# uses the most recent ping timestamp without matching
+                // PingID, ACK RTT samples, Karn filtering or exponential backoff.
+                let elapsed_ms = Instant::now().duration_since(sent).as_secs_f64() * 1000.0;
+                self.ping_ms = (0.8 * f64::from(self.ping_ms) + 0.2 * elapsed_ms) as u32;
+                let sample = Duration::from_millis(u64::from(self.ping_ms) * 5);
+                self.rto = if sample > self.timing.max_rto {
+                    self.timing.max_rto
+                } else {
+                    sample.max(Duration::from_millis(250))
+                };
+            }
         } else if packet.id == StartPingCheck::ID {
             if let Ok(ping) = packet.decode::<StartPingCheck>() {
                 let mut reply = CompletePingCheck::default();
@@ -339,7 +458,7 @@ impl State {
             });
             self.send_message(sock, from, &reply, true).await?;
             // LogoutHandler sends a reliable reply then CloseWithoutChecks
-            // flushes and closes; it does not wait for an acknowledgement.
+            // closes without waiting for an acknowledgement.
             return Ok(true);
         }
         Ok(false)
@@ -370,6 +489,10 @@ fn valid_packet_ids(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
         check!(AgentHeightWidth)
     } else if packet.id == LogoutRequest::ID {
         check!(LogoutRequest)
+    } else if packet.id == AgentPause::ID {
+        check!(AgentPause)
+    } else if packet.id == AgentResume::ID {
+        check!(AgentResume)
     } else {
         true
     }
@@ -378,6 +501,7 @@ fn valid_packet_ids(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
 pub struct CircuitServer {
     socket: UdpSocket,
     handshake: HandshakeConfig,
+    timing: CircuitTiming,
 }
 impl CircuitServer {
     pub async fn bind() -> Result<Self, CircuitError> {
@@ -387,25 +511,37 @@ impl CircuitServer {
         Ok(Self {
             socket: UdpSocket::bind(address).await?,
             handshake: HandshakeConfig::for_region(Uuid::nil()),
+            timing: CircuitTiming::default(),
         })
     }
     pub fn with_handshake(mut self, handshake: HandshakeConfig) -> Self {
         self.handshake = handshake;
         self
     }
+    pub fn with_timing(mut self, timing: CircuitTiming) -> Result<Self, CircuitError> {
+        if !timing.valid() {
+            return Err(CircuitError::InvalidTiming);
+        }
+        self.timing = timing;
+        Ok(self)
+    }
     pub fn local_addr(&self) -> Result<SocketAddr, CircuitError> {
         Ok(self.socket.local_addr()?)
     }
     /// Serve one authorized viewer until LogoutReply. Datagram errors are
-    /// tolerated within the circuit's bounded lifetime.
+    /// tolerated until inactivity. The outer deadline is only a test guard.
     #[cfg(test)]
     pub async fn serve_one(
         &self,
         expect: CircuitExpect,
         timeout: Duration,
     ) -> Result<(), CircuitError> {
-        self.serve_one_with_arrival(expect, ArrivalConfig::default(), timeout)
-            .await
+        tokio::time::timeout(
+            timeout,
+            self.serve_one_with_arrival(expect, ArrivalConfig::default()),
+        )
+        .await
+        .map_err(|_| CircuitError::Timeout)?
     }
 
     /// Serve an accepted login with its actual start position and the region's
@@ -415,7 +551,6 @@ impl CircuitServer {
         &self,
         expect: CircuitExpect,
         arrival: ArrivalConfig,
-        timeout: Duration,
     ) -> Result<(), CircuitError> {
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
@@ -424,7 +559,7 @@ impl CircuitServer {
         if handshake.region_id.is_nil() {
             handshake.region_id = expect.region_id;
         }
-        serve_socket(&self.socket, expect, handshake, arrival, timeout).await
+        serve_socket(&self.socket, expect, handshake, arrival, self.timing).await
     }
 }
 async fn serve_socket(
@@ -432,18 +567,13 @@ async fn serve_socket(
     expect: CircuitExpect,
     handshake: HandshakeConfig,
     arrival: ArrivalConfig,
-    timeout: Duration,
+    timing: CircuitTiming,
 ) -> Result<(), CircuitError> {
-    let mut state = State::new(handshake, arrival);
-    let deadline = Instant::now() + timeout;
+    let mut state = State::with_timing(handshake, arrival, timing);
     let mut buf = [0u8; MAX_DATAGRAM];
     loop {
         state.maintain(sock).await?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(CircuitError::Timeout);
-        }
-        let wait = remaining.min(state.time_until_work());
+        let wait = state.time_until_work();
         if wait.is_zero() {
             continue;
         }
@@ -451,7 +581,7 @@ async fn serve_socket(
             Ok(Ok(received)) => received,
             Ok(Err(_)) => {
                 // Includes Windows WSAECONNRESET; back off to avoid spinning
-                // on a persistently failing socket until the bounded deadline.
+                // on a persistently failing socket until inactivity expires.
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 continue;
             }
@@ -465,6 +595,10 @@ async fn serve_socket(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "circuit_timing_tests.rs"]
+mod timing_tests;
 
 #[cfg(test)]
 #[path = "circuit_tests.rs"]
@@ -646,7 +780,7 @@ mod tests {
         let mut resent = false;
         let mut packet_acks = 0u32;
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(800) {
+        while start.elapsed() < Duration::from_millis(1400) {
             let Some(packet) = recv(&viewer, &mut buf, Duration::from_millis(100)).await else {
                 continue;
             };

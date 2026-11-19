@@ -30,6 +30,8 @@
 //   Source/OpenSim.Server.RegionServer/OpenSimBase.cs (CreateRegion)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (map configuration)
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (CompleteMovement)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs (constructor)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs (constructor)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -40,8 +42,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::time::Duration;
 
-use ferroan_client::HandshakeConfig;
+use ferroan_client::{CircuitTiming, HandshakeConfig};
 use ferroan_config::{Config, RegionLoad};
 use uuid::Uuid;
 
@@ -75,6 +78,7 @@ pub struct RegionConfig {
     pub grid_server_uri: String,
     pub estate_owner: Uuid,
     pub handshake: HandshakeConfig,
+    pub circuit_timing: CircuitTiming,
     /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
     pub channel_version: String,
     pub region_secret: Uuid,
@@ -232,6 +236,7 @@ impl RegionConfig {
             grid_server_uri: grid_server_uri.to_owned(),
             estate_owner,
             handshake,
+            circuit_timing: circuit_timing(server)?,
             channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
         })
@@ -270,6 +275,45 @@ fn required<'a>(
         .get(section, key)
         .filter(|text| !text.is_empty())
         .ok_or_else(|| value(section, key, "is required"))
+}
+
+fn circuit_timing(config: &Config) -> Result<CircuitTiming, RegionConfigError> {
+    const SECTION: &str = "ClientStack.LindenUDP";
+    let rto = |key, fallback| -> Result<Duration, RegionConfigError> {
+        let milliseconds = number(config, SECTION, key, "0")?;
+        if milliseconds > i32::MAX as u32 {
+            return Err(value(
+                SECTION,
+                key,
+                "must fit a positive signed millisecond timer",
+            ));
+        }
+        // LLUDPClient treats zero as "use the default", not an immediate retry.
+        Ok(Duration::from_millis(u64::from(if milliseconds == 0 {
+            fallback
+        } else {
+            milliseconds
+        })))
+    };
+    let silence = |key, fallback| -> Result<Duration, RegionConfigError> {
+        let seconds = number(config, SECTION, key, fallback)?;
+        // C# multiplies GetInt by 1000. Refuse nonpositive/overflowing timers
+        // rather than accepting a disabled or wrapped inactivity bound.
+        if seconds == 0 || seconds > i32::MAX as u32 / 1000 {
+            return Err(value(
+                SECTION,
+                key,
+                "must be positive seconds fitting a signed millisecond timer",
+            ));
+        }
+        Ok(Duration::from_secs(u64::from(seconds)))
+    };
+    Ok(CircuitTiming {
+        default_rto: rto("DefaultRTO", 1000)?,
+        max_rto: rto("MaxRTO", 3000)?,
+        ack_timeout: silence("AckTimeout", "60")?,
+        paused_ack_timeout: silence("PausedAckTimeout", "300")?,
+    })
 }
 
 fn number(
@@ -380,6 +424,66 @@ mod tests {
         assert_eq!(region.udp_bind, "127.0.0.1:9100".parse().unwrap());
         assert_eq!(region.server_uri, "http://127.0.0.1:9100/");
         assert_eq!(region.size, [256, 256]);
+    }
+
+    #[test]
+    fn circuit_settings_follow_csharp_units_defaults_and_zero_rto_override() {
+        let mut server = server();
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.circuit_timing.default_rto,
+            Duration::from_millis(1000)
+        );
+        assert_eq!(config.circuit_timing.max_rto, Duration::from_millis(3000));
+        assert_eq!(config.circuit_timing.ack_timeout, Duration::from_secs(60));
+        assert_eq!(
+            config.circuit_timing.paused_ack_timeout,
+            Duration::from_secs(300)
+        );
+        for (key, setting) in [
+            ("DefaultRTO", "750"),
+            ("MaxRTO", "6000"),
+            ("AckTimeout", "90"),
+            ("PausedAckTimeout", "420"),
+        ] {
+            server.set("ClientStack.LindenUDP", key, setting);
+        }
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.circuit_timing.default_rto,
+            Duration::from_millis(750)
+        );
+        assert_eq!(config.circuit_timing.max_rto, Duration::from_millis(6000));
+        assert_eq!(config.circuit_timing.ack_timeout, Duration::from_secs(90));
+        assert_eq!(
+            config.circuit_timing.paused_ack_timeout,
+            Duration::from_secs(420)
+        );
+        server.set("ClientStack.LindenUDP", "DefaultRTO", "0");
+        server.set("ClientStack.LindenUDP", "MaxRTO", "0");
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.circuit_timing.default_rto,
+            Duration::from_millis(1000)
+        );
+        assert_eq!(config.circuit_timing.max_rto, Duration::from_millis(3000));
+    }
+
+    #[test]
+    fn invalid_or_overflowing_circuit_timer_settings_are_refused() {
+        for (key, setting) in [
+            ("DefaultRTO", "-1"),
+            ("MaxRTO", "2147483648"),
+            ("AckTimeout", "0"),
+            ("PausedAckTimeout", "2147484"),
+            ("AckTimeout", "not-a-number"),
+        ] {
+            let mut server = server();
+            server.set("ClientStack.LindenUDP", key, setting);
+            assert!(
+                matches!(RegionConfig::from_configs(&server, &regions()), Err(RegionConfigError::Value { key: actual, .. }) if actual == key)
+            );
+        }
     }
 
     #[test]

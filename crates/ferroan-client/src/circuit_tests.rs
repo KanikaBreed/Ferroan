@@ -236,7 +236,7 @@ fn captured_config() -> HandshakeConfig {
         HandshakeConfig::for_region(Uuid::from_u128(0x6d1a7f4e0c3b4f539a1e5f0e3c2a9b01));
     config.sim_name = "Ferroan Test".to_string();
     config.estate_owner = Uuid::from_u128(0x4f0c8d2e7a514b8e9c3d2e6f1a0b7c55);
-    config.cache_id = Uuid::from_u128(0x00795643ab6b490fa9dc3a0ccf4b9ca1);
+    config.cache_id = Uuid::from_u128(0x82c1d49a65874da49401b9443137dee9);
     config
 }
 
@@ -299,51 +299,86 @@ async fn initial_ack_and_configured_handshake_match_csharp_datagrams() {
 
 #[tokio::test]
 async fn queued_ack_matches_csharp_bytes_and_consumes_a_sequence() {
-    let captured = parse_packet(ESTABLISHED_ACK).unwrap();
-    let ack = captured.decode::<PacketAck>().unwrap();
-    let mut state = State::new(captured_config(), ArrivalConfig::default());
-    state.sequence = SequenceCounter::new(captured.sequence);
-    state
-        .pending_acks
-        .extend(ack.packets.iter().map(|block| block.id));
-    let io = FakeIo::default();
-    state.flush_acks(&io, peer()).await.unwrap();
-    assert_eq!(io.sent.lock().unwrap().as_slice(), &[ESTABLISHED_ACK]);
-    assert_eq!(state.sequence.peek(), captured.sequence + 1);
+    let (state, io) = drive_captured_inbound(false).await;
+    let sent = io.sent.lock().unwrap();
+    let actual = sent.last().unwrap();
+    captured_wire_except_scene_sequence(actual, ESTABLISHED_ACK);
+    assert_eq!(parse_packet(actual).unwrap().sequence, 3);
+    assert_eq!(state.sequence.peek(), 4);
     assert!(state.pending_acks.is_empty());
     assert!(state.unacked.is_empty());
 }
 
-#[tokio::test]
-async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
-    let captured = parse_packet(LOGOUT).unwrap();
+fn captured_wire_except_scene_sequence(actual: &[u8], captured: &[u8]) {
+    // C# emits terrain/appearance/world packets that this login-only region
+    // does not yet produce. Compare every captured wire byte except the four
+    // outbound sequence bytes, whose allocation is asserted from driven flow.
+    assert_eq!(actual.len(), captured.len());
+    assert_eq!(actual[..1], captured[..1]);
+    assert_eq!(actual[5..], captured[5..]);
+}
+
+fn captured_circuit() -> Vec<ferroan_capture::Record> {
+    ferroan_capture::read_capture(include_bytes!("../../../fixtures/circuit/sequence.cap")).unwrap()
+}
+
+async fn drive_captured_inbound(through_logout: bool) -> (State, FakeIo) {
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), ArrivalConfig::default());
-    state.peer = Some(peer());
-    state.sequence = SequenceCounter::new(captured.sequence);
     let io = FakeIo::default();
-    let request = logout(expect, &[]);
-    assert!(
-        state
-            .handle(
-                &io,
-                peer(),
-                &expect,
-                &parse_packet(&request).unwrap(),
-                request.len()
+    for record in captured_circuit() {
+        let packet = parse_packet(&record.bytes).unwrap();
+        if record.kind == ferroan_capture::Kind::UdpIn {
+            if state
+                .handle(&io, peer(), &expect, &packet, record.bytes.len())
+                .await
+                .unwrap()
+            {
+                assert!(through_logout);
+                return (state, io);
+            }
+        } else if packet.id == PacketAck::ID && packet.sequence != 0 {
+            // C# flushes this batch at the recorded point in the exchange.
+            // Every queued ID must come from the captured incoming packets.
+            state.flush_acks(&io, peer()).await.unwrap();
+            if !through_logout {
+                return (state, io);
+            }
+        }
+    }
+    panic!("capture lacks the requested established ACK/logout boundary");
+}
+
+#[tokio::test]
+async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
+    let expect = identity(Uuid::from_u128(1));
+    let (state, io) = drive_captured_inbound(true).await;
+    {
+        let sent = io.sent.lock().unwrap();
+        let actual = sent.last().unwrap();
+        captured_wire_except_scene_sequence(actual, LOGOUT);
+        assert_eq!(parse_packet(actual).unwrap().sequence, 4);
+        assert_eq!(state.sequence.peek(), 5);
+        assert!(state.unacked.contains(4));
+        assert!(
+            sent.iter().all(
+                |bytes| parse_packet(bytes).unwrap().id != ferroan_protocol::msgs::KickUser::ID
             )
-            .await
-            .unwrap()
-    );
-    assert_eq!(io.sent.lock().unwrap().as_slice(), &[LOGOUT]);
-    assert!(state.unacked.contains(captured.sequence));
+        );
+    }
 
     // With no incoming ACK at all, the real serving loop must still complete.
     let io = FakeIo::default();
-    io.incoming
-        .lock()
-        .unwrap()
-        .extend([Ok(use_circuit(expect)), Ok(logout(expect, &[]))]);
+    for record in captured_circuit()
+        .into_iter()
+        .filter(|record| record.kind == ferroan_capture::Kind::UdpIn)
+    {
+        let logout = parse_packet(&record.bytes).unwrap().id == LogoutRequest::ID;
+        io.incoming.lock().unwrap().push_back(Ok(record.bytes));
+        if logout {
+            break;
+        }
+    }
     tokio::time::timeout(
         Duration::from_secs(1),
         serve_socket(
@@ -351,7 +386,7 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
             expect,
             captured_config(),
             ArrivalConfig::default(),
-            Duration::from_secs(5),
+            crate::CircuitTiming::default(),
         ),
     )
     .await
@@ -365,6 +400,18 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
             .iter()
             .any(|bytes| parse_packet(bytes).unwrap().id == LogoutReply::ID)
     );
+}
+
+#[test]
+fn captured_kick_is_a_shutdown_notice_not_the_ordinary_logout_tail() {
+    let kick = parse_packet(include_bytes!("../../../fixtures/circuit/kick-user.bin"))
+        .unwrap()
+        .decode::<ferroan_protocol::msgs::KickUser>()
+        .unwrap();
+    assert_eq!(kick.user_info.reason, b"The simulator is going down.\0");
+    // Scene.Close emits this exact notice during simulator shutdown. Ordinary
+    // Scene.CloseAgent(false) does not call Kick; KillObject needs the avatar
+    // LocalId/scene broadcast path planned in P2.0f.
 }
 
 #[tokio::test]
@@ -388,7 +435,7 @@ async fn receive_and_send_peer_errors_do_not_end_the_circuit() {
         expect,
         captured_config(),
         ArrivalConfig::default(),
-        Duration::from_secs(1),
+        crate::CircuitTiming::default(),
     )
     .await
     .unwrap();
