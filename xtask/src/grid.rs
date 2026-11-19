@@ -613,18 +613,15 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &chat,
         &home_log,
         ferroan,
-        Some((&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan)),
+        (&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan),
     ).and_then(|mut report| {
         if scenario == "login" {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
                 .map_err(|error| format!("could not start login probe runtime: {error}"))?;
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
-            // Pin3's C# cleanup is asynchronous after the immediate reply.
-            // Wait for its actual service state before capturing parity probes.
-            runtime.block_on(login_probe::offline(&private_uri))?;
+            // run_bot has already awaited service cleanup after each logout.
             if ferroan {
-                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, Some((&private_uri, &root, true)))?;
-                runtime.block_on(login_probe::offline(&private_uri))?;
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true))?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
             }
@@ -709,7 +706,7 @@ fn run_bot(
     chat: &str,
     region_log: &Path,
     strict_logout: bool,
-    online: Option<(&str, &Path, bool)>,
+    online: (&str, &Path, bool),
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
@@ -726,16 +723,22 @@ fn run_bot(
         .enable_all()
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
-    let lines = if scenario == "login"
-        && let Some((private_uri, directory, ferroan)) = online
-    {
-        runtime.block_on(ferroan_bot::scenario::run_login_observed(
-            &harness,
-            |arrival| login_probe::online(private_uri, directory, ferroan, arrival),
-        ))?
-    } else {
-        runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?
-    };
+    let (private_uri, directory, ferroan) = online;
+    let harness_ref = &harness;
+    let lines = runtime.block_on(login_probe::run_scenarios(
+        scenario,
+        private_uri,
+        |selected| async move {
+            if scenario == "login" {
+                ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| {
+                    login_probe::online(private_uri, directory, ferroan, arrival)
+                })
+                .await
+            } else {
+                ferroan_bot::scenario::run(selected, harness_ref).await
+            }
+        },
+    ))?;
     Ok(BotReport {
         lines,
         http: harness.http_trace.records(),

@@ -74,6 +74,12 @@ For harness changes in P0.10g, run `cargo xtask live run all grid` three consecu
 
 ## Honest status
 
+`next_scenario_login_waits_for_griduser_and_presence_to_settle` runs the grid
+scenario scheduler against controlled HTTP service replies. It first leaves
+only GridUser online, then only Presence populated, then holds the final empty
+Presence reply. The next scenario's login is attempted only after that reply
+is released. The live grid run covers the same boundary against pinned C#.
+
 P0.10k checks standalone followed by grid mode and verifies three separate SQLite files, interruption during standalone startup followed by `live down`, forced proxy failure, and 200 repeated `grid_state` test runs with the default parallel test runner. CAPS fixture comparisons serve the production `CapsRegistry::router()`. The event-poll hold and proxy default timeout are checked against the C# manifest's measured hold; transport connection headers and event URL shape come from that capture too. Circuit, arrival and CAPS extraction require the pinned C# channel/version on the matching login circuit.
 
 A compile check proves the code builds. It does not prove a viewer can log in, a script behaves as it did in C#, or a grid stays up. Record those as pending until someone has seen them work, with the revision, viewer or grid, and result. A passing live-harness run is evidence of protocol behavior seen by `ferroan-bot`; it is not evidence that Firestorm renders the result, which the phase-gate check covers.
