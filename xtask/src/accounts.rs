@@ -315,6 +315,15 @@ fn run_side(name: &str, fixture: &Path) -> Result<Vec<String>, String> {
         stop_running(&mut server);
         return Err(error);
     }
+    // GridServer accepts TCP before the connector is registered. A request in
+    // that gap is an empty HTML page, not the account handler.
+    if name == "csharp" {
+        wait_for_log(
+            &mut server,
+            &log,
+            "UserAccountServiceConnector loaded successfully",
+        )?;
+    }
     println!("live: accounts {name} on http://127.0.0.1:{port}");
     let mut records = Vec::new();
     for (path, body) in forms() {
@@ -493,6 +502,31 @@ fn spawn_running(
         tracked: Some(tracked),
         stop_on_drop: true,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_log(server: &mut Running, log: &Path, needle: &str) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    loop {
+        if server
+            .child
+            .try_wait()
+            .map_err(|error| format!("could not check the account service: {error}"))?
+            .is_some()
+        {
+            return Err(format!("the account service exited\n{}", tail(log)));
+        }
+        if fs::read_to_string(log).unwrap_or_default().contains(needle) {
+            return Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            return Err(format!(
+                "the account service did not report {needle}\n{}",
+                tail(log)
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(target_os = "linux")]
