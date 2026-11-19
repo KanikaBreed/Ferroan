@@ -39,7 +39,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | DONE (#58) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10q | P0.10m: `cargo xtask live up grid --region ferroan`, a grid that stays up for the maintainer's Firestorm tests | DONE (#77) |
-| Q10r | P2.0d7: inventory and asset fetch capabilities on the Ferroan region | IN PROGRESS (feat/inventory-caps) |
+| Q10r | P2.0d7: inventory and asset fetch capabilities on the Ferroan region | DONE (#80) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
