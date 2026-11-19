@@ -39,7 +39,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
-| Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
+| Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | READY after Q10f |
 | Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | READY after Q10g |
@@ -145,6 +145,12 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 - 2026-11-18, Q8 reliability extraction (queued as Q10b, P0.10i part 2): the bot's existing `Circuit::take_dropped` queue accumulates exhausted sequence IDs until drained, and `Session` currently does not drain it. Q8 shares retry accounting while preserving this caller behavior. Proposed follow-up: bound or consume the bot's dropped-ID notification queue and test a long loss-heavy session.
 
 - 2026-11-18, Q9 source review (queued as Q10b, P0.10i part 1): the shared LLSD XML decoder predates this item and accepts `base16`, unpadded base64, and malformed binary text (invalid base64 becomes empty bytes). Pinned libopenmetaverse `OpenMetaverse.StructuredData/LLSD/XmlLLSD.cs` rejects unsupported encodings and malformed base64. For example, `<llsd><array><binary>!</binary></array></llsd>` reaches the Rust seed as an array but C# returns 400. Proposed follow-up: capture malformed LLSD cases in the oracle and align `crates/ferroan-llsd/src/xml_llsd.rs::decode_binary`, checking all callers. Q9 changes seed error mapping and name conversion without rewriting the shared parser.
+
+- 2026-11-18, Q10f: `ControlPlaneAccess.AddTrustedHost` at `8583218` treats some host:port and bare IPv6 strings as opaque absolute URIs, then resolves their empty Host to machine-local addresses. A .NET 10 oracle confirmed the parser and empty-host DNS behavior. Recorded as TB5 in `docs/TRANQUILLITY_BUGS.md`; D20 records Ferroan's explicit startup rejection. Proposed upstream fix: reject empty URI hosts or parse IP/host-port forms before URI interpretation. No upstream issue was filed.
+
+- 2026-11-18, Q10f: shared `ferroan_http::post_form` parses XML without checking HTTP success, whereas pinned `WebUtil.SynchronousRestFormsRequester` calls `EnsureSuccessStatusCode`. The new region Presence/GridUser clients and their offline-state probe check status locally, so a 500 response containing plausible XML cannot authorize admission or prove logout. Proposed separate HTTP follow-up: audit shared-client callers, capture failed-status behavior, and add status validation there. Existing unrelated callers were not changed.
+
+- 2026-11-18, Q10f detector review: the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
 
 ## Waiting on the maintainer
 

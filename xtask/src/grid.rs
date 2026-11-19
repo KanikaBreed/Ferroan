@@ -62,6 +62,8 @@ use crate::live;
 
 #[path = "grid_capture.rs"]
 mod login_capture;
+#[path = "grid_probe.rs"]
+mod login_probe;
 
 const HOME_NAME: &str = "Ferroan Test";
 const NEIGHBOUR_NAME: &str = "Ferroan Neighbour";
@@ -86,6 +88,10 @@ pub fn run_ferroan(scenario: &str) -> std::process::ExitCode {
 
 pub fn login_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(login_capture::generate(directory))
+}
+
+pub fn parity_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(login_probe::generate(directory))
 }
 
 fn run_inner(scenario: &str, ferroan: bool) -> Result<String, String> {
@@ -603,7 +609,23 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &chat,
         &home_log,
         ferroan,
-    );
+    ).and_then(|mut report| {
+        if scenario == "login" {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
+                .map_err(|error| format!("could not start login probe runtime: {error}"))?;
+            let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
+            if ferroan {
+                runtime.block_on(login_probe::offline(&private_uri))?;
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true)?;
+                runtime.block_on(login_probe::offline(&private_uri))?;
+                report.http.extend(second.http);
+                report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
+            }
+            let line = runtime.block_on(login_probe::probe(&format!("http://{ADVERTISED}:{home_port}"), &root, ferroan))?;
+            report.lines.push('\n'); report.lines.push_str(&line);
+        }
+        Ok(report)
+    });
     let cleanup = grid.stop();
     if let Err(error) = &report
         && let Err(cleanup) = &cleanup

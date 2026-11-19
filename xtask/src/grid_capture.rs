@@ -75,6 +75,91 @@ pub fn compare(directory: &Path) -> Result<String, String> {
     Ok("grid login http: register, QueryAccess, CreateAgent, deregister match C#".to_string())
 }
 
+/// Q10f service exchanges selected from the real C# login/logout and probes.
+pub(super) fn service_exchanges(directory: &Path) -> Result<Value, String> {
+    let records = records(&directory.join("proxy-robust-private.cap"))?;
+    let normalizer = Normalizer {
+        home_port: String::new(),
+        item_ids: BTreeMap::new(),
+    };
+    let mut output = Map::new();
+    for (index, record) in records.iter().enumerate() {
+        if record.kind != Kind::HttpRequest {
+            continue;
+        }
+        let request = Message::parse(&record.bytes)?;
+        if !matches!(request.path.as_str(), "/presence" | "/griduser") {
+            continue;
+        }
+        let mut fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
+        let method = text_field(&fields, "METHOD")?;
+        if !matches!(method.as_str(), "getagent" | "logout" | "loggedout") {
+            continue;
+        }
+        // Never infer pairing through concurrent requests. Later unambiguous
+        // exchanges may provide the same case; all four cases are required.
+        let Ok(reply) = paired(&records, index) else {
+            continue;
+        };
+        let response = reply.text()?;
+        let decoded =
+            ferroan_http::parse_xml_response(&response).map_err(|error| error.to_string())?;
+        let name = match (
+            request.path.as_str(),
+            method.as_str(),
+            decoded.get("result"),
+        ) {
+            ("/presence", "getagent", Some(Field::Map(info))) if matches!(info.get("UserID"), Some(Field::Str(user)) if user == crate::live::ESTATE_OWNER) => {
+                "presence-get"
+            }
+            ("/presence", "getagent", Some(Field::Str(value))) if value == "null" => {
+                "presence-missing"
+            }
+            ("/presence", "logout", _) => "presence-logout",
+            ("/griduser", "loggedout", _)
+                if text_field(&fields, "UserID")? == crate::live::ESTATE_OWNER =>
+            {
+                "griduser-loggedout"
+            }
+            _ => continue,
+        };
+        if output.contains_key(name) {
+            continue;
+        }
+        for (key, field) in &mut fields {
+            let Field::Str(value) = field else {
+                return Err("service capture has a non-string field".into());
+            };
+            *value = if key == "SessionID" {
+                non_nil_uuid(value, SESSION)?
+            } else {
+                normalizer.text(value)
+            };
+        }
+        output.insert(
+            name.into(),
+            exchange(
+                &request,
+                &reply,
+                Value::String(build_query_string(&fields).map_err(|error| error.to_string())?),
+                Value::String(normalizer.text(&response)),
+                &normalizer,
+            ),
+        );
+    }
+    for name in [
+        "presence-get",
+        "presence-missing",
+        "presence-logout",
+        "griduser-loggedout",
+    ] {
+        if !output.contains_key(name) {
+            return Err(format!("C# capture has no unambiguous {name} exchange"));
+        }
+    }
+    Ok(Value::Object(output))
+}
+
 fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)

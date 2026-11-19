@@ -32,6 +32,9 @@
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (CompleteMovement)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs (constructor)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs (constructor)
+//   Source/OpenSim.Framework/Util.cs (GetConfigVarFromSections)
+//   Source/OpenSim.Framework/ServiceAuth/ServiceAuth.cs (Create)
+//   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -44,6 +47,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::control_plane::{ControlPlaneAccess, ControlPlaneError};
 use ferroan_client::{CircuitTiming, HandshakeConfig};
 use ferroan_config::{Config, RegionLoad};
 use uuid::Uuid;
@@ -58,8 +62,12 @@ pub enum RegionConfigError {
         key: &'static str,
         reason: &'static str,
     },
-    #[error("Regions.ini must define exactly one region")]
+    #[error("regionload_regionsdir must define exactly one region across all INI files")]
     RegionCount,
+    #[error("XML region files are not supported; use INI region configuration")]
+    XmlRegions,
+    #[error(transparent)]
+    ControlPlane(#[from] ControlPlaneError),
 }
 
 /// Resolved public settings. Deliberately no Debug: region_secret is private.
@@ -76,6 +84,9 @@ pub struct RegionConfig {
     pub external_host: String,
     pub server_uri: String,
     pub grid_server_uri: String,
+    pub presence_server_uri: String,
+    pub grid_user_server_uri: String,
+    pub control_plane: ControlPlaneAccess,
     pub estate_owner: Uuid,
     pub handshake: HandshakeConfig,
     pub circuit_timing: CircuitTiming,
@@ -92,12 +103,14 @@ impl RegionConfig {
             .get("Startup", "regionload_regionsdir")
             .unwrap_or("Regions")
             .trim();
-        let regions_path = load
-            .config_dir
-            .join(Path::new(directory))
-            .join("Regions.ini");
-        let regions = Config::parse_file(&regions_path)?;
+        let regions_path = load.config_dir.join(Path::new(directory));
+        let regions = load_regions(&regions_path)?;
         Self::from_configs(&resolved.config, &regions)
+    }
+
+    pub async fn resolve_control_plane(&mut self) -> Result<(), RegionConfigError> {
+        self.control_plane.resolve().await?;
+        Ok(())
     }
 
     pub fn from_configs(server: &Config, regions: &Config) -> Result<Self, RegionConfigError> {
@@ -136,9 +149,11 @@ impl RegionConfig {
             Ok(tile)
         };
         let location = [coordinate(x)?, coordinate(y)?];
+        // Util.GetConfigVarFromSections visits Map, then Startup; the latter
+        // overrides values already found, including an explicitly empty value.
         let generate_maps = server
-            .get("Map", "GenerateMaptiles")
-            .or_else(|| server.get("Startup", "GenerateMaptiles"))
+            .get("Startup", "GenerateMaptiles")
+            .or_else(|| server.get("Map", "GenerateMaptiles"))
             .unwrap_or("true");
         if !generate_maps.eq_ignore_ascii_case("false") {
             return Err(value(
@@ -147,10 +162,10 @@ impl RegionConfig {
                 "P2.0d requires false; map generation is not implemented",
             ));
         }
-        let map_section = if server.get("Map", "MaptileStaticUUID").is_some() {
-            "Map"
-        } else {
+        let map_section = if server.get("Startup", "MaptileStaticUUID").is_some() {
             "Startup"
+        } else {
+            "Map"
         };
         let global_tile = uuid(server, map_section, "MaptileStaticUUID", Some(Uuid::nil()))?;
         let region_tile = uuid(regions, name, "MaptileStaticUUID", Some(Uuid::nil()))?;
@@ -206,6 +221,32 @@ impl RegionConfig {
         let grid_server_uri = required(server, "GridService", "GridServerURI")?;
         check_uri(grid_server_uri)
             .map_err(|reason| value("GridService", "GridServerURI", reason))?;
+        let presence_server_uri = required(server, "PresenceService", "PresenceServerURI")?;
+        check_uri(presence_server_uri)
+            .map_err(|reason| value("PresenceService", "PresenceServerURI", reason))?;
+        let grid_user_server_uri = required(server, "GridUserService", "GridUserServerURI")?;
+        check_uri(grid_user_server_uri)
+            .map_err(|reason| value("GridUserService", "GridUserServerURI", reason))?;
+        // GridUserServicesConnector uses OSHHTPHost.URI, a host/port base;
+        // unlike the other connectors it does not accept a service path prefix.
+        if reqwest::Url::parse(grid_user_server_uri)
+            .map_err(|_| {
+                value(
+                    "GridUserService",
+                    "GridUserServerURI",
+                    "expected an HTTP service URI",
+                )
+            })?
+            .path()
+            != "/"
+        {
+            return Err(value(
+                "GridUserService",
+                "GridUserServerURI",
+                "expected a host/port base without a path prefix",
+            ));
+        }
+        reject_unsupported_auth(server)?;
         let estate_owner = uuid(
             server,
             "Estates",
@@ -234,6 +275,9 @@ impl RegionConfig {
             external_host: external_host.to_owned(),
             server_uri,
             grid_server_uri: grid_server_uri.to_owned(),
+            presence_server_uri: presence_server_uri.to_owned(),
+            grid_user_server_uri: grid_user_server_uri.to_owned(),
+            control_plane: ControlPlaneAccess::from_config(server)?,
             estate_owner,
             handshake,
             circuit_timing: circuit_timing(server)?,
@@ -256,6 +300,102 @@ impl RegionConfig {
             channel_version: self.channel_version.clone(),
         }
     }
+}
+
+fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
+    const MAX_DIRECTORY_ENTRIES: usize = 4096;
+    const MAX_INI_FILES: usize = 256;
+    const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+    let failure = |error: std::io::Error| ferroan_config::ConfigError::Io {
+        path: directory.display().to_string(),
+        message: error.to_string(),
+    };
+    let entries = std::fs::read_dir(directory).map_err(failure)?;
+    let mut paths = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_DIRECTORY_ENTRIES {
+            return Err(ferroan_config::ConfigError::Limit {
+                what: "region directory entries",
+            }
+            .into());
+        }
+        let entry = entry.map_err(failure)?;
+        if entry.file_type().map_err(failure)?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let matches = |expected: &str| {
+            if cfg!(windows) {
+                extension.eq_ignore_ascii_case(expected)
+            } else {
+                extension == expected
+            }
+        };
+        if matches("xml") {
+            return Err(RegionConfigError::XmlRegions);
+        }
+        if matches("ini") {
+            if paths.len() >= MAX_INI_FILES {
+                return Err(ferroan_config::ConfigError::Limit {
+                    what: "region INI file count",
+                }
+                .into());
+            }
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    let mut selected = None;
+    let mut total_bytes = 0u64;
+    for path in paths {
+        total_bytes = total_bytes.saturating_add(std::fs::metadata(&path).map_err(failure)?.len());
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err(ferroan_config::ConfigError::Limit {
+                what: "region INI total bytes",
+            }
+            .into());
+        }
+        let config = Config::parse_file(&path)?;
+        // Each section in each file creates a region in C#. Do not merge files:
+        // identical section names in two files still represent two regions.
+        let count = config.section_names().count();
+        if count > 1 || (count == 1 && selected.is_some()) {
+            return Err(RegionConfigError::RegionCount);
+        }
+        if count == 1 {
+            selected = Some(config);
+        }
+    }
+    selected.ok_or(RegionConfigError::RegionCount)
+}
+
+fn reject_unsupported_auth(config: &Config) -> Result<(), RegionConfigError> {
+    // ServiceAuth.Create uses Network first and the service section last.
+    // Reject unsupported authentication explicitly instead of silently sending
+    // unauthenticated service requests or exposing an unauthenticated listener.
+    for section in [
+        "Network",
+        "GridService",
+        "PresenceService",
+        "GridUserService",
+    ] {
+        let setting = config
+            .get(section, "AuthType")
+            .or_else(|| config.get("Network", "AuthType"))
+            .unwrap_or("None");
+        if setting != "None" {
+            return Err(value(
+                section,
+                "AuthType",
+                "only None is supported by this region",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {
@@ -408,7 +548,7 @@ mod tests {
     use std::fs;
 
     fn server() -> Config {
-        Config::parse("[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n[GridService]\nGridServerURI=http://127.0.0.1:8003\n[Map]\nGenerateMaptiles=false\n").unwrap()
+        Config::parse("[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n[GridService]\nGridServerURI=http://127.0.0.1:8003\n[PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n[GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n[Map]\nGenerateMaptiles=false\n").unwrap()
     }
 
     fn regions() -> Config {
@@ -576,13 +716,13 @@ mod tests {
             .join("../../.scratch")
             .join(format!("region-config-{}", Uuid::new_v4()));
         fs::create_dir_all(dir.join("Regions")).unwrap();
-        fs::write(dir.join("RegionServer.ini"), "[Const]\nServicePort=8003\n[GridService]\nGridServerURI=http://127.0.0.1:${Const|ServicePort}\n[Startup]\nInclude-Network=network.ini\n").unwrap();
+        fs::write(dir.join("RegionServer.ini"), "[Const]\nServicePort=8003\n[GridService]\nGridServerURI=http://127.0.0.1:${Const|ServicePort}\n[PresenceService]\nPresenceServerURI=http://127.0.0.1:${Const|ServicePort}\n[GridUserService]\nGridUserServerURI=http://127.0.0.1:${Const|ServicePort}\n[Startup]\nInclude-Network=network.ini\n").unwrap();
         fs::write(
             dir.join("network.ini"),
             "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n[Map]\nGenerateMaptiles=false\n",
         )
         .unwrap();
-        fs::write(dir.join("Regions/Regions.ini"), "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\nLocation=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\nExternalHostName=127.0.0.1\n").unwrap();
+        fs::write(dir.join("Regions/custom-name.ini"), "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\nLocation=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\nExternalHostName=127.0.0.1\n").unwrap();
         let load = RegionLoad {
             config_dir: dir.clone(),
             argv: Config::parse(
@@ -594,6 +734,160 @@ mod tests {
         let config = RegionConfig::load(&load).unwrap();
         assert_eq!(config.grid_server_uri, "http://127.0.0.1:8003");
         assert_eq!(config.http_bind, "127.0.0.2:9100".parse().unwrap());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_overrides_map_section_for_generation_and_static_tile() {
+        let mut server = server();
+        server.set("Map", "GenerateMaptiles", "true");
+        server.set("Startup", "GenerateMaptiles", "false");
+        server.set(
+            "Map",
+            "MaptileStaticUUID",
+            "00000000-0000-0000-0000-000000000001",
+        );
+        server.set(
+            "Startup",
+            "MaptileStaticUUID",
+            "00000000-0000-0000-0000-000000000000",
+        );
+        assert!(RegionConfig::from_configs(&server, &regions()).is_ok());
+        server.set("Map", "GenerateMaptiles", "false");
+        server.set("Startup", "GenerateMaptiles", "true");
+        assert!(matches!(
+            RegionConfig::from_configs(&server, &regions()),
+            Err(RegionConfigError::Value {
+                key: "GenerateMaptiles",
+                ..
+            })
+        ));
+        server.set("Startup", "GenerateMaptiles", "false");
+        server.set(
+            "Map",
+            "MaptileStaticUUID",
+            "00000000-0000-0000-0000-000000000000",
+        );
+        server.set(
+            "Startup",
+            "MaptileStaticUUID",
+            "00000000-0000-0000-0000-000000000001",
+        );
+        assert!(matches!(
+            RegionConfig::from_configs(&server, &regions()),
+            Err(RegionConfigError::Value {
+                key: "MaptileStaticUUID",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unsupported_auth_is_refused_for_network_and_each_used_service_without_secrets() {
+        for section in [
+            "Network",
+            "GridService",
+            "PresenceService",
+            "GridUserService",
+        ] {
+            for auth in [
+                "BasicHttpAuthentication",
+                "TrustedGridAuthentication",
+                "none",
+                "",
+            ] {
+                let mut config = server();
+                config.set(section, "AuthType", auth);
+                config.set(section, "HttpAuthPassword", "private-test-value");
+                let error = RegionConfig::from_configs(&config, &regions())
+                    .err()
+                    .unwrap();
+                assert!(matches!(
+                    error,
+                    RegionConfigError::Value {
+                        key: "AuthType",
+                        ..
+                    }
+                ));
+                assert!(!error.to_string().contains("private-test-value"));
+            }
+        }
+        let mut config = server();
+        config.set("Network", "AuthType", "None");
+        config.set("PresenceService", "AuthType", "None");
+        assert!(RegionConfig::from_configs(&config, &regions()).is_ok());
+    }
+
+    #[test]
+    fn required_presence_and_grid_user_uris_are_validated_without_credentials() {
+        for (section, key) in [
+            ("PresenceService", "PresenceServerURI"),
+            ("GridUserService", "GridUserServerURI"),
+        ] {
+            for setting in [
+                "",
+                "not-a-uri",
+                "http://test:private-test-value@localhost:8003",
+            ] {
+                let mut config = server();
+                config.set(section, key, setting);
+                let error = RegionConfig::from_configs(&config, &regions())
+                    .err()
+                    .unwrap();
+                assert!(
+                    matches!(error, RegionConfigError::Value { key: actual, .. } if actual == key)
+                );
+                assert!(!error.to_string().contains("private-test-value"));
+            }
+        }
+        let mut config = server();
+        config.set(
+            "GridUserService",
+            "GridUserServerURI",
+            "http://127.0.0.1:8003/",
+        );
+        assert!(RegionConfig::from_configs(&config, &regions()).is_ok());
+        config.set(
+            "GridUserService",
+            "GridUserServerURI",
+            "http://127.0.0.1:8003/prefix",
+        );
+        assert!(matches!(
+            RegionConfig::from_configs(&config, &regions()),
+            Err(RegionConfigError::Value {
+                key: "GridUserServerURI",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn all_ini_files_count_regions_separately_and_xml_is_refused() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.scratch")
+            .join(format!("region-files-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(matches!(
+            load_regions(&dir),
+            Err(RegionConfigError::RegionCount)
+        ));
+        fs::write(dir.join("empty.ini"), "; no region here\n").unwrap();
+        fs::write(dir.join("custom.ini"), "[Same Name]\nLocation=1000,1000\n").unwrap();
+        assert_eq!(
+            load_regions(&dir).unwrap().get("Same Name", "Location"),
+            Some("1000,1000")
+        );
+        fs::write(dir.join("second.ini"), "[Same Name]\nLocation=1001,1000\n").unwrap();
+        assert!(matches!(
+            load_regions(&dir),
+            Err(RegionConfigError::RegionCount)
+        ));
+        fs::remove_file(dir.join("second.ini")).unwrap();
+        fs::write(dir.join("old-region.xml"), "<Region/>\n").unwrap();
+        assert!(matches!(
+            load_regions(&dir),
+            Err(RegionConfigError::XmlRegions)
+        ));
         fs::remove_dir_all(dir).unwrap();
     }
 }

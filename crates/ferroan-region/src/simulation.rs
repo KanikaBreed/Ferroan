@@ -23,12 +23,42 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
+// Copyright (c) 2006-2016, openmetaverse.co
+// All rights reserved.
+//
+// - Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+// - Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+// - Neither the name of the openmetaverse.co nor the names
+//   of its contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+// JsonWriter.cs: The authors disclaim copyright to this source code. For more
+// details, see the COPYING file included with this distribution.
+//
 // Ported to Rust for Ferroan from Source/OpenSim.Server.Handlers/Simulation/
 //   AgentHandlers.cs and Utils.cs, Source/OpenSim.Framework/AgentCircuitData.cs,
 //   EntityTransferContext.cs, VersionInfo.cs and CapsUtil.cs, and
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Simulation/LocalSimulationConnector.cs
 //   and Source/OpenSim.Region.Framework/Scenes/Scene.cs (NewUserConnection)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   OpenMetaverse.StructuredData/StructuredData.cs (OSD boolean/real conversions)
+//   and OpenMetaverse.StructuredData/JSON/JsonWriter.cs (real-number formatting)
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Ferroan changes: bounded local login admission, one active circuit, gzip limits.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -39,9 +69,16 @@
 use std::{
     io::Read,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
+use crate::config::RegionConfig;
+use crate::control_plane::ControlPlaneAccess;
+use crate::grid::PresenceClient;
 use axum::{
     Router,
     body::to_bytes,
@@ -72,6 +109,8 @@ enum SimulationError {
     BodyLimit,
     #[error("invalid simulation field: {0}")]
     Field(&'static str),
+    #[error("{0}")]
+    Refused(String),
 }
 
 #[derive(Clone)]
@@ -80,10 +119,17 @@ pub struct SimulationState {
     caps: CapsRegistry,
     sender: mpsc::Sender<AcceptedAgent>,
     active: Arc<Mutex<Option<ActiveSession>>>,
+    region_name: String,
+    region_size: [u32; 2],
+    presence: PresenceClient,
+    control_plane: ControlPlaneAccess,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    admission_open: Arc<AtomicBool>,
 }
 
 struct ActiveSession {
     agent_id: Uuid,
+    session_id: Uuid,
     generation: Uuid,
     cancel: oneshot::Sender<()>,
 }
@@ -102,6 +148,31 @@ pub struct AcceptedAgent {
 }
 
 impl AcceptedAgent {
+    pub async fn lock_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self._lease.lifecycle.clone().lock_owned().await
+    }
+
+    pub fn is_current(&self) -> bool {
+        self._lease
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .is_some_and(|session| session.generation == self._lease.generation)
+    }
+
+    /// A replay may replace a circuit while retaining its Presence session.
+    pub fn may_logout_presence(&self) -> bool {
+        self._lease
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .is_none_or(|session| {
+                session.generation == self._lease.generation
+                    || session.session_id != self.expect.session_id
+            })
+    }
     /// Completes when a new login replaces this circuit. The dispatcher must
     /// drop the old UDP-serving future before starting the replacement.
     pub async fn replaced(&mut self) {
@@ -113,6 +184,7 @@ struct SessionLease {
     active: Arc<Mutex<Option<ActiveSession>>>,
     generation: Uuid,
     caps: CapsRegistry,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Drop for SessionLease {
@@ -132,13 +204,43 @@ impl Drop for SessionLease {
 }
 
 impl SimulationState {
-    pub fn new(region_id: Uuid, caps: CapsRegistry, sender: mpsc::Sender<AcceptedAgent>) -> Self {
+    pub fn new(
+        config: &RegionConfig,
+        caps: CapsRegistry,
+        sender: mpsc::Sender<AcceptedAgent>,
+    ) -> Self {
         Self {
-            region_id,
+            region_id: config.id,
             caps,
             sender,
             active: Arc::new(Mutex::new(None)),
+            region_name: config.name.clone(),
+            region_size: config.size,
+            presence: PresenceClient::new(&config.presence_server_uri),
+            control_plane: config.control_plane.clone(),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            admission_open: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    pub fn stop_accepting(&self) {
+        self.admission_open.store(false, Ordering::Release);
+    }
+
+    fn admission_refusal(&self, agent: Uuid) -> Option<&'static str> {
+        if !self.admission_open.load(Ordering::Acquire) {
+            return Some("Logins to this region are disabled");
+        }
+        if self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .is_some_and(|session| session.agent_id != agent)
+        {
+            return Some("Region already has an active login");
+        }
+        None
     }
 
     /// Serve using `into_make_service_with_connect_info::<SocketAddr>()`.
@@ -149,6 +251,9 @@ impl SimulationState {
     }
 
     fn accept(&self, fields: AgentFields) -> Result<(), &'static str> {
+        if !self.admission_open.load(Ordering::Acquire) {
+            return Err("Logins to this region are disabled");
+        }
         let mut active = self
             .active
             .lock()
@@ -177,6 +282,7 @@ impl SimulationState {
         let (cancel, cancelled) = oneshot::channel();
         *active = Some(ActiveSession {
             agent_id: fields.agent_id,
+            session_id: fields.session_id,
             generation,
             cancel,
         });
@@ -184,6 +290,7 @@ impl SimulationState {
             active: self.active.clone(),
             generation,
             caps: self.caps.clone(),
+            lifecycle: self.lifecycle.clone(),
         };
         let accepted = AcceptedAgent {
             expect: CircuitExpect {
@@ -223,10 +330,9 @@ async fn handle(
     if method != "POST" && method != "QUERYACCESS" {
         return bare(StatusCode::METHOD_NOT_ALLOWED);
     }
-    // This first region runner admits local test-grid control-plane requests only.
-    // Never trust viewer-supplied requests to install a circuit.
     if method == "POST"
-        && (!peer.ip().is_loopback() || request.headers().contains_key("x-secondlife-shard"))
+        && (!state.control_plane.allows(peer.ip())
+            || request.headers().contains_key("x-secondlife-shard"))
     {
         return (StatusCode::FORBIDDEN, [(header::CONNECTION, "close")], "").into_response();
     }
@@ -244,20 +350,56 @@ async fn handle(
     };
     if method == "QUERYACCESS" {
         return match query_access(&args, region == Some(state.region_id)) {
-            Ok(answer) => json_reply(answer, false),
+            Ok(mut answer) => {
+                if answer["success"] == true
+                    && let Some(reason) = state.admission_refusal(agent)
+                {
+                    answer["success"] = json!(false);
+                    answer["reason"] = json!(reason);
+                }
+                json_reply(answer, false)
+            }
             Err(_) => bare(StatusCode::BAD_REQUEST),
         };
     }
-    let fields = match AgentFields::parse(&args, agent, state.region_id) {
+    let mut fields = match AgentFields::parse(&args, agent, state.region_id) {
         Ok(fields) => fields,
+        Err(SimulationError::Refused(reason)) => return create_refused(&reason, peer),
         Err(_) => return bare(StatusCode::BAD_REQUEST),
     };
+    fields.clamp_position(state.region_size);
+    let Ok(_lifecycle) =
+        tokio::time::timeout(Duration::from_secs(15), state.lifecycle.lock()).await
+    else {
+        return create_refused("Region is busy completing a login or logout", peer);
+    };
+    if !state
+        .presence
+        .verify(fields.agent_id, fields.session_id)
+        .await
+        .unwrap_or(false)
+    {
+        return create_refused(
+            &format!(
+                "Failed to verify user presence in the grid for {} {}, access denied to region {}.",
+                fields.first_name, fields.last_name, state.region_name
+            ),
+            peer,
+        );
+    }
     let answer = match state.accept(fields) {
         Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
     };
     json_reply(answer, true)
+}
+
+fn create_refused(reason: &str, peer: SocketAddr) -> Response {
+    json_reply(
+        json!({"reason":reason, "your_ip":peer.ip().to_string()}),
+        true,
+    )
 }
 
 fn bare(status: StatusCode) -> Response {
@@ -323,7 +465,13 @@ fn decode_body(body: &[u8], gzip: bool) -> Result<Map<String, Value>, Simulation
 }
 
 fn query_access(args: &Map<String, Value>, known_region: bool) -> Result<Value, SimulationError> {
-    let number = |key| args.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let number = |key| match args.get(key) {
+        Some(Value::String(text)) => {
+            text.trim().replace(',', "").parse::<f64>().unwrap_or(0.0) as f32
+        }
+        Some(Value::Bool(value)) => u8::from(*value) as f32,
+        value => value.and_then(Value::as_f64).unwrap_or(0.0) as f32,
+    };
     let supported_min = number("simulation_service_supported_min");
     let supported_max = number("simulation_service_supported_max");
     let accepted_min = number("simulation_service_accepted_min");
@@ -362,7 +510,6 @@ fn query_access(args: &Map<String, Value>, known_region: bool) -> Result<Value, 
         inbound = accepted_max.min(MAX_VERSION);
     }
     let features = match args.get("features") {
-        None => Vec::new(),
         Some(Value::Array(values)) if values.len() <= MAX_FEATURES => values
             .iter()
             .map(|value| {
@@ -373,11 +520,23 @@ fn query_access(args: &Map<String, Value>, known_region: bool) -> Result<Value, 
                     .ok_or(SimulationError::Field("features"))
             })
             .collect::<Result<Vec<_>, _>>()?,
-        _ => return Err(SimulationError::Field("features")),
+        Some(Value::Array(_)) => return Err(SimulationError::Field("features")),
+        _ => Vec::new(),
+    };
+    let reason = if !known_region {
+        "Communications failure"
+    } else if args
+        .get("viaTeleport")
+        .is_some_and(|value| !osd_boolean(value))
+    {
+        // Explicit Ferroan capability limit, not a C# refusal condition.
+        "Region crossings are not implemented"
+    } else {
+        ""
     };
     Ok(json!({
-        "success":known_region,
-        "reason":if known_region { "" } else { "Communications failure" },
+        "success":reason.is_empty(),
+        "reason":reason,
         "version":format!("SIMULATION/{version}"),
         "negotiated_inbound_version":wire_version(inbound),
         "negotiated_outbound_version":wire_version(outbound),
@@ -387,8 +546,20 @@ fn query_access(args: &Map<String, Value>, known_region: bool) -> Result<Value, 
 }
 
 fn wire_version(version: f32) -> f64 {
-    // OpenMetaverse's JSON conversion emits the captured C# 15-digit double.
-    format!("{:.15}", f64::from(version)).parse().unwrap_or(0.0)
+    // OSD.FromReal widens the single; JsonWriter uses Convert.ToString(double),
+    // not a fixed 15-decimal rounding. serde_json emits the shortest double too.
+    f64::from(version)
+}
+
+fn osd_boolean(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(value) => {
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        }
+        _ => false,
+    }
 }
 
 struct AgentFields {
@@ -417,8 +588,18 @@ impl AgentFields {
             })
         };
         let agent_id = uuid("agent_id")?;
-        if agent_id != path_agent || uuid("destination_uuid")? != region_id {
-            return Err(SimulationError::Field("destination_uuid/agent_id"));
+        if agent_id != path_agent {
+            return Err(SimulationError::Field("agent_id"));
+        }
+        let destination = Uuid::parse_str(required_str(args, "destination_uuid")?)
+            .map_err(|_| SimulationError::Field("destination_uuid"))?;
+        if destination != region_id {
+            return Err(SimulationError::Refused(format!(
+                "Did not find region {}",
+                args.get("destination_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            )));
         }
         let session_id = uuid("session_id")?;
         let secure_session_id = uuid("secure_session_id")?;
@@ -428,8 +609,15 @@ impl AgentFields {
         let flags: u32 = required_str(args, "teleport_flags")?
             .parse()
             .map_err(|_| SimulationError::Field("teleport_flags"))?;
-        if flags & VIA_LOGIN == 0 || args.get("child").and_then(Value::as_bool) == Some(true) {
-            return Err(SimulationError::Field("teleport_flags/child"));
+        if args.get("child").and_then(Value::as_bool) == Some(true) {
+            return Err(SimulationError::Refused(
+                "Child agent connections are not implemented".to_owned(),
+            ));
+        }
+        if flags & VIA_LOGIN == 0 {
+            return Err(SimulationError::Refused(
+                "Only login agent connections are supported".to_owned(),
+            ));
         }
         let caps_path = required_str(args, "caps_path")?;
         if caps_path.is_empty()
@@ -467,6 +655,18 @@ impl AgentFields {
             last_name: required_str(args, "last_name")?.to_owned(),
         })
     }
+
+    fn clamp_position(&mut self, size: [u32; 2]) {
+        // Scene.NewUserConnection clamps root-login X/Y, preserving Z for
+        // CompleteMovement's later terrain/landing correction (P2.0e).
+        for (coordinate, extent) in self.start_pos[..2].iter_mut().zip(size) {
+            if *coordinate < 0.0 {
+                *coordinate = 1.0;
+            } else if *coordinate >= extent as f32 {
+                *coordinate = extent as f32 - 1.0;
+            }
+        }
+    }
 }
 
 fn required_str<'a>(
@@ -492,6 +692,377 @@ mod tests {
     const CREATE_RESPONSE: &str =
         include_str!("../../../fixtures/region-login/create-agent.response.json");
 
+    fn test_config(base: &str, region: Uuid) -> RegionConfig {
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nbind_ip_address=127.0.0.1\nhttp_listener_port=9000\n[GridService]\nGridServerURI={base}\n[PresenceService]\nPresenceServerURI={base}\n[GridUserService]\nGridUserServerURI={base}\n[Map]\nGenerateMaptiles=false\n"
+        )).unwrap();
+        let regions = ferroan_config::Config::parse(&format!(
+            "[Fixture Region]\nRegionUUID={region}\nLocation=1000,1000\nInternalAddress=127.0.0.1\nInternalPort=9000\nExternalHostName=127.0.0.1\n"
+        )).unwrap();
+        RegionConfig::from_configs(&server, &regions).unwrap()
+    }
+
+    fn presence_reply(user: Uuid) -> String {
+        format!(
+            "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>{user}</UserID></result></ServerResponse>"
+        )
+    }
+
+    #[tokio::test]
+    async fn captured_refusals_and_query_variants_match_csharp_http() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/region-parity/exchanges.json"
+        ))
+        .unwrap();
+        let exchanges = fixture["exchanges"].as_object().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let caps = CapsRegistry::new(&base).unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config(&base, region), caps.clone(), sender);
+        let app = state.router().route(
+            "/presence",
+            axum::routing::post(|| async {
+                "<ServerResponse><result>null</result></ServerResponse>"
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for (name, exchange) in exchanges {
+            let body = exchange["request"].to_string();
+            let mut request = client
+                .request(
+                    reqwest::Method::from_bytes(exchange["method"].as_str().unwrap().as_bytes())
+                        .unwrap(),
+                    format!("{base}{}", exchange["path"].as_str().unwrap()),
+                )
+                .header(
+                    "content-type",
+                    exchange["request_content_type"].as_str().unwrap(),
+                );
+            if exchange["request_x_content_encoding"] == "gzip" {
+                let mut compressed =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                compressed.write_all(body.as_bytes()).unwrap();
+                request = request
+                    .header("x-content-encoding", "gzip")
+                    .body(compressed.finish().unwrap());
+            } else {
+                request = request.body(body);
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                exchange["status"].as_u64().unwrap() as u16,
+                "{name}"
+            );
+            assert_eq!(
+                response.headers()["content-type"],
+                exchange["content_type"].as_str().unwrap(),
+                "{name}"
+            );
+            let actual: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            assert_eq!(actual, exchange["response"], "{name}");
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(caps.register("/CAPS/denied-left-no-seed0000/").is_ok());
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn mismatched_or_failed_presence_never_admits_or_replaces() {
+        // Source-derived variants of the captured unknown-session denial:
+        // VerifyUserPresence also rejects a different UserID or connector error.
+        for reply in [
+            presence_reply(Uuid::from_u128(999)),
+            "malformed service reply".to_owned(),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+            let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+            let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+            let caps = CapsRegistry::new(&base).unwrap();
+            let (sender, mut receiver) = mpsc::channel(1);
+            let state = SimulationState::new(&test_config(&base, region), caps, sender);
+            state
+                .accept(AgentFields::parse(&args, agent, region).unwrap())
+                .unwrap();
+            let mut current = receiver.recv().await.unwrap();
+            let app = state.router().route(
+                "/presence",
+                axum::routing::post(move || {
+                    let reply = reply.clone();
+                    async move { reply }
+                }),
+            );
+            let task = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            let response = reqwest::Client::new()
+                .post(format!("{base}/agent/{agent}/"))
+                .body(CREATE_REQUEST)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let actual: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../fixtures/region-parity/exchanges.json"
+            ))
+            .unwrap();
+            assert_eq!(actual, fixture["exchanges"]["unknown-session"]["response"]);
+            assert!(current.is_current());
+            assert!(matches!(
+                current.cancelled.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    #[test]
+    fn login_position_clamps_xy_but_preserves_z() {
+        for (input, output) in [
+            ([-0.1, -100.0, -10.0], [1.0, 1.0, -10.0]),
+            ([256.0, 1024.0, 200.0], [255.0, 511.0, 200.0]),
+            ([0.0, 511.5, 0.0], [0.0, 511.5, 0.0]),
+        ] {
+            let mut fields = synthetic_agent();
+            fields.start_pos = input;
+            fields.clamp_position([256, 512]);
+            assert_eq!(fields.start_pos, output);
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_semantics_use_refusal_envelopes_and_query_honors_capacity() {
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state =
+            SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        for (key, value, reason) in [
+            (
+                "child",
+                json!(true),
+                "Child agent connections are not implemented",
+            ),
+            (
+                "teleport_flags",
+                json!("0"),
+                "Only login agent connections are supported",
+            ),
+        ] {
+            let mut request_args = args.clone();
+            request_args.insert(key.into(), value);
+            let request = Request::builder()
+                .method("POST")
+                .uri(format!("/agent/{agent}/"))
+                .body(axum::body::Body::from(
+                    Value::Object(request_args).to_string(),
+                ))
+                .unwrap();
+            let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({"reason":reason,"your_ip":"127.0.0.1"})
+            );
+        }
+        let mut query = decode_body(QUERY_REQUEST.as_bytes(), false).unwrap();
+        for via in [json!(false), json!("false"), json!(0)] {
+            query.insert("viaTeleport".into(), via);
+            let answer = query_access(&query, true).unwrap();
+            assert_eq!(answer["success"], false);
+            assert_eq!(answer["reason"], "Region crossings are not implemented");
+        }
+        state
+            .accept(AgentFields::parse(&args, agent, region).unwrap())
+            .unwrap();
+        let current = receiver.recv().await.unwrap();
+        assert_eq!(state.admission_refusal(agent), None);
+        let other = Uuid::from_u128(999);
+        let request = Request::builder()
+            .method("QUERYACCESS")
+            .uri(format!("/agent/{other}/{region}/"))
+            .body(axum::body::Body::from(QUERY_REQUEST))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let answer: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["success"], false);
+        assert_eq!(answer["reason"], "Region already has an active login");
+        drop(current);
+    }
+
+    #[tokio::test]
+    async fn configured_region_and_captured_create_agent_drive_arrival_send_path() {
+        use ferroan_client::CircuitServer;
+        use ferroan_protocol::msgs::{
+            AgentMovementComplete, CompleteAgentMovement, UseCircuitCode,
+        };
+        use ferroan_protocol::{Msg, build_packet, parse_packet};
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let config = test_config("http://127.0.0.1:8003", region);
+        let mut fields = AgentFields::parse(&args, agent, region).unwrap();
+        fields.clamp_position(config.size);
+        let expect = CircuitExpect {
+            agent_id: agent,
+            session_id: fields.session_id,
+            circuit_code: fields.circuit_code,
+            region_id: region,
+        };
+        let arrival = config.arrival(fields.start_pos);
+        let server = CircuitServer::bind()
+            .await
+            .unwrap()
+            .with_handshake(config.handshake.clone())
+            .with_timing(config.circuit_timing)
+            .unwrap();
+        let address = server.local_addr().unwrap();
+        let task =
+            tokio::spawn(async move { server.serve_one_with_arrival(expect, arrival).await });
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut use_circuit = UseCircuitCode::default();
+        use_circuit.circuit_code.id = expect.agent_id;
+        use_circuit.circuit_code.session_id = expect.session_id;
+        use_circuit.circuit_code.code = expect.circuit_code;
+        let mut bytes = Vec::new();
+        build_packet(&use_circuit, 1, true, false, &[], &mut bytes);
+        socket.send_to(&bytes, address).await.unwrap();
+        let mut movement = CompleteAgentMovement::default();
+        movement.agent_data.agent_id = expect.agent_id;
+        movement.agent_data.session_id = expect.session_id;
+        movement.agent_data.circuit_code = expect.circuit_code;
+        bytes.clear();
+        build_packet(&movement, 2, true, false, &[], &mut bytes);
+        socket.send_to(&bytes, address).await.unwrap();
+        let incoming = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut buffer = [0; 4096];
+            for _ in 0..16 {
+                let (size, _) = socket.recv_from(&mut buffer).await.unwrap();
+                let packet = parse_packet(&buffer[..size]).unwrap();
+                if packet.id == AgentMovementComplete::ID {
+                    return packet;
+                }
+            }
+            panic!("arrival missing from bounded login exchange")
+        })
+        .await;
+        task.abort();
+        let _ = task.await;
+        let packet = incoming.unwrap();
+        let mut actual = packet.decode::<AgentMovementComplete>().unwrap();
+        let capture = include_bytes!("../../../fixtures/arrival/agent-movement-complete.bin");
+        let captured = parse_packet(capture).unwrap();
+        let expected = captured.decode::<AgentMovementComplete>().unwrap();
+        assert_eq!(packet.flags, captured.flags);
+        assert_eq!(packet.sequence, captured.sequence);
+        assert_eq!(packet.acks, captured.acks);
+        assert_eq!(actual.agent_data.agent_id, fields.agent_id);
+        assert_eq!(actual.agent_data.session_id, fields.session_id);
+        assert_eq!(actual.data.position.z, fields.start_pos[2]);
+        assert_ne!(actual.data.position.z, expected.data.position.z);
+        assert_eq!(
+            actual.sim_data.channel_version,
+            format!("{}\0", config.channel_version).as_bytes()
+        );
+        assert_ne!(
+            actual.sim_data.channel_version,
+            expected.sim_data.channel_version
+        );
+        // The HTTP and UDP fixtures use different identity folds. Retain the
+        // captured UDP fold and timestamp normalization; only terrain-adjusted
+        // Z (P2.0e) and the actual server product/version intentionally differ.
+        actual.scrub();
+        actual.data.timestamp = 0;
+        actual.data.position.z = expected.data.position.z;
+        actual.sim_data.channel_version = expected.sim_data.channel_version.clone();
+        bytes.clear();
+        build_packet(
+            &actual,
+            packet.sequence,
+            true,
+            false,
+            &packet.acks,
+            &mut bytes,
+        );
+        assert_eq!(bytes, capture);
+    }
+
+    #[tokio::test]
+    async fn logout_ownership_tracks_generation_and_session_and_shutdown_refuses_admission() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let old = receiver.recv().await.unwrap();
+        state.accept(synthetic_agent()).unwrap();
+        let same_session = receiver.recv().await.unwrap();
+        assert!(!old.is_current());
+        assert!(!old.may_logout_presence());
+        assert!(same_session.is_current());
+        let mut next = synthetic_agent();
+        next.session_id = Uuid::from_u128(7);
+        state.accept(next).unwrap();
+        let current = receiver.recv().await.unwrap();
+        assert!(old.may_logout_presence());
+        assert!(same_session.may_logout_presence());
+        assert!(!same_session.is_current());
+        assert!(current.is_current());
+        let guard = current.lock_lifecycle().await;
+        assert!(state.lifecycle.try_lock().is_err());
+        state.stop_accepting();
+        assert_eq!(
+            state.accept(synthetic_agent()),
+            Err("Logins to this region are disabled")
+        );
+        drop(old);
+        drop(same_session);
+        assert!(current.is_current());
+        drop(current);
+        drop(guard);
+        assert!(state.active.lock().unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn captured_csharp_login_requests_install_circuit_and_seed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -502,8 +1073,11 @@ mod tests {
         let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
         let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
         let expected = AgentFields::parse(&args, agent, region).unwrap();
-        let state = SimulationState::new(region, caps.clone(), sender);
-        let app = state.router().merge(caps.router());
+        let state = SimulationState::new(&test_config(&base, region), caps.clone(), sender);
+        let app = state.router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || async move { presence_reply(agent) }),
+        );
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -535,7 +1109,8 @@ mod tests {
         compressed.write_all(CREATE_REQUEST.as_bytes()).unwrap();
         let response = client
             .post(format!("{base}/agent/{agent}/"))
-            .header("content-type", "application/x-gzip")
+            .header("content-type", "application/json")
+            .header("x-content-encoding", "gzip")
             .body(compressed.finish().unwrap())
             .send()
             .await
@@ -652,7 +1227,11 @@ mod tests {
     async fn admission_lease_replaces_same_agent_and_cleans_closed_queue() {
         let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
-        let state = SimulationState::new(Uuid::from_u128(5), caps.clone(), sender);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps.clone(),
+            sender,
+        );
         state.accept(synthetic_agent()).unwrap();
         let mut accepted = receiver.recv().await.unwrap();
         assert_eq!(accepted.expect.circuit_code, 42);
@@ -689,7 +1268,11 @@ mod tests {
     async fn a_full_or_closed_dispatch_queue_preserves_the_current_login() {
         let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
-        let state = SimulationState::new(Uuid::from_u128(5), caps.clone(), sender);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps.clone(),
+            sender,
+        );
         state.accept(synthetic_agent()).unwrap();
         // First login is still queued; reserving a replacement must fail
         // without changing its capabilities or sending a cancellation.
