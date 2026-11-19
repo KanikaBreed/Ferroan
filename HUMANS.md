@@ -34,7 +34,7 @@ Put temporary logs in `.scratch/`, which Git ignores.
 ## Two ways work gets done
 
 - **The project's own coder agent** works through [WORK_QUEUE.md](WORK_QUEUE.md), one item at a time, on the main line of the plan. The maintainers start and run it.
-- **Everyone else** works on GitHub issues labelled [`agent-ready`](https://github.com/KanikaBreed/Ferroan/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready). Each one has a complete brief: the C# files to follow, where the code goes, what proves it, and what is out of scope. The queue marks those tasks `EXTERNAL`, so the two never take the same work.
+- **Everyone else** works on GitHub issues labelled [`agent-ready`](https://github.com/KanikaBreed/Ferroan/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready). Each one has a complete brief: the C# files to follow, where the code goes, what proves it, and what is out of scope. The same tasks are also on the queue, and the coder does not wait for contributors: when it reaches one whose issue is not `claimed`, it claims the issue itself and says so there. Claim an issue before the coder reaches it and the coder skips it, so the two never take the same work.
 
 ## Picking a task
 

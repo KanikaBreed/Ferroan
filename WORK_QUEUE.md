@@ -18,7 +18,9 @@ The coder works unattended, through the queue, as far as it can get. The maintai
 
 Only the manager adds, removes, reorders or rewrites items. The coder changes only the Status column, the notes under an item, and "Found while working".
 
-Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done by outside contributors through the GitHub issues named on the item; skip it, and treat it as done only when its TASKS.md row is `DONE`).
+Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (an outside contributor has claimed the item's issue; skip it, and treat it as done only when its TASKS.md row is `DONE`).
+
+Items that name a GitHub issue are open to outside contributors too, but the coder does not wait for them. When such an item comes up, check its issue first (`gh issue view <n> --json labels`). If it is labelled `claimed`, a contributor has it: skip the item and go on. If not, it is the coder's: add the `claimed` label, post one comment on the issue ("The project's queue coder is taking this, on branch `<branch>`."), and work it as usual, with `Closes #<n>` in the PR. An item that names several issues is taken one issue at a time, in the order listed. This is the only issue comment the coder posts.
 
 ## Queue
 
@@ -52,29 +54,30 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
 | Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
+| Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
-| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | EXTERNAL (#59, #60, #61) |
+| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q19 (issues #59, #60, #61) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
-| Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
-| Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
-| Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
-| Q28 | P1.5: inventory and the library | EXTERNAL (#68) |
-| Q29 | P1.6: grid service | EXTERNAL (#69) |
-| Q30 | P1.7: map tiles | EXTERNAL (#70) |
-| Q31 | P1.8: friends and the mute list | EXTERNAL (#71) |
-| Q32 | P1.9: offline IM | EXTERNAL (#72) |
-| Q33 | P1.10: Groups V2 | EXTERNAL (#73) |
-| Q34 | P1.11: profiles and search | EXTERNAL (#74) |
-| Q35 | P1.12: estates and Experiences over Robust | EXTERNAL (#75) |
+| Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
+| Q26 | P1.3: grid user, presence and agent preferences | READY after Q25 (issue #66) |
+| Q27 | P1.4: avatars and baked textures | READY after Q26 (issue #67) |
+| Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |
+| Q29 | P1.6: grid service | READY after Q28 (issue #69) |
+| Q30 | P1.7: map tiles | READY after Q29 (issue #70) |
+| Q31 | P1.8: friends and the mute list | READY after Q30 (issue #71) |
+| Q32 | P1.9: offline IM | READY after Q31 (issue #72) |
+| Q33 | P1.10: Groups V2 | READY after Q32 (issue #73) |
+| Q34 | P1.11: profiles and search | READY after Q33 (issue #74) |
+| Q35 | P1.12: estates and Experiences over Robust | READY after Q34 (issue #75) |
 | Q36 | P1.13: login | READY after Q35 |
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
@@ -112,6 +115,8 @@ Phase 1 opened to outside contributors (manager, 19 November 2026, at the mainta
 
 Q24a (manager, 19 November 2026, from the Q24 finding): every Phase 1 issue (#65 to #75) requires its service to pass the live scenarios in grid mode with `--rust`. #83 found that `grid --rust accounts` is not wired, because C# Robust's login and other services call the user-account module in process. Fix it once, for every service, before contributors start: when `--rust` names a service, the harness configures C# Robust's consumers of that service (the `LocalServiceModule` or service keys in `Robust.ini`, as the C# reads them at the pin) to reach `ferroan-robust` through the C# remote connector (`OpenSim.Services.Connectors`) and its server URI, so only the Rust process touches that service's tables. Read the C# config loading at the pin before choosing the keys, and record which C# services consume each Phase 1 service. Acceptance: `cargo xtask live run login grid --rust accounts` and `… --rust assets,accounts` pass in the live CI job, the C# Robust log shows no in-process `UserAccountService` load, and the pattern section in `crates/ferroan-services/README.md` says how a new service adds its connector mapping. Issues #65 to #75 stay `blocked` until Q24a is DONE; the manager then relabels them.
 
+No waiting for contributors (manager, 19 November 2026, at the maintainer's request): assume no outside contributor will pitch in, and keep the issues open in case one does. Q20 and Q25 to Q35 are the coder's again, after Q19, in order; each still names its issue, and the issue rule above decides who works it. Until then the coder stays on the region track: Q24a, Q10h to Q10k, Q10s, Q11 to Q13, then Q14 to Q19.
+
 Q10h READY again (manager, 19 November 2026): the coder's audit was right, and the first version of the row overstated C#. The row now takes the first proposed fix: keep both C# helper policies, with a checked status for Presence and GridUser and an unchecked one for Grid register and deregister, and capture both. Grid's missing check is TB10. The maintainer may fix it upstream, and Ferroan follows through a pin move. No compatibility change is authorized here. Resume from `1716151`.
 
 Q10h BLOCKED (19 November 2026, `docs/http-form-status-blocked`): the caller audit disproves the row's universal failed-status rejection premise. At `858321883f5487a5d192d36ea9d7b90fa468310c`, `Source/OpenSim.Framework/WebUtil.cs::SynchronousRestFormsRequester.MakeRequest` calls `EnsureSuccessStatusCode`, but the separate `MakePostRequest` does not. `GridServicesConnector.RegisterRegion` and `DeregisterRegion` use `MakePostRequest`; the Presence and GridUser connectors use `MakeRequest`. A local oracle executed those unmodified C# connectors against controlled loopback HTTP responses: nine operations times HTTP 200, 201, 302 without Location, and 500, with valid success XML. Both Grid operations accept all four statuses (registration returns an empty success string; deregistration returns true). Presence and GridUser ignore the success XML on 302/500, returning false, null or an empty list according to the method. These are injected fault responses, not a claim that Robust normally sends success XML with HTTP 500. TB10 records the missing C# check.
@@ -139,6 +144,8 @@ Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranqui
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
+
+Q13a (manager, 19 November 2026, at the maintainer's request): the maintainer wants proper readouts when errors happen or a soft or hard limit is hit, so problems can be diagnosed and fixed from the data. It builds on Q12's metrics and Q13's logging, and retrofits every limit already in the code (for example the 1 MiB POST body, the 64-folder and 256-item fetch caps, the D19 and D20 bounds, packet, LLSD, queue and retry bounds). From Q13a on, AGENTS.md §6 requires new limits to report the same way.
 
 ## Found while working
 
