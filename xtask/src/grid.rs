@@ -38,12 +38,18 @@
 //!
 //! Standalone stays `cargo xtask live run`. This starts Tranquillity's
 //! GridServer and two neighbouring regions. Each region uses the shipped
-//! `Grid.ini` and an unchanged `GridCommon.ini`. Service URLs point at
-//! `ferroan-capture` proxies. The region HTTP listener is on another
-//! loopback address from the address it advertises, so the proxy can bind
-//! the advertised port. UDP stays on `127.0.0.1`. Each region has its own
-//! working directory, so the relative SQLite files in `SQLiteStandalone.ini`
-//! do not collide. The bot logs in on Robust's own public address.
+//! `Grid.ini` and `GridCommon.ini`. Service URLs point at `ferroan-capture`
+//! proxies. The region HTTP listener is on another loopback address from
+//! the address it advertises, so the proxy can bind the advertised port.
+//! UDP stays on `127.0.0.1`. Each region has its own working directory, so
+//! the relative SQLite files in `SQLiteStandalone.ini` do not collide. The
+//! bot logs in on Robust's own public address.
+//!
+//! `--rust assets` also starts `ferroan-robust` on `127.0.0.1` with the
+//! seeded SQLite asset store. C# Robust keeps the other services and drops
+//! its asset connector. Each region then gets its own `GridCommon.ini`,
+//! copied from the example, whose `AssetServerURI` is that Rust service.
+//! Robust's ini names the same URI. The published example is not edited.
 //!
 //! The ini text follows GridServer.ini.example, Grid.ini and
 //! GridCommon.ini.example at Tranquillity `40432e0`. Nothing here edits
@@ -88,12 +94,8 @@ const NEIGHBOUR_BIND: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 3);
 const ROBUST_BIND: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 4);
 const PROMPT: &str = "GridServer>";
 
-pub fn run(scenario: &str) -> std::process::ExitCode {
-    live::finish(run_inner(scenario, false))
-}
-
-pub fn run_ferroan(scenario: &str) -> std::process::ExitCode {
-    live::finish(run_inner(scenario, true))
+pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
+    live::finish(run_inner(spec))
 }
 
 pub fn login_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -108,14 +110,14 @@ pub fn root_arrival_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(login_probe::generate_root_arrival(directory))
 }
 
-fn run_inner(scenario: &str, ferroan: bool) -> Result<String, String> {
+fn run_inner(spec: &crate::live_args::RunSpec) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(scenario, ferroan)
+        run_linux(spec)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (scenario, ferroan);
+        let _ = spec;
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -218,6 +220,7 @@ fn robust_ini(
     database: &str,
     library: &str,
     assets: &str,
+    asset_uri: Option<&str>,
 ) -> Result<String, String> {
     plain(database, "database path")?;
     plain(library, "library path")?;
@@ -234,6 +237,27 @@ fn robust_ini(
     let accounts = sqlite(database);
     let asset_store = sqlite(&asset_db);
     let auth_store = sqlite(&auth_db);
+    let (asset_connector, asset_section) = if let Some(uri) = asset_uri {
+        asset_service_uri(uri)?;
+        (
+            String::new(),
+            format!("[AssetService]\n    AssetServerURI = \"{uri}\"\n\n"),
+        )
+    } else {
+        (
+            format!(
+                "    AssetServiceConnector = \"{private_port}/OpenSim.Server.Handlers.dll:AssetServiceConnector\"\n"
+            ),
+            format!(
+                "[AssetService]\n    \
+                 LocalServiceModule = \"OpenSim.Services.AssetService.dll:AssetService\"\n    \
+                 StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+                 ConnectionString = \"{asset_store}\"\n    \
+                 DefaultAssetLoader = \"OpenSim.Framework.AssetLoader.Filesystem.dll\"\n    \
+                 AssetLoaderArgs = \"{assets}\"\n\n"
+            ),
+        )
+    };
     Ok(format!(
         r#"[Const]
     BaseHostname = "{bind}"
@@ -253,8 +277,7 @@ fn robust_ini(
     bind_ip_address = "{bind}"
 
 [ServiceList]
-    AssetServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:AssetServiceConnector"
-    InventoryInConnector = "{private_port}/OpenSim.Server.Handlers.dll:XInventoryInConnector"
+{asset_connector}    InventoryInConnector = "{private_port}/OpenSim.Server.Handlers.dll:XInventoryInConnector"
     GridServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:GridServiceConnector"
     GridInfoServerInConnector = "{public_port}/OpenSim.Server.Handlers.dll:GridInfoServerInConnector"
     AuthenticationServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:AuthenticationServiceConnector"
@@ -273,14 +296,7 @@ fn robust_ini(
     StorageProvider = "OpenSim.Data.SQLite.dll"
     ConnectionString = "{accounts}"
 
-[AssetService]
-    LocalServiceModule = "OpenSim.Services.AssetService.dll:AssetService"
-    StorageProvider = "OpenSim.Data.SQLite.dll"
-    ConnectionString = "{asset_store}"
-    DefaultAssetLoader = "OpenSim.Framework.AssetLoader.Filesystem.dll"
-    AssetLoaderArgs = "{assets}"
-
-[InventoryService]
+{asset_section}[InventoryService]
     LocalServiceModule = "OpenSim.Services.InventoryService.dll:XInventoryService"
     AllowDelete = true
 
@@ -353,6 +369,45 @@ fn robust_ini(
     ))
 }
 
+fn asset_service_uri(uri: &str) -> Result<(), String> {
+    if uri.is_empty() || uri.contains(['"', '\n', '\r', ' ', ';']) {
+        return Err(
+            "asset service URL is empty or contains a space, quote, break or semicolon".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Point one `AssetServerURI` assignment at `uri`. Commented lines stay.
+pub(crate) fn rewrite_asset_server_uri(text: &str, uri: &str) -> Result<String, String> {
+    asset_service_uri(uri)?;
+    let mut found = false;
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        let trimmed = bare.trim();
+        let assignment = !trimmed.starts_with(';')
+            && trimmed.starts_with("AssetServerURI")
+            && trimmed.contains('=');
+        if assignment {
+            if found {
+                return Err("GridCommon.ini has more than one AssetServerURI".to_string());
+            }
+            found = true;
+            out.push_str("    AssetServerURI = \"");
+            out.push_str(uri);
+            out.push('"');
+            out.push_str(&line[bare.len()..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    if !found {
+        return Err("GridCommon.ini has no AssetServerURI".to_string());
+    }
+    Ok(out)
+}
+
 fn plain(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty() || value.contains(['"', '\n', '\r', ';']) {
         Err(format!(
@@ -412,6 +467,7 @@ struct Grid {
     robust: Option<Proc>,
     home: Option<Proc>,
     neighbour: Option<Proc>,
+    rust_assets: Option<crate::assets::Owned>,
     proxies: Option<crate::live_proxy::Proxies>,
     passwords: Vec<String>,
     _state: crate::grid_state::Run,
@@ -423,6 +479,7 @@ impl Grid {
         for slot in [&mut self.home, &mut self.neighbour, &mut self.robust] {
             drop(slot.take());
         }
+        drop(self.rust_assets.take());
         self.proxies
             .take()
             .map_or(Ok(()), |proxies| proxies.finish())
@@ -461,7 +518,10 @@ impl Drop for Grid {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
+fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
+    let scenario = spec.scenario.as_str();
+    let ferroan = spec.ferroan_region;
+    let rust_assets = spec.rust_assets();
     if ferroan
         && !matches!(
             scenario,
@@ -488,14 +548,20 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     }
     let state = crate::grid_state::claim()?;
     live::ensure_region_built()?;
+    let seeded = if rust_assets {
+        Some(crate::assets::seed_library_database()?)
+    } else {
+        None
+    };
     let ferrobot_binary = if scenario == "ferrobot" {
         Some(crate::ferrobot_build::build()?)
     } else {
         None
     };
+    let port_count = if rust_assets { 7 } else { 6 };
     let mut ports = Vec::new();
     for _ in 0..32 {
-        if ports.len() == 6 {
+        if ports.len() == port_count {
             break;
         }
         let port = live::free_port()?;
@@ -503,8 +569,8 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             ports.push(port);
         }
     }
-    if ports.len() != 6 {
-        return Err("could not allocate six local ports".to_string());
+    if ports.len() != port_count {
+        return Err(format!("could not allocate {port_count} local ports"));
     }
     let robust_public = ports[0];
     let robust_private = ports[1];
@@ -512,6 +578,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     let private_proxy = ports[3];
     let home_port = ports[4];
     let neighbour_port = ports[5];
+    let asset_port = if rust_assets { Some(ports[6]) } else { None };
     let root = grid_root();
     if root.exists() {
         fs::remove_dir_all(&root)
@@ -525,6 +592,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         robust: None,
         home: None,
         neighbour: None,
+        rust_assets: None,
         proxies: None,
         passwords: vec![estate.clone(), chat.clone()],
         _state: state,
@@ -568,6 +636,22 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     } else {
         None
     };
+    let asset_uri = if let Some(port) = asset_port {
+        let seed = seeded.as_ref().ok_or("the asset seed was not prepared")?;
+        let database = root.join("assets.db");
+        fs::copy(seed, &database)
+            .map_err(|error| format!("could not copy the asset database: {error}"))?;
+        let log = root.join("assets-ferroan.log");
+        let ini = root.join("assets-ferroan.ini");
+        let uri = format!("http://127.0.0.1:{port}");
+        grid.rust_assets = Some(crate::assets::start_sqlite_asset_service(
+            &database, port, &log, &ini,
+        )?);
+        println!("live: rust assets on {uri}");
+        Some(uri)
+    } else {
+        None
+    };
     println!(
         "live: grid Robust on {ROBUST_BIND}:{robust_public} (private {robust_private}), proxies {public_proxy}/{private_proxy}"
     );
@@ -576,6 +660,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         robust_public,
         robust_private,
         &grid.passwords,
+        asset_uri.as_deref(),
     )?);
     create_account(
         grid.robust.as_mut().expect("robust is started"),
@@ -622,6 +707,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             public_proxy,
             private_proxy,
             capture: Some(root.join("capture-udp.cap")),
+            asset_uri: asset_uri.clone(),
         },
         &grid.passwords,
     )?);
@@ -645,6 +731,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             public_proxy,
             private_proxy,
             capture: None,
+            asset_uri: asset_uri.clone(),
         },
         &grid.passwords,
     )?);
@@ -882,6 +969,7 @@ fn start_robust(
     public_port: u16,
     private_port: u16,
     passwords: &[String],
+    asset_uri: Option<&str>,
 ) -> Result<Proc, String> {
     start_robust_at(
         root,
@@ -890,6 +978,7 @@ fn start_robust(
         passwords,
         ROBUST_BIND,
         None,
+        asset_uri,
     )
 }
 
@@ -901,6 +990,7 @@ fn start_robust_at(
     passwords: &[String],
     bind: Ipv4Addr,
     console: Option<&fs::File>,
+    asset_uri: Option<&str>,
 ) -> Result<Proc, String> {
     let binary = live::grid_server_binary();
     if !binary.is_file() {
@@ -923,6 +1013,7 @@ fn start_robust_at(
         database.to_str().ok_or("database path is not utf-8")?,
         library.to_str().ok_or("library path is not utf-8")?,
         assets.to_str().ok_or("asset set path is not utf-8")?,
+        asset_uri,
     )?;
     let ini_path = root.join("robust.ini");
     live::write_secret(&ini_path, &ini)?;
@@ -1012,6 +1103,7 @@ struct RegionStart {
     public_proxy: u16,
     private_proxy: u16,
     capture: Option<PathBuf>,
+    asset_uri: Option<String>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1032,6 +1124,9 @@ fn start_region(
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
+    if let Some(uri) = &spec.asset_uri {
+        install_grid_common_asset_uri(cwd, uri)?;
+    }
     let config = cwd.join("config");
     let regions = cwd.join("Regions");
     fs::create_dir_all(&config)
@@ -1166,6 +1261,54 @@ fn first_file(paths: &[PathBuf]) -> Result<PathBuf, String> {
                     .join(" or ")
             )
         })
+}
+
+/// Replace the published `config-include` link with a region-local copy so
+/// `AssetServerURI` can name `ferroan-robust` without editing the shared tree.
+#[cfg(target_os = "linux")]
+fn install_grid_common_asset_uri(cwd: &Path, uri: &str) -> Result<(), String> {
+    let linked = cwd.join("config-include");
+    let meta = fs::symlink_metadata(&linked)
+        .map_err(|error| format!("could not inspect {}: {error}", linked.display()))?;
+    if !meta.file_type().is_symlink() {
+        return Err(format!(
+            "{} is not the published config-include link",
+            linked.display()
+        ));
+    }
+    let source = fs::read_link(&linked)
+        .map_err(|error| format!("could not read {}: {error}", linked.display()))?;
+    let source = if source.is_absolute() {
+        source
+    } else {
+        cwd.join(source)
+    };
+    let example = fs::read_to_string(source.join("GridCommon.ini")).map_err(|error| {
+        format!(
+            "could not read {}: {error}",
+            source.join("GridCommon.ini").display()
+        )
+    })?;
+    let rewritten = rewrite_asset_server_uri(&example, uri)?;
+    fs::remove_file(&linked)
+        .map_err(|error| format!("could not replace {}: {error}", linked.display()))?;
+    fs::create_dir(&linked)
+        .map_err(|error| format!("could not create {}: {error}", linked.display()))?;
+    let entries = fs::read_dir(&source)
+        .map_err(|error| format!("could not read {}: {error}", source.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("could not read {}: {error}", source.display()))?;
+        let name = entry.file_name();
+        let dest = linked.join(&name);
+        if name == "GridCommon.ini" {
+            fs::write(&dest, &rewritten)
+                .map_err(|error| format!("could not write {}: {error}", dest.display()))?;
+        } else {
+            link_path(&dest, &entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1448,6 +1591,7 @@ mod tests {
             "/tmp/ferroan-robust.db",
             "/tmp/Libraries.xml",
             "/tmp/AssetSets.xml",
+            None,
         )
         .unwrap();
         assert!(ini.contains("bind_ip_address = \"127.0.0.4\""));
@@ -1468,6 +1612,55 @@ mod tests {
         assert!(ini.contains("DefaultLibrary = \"/tmp/Libraries.xml\""));
         assert!(!ini.contains("password"));
         assert!(plain("bad;path", "database").is_err());
+        assert!(ini.contains("AssetServiceConnector"));
+        assert!(ini.contains("AssetLoaderArgs = \"/tmp/AssetSets.xml\""));
+    }
+
+    #[test]
+    fn a_rust_asset_uri_replaces_robust_local_assets_and_one_gridcommon_line() {
+        let ini = robust_ini(
+            ROBUST_BIND,
+            8002,
+            8003,
+            "/tmp/ferroan-robust.db",
+            "/tmp/Libraries.xml",
+            "/tmp/AssetSets.xml",
+            Some("http://127.0.0.1:9"),
+        )
+        .unwrap();
+        assert!(ini.contains("AssetServerURI = \"http://127.0.0.1:9\""));
+        assert!(!ini.contains("AssetServiceConnector"));
+        assert!(!ini.contains("OpenSim.Services.AssetService.dll:AssetService"));
+        assert!(!ini.contains("ferroan-robust.db.assets"));
+        assert!(ini.contains("InventoryInConnector"));
+        assert!(ini.contains("DefaultLibrary = \"/tmp/Libraries.xml\""));
+        assert!(
+            robust_ini(
+                ROBUST_BIND,
+                8002,
+                8003,
+                "/tmp/ferroan-robust.db",
+                "/tmp/Libraries.xml",
+                "/tmp/AssetSets.xml",
+                Some("http://bad uri"),
+            )
+            .is_err()
+        );
+
+        let common = "\
+[AssetService]\n    \
+    AssetServerURI = \"${Const|PrivURL}:${Const|PrivatePort}\"\n\n\
+[InventoryService]\n    \
+    InventoryServerURI = \"${Const|PrivURL}:${Const|PrivatePort}\"\n\
+    ; RegionHGAssetServerURI = ${Const|BaseURL}:${Const|PublicPort}\n";
+        let pointed = rewrite_asset_server_uri(common, "http://127.0.0.1:9").unwrap();
+        assert!(pointed.contains("AssetServerURI = \"http://127.0.0.1:9\""));
+        assert!(!pointed.contains("${Const|PrivURL}:${Const|PrivatePort}\"\n\n[Inventory"));
+        assert!(pointed.contains("InventoryServerURI = \"${Const|PrivURL}:${Const|PrivatePort}\""));
+        assert!(pointed.contains("RegionHGAssetServerURI"));
+        assert!(rewrite_asset_server_uri("[AssetService]\n", "http://127.0.0.1:9").is_err());
+        let twice = "AssetServerURI = \"a\"\nAssetServerURI = \"b\"\n";
+        assert!(rewrite_asset_server_uri(twice, "http://127.0.0.1:9").is_err());
     }
 
     #[test]
@@ -1491,6 +1684,7 @@ mod tests {
                 "/tmp/grid.db",
                 "/tmp/library.xml",
                 "/tmp/assets.xml",
+                None,
             )
             .unwrap();
             assert!(robust.contains(&format!("bind_ip_address = \"{bind}\"")));

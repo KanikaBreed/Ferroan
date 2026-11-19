@@ -1,0 +1,512 @@
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Arguments for `cargo xtask live`.
+//!
+//! Grid mode takes `--rust <service>,…` and `--db sqlite|mysql|pgsql`.
+//! P1.0 serves `assets` on SQLite. MySQL and PostgreSQL stay refused until
+//! P1.A1 (#59) provides those stores.
+
+use std::net::Ipv4Addr;
+use std::process::ExitCode;
+
+use crate::grid;
+use crate::live;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Database {
+    Sqlite,
+    Mysql,
+    Pgsql,
+}
+
+impl Database {
+    pub(crate) fn require_ready(self) -> Result<(), String> {
+        match self {
+            Database::Sqlite => Ok(()),
+            Database::Mysql => {
+                Err("mysql needs P1.A1 (#59) before the harness can use it".to_string())
+            }
+            Database::Pgsql => {
+                Err("pgsql needs P1.A1 (#59) before the harness can use it".to_string())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunSpec {
+    pub scenario: String,
+    pub grid: bool,
+    pub ferroan_region: bool,
+    pub rust_services: Vec<String>,
+    pub db: Database,
+}
+
+impl RunSpec {
+    /// True when this grid run serves assets from `ferroan-robust`.
+    ///
+    /// The caller lives in the Linux harness. Tests compile it too.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn rust_assets(&self) -> bool {
+        self.rust_services.iter().any(|service| service == "assets")
+    }
+}
+
+pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> {
+    for service in services {
+        if service != "assets" {
+            return Err(format!(
+                "{service} is not served by this harness yet; P1.0 wires assets"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    Build,
+    Up { ferroan_assets: bool },
+    UpGrid { bind: Option<String> },
+    PersistentGridCheck,
+    Down,
+    Run(RunSpec),
+    RunningAssets { db: Database },
+    Compare { service: String, db: Database },
+    Fixture { kind: Fixture, path: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fixture {
+    Caps,
+    Login,
+    RootArrival,
+    RegionParity,
+    Circuit,
+    Arrival,
+    Trailing,
+}
+
+pub(crate) enum Outcome {
+    Exit(ExitCode),
+    Usage,
+}
+
+#[derive(Debug)]
+enum ParseFail {
+    Usage,
+    Message(String),
+}
+
+pub(crate) fn dispatch(args: &[&str]) -> Outcome {
+    match parse(args) {
+        Ok(command) => Outcome::Exit(execute(command)),
+        Err(ParseFail::Usage) => Outcome::Usage,
+        Err(ParseFail::Message(text)) => {
+            eprintln!("live: {text}");
+            Outcome::Exit(ExitCode::from(2))
+        }
+    }
+}
+
+fn execute(command: Command) -> ExitCode {
+    match command {
+        Command::Build => live::build(),
+        Command::Up { ferroan_assets } => live::up(ferroan_assets),
+        Command::UpGrid { bind } => {
+            let Some(bind) = bind else {
+                return grid::up(Ipv4Addr::LOCALHOST);
+            };
+            match bind.parse::<Ipv4Addr>() {
+                Ok(bind) => grid::up(bind),
+                Err(_) => live::finish(Err("--bind requires an IPv4 address".to_string())),
+            }
+        }
+        Command::PersistentGridCheck => crate::grid_smoke::run(),
+        Command::Down => live::down(),
+        Command::Run(spec) => run_spec(spec),
+        Command::RunningAssets { db } => match db.require_ready() {
+            Ok(()) => live::run_running_assets(),
+            Err(error) => live::finish(Err(error)),
+        },
+        Command::Compare { service, db } => compare_service(&service, db),
+        Command::Fixture { kind, path } => fixture(kind, &path),
+    }
+}
+
+fn run_spec(spec: RunSpec) -> ExitCode {
+    if let Err(error) = spec.db.require_ready() {
+        return live::finish(Err(error));
+    }
+    if !spec.grid {
+        if spec.ferroan_region {
+            return live::finish(Err("--region ferroan is used with grid mode".to_string()));
+        }
+        if !spec.rust_services.is_empty() {
+            return live::finish(Err("--rust is used with grid mode".to_string()));
+        }
+        return live::run(&spec.scenario);
+    }
+    if let Err(error) = require_known_services(&spec.rust_services) {
+        return live::finish(Err(error));
+    }
+    grid::run_with(&spec)
+}
+
+fn compare_service(service: &str, db: Database) -> ExitCode {
+    if let Err(error) = db.require_ready() {
+        return live::finish(Err(error));
+    }
+    if service != "assets" {
+        return live::finish(Err(format!(
+            "live compare serves assets in this row; {service} is not wired yet"
+        )));
+    }
+    crate::assets::compare()
+}
+
+fn fixture(kind: Fixture, path: &str) -> ExitCode {
+    let path = std::path::Path::new(path);
+    match kind {
+        Fixture::Caps => live::finish(crate::caps_fixtures::generate(path)),
+        Fixture::Login => grid::login_fixtures(path),
+        Fixture::RootArrival => grid::root_arrival_fixtures(path),
+        Fixture::RegionParity => grid::parity_fixtures(path),
+        Fixture::Circuit => live::finish(crate::circuit_fixtures::generate(path)),
+        Fixture::Arrival => live::finish(crate::arrival_fixtures::generate(path)),
+        Fixture::Trailing => live::finish(crate::trailing_fixtures::generate(path)),
+    }
+}
+
+fn parse(args: &[&str]) -> Result<Command, ParseFail> {
+    match args {
+        ["build"] => Ok(Command::Build),
+        ["up"] => Ok(Command::Up {
+            ferroan_assets: false,
+        }),
+        ["up", "--assets", "ferroan"] => Ok(Command::Up {
+            ferroan_assets: true,
+        }),
+        ["up", "grid", rest @ ..] => {
+            let flags = flags(rest)?;
+            if flags.running || flags.rust_services.is_some() || flags.db_set {
+                return Err(ParseFail::Usage);
+            }
+            if !flags.region_ferroan {
+                return Err(ParseFail::Usage);
+            }
+            Ok(Command::UpGrid { bind: flags.bind })
+        }
+        ["persistent-grid-check"] => Ok(Command::PersistentGridCheck),
+        ["down"] => Ok(Command::Down),
+        ["run", rest @ ..] => parse_run(rest),
+        ["compare", service, rest @ ..] => {
+            if service.starts_with('-') {
+                return Err(ParseFail::Usage);
+            }
+            let flags = flags(rest)?;
+            if flags.running
+                || flags.region_ferroan
+                || flags.bind.is_some()
+                || flags.rust_services.is_some()
+            {
+                return Err(ParseFail::Usage);
+            }
+            Ok(Command::Compare {
+                service: (*service).to_string(),
+                db: flags.db,
+            })
+        }
+        ["assets", rest @ ..] => {
+            let flags = flags(rest)?;
+            if flags.running
+                || flags.region_ferroan
+                || flags.bind.is_some()
+                || flags.rust_services.is_some()
+            {
+                return Err(ParseFail::Usage);
+            }
+            Ok(Command::Compare {
+                service: "assets".to_string(),
+                db: flags.db,
+            })
+        }
+        [name, path] if !name.starts_with('-') && !path.starts_with('-') => {
+            let kind = fixture_kind(name).ok_or(ParseFail::Usage)?;
+            Ok(Command::Fixture {
+                kind,
+                path: (*path).to_string(),
+            })
+        }
+        _ => Err(ParseFail::Usage),
+    }
+}
+
+fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
+    let Some((scenario, rest)) = args.split_first() else {
+        return Err(ParseFail::Usage);
+    };
+    if scenario.starts_with('-') {
+        return Err(ParseFail::Usage);
+    }
+    let (grid, rest) = if rest.first() == Some(&"grid") {
+        (true, &rest[1..])
+    } else {
+        (false, rest)
+    };
+    let flags = flags(rest)?;
+    if flags.bind.is_some() {
+        return Err(ParseFail::Usage);
+    }
+    if flags.running {
+        if *scenario != "assets" || grid || flags.region_ferroan || flags.rust_services.is_some() {
+            return Err(ParseFail::Usage);
+        }
+        return Ok(Command::RunningAssets { db: flags.db });
+    }
+    Ok(Command::Run(RunSpec {
+        scenario: (*scenario).to_string(),
+        grid,
+        ferroan_region: flags.region_ferroan,
+        rust_services: flags.rust_services.unwrap_or_default(),
+        db: flags.db,
+    }))
+}
+
+struct Flags {
+    region_ferroan: bool,
+    bind: Option<String>,
+    rust_services: Option<Vec<String>>,
+    db: Database,
+    db_set: bool,
+    running: bool,
+}
+
+fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
+    let mut parsed = Flags {
+        region_ferroan: false,
+        bind: None,
+        rust_services: None,
+        db: Database::Sqlite,
+        db_set: false,
+        running: false,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        match arg {
+            "--running" => parsed.running = true,
+            "--region" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                if *value != "ferroan" {
+                    return Err(ParseFail::Usage);
+                }
+                parsed.region_ferroan = true;
+                index += 1;
+            }
+            "--bind" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                if value.starts_with('-') {
+                    return Err(ParseFail::Usage);
+                }
+                parsed.bind = Some((*value).to_string());
+                index += 1;
+            }
+            "--rust" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                parsed.rust_services = Some(services(value)?);
+                index += 1;
+            }
+            "--db" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                parsed.db = database(value)?;
+                parsed.db_set = true;
+                index += 1;
+            }
+            _ => return Err(ParseFail::Usage),
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+fn services(value: &str) -> Result<Vec<String>, ParseFail> {
+    if value.starts_with('-') {
+        return Err(ParseFail::Usage);
+    }
+    let mut names = Vec::new();
+    for part in value.split(',') {
+        let name = part.trim();
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(ParseFail::Usage);
+        }
+        if !names.iter().any(|have: &String| have == name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() {
+        return Err(ParseFail::Usage);
+    }
+    Ok(names)
+}
+
+fn database(value: &str) -> Result<Database, ParseFail> {
+    match value {
+        "sqlite" => Ok(Database::Sqlite),
+        "mysql" => Ok(Database::Mysql),
+        "pgsql" => Ok(Database::Pgsql),
+        _ => Err(ParseFail::Message(
+            "--db expects sqlite, mysql or pgsql".to_string(),
+        )),
+    }
+}
+
+fn fixture_kind(name: &str) -> Option<Fixture> {
+    Some(match name {
+        "caps-fixtures" => Fixture::Caps,
+        "login-fixtures" => Fixture::Login,
+        "root-arrival-fixtures" => Fixture::RootArrival,
+        "region-parity-fixtures" => Fixture::RegionParity,
+        "circuit-fixtures" => Fixture::Circuit,
+        "arrival-fixtures" => Fixture::Arrival,
+        "trailing-fixtures" => Fixture::Trailing,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(args: &[&str]) -> RunSpec {
+        match parse(args).unwrap() {
+            Command::Run(spec) => spec,
+            other => panic!("expected a run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grid_rust_assets_parses_in_any_flag_order() {
+        let spec = run(&[
+            "run", "assets", "grid", "--db", "sqlite", "--rust", "assets", "--region", "ferroan",
+        ]);
+        assert_eq!(spec.scenario, "assets");
+        assert!(spec.grid);
+        assert!(spec.ferroan_region);
+        assert_eq!(spec.rust_services, vec!["assets".to_string()]);
+        assert_eq!(spec.db, Database::Sqlite);
+        assert!(spec.rust_assets());
+    }
+
+    #[test]
+    fn rust_list_trims_and_drops_duplicates() {
+        let spec = run(&["run", "all", "grid", "--rust", "assets, assets"]);
+        assert_eq!(spec.rust_services, vec!["assets".to_string()]);
+        assert!(!spec.ferroan_region);
+        assert_eq!(spec.db, Database::Sqlite);
+    }
+
+    #[test]
+    fn compare_assets_defaults_to_sqlite() {
+        match parse(&["compare", "assets"]).unwrap() {
+            Command::Compare { service, db } => {
+                assert_eq!(service, "assets");
+                assert_eq!(db, Database::Sqlite);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        match parse(&["assets", "--db", "pgsql"]).unwrap() {
+            Command::Compare { service, db } => {
+                assert_eq!(service, "assets");
+                assert_eq!(db, Database::Pgsql);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn existing_live_forms_still_parse() {
+        assert!(matches!(parse(&["build"]), Ok(Command::Build)));
+        assert!(matches!(
+            parse(&["up"]),
+            Ok(Command::Up {
+                ferroan_assets: false
+            })
+        ));
+        assert!(matches!(
+            parse(&["up", "--assets", "ferroan"]),
+            Ok(Command::Up {
+                ferroan_assets: true
+            })
+        ));
+        assert!(matches!(
+            parse(&["up", "grid", "--region", "ferroan"]),
+            Ok(Command::UpGrid { bind: None })
+        ));
+        assert!(matches!(
+            parse(&[
+                "up",
+                "grid",
+                "--bind",
+                "192.0.2.1",
+                "--region",
+                "ferroan"
+            ]),
+            Ok(Command::UpGrid { bind: Some(bind) }) if bind == "192.0.2.1"
+        ));
+        assert!(matches!(parse(&["down"]), Ok(Command::Down)));
+        assert!(matches!(
+            parse(&["persistent-grid-check"]),
+            Ok(Command::PersistentGridCheck)
+        ));
+        let spec = run(&["run", "login"]);
+        assert!(!spec.grid);
+        assert_eq!(spec.scenario, "login");
+        let spec = run(&["run", "all", "grid"]);
+        assert!(spec.grid);
+        assert!(spec.rust_services.is_empty());
+        let spec = run(&["run", "caps", "grid", "--region", "ferroan"]);
+        assert!(spec.ferroan_region);
+        assert!(matches!(
+            parse(&["run", "assets", "--running"]),
+            Ok(Command::RunningAssets {
+                db: Database::Sqlite
+            })
+        ));
+        assert!(matches!(
+            parse(&["login-fixtures", "/tmp/capture"]),
+            Ok(Command::Fixture {
+                kind: Fixture::Login,
+                path
+            }) if path == "/tmp/capture"
+        ));
+    }
+
+    #[test]
+    fn incomplete_flags_are_usage() {
+        assert!(parse(&["run"]).is_err());
+        assert!(parse(&["run", "all", "grid", "--rust"]).is_err());
+        assert!(parse(&["run", "all", "grid", "--rust", "assets,"]).is_err());
+        assert!(parse(&["run", "all", "grid", "--region"]).is_err());
+        assert!(parse(&["up", "grid"]).is_err());
+        assert!(parse(&["compare"]).is_err());
+        assert!(parse(&["assets", "grid"]).is_err());
+    }
+
+    #[test]
+    fn mysql_and_pgsql_name_p1a1_and_unknown_services_are_refused() {
+        assert_eq!(
+            Database::Mysql.require_ready().unwrap_err(),
+            "mysql needs P1.A1 (#59) before the harness can use it"
+        );
+        assert_eq!(
+            Database::Pgsql.require_ready().unwrap_err(),
+            "pgsql needs P1.A1 (#59) before the harness can use it"
+        );
+        assert!(Database::Sqlite.require_ready().is_ok());
+        let error = require_known_services(&["assets".into(), "inventory".into()]).unwrap_err();
+        assert!(error.contains("inventory"));
+        assert!(error.contains("assets"));
+    }
+}

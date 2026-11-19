@@ -87,6 +87,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         robust: None,
         home: None,
         neighbour: None,
+        rust_assets: None,
         proxies: None,
         passwords: vec![password.clone(), chat.clone()],
         _state: state,
@@ -120,6 +121,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         &grid.passwords,
         bind,
         Some(&console),
+        None,
     )?);
     for (first, last, secret, email, id) in [
         (
@@ -189,6 +191,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 public_proxy: public_port,
                 private_proxy: private_port,
                 capture: None,
+                asset_uri: None,
             },
             &grid.passwords,
         )?;
