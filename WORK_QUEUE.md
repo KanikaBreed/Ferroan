@@ -59,7 +59,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | EXTERNAL (#59, #60, #61) |
-| Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | IN PROGRESS (feat/phase1-harness) |
+| Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
 | Q24 | P1.1: user accounts | READY after Q21 |
