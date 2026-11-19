@@ -29,18 +29,27 @@
 //   Source/OpenSim.Server.Base/ProtocolVersions.cs
 //   Read with Source/OpenSim.Server.Handlers/Grid/GridServerPostHandler.cs
 //   and Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Grid/RegionGridServiceConnector.cs
+//   Source/OpenSim.Services.Connectors/Presence/PresenceServicesConnector.cs
+//   Source/OpenSim.Services.Connectors/GridUser/GridUserServicesConnector.cs
+//   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost URI normalization)
+//   Source/OpenSim.Framework/WebUtil.cs (SynchronousRestFormsRequester)
+//   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
+//   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
+//   Source/OpenSim.Region.Framework/Scenes/Scene.cs (VerifyUserPresence)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Register and deregister this process's single region through C# Robust.
-//! Transport has ferroan-http's 30 second deadline and bounded XML reader.
+//! Region registration, presence verification and logout through C# Robust.
+//! Transport has a 30 second deadline and ferroan-http's bounded XML reader.
 //! No retries: startup fails when registration is refused or unconfirmed.
 
 use ferroan_http::{Field, FieldMap};
 use uuid::Uuid;
 
 use crate::config::RegionConfig;
+
+const MAX_SERVICE_REPLY: usize = 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GridError {
@@ -50,6 +59,154 @@ pub enum GridError {
     Rejected { message: String },
     #[error("grid service reply has no recognized Result")]
     InvalidReply,
+    #[error("logout position or look direction is not finite")]
+    InvalidPosition,
+    #[error("region service HTTP request failed")]
+    Transport(#[from] reqwest::Error),
+}
+
+#[derive(Clone)]
+pub struct PresenceClient {
+    endpoint: String,
+}
+
+impl PresenceClient {
+    pub fn new(base_uri: &str) -> Self {
+        Self {
+            endpoint: format!("{base_uri}/presence"),
+        }
+    }
+
+    /// Scene.VerifyUserPresence checks the returned UserID, not RegionID.
+    /// Missing/malformed/failed replies must never authorize admission.
+    pub async fn verify(&self, agent_id: Uuid, session_id: Uuid) -> Result<bool, GridError> {
+        let reply = service_form(&self.endpoint, &presence_fields("getagent", session_id)).await?;
+        match reply.get("result") {
+            Some(Field::Map(presence)) => Ok(
+                matches!(presence.get("UserID"), Some(Field::Str(user)) if user == &agent_id.to_string()),
+            ),
+            Some(Field::Str(result)) if result == "null" => Ok(false),
+            _ => Err(GridError::InvalidReply),
+        }
+    }
+
+    pub async fn logout(&self, session_id: Uuid) -> Result<(), GridError> {
+        service_result(&service_form(&self.endpoint, &presence_fields("logout", session_id)).await?)
+    }
+}
+
+#[derive(Clone)]
+pub struct GridUserClient {
+    endpoint: String,
+}
+
+impl GridUserClient {
+    pub fn new(base_uri: &str) -> Self {
+        Self {
+            // GridUserServicesConnector uses OSHHTPHost.URI, unlike Presence's
+            // raw configured URI. Configuration rejects nonroot URL paths.
+            endpoint: format!("{}/griduser", base_uri.trim_end_matches('/')),
+        }
+    }
+
+    /// The C# connector does not transmit SessionID. Callers must serialize
+    /// admission/cleanup and skip this call for a superseded generation.
+    pub async fn logged_out(
+        &self,
+        agent_id: Uuid,
+        region_id: Uuid,
+        position: [f32; 3],
+        look_at: [f32; 3],
+    ) -> Result<(), GridError> {
+        let fields = logout_fields(agent_id, region_id, position, look_at)?;
+        service_result(&service_form(&self.endpoint, &fields).await?)
+    }
+}
+
+// EnsureSuccessStatusCode in SynchronousRestFormsRequester is essential here:
+// an error response containing an otherwise valid UserID must not admit an agent.
+async fn service_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, GridError> {
+    let body = ferroan_http::build_query_string(fields)?;
+    let mut response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .post(endpoint)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let got = bytes.len().saturating_add(chunk.len());
+        if got > MAX_SERVICE_REPLY {
+            return Err(ferroan_http::HttpError::Limit {
+                what: "service reply",
+                limit: MAX_SERVICE_REPLY,
+                got,
+            }
+            .into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| ferroan_http::HttpError::Xml("reply is not utf-8"))?;
+    Ok(ferroan_http::parse_xml_response(text)?)
+}
+
+fn service_fields(method: &str) -> FieldMap {
+    FieldMap::from_iter([
+        ("VERSIONMIN".into(), Field::Str("1".into())),
+        ("VERSIONMAX".into(), Field::Str("1".into())),
+        ("METHOD".into(), Field::Str(method.into())),
+    ])
+}
+
+fn presence_fields(method: &str, session: Uuid) -> FieldMap {
+    let mut fields = service_fields(method);
+    fields.insert("SessionID".into(), Field::Str(session.to_string()));
+    fields
+}
+
+fn logout_fields(
+    agent: Uuid,
+    region: Uuid,
+    position: [f32; 3],
+    look: [f32; 3],
+) -> Result<FieldMap, GridError> {
+    if !position
+        .iter()
+        .chain(&look)
+        .all(|coordinate| coordinate.is_finite())
+    {
+        return Err(GridError::InvalidPosition);
+    }
+    let vector = |v: [f32; 3]| format!("<{}, {}, {}>", v[0], v[1], v[2]);
+    let mut fields = service_fields("loggedout");
+    for (key, value) in [
+        ("UserID", agent.to_string()),
+        ("RegionID", region.to_string()),
+        ("Position", vector(position)),
+        ("LookAt", vector(look)),
+    ] {
+        fields.insert(key.into(), Field::Str(value));
+    }
+    Ok(fields)
+}
+
+fn service_result(reply: &FieldMap) -> Result<(), GridError> {
+    match reply.get("result") {
+        Some(Field::Str(result)) if result.eq_ignore_ascii_case("success") => Ok(()),
+        Some(Field::Str(result)) if result.eq_ignore_ascii_case("failure") => {
+            Err(GridError::Rejected {
+                message: "presence/grid-user operation failed".into(),
+            })
+        }
+        _ => Err(GridError::InvalidReply),
+    }
 }
 
 pub struct GridClient {
@@ -130,11 +287,203 @@ fn check_result(reply: &FieldMap) -> Result<(), GridError> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn presence_and_logout_forms_match_captured_csharp_exchanges() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/region-parity/exchanges.json"
+        ))
+        .unwrap();
+        let selected: VecDeque<_> = [
+            "presence-get",
+            "griduser-loggedout",
+            "presence-logout",
+            "presence-missing",
+        ]
+        .into_iter()
+        .map(|name| fixture["services"][name].clone())
+        .collect();
+        let queue = Arc::new(Mutex::new(selected));
+        let remaining = queue.clone();
+        let app = axum::Router::new().fallback(
+            move |method: axum::http::Method,
+                  uri: axum::http::Uri,
+                  headers: axum::http::HeaderMap,
+                  body: String| {
+                let captured = queue.lock().unwrap().pop_front().unwrap();
+                assert_eq!(method.as_str(), captured["method"].as_str().unwrap());
+                assert_eq!(uri.path(), captured["path"].as_str().unwrap());
+                assert_eq!(
+                    headers["content-type"],
+                    captured["request_content_type"].as_str().unwrap()
+                );
+                assert_eq!(body, captured["request"].as_str().unwrap());
+                async move {
+                    (
+                        axum::http::StatusCode::from_u16(
+                            captured["status"].as_u64().unwrap() as u16
+                        )
+                        .unwrap(),
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            captured["response_content_type"]
+                                .as_str()
+                                .unwrap()
+                                .to_owned(),
+                        )],
+                        captured["response"].as_str().unwrap().to_owned(),
+                    )
+                }
+            },
+        );
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+        let session = "00000000-0000-4000-8000-000000000004".parse().unwrap();
+        let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        let presence = PresenceClient::new(&base);
+        assert!(presence.verify(agent, session).await.unwrap());
+        GridUserClient::new(&base)
+            .logged_out(agent, region, [128., 128., 26.033272], [0.; 3])
+            .await
+            .unwrap();
+        presence.logout(session).await.unwrap();
+        assert!(!presence.verify(agent, session).await.unwrap());
+        assert!(remaining.lock().unwrap().is_empty());
+        serving.abort();
+    }
+
+    #[tokio::test]
+    async fn presence_verification_checks_user_and_never_accepts_missing_or_malformed_replies() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        let owner = Uuid::from_u128(1);
+        let session = Uuid::from_u128(2);
+        let replies = Arc::new(Mutex::new(VecDeque::from([
+            format!(
+                "<ServerResponse><result type=\"List\"><UserID>{owner}</UserID><RegionID>{}</RegionID></result></ServerResponse>",
+                Uuid::nil()
+            ),
+            format!(
+                "<ServerResponse><result type=\"List\"><UserID>{}</UserID></result></ServerResponse>",
+                Uuid::from_u128(3)
+            ),
+            "<ServerResponse><result>null</result></ServerResponse>".into(),
+            "<ServerResponse><Result>Success</Result></ServerResponse>".into(),
+            "not XML".into(),
+        ])));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let app = axum::Router::new().route(
+            "/presence",
+            axum::routing::post(move |body: String| {
+                seen.lock().unwrap().push(body);
+                let reply = replies.lock().unwrap().pop_front().unwrap();
+                async move { reply }
+            }),
+        );
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = PresenceClient::new(&format!("http://{}", socket.local_addr().unwrap()));
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        assert!(client.verify(owner, session).await.unwrap());
+        assert!(!client.verify(owner, session).await.unwrap());
+        assert!(!client.verify(owner, session).await.unwrap());
+        assert!(client.verify(owner, session).await.is_err());
+        assert!(client.verify(owner, session).await.is_err());
+        serving.abort();
+        for request in requests.lock().unwrap().iter() {
+            assert_eq!(
+                request,
+                &format!("VERSIONMIN=1&VERSIONMAX=1&METHOD=getagent&SessionID={session}")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_connectors_send_the_source_fields_and_require_success() {
+        use std::sync::{Arc, Mutex};
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+            seen.lock().unwrap().push((uri.path().to_owned(), body));
+            async { "<ServerResponse><result>Success</result></ServerResponse>" }
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let agent = Uuid::from_u128(1);
+        let session = Uuid::from_u128(2);
+        let region = Uuid::from_u128(3);
+        GridUserClient::new(&format!("{base}/"))
+            .logged_out(agent, region, [128., 128., 25.], [0.99, 0.042, 0.])
+            .await
+            .unwrap();
+        PresenceClient::new(&base).logout(session).await.unwrap();
+        serving.abort();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].0, "/griduser");
+        assert_eq!(
+            requests[0].1,
+            format!(
+                "VERSIONMIN=1&VERSIONMAX=1&METHOD=loggedout&UserID={agent}&RegionID={region}&Position=%3c128%2c+128%2c+25%3e&LookAt=%3c0.99%2c+0.042%2c+0%3e"
+            )
+        );
+        assert!(!requests[0].1.contains("SessionID"));
+        assert_eq!(
+            requests[1],
+            (
+                "/presence".into(),
+                format!("VERSIONMIN=1&VERSIONMAX=1&METHOD=logout&SessionID={session}")
+            )
+        );
+        for xml in [
+            "<ServerResponse><result>Failure</result></ServerResponse>",
+            "<ServerResponse><result type=\"List\"><UserID>1</UserID></result></ServerResponse>",
+            "<ServerResponse/>",
+        ] {
+            assert!(service_result(&ferroan_http::parse_xml_response(xml).unwrap()).is_err());
+        }
+        assert!(logout_fields(agent, region, [f32::NAN, 0., 0.], [0.; 3]).is_err());
+    }
+
+    #[tokio::test]
+    async fn service_errors_cannot_authorize_or_confirm_logout() {
+        let agent = Uuid::from_u128(1);
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri| async move {
+            let body = if uri.path() == "/presence" {
+                format!("<ServerResponse><result type=\"List\"><UserID>{agent}</UserID></result></ServerResponse>")
+            } else {
+                "<ServerResponse><result>Success</result></ServerResponse>".into()
+            };
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, body)
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        assert!(matches!(
+            PresenceClient::new(&base)
+                .verify(agent, Uuid::from_u128(2))
+                .await,
+            Err(GridError::Transport(_))
+        ));
+        assert!(matches!(
+            GridUserClient::new(&base)
+                .logged_out(agent, Uuid::from_u128(3), [0.; 3], [0.; 3])
+                .await,
+            Err(GridError::Transport(_))
+        ));
+        serving.abort();
+    }
+
     #[test]
     fn registration_and_deregistration_match_the_csharp_grid_capture() {
         let server = ferroan_config::Config::parse(
             "[Network]\nhttp_listener_port=9000\nbind_ip_address=127.0.0.2\n\
              [GridService]\nGridServerURI=http://192.0.2.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://192.0.2.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://192.0.2.1:8003\n\
              [Estates]\nDefaultEstateOwnerUUID=00000000-0000-4000-8000-000000000001\n\
              [Map]\nGenerateMaptiles=false\n",
         )

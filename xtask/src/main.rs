@@ -75,6 +75,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run caps grid [--region ferroan]
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
+       cargo xtask live region-parity-fixtures <capture-dir>
        cargo xtask live circuit-fixtures <udp-capture>
        cargo xtask live arrival-fixtures <udp-capture>
        cargo xtask live trailing-fixtures <udp-capture>
@@ -125,6 +126,9 @@ fn main() -> ExitCode {
             live::finish(caps_fixtures::generate(Path::new(directory)))
         }
         ["live", "login-fixtures", directory] => grid::login_fixtures(Path::new(directory)),
+        ["live", "region-parity-fixtures", directory] => {
+            grid::parity_fixtures(Path::new(directory))
+        }
         ["live", "circuit-fixtures", capture] => {
             live::finish(circuit_fixtures::generate(Path::new(capture)))
         }

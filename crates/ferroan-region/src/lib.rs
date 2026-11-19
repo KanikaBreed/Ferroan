@@ -4,5 +4,6 @@
 //! A region registered with C# Robust; login remains a grid service.
 
 pub mod config;
+pub mod control_plane;
 pub mod grid;
 pub mod simulation;

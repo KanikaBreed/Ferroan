@@ -140,6 +140,10 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 
 - 2026-11-18, Q9 source review (queued as Q10b, P0.10i part 1): the shared LLSD XML decoder predates this item and accepts `base16`, unpadded base64, and malformed binary text (invalid base64 becomes empty bytes). Pinned libopenmetaverse `OpenMetaverse.StructuredData/LLSD/XmlLLSD.cs` rejects unsupported encodings and malformed base64. For example, `<llsd><array><binary>!</binary></array></llsd>` reaches the Rust seed as an array but C# returns 400. Proposed follow-up: capture malformed LLSD cases in the oracle and align `crates/ferroan-llsd/src/xml_llsd.rs::decode_binary`, checking all callers. Q9 changes seed error mapping and name conversion without rewriting the shared parser.
 
+- 2026-11-18, Q10f: `ControlPlaneAccess.AddTrustedHost` at `8583218` treats some host:port and bare IPv6 strings as opaque absolute URIs, then resolves their empty Host to machine-local addresses. A .NET 10 oracle confirmed the parser and empty-host DNS behavior. Recorded as TB5 in `docs/TRANQUILLITY_BUGS.md`; D20 records Ferroan's explicit startup rejection. Proposed upstream fix: reject empty URI hosts or parse IP/host-port forms before URI interpretation. No upstream issue was filed.
+
+- 2026-11-18, Q10f: shared `ferroan_http::post_form` parses XML without checking HTTP success, whereas pinned `WebUtil.SynchronousRestFormsRequester` calls `EnsureSuccessStatusCode`. The new region Presence/GridUser clients and their offline-state probe check status locally, so a 500 response containing plausible XML cannot authorize admission or prove logout. Proposed separate HTTP follow-up: audit shared-client callers, capture failed-status behavior, and add status validation there. Existing unrelated callers were not changed.
+
 ## Waiting on the maintainer
 
 - Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
