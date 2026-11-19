@@ -51,7 +51,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | DONE (#90) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | DONE (#81) |
-| Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | READY after Q10h |
+| Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | IN PROGRESS (`feat/circuit-close`) |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
 | Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
