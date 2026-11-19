@@ -56,9 +56,11 @@ Add checks for the behavior changed: captured-traffic fixtures, `ferroan-bot` sc
 
 ## 8. Tasks and documentation
 
-[TASKS.md](TASKS.md) is the task index. Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED` (with the next action). Update only the relevant rows, with evidence and an owner or branch.
+[TASKS.md](TASKS.md) is the task index. Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED` (with the next action). Update only the relevant rows, with evidence and an owner or branch. Outside contributors leave TASKS.md to the manager (see below).
 
-[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue. Take its first `READY` item and nothing else, and follow the rules at the top of that file. Those rules are the maintainer's standing authorization for the coder to open PRs for queue items and merge them with `gh pr merge --auto --squash` once the required checks pass.
+[WORK_QUEUE.md](WORK_QUEUE.md) is the project manager's ordered queue for the project's own coder agent, which the maintainers start and tell that it is the queue coder. That agent takes the queue's first `READY` item and nothing else, and follows the rules at the top of that file. Those rules are the maintainer's standing authorization for it to open PRs for queue items and merge them with `gh pr merge --auto --squash` once the required checks pass.
+
+Every other agent works on one GitHub issue labelled `agent-ready` that its human has claimed ([HUMANS.md](HUMANS.md)). Such an agent works only on that issue, does not take queue items, and does not edit TASKS.md or WORK_QUEUE.md: it puts its evidence in the PR, and the manager updates the task row when the PR merges. It never merges its own PR or enables auto-merge. If the issue's brief is wrong or too big, it stops and says so on the issue.
 
 Keep commands runnable and paths real. Mark planned crates and features as planned. Update [ARCHITECTURE.md](ARCHITECTURE.md) and the relevant guides with each implementation change.
 

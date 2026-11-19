@@ -18,7 +18,7 @@ The coder works unattended, through the queue, as far as it can get. The maintai
 
 Only the manager adds, removes, reorders or rewrites items. The coder changes only the Status column, the notes under an item, and "Found while working".
 
-Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
+Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done by outside contributors through the GitHub issues named on the item; skip it, and treat it as done only when its TASKS.md row is `DONE`).
 
 ## Queue
 
@@ -57,7 +57,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
-| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q19 |
+| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | EXTERNAL (#59, #60, #61) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | READY after Q20 |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
