@@ -18,7 +18,9 @@ The coder works unattended, through the queue, as far as it can get. The maintai
 
 Only the manager adds, removes, reorders or rewrites items. The coder changes only the Status column, the notes under an item, and "Found while working".
 
-Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done by outside contributors through the GitHub issues named on the item; skip it, and treat it as done only when its TASKS.md row is `DONE`).
+Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (an outside contributor has claimed the item's issue; skip it, and treat it as done only when its TASKS.md row is `DONE`).
+
+Items that name a GitHub issue are open to outside contributors too, but the coder does not wait for them. When such an item comes up, check its issue first (`gh issue view <n> --json labels`). If it is labelled `claimed`, a contributor has it: skip the item and go on. If not, it is the coder's: add the `claimed` label, post one comment on the issue ("The project's queue coder is taking this, on branch `<branch>`."), and work it as usual, with `Closes #<n>` in the PR. An item that names several issues is taken one issue at a time, in the order listed. This is the only issue comment the coder posts.
 
 ## Queue
 
@@ -58,23 +60,23 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
-| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | EXTERNAL (#59, #60, #61) |
+| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q19 (issues #59, #60, #61) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | READY after Q24 |
-| Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
-| Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
-| Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
-| Q28 | P1.5: inventory and the library | EXTERNAL (#68) |
-| Q29 | P1.6: grid service | EXTERNAL (#69) |
-| Q30 | P1.7: map tiles | EXTERNAL (#70) |
-| Q31 | P1.8: friends and the mute list | EXTERNAL (#71) |
-| Q32 | P1.9: offline IM | EXTERNAL (#72) |
-| Q33 | P1.10: Groups V2 | EXTERNAL (#73) |
-| Q34 | P1.11: profiles and search | EXTERNAL (#74) |
-| Q35 | P1.12: estates and Experiences over Robust | EXTERNAL (#75) |
+| Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
+| Q26 | P1.3: grid user, presence and agent preferences | READY after Q25 (issue #66) |
+| Q27 | P1.4: avatars and baked textures | READY after Q26 (issue #67) |
+| Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |
+| Q29 | P1.6: grid service | READY after Q28 (issue #69) |
+| Q30 | P1.7: map tiles | READY after Q29 (issue #70) |
+| Q31 | P1.8: friends and the mute list | READY after Q30 (issue #71) |
+| Q32 | P1.9: offline IM | READY after Q31 (issue #72) |
+| Q33 | P1.10: Groups V2 | READY after Q32 (issue #73) |
+| Q34 | P1.11: profiles and search | READY after Q33 (issue #74) |
+| Q35 | P1.12: estates and Experiences over Robust | READY after Q34 (issue #75) |
 | Q36 | P1.13: login | READY after Q35 |
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
@@ -111,6 +113,8 @@ Q10q and Q10r, and the new order (manager, 19 November 2026, at the maintainer's
 Phase 1 opened to outside contributors (manager, 19 November 2026, at the maintainer's request): after Q10i, the coder takes Q21 (P1.0, the Phase 1 harness) and Q24 (P1.1, user accounts), then Q10h, Q10j, Q10k, Q10s, Q11 to Q13, and Q14 onward. P1.0 no longer waits for P1.A1: build it on SQLite with the asset service that exists, and add the MySQL and PostgreSQL runs of `--rust assets` when #59 merges. P1.1 sets the pattern every later service follows, so keep its module layout, store code and `live compare` use plain enough to copy. Q25 to Q35 (P1.2 to P1.12) are `EXTERNAL`, as issues #65 to #75, labelled `blocked` until P1.0 and P1.1 are DONE. The manager then relabels them `agent-ready`. If one of them sits unclaimed when Q36 (P1.13, login) would otherwise be next, the manager moves it back to the coder rather than letting the queue stall. Q22 and Q23 (P1.A2, P1.A3) still wait for P1.A1.
 
 Q24a (manager, 19 November 2026, from the Q24 finding): every Phase 1 issue (#65 to #75) requires its service to pass the live scenarios in grid mode with `--rust`. #83 found that `grid --rust accounts` is not wired, because C# Robust's login and other services call the user-account module in process. Fix it once, for every service, before contributors start: when `--rust` names a service, the harness configures C# Robust's consumers of that service (the `LocalServiceModule` or service keys in `Robust.ini`, as the C# reads them at the pin) to reach `ferroan-robust` through the C# remote connector (`OpenSim.Services.Connectors`) and its server URI, so only the Rust process touches that service's tables. Read the C# config loading at the pin before choosing the keys, and record which C# services consume each Phase 1 service. Acceptance: `cargo xtask live run login grid --rust accounts` and `… --rust assets,accounts` pass in the live CI job, the C# Robust log shows no in-process `UserAccountService` load, and the pattern section in `crates/ferroan-services/README.md` says how a new service adds its connector mapping. Issues #65 to #75 stay `blocked` until Q24a is DONE; the manager then relabels them.
+
+No waiting for contributors (manager, 19 November 2026, at the maintainer's request): assume no outside contributor will pitch in, and keep the issues open in case one does. Q20 and Q25 to Q35 are the coder's again, after Q19, in order; each still names its issue, and the issue rule above decides who works it. Until then the coder stays on the region track: Q24a, Q10h to Q10k, Q10s, Q11 to Q13, then Q14 to Q19.
 
 Q10h READY again (manager, 19 November 2026): the coder's audit was right, and the first version of the row overstated C#. The row now takes the first proposed fix: keep both C# helper policies, with a checked status for Presence and GridUser and an unchecked one for Grid register and deregister, and capture both. Grid's missing check is TB10. The maintainer may fix it upstream, and Ferroan follows through a pin move. No compatibility change is authorized here. Resume from `1716151`.
 
