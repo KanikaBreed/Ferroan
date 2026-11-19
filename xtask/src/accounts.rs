@@ -31,6 +31,7 @@ use crate::live;
 #[cfg(target_os = "linux")]
 use crate::repo_root;
 
+#[cfg(any(target_os = "linux", test))]
 const PRINCIPAL: &str = "11111111-1111-4111-8111-111111111111";
 
 pub fn compare() -> ExitCode {
