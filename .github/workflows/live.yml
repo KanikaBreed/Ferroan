@@ -108,6 +108,8 @@ jobs:
           set -euo pipefail
           cargo xtask live run caps grid
           cargo xtask live run caps grid --region ferroan
+      - name: Compare inventory and texture caps on the Ferroan region
+        run: cargo xtask live run assets grid --region ferroan
       - name: Check Ferrobot in standalone and mixed grids
         run: |
           set -euo pipefail

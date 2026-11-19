@@ -276,7 +276,7 @@ impl SimulationState {
             self.caps.clear();
         }
         let path = format!("/CAPS/{}0000/", fields.caps_path);
-        if self.caps.register(&path).is_err() {
+        if self.caps.register_agent(&path, fields.agent_id).is_err() {
             return Err("Could not create seed capability");
         }
         let generation = Uuid::new_v4();

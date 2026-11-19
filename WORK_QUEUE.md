@@ -49,7 +49,7 @@ The manager removes this section when the queue is running again.
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | DONE (#58) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10q | P0.10m: `cargo xtask live up grid --region ferroan`, a grid that stays up for the maintainer's Firestorm tests | DONE (#77) |
-| Q10r | P2.0d7: inventory and asset fetch capabilities on the Ferroan region | READY after Q10q |
+| Q10r | P2.0d7: inventory and asset fetch capabilities on the Ferroan region | IN PROGRESS (feat/inventory-caps) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
@@ -148,6 +148,10 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-19, Q10r: the row says the region reaches Robust's library over HTTP. At pin `40432e0`, `LibraryService` is an in-process tree loaded from `DefaultLibrary` Nini XML (`Libraries.xml` and the folder/item files it names), owner `11111111-1111-0000-0000-000100bba000`. `FetchLibDescendents2`, `FetchLib2` and library-owner folders in `FetchInventoryDescendents2` read that tree. There is no library HTTP service. Ferroan loads the same file and does not add an inventory or asset database. `ReadItemFromConfig` stores `GroupPermissions` from the key `basePermissions` (default 0), not `groupPermissions`; Ferroan does the same.
+- 2026-11-19, Q10r: a fetch with bad folders writes a second `<map>` after the folders map, still inside one `<llsd>`. Ferroan's LLSD reader keeps the first value, so the success path is one map and a bad-folder reply is one standard map containing both `folders` and `bad_folders`. The live comparison uses folders that exist.
+- 2026-11-19, Q10r: the pinned fetch handlers do not cap how many folders or items one request may ask for. Ferroan refuses a descendents request above 64 folders and an item request above 256 ids, and an asset body above 16 MiB. The shipped library has at most 57 items in one folder, and the bot asks for one folder. `FetchInventory2` registers only when `Cap_FetchInventory2` is exactly `localhost`; the module's external-URL branch is unreachable. `NewFileAgentInventory` is not one of the row's seed names, but `BunchOfCaps` always registers it and the existing texture and inventory scenarios require it and `GetTexture`. Texture, sound and animation uploads store through Robust. Mesh upload builds scene objects this region does not have, so that request returns the capability error state.
 
 - 2026-11-19, Q10q second local smoke: the bot reached the Ferroan region, then failed before logout because the new smoke harness supplied an empty region-log path; the existing scenario reads that log before enforcing its strict wire-reply policy. The smoke now supplies the actual home-region log, with `require_logout_reply` still enabled. Diagnostics are retained in `.scratch/q10q-second-smoke/`; this is a harness setup correction, not a C# failure or a loosened logout check.
 

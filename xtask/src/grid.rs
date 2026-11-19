@@ -462,9 +462,14 @@ impl Drop for Grid {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
-    if ferroan && !matches!(scenario, "login" | "caps" | "ferrobot") {
+    if ferroan
+        && !matches!(
+            scenario,
+            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets"
+        )
+    {
         return Err(
-            "the Ferroan grid region currently supports login, caps and ferrobot scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory and assets scenarios"
                 .to_string(),
         );
     }
@@ -601,7 +606,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &estate,
         RegionStart {
             ferroan,
-            login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
+            login_only: ferroan || matches!(scenario, "login" | "caps" | "ferrobot"),
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
@@ -698,6 +703,20 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             let line = runtime.block_on(login_probe::probe(&format!("http://{ADVERTISED}:{home_port}"), &root, ferroan))?;
             capture_missing_presence(SocketAddr::from((ROBUST_BIND, robust_private)), &root)?;
             report.lines.push('\n'); report.lines.push_str(&line);
+        }
+        if ferroan && matches!(scenario, "texture" | "inventory" | "assets") {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("could not start inventory probe runtime: {error}"))?;
+            let line = runtime.block_on(crate::inventory_probe::compare(
+                &format!("http://{ROBUST_BIND}:{robust_public}/"),
+                &estate,
+                &format!("http://{ADVERTISED}:{private_proxy}"),
+                &root,
+            ))?;
+            report.lines.push('\n');
+            report.lines.push_str(&line);
         }
         Ok(report)
     })

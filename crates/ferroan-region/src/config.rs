@@ -44,11 +44,11 @@
 //! region sizes and TLS listeners remain unsupported and are refused.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::control_plane::{ControlPlaneAccess, ControlPlaneError};
-use ferroan_client::{CircuitTiming, HandshakeConfig};
+use ferroan_client::{CapGrantSet, CircuitTiming, HandshakeConfig};
 use ferroan_config::{Config, RegionLoad};
 use uuid::Uuid;
 
@@ -96,6 +96,16 @@ pub struct RegionConfig {
     /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
     pub channel_version: String,
     pub region_secret: Uuid,
+    /// Robust xinventory base. Empty when this region has no inventory service.
+    pub inventory_server_uri: String,
+    /// Robust asset service base. Empty when this region has no asset service.
+    pub asset_server_uri: String,
+    /// True when `[LibraryService]` is present. The tree is loaded in-process.
+    pub library_enabled: bool,
+    pub library_name: String,
+    /// Resolved by [`Self::load`] against the region directory. [`Self::from_configs`] leaves this empty.
+    pub library_file: Option<PathBuf>,
+    pub cap_grants: CapGrantSet,
 }
 
 impl RegionConfig {
@@ -108,7 +118,9 @@ impl RegionConfig {
             .trim();
         let regions_path = load.config_dir.join(Path::new(directory));
         let regions = load_regions(&regions_path)?;
-        Self::from_configs(&resolved.config, &regions)
+        let mut region = Self::from_configs(&resolved.config, &regions)?;
+        region.library_file = library_file(&load.config_dir, &resolved.config)?;
+        Ok(region)
     }
 
     pub async fn resolve_control_plane(&mut self) -> Result<(), RegionConfigError> {
@@ -250,6 +262,9 @@ impl RegionConfig {
             ));
         }
         reject_unsupported_auth(server)?;
+        let inventory_server_uri = optional_uri(server, "InventoryService", "InventoryServerURI")?;
+        let asset_server_uri = optional_uri(server, "AssetService", "AssetServerURI")?;
+        let (library_enabled, library_name) = library_settings(server)?;
         let estate_owner = uuid(
             server,
             "Estates",
@@ -287,6 +302,12 @@ impl RegionConfig {
             login_connect_wait: login_connect_wait(server)?,
             channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
+            inventory_server_uri,
+            asset_server_uri,
+            library_enabled,
+            library_name,
+            library_file: None,
+            cap_grants: crate::caps_policy::cap_grants(server),
         })
     }
 
@@ -402,6 +423,8 @@ fn reject_unsupported_auth(config: &Config) -> Result<(), RegionConfigError> {
         "GridService",
         "PresenceService",
         "GridUserService",
+        "InventoryService",
+        "AssetService",
     ] {
         let setting = config
             .get(section, "AuthType")
@@ -541,6 +564,65 @@ fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, Re
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(value(section, key, "expected true or false")),
+    }
+}
+
+fn optional_uri(
+    config: &Config,
+    section: &str,
+    key: &'static str,
+) -> Result<String, RegionConfigError> {
+    match config
+        .get(section, key)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        None => Ok(String::new()),
+        Some(text) => {
+            check_uri(text).map_err(|reason| value(section, key, reason))?;
+            Ok(text.to_owned())
+        }
+    }
+}
+
+fn library_settings(config: &Config) -> Result<(bool, String), RegionConfigError> {
+    if !config.section_names().any(|name| name == "LibraryService") {
+        return Ok((false, String::new()));
+    }
+    let name = config
+        .get("LibraryService", "LibraryName")
+        .unwrap_or("OpenSim Library")
+        .trim();
+    if name.len() > 256 {
+        return Err(value("LibraryService", "LibraryName", "exceeds 256 bytes"));
+    }
+    Ok((true, name.to_owned()))
+}
+
+/// `DefaultLibrary` may be absolute. A relative path is joined to the region directory.
+fn library_file(config_dir: &Path, config: &Config) -> Result<Option<PathBuf>, RegionConfigError> {
+    if !config.section_names().any(|name| name == "LibraryService") {
+        return Ok(None);
+    }
+    let Some(raw) = config
+        .get("LibraryService", "DefaultLibrary")
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
+        return Ok(None);
+    };
+    if raw.len() > 4096 {
+        return Err(value(
+            "LibraryService",
+            "DefaultLibrary",
+            "exceeds 4096 bytes",
+        ));
+    }
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        Ok(Some(path.to_path_buf()))
+    } else {
+        Ok(Some(config_dir.join(path)))
     }
 }
 

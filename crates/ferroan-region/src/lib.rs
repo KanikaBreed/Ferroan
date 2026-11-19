@@ -3,7 +3,12 @@
 
 //! A region registered with C# Robust; login remains a grid service.
 
+pub mod caps_policy;
 pub mod config;
 pub mod control_plane;
+pub mod fetch_caps;
 pub mod grid;
+pub mod inventory;
+pub mod library;
+pub mod remote_asset;
 pub mod simulation;
