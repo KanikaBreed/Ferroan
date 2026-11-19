@@ -1,0 +1,20 @@
+{
+  "caller": "grid-deregister",
+  "request": {
+    "method": "POST",
+    "path": "/grid",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "REGIONID=00000000-0000-4000-8000-000000000002\u0026METHOD=deregister"
+  },
+  "injected_response": {
+    "status": 302,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003CResult\u003ESuccess\u003C/Result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "bool",
+    "value": true,
+    "accepted": true
+  }
+}

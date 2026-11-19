@@ -1,0 +1,25 @@
+{
+  "caller": "presence-getagents",
+  "request": {
+    "method": "POST",
+    "path": "/presence",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=00000000-0000-4000-8000-000000000001"
+  },
+  "injected_response": {
+    "status": 201,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cpresence0 type=\u0022List\u0022\u003E\u003CUserID\u003E00000000-0000-4000-8000-000000000001\u003C/UserID\u003E\u003CRegionID\u003E00000000-0000-4000-8000-000000000002\u003C/RegionID\u003E\u003C/presence0\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "presence-array",
+    "value": [
+      {
+        "user_id": "00000000-0000-4000-8000-000000000001",
+        "region_id": "00000000-0000-4000-8000-000000000002"
+      }
+    ],
+    "accepted": true
+  }
+}

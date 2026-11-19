@@ -19,8 +19,10 @@
 //! reference checkouts.
 //!
 //! `http` builds the C# ServerUtils oracle and generates or verifies the
-//! query-string and Robust XML fixtures. It needs the .NET SDK and the
-//! reference checkouts. The Linux live workflow runs `verify`.
+//! query-string and Robust XML fixtures. `http status-verify` runs the pinned
+//! Grid, Presence and GridUser connectors against the status fixtures. Both
+//! need the .NET SDK and the reference checkouts. The Linux live workflow
+//! runs `verify` and `status-verify`.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -73,6 +75,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask config verify [directory]
        cargo xtask http generate [directory]
        cargo xtask http verify [directory]
+       cargo xtask http status-generate
+       cargo xtask http status-verify
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask pin3 generate|verify
@@ -141,6 +145,8 @@ fn main() -> ExitCode {
         ["http", "generate", directory] => http_oracle::generate(Some(PathBuf::from(directory))),
         ["http", "verify"] => http_oracle::verify(None),
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
+        ["http", "status-generate"] => http_oracle::status_generate(),
+        ["http", "status-verify"] => http_oracle::status_verify(),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),

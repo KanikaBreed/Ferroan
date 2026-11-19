@@ -1,0 +1,20 @@
+{
+  "caller": "presence-getagent",
+  "request": {
+    "method": "POST",
+    "path": "/presence",
+    "content_type": "application/x-www-form-urlencoded",
+    "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000004"
+  },
+  "injected_response": {
+    "status": 302,
+    "content_type": "application/xml",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CUserID\u003E00000000-0000-4000-8000-000000000001\u003C/UserID\u003E\u003CRegionID\u003E00000000-0000-4000-8000-000000000002\u003C/RegionID\u003E\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "location": null
+  },
+  "outcome": {
+    "kind": "presence",
+    "value": null,
+    "accepted": false
+  }
+}

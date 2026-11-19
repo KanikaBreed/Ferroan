@@ -26,9 +26,11 @@ static class Program
 
     static int Main(string[] args)
     {
-        if (args.Length != 4 || (args[0] != "generate" && args[0] != "verify") || args[2] != "--revision")
+        if (args.Length != 4
+            || args[2] != "--revision"
+            || (args[0] != "generate" && args[0] != "verify" && args[0] != "status-generate" && args[0] != "status-verify"))
         {
-            Console.Error.WriteLine("usage: HttpOracle generate|verify <directory> --revision <40 hex>");
+            Console.Error.WriteLine("usage: HttpOracle generate|verify|status-generate|status-verify <directory> --revision <40 hex>");
             return 2;
         }
         string directory = Path.GetFullPath(args[1]);
@@ -40,6 +42,11 @@ static class Program
         }
         try
         {
+            if (args[0].StartsWith("status-", StringComparison.Ordinal))
+            {
+                StatusCases.Run(directory, revision, args[0] == "status-generate");
+                return 0;
+            }
             if (args[0] == "generate")
                 Generate(directory, revision);
             else

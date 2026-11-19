@@ -27,7 +27,7 @@ The reference revisions used for porting are listed in [docs/REFERENCES.md](docs
 
 `tools/config-oracle` calls the NuGet package `nini-core` 0.9.2.16 (X11, copyright Brent R. Matzelle, maintained by Sjofn LLC). `ferroan-config` reimplements that reader. Nini's source is not copied into this repository.
 
-`crates/ferroan-http/src/query.rs` and `src/xml.rs` are ported from Tranquillity `Source/OpenSim.Server.Base/ServerUtils.cs` at `713857f10b8e91a639a967d4354a4682b080793c` (BSD-3-Clause). The files keep that notice. Percent-encoding and XML name escapes follow `HttpUtility` and `XmlConvert` as those methods call them; that .NET source is not copied. The HTTP server, client and LLSD framing are new Ferroan code.
+`crates/ferroan-http/src/query.rs` and `src/xml.rs` are ported from Tranquillity `Source/OpenSim.Server.Base/ServerUtils.cs` at `713857f10b8e91a639a967d4354a4682b080793c` (BSD-3-Clause). The files keep that notice. Percent-encoding and XML name escapes follow `HttpUtility` and `XmlConvert` as those methods call them; that .NET source is not copied. The HTTP server, client and LLSD framing are new Ferroan code. The form client's per-call status policy follows `Source/OpenSim.Framework/WebUtil.cs` `SynchronousRestFormsRequester.MakeRequest` and `MakePostRequest` at `858321883f5487a5d192d36ea9d7b90fa468310c` (BSD-3-Clause). That file is not copied.
 
 `crates/ferroan-services` and `crates/ferroan-robust` follow Tranquillity's asset handlers, `AssetService` and `SQLiteAssetData` at `713857f10b8e91a639a967d4354a4682b080793c` (BSD-3-Clause). The C# sources are not copied. The XML bytes are what `XmlSerializer` emits; that .NET source is not copied. `tools/asset-oracle` calls those types and is new Ferroan code.
 
