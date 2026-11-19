@@ -53,6 +53,8 @@ Q10f URI normalization and failed-status handling additionally follow `Source/Op
 
 Q10g additionally follows the root-transition ordering in `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs` (`MakeRootAgent`, `CompleteMovement`) and the `DoOnMakeRootAgent` methods in the Presence/GridUser detectors above, with `PresenceServicesConnector.ReportAgent` and `GridUserServicesConnector.SetLastPosition`, at Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`. The affected files retain their original BSD notices. The bot observer and online-state probes are original Ferroan test code.
 
+Q10 runs Ferrobot at the revision in [REFERENCES.md](docs/REFERENCES.md) as a separate test executable. It is not vendored, copied into Ferroan, or linked by a Ferroan crate. Its build and runtime dependencies remain in that external executable. The harness build, signed API client, process orchestration and capture relay are new Ferroan code. The companion bot's IM construction in `xtask/src/ferrobot.rs` follows libopenmetaverse `OpenMetaverse/AgentManager.cs` (`InstantMessage`) at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`, retaining its BSD notice and source attribution.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

@@ -2,11 +2,13 @@
 
 The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. It is Linux-only. Run state, the scratch Tranquillity tree and the generated password stay under `.scratch/live/`. The password is not printed. The reference checkout is only read. Set `FERROAN_REF` when that checkout is not `~/Git/reference`.
 
-Pin3 uses the maintainer's fork at `40432e0f83d3802434f898a4e28687bd977d5cf5`, tag `ferroan-pin3` on `dev-build`; these fixes are not yet on `develop` ([D21](DECISIONS.md)). CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). During a pin move, use clean reference clones under `.scratch/reference` and set `FERROAN_REF` to that directory. Leave the shared reference checkout on main's pin until the pin PR merges. Builds use separate writable scratch copies.
+Pin3 uses the maintainer's fork at `40432e0f83d3802434f898a4e28687bd977d5cf5`, tag `ferroan-pin3` on `dev-build`; these fixes are not yet on `develop` ([D21](DECISIONS.md)). Pin3 merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56), and the clean shared reference checkout is now at this pin. CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). Builds use separate writable scratch copies; `FERROAN_REF` selects clean alternate reference checkouts when needed.
 
 The fixed C# sends `LogoutReply` immediately. The strict login checks still require that packet and a fresh arrival on the current circuit. The Rust region also follows pending ViaLogin connections, clears stranded GridUser users at startup, and attempts independent close notifications. Controlled C# observations for those cases and trusted-host parsing are regenerated with `cargo xtask pin3 generate` and checked with `cargo xtask pin3 verify`; see [the fixture provenance](../fixtures/pin3/README.md).
 
 `cargo xtask live build` clones the pinned revision, applies the capture patch in [tools/live/README.md](../tools/live/README.md), and publishes the region server and a self-contained GridServer. `cargo xtask live up` starts the region on `127.0.0.1` and prints the login URL. Add `--assets ferroan` to start `ferroan-robust` on a seeded asset store and point the region at it. `cargo xtask live down` stops the region and its asset process. `cargo xtask live run <scenario>|all` builds if needed, runs the scenarios, records UDP and HTTP, and runs `check`, then `redact`, then `replay`. A failing check fails the run. `cargo xtask live run <scenario>|all|neighbour grid` starts GridServer and two neighbouring regions instead of one standalone region. `cargo xtask live assets` runs texture and inventory against the C# asset service and against `ferroan-robust`, then compares the normalized HTTP. Plain `live up` uses the in-process asset service. Neither `live up` mode records a capture.
+
+`live build` also builds the pinned Ferrobot with `cargo build --locked`. A clean checkout at `FERROAN_REF/Ferrobot` supplies a scratch clone when its revision matches [REFERENCES.md](REFERENCES.md); otherwise the harness clones the public repository at that pin. Source and build output remain in `.scratch/ferrobot-src` and `.scratch/ferrobot-target`. An existing scratch checkout with changes or a different revision is refused and preserved for inspection. No reference checkout is built in. Ferrobot is a separate executable, with no vendored code or dependency from a Ferroan crate.
 
 ## Scenarios
 
@@ -30,6 +32,32 @@ cleanup, so it alone cannot authorize the next scenario's login.
 | inventory | `inventory: pass`. The skeleton and a folder fetch include the uploaded item |
 
 `assets` is texture and inventory, used by `cargo xtask live assets`.
+
+## Ferrobot
+
+Run the dedicated second-client scenario separately from `all`:
+
+```sh
+cargo xtask live run ferrobot
+cargo xtask live run ferrobot grid
+cargo xtask live run ferrobot grid --region ferroan
+```
+
+The harness starts Ferrobot as its test account. The generated password and `FERRO_SHARED_SECRET` stay in a private `ferrobot/environment.json` under the run's `.scratch/` directory. `FERRO_HTTP_BIND=127.0.0.1` and `FERRO_HTTP_PORT=0` give the API a free loopback port. Relog and IM commands are disabled. Requests to `/api/Run` follow the pinned client's API: form fields `commandName`, `args` joined with `~#~`, `unixtime`, and a SHA-1 signature over command, arguments, timestamp and shared secret. API responses and logs are bounded; diagnostics do not print generated credentials. The controller records Ferrobot's process identity so `live down` can recover an interrupted run.
+
+Login requires the signed `SimName` response and captured circuit, handshake/reply, movement request and fresh reliable `AgentMovementComplete` for the test account. The client then stays connected for 120 seconds before the companion bot logs in. The check requires continuing matching ping replies and repeated event polls with captured valid responses: held empty 502 replies or LLSD event batches. Merely seeing poll requests is insufficient. C# runs then exchange synthetic local chat in both directions with `ferroan-bot` and deliver an IM to Ferrobot. All three variants require a matching captured `LogoutRequest` and subsequent `LogoutReply` after SIGTERM; server log lines cannot satisfy this check.
+
+| Check | C# standalone and grid | Ferroan region |
+| --- | --- | --- |
+| Arrival | `ferrobot login: pass` | Same |
+| Connected session | `ferrobot connected: pass (120 s; pings and event-queue polls)` | Same |
+| Local chat | `ferrobot chat receive: pass`, `ferrobot chat send: pass` | `ferrobot local chat: pending (P2.0g)` |
+| IM | `ferrobot IM: pass` | `ferrobot IM: pending (region IM support)` |
+| SIGTERM logout | `ferrobot logout: pass (SIGTERM; LogoutReply)` | Same |
+
+These are required report lines, not a claim that an unrun validation passed; [TASKS.md](../TASKS.md) records completed local and CI evidence. Firestorm validation remains separate.
+
+Ferrobot's region HTTP passes through capture proxies; C# UDP uses the existing capture patch. The Rust-region variant uses a bounded loopback UDP relay for its single test circuit. Captures must pass `check`, `redact` and `replay` without filtering unsupported packets. The relay records original datagrams before forwarding, and the private raw capture stays in scratch. API control requests are not part of region-traffic fixtures. Ferrobot bugs must be recorded and reported upstream with the maintainer's agreement, never patched or silently worked around here.
 
 ## Keeping the Ferroan asset service up
 
@@ -90,22 +118,22 @@ Add the name to `NAMES` and the `selection` match in [tools/bot/src/scenario.rs]
 
 ## What CI runs
 
-[`.github/workflows/live.yml`](../.github/workflows/live.yml) is the Linux job. It installs .NET SDK 10.0.114 with `actions/setup-dotnet` pinned by commit, installs `sqlite3`, and clones the pinned Tranquillity and libopenmetaverse checkouts into `FERROAN_REF`. It restores from nuget.org only and needs no grid credentials. It verifies all five C# oracles, then builds and runs standalone/grid C# scenarios, strict Rust-region login, C# and Rust CAPS probes, and the asset comparison. It also starts `live up --assets ferroan` and checks it with `live run assets --running`. A final `live down` step runs even if an earlier step fails. The Tranquillity publish is cached by the pin, the capture patch and the harness source. The job runs nightly, on `workflow_dispatch`, and on every pull request (a required check on `main`). The ordinary CI job does not start Tranquillity.
+[`.github/workflows/live.yml`](../.github/workflows/live.yml) is the Linux job. It installs .NET SDK 10.0.114 with `actions/setup-dotnet` pinned by commit, installs `sqlite3`, and clones the pinned Tranquillity, libopenmetaverse and Ferrobot checkouts into `FERROAN_REF`. It restores from nuget.org only and needs no grid credentials. It verifies all six C# oracles, including the Pin3 lifecycle/trust observations, then builds and runs standalone/grid C# scenarios, strict Rust-region login, C# and Rust CAPS probes, all three Ferrobot variants, and the asset comparison. It also starts `live up --assets ferroan` and checks it with `live run assets --running`. A final `live down` step runs even if an earlier step fails. The Tranquillity publish is cached by the pin, the capture patch and the harness source. The job runs nightly, on `workflow_dispatch`, and on every pull request (a required check on `main`). The ordinary CI job does not start Tranquillity.
 
-Ferrobot's P0.10h integration remains blocked and is not present in these commands or workflows. Its pin and intended role are recorded in [REFERENCES.md](REFERENCES.md) and [D17](DECISIONS.md); the current blocker and candidate evidence are in [WORK_QUEUE.md](../WORK_QUEUE.md).
+The Ferrobot revision and role are recorded in [REFERENCES.md](REFERENCES.md) and [D17](DECISIONS.md). Historical blockers and their prerequisite fixes remain in [WORK_QUEUE.md](../WORK_QUEUE.md); current acceptance evidence belongs in P0.10h's task row.
 
 ## Manual recipe (Linux)
 
-The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The pin is now `858321883f5487a5d192d36ea9d7b90fa468310c`, which contains both fixes. The harness sets `bind_ip_address` and starts the region once.
+The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The commands below now select Pin3 `40432e0f83d3802434f898a4e28687bd977d5cf5` from the maintainer's fork; the historical viewer observations are not a claim of manual validation at this newer pin. The harness sets `bind_ip_address` and starts the region once.
 
-All paths are scratch paths. Never build in `~/Git/reference`.
+Start from a Ferroan worktree root; the commands create a separate scratch clone. Never build in `~/Git/reference`.
 
 1. Clone and build the pinned revision. The NuGet restore uses nuget.org only and needs no credentials: Tranquillity dropped its GitHub Packages feed in `a4ebd66006` (29 September 2026). Its `Docs/BUILDING.md` still describes the old feed and its `GITHUB_TOKEN`; ignore that part.
 
    ```sh
-   W=~/Git/work/ferroan/tranquillity-live
-   git clone --no-checkout ~/Git/reference/OpenSim-Tranquillity "$W"
-   git -C "$W" checkout --detach 858321883f5487a5d192d36ea9d7b90fa468310c
+   W="$PWD/.scratch/tranquillity-live"
+   git clone --no-checkout https://github.com/KanikaBreed/OpenSim-Tranquillity.git "$W"
+   git -C "$W" checkout --detach 40432e0f83d3802434f898a4e28687bd977d5cf5
    cd "$W"
    dotnet publish Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj -c Release -r linux-x64
    P="$W/Source/OpenSim.Server.RegionServer/bin/Release/net10.0/linux-x64/publish"
