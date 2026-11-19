@@ -46,14 +46,18 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
-| Q11 | P0.11: container images and the example compose grid | READY after Q10s |
+| Q11 | P0.11: container images and the example compose grid | READY after Q10s5 |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | DONE (#90) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | DONE (#81) |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | DONE (#91) |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | DONE (#92) |
-| Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | BLOCKED (too big; split proposed below) |
+| Q10s1 | P0.10n1: pin `rust-toolchain.toml` to the exact stable CI's runners use | READY after Q10k |
+| Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | READY after Q10s1 |
+| Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | READY after Q10s2 |
+| Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | READY after Q10s3 |
+| Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
@@ -163,6 +167,8 @@ Proposed split for the manager, in this order. The coder has not added these row
 5. **P0.10n5**, after P0.10l. Record twice. One C# scenario runs twice. The report classifies values that change (each wildcard has a recorded reason), order, and line count. Order and count differences fail. The report runs in the live CI job.
 
 Q11 still waits for Q10s. Q14's `after` is Q10k, which is DONE, and this blocker does not take it.
+
+Q10s split (manager, 19 November 2026): the coder's split above is accepted as written. Q10s is replaced by Q10s1 to Q10s5, in that order, and Q11 now waits for Q10s5. For Q10s1, read `rustc --version` and `cargo clippy --version` from a runner in a CI step before choosing the pin, and record the output in the row.
 
 ## Found while working
 
