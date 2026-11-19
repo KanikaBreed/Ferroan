@@ -54,7 +54,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | DONE (#91) |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | DONE (#92) |
 | Q10s1 | P0.10n1: pin `rust-toolchain.toml` to the exact stable CI's runners use | DONE (#95) |
-| Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | IN PROGRESS (`feat/panic-lints`) |
+| Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | DONE (#96) |
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | READY after Q10s2 |
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | READY after Q10s3 |
 | Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |
@@ -171,6 +171,8 @@ Q11 still waits for Q10s. Q14's `after` is Q10k, which is DONE, and this blocker
 Q10s split (manager, 19 November 2026): the coder's split above is accepted as written. Q10s is replaced by Q10s1 to Q10s5, in that order, and Q11 now waits for Q10s5. For Q10s1, read `rustc --version` and `cargo clippy --version` from a runner in a CI step before choosing the pin, and record the output in the row.
 
 Q10s1 (19 November 2026, `feat/toolchain-pin`): [run 44630811551](https://github.com/KanikaBreed/Ferroan/actions/runs/44630811551) printed the versions while `channel` was still `stable`. Linux and Windows: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `clippy 0.1.99 (58cf8f9c35 2026-10-13)`. macOS: `rustc 1.100.0 (0ef1bc386 2026-11-09)`, `clippy 0.1.100 (0ef1bc3860 2026-11-09)`. The pin is `1.100.0`, the newest line and the 1.100 patch this split named. The file makes Linux and Windows install it so all three checks use one compiler.
+
+Q10s2 (19 November 2026, `feat/panic-lints`): workspace Clippy denies `unwrap_used`, `expect_used` and `panic` outside tests. Local `cargo xtask check` passed on the pinned 1.100.0 compiler. PR #96.
 
 ## Found while working
 
