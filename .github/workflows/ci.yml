@@ -28,6 +28,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Rust
-        run: rustup show
+        run: |
+          rustup show
+          rustc --version
+          cargo clippy --version
       - name: Check documentation and Rust workspace
         run: cargo xtask check
