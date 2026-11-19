@@ -43,7 +43,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
-| Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | BLOCKED (C# Grid accepts failed-status success XML; scope decision needed) |
+| Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | READY (scope revised, see below) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10h (Q11 to Q13 wait for Q10) |
@@ -96,6 +96,8 @@ Q10a and Q10b were added on 18 November 2026 from the Q10 blocker and "Found whi
 Q10g and Q10h (added 18 November 2026, from Q10f's Found while working) sit below Q11 in the table, but come first: Q11 depends on P0.10h, which is BLOCKED, so Q11 is not eligible until Q10 resumes. After Q10h, the next eligible items are Q14 onward (P2.0e to P2.0j), which do not depend on Q10.
 
 When Q10 resumes from #41: Q10f's PR uses TB5 for the C# trusted-host parsing bug. #41's logout race takes the next free TB number when its conflict with `main` is resolved.
+
+Q10h READY again (manager, 19 November 2026): the coder's audit was right, and the first version of the row overstated C#. The row now takes the first proposed fix: keep both C# helper policies, with a checked status for Presence and GridUser and an unchecked one for Grid register and deregister, and capture both. Grid's missing check is TB10. The maintainer may fix it upstream, and Ferroan follows through a pin move. No compatibility change is authorized here. Resume from `1716151`.
 
 Q10h BLOCKED (19 November 2026, `docs/http-form-status-blocked`): the caller audit disproves the row's universal failed-status rejection premise. At `858321883f5487a5d192d36ea9d7b90fa468310c`, `Source/OpenSim.Framework/WebUtil.cs::SynchronousRestFormsRequester.MakeRequest` calls `EnsureSuccessStatusCode`, but the separate `MakePostRequest` does not. `GridServicesConnector.RegisterRegion` and `DeregisterRegion` use `MakePostRequest`; the Presence and GridUser connectors use `MakeRequest`. A local oracle executed those unmodified C# connectors against controlled loopback HTTP responses: nine operations times HTTP 200, 201, 302 without Location, and 500, with valid success XML. Both Grid operations accept all four statuses (registration returns an empty success string; deregistration returns true). Presence and GridUser ignore the success XML on 302/500, returning false, null or an empty list according to the method. These are injected fault responses, not a claim that Robust normally sends success XML with HTTP 500. TB10 records the missing C# check.
 
