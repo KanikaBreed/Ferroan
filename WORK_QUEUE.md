@@ -144,6 +144,8 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 
 - 2026-11-18, Q10f: shared `ferroan_http::post_form` parses XML without checking HTTP success, whereas pinned `WebUtil.SynchronousRestFormsRequester` calls `EnsureSuccessStatusCode`. The new region Presence/GridUser clients and their offline-state probe check status locally, so a 500 response containing plausible XML cannot authorize admission or prove logout. Proposed separate HTTP follow-up: audit shared-client callers, capture failed-status behavior, and add status validation there. Existing unrelated callers were not changed.
 
+- 2026-11-18, Q10f detector review: the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
+
 ## Waiting on the maintainer
 
 - Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
