@@ -310,7 +310,7 @@ fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
         path: directory.display().to_string(),
         message: error.to_string(),
     };
-    let entries = std::fs::read_dir(directory).map_err(&failure)?;
+    let entries = std::fs::read_dir(directory).map_err(failure)?;
     let mut paths = Vec::new();
     for (index, entry) in entries.enumerate() {
         if index >= MAX_DIRECTORY_ENTRIES {
@@ -319,8 +319,8 @@ fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
             }
             .into());
         }
-        let entry = entry.map_err(&failure)?;
-        if entry.file_type().map_err(&failure)?.is_dir() {
+        let entry = entry.map_err(failure)?;
+        if entry.file_type().map_err(failure)?.is_dir() {
             continue;
         }
         let path = entry.path();
@@ -352,7 +352,7 @@ fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
     let mut selected = None;
     let mut total_bytes = 0u64;
     for path in paths {
-        total_bytes = total_bytes.saturating_add(std::fs::metadata(&path).map_err(&failure)?.len());
+        total_bytes = total_bytes.saturating_add(std::fs::metadata(&path).map_err(failure)?.len());
         if total_bytes > MAX_TOTAL_BYTES {
             return Err(ferroan_config::ConfigError::Limit {
                 what: "region INI total bytes",
