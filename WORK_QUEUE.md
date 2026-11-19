@@ -63,7 +63,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
 | Q24 | P1.1: user accounts | DONE (#83) |
-| Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | READY after Q24 |
+| Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | IN PROGRESS on feat/grid-rust-accounts |
 | Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
 | Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
 | Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |

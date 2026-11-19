@@ -385,31 +385,55 @@ pub(crate) fn seed_library_database() -> Result<PathBuf, String> {
     seed_database()
 }
 
-/// `ferroan-robust` on `127.0.0.1`, serving the copied SQLite asset store.
+/// One `ferroan-robust` for the grid `--rust` services named here.
+///
+/// An asset database is the seeded library store. An account database is a
+/// copy of the UserAccount fixture, not Robust's file. Asset-only keeps the
+/// ini the harness used before accounts were wired.
 #[cfg(target_os = "linux")]
-pub(crate) fn start_sqlite_asset_service(
-    database: &Path,
+pub(crate) fn start_grid_services(
+    asset_database: Option<&Path>,
+    account_database: Option<&Path>,
     port: u16,
     log: &Path,
     ini_path: &Path,
 ) -> Result<Owned, String> {
+    if asset_database.is_none() && account_database.is_none() {
+        return Err("ferroan-robust needs an asset or account database".to_string());
+    }
     let binary = live::build_binary("ferroan-robust")?;
     let empty = ini_path
         .parent()
         .unwrap_or(Path::new("."))
-        .join("assets-empty");
+        .join("rust-empty");
     fs::create_dir_all(&empty)
         .map_err(|error| format!("could not create {}: {error}", empty.display()))?;
-    let db = database.display();
-    let ini = format!(
-        "[Network]\n    port = {port}\n    bind_ip_address = \"127.0.0.1\"\n\n[AssetService]\n    \
-         LocalServiceModule = \"OpenSim.Services.AssetService.dll:AssetService\"\n    \
-         StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
-         ConnectionString = \"Data Source={db};Version=3;\"\n"
-    );
+    let mut ini = format!("[Network]\n    port = {port}\n    bind_ip_address = \"127.0.0.1\"\n\n");
+    if let Some(database) = asset_database {
+        let db = database.display();
+        ini.push_str(&format!(
+            "[AssetService]\n    \
+             LocalServiceModule = \"OpenSim.Services.AssetService.dll:AssetService\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"Data Source={db};Version=3;\"\n"
+        ));
+    }
+    if let Some(database) = account_database {
+        if asset_database.is_some() {
+            ini.push('\n');
+        }
+        let db = database.display();
+        ini.push_str(&format!(
+            "[UserAccountService]\n    \
+             LocalServiceModule = \"OpenSim.Services.UserAccountService.dll:UserAccountService\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"Data Source={db};Version=3;\"\n    \
+             AllowCreateUser = true\n"
+        ));
+    }
     live::write_secret(ini_path, &ini)?;
-    let ini_arg = ini_path.to_str().ok_or("asset ini path is not utf-8")?;
-    let empty_arg = empty.to_str().ok_or("asset config path is not utf-8")?;
+    let ini_arg = ini_path.to_str().ok_or("service ini path is not utf-8")?;
+    let empty_arg = empty.to_str().ok_or("service config path is not utf-8")?;
     let mut server = spawn_owned(
         &binary,
         &["--inimaster", ini_arg, "--inidirectory", empty_arg],

@@ -51,19 +51,23 @@ impl RunSpec {
     pub(crate) fn rust_assets(&self) -> bool {
         self.rust_services.iter().any(|service| service == "assets")
     }
+
+    /// True when this grid run serves user accounts from `ferroan-robust`.
+    ///
+    /// The caller lives in the Linux harness. Tests compile it too.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn rust_accounts(&self) -> bool {
+        self.rust_services
+            .iter()
+            .any(|service| service == "accounts")
+    }
 }
 
 pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> {
     for service in services {
-        if service == "accounts" {
-            return Err(
-                "accounts is compared with live compare accounts; grid --rust accounts is not wired because Robust login uses the in-process user account service"
-                    .to_string(),
-            );
-        }
-        if service != "assets" {
+        if service != "assets" && service != "accounts" {
             return Err(format!(
-                "{service} is not served by this harness yet; P1.0 wires assets"
+                "{service} is not served by this harness yet; grid --rust wires assets and accounts"
             ));
         }
     }
@@ -418,6 +422,18 @@ mod tests {
         assert_eq!(spec.rust_services, vec!["assets".to_string()]);
         assert_eq!(spec.db, Database::Sqlite);
         assert!(spec.rust_assets());
+        assert!(!spec.rust_accounts());
+    }
+
+    #[test]
+    fn grid_rust_accounts_and_the_pair_parse() {
+        let accounts = run(&["run", "login", "grid", "--rust", "accounts"]);
+        assert!(accounts.rust_accounts());
+        assert!(!accounts.rust_assets());
+        let both = run(&["run", "login", "grid", "--rust", "assets,accounts"]);
+        assert!(both.rust_assets());
+        assert!(both.rust_accounts());
+        assert!(require_known_services(&both.rust_services).is_ok());
     }
 
     #[test]
@@ -451,9 +467,7 @@ mod tests {
             }
             other => panic!("expected compare, got {other:?}"),
         }
-        let error = require_known_services(&["accounts".into()]).unwrap_err();
-        assert!(error.contains("live compare accounts"));
-        assert!(error.contains("in-process"));
+        assert!(require_known_services(&["accounts".into()]).is_ok());
     }
 
     #[test]
