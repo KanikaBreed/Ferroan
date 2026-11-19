@@ -35,7 +35,8 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
-| Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (C# logout fix coming; see below) |
+| Q10p | Pin3: move the Tranquillity pin to bring in the C# login, logout and crossing fixes | BLOCKED (waits for Tranquillity PRs #418, #419 and #428 to merge) |
+| Q10 | P0.10h: Ferrobot as the second test client in the live harness | BLOCKED (after Q10p) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
@@ -45,7 +46,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | READY after Q10g |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
-| Q14 | P2.0e: terrain from the C# region store | READY after Q13 |
+| Q14 | P2.0e: terrain from the C# region store | READY after Q10h (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
@@ -95,6 +96,8 @@ Q10a and Q10b were added on 18 November 2026 from the Q10 blocker and "Found whi
 Q10g and Q10h (added 18 November 2026, from Q10f's Found while working) sit below Q11 in the table, but come first: Q11 depends on P0.10h, which is BLOCKED, so Q11 is not eligible until Q10 resumes. After Q10h, the next eligible items are Q14 onward (P2.0e to P2.0j), which do not depend on Q10.
 
 When Q10 resumes from #41: Q10f's PR uses TB5 for the C# trusted-host parsing bug. #41's logout race takes the next free TB number when its conflict with `main` is resolved.
+
+Q10p and Q10 (manager, 19 November 2026): the maintainer's C# fix for the lost `LogoutReply` is [Tranquillity PR #428](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/428), stacked on #419 and #418. It also fixes users left online and simultaneous logins (TB6 to TB9). Q10p (Pin3) stays BLOCKED until all three are merged into `develop`, and the manager then sets it READY. Q10 follows it and resumes from commit `85ee0f1`, which is in the history of `feat/ferrobot-harness-complete`. #41 was closed, and its TB5 logout entry is now TB6. The strict logout-reply check stays as it is.
 
 Q10 BLOCKED by the manager (18 November 2026): the live CI failure on #41 (C# standalone gets no `LogoutReply`; runs 44405800874 and 44408547716) is a confirmed Tranquillity login issue, and the maintainer has a C# fix coming. Do not investigate it further, and do not retry #41's live job. Leave #41 open as it is and continue with Q10d. When the fix is on Tranquillity `develop`, the manager queues a pin move. After that, Q10 resumes from #41 with the strict logout-reply check unchanged. When resuming, merge `main` into the branch and keep `main`'s versions of the Q10 and P0.10h status lines.
 
