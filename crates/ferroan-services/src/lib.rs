@@ -9,6 +9,8 @@
 //! are compared with `fixtures/asset`. Account HTTP is compared with
 //! `cargo xtask live compare accounts`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod account;
 pub mod alias;
 pub mod asset;

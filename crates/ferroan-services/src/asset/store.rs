@@ -41,6 +41,8 @@ impl AssetStore {
     }
 
     fn pool(&self) -> &sqlx::sqlite::SqlitePool {
+        // INFALLIBLE: new() returns StoreError::NotSqlite when sqlite() is None.
+        #[allow(clippy::expect_used)]
         self.pool.sqlite().expect("checked in new")
     }
 

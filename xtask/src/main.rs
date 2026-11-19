@@ -32,6 +32,8 @@
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
 //! The live CI job runs standalone and grid mode.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod accounts;
 mod arrival_fixtures;
 mod asset_oracle;

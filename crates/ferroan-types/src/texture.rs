@@ -52,7 +52,8 @@
 use uuid::Uuid;
 
 use crate::wire::{
-    self, Color4, WireError, read_color4, read_f32, read_i16, read_uuid, write_color4, write_uuid,
+    self, Color4, WireError, layout_ok, read_color4, read_f32, read_i16, read_uuid, write_color4,
+    write_uuid,
 };
 
 /// `TextureEntry.MAX_FACES`.
@@ -248,9 +249,16 @@ impl TextureFace {
         }
     }
 
+    /// An unset attribute bit means this face inherits from its parent.
+    fn inherit(parent: Option<&TextureFace>) -> &TextureFace {
+        // INFALLIBLE: an unset attribute bit means this face inherits from its parent.
+        #[allow(clippy::expect_used)]
+        parent.expect("texture face default")
+    }
+
     fn set_texture_id(&mut self, value: Uuid, parent: Option<&TextureFace>) {
         let current = if self.attributes & TEXTURE_ID == 0 {
-            parent.expect("texture face default").texture_id
+            Self::inherit(parent).texture_id
         } else {
             self.texture_id
         };
@@ -262,7 +270,7 @@ impl TextureFace {
 
     fn set_rgba(&mut self, value: Color4, parent: Option<&TextureFace>) {
         let current = if self.attributes & RGBA == 0 {
-            parent.expect("texture face default").rgba
+            Self::inherit(parent).rgba
         } else {
             self.rgba
         };
@@ -274,7 +282,7 @@ impl TextureFace {
 
     fn set_repeat_u(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & REPEAT_U == 0 {
-            parent.expect("texture face default").repeat_u
+            Self::inherit(parent).repeat_u
         } else {
             self.repeat_u
         };
@@ -286,7 +294,7 @@ impl TextureFace {
 
     fn set_repeat_v(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & REPEAT_V == 0 {
-            parent.expect("texture face default").repeat_v
+            Self::inherit(parent).repeat_v
         } else {
             self.repeat_v
         };
@@ -298,7 +306,7 @@ impl TextureFace {
 
     fn set_offset_u(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & OFFSET_U == 0 {
-            parent.expect("texture face default").offset_u
+            Self::inherit(parent).offset_u
         } else {
             self.offset_u
         };
@@ -311,7 +319,7 @@ impl TextureFace {
 
     fn set_offset_v(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & OFFSET_V == 0 {
-            parent.expect("texture face default").offset_v
+            Self::inherit(parent).offset_v
         } else {
             self.offset_v
         };
@@ -324,7 +332,7 @@ impl TextureFace {
 
     fn set_rotation(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & ROTATION == 0 {
-            parent.expect("texture face default").rotation
+            Self::inherit(parent).rotation
         } else {
             self.rotation
         };
@@ -337,7 +345,7 @@ impl TextureFace {
 
     fn set_glow(&mut self, value: f32, parent: Option<&TextureFace>) {
         let current = if self.attributes & GLOW == 0 {
-            parent.expect("texture face default").glow
+            Self::inherit(parent).glow
         } else {
             self.glow
         };
@@ -351,7 +359,7 @@ impl TextureFace {
     fn set_bump(&mut self, value: u8, parent: Option<&TextureFace>) {
         let old = self.material;
         if self.attributes & MATERIAL == 0 {
-            self.material = parent.expect("texture face default").material;
+            self.material = Self::inherit(parent).material;
         }
         let mixed = (self.material & 0xe0) | value;
         if old != mixed {
@@ -363,7 +371,7 @@ impl TextureFace {
     fn set_shiny(&mut self, value: u8, parent: Option<&TextureFace>) {
         let old = self.material;
         if self.attributes & MATERIAL == 0 {
-            self.material = parent.expect("texture face default").material;
+            self.material = Self::inherit(parent).material;
         }
         let mixed = (self.material & 0x3f) | value;
         if old != mixed {
@@ -375,7 +383,7 @@ impl TextureFace {
     fn set_fullbright(&mut self, value: bool, parent: Option<&TextureFace>) {
         let old = self.material;
         if self.attributes & MATERIAL == 0 {
-            self.material = parent.expect("texture face default").material;
+            self.material = Self::inherit(parent).material;
         }
         let mut mixed = self.material & 0xdf;
         if value {
@@ -390,7 +398,7 @@ impl TextureFace {
     fn set_media(&mut self, value: bool, parent: Option<&TextureFace>) {
         let old = self.media;
         if self.attributes & MEDIA == 0 {
-            self.media = parent.expect("texture face default").media;
+            self.media = Self::inherit(parent).media;
         }
         let mut mixed = self.media & 0xfe;
         if value {
@@ -405,7 +413,7 @@ impl TextureFace {
     fn set_mapping(&mut self, value: u8, parent: Option<&TextureFace>) {
         let old = self.media;
         if self.attributes & MEDIA == 0 {
-            self.media = parent.expect("texture face default").media;
+            self.media = Self::inherit(parent).media;
         }
         let mixed = (self.media & 0xf9) | value;
         if old != mixed {
@@ -416,7 +424,7 @@ impl TextureFace {
 
     fn set_material_id(&mut self, value: Uuid, parent: Option<&TextureFace>) {
         let current = if self.attributes & MATERIAL_ID == 0 {
-            parent.expect("texture face default").material_id
+            Self::inherit(parent).material_id
         } else {
             self.material_id
         };
@@ -448,10 +456,7 @@ impl TextureEntry {
     /// Setters on the default face. The default face starts with every
     /// attribute bit set, which is what `new TextureEntryFace(null)` does.
     pub fn apply_default(&mut self, set: &TextureFaceSet) {
-        self.default
-            .as_mut()
-            .expect("texture entry default")
-            .apply(set, None);
+        self.default_mut().apply(set, None);
     }
 
     /// `CreateFace` followed by the public setters, in [`TextureFaceSet`] order.
@@ -462,13 +467,9 @@ impl TextureEntry {
                 got: index,
             });
         }
-        let parent = *self.default.as_ref().expect("texture entry default");
-        if self.faces[index].is_none() {
-            self.faces[index] = Some(TextureFace::child());
-        }
+        let parent = *self.default_face();
         self.faces[index]
-            .as_mut()
-            .expect("face")
+            .get_or_insert_with(TextureFace::child)
             .apply(set, Some(&parent));
         Ok(())
     }
@@ -634,7 +635,15 @@ impl TextureEntry {
         Ok(entry)
     }
 
+    fn default_face(&self) -> &TextureFace {
+        // INFALLIBLE: new() and a decoded entry install the default face before a setter runs.
+        #[allow(clippy::expect_used)]
+        self.default.as_ref().expect("texture entry default")
+    }
+
     fn default_mut(&mut self) -> &mut TextureFace {
+        // INFALLIBLE: new() and a decoded entry install the default face before a setter runs.
+        #[allow(clippy::expect_used)]
         self.default.as_mut().expect("texture entry default")
     }
 
@@ -866,9 +875,16 @@ impl TextureEntry {
         loop {
             let bit = 1u64 << cursor;
             if done & bit == 0 {
-                let face = self.faces[cursor]
-                    .as_ref()
-                    .expect("null face was not in the null mask");
+                let face = match self.faces[cursor].as_ref() {
+                    Some(face) => face,
+                    None => {
+                        // INFALLIBLE: a null face is recorded in the null mask, and this loop skips those bits.
+                        #[allow(clippy::panic)]
+                        {
+                            panic!("null face was not in the null mask");
+                        }
+                    }
+                };
                 if face.attributes & attr != 0 {
                     let value = get(face);
                     if value != default_value {
@@ -1079,13 +1095,13 @@ fn write_face_bitfield(out: &mut Vec<u8>, bitfield: u64) {
 
 fn push_uuid(out: &mut Vec<u8>, id: Uuid) {
     let mut buf = [0u8; 16];
-    write_uuid(&id, &mut buf).expect("uuid is 16 bytes");
+    layout_ok(write_uuid(&id, &mut buf));
     out.extend_from_slice(&buf);
 }
 
 fn push_color(out: &mut Vec<u8>, color: Color4, inverted: bool) {
     let mut buf = [0u8; 4];
-    write_color4(color, inverted, &mut buf).expect("color is 4 bytes");
+    layout_ok(write_color4(color, inverted, &mut buf));
     out.extend_from_slice(&buf);
 }
 

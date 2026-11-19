@@ -40,6 +40,12 @@ use uuid::Uuid;
 
 const OWNER_TEXT: &str = "11111111-1111-0000-0000-000100bba000";
 const ROOT_TEXT: &str = "00000112-000f-0000-0000-000100bba000";
+
+fn library_uuid(text: &str) -> Uuid {
+    // INFALLIBLE: OWNER_TEXT and ROOT_TEXT are the fixed library UUIDs in this file.
+    #[allow(clippy::expect_used)]
+    Uuid::parse_str(text).expect("library uuid")
+}
 const BASE_PERMISSIONS: u32 = 0x9e000;
 const EVERYONE_PERMISSIONS: u32 = 0x9a000;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -131,8 +137,8 @@ impl Library {
 
     /// Load `DefaultLibrary`. Included files stay inside that file's directory.
     pub fn open(path: &Path, name: &str) -> Result<Self, LibraryError> {
-        let owner = Uuid::parse_str(OWNER_TEXT).expect("library owner");
-        let root_id = Uuid::parse_str(ROOT_TEXT).expect("library root");
+        let owner = library_uuid(OWNER_TEXT);
+        let root_id = library_uuid(ROOT_TEXT);
         let mut library = Self {
             loaded: true,
             owner,
@@ -160,8 +166,8 @@ impl Library {
     }
 
     pub fn root_only(name: &str) -> Self {
-        let owner = Uuid::parse_str(OWNER_TEXT).expect("library owner");
-        let root_id = Uuid::parse_str(ROOT_TEXT).expect("library root");
+        let owner = library_uuid(OWNER_TEXT);
+        let root_id = library_uuid(ROOT_TEXT);
         Self {
             loaded: true,
             owner,

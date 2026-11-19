@@ -3,6 +3,9 @@
 
 //! HTTP replies compared with the pinned C# server's captured bytes.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use axum::http::Method;
 use ferroan_client::CapsRegistry;
 

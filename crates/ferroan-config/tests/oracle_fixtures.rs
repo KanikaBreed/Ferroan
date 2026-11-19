@@ -5,6 +5,9 @@
 //! from Nini. Cases under `region-ref` and `grid-ref` read the pinned
 //! Tranquillity tree when it is available and are skipped otherwise.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

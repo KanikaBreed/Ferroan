@@ -4,6 +4,9 @@
 //! Checked form calls fail on the final HTTP status before reading the body.
 //! Unchecked calls parse that body. The policy is chosen per call.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use axum::{Router, http::StatusCode, routing::any};
 use ferroan_http::{
     Field, FieldMap, FormOptions, FormStatusPolicy, HttpError, post_form, post_form_with,

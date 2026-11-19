@@ -6,6 +6,8 @@
 //! `--circuit` also completes the region handshake and logs out. The password
 //! is never printed. Pass it with `--password` or `FERROAN_BOT_PASSWORD`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 use std::env;
 use std::net::SocketAddr;
 use std::process::ExitCode;

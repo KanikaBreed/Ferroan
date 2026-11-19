@@ -3,6 +3,9 @@
 
 //! User-account and user-alias routes against a copy of the UserAccount fixture.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

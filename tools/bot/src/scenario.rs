@@ -534,7 +534,9 @@ async fn cross_to(
             opened,
         )?;
         if poll.is_finished() {
-            let task = poll.take().expect("is_finished means a task is present");
+            let Some(task) = poll.take() else {
+                return Err("event-queue poll finished without a task".to_string());
+            };
             match task.await {
                 Ok(Ok(batch)) => {
                     ack = Some(batch.id);

@@ -67,7 +67,7 @@
 //! The five masks on an object update are little-endian, in the order
 //! base, owner, group, everyone, next owner.
 
-use crate::wire::WireError;
+use crate::wire::{WireError, le_array};
 
 /// Five little-endian masks.
 pub const PERMISSIONS_LEN: usize = 20;
@@ -122,11 +122,11 @@ impl Permissions {
             });
         }
         Ok(Self {
-            base: u32::from_le_bytes(data[0..4].try_into().expect("4 bytes")),
-            owner: u32::from_le_bytes(data[4..8].try_into().expect("4 bytes")),
-            group: u32::from_le_bytes(data[8..12].try_into().expect("4 bytes")),
-            everyone: u32::from_le_bytes(data[12..16].try_into().expect("4 bytes")),
-            next_owner: u32::from_le_bytes(data[16..20].try_into().expect("4 bytes")),
+            base: u32::from_le_bytes(le_array(&data[0..4])),
+            owner: u32::from_le_bytes(le_array(&data[4..8])),
+            group: u32::from_le_bytes(le_array(&data[8..12])),
+            everyone: u32::from_le_bytes(le_array(&data[12..16])),
+            next_owner: u32::from_le_bytes(le_array(&data[16..20])),
         })
     }
 }

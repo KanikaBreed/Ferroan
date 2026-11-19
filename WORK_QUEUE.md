@@ -54,7 +54,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | DONE (#91) |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | DONE (#92) |
 | Q10s1 | P0.10n1: pin `rust-toolchain.toml` to the exact stable CI's runners use | DONE (#95) |
-| Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | READY after Q10s1 |
+| Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | IN PROGRESS (`feat/panic-lints`) |
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | READY after Q10s2 |
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | READY after Q10s3 |
 | Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |

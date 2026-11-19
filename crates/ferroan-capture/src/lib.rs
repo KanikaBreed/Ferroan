@@ -9,6 +9,8 @@
 //! records, redacts both, and checks that every UDP datagram decodes and
 //! encodes back to the same bytes.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod format;
 mod proxy;
 mod redact;

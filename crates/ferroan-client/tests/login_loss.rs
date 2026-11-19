@@ -6,6 +6,9 @@
 //! follows LLUDPServer.HandleUnacked/ResendUnacked at
 //! Tranquillity 40432e0f83d3802434f898a4e28687bd977d5cf5; no C# code is copied.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 

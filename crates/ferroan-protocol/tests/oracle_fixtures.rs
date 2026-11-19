@@ -4,6 +4,9 @@
 //! Every packet fixture from the OpenMetaverse oracle round-trips through the
 //! typed message structs and the Tranquillity framing rules.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::fs;
 use std::path::PathBuf;
 

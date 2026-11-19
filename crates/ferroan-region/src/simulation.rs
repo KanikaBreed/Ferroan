@@ -482,12 +482,18 @@ async fn handle(
 fn forbidden() -> Response {
     // AgentSimpleHandler sets Content-Type application/json, then Authorize
     // answers 403 with an empty buffer. A string body would replace that type.
-    Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONNECTION, "close")
-        .body(axum::body::Body::empty())
-        .expect("static forbidden response")
+    let mut response = Response::new(axum::body::Body::empty());
+    *response.status_mut() = StatusCode::FORBIDDEN;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CONNECTION,
+        header::HeaderValue::from_static("close"),
+    );
+    response
 }
 
 fn create_refused(reason: &str, peer: SocketAddr) -> Response {

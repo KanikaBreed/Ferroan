@@ -330,7 +330,9 @@ impl Reader {
             if end_of_line(ch) {
                 return Err(ConfigError::Parse);
             }
-            let ch = self.bump().expect("not end of line");
+            let Some(ch) = self.bump() else {
+                return Err(ConfigError::Parse);
+            };
             self.name.push(ch);
         }
         self.read_key_value()?;
@@ -365,7 +367,9 @@ impl Reader {
             if end_of_line(ch) {
                 break;
             }
-            let ch = self.bump().expect("value character");
+            let Some(ch) = self.bump() else {
+                return Err(ConfigError::Parse);
+            };
             self.value.push(ch);
         }
         if !found_quote {
@@ -384,7 +388,9 @@ impl Reader {
             if end_of_line(ch) {
                 return Err(ConfigError::Parse);
             }
-            let ch = self.bump().expect("section character");
+            let Some(ch) = self.bump() else {
+                return Err(ConfigError::Parse);
+            };
             self.name.push(ch);
         }
         self.consume_to_end();

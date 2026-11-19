@@ -15,6 +15,8 @@
 //! a table the pin does not ship for SQLite; the process refuses to start
 //! that section until the table exists.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 use std::env;
 use std::process::ExitCode;
 

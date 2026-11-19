@@ -816,7 +816,11 @@ async fn serve_socket_reporting(
         // Only a serve that has not mapped a peer may consume a UseCircuitCode
         // saved while the previous circuit was still running.
         if state.peer.is_none() {
-            let queued = extra.pending.and_then(|slot| slot.lock().unwrap().take());
+            let queued = extra.pending.and_then(|slot| {
+                // INFALLIBLE: the pending slot is locked only to push or take one datagram.
+                #[allow(clippy::unwrap_used)]
+                slot.lock().unwrap().take()
+            });
             if let Some((from, bytes)) = queued {
                 if let Ok(packet) = packet::parse_packet(&bytes)
                     && state
@@ -878,7 +882,11 @@ async fn serve_socket_reporting(
             // Store before the ACK so a test that waits for the ACK can already
             // see the datagram queued for the replacement serve.
             if let Some(slot) = extra.pending {
-                *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+                // INFALLIBLE: the pending slot is locked only to push or take one datagram.
+                #[allow(clippy::unwrap_used)]
+                {
+                    *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+                }
             }
             State::immediate_ack(sock, from, packet.sequence).await;
             continue;

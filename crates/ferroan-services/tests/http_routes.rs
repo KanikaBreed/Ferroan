@@ -4,6 +4,9 @@
 //! The asset routes against a copy of Tranquillity's AssetStore SQLite file.
 //! The file is schema only; the rows are inserted through the HTTP store.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

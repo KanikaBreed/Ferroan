@@ -7,7 +7,7 @@ cargo xtask check              # links, formatting, clippy, tests
 cargo xtask check --docs-only  # Markdown links only
 ```
 
-The command is the same on every platform. [Ordinary CI](../.github/workflows/ci.yml) runs it on Linux, Windows and macOS, using committed fixtures without the C# references or .NET SDK. The separate [Linux live workflow](../.github/workflows/live.yml) installs .NET, checks out the pinned references, verifies the C# oracles and runs real servers. It does not rerun the whole Rust test suite with those references present.
+The command is the same on every platform. Workspace Clippy lints deny `unwrap_used`, `expect_used` and `panic` outside tests. A test crate may allow them. An internal invariant that stays has a narrow `#[allow]` and an `// INFALLIBLE:` comment. [Ordinary CI](../.github/workflows/ci.yml) runs it on Linux, Windows and macOS, using committed fixtures without the C# references or .NET SDK. The separate [Linux live workflow](../.github/workflows/live.yml) installs .NET, checks out the pinned references, verifies the C# oracles and runs real servers. It does not rerun the whole Rust test suite with those references present.
 
 ## The Rust toolchain
 

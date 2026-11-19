@@ -6,6 +6,8 @@
 //! UUID, vector, quaternion, colour, texture-entry, extra-parameter, prim-shape
 //! and permission-mask bytes match OpenMetaverse and Tranquillity.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod extra;
 mod permissions;
 mod shape;

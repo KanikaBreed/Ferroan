@@ -557,6 +557,18 @@ impl Drop for Grid {
 }
 
 #[cfg(target_os = "linux")]
+fn require_started<'a, T>(slot: &'a Option<T>, what: &str) -> Result<&'a T, String> {
+    slot.as_ref()
+        .ok_or_else(|| format!("{what} is not started"))
+}
+
+#[cfg(target_os = "linux")]
+fn require_started_mut<'a, T>(slot: &'a mut Option<T>, what: &str) -> Result<&'a mut T, String> {
+    slot.as_mut()
+        .ok_or_else(|| format!("{what} is not started"))
+}
+
+#[cfg(target_os = "linux")]
 fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
     let scenario = spec.scenario.as_str();
     let ferroan = spec.ferroan_region;
@@ -671,9 +683,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
     ])?);
     let udp_relay = if ferroan && scenario == "ferrobot" {
         Some(
-            grid.proxies
-                .as_ref()
-                .expect("proxies started")
+            require_started(&grid.proxies, "proxies")?
                 .block_on(ferrobot_capture::start_udp(
                     SocketAddr::from((ADVERTISED, home_port)),
                     SocketAddr::from((HOME_BIND, home_port)),
@@ -746,7 +756,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
         },
     )?);
     if rust_accounts {
-        let log = grid.robust.as_ref().expect("robust is started").log.clone();
+        let log = require_started(&grid.robust, "Robust")?.log.clone();
         let text = fs::read_to_string(&log)
             .map_err(|error| format!("could not read {}: {error}", log.display()))?;
         if in_process_user_account(&text) {
@@ -757,7 +767,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
         }
     }
     provision_account(
-        grid.robust.as_mut().expect("robust is started"),
+        require_started_mut(&mut grid.robust, "Robust")?,
         account_uri.as_deref(),
         robust_private,
         AccountSeed {
@@ -770,7 +780,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
         &grid.passwords,
     )?;
     provision_account(
-        grid.robust.as_mut().expect("robust is started"),
+        require_started_mut(&mut grid.robust, "Robust")?,
         account_uri.as_deref(),
         robust_private,
         AccountSeed {
@@ -839,12 +849,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
         },
         &grid.passwords,
     )?);
-    let home_log = grid
-        .home
-        .as_ref()
-        .expect("home region is started")
-        .log
-        .clone();
+    let home_log = require_started(&grid.home, "home region")?.log.clone();
     let report = if let Some(executable) = ferrobot_binary {
         let harness = live::harness(
             &format!("http://{ADVERTISED}:{public_proxy}/"),
@@ -914,21 +919,19 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
     };
     let relay_result = if let Some(task) = udp_relay {
         if task.is_finished() {
-            grid.proxies
-                .as_ref()
-                .expect("proxies started")
-                .block_on(task)
-                .map_err(|error| format!("UDP capture task stopped: {error}"))
-                .and_then(|result| result)
+            require_started(&grid.proxies, "proxies").and_then(|proxies| {
+                proxies
+                    .block_on(task)
+                    .map_err(|error| format!("UDP capture task stopped: {error}"))
+                    .and_then(|result| result)
+            })
         } else {
             task.abort();
             // Finish cancellation before reading the capture or stopping the
             // runtime, so the relay has released its socket and output file.
-            let _ = grid
-                .proxies
-                .as_ref()
-                .expect("proxies started")
-                .block_on(task);
+            if let Ok(proxies) = require_started(&grid.proxies, "proxies") {
+                let _ = proxies.block_on(task);
+            }
             Ok(())
         }
     } else {
