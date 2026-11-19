@@ -94,12 +94,7 @@ pub async fn compare(
         &neighbour.library_as_user,
         &home.library_as_user,
     )?;
-    same_llsd(
-        scratch,
-        "library-item",
-        &neighbour.library_item,
-        &home.library_item,
-    )?;
+    same_library_item(scratch, &neighbour.library_item, &home.library_item)?;
     same_llsd(scratch, "user-item", &neighbour.user_item, &home.user_item)?;
     same_http(scratch, "texture", &neighbour.texture, &home.texture)?;
     same_http(scratch, "texture-range", &neighbour.ranged, &home.ranged)?;
@@ -414,6 +409,73 @@ async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// `InventoryItemBase.CreationDate` is unix seconds at construction. Library
+/// XML does not store a date, so the two regions stamp an item a few seconds
+/// apart. The rest of the item is equal LLSD.
+fn same_library_item(scratch: &Path, left: &Llsd, right: &Llsd) -> Result<(), String> {
+    let left_stamps = created_ats(left)?;
+    let right_stamps = created_ats(right)?;
+    if left_stamps.len() != right_stamps.len() {
+        return Err(format!(
+            "library item created_at count {} and {}",
+            left_stamps.len(),
+            right_stamps.len()
+        ));
+    }
+    let now = unix_now();
+    for (left_stamp, right_stamp) in left_stamps.iter().zip(&right_stamps) {
+        let gap = i64::from(*left_stamp) - i64::from(*right_stamp);
+        let left_age = i64::from(now) - i64::from(*left_stamp);
+        let right_age = i64::from(now) - i64::from(*right_stamp);
+        if gap.abs() > 15 * 60 || left_age.abs() > 24 * 3600 || right_age.abs() > 24 * 3600 {
+            return Err(format!(
+                "library item created_at {left_stamp} and {right_stamp} are not both the load-time clock"
+            ));
+        }
+    }
+    same_llsd(
+        scratch,
+        "library-item",
+        &zero_created_at(left),
+        &zero_created_at(right),
+    )
+}
+
+fn created_ats(doc: &Llsd) -> Result<Vec<i32>, String> {
+    let mut stamps = Vec::new();
+    for item in doc.get("items").as_array() {
+        let stamp = item.get("created_at").as_i32();
+        if stamp <= 0 {
+            return Err("library item created_at is not a positive unix time".to_string());
+        }
+        stamps.push(stamp);
+    }
+    if stamps.is_empty() {
+        return Err("library item reply has no item".to_string());
+    }
+    Ok(stamps)
+}
+
+fn zero_created_at(doc: &Llsd) -> Llsd {
+    let mut copy = doc.clone();
+    if let Llsd::Map(map) = &mut copy
+        && let Some(Llsd::Array(items)) = map.get_mut("items")
+    {
+        for item in items.iter_mut() {
+            item.insert("created_at", 0);
+        }
+    }
+    copy
+}
+
+fn unix_now() -> i32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i32::try_from(duration.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 fn same_llsd(scratch: &Path, name: &str, left: &Llsd, right: &Llsd) -> Result<(), String> {
     if left == right {
         return Ok(());
@@ -455,4 +517,31 @@ fn same_http(
 
 fn media_type(header: &str) -> &str {
     header.split(';').next().unwrap_or(header).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(created_at: i32) -> Llsd {
+        let mut item = Llsd::new_map();
+        item.insert("name", "4-tile2");
+        item.insert("created_at", created_at);
+        let mut items = Llsd::new_array();
+        items.push(item);
+        let mut doc = Llsd::new_map();
+        doc.insert("items", items);
+        doc
+    }
+
+    #[test]
+    fn library_item_dates_may_differ_by_the_load_gap() {
+        let now = unix_now();
+        let scratch = std::env::temp_dir().join(format!("ferroan-library-item-{now}"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        same_library_item(&scratch, &item(now - 20), &item(now - 5)).unwrap();
+        assert!(same_library_item(&scratch, &item(now), &item(0)).is_err());
+        assert!(same_library_item(&scratch, &item(now), &item(now - 16 * 60)).is_err());
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }

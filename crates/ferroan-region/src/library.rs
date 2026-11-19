@@ -326,7 +326,9 @@ impl Library {
                 group_owned: false,
                 sale_price: 0,
                 sale_type: 0,
-                creation_date: 0,
+                // InventoryItemBase initializes CreationDate to unix seconds at
+                // construction. The library XML does not store a date.
+                creation_date: unix_now(),
             };
             let index = self.items.len();
             self.items.push(item);
@@ -494,6 +496,14 @@ fn long_value(value: Option<&String>, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn unix_now() -> i32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i32::try_from(duration.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 fn uuid_value(value: Option<&String>, default: &str) -> Uuid {
     value
         .and_then(|text| Uuid::parse_str(text.trim()).ok())
@@ -569,6 +579,7 @@ mod tests {
         assert_eq!(quirk.base_permissions, 123);
         assert_eq!(quirk.group_permissions, 123);
         assert_eq!(quirk.asset_id, quirk.id);
+        assert!(quirk.creation_date > 1_700_000_000);
         let _ = fs::remove_dir_all(&dir);
     }
 
