@@ -2,6 +2,7 @@
   "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
   "source": "cargo xtask live run caps grid",
   "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
+  "connection_bytes": "The proxy rewrites hop headers to Connection: close before the region reads the request, and the capture stores those forwarded bytes. response_connection is the Connection value C# copied from that request (HttpResponse.cs copies request.Connection), except where a handler such as the event poll sets Keep-Alive.",
   "event_queue_url": "http://192.0.2.1:9000/CE/00000000-0000-4000-8000-000000000001",
   "event_queue_url_shape": {
     "path_prefix": "/CE/",

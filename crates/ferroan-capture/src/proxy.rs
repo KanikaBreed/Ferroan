@@ -288,11 +288,14 @@ async fn forward(
         // No exchange began, so neither a capture nor a failure is warranted.
         return Ok(());
     };
-    capture.push(Kind::HttpRequest, &request)?;
+    // Record the bytes the upstream server reads. C# copies the request's
+    // Connection onto the response, so the fixture has to show this rewrite.
+    let forwarded = close_connection(&request)?;
+    capture.push(Kind::HttpRequest, &forwarded)?;
     let mut server = timeout(IO_WAIT, TcpStream::connect(upstream))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"))??;
-    write_message(&mut server, &close_connection(&request)?).await?;
+    write_message(&mut server, &forwarded).await?;
     let response = read_message(&mut server, false, reply_timeout).await?;
     capture.push(Kind::HttpResponse, &response)?;
     write_message(&mut client, &close_connection(&response)?).await?;
@@ -997,12 +1000,16 @@ mod tests {
         server.await.unwrap();
         let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(records.len(), 4);
-        // Captures describe each original received message, before hop headers change.
-        assert!(
-            records
-                .iter()
-                .all(|record| header_has(&record.bytes, "connection: keep-alive"))
-        );
+        // Requests are the forwarded bytes (Connection: close). Responses stay
+        // the upstream message, before the client-facing rewrite.
+        assert!(records.iter().enumerate().all(|(index, record)| {
+            if index % 2 == 0 {
+                header_has(&record.bytes, "connection: close")
+                    && !header_has(&record.bytes, "keep-alive")
+            } else {
+                header_has(&record.bytes, "connection: keep-alive")
+            }
+        }));
         std::fs::remove_file(path).unwrap();
     }
 
