@@ -53,7 +53,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | DONE (#81) |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | DONE (#91) |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | DONE (#92) |
-| Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
+| Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | BLOCKED (too big; split proposed below) |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
@@ -147,6 +147,22 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 Q13a (manager, 19 November 2026, at the maintainer's request): the maintainer wants proper readouts when errors happen or a soft or hard limit is hit, so problems can be diagnosed and fixed from the data. It builds on Q12's metrics and Q13's logging, and retrofits every limit already in the code (for example the 1 MiB POST body, the 64-folder and 256-item fetch caps, the D19 and D20 bounds, packet, LLSD, queue and retry bounds). From Q13a on, AGENTS.md §6 requires new limits to report the same way.
+
+Q10s BLOCKED (19 November 2026, `docs/quality-guards-blocked`): the row is five pieces, and (4) and (5) are large enough to split, as the row allows. No code was changed and no scope was chosen. A scan of non-test Rust found 92 `.unwrap()`, `.expect()` or `panic!` sites outside `#[cfg(test)]` modules and `tests/` files: 21 in `ferroan-types` texture defaults, 17 in `ferroan-protocol/build.rs`, and the rest in wire/extra/permissions slices, HTTP query decoding, capture framing, INI parsing, library UUID constants, three service `sqlite()` checks, grid startup, one region response, one client path and one bot task. Outside-input sites need real errors; internal invariants need a narrow `// INFALLIBLE:` allow. That audit is one PR by itself. (5) is a new live-harness mode that runs a C# scenario twice, classifies value, order and count differences, records a reason for every wildcard, and adds the report to the live job, which already takes about 25 minutes. (4) is three open rows where Ferroan deliberately differs (TB1 unnamed asset flags, TB10 unchecked `MakePostRequest` on HTTP 302/500, TB11 pre-root endpoint reconnect). (2) is `TCP_NODELAY` on accepted sockets. (3) is the toolchain pin.
+
+Proposed split for the manager, in this order. The coder has not added these rows:
+
+1. **P0.10n1**, after P0.10l. Pin `rust-toolchain.toml` to the exact stable the GitHub runners already use, and write how to move it in `docs/TESTING.md`. Do not change global Cargo or rustup; the repository file is the pin. CI's `rustup show` on [run 44615349390](https://github.com/KanikaBreed/Ferroan/actions/runs/44615349390) prints `stable-x86_64-unknown-linux-gnu` and not `rustc --version`. The 18 November Windows failure named Clippy 1.100 while this machine's default is 1.97.1, which is why three PRs passed locally and failed CI's Clippy. The pin is that 1.100 patch, once `rustc --version` is read from a runner. Acceptance: `cargo xtask check` on Linux, Windows and macOS uses that compiler.
+
+2. **P0.10n2**, after P0.10n1. Workspace lints deny `unwrap_used`, `expect_used` and `panic` outside tests. Fix outside input. Each internal invariant that stays gets a narrow `#[allow]` and an `// INFALLIBLE:` comment, including build-script failures on the message template. Acceptance: `cargo xtask check` enforces the lints.
+
+3. **P0.10n3**, after P0.10l. `TCP_NODELAY` as C# sets it at the pin: `HttpListener.cs` on every accepted socket and `OutboundUrlFilter.cs` on outbound sockets. Set it on the region, robust and harness-proxy accepts. Keep reqwest's default `tcp_nodelay(true)`. A test reads the option on an accepted socket, and the harness records request latency before and after.
+
+4. **P0.10n4**, after P0.10l. Known-difference tests for TB1, TB10 and TB11. Each asserts the C# fixture or oracle still shows the bug. A pin move that fixes it fails, and the message names the TB row, the fixture and the code to change.
+
+5. **P0.10n5**, after P0.10l. Record twice. One C# scenario runs twice. The report classifies values that change (each wildcard has a recorded reason), order, and line count. Order and count differences fail. The report runs in the live CI job.
+
+Q11 still waits for Q10s. Q14's `after` is Q10k, which is DONE, and this blocker does not take it.
 
 ## Found while working
 
