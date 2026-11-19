@@ -63,7 +63,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
 | Q24 | P1.1: user accounts | DONE (#83) |
-| Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | IN PROGRESS on feat/grid-rust-accounts |
+| Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
 | Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
 | Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
@@ -145,6 +145,7 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 - 2026-11-19, Q24: SQLite has no UserAlias data class or migration. The MySQL migration is the only schema. Rust tests create that table. `live compare accounts` covers user accounts, not aliases, because C# SQLite cannot load the alias plugin. A stored NULL description is read back as an empty string, so the XML element is present. There is no live alias comparison to check C#'s null skip.
 - 2026-11-19, Q24: SQLite `GetUsersWhere` returns null, so `getmultiaccounts` is empty on SQLite. The short-word search skips the word that slides into the current index. `UserCountry` is not a SQLite column, so a non-empty country makes the store return false. These match the pin and are not new Tranquillity bugs. TB8 is already recorded: sqlx uses a fixed column list, so a query cannot see a half-built name list.
 - 2026-11-19, Q24: `grid --rust accounts` is not wired. Robust login uses the in-process user-account module, and the two processes must not share one SQLite file. `cargo xtask live compare accounts` is the standalone HTTP comparison. `--db mysql` and `--db pgsql` still stop before any process and say they need P1.A1 (#59).
+- 2026-11-19, Q24a: that wiring is #87. Login uses `UserAccountServicesConnector` and `UserAccountServerURI`. The account SQLite file is separate from Robust's. `AuthenticationServicesConnector` posts `setpassword` to `/auth/plain`. `POST /auth` returns an empty body. Live run https://github.com/KanikaBreed/Ferroan/actions/runs/44567579223 failed with "could not store the password for Test User" before the path was corrected. That was a wrong path, not a flake. The corrected live run https://github.com/KanikaBreed/Ferroan/actions/runs/44571461876 printed `login: pass` for `--rust accounts` and `--rust assets,accounts`.
 - 2026-11-19, Q24: `ferroan-http` caps a POST body at 1 MiB and answers 413. Tranquillity does not cap that body.
 
 - 2026-11-19, Q10r: the row says the region reaches Robust's library over HTTP. At pin `40432e0`, `LibraryService` is an in-process tree loaded from `DefaultLibrary` Nini XML (`Libraries.xml` and the folder/item files it names), owner `11111111-1111-0000-0000-000100bba000`. `FetchLibDescendents2`, `FetchLib2` and library-owner folders in `FetchInventoryDescendents2` read that tree. There is no library HTTP service. Ferroan loads the same file and does not add an inventory or asset database. `ReadItemFromConfig` stores `GroupPermissions` from the key `basePermissions` (default 0), not `groupPermissions`; Ferroan does the same.
