@@ -76,7 +76,7 @@ jobs:
             "$root/OpenSim-Tranquillity" "$tranq"
           clone_at "$(repository libopenmetaverse)" \
             "$root/libopenmetaverse" "$meta"
-          clone_at https://github.com/BlackBox-Roleplay-Systems/Ferrobot.git \
+          clone_at "$(repository Ferrobot)" \
             "$root/Ferrobot" "$ferrobot"
           echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
       - name: Restore the Tranquillity build

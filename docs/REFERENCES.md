@@ -15,7 +15,7 @@ To move a pin, open a PR that changes this file and says why, and check what cha
 
 Pin3 is upstream `develop` `80a642a681` with the maintainer's eight open OpenSim-NGC PRs merged unchanged: [#418](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/418) (teleports and crossings), [#419](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/419) (stale roots and logins), [#428](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/428) (login/logout cleanup and replies), [#422](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/422), [#423](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/423), [#425](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/425), [#426](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/426) (land, parcels and terrain), and [#429](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/pull/429) (control-plane trust). These fixes are on the fork's `dev-build`, not yet upstream `develop`; the tag keeps the exact commit reachable. See [D21](DECISIONS.md).
 
-While Pin3 is reviewed, the shared `~/Git/reference/OpenSim-Tranquillity` remains at Pin2. Use clean task-local clones and set `FERROAN_REF` to their parent directory. The maintainer moves the shared checkout after merge. CI reads both repository URLs and revisions from this table.
+Pin3 merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56). The shared `~/Git/reference/OpenSim-Tranquillity` checkout is clean at `40432e0` and can supply scratch builds again. Set `FERROAN_REF` to the parent of clean alternate checkouts when needed. CI reads both repository URLs and revisions from this table.
 
 Other checkouts the maintainers have, read for context only:
 

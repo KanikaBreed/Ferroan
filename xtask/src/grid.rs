@@ -655,11 +655,10 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             .map_err(|error| error.to_string())?;
         runtime
             .block_on(crate::ferrobot::run(&harness, &config))
-            .and_then(|lines| {
-                Ok(BotReport {
-                    lines,
-                    http: ferrobot_capture::http_records(&config.http_captures)?,
-                })
+            .map(|lines| BotReport {
+                lines,
+                // Read the complete proxy evidence after grid.stop drains it.
+                http: Vec::new(),
             })
     } else {
         run_bot(
@@ -723,11 +722,12 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
     if scenario == "ferrobot" {
-        let capture = live::finish_capture(
-            &root.join("capture-udp.cap"),
-            &report.http,
-            &[&estate, &chat],
-        )?;
+        let http = ferrobot_capture::http_records(&[
+            captures.robust_public.clone(),
+            captures.home.clone(),
+        ])?;
+        let capture =
+            live::finish_capture(&root.join("capture-udp.cap"), &http, &[&estate, &chat])?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
