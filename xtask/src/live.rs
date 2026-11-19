@@ -1295,26 +1295,55 @@ fn finish_start(
 #[cfg(target_os = "linux")]
 fn down_linux() -> Result<String, String> {
     // An active controller owns standalone and asset children too. Do not
-    // bypass its refusal through the older standalone state below.
-    crate::grid_state::down()?;
-    down_standalone()?;
-    Ok("live: down".to_string())
+    // bypass its refusal through the older standalone state below. A grid-state
+    // error must still run standalone cleanup, and both errors are reported.
+    report_shutdown(crate::grid_state::down(), down_standalone())
+}
+
+#[cfg(target_os = "linux")]
+fn report_shutdown(
+    grid: Result<(), String>,
+    standalone: Result<(), String>,
+) -> Result<String, String> {
+    match (grid, standalone) {
+        (Ok(()), Ok(())) => Ok("live: down".to_string()),
+        (Err(grid), Err(standalone)) => Err(format!("{grid}\n{standalone}")),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn down_standalone() -> Result<(), String> {
-    let Some(state) = read_state(&state_path())? else {
+    down_standalone_at(&state_path(), &run_dir())
+}
+
+#[cfg(target_os = "linux")]
+fn down_standalone_at(state_file: &Path, run: &Path) -> Result<(), String> {
+    let Some(state) = read_state(state_file)? else {
         return Ok(());
     };
     let region_result = stop_pid(state.pid);
     let asset_result = state.assets.as_ref().map_or(Ok(()), |asset| {
         crate::assets::stop_persistent(asset.pid, asset.start_time)
     });
-    region_result?;
-    asset_result?;
-    let _ = fs::remove_file(state_path());
-    let _ = fs::remove_file(run_dir().join("password"));
-    Ok(())
+    let cleanup = match (region_result, asset_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(region), Err(asset)) => Err(format!("{region}\n{asset}")),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+    };
+    if cleanup.is_ok() {
+        let _ = fs::remove_file(state_file);
+        let _ = fs::remove_file(run.join("password"));
+    }
+    cleanup
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn shutdown_at(grid: &Path, standalone: &Path, run: &Path) -> Result<String, String> {
+    report_shutdown(
+        crate::grid_state::down_file(grid),
+        down_standalone_at(standalone, run),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -2270,6 +2299,66 @@ mod tests {
             None
         );
         assert_eq!(parse_process_start_time("42 (broken) S 0"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_down_cleans_standalone_after_a_grid_state_stop_error() {
+        let root = repo_root()
+            .join(".scratch")
+            .join(format!("down-both-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        // Not a process-group leader: stop must refuse before any signal.
+        // /proc cmdline can be empty for a moment after exec.
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        struct Reap(std::process::Child);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Reap(child);
+        let grid = root.join("grid-state");
+        let pid = child.0.id();
+        let visible = Instant::now() + Duration::from_secs(2);
+        loop {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "sleep fixture exited before its identity was recorded"
+            );
+            match crate::grid_state::write_ungrouped_stop_failure(&grid, pid) {
+                Ok(()) => break,
+                Err(error) if error == "the process has exited" && Instant::now() < visible => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let standalone = root.join("state");
+        let run = root.join("run");
+        fs::create_dir_all(&run).unwrap();
+        write_state(
+            &standalone,
+            &RunState {
+                pid: u32::MAX - 1,
+                public_port: 1,
+                private_port: 2,
+                assets: None,
+            },
+        )
+        .unwrap();
+        fs::write(run.join("password"), b"not-a-grid-secret").unwrap();
+        let error = shutdown_at(&grid, &standalone, &run).unwrap_err();
+        assert!(error.contains("group leader"), "{error}");
+        assert!(!standalone.exists(), "standalone state was not removed");
+        assert!(!run.join("password").exists());
+        assert!(
+            grid.exists(),
+            "a failed grid stop keeps its state for a retry"
+        );
+        drop(child);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

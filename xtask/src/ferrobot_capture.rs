@@ -49,10 +49,15 @@ pub(crate) async fn start_udp(
     listen: SocketAddr,
     upstream: SocketAddr,
     path: &Path,
-) -> Result<tokio::task::JoinHandle<Result<(), String>>, String> {
+) -> Result<(tokio::task::JoinHandle<Result<(), String>>, SocketAddr), String> {
     let front = UdpSocket::bind(listen)
         .await
         .map_err(|error| format!("bind UDP capture: {error}"))?;
+    // Port 0 is assigned here. Callers must use this address, not a port
+    // observed and then released before the bind.
+    let bound = front
+        .local_addr()
+        .map_err(|error| format!("UDP capture address: {error}"))?;
     let backend = UdpSocket::bind("127.0.0.1:0")
         .await
         .map_err(|error| error.to_string())?;
@@ -80,36 +85,39 @@ pub(crate) async fn start_udp(
     let owner = crate::live::ESTATE_OWNER
         .parse::<uuid::Uuid>()
         .map_err(|_| "invalid harness owner UUID")?;
-    Ok(tokio::spawn(async move {
-        let mut peer = None;
-        let mut incoming = [0u8; MAX_DATAGRAM + 1];
-        let mut outgoing = [0u8; MAX_DATAGRAM + 1];
-        let mut written = header.len() as u64;
-        let mut count = 0;
-        loop {
-            tokio::select! {
-                received = front.recv_from(&mut incoming) => {
-                    let (len, from) = received.map_err(|error| format!("UDP capture receive: {error}"))?;
-                    if len == 0 || len > MAX_DATAGRAM || peer.is_some_and(|peer| peer != from) { continue; }
-                    if peer.is_none() {
-                        let Ok(packet) = parse_packet(&incoming[..len]) else { continue; };
-                        if packet.id != UseCircuitCode::ID || !packet.decode::<UseCircuitCode>().is_ok_and(|code| code.circuit_code.id == owner) { continue; }
-                        peer = Some(from);
+    Ok((
+        tokio::spawn(async move {
+            let mut peer = None;
+            let mut incoming = [0u8; MAX_DATAGRAM + 1];
+            let mut outgoing = [0u8; MAX_DATAGRAM + 1];
+            let mut written = header.len() as u64;
+            let mut count = 0;
+            loop {
+                tokio::select! {
+                    received = front.recv_from(&mut incoming) => {
+                        let (len, from) = received.map_err(|error| format!("UDP capture receive: {error}"))?;
+                        if len == 0 || len > MAX_DATAGRAM || peer.is_some_and(|peer| peer != from) { continue; }
+                        if peer.is_none() {
+                            let Ok(packet) = parse_packet(&incoming[..len]) else { continue; };
+                            if packet.id != UseCircuitCode::ID || !packet.decode::<UseCircuitCode>().is_ok_and(|code| code.circuit_code.id == owner) { continue; }
+                            peer = Some(from);
+                        }
+                        record(&mut file, &mut written, &mut count, header.len(), Kind::UdpIn, &incoming[..len])?;
+                        backend.send(&incoming[..len]).await.map_err(|error| format!("UDP capture forward: {error}"))?;
                     }
-                    record(&mut file, &mut written, &mut count, header.len(), Kind::UdpIn, &incoming[..len])?;
-                    backend.send(&incoming[..len]).await.map_err(|error| format!("UDP capture forward: {error}"))?;
-                }
-                received = backend.recv(&mut outgoing) => {
-                    let len = received.map_err(|error| format!("UDP capture reply: {error}"))?;
-                    if len == 0 || len > MAX_DATAGRAM { continue; }
-                    if let Some(peer) = peer {
-                        record(&mut file, &mut written, &mut count, header.len(), Kind::UdpOut, &outgoing[..len])?;
-                        front.send_to(&outgoing[..len], peer).await.map_err(|error| format!("UDP capture return: {error}"))?;
+                    received = backend.recv(&mut outgoing) => {
+                        let len = received.map_err(|error| format!("UDP capture reply: {error}"))?;
+                        if len == 0 || len > MAX_DATAGRAM { continue; }
+                        if let Some(peer) = peer {
+                            record(&mut file, &mut written, &mut count, header.len(), Kind::UdpOut, &outgoing[..len])?;
+                            front.send_to(&outgoing[..len], peer).await.map_err(|error| format!("UDP capture return: {error}"))?;
+                        }
                     }
                 }
             }
-        }
-    }))
+        }),
+        bound,
+    ))
 }
 
 fn record(
@@ -187,12 +195,13 @@ mod tests {
         let path = scratch.0.join("udp.cap");
         std::fs::write(&path, b"old capture").unwrap();
         let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let reservation = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let listen = reservation.local_addr().unwrap();
-        drop(reservation);
-        let task = start_udp(listen, upstream.local_addr().unwrap(), &path)
-            .await
-            .unwrap();
+        let (task, listen) = start_udp(
+            "127.0.0.1:0".parse().unwrap(),
+            upstream.local_addr().unwrap(),
+            &path,
+        )
+        .await
+        .unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         owner.connect(listen).await.unwrap();

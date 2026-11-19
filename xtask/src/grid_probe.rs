@@ -223,6 +223,7 @@ async fn post_before(
         let mut response = client
             .post(url)
             .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("X-Ferroan-Probe", "harness")
             .body(body)
             .send()
             .await
@@ -344,7 +345,8 @@ pub async fn probe(home_uri: &str, directory: &Path, ferroan: bool) -> Result<St
                     .map_err(|error| error.to_string())?,
                 format!("{home_uri}{path}"),
             )
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            .header("X-Ferroan-Probe", "harness");
         let encoding = if method == "POST" {
             let mut gzip =
                 flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -428,9 +430,15 @@ fn read(path: &Path) -> Result<Value, String> {
 
 pub fn generate(directory: &Path) -> Result<String, String> {
     let mut report = read(&directory.join("region-parity.json"))?;
+    // The probe writes `source` itself. The C#-only proof is the pinned channel
+    // on this directory's login circuit, the same marker login fixtures require.
+    let provenance = crate::arrival_fixtures::csharp_provenance(&super::login_capture::records(
+        &directory.join("capture-udp.cap"),
+    )?)?;
     if report["source"] != "csharp" || report["revision"] != PIN {
         return Err("region parity fixtures require a capture from pinned C#".into());
     }
+    report["provenance"] = provenance;
     if report["exchanges"].as_object().is_none_or(|exchanges| {
         exchanges.len() != CASES.len() || CASES.iter().any(|case| !exchanges.contains_key(*case))
     }) {
@@ -675,9 +683,14 @@ mod tests {
             .join(".scratch")
             .join(format!("parity-fixture-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
+        let mut complete = serde_json::Map::new();
+        for case in CASES {
+            complete.insert((*case).to_string(), json!({}));
+        }
         for report in [
             json!({"source":"ferroan","revision":PIN}),
             json!({"source":"csharp","revision":PIN,"exchanges":{}}),
+            json!({"source":"csharp","revision":PIN,"exchanges":complete}),
         ] {
             fs::write(
                 directory.join("region-parity.json"),

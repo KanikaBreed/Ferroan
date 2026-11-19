@@ -34,6 +34,12 @@ can interleave with that lookup on the normal service proxy. Its explicit
 `capture_source` records this distinction; ambiguous pairs are still rejected.
 No password, live session ID or raw capture is committed.
 
+Regenerating these fixtures requires `capture-udp.cap` in the same directory to
+carry the pinned Tranquillity channel on the login circuit. The `source` label
+written by the probe is not that proof. A Ferroan-region run is refused. Probe
+requests carry `X-Ferroan-Probe` and are excluded from the selected service
+exchanges. The missing-session query stays on its separate one-exchange proxy.
+
 `AgentHandlers.cs`, `Scene.cs::VerifyUserPresence`, `PresenceServerPostHandler.cs`
 and `GridUserServerPostHandler.cs` define these responses. The service calls come
 from `PresenceServicesConnector.cs`, `GridUserServicesConnector.cs`,

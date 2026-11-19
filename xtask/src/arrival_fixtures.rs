@@ -23,14 +23,32 @@ const HOME_HANDLE: u64 = (256_000u64 << 32) | 256_000;
 const CSHARP_CHANNEL: &[u8] =
     b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
 
+pub(crate) struct LoginCircuit {
+    pub value: Value,
+    pub circuit_code: u32,
+    pub session_id: uuid::Uuid,
+    pub circuit_index: usize,
+    pub arrival_index: usize,
+}
+
+pub(crate) fn prove(records: &[Record]) -> Result<LoginCircuit, String> {
+    let selected = select(records)?;
+    Ok(LoginCircuit {
+        value: json!({
+            "marker": "AgentMovementComplete.SimData.ChannelVersion",
+            "channel_version": String::from_utf8_lossy(CSHARP_CHANNEL).trim_end_matches('\0'),
+            "region_handle": selected.manifest["arrival"]["region_handle"],
+            "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival",
+        }),
+        circuit_code: selected.circuit_code,
+        session_id: selected.session_id,
+        circuit_index: selected.circuit_index,
+        arrival_index: selected.arrival_index,
+    })
+}
+
 pub(crate) fn csharp_provenance(records: &[Record]) -> Result<Value, String> {
-    let (_, manifest) = select(records)?;
-    Ok(json!({
-        "marker": "AgentMovementComplete.SimData.ChannelVersion",
-        "channel_version": String::from_utf8_lossy(CSHARP_CHANNEL).trim_end_matches('\0'),
-        "region_handle": manifest["arrival"]["region_handle"],
-        "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival",
-    }))
+    Ok(prove(records)?.value)
 }
 
 pub fn generate(path: &Path) -> Result<String, String> {
@@ -42,7 +60,9 @@ pub fn generate(path: &Path) -> Result<String, String> {
         return Err("arrival capture exceeds 64 MiB".to_string());
     }
     let records = read_capture(&bytes).map_err(|error| error.to_string())?;
-    let (trace, manifest) = select(&records)?;
+    let selected = select(&records)?;
+    let trace = selected.trace;
+    let manifest = selected.manifest;
     let target = crate::repo_root().join("fixtures/arrival");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     let arrival = trace.last().ok_or("no arrival evidence")?;
@@ -64,9 +84,22 @@ pub fn generate(path: &Path) -> Result<String, String> {
     Ok("arrival fixtures: captured C# request and reliable arrival; identities and timestamp folded".to_string())
 }
 
-fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
+struct Selected {
+    trace: Vec<Record>,
+    manifest: Value,
+    circuit_code: u32,
+    session_id: uuid::Uuid,
+    circuit_index: usize,
+    arrival_index: usize,
+}
+
+fn select(records: &[Record]) -> Result<Selected, String> {
     check_udp(records).map_err(|error| error.to_string())?;
     let mut circuit = None;
+    let mut circuit_code = 0u32;
+    let mut session_id = uuid::Uuid::nil();
+    let mut circuit_index = 0usize;
+    let mut arrival_index = 0usize;
     let mut requested = false;
     let mut home = false;
     let mut selected = Vec::new();
@@ -90,6 +123,9 @@ fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
                 }
                 continue;
             }
+            circuit_code = code.circuit_code.code;
+            session_id = code.circuit_code.session_id;
+            circuit_index = index;
             circuit = Some(code.circuit_code);
             UseCircuitCode::NAME
         } else if record.kind == Kind::UdpIn && packet.id == CompleteAgentMovement::ID {
@@ -151,6 +187,7 @@ fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
                 return Err("arrival differs from the expected C# home-region envelope".to_string());
             }
             arrival = Some(movement);
+            arrival_index = index;
             AgentMovementComplete::NAME
         } else {
             continue;
@@ -195,7 +232,14 @@ fn select(records: &[Record]) -> Result<(Vec<Record>, Value), String> {
             "channel_version":arrival.sim_data.channel_version,
         }
     });
-    Ok((trace, manifest))
+    Ok(Selected {
+        trace,
+        manifest,
+        circuit_code,
+        session_id,
+        circuit_index,
+        arrival_index,
+    })
 }
 
 #[cfg(test)]
@@ -252,7 +296,9 @@ pub(crate) mod tests {
     #[test]
     fn arrival_extraction_folds_only_identities_and_time() {
         let records = source_records();
-        let (trace, manifest) = select(&records).unwrap();
+        let selected = select(&records).unwrap();
+        let trace = selected.trace;
+        let manifest = selected.manifest;
         assert_eq!(
             trace.last().unwrap().bytes,
             include_bytes!("../../fixtures/arrival/agent-movement-complete.bin")
@@ -277,20 +323,20 @@ pub(crate) mod tests {
     fn arrival_extraction_refuses_missing_request_and_reply() {
         let mut records = source_records();
         records.pop();
-        assert!(
-            select(&records)
-                .unwrap_err()
-                .contains("no C# AgentMovementComplete")
-        );
+        let error = match select(&records) {
+            Err(error) => error,
+            Ok(_) => panic!("expected a missing arrival to be refused"),
+        };
+        assert!(error.contains("no C# AgentMovementComplete"));
         let records: Vec<_> = source_records()
             .into_iter()
             .filter(|record| parse_packet(&record.bytes).unwrap().id != CompleteAgentMovement::ID)
             .collect();
-        assert!(
-            select(&records)
-                .unwrap_err()
-                .contains("lacks its movement request")
-        );
+        let error = match select(&records) {
+            Err(error) => error,
+            Ok(_) => panic!("expected a missing movement request to be refused"),
+        };
+        assert!(error.contains("lacks its movement request"));
     }
 
     #[test]
@@ -313,7 +359,10 @@ pub(crate) mod tests {
                 &packet.acks,
                 &mut record.bytes,
             );
-            let error = select(&records).unwrap_err();
+            let error = match select(&records) {
+                Err(error) => error,
+                Ok(_) => panic!("expected a mismatched arrival to be refused"),
+            };
             assert!(error.contains(if wrong_session {
                 "identity"
             } else {

@@ -538,6 +538,33 @@ pub(crate) fn down() -> Result<(), String> {
     store().down()
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn down_file(path: &Path) -> Result<(), String> {
+    Store {
+        path: path.to_path_buf(),
+    }
+    .down()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn write_ungrouped_stop_failure(path: &Path, pid: u32) -> Result<(), String> {
+    let store = Store {
+        path: path.to_path_buf(),
+    };
+    let process = Identity::capture(pid)?;
+    let owner = Identity {
+        pid: u32::MAX,
+        start: 1,
+        exe: "/bin/sleep".to_owned(),
+        args: 1,
+    };
+    store.write(&State {
+        owner,
+        processes: vec![process],
+        pending: None,
+    })
+}
+
 fn scan_pending(pending: &Pending) -> Result<Vec<Identity>, String> {
     scan_pending_bounded(pending, MAX_PROC_ENTRIES, MAX_SCAN_BYTES)
 }

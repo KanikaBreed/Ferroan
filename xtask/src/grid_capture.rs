@@ -24,9 +24,14 @@ const SECURE_SESSION: &str = "00000000-0000-4000-8000-000000000005";
 const CAPS: &str = "00000000000040008000000000000006";
 
 pub fn generate(directory: &Path) -> Result<String, String> {
-    let provenance =
-        crate::arrival_fixtures::csharp_provenance(&records(&directory.join("capture-udp.cap"))?)?;
-    let exchanges = extract(directory, true)?;
+    let udp = records(&directory.join("capture-udp.cap"))?;
+    let login = crate::arrival_fixtures::prove(&udp)?;
+    let exchanges = extract(
+        directory,
+        true,
+        Some((login.circuit_code, login.session_id)),
+    )?;
+    let provenance = login.value;
     let target = crate::repo_root().join("fixtures/region-login");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     for name in ["register", "deregister", "query-access", "create-agent"] {
@@ -78,7 +83,7 @@ pub fn generate(directory: &Path) -> Result<String, String> {
 }
 
 pub fn compare(directory: &Path) -> Result<String, String> {
-    let actual = extract(directory, false)?;
+    let actual = extract(directory, false, None)?;
     let path = crate::repo_root().join("fixtures/region-login/exchanges.json");
     let expected: Value = serde_json::from_slice(&bounded(&path, MAX_BODY)?)
         .map_err(|error| format!("invalid login fixture: {error}"))?;
@@ -250,7 +255,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
             continue;
         }
         let request = Message::parse(&record.bytes)?;
-        if !matches!(request.path.as_str(), "/presence" | "/griduser") {
+        if request.probe || !matches!(request.path.as_str(), "/presence" | "/griduser") {
             continue;
         }
         let mut fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
@@ -387,14 +392,19 @@ fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn records(path: &Path) -> Result<Vec<Record>, String> {
+pub(super) fn records(path: &Path) -> Result<Vec<Record>, String> {
     read_complete_prefix(&bounded(path, MAX_CAPTURE)?).map_err(|error| error.to_string())
 }
 
-fn extract(directory: &Path, allow_neighbour_deregister: bool) -> Result<Value, String> {
+fn extract(
+    directory: &Path,
+    allow_neighbour_deregister: bool,
+    circuit: Option<(u32, uuid::Uuid)>,
+) -> Result<Value, String> {
     let private = records(&directory.join("proxy-robust-private.cap"))?;
     let home = records(&directory.join("proxy-home.cap"))?;
     let mut output = Map::new();
+    let mut mismatched_circuit = false;
     let mut normalizer = Normalizer {
         home_port: String::new(),
         item_ids: BTreeMap::new(),
@@ -404,7 +414,7 @@ fn extract(directory: &Path, allow_neighbour_deregister: bool) -> Result<Value, 
             continue;
         }
         let request = Message::parse(&record.bytes)?;
-        if request.path != "/grid" {
+        if request.probe || request.path != "/grid" {
             continue;
         }
         let mut fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
@@ -464,6 +474,9 @@ fn extract(directory: &Path, allow_neighbour_deregister: bool) -> Result<Value, 
             continue;
         }
         let request = Message::parse(&record.bytes)?;
+        if request.probe {
+            continue;
+        }
         let name = match request.method.as_str() {
             "QUERYACCESS" if request.path.starts_with("/agent/") => "query-access",
             "POST" if request.path.starts_with("/agent/") => "create-agent",
@@ -478,12 +491,25 @@ fn extract(directory: &Path, allow_neighbour_deregister: bool) -> Result<Value, 
         let mut response: Value = serde_json::from_str(&reply.text()?)
             .map_err(|error| format!("invalid {name} response JSON: {error}"))?;
         validate_json(name, &body, &response)?;
+        if name == "create-agent"
+            && let Some((code, session)) = circuit
+        {
+            let wire = crate::caps_fixtures::json_circuit(body.get("circuit_code"))?;
+            let wire_session = body.get("session_id").and_then(Value::as_str).unwrap_or("");
+            if wire != code || wire_session != session.to_string() {
+                mismatched_circuit = true;
+                continue;
+            }
+        }
         normalizer.json(&mut body, "")?;
         normalizer.json(&mut response, "")?;
         output.insert(
             name.to_string(),
             exchange(&request, &reply, body, response, &normalizer),
         );
+    }
+    if circuit.is_some() && mismatched_circuit && !output.contains_key("create-agent") {
+        return Err("create-agent does not match the C# login circuit".to_string());
     }
     for name in ["register", "deregister", "query-access", "create-agent"] {
         if !output.contains_key(name) {
@@ -557,6 +583,7 @@ struct Message {
     content_type: String,
     encoding: String,
     x_encoding: String,
+    probe: bool,
     body: Vec<u8>,
 }
 
@@ -597,6 +624,7 @@ impl Message {
             content_type: String::new(),
             encoding: String::new(),
             x_encoding: String::new(),
+            probe: false,
             body: bytes[split + 4..].to_vec(),
         };
         for line in lines {
@@ -609,6 +637,9 @@ impl Message {
                 }
                 if key.eq_ignore_ascii_case("x-content-encoding") {
                     message.x_encoding = value.trim().to_ascii_lowercase();
+                }
+                if key.eq_ignore_ascii_case("x-ferroan-probe") && !value.trim().is_empty() {
+                    message.probe = true;
                 }
             }
         }
@@ -815,5 +846,210 @@ mod tests {
         let mut message = Message::parse(&bytes).unwrap();
         message.body = gzip.finish().unwrap();
         assert!(message.text().is_err());
+    }
+
+    fn http_pair(request: &str, response: &str) -> [Record; 2] {
+        [
+            Record {
+                kind: Kind::HttpRequest,
+                time_ms: 0,
+                bytes: request.as_bytes().to_vec(),
+            },
+            Record {
+                kind: Kind::HttpResponse,
+                time_ms: 1,
+                bytes: response.as_bytes().to_vec(),
+            },
+        ]
+    }
+
+    #[test]
+    fn login_fixtures_refuse_a_ferroan_channel_and_a_different_circuit() {
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(format!("login-fixtures-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut udp = crate::arrival_fixtures::tests::source_records();
+        let login = crate::arrival_fixtures::prove(&udp).unwrap();
+        let last = udp.last_mut().unwrap();
+        let packet = ferroan_protocol::parse_packet(&last.bytes).unwrap();
+        let mut arrival = packet
+            .decode::<ferroan_protocol::msgs::AgentMovementComplete>()
+            .unwrap();
+        arrival.sim_data.channel_version = b"Ferroan 0.1.0\0".to_vec();
+        ferroan_protocol::build_packet(
+            &arrival,
+            packet.sequence,
+            packet.reliable(),
+            false,
+            &[],
+            &mut last.bytes,
+        );
+        fs::write(
+            directory.join("capture-udp.cap"),
+            ferroan_capture::write_capture(&udp).unwrap(),
+        )
+        .unwrap();
+        let refused = generate(&directory).unwrap_err();
+        assert!(refused.contains("pinned C# channel/version"), "{refused}");
+
+        fs::write(
+            directory.join("capture-udp.cap"),
+            ferroan_capture::write_capture(&crate::arrival_fixtures::tests::source_records())
+                .unwrap(),
+        )
+        .unwrap();
+        let owner = crate::live::ESTATE_OWNER;
+        let region = crate::live::REGION_UUID;
+        let nil = "00000000-0000-0000-0000-000000000000";
+        let register = format!(
+            "POST /grid HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nMETHOD=register&uuid={region}&serverHttpPort=9000&regionMapTexture={nil}&parcelMapTexture={nil}&regionName=Ferroan%20Test"
+        );
+        fs::write(
+            directory.join("proxy-robust-private.cap"),
+            ferroan_capture::write_capture(&http_pair(
+                &register,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let body = format!(
+            "{{\"agent_id\":\"{owner}\",\"caps_path\":\"11223344-5566-7788-99aa-bbccddeeff00\",\"circuit_code\":\"{}\",\"session_id\":\"{}\",\"secure_session_id\":\"00000000-0000-4000-8000-000000000005\",\"destination_uuid\":\"{region}\",\"packed_appearance\":{{}}}}",
+            login.circuit_code.wrapping_add(1),
+            login.session_id
+        );
+        let request = format!(
+            "POST /agent/{owner}/ HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{body}"
+        );
+        fs::write(
+            directory.join("proxy-home.cap"),
+            ferroan_capture::write_capture(&http_pair(
+                &request,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"success\":true,\"reason\":\"ok\"}",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mismatched = generate(&directory).unwrap_err();
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            mismatched.contains("does not match the C# login circuit"),
+            "{mismatched}"
+        );
+    }
+
+    #[test]
+    fn probe_getagent_never_becomes_the_presence_fixture() {
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(format!("probe-presence-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let owner = crate::live::ESTATE_OWNER;
+        let region = crate::live::REGION_UUID;
+        let present = format!(
+            "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>{owner}</UserID><RegionID>{region}</RegionID></result></ServerResponse>"
+        );
+        let form =
+            |method: &str, extra: &str| format!("VERSIONMIN=1&VERSIONMAX=1&METHOD={method}{extra}");
+        let request = |path: &str, body: &str, probe: bool| {
+            format!(
+                "POST {path} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n{}Content-Length: {}\r\n\r\n{body}",
+                if probe {
+                    "X-Ferroan-Probe: harness\r\n"
+                } else {
+                    ""
+                },
+                body.len()
+            )
+        };
+        let response = |body: &str| {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let probe_body = form(
+            "getagent",
+            "&SessionID=00000000-0000-4000-8000-000000000099&Note=from-probe",
+        );
+        let real_body = form(
+            "getagent",
+            "&SessionID=00000000-0000-4000-8000-000000000004",
+        );
+        let missing_body = form(
+            "getagent",
+            "&SessionID=00000000-0000-4000-8000-000000000004",
+        );
+        let logout_body = form("logout", "&SessionID=00000000-0000-4000-8000-000000000004");
+        let logged_body = form("loggedout", &format!("&UserID={owner}&RegionID={region}"));
+        let success =
+            "<?xml version=\"1.0\"?><ServerResponse><result>Success</result></ServerResponse>";
+        let missing =
+            "<?xml version=\"1.0\"?><ServerResponse><result>null</result></ServerResponse>";
+        let mut records = Vec::new();
+        records.extend(http_pair(
+            &request("/presence", &probe_body, true),
+            &response(&present),
+        ));
+        records.extend(http_pair(
+            &request("/presence", &real_body, false),
+            &response(&present),
+        ));
+        records.extend(http_pair(
+            &request("/presence", &missing_body, false),
+            &response(missing),
+        ));
+        records.extend(http_pair(
+            &request("/presence", &logout_body, false),
+            &response(success),
+        ));
+        records.extend(http_pair(
+            &request("/griduser", &logged_body, false),
+            &response(success),
+        ));
+        fs::write(
+            directory.join("proxy-robust-private.cap"),
+            ferroan_capture::write_capture(&records).unwrap(),
+        )
+        .unwrap();
+        let selected = service_exchanges_selected(&directory, false).unwrap();
+        assert!(
+            !selected["presence-get"]["request"]
+                .as_str()
+                .unwrap()
+                .contains("from-probe"),
+            "{}",
+            selected["presence-get"]["request"]
+        );
+        let probe_only = [
+            http_pair(
+                &request("/presence", &probe_body, true),
+                &response(&present),
+            ),
+            http_pair(
+                &request("/presence", &missing_body, false),
+                &response(missing),
+            ),
+            http_pair(
+                &request("/presence", &logout_body, false),
+                &response(success),
+            ),
+            http_pair(
+                &request("/griduser", &logged_body, false),
+                &response(success),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        fs::write(
+            directory.join("proxy-robust-private.cap"),
+            ferroan_capture::write_capture(&probe_only).unwrap(),
+        )
+        .unwrap();
+        let error = service_exchanges_selected(&directory, false).unwrap_err();
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(error.contains("presence-get"), "{error}");
     }
 }

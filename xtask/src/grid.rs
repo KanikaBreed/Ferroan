@@ -670,13 +670,17 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
         ),
     ])?);
     let udp_relay = if ferroan && scenario == "ferrobot" {
-        Some(grid.proxies.as_ref().expect("proxies started").block_on(
-            ferrobot_capture::start_udp(
-                SocketAddr::from((ADVERTISED, home_port)),
-                SocketAddr::from((HOME_BIND, home_port)),
-                &root.join("capture-udp.cap"),
-            ),
-        )?)
+        Some(
+            grid.proxies
+                .as_ref()
+                .expect("proxies started")
+                .block_on(ferrobot_capture::start_udp(
+                    SocketAddr::from((ADVERTISED, home_port)),
+                    SocketAddr::from((HOME_BIND, home_port)),
+                    &root.join("capture-udp.cap"),
+                ))?
+                .0,
+        )
     } else {
         None
     };
@@ -1450,20 +1454,20 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
     fs::create_dir_all(cwd)
         .map_err(|error| format!("could not create {}: {error}", cwd.display()))?;
     // Plugin loading uses Assembly.LoadFrom with a path relative to the
-    // working directory, and configDir() is that same directory. Link the
-    // published assemblies/configuration, excluding mutable standalone data.
-    // SQLite opens relative connection strings in each region's own cwd.
+    // working directory, and configDir() is that same directory. Link only
+    // published assemblies and static content. maptiles/, MeshCache/, console
+    // history, the daily log and other runtime files stay per region.
     let entries = fs::read_dir(publish)
         .map_err(|error| format!("could not read {}: {error}", publish.display()))?;
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("could not read {}: {error}", publish.display()))?;
         let name = entry.file_name();
-        if matches!(
-            name.to_str(),
-            Some("Regions" | "Estates" | "assetcache" | "ScriptEngines")
-        ) || live::is_sqlite_file(&name.to_string_lossy())
-        {
+        let is_dir = entry
+            .file_type()
+            .map_err(|error| format!("could not read {}: {error}", entry.path().display()))?
+            .is_dir();
+        if !published_region_entry(&name, is_dir) {
             continue;
         }
         link_path(&cwd.join(name), &entry.path())?;
@@ -1494,6 +1498,71 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+/// Static publish output the region opens from its working directory.
+/// Runtime names from the pin (`maptiles`, `MeshCache`, `OpenSimConsoleHistory.txt`,
+/// `OpenSim.log` and the dated `OpenSim.Server.RegionServerYYYYMMDD.log`) are absent
+/// on purpose. A new static publish kind has to be added here.
+#[cfg(target_os = "linux")]
+fn published_region_entry(name: &std::ffi::OsStr, is_dir: bool) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if is_dir {
+        return matches!(
+            name,
+            "config-include"
+                | "inventory"
+                | "assets"
+                | "data"
+                | "Library"
+                | "openmetaverse_data"
+                | "runtimes"
+                | "Scripts"
+        ) || is_dotnet_satellite(name);
+    }
+    if live::is_sqlite_file(name) || is_region_runtime_file(name) {
+        return false;
+    }
+    name == "OpenSim.Server.RegionServer"
+        || matches!(
+            Path::new(name).extension().and_then(|ext| ext.to_str()),
+            Some(
+                "dll"
+                    | "pdb"
+                    | "so"
+                    | "dylib"
+                    | "json"
+                    | "config"
+                    | "xml"
+                    | "ini"
+                    | "example"
+                    | "txt"
+                    | "html"
+            )
+        )
+}
+
+#[cfg(target_os = "linux")]
+fn is_region_runtime_file(name: &str) -> bool {
+    name == "OpenSimConsoleHistory.txt" || name.ends_with(".log") || name.ends_with(".dat")
+}
+
+#[cfg(target_os = "linux")]
+fn is_dotnet_satellite(name: &str) -> bool {
+    let mut parts = name.split('-');
+    let Some(language) = parts.next() else {
+        return false;
+    };
+    let region = parts.next();
+    language.len() == 2
+        && language.bytes().all(|byte| byte.is_ascii_lowercase())
+        && parts.next().is_none()
+        && region.is_none_or(|region| {
+            (2..=8).contains(&region.len())
+                && region.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
 }
 
 #[cfg(target_os = "linux")]
@@ -1766,6 +1835,28 @@ mod tests {
             fs::write(publish.join(directory).join(file), b"test").unwrap();
         }
         fs::write(publish.join("RegionServerDefaults.ini"), b"test").unwrap();
+        fs::write(publish.join("OpenSim.Region.Framework.dll"), b"assembly").unwrap();
+        fs::create_dir_all(publish.join("config-include")).unwrap();
+        fs::write(publish.join("config-include/Grid.ini"), b"grid").unwrap();
+        fs::create_dir_all(publish.join("de")).unwrap();
+        fs::write(publish.join("de/Satellite.resources.dll"), b"sat").unwrap();
+        for (directory, bytes) in [
+            ("maptiles", "tile.jpg"),
+            ("MeshCache", "cntr"),
+            ("ScriptEngines", "state"),
+            ("Regions", "Regions.ini"),
+            ("assetcache", "blob"),
+        ] {
+            fs::create_dir_all(publish.join(directory)).unwrap();
+            fs::write(publish.join(directory).join(bytes), b"shared").unwrap();
+        }
+        fs::write(publish.join("OpenSimConsoleHistory.txt"), b"shared").unwrap();
+        fs::write(
+            publish.join("OpenSim.Server.RegionServer20261118.log"),
+            b"shared",
+        )
+        .unwrap();
+        fs::write(publish.join("avatar-texture.dat"), b"shared").unwrap();
         let names = [
             "OpenSim.db",
             "OpenSim.db-wal",
@@ -1786,6 +1877,35 @@ mod tests {
                     "{region}/{name}"
                 );
             }
+            for name in [
+                "maptiles",
+                "MeshCache",
+                "ScriptEngines",
+                "Regions",
+                "assetcache",
+                "OpenSimConsoleHistory.txt",
+                "OpenSim.Server.RegionServer20261118.log",
+                "avatar-texture.dat",
+            ] {
+                assert!(
+                    cwd.join(name).symlink_metadata().is_err(),
+                    "{region} linked runtime {name}"
+                );
+            }
+            assert_eq!(
+                fs::read(cwd.join("OpenSim.Region.Framework.dll")).unwrap(),
+                b"assembly"
+            );
+            assert_eq!(
+                fs::read(cwd.join("config-include/Grid.ini")).unwrap(),
+                b"grid"
+            );
+            assert_eq!(
+                fs::read(cwd.join("de/Satellite.resources.dll")).unwrap(),
+                b"sat"
+            );
+            fs::create_dir_all(cwd.join("maptiles")).unwrap();
+            fs::write(cwd.join("maptiles/own.jpg"), region).unwrap();
             fs::write(cwd.join("OpenSim.db"), region).unwrap();
         }
         assert_eq!(fs::read(root.join("home/OpenSim.db")).unwrap(), b"home");
@@ -1796,6 +1916,18 @@ mod tests {
         assert_eq!(
             fs::read(publish.join("OpenSim.db")).unwrap(),
             b"standalone state"
+        );
+        assert_eq!(
+            fs::read(publish.join("maptiles/tile.jpg")).unwrap(),
+            b"shared"
+        );
+        assert_eq!(
+            fs::read(root.join("home/maptiles/own.jpg")).unwrap(),
+            b"home"
+        );
+        assert_eq!(
+            fs::read(root.join("neighbour/maptiles/own.jpg")).unwrap(),
+            b"neighbour"
         );
         fs::remove_dir_all(root).unwrap();
     }

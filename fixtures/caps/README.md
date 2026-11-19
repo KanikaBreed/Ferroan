@@ -54,6 +54,13 @@ Body files have no added newline. `.body` files represent empty or deliberately
 malformed bodies; `.xml` files retain the actual request/response XML. The
 manifest retains method, normalized path, status, MIME types, CORS headers,
 the captured Connection header, event URL shape and elapsed milliseconds.
+`connection_bytes` records that the proxy rewrites hop headers to
+`Connection: close` before C# reads the request, and that the capture stores
+those forwarded request bytes. `response_connection` is the value C#
+`HttpResponse` copied from that request
+(`Source/OpenSim.Framework.Servers.HttpServer/OSHttpServer/HttpResponse.cs`
+copies `request.Connection`). The event poll is the exception: its handler sets
+Keep-Alive. Response bodies were not regenerated for this note.
 Transport dates and other generated HTTP headers are
 outside this comparison. Raw captures and real bearer URLs stay in `.scratch/`.
 The generator rejects ambiguous request/response pairing, mixed capability
@@ -61,8 +68,10 @@ paths, compressed messages, unexpected bodies or MIME types, and missing
 required exchanges before writing fixtures.
 
 The sibling `capture-udp.cap` must contain the matching login sequence and the
-exact pinned Tranquillity channel/version. A Rust region using the same test
-account, name and UUID is rejected as a fixture source.
+exact pinned Tranquillity channel/version. The seed path must be that login
+circuit's create-agent `caps_path` (`/CAPS/{caps_path}0000`, hyphenated as C#
+registers it, or the same UUID without hyphens). A Rust region using the same
+test account, name and UUID is rejected as a fixture source.
 
 The source behavior is in these files at the revision above:
 

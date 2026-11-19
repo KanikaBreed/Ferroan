@@ -15,13 +15,16 @@ const LIMIT: u64 = 64 * 1024 * 1024;
 const EVENT_URL: &str = "http://192.0.2.1:9000/CE/00000000-0000-4000-8000-000000000001";
 const EVENT_PATH: &str = "/CE/00000000-0000-4000-8000-000000000001";
 const SEED_PATH: &str = "/CAPS/000000000000400080000000000000020000/";
+pub(crate) const CONNECTION_BYTES: &str = "The proxy rewrites hop headers to Connection: close before the region reads the request, and the capture stores those forwarded bytes. response_connection is the Connection value C# copied from that request (HttpResponse.cs copies request.Connection), except where a handler such as the event poll sets Keep-Alive.";
 
 pub fn generate(directory: &Path) -> Result<String, String> {
     let udp = read_records(&directory.join("capture-udp.cap"))?;
-    let provenance = crate::arrival_fixtures::csharp_provenance(&udp)?;
+    let login = crate::arrival_fixtures::prove(&udp)?;
     let records = read_records(&directory.join("proxy-home.cap"))?;
+    let caps_path = login_caps_path(&records, login.circuit_code, login.session_id)?;
     let mut evidence = extract(&records)?;
-    evidence.manifest["provenance"] = provenance;
+    seed_belongs(&evidence.seed_path, &caps_path)?;
+    evidence.manifest["provenance"] = login.value;
     let target = crate::repo_root().join("fixtures/caps");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     for (name, bytes) in evidence.files {
@@ -55,6 +58,7 @@ fn read_records(path: &Path) -> Result<Vec<Record>, String> {
 struct Evidence {
     manifest: Value,
     files: BTreeMap<String, Vec<u8>>,
+    seed_path: String,
 }
 
 fn extract(records: &[Record]) -> Result<Evidence, String> {
@@ -291,11 +295,116 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
         "source": "cargo xtask live run caps grid",
         "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
+        "connection_bytes": CONNECTION_BYTES,
         "event_queue_url": EVENT_URL,
         "event_queue_url_shape": event_url_shape(&event_url)?,
         "exchanges": selected,
     });
-    Ok(Evidence { manifest, files })
+    Ok(Evidence {
+        manifest,
+        files,
+        seed_path,
+    })
+}
+
+/// The create-agent on the arrival's circuit, not a later or probe request.
+pub(crate) fn login_caps_path(
+    records: &[Record],
+    circuit_code: u32,
+    session: uuid::Uuid,
+) -> Result<String, String> {
+    let mut saw_other = false;
+    for (index, record) in records.iter().enumerate() {
+        if record.kind != Kind::HttpRequest {
+            continue;
+        }
+        let request = Http::parse(&record.bytes)?;
+        if is_probe(&request) || request.method != "POST" || !request.target.starts_with("/agent/")
+        {
+            continue;
+        }
+        let reply = adjacent_response(records, index)?;
+        let body: Value = serde_json::from_slice(&request.body)
+            .map_err(|error| format!("invalid create-agent JSON: {error}"))?;
+        let response: Value = serde_json::from_slice(&reply.body)
+            .map_err(|error| format!("invalid create-agent response JSON: {error}"))?;
+        if body.get("agent_id").and_then(Value::as_str) != Some(crate::live::ESTATE_OWNER) {
+            continue;
+        }
+        let wire = json_circuit(body.get("circuit_code"))?;
+        let wire_session = body.get("session_id").and_then(Value::as_str).unwrap_or("");
+        if wire != circuit_code || wire_session != session.to_string() {
+            saw_other = true;
+            continue;
+        }
+        if response.get("success") != Some(&Value::Bool(true)) {
+            return Err("create-agent on the login circuit is not a successful response".into());
+        }
+        return body
+            .get("caps_path")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "create-agent has no caps_path".to_string());
+    }
+    if saw_other {
+        Err("create-agent does not match the C# login circuit".to_string())
+    } else {
+        Err("capture has no create-agent on the C# login circuit".to_string())
+    }
+}
+
+pub(crate) fn seed_belongs(target: &str, caps_path: &str) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(caps_path)
+        .map_err(|_| "create-agent caps_path is not a UUID".to_string())?;
+    let target = target.trim_end_matches('/');
+    let hyphenated = format!("/CAPS/{id}0000");
+    let simple = format!("/CAPS/{}0000", id.simple());
+    if target == hyphenated || target == simple {
+        Ok(())
+    } else {
+        Err("proxy-home seed path is not the login circuit's capability".to_string())
+    }
+}
+
+pub(crate) fn json_circuit(value: Option<&Value>) -> Result<u32, String> {
+    let code = match value {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .and_then(|number| u32::try_from(number).ok()),
+        Some(Value::String(text)) => text.parse().ok(),
+        _ => None,
+    };
+    code.ok_or_else(|| "circuit_code is not a u32".to_string())
+}
+
+fn is_probe(message: &Http) -> bool {
+    !message.header("x-ferroan-probe").is_empty()
+}
+
+fn adjacent_response(records: &[Record], index: usize) -> Result<Http, String> {
+    let mut outstanding = 0usize;
+    for record in &records[..index] {
+        match record.kind {
+            Kind::HttpRequest => outstanding += 1,
+            Kind::HttpResponse => {
+                outstanding = outstanding
+                    .checked_sub(1)
+                    .ok_or("HTTP response has no preceding request")?
+            }
+            _ => {}
+        }
+    }
+    if outstanding != 0 {
+        return Err(
+            "selected create-agent overlaps another request; recapture an isolated login"
+                .to_string(),
+        );
+    }
+    let response = records
+        .get(index + 1)
+        .filter(|record| record.kind == Kind::HttpResponse)
+        .ok_or("selected create-agent has no unambiguous adjacent response")?;
+    Http::parse(&response.bytes)
 }
 
 fn event_url_shape(url: &str) -> Result<Value, String> {
@@ -480,6 +589,65 @@ mod tests {
         let result = generate(&directory);
         fs::remove_dir_all(directory).unwrap();
         assert!(result.unwrap_err().contains("pinned C# channel/version"));
+    }
+
+    #[test]
+    fn seed_path_must_be_the_login_circuits_capability() {
+        let id = "11223344-5566-7788-99aa-bbccddeeff00";
+        seed_belongs(&format!("/CAPS/{id}0000/"), id).unwrap();
+        seed_belongs("/CAPS/112233445566778899aabbccddeeff000000", id).unwrap();
+        assert!(seed_belongs("/CAPS/ffffffffffffffffffffffffffffffff0000/", id).is_err());
+        assert!(seed_belongs("/CAPS/11223344-5566-7788-99aa-bbccddeeff00", id).is_err());
+    }
+
+    #[test]
+    fn caps_generation_rejects_a_create_agent_from_another_circuit() {
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(format!("caps-circuit-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let udp = crate::arrival_fixtures::tests::source_records();
+        let login = crate::arrival_fixtures::prove(&udp).unwrap();
+        fs::write(
+            directory.join("capture-udp.cap"),
+            ferroan_capture::write_capture(&udp).unwrap(),
+        )
+        .unwrap();
+        let body = format!(
+            "{{\"agent_id\":\"{}\",\"caps_path\":\"11223344-5566-7788-99aa-bbccddeeff00\",\"circuit_code\":\"{}\",\"session_id\":\"{}\",\"secure_session_id\":\"00000000-0000-4000-8000-000000000005\",\"destination_uuid\":\"{}\"}}",
+            crate::live::ESTATE_OWNER,
+            login.circuit_code.wrapping_add(1),
+            login.session_id,
+            crate::live::REGION_UUID
+        );
+        let records = vec![
+            Record {
+                kind: Kind::HttpRequest,
+                time_ms: 0,
+                bytes: format!(
+                    "POST /agent/{}/ HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    crate::live::ESTATE_OWNER,
+                    body.len()
+                )
+                .into_bytes(),
+            },
+            Record {
+                kind: Kind::HttpResponse,
+                time_ms: 1,
+                bytes: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 28\r\n\r\n{\"success\":true,\"reason\":\"ok\"}".to_vec(),
+            },
+        ];
+        fs::write(
+            directory.join("proxy-home.cap"),
+            ferroan_capture::write_capture(&records).unwrap(),
+        )
+        .unwrap();
+        let error = generate(&directory).unwrap_err();
+        fs::remove_dir_all(directory).unwrap();
+        assert!(
+            error.contains("does not match the C# login circuit"),
+            "{error}"
+        );
     }
 
     #[test]
