@@ -20,6 +20,16 @@ Only the manager adds, removes, reorders or rewrites items. The coder changes on
 
 Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done by outside contributors through the GitHub issues named on the item; skip it, and treat it as done only when its TASKS.md row is `DONE`).
 
+## Paused for handoff (19 November 2026)
+
+The queue coder paused at the maintainer's request, to save its weekly usage. Whoever resumes the queue, the same agent or another one the maintainers start as the queue coder, starts here:
+
+1. **Q10q (P0.10m) is in [PR #77](https://github.com/KanikaBreed/Ferroan/pull/77), branch `feat/persistent-grid`, and is not finished.** Its code and local checks are done: `cargo xtask check`, two strict login and logout sessions through the printed URL, and recovery after an interrupted launch. CI was running at `fc10c6b` when the coder paused. Check those runs and fix any real failure. Record a flaky failure under "Found while working" before retrying. Then add the CI links and harness report lines to the P0.10m row in that PR, set Q10q to `DONE (#77)`, and enable `gh pr merge --auto --squash`.
+2. Then pull `main`, read this file again, and take the next item. The order changed while Q10q ran (#76): Q10r, Q10i, Q21 (P1.0), Q24 (P1.1), Q10h, Q10j, Q10k, Q10s, Q11 to Q13, Q14 onward. Skip `EXTERNAL` items.
+3. On the maintainers' machine, the paused coder's detailed notes are in `.scratch/HANDOFF.md` in the `feat/persistent-grid` worktree. They are not in Git. Leave that worktree to the queue coder.
+
+The manager removes this section when the queue is running again.
+
 ## Queue
 
 | # | Item | Status |
