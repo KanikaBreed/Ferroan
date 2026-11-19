@@ -1,0 +1,228 @@
+{
+  "never_connected": {
+    "before": {
+      "circuit": true,
+      "watched": true,
+      "presence_session": true,
+      "scene_presence": false,
+      "online": true,
+      "last_region": "00000000-0000-4000-8000-000000000900",
+      "last_position": [
+        1,
+        2,
+        3
+      ],
+      "last_look": [
+        0,
+        1,
+        0
+      ]
+    },
+    "after": {
+      "circuit": false,
+      "watched": false,
+      "presence_session": false,
+      "scene_presence": false,
+      "online": false,
+      "last_region": "00000000-0000-4000-8000-000000000900",
+      "last_position": [
+        1,
+        2,
+        3
+      ],
+      "last_look": [
+        0,
+        1,
+        0
+      ]
+    }
+  },
+  "connected_past_deadline": {
+    "circuit": true,
+    "watched": true,
+    "presence_session": true,
+    "scene_presence": true,
+    "online": true,
+    "last_region": "00000000-0000-4000-8000-000000000900",
+    "last_position": [
+      1,
+      2,
+      3
+    ],
+    "last_look": [
+      0,
+      1,
+      0
+    ]
+  },
+  "removed_before_root": {
+    "circuit": false,
+    "watched": false,
+    "presence_session": false,
+    "scene_presence": false,
+    "online": false,
+    "last_region": "00000000-0000-4000-8000-000000000900",
+    "last_position": [
+      1,
+      2,
+      3
+    ],
+    "last_look": [
+      0,
+      1,
+      0
+    ]
+  },
+  "root_arrived": {
+    "circuit": true,
+    "watched": false,
+    "presence_session": true,
+    "scene_presence": true,
+    "online": true,
+    "last_region": "00000000-0000-4000-8000-000000000900",
+    "last_position": [
+      1,
+      2,
+      3
+    ],
+    "last_look": [
+      0,
+      1,
+      0
+    ]
+  },
+  "later_session": {
+    "circuit": false,
+    "watched": false,
+    "presence_session": false,
+    "scene_presence": false,
+    "online": true,
+    "last_region": "00000000-0000-4000-8000-000000000900",
+    "last_position": [
+      1,
+      2,
+      3
+    ],
+    "last_look": [
+      0,
+      1,
+      0
+    ],
+    "replacement_presence_session": true
+  },
+  "zero_wait": {
+    "circuit": true,
+    "watched": false,
+    "presence_session": true,
+    "scene_presence": false,
+    "online": true,
+    "last_region": "00000000-0000-4000-8000-000000000900",
+    "last_position": [
+      1,
+      2,
+      3
+    ],
+    "last_look": [
+      0,
+      1,
+      0
+    ]
+  },
+  "close_handlers": {
+    "callbacks": [
+      "throwing",
+      "later-one",
+      "later-two"
+    ],
+    "close_threw": false,
+    "scene_presence": false,
+    "circuit": false,
+    "clients": 0,
+    "logout_category": "Unknown"
+  },
+  "startup_success": {
+    "method": "POST",
+    "path": "/griduser",
+    "content_type": "application/x-www-form-urlencoded",
+    "request": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=loggedoutregion\u0026UserID\u0026RegionID=00000000-0000-4000-8000-000000001080\u0026Position=%3c0%2c\u002B0%2c\u002B0%3e\u0026LookAt=%3c0%2c\u002B0%2c\u002B0%3e",
+    "response": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003ESuccess\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "status": 200,
+    "accepted": true,
+    "detector_region_calls": [
+      "00000000-0000-4000-8000-000000001080"
+    ]
+  },
+  "startup_old_robust_failure": {
+    "method": "POST",
+    "path": "/griduser",
+    "content_type": "application/x-www-form-urlencoded",
+    "request": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=loggedoutregion\u0026UserID\u0026RegionID=00000000-0000-4000-8000-000000001081\u0026Position=%3c0%2c\u002B0%2c\u002B0%3e\u0026LookAt=%3c0%2c\u002B0%2c\u002B0%3e",
+    "response": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003EFailure\u003C/result\u003E\u003C/ServerResponse\u003E",
+    "status": 200,
+    "accepted": false,
+    "detector_region_calls": [
+      "00000000-0000-4000-8000-000000001081"
+    ]
+  },
+  "pre_root_endpoint_reconnect": {
+    "before": {
+      "circuit": true,
+      "watched": true,
+      "presence_session": true,
+      "scene_presence": true,
+      "online": true,
+      "last_region": "00000000-0000-4000-8000-000000000900",
+      "last_position": [
+        1,
+        2,
+        3
+      ],
+      "last_look": [
+        0,
+        1,
+        0
+      ]
+    },
+    "after": {
+      "circuit": true,
+      "watched": false,
+      "presence_session": false,
+      "scene_presence": true,
+      "online": false,
+      "last_region": "00000000-0000-4000-8000-000000000900",
+      "last_position": [
+        1,
+        2,
+        3
+      ],
+      "last_look": [
+        0,
+        1,
+        0
+      ]
+    },
+    "same_endpoint": {
+      "circuit": true,
+      "watched": true,
+      "presence_session": true,
+      "scene_presence": true,
+      "online": true,
+      "last_region": "00000000-0000-4000-8000-000000000900",
+      "last_position": [
+        1,
+        2,
+        3
+      ],
+      "last_look": [
+        0,
+        1,
+        0
+      ]
+    },
+    "same_endpoint_preserves_presence": true,
+    "presence_replaced": true,
+    "second_endpoint": 1000,
+    "same_circuit_restored": true
+  },
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5"
+}

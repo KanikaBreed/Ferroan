@@ -1,0 +1,9 @@
+{
+  "capture_revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "audited_reference_revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "file": "shutdown-kick-8583218.bin",
+  "source": "Q10e C# grid capture retained from the pre-Pin3 fixture",
+  "message": "KickUser",
+  "reason": "The simulator is going down.",
+  "scope": "Simulator shutdown artifact, not ordinary logout. Historical bytes are retained; this packet is absent from the new Pin3 normal-login sequence.cap."
+}

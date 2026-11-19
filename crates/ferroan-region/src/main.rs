@@ -27,9 +27,10 @@
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (Lookat)
+//   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs (ping and outgoing workers)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs (async movement dispatch)
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Ferroan changes: async lifecycle, generation-safe cleanup and process orchestration.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -137,6 +138,14 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         .with_handshake(config.handshake.clone())
         .with_timing(config.circuit_timing)?;
     let listener = TcpListener::bind(config.http_bind).await?;
+    // ActivityDetector.AddRegion clears users stranded by a previous process.
+    // Finish before exposing admission: stale Robust registration may still
+    // address this listener. An older Robust's refusal is nonfatal, as in C#.
+    notify_startup(
+        &GridUserClient::new(&config.grid_user_server_uri),
+        config.id,
+    )
+    .await;
     let caps = CapsRegistry::new(&config.server_uri)?;
     let (accepted, agents) = mpsc::channel(1);
     let simulation = SimulationState::new(&config, caps.clone(), accepted);
@@ -190,10 +199,10 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     simulation.stop_accepting();
     let _ = stop_circuits.send(());
     if !circuits_consumed {
-        // One active + one queued generation; two in-flight arrival writes,
-        // one GridUser and two Presence logout writes, plus admission, each
-        // bounded at 30s. Shutdown never cancels a write ahead of its cleanup.
-        let drained = tokio::time::timeout(Duration::from_secs(185), &mut circuits).await;
+        // One active + one queued generation; two arrival writes, up to six
+        // failed-login cleanup requests and one admission, each bounded at30s.
+        // Shutdown never cancels a write ahead of its cleanup.
+        let drained = tokio::time::timeout(Duration::from_secs(275), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
             Ok(Ok(Err(error))) => Some(RunError::Grid(error)),
@@ -224,6 +233,12 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     outcome
 }
 
+async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
+    if let Err(error) = grid_user.logged_out_region(region).await {
+        eprintln!("ferroan-region: startup GridUser cleanup failed: {error}");
+    }
+}
+
 async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
@@ -233,7 +248,6 @@ async fn dispatch_circuits(
     let grid_user = GridUserClient::new(&config.grid_user_server_uri);
     let presence = PresenceClient::new(&config.presence_server_uri);
     let mut stopping = false;
-    let mut failure = None;
     loop {
         let next = if stopping {
             agents.recv().await
@@ -249,13 +263,17 @@ async fn dispatch_circuits(
             }
         };
         let Some(mut agent) = next else { break };
+        let mut root_arrived = false;
         if !stopping {
             let expect = agent.expect;
             let arrival = config.arrival(agent.start_pos);
             let (report, mut report_ready) = oneshot::channel();
-            let serving = circuit.serve_one_with_arrival_reporting(expect, arrival, report);
+            let (opened, mut opening) = oneshot::channel();
+            let serving = circuit.serve_login(expect, arrival, report, opened);
             tokio::pin!(serving);
             let mut reported = false;
+            let mut connected = false;
+            let deadline = agent.accepted_at + config.login_connect_wait;
             loop {
                 tokio::select! {
                     biased;
@@ -264,9 +282,15 @@ async fn dispatch_circuits(
                         println!("ferroan-region: circuit replaced by a new login");
                         break;
                     }
+                    _ = &mut opening, if !connected => { connected = true; }
+                    _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
+                        eprintln!("ferroan-region: login viewer did not connect before its deadline");
+                        break;
+                    }
                     report = &mut report_ready, if !reported => {
                         reported = true;
                         if let Ok(report) = report {
+                            root_arrived = true;
                             // C# runs movement callbacks separately from ping,
                             // ACK and resend handling. Keep polling UDP during
                             // HTTP, but defer cancellation until writes finish.
@@ -309,20 +333,53 @@ async fn dispatch_circuits(
         // Keep the generation lease and admission gate throughout both HTTP
         // calls. A stale generation must never mark its replacement offline.
         let guard = agent.lock_lifecycle().await;
-        let result = notify_logout(&grid_user, &presence, &config, &agent).await;
+        let result = if root_arrived {
+            notify_logout(&grid_user, &presence, &config, &agent).await
+        } else if !config.login_connect_wait.is_zero() {
+            notify_failed_login(&grid_user, &presence, &agent).await
+        } else {
+            Ok(())
+        };
         drop(agent);
         drop(guard);
         if let Err(error) = result {
             eprintln!("ferroan-region: logout notification failed: {error}");
-            failure.get_or_insert(error);
-            stopping = true;
-            agents.close();
         }
     }
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(()),
+    Ok(())
+}
+
+async fn notify_failed_login(
+    grid_user: &GridUserClient,
+    presence: &PresenceClient,
+    agent: &AcceptedAgent,
+) -> Result<(), GridError> {
+    // Scene.LogOutLogin first checks that this exact Presence session remains;
+    // a later login elsewhere removes it and must not be marked offline here.
+    if !agent.may_logout_presence()
+        || !presence
+            .verify(agent.expect.agent_id, agent.expect.session_id)
+            .await?
+    {
+        return Ok(());
     }
+    if let Err(error) = presence.logout(agent.expect.session_id).await {
+        eprintln!("ferroan-region: failed-login Presence logout failed: {error}");
+    }
+    if agent.is_current()
+        && let Some(previous) = grid_user.location(agent.expect.agent_id).await?
+        && previous.online
+    {
+        grid_user
+            .logged_out(
+                agent.expect.agent_id,
+                previous.region_id,
+                previous.position,
+                previous.look_at,
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn notify_root_arrival(
@@ -403,12 +460,22 @@ mod tests {
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{
         AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, LogoutReply,
-        LogoutRequest, StartPingCheck, UseCircuitCode,
+        LogoutRequest, RegionHandshake, StartPingCheck, UseCircuitCode,
     };
     use ferroan_protocol::{Msg, build_packet, parse_packet};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    fn csharp_lifecycle() -> Value {
+        serde_json::from_str(include_str!("../../../fixtures/pin3/lifecycle.json")).unwrap()
+    }
+
+    async fn elapse(duration: Duration) {
+        tokio::time::pause();
+        tokio::time::advance(duration).await;
+        tokio::time::resume();
+    }
 
     struct Harness {
         state: SimulationState,
@@ -416,6 +483,9 @@ mod tests {
         base: String,
         udp: SocketAddr,
         requests: Arc<Mutex<Vec<FieldMap>>>,
+        presence_missing: Arc<std::sync::atomic::AtomicBool>,
+        sessions: Arc<Mutex<std::collections::HashSet<String>>>,
+        online: Arc<std::sync::atomic::AtomicBool>,
         stop: Option<oneshot::Sender<()>>,
         running: Option<tokio::task::JoinHandle<Result<(), GridError>>>,
         tasks: Vec<tokio::task::AbortHandle>,
@@ -438,19 +508,52 @@ mod tests {
             fail_arrival: bool,
             report_gate: Option<Arc<tokio::sync::Semaphore>>,
         ) -> Self {
+            Self::with_settings(
+                short_timeout,
+                fail_grid_user,
+                fail_arrival,
+                report_gate,
+                Duration::from_secs(120),
+            )
+            .await
+        }
+
+        async fn with_settings(
+            short_timeout: bool,
+            fail_grid_user: bool,
+            fail_arrival: bool,
+            report_gate: Option<Arc<tokio::sync::Semaphore>>,
+            login_wait: Duration,
+        ) -> Self {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let seen = requests.clone();
+            let presence_missing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let missing = presence_missing.clone();
+            let sessions = Arc::new(Mutex::new(std::collections::HashSet::new()));
+            let service_sessions = sessions.clone();
+            let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let service_online = online.clone();
             let app = axum::Router::new().fallback(move |body: String| {
                 let fields = ferroan_http::parse_query_string(&body).unwrap();
                 let method = match &fields["METHOD"] { Field::Str(s) => s.clone(), _ => panic!() };
+                let session = match fields.get("SessionID") { Some(Field::Str(s)) => s.clone(), _ => String::new() };
                 seen.lock().unwrap().push(fields);
                 let report_gate = report_gate.clone();
+                let missing = missing.clone();
+                let sessions = service_sessions.clone();
+                let online = service_online.clone();
                 async move {
                     if method == "report" && let Some(gate) = report_gate {
                         gate.acquire_owned().await.unwrap().forget();
                     }
-                    if method == "getagent" {
+                    if method == "logout" { sessions.lock().unwrap().remove(&session); }
+                    if method == "loggedout" && !fail_grid_user { online.store(false, std::sync::atomic::Ordering::Relaxed); }
+                    if method == "getagent" && (missing.load(std::sync::atomic::Ordering::Relaxed) || !sessions.lock().unwrap().contains(&session)) {
+                        "<ServerResponse><result>null</result></ServerResponse>"
+                    } else if method == "getagent" {
                         "<ServerResponse><result type=\"List\"><UserID>00000000-0000-4000-8000-000000000001</UserID><RegionID>00000000-0000-0000-0000-000000000000</RegionID></result></ServerResponse>"
+                    } else if method == "getgriduserinfo" {
+                        "<ServerResponse><result type=\"List\"><Online>True</Online><LastRegionID>00000000-0000-4000-8000-000000000900</LastRegionID><LastPosition>&lt;1, 2, 3&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt></result></ServerResponse>"
                     } else if (fail_grid_user && method == "loggedout") || (fail_arrival && matches!(method.as_str(), "report" | "setposition")) {
                         "<ServerResponse><result>Failure</result></ServerResponse>"
                     } else {
@@ -466,6 +569,7 @@ mod tests {
             )).unwrap();
             let regions = Config::parse("[Fixture Region]\nRegionUUID=00000000-0000-4000-8000-000000000002\nLocation=1000,1000\nInternalAddress=127.0.0.1\nInternalPort=9000\nExternalHostName=127.0.0.1\n").unwrap();
             let mut config = RegionConfig::from_configs(&config, &regions).unwrap();
+            config.login_connect_wait = login_wait;
             config.resolve_control_plane().await.unwrap();
             if short_timeout {
                 config.circuit_timing.ack_timeout = Duration::from_millis(20);
@@ -503,6 +607,9 @@ mod tests {
                 base,
                 udp,
                 requests,
+                presence_missing,
+                sessions,
+                online,
                 stop: Some(stop),
                 running: Some(running),
                 tasks,
@@ -521,6 +628,12 @@ mod tests {
                     body["session_id"] = json!(Uuid::from_u128(11).to_string());
                 }
             }
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(body["session_id"].as_str().unwrap().to_owned());
+            self.online
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -560,6 +673,53 @@ mod tests {
                 .iter()
                 .filter(|fields| fields.get("METHOD") == Some(&Field::Str(method.into())))
                 .count()
+        }
+
+        async fn seed_status(&self) -> reqwest::StatusCode {
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../fixtures/region-login/create-agent.request.json"
+            ))
+            .unwrap();
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap()
+                .post(format!(
+                    "{}/CAPS/{}0000/",
+                    self.base,
+                    fixture["caps_path"].as_str().unwrap()
+                ))
+                .header("content-type", "application/llsd+xml")
+                .body("<llsd><array/></llsd>")
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+
+        async fn wait_seed_removed(&self) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.seed_status().await != reqwest::StatusCode::NOT_FOUND {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn matches_csharp_state(&self, expected: &Value) {
+            let active = self.seed_status().await == reqwest::StatusCode::OK;
+            assert_eq!(json!(active), expected["circuit"]);
+            assert_eq!(
+                json!(self.online.load(std::sync::atomic::Ordering::Relaxed)),
+                expected["online"]
+            );
+            let initial_session = "00000000-0000-4000-8000-000000000004";
+            let present = !self
+                .presence_missing
+                .load(std::sync::atomic::Ordering::Relaxed)
+                && self.sessions.lock().unwrap().contains(initial_session);
+            assert_eq!(json!(present), expected["presence_session"]);
         }
 
         async fn finish(&mut self) -> Result<(), GridError> {
@@ -838,8 +998,9 @@ mod tests {
     async fn shutdown_and_inactivity_both_report_griduser_and_presence_logout() {
         for timeout in [false, true] {
             let mut harness = Harness::new(timeout, false).await;
-            harness.admit(false, false).await;
+            let expect = harness.admit(false, false).await;
             if timeout {
+                let _socket = open(&harness, expect).await;
                 tokio::time::timeout(Duration::from_secs(2), async {
                     while harness.count("logout") == 0 {
                         tokio::task::yield_now().await;
@@ -869,11 +1030,248 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn griduser_failure_still_removes_presence_and_fails_dispatcher() {
+    async fn griduser_failure_still_removes_presence_and_keeps_dispatcher_available() {
         let mut harness = Harness::new(false, true).await;
-        harness.admit(false, false).await;
-        assert!(harness.finish().await.is_err());
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = expect.agent_id;
+        logout.agent_data.session_id = expect.session_id;
+        send(&socket, &logout, 3).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // A failed handler did not stop admission or the dispatcher.
+        harness.wait_seed_removed().await;
+        assert_eq!(
+            json!(harness.seed_status().await == reqwest::StatusCode::OK),
+            csharp_lifecycle()["close_handlers"]["circuit"]
+        );
+        harness.admit(true, false).await;
         assert_eq!(harness.count("loggedout"), 1);
         assert_eq!(harness.count("logout"), 1);
+        let result = harness.finish().await;
+        assert_eq!(
+            json!(result.is_err()),
+            csharp_lifecycle()["close_handlers"]["close_threw"]
+        );
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_login_deadline_preserves_last_location_and_releases_caps() {
+        let mut harness =
+            Harness::with_settings(false, false, false, None, Duration::from_secs(120)).await;
+        harness.admit(false, false).await;
+        let fixture = csharp_lifecycle();
+        harness
+            .matches_csharp_state(&fixture["never_connected"]["before"])
+            .await;
+        elapse(Duration::from_secs(121)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("loggedout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        {
+            let requests = harness.requests.lock().unwrap();
+            let logout = requests
+                .iter()
+                .find(|f| f["METHOD"] == Field::Str("loggedout".into()))
+                .unwrap();
+            assert_eq!(
+                logout["RegionID"],
+                Field::Str("00000000-0000-4000-8000-000000000900".into())
+            );
+            assert_eq!(logout["Position"], Field::Str("<1, 2, 3>".into()));
+            assert_eq!(logout["LookAt"], Field::Str("<0, 1, 0>".into()));
+            let methods: Vec<_> = requests.iter().map(|f| f["METHOD"].clone()).collect();
+            assert_eq!(
+                methods,
+                [
+                    "getagent",
+                    "getagent",
+                    "logout",
+                    "getgriduserinfo",
+                    "loggedout"
+                ]
+                .map(|s| Field::Str(s.into()))
+            );
+        }
+        harness.wait_seed_removed().await;
+        harness
+            .matches_csharp_state(&fixture["never_connected"]["after"])
+            .await;
+        harness.admit(true, false).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_old_session_does_not_log_out_a_new_grid_login() {
+        let mut harness =
+            Harness::with_settings(false, false, false, None, Duration::from_secs(120)).await;
+        harness.admit(false, false).await;
+        harness
+            .presence_missing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        elapse(Duration::from_secs(121)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("getagent") < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        harness.finish().await.unwrap();
+        harness.wait_seed_removed().await;
+        harness
+            .matches_csharp_state(&csharp_lifecycle()["later_session"])
+            .await;
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("getgriduserinfo"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+    }
+
+    #[tokio::test]
+    async fn zero_wait_keeps_unopened_login_beyond_client_inactivity() {
+        let mut harness = Harness::with_settings(true, false, false, None, Duration::ZERO).await;
+        harness.admit(false, false).await;
+        elapse(Duration::from_secs(121)).await;
+        assert_eq!(harness.count("getagent"), 1);
+        assert_eq!(harness.count("logout"), 0);
+        assert!(!harness.running.as_ref().unwrap().is_finished());
+        assert_eq!(harness.seed_status().await, reqwest::StatusCode::OK);
+        harness
+            .matches_csharp_state(&csharp_lifecycle()["zero_wait"])
+            .await;
+        harness.finish().await.unwrap();
+        assert_eq!(harness.count("loggedout"), 0);
+    }
+
+    #[tokio::test]
+    async fn connected_and_root_logins_survive_login_deadline_like_csharp() {
+        for root in [false, true] {
+            let mut harness =
+                Harness::with_settings(false, false, false, None, Duration::from_secs(1)).await;
+            let expect = harness.admit(false, false).await;
+            let socket = open(&harness, expect).await;
+            let mut bytes = [0; 4096];
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let len = socket.recv(&mut bytes).await.unwrap();
+                    if parse_packet(&bytes[..len]).unwrap().id == RegionHandshake::ID {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            if root {
+                movement(&socket, expect, 2).await;
+                wait_arrival(&socket).await;
+            }
+            elapse(Duration::from_secs(2)).await;
+            harness
+                .matches_csharp_state(
+                    &csharp_lifecycle()[if root {
+                        "root_arrived"
+                    } else {
+                        "connected_past_deadline"
+                    }],
+                )
+                .await;
+            assert_eq!(harness.count("logout"), 0);
+            harness.finish().await.unwrap();
+            if !root {
+                harness
+                    .matches_csharp_state(&csharp_lifecycle()["removed_before_root"])
+                    .await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn same_endpoint_circuit_open_preserves_pending_login_like_csharp() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        let mut again = UseCircuitCode::default();
+        again.circuit_code.id = expect.agent_id;
+        again.circuit_code.session_id = expect.session_id;
+        again.circuit_code.code = expect.circuit_code;
+        send(&socket, &again, 2).await;
+        let mut ping = StartPingCheck::default();
+        ping.ping_id.ping_id = 74;
+        send(&socket, &ping, 3).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = [0; 4096];
+            loop {
+                let len = socket.recv(&mut bytes).await.unwrap();
+                if parse_packet(&bytes[..len]).unwrap().id == CompletePingCheck::ID {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let captured = csharp_lifecycle()["pre_root_endpoint_reconnect"].clone();
+        assert_eq!(captured["same_endpoint_preserves_presence"], true);
+        harness
+            .matches_csharp_state(&captured["same_endpoint"])
+            .await;
+        assert_eq!(harness.count("logout"), 0);
+        movement(&socket, expect, 4).await;
+        wait_arrival(&socket).await;
+        assert_eq!(harness.count("report"), 1);
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_cleanup_matches_csharp_and_ignores_old_robust_failure() {
+        for case in ["startup_success", "startup_old_robust_failure"] {
+            let fixture = csharp_lifecycle()[case].clone();
+            let captured = fixture.clone();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = calls.clone();
+            let app = axum::Router::new().fallback(
+                move |method: axum::http::Method,
+                      uri: axum::http::Uri,
+                      headers: axum::http::HeaderMap,
+                      body: String| {
+                    assert_eq!(method.as_str(), captured["method"].as_str().unwrap());
+                    assert_eq!(uri.path(), captured["path"].as_str().unwrap());
+                    assert_eq!(
+                        headers["content-type"],
+                        captured["content_type"].as_str().unwrap()
+                    );
+                    assert_eq!(body, captured["request"].as_str().unwrap());
+                    seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let reply = captured["response"].as_str().unwrap().to_owned();
+                    async move { reply }
+                },
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let region = fixture["detector_region_calls"][0]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            notify_startup(&GridUserClient::new(&base), region).await;
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::Relaxed),
+                fixture["detector_region_calls"].as_array().unwrap().len()
+            );
+            server.abort();
+        }
     }
 }

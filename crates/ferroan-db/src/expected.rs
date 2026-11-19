@@ -45,7 +45,7 @@ pub fn expected_version(backend: Backend, store: &str) -> Result<i32, DbError> {
         })
 }
 
-/// `OpenSim.Data.SQLite/Resources` at `858321883f5487a5d192d36ea9d7b90fa468310c`.
+/// `OpenSim.Data.SQLite/Resources` at `40432e0f83d3802434f898a4e28687bd977d5cf5`.
 const SQLITE: &[StoreVersion] = &[
     StoreVersion {
         name: "AgentPrefs",

@@ -28,7 +28,7 @@
 //   Source/OpenSim.Server.GridServer/AppData/GridServer.ini.example
 //   Source/OpenSim.Server.RegionServer/AppData/config-include/Grid.ini
 //   Source/OpenSim.Server.RegionServer/AppData/config-include/GridCommon.ini.example
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // The configuration files carry the repository's OpenSimulator BSD notice above.
 // Process management and capture orchestration are new Ferroan code.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
@@ -46,7 +46,7 @@
 //! do not collide. The bot logs in on Robust's own public address.
 //!
 //! The ini text follows GridServer.ini.example, Grid.ini and
-//! GridCommon.ini.example at Tranquillity `8583218`. Nothing here edits
+//! GridCommon.ini.example at Tranquillity `40432e0`. Nothing here edits
 //! those files.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
@@ -619,14 +619,17 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
                 .map_err(|error| format!("could not start login probe runtime: {error}"))?;
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
+            // Pin3's C# cleanup is asynchronous after the immediate reply.
+            // Wait for its actual service state before capturing parity probes.
+            runtime.block_on(login_probe::offline(&private_uri))?;
             if ferroan {
-                runtime.block_on(login_probe::offline(&private_uri))?;
                 let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, Some((&private_uri, &root, true)))?;
                 runtime.block_on(login_probe::offline(&private_uri))?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
             }
             let line = runtime.block_on(login_probe::probe(&format!("http://{ADVERTISED}:{home_port}"), &root, ferroan))?;
+            capture_missing_presence(SocketAddr::from((ROBUST_BIND, robust_private)), &root)?;
             report.lines.push('\n'); report.lines.push_str(&line);
         }
         Ok(report)
@@ -673,6 +676,29 @@ struct ProxyPaths {
 struct BotReport {
     lines: String,
     http: Vec<ferroan_capture::Record>,
+}
+
+#[cfg(target_os = "linux")]
+fn capture_missing_presence(upstream: SocketAddr, root: &Path) -> Result<(), String> {
+    let (addresses, proxy) = crate::live_proxy::Proxies::start(&[(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        upstream,
+        root.join("proxy-presence-missing.cap"),
+    )])?;
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?
+        .block_on(login_probe::missing_presence(&format!(
+            "http://{}",
+            addresses[0]
+        )));
+    let finished = proxy.finish();
+    match (result, finished) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    }
 }
 
 #[cfg(target_os = "linux")]

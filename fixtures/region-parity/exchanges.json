@@ -1,6 +1,6 @@
 {
   "source": "csharp",
-  "revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
   "exchanges": {
     "unknown-session": {
       "method": "POST",
@@ -916,7 +916,7 @@
       "request_content_type": "application/x-www-form-urlencoded",
       "request_content_encoding": "",
       "request_x_content_encoding": "",
-      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=loggedout&UserID=00000000-0000-4000-8000-000000000001&RegionID=00000000-0000-4000-8000-000000000002&Position=%3c128%2c+128%2c+26.033272%3e&LookAt=%3c0%2c+0%2c+0%3e",
+      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=loggedout&UserID=00000000-0000-4000-8000-000000000001&RegionID=00000000-0000-4000-8000-000000000002&Position=%3c128%2c+128%2c+26.034952%3e&LookAt=%3c0%2c+0%2c+0%3e",
       "status": 200,
       "response_content_type": "application/xml",
       "response_content_encoding": "",
@@ -947,7 +947,8 @@
       "response_content_type": "application/xml",
       "response_content_encoding": "",
       "response_x_content_encoding": "",
-      "response": "<?xml version=\"1.0\"?><ServerResponse><result>null</result></ServerResponse>"
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result>null</result></ServerResponse>",
+      "capture_source": "Explicit missing-session query through an isolated one-exchange proxy to the same live C# Robust backend; not inferred from overlapping CreateAgent inventory traffic."
     }
   }
 }

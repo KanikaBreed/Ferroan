@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Local test-grid probes of AgentHandlers, Scene.VerifyUserPresence and Robust's
-//! Presence/GridUser HTTP services at Tranquillity 858321883f5487a5d192d36ea9d7b90fa468310c.
+//! Presence/GridUser HTTP services at Tranquillity 40432e0f83d3802434f898a4e28687bd977d5cf5.
 //! Requests contain only committed fixture identities. Responses retain status,
 //! content type and parsed JSON; only the test region name/UUID are folded.
 
@@ -16,7 +16,7 @@ use std::{
 };
 
 const LIMIT: usize = 1024 * 1024;
-const PIN: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";
+const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
 const CASES: &[&str] = &[
@@ -215,6 +215,26 @@ fn fields(method: &str) -> FieldMap {
         .into_iter()
         .map(|(key, value)| (key.to_string(), Field::Str(value.to_string())))
         .collect()
+}
+
+/// A deliberate query for a fixed nonexistent test session. A dedicated proxy
+/// records it separately from CreateAgent's concurrent inventory prefetch.
+pub async fn missing_presence(private_uri: &str) -> Result<(), String> {
+    let mut request = fields("getagent");
+    request.insert(
+        "SessionID".into(),
+        Field::Str("00000000-0000-4000-8000-000000000004".into()),
+    );
+    let reply = post_before(
+        tokio::time::Instant::now() + Duration::from_secs(10),
+        &format!("{private_uri}/presence"),
+        &request,
+    )
+    .await?;
+    if !matches!(reply.get("result"), Some(Field::Str(value)) if value == "null") {
+        return Err("isolated missing-session probe unexpectedly found a Presence".into());
+    }
+    Ok(())
 }
 
 fn cases() -> Result<Vec<(&'static str, &'static str, Value)>, String> {

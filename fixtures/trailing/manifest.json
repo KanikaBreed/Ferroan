@@ -1,5 +1,8 @@
 {
   "tranquillity": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "capture_revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "audited_reference_revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "pin3_audit": "LLClientView.SendInstantMessage is unchanged across Pin2..Pin3; historical captured bytes retained, not recaptured.",
   "source": "cargo xtask live run ferrobot (preserved Q10 candidate, C# standalone)",
   "source_file": "Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs::SendInstantMessage",
   "channel_version": "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)",

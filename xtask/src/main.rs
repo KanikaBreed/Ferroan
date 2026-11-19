@@ -42,6 +42,8 @@ mod http_oracle;
 mod live;
 mod live_proxy;
 mod oracle;
+mod oracle_reference;
+mod pin3_oracle;
 mod schema;
 mod trailing_fixtures;
 
@@ -67,6 +69,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http verify [directory]
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
+       cargo xtask pin3 generate|verify
        cargo xtask live build
        cargo xtask live up [--assets ferroan]
        cargo xtask live down
@@ -88,6 +91,8 @@ fn main() -> ExitCode {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match refs.as_slice() {
         ["check"] => check(false),
+        ["pin3", "generate"] => pin3_oracle::run(true),
+        ["pin3", "verify"] => pin3_oracle::run(false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),

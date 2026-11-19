@@ -1,0 +1,428 @@
+{
+  "host_forms": [
+    {
+      "entry": "",
+      "host": "",
+      "address": null
+    },
+    {
+      "entry": "  robust:8003  ",
+      "host": "robust",
+      "address": null
+    },
+    {
+      "entry": "robust.example.invalid:8003",
+      "host": "robust.example.invalid",
+      "address": null
+    },
+    {
+      "entry": "fd00::1",
+      "host": "fd00::1",
+      "address": "fd00::1"
+    },
+    {
+      "entry": "[fd00::1]:8003",
+      "host": "[fd00::1]:8003",
+      "address": "fd00::1"
+    },
+    {
+      "entry": "http://[fd00::2]:8003/path",
+      "host": "[fd00::2]",
+      "address": null
+    },
+    {
+      "entry": "fe80::1%2",
+      "host": "fe80::1%2",
+      "address": "fe80::1"
+    },
+    {
+      "entry": "fe80::1%fixture0",
+      "host": "fe80::1%fixture0",
+      "address": "fe80::1"
+    },
+    {
+      "entry": "[fe80::1%2]:8003",
+      "host": "[fe80::1%2]:8003",
+      "address": "fe80::1"
+    },
+    {
+      "entry": "http://[fe80::1%2]:8003/path",
+      "host": "[fe80::1]",
+      "address": null
+    },
+    {
+      "entry": "::ffff:192.0.2.3",
+      "host": "::ffff:192.0.2.3",
+      "address": "192.0.2.3"
+    },
+    {
+      "entry": "http://robust.example.invalid:8003/path",
+      "host": "robust.example.invalid",
+      "address": null
+    },
+    {
+      "entry": "[]:8003",
+      "host": "",
+      "address": null
+    },
+    {
+      "entry": ":8003",
+      "host": "",
+      "address": null
+    },
+    {
+      "entry": "[broken",
+      "host": "",
+      "address": null
+    },
+    {
+      "entry": "192.0.2.0/24",
+      "host": "192.0.2.0/24",
+      "address": null
+    },
+    {
+      "entry": "file:///tmp/fixture",
+      "host": "file",
+      "address": null
+    },
+    {
+      "entry": "127.1",
+      "host": "127.1",
+      "address": "127.0.0.1"
+    },
+    {
+      "entry": "0x7f000001",
+      "host": "0x7f000001",
+      "address": "127.0.0.1"
+    },
+    {
+      "entry": "0177.0.0.1",
+      "host": "0177.0.0.1",
+      "address": "127.0.0.1"
+    },
+    {
+      "entry": "[fd00::1]:bad",
+      "host": "fd00::1",
+      "address": null
+    },
+    {
+      "entry": "[fd00::1]garbage",
+      "host": "fd00::1",
+      "address": null
+    },
+    {
+      "entry": "[fd00::1]:-1",
+      "host": "fd00::1",
+      "address": null
+    },
+    {
+      "entry": "[fd00::1]:65536",
+      "host": "[fd00::1]:65536",
+      "address": "fd00::1"
+    },
+    {
+      "entry": "[192.0.2.1]:8003",
+      "host": "192.0.2.1",
+      "address": null
+    },
+    {
+      "entry": "fe80::1%",
+      "host": "fe80::1%",
+      "address": "fe80::1"
+    },
+    {
+      "entry": "fe80::1%bad%zone",
+      "host": "fe80::1%bad%zone",
+      "address": "fe80::1"
+    }
+  ],
+  "combined_lists": {
+    "ini": "[Security]\nControlPlaneTrustedHosts=\u0022192.0.2.1;[::ffff:192.0.2.2]:8003|fd00::1 fe80::1%2\u0022\nTrustedControlPlaneHosts=robust:8003\n[Network]\nControlPlaneTrustedHosts=\u0022192.0.2.3,robust.example.invalid:8003,[]:8003,:8003,192.0.2.0/24\u0022\nTrustedControlPlaneHosts=http://[fd00::2]:8003/\nhostname=http://local.example.invalid:9000/\n",
+    "answers": {
+      "robust": [
+        "192.0.2.4"
+      ],
+      "robust.example.invalid": [
+        "192.0.2.5"
+      ],
+      "local.example.invalid": [
+        "192.0.2.6"
+      ]
+    },
+    "lookups": [
+      "robust",
+      "robust.example.invalid",
+      "local.example.invalid"
+    ],
+    "queries": [
+      {
+        "address": "127.0.0.9",
+        "allowed": true
+      },
+      {
+        "address": "::1",
+        "allowed": true
+      },
+      {
+        "address": "::ffff:127.0.0.9",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.1",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.2",
+        "allowed": true
+      },
+      {
+        "address": "::ffff:192.0.2.2",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.3",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.4",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.5",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.6",
+        "allowed": true
+      },
+      {
+        "address": "fd00::1",
+        "allowed": true
+      },
+      {
+        "address": "fd00::2",
+        "allowed": true
+      },
+      {
+        "address": "fe80::1%7",
+        "allowed": true
+      },
+      {
+        "address": "192.0.2.9",
+        "allowed": false
+      },
+      {
+        "address": "fd00::9",
+        "allowed": false
+      }
+    ]
+  },
+  "refresh": {
+    "ini": "[Network]\nControlPlaneTrustedHosts=moving.example.invalid,stable.example.invalid,missing.example.invalid\n",
+    "startup_answers": {
+      "moving.example.invalid": [
+        "192.0.2.10"
+      ],
+      "stable.example.invalid": [
+        "192.0.2.20"
+      ],
+      "missing.example.invalid": null
+    },
+    "startup_lookups": [
+      "moving.example.invalid",
+      "stable.example.invalid",
+      "missing.example.invalid"
+    ],
+    "steps": [
+      {
+        "seconds": 0,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.10"
+          ],
+          "stable.example.invalid": [
+            "192.0.2.20"
+          ],
+          "missing.example.invalid": null
+        },
+        "query": "192.0.2.10",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 59,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.10"
+          ],
+          "stable.example.invalid": [
+            "192.0.2.20"
+          ],
+          "missing.example.invalid": null
+        },
+        "query": "192.0.2.11",
+        "allowed": false,
+        "lookups": []
+      },
+      {
+        "seconds": 60,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.11"
+          ],
+          "stable.example.invalid": [],
+          "missing.example.invalid": [
+            "192.0.2.30"
+          ]
+        },
+        "query": "192.0.2.11",
+        "allowed": true,
+        "lookups": [
+          "moving.example.invalid",
+          "stable.example.invalid",
+          "missing.example.invalid"
+        ]
+      },
+      {
+        "seconds": 60,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.11"
+          ],
+          "stable.example.invalid": [],
+          "missing.example.invalid": [
+            "192.0.2.30"
+          ]
+        },
+        "query": "192.0.2.10",
+        "allowed": false,
+        "lookups": []
+      },
+      {
+        "seconds": 60,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.11"
+          ],
+          "stable.example.invalid": [],
+          "missing.example.invalid": [
+            "192.0.2.30"
+          ]
+        },
+        "query": "192.0.2.20",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 60,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.11"
+          ],
+          "stable.example.invalid": [],
+          "missing.example.invalid": [
+            "192.0.2.30"
+          ]
+        },
+        "query": "192.0.2.30",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 120,
+        "answers": {
+          "moving.example.invalid": null,
+          "stable.example.invalid": [
+            "192.0.2.21"
+          ],
+          "missing.example.invalid": []
+        },
+        "query": "192.0.2.21",
+        "allowed": true,
+        "lookups": [
+          "moving.example.invalid",
+          "stable.example.invalid",
+          "missing.example.invalid"
+        ]
+      },
+      {
+        "seconds": 120,
+        "answers": {
+          "moving.example.invalid": null,
+          "stable.example.invalid": [
+            "192.0.2.21"
+          ],
+          "missing.example.invalid": []
+        },
+        "query": "192.0.2.11",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 120,
+        "answers": {
+          "moving.example.invalid": null,
+          "stable.example.invalid": [
+            "192.0.2.21"
+          ],
+          "missing.example.invalid": []
+        },
+        "query": "192.0.2.20",
+        "allowed": false,
+        "lookups": []
+      },
+      {
+        "seconds": 120,
+        "answers": {
+          "moving.example.invalid": null,
+          "stable.example.invalid": [
+            "192.0.2.21"
+          ],
+          "missing.example.invalid": []
+        },
+        "query": "192.0.2.30",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 180,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.12"
+          ],
+          "stable.example.invalid": [
+            "192.0.2.22"
+          ],
+          "missing.example.invalid": [
+            "192.0.2.31"
+          ]
+        },
+        "query": "192.0.2.11",
+        "allowed": true,
+        "lookups": []
+      },
+      {
+        "seconds": 180,
+        "answers": {
+          "moving.example.invalid": [
+            "192.0.2.12"
+          ],
+          "stable.example.invalid": [
+            "192.0.2.22"
+          ],
+          "missing.example.invalid": [
+            "192.0.2.31"
+          ]
+        },
+        "query": "192.0.2.12",
+        "allowed": true,
+        "lookups": [
+          "moving.example.invalid",
+          "stable.example.invalid",
+          "missing.example.invalid"
+        ]
+      }
+    ]
+  },
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5"
+}

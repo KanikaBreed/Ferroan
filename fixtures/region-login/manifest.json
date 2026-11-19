@@ -1,0 +1,17 @@
+{
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "source": "cargo xtask live run login grid",
+  "exchanges": [
+    "register",
+    "deregister",
+    "query-access",
+    "create-agent"
+  ],
+  "normalization": "Test identity and endpoint folding described in README.md; form ordering, status, content type and decoded bodies retained.",
+  "provenance": {
+    "marker": "AgentMovementComplete.SimData.ChannelVersion",
+    "channel_version": "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)",
+    "region_handle": 1099511628032000,
+    "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival"
+  }
+}

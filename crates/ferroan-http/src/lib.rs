@@ -27,7 +27,7 @@ pub use xml::{build_xml_response, parse_xml_response, parse_xml_response_limited
 /// Tranquillity revision of the committed `fixtures/http` documents.
 /// `query.rs` and `xml.rs` were ported from `713857f`; regenerating at this
 /// pin left those case bytes unchanged.
-pub const REFERENCE_TRANQUILLITY_REVISION: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";
+pub const REFERENCE_TRANQUILLITY_REVISION: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
 
 /// `ParseXmlResponse` sets `XmlReaderSettings.MaxCharactersInDocument` to this.
 pub const MAX_XML_CHARS: usize = 50_000_000;

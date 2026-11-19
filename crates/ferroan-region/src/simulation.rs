@@ -55,7 +55,7 @@
 //   EntityTransferContext.cs, VersionInfo.cs and CapsUtil.cs, and
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Simulation/LocalSimulationConnector.cs
 //   and Source/OpenSim.Region.Framework/Scenes/Scene.cs (NewUserConnection)
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 //   OpenMetaverse.StructuredData/StructuredData.cs (OSD boolean/real conversions)
 //   and OpenMetaverse.StructuredData/JSON/JsonWriter.cs (real-number formatting)
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
@@ -137,6 +137,7 @@ struct ActiveSession {
 /// Keeps the accepted seed and circuit reserved until logout, timeout or failure.
 /// Do not log this value: it includes session credentials received from Robust.
 pub struct AcceptedAgent {
+    pub accepted_at: tokio::time::Instant,
     pub expect: CircuitExpect,
     pub secure_session_id: Uuid,
     pub caps_path: String,
@@ -293,6 +294,7 @@ impl SimulationState {
             lifecycle: self.lifecycle.clone(),
         };
         let accepted = AcceptedAgent {
+            accepted_at: tokio::time::Instant::now(),
             expect: CircuitExpect {
                 agent_id: fields.agent_id,
                 session_id: fields.session_id,
@@ -331,8 +333,8 @@ async fn handle(
         return bare(StatusCode::METHOD_NOT_ALLOWED);
     }
     if method == "POST"
-        && (!state.control_plane.allows(peer.ip())
-            || request.headers().contains_key("x-secondlife-shard"))
+        && (request.headers().contains_key("x-secondlife-shard")
+            || !state.control_plane.allows(peer.ip()).await)
     {
         return (StatusCode::FORBIDDEN, [(header::CONNECTION, "close")], "").into_response();
     }
