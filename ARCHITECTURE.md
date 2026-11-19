@@ -26,6 +26,13 @@ The bot and region circuit share bounded sequence, duplicate-history and retry-w
 
 Ferrobot is the external second test client from [D17](docs/DECISIONS.md). The harness builds its pinned revision in scratch, starts it with isolated test credentials, drives its signed loopback HTTP API, and records region UDP and HTTP. Its dedicated standalone and grid scenarios require fresh arrival, a 120-second session with ping replies and completed event-queue polls, chat both ways, an incoming IM and SIGTERM logout. The Ferroan-region variant checks arrival, the session and logout; chat and IM remain pending. Ferrobot is tracked for interrupted-run cleanup and is not a dependency of any Ferroan crate. Validation results are recorded in [TASKS.md](TASKS.md).
 
+`cargo xtask live up grid --region ferroan` leaves C# Robust and the C# neighbour
+running with the Ferroan home region for informal viewer checks. It uses direct
+listeners rather than capture proxies, defaults to loopback, and retains the
+same process identity records for `live down` and interrupted-launch recovery.
+The CI smoke check starts this command, uses its printed login URL for two
+strict bot sessions, and verifies process and listener cleanup after shutdown.
+
 ## Planned
 
 ### Programs

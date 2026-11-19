@@ -38,6 +38,47 @@ Notes worth recording even when the step passes: slow texture loads, textures th
 
 After the viewer has logged out, `cargo xtask live down` stops both the region and `ferroan-robust`. To run the C# comparison, stop this setup first and start `cargo xtask live up`. `cargo xtask live assets` separately compares the two services' captured texture and inventory HTTP and stops its processes when finished.
 
+## Firestorm on the Ferroan region (before G2)
+
+These are informal maintainer checks. Firestorm validation is pending; this
+setup does not mark G2 or any other gate passed.
+
+```sh
+cargo xtask live build
+cargo xtask live up grid --region ferroan
+```
+
+The command leaves C# Robust, the C# neighbour and the Ferroan home region
+running. Add the printed Robust login URL in Firestorm's Grid Manager, then
+log in as the printed account using the password from the printed file path.
+Keep that password and private viewer logs out of public reports. All servers
+bind to loopback by default, so run Firestorm on the same machine.
+
+| Step | Expected |
+| --- | --- |
+| Log in to `Ferroan Test` | Login completes and the viewer arrives on the Ferroan region |
+| Stay connected for at least two minutes | The session remains connected without a timeout |
+| Log out | The viewer completes logout |
+| Log in again with the same account, then log out | A fresh session arrives and completes logout |
+
+Terrain (P2.0e), avatar appearance (P2.0f), local chat (P2.0g), teleports inside
+the region and to its neighbour (P2.0h/P2.0i), objects, physics and scripts are
+not implemented yet. Inventory and texture fetch capabilities arrive with
+P2.0d7. A blank scene, missing avatar appearance or unavailable inventory is
+not evidence those later items have passed.
+
+Record informal notes with the date, Firestorm version/build, printed Ferroan
+commit, Tranquillity pin and result for each step. The maintainer supplies
+these observations; automated login checks cannot establish what Firestorm
+renders. After logging out, stop all three processes from this worktree:
+
+```sh
+cargo xtask live down
+```
+
+Use the same command after an interrupted launch. The harness retains process
+identities for recovery. Stop this grid before running another live scenario.
+
 ## Later gates
 
 Each phase adds a section here when its packages are written. The Phase 2 first-login milestone and gate will cover the same steps against a Ferroan region, side by side with a C# region.

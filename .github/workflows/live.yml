@@ -116,6 +116,8 @@ jobs:
           cargo xtask live run ferrobot grid --region ferroan
       - name: Compare C# and Ferroan asset services
         run: cargo xtask live assets
+      - name: Check persistent mixed-grid login, relogin and cleanup
+        run: cargo xtask live persistent-grid-check
       - name: Check the persistent Ferroan asset setup
         run: |
           set -euo pipefail

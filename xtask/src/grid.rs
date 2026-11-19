@@ -54,7 +54,7 @@
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -63,7 +63,14 @@ use crate::live;
 #[path = "grid_capture.rs"]
 mod login_capture;
 #[path = "grid_probe.rs"]
-mod login_probe;
+pub(crate) mod login_probe;
+
+#[path = "grid_up.rs"]
+mod persistent;
+
+pub fn up(bind: Ipv4Addr) -> std::process::ExitCode {
+    live::finish(persistent::up(bind))
+}
 
 #[path = "ferrobot_capture.rs"]
 pub(crate) mod ferrobot_capture;
@@ -122,6 +129,7 @@ struct RegionIni<'a> {
     y: u32,
     http_bind: Ipv4Addr,
     udp_bind: Ipv4Addr,
+    advertised: Ipv4Addr,
     http_port: u16,
     regions_dir: &'a str,
     public_proxy: u16,
@@ -154,6 +162,7 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
 [Network]
     http_listener_port = {http_port}
     bind_ip_address = "{http_bind}"
+    ControlPlaneTrustedHosts = "{advertised}"
 
 [Estates]
     DefaultEstateName = "Ferroan Test Estate"
@@ -165,7 +174,7 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
 [Architecture]
     Include-Architecture = "config-include/Grid.ini"
 "#,
-        advertised = ADVERTISED,
+        advertised = region.advertised,
         public_proxy = region.public_proxy,
         private_proxy = region.private_proxy,
         dir = region.regions_dir,
@@ -196,13 +205,14 @@ ExternalHostName = {advertised}
         uuid = region.uuid,
         x = region.x,
         y = region.y,
-        advertised = ADVERTISED,
+        advertised = region.advertised,
         udp_bind = region.udp_bind,
         port = region.http_port,
     )
 }
 
 fn robust_ini(
+    bind: Ipv4Addr,
     public_port: u16,
     private_port: u16,
     database: &str,
@@ -340,7 +350,6 @@ fn robust_ini(
     gridname = "Ferroan Test Grid"
     gridnick = "ferroan"
 "#,
-        bind = ROBUST_BIND,
     ))
 }
 
@@ -378,15 +387,19 @@ fn grid_root() -> PathBuf {
 #[cfg(target_os = "linux")]
 struct Proc {
     child: Child,
-    stdin: Option<ChildStdin>,
+    stdin: Option<Box<dyn std::io::Write>>,
     log: PathBuf,
     tracked: crate::grid_state::Tracked,
+    detached: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl Drop for Proc {
     fn drop(&mut self) {
         drop(self.stdin.take());
+        if self.detached {
+            return;
+        }
         stop_child(&mut self.child);
         if let Err(error) = self.tracked.forget() {
             eprintln!("live: grid process cleanup: {error}");
@@ -594,6 +607,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             x: HOME_X,
             y: HOME_Y,
             http_bind: HOME_BIND,
+            advertised: ADVERTISED,
             udp_bind: if ferroan && scenario == "ferrobot" {
                 HOME_BIND
             } else {
@@ -620,6 +634,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             x: NEIGHBOUR_X,
             y: NEIGHBOUR_Y,
             http_bind: NEIGHBOUR_BIND,
+            advertised: ADVERTISED,
             udp_bind: ADVERTISED,
             http_port: neighbour_port,
             public_proxy,
@@ -848,6 +863,25 @@ fn start_robust(
     private_port: u16,
     passwords: &[String],
 ) -> Result<Proc, String> {
+    start_robust_at(
+        root,
+        public_port,
+        private_port,
+        passwords,
+        ROBUST_BIND,
+        None,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn start_robust_at(
+    root: &Path,
+    public_port: u16,
+    private_port: u16,
+    passwords: &[String],
+    bind: Ipv4Addr,
+    console: Option<&fs::File>,
+) -> Result<Proc, String> {
     let binary = live::grid_server_binary();
     if !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
@@ -863,6 +897,7 @@ fn start_robust(
         return Err(format!("missing {}", assets.display()));
     }
     let ini = robust_ini(
+        bind,
         public_port,
         private_port,
         database.to_str().ok_or("database path is not utf-8")?,
@@ -877,7 +912,7 @@ fn start_robust(
     let log = root.join("robust.log");
     let ini_arg = ini_path.to_str().ok_or("robust ini path is not utf-8")?;
     let empty_arg = empty.to_str().ok_or("robust config path is not utf-8")?;
-    let mut proc = spawn_proc(
+    let mut proc = spawn_proc_with_input(
         &binary,
         &[
             "--inimaster",
@@ -890,6 +925,7 @@ fn start_robust(
         binary.parent().unwrap_or(Path::new(".")),
         &log,
         true,
+        console,
     )?;
     wait_log(
         &mut proc.child,
@@ -898,8 +934,8 @@ fn start_robust(
         live::START_TIMEOUT,
         passwords,
     )?;
-    live::require_listen(proc.child.id(), ROBUST_BIND, public_port)?;
-    live::require_listen(proc.child.id(), ROBUST_BIND, private_port)?;
+    live::require_listen(proc.child.id(), bind, public_port)?;
+    live::require_listen(proc.child.id(), bind, private_port)?;
     Ok(proc)
 }
 
@@ -951,6 +987,7 @@ struct RegionStart {
     y: u32,
     http_bind: Ipv4Addr,
     udp_bind: Ipv4Addr,
+    advertised: Ipv4Addr,
     http_port: u16,
     public_proxy: u16,
     private_proxy: u16,
@@ -1000,6 +1037,7 @@ fn start_region(
         y: spec.y,
         http_bind: spec.http_bind,
         udp_bind: spec.udp_bind,
+        advertised: spec.advertised,
         http_port: spec.http_port,
         regions_dir: &regions_text,
         public_proxy: spec.public_proxy,
@@ -1141,6 +1179,18 @@ fn spawn_proc(
     log: &Path,
     pipe_stdin: bool,
 ) -> Result<Proc, String> {
+    spawn_proc_with_input(binary, args, cwd, log, pipe_stdin, None)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_proc_with_input(
+    binary: &Path,
+    args: &[&str],
+    cwd: &Path,
+    log: &Path,
+    pipe_stdin: bool,
+    input: Option<&fs::File>,
+) -> Result<Proc, String> {
     use std::os::unix::process::CommandExt;
     if let Some(parent) = log.parent() {
         fs::create_dir_all(parent)
@@ -1157,7 +1207,18 @@ fn spawn_proc(
         .current_dir(cwd)
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(err_file));
-    if pipe_stdin {
+    let console = input
+        .map(|file| {
+            file.try_clone()
+                .map_err(|error| format!("could not clone grid console: {error}"))
+        })
+        .transpose()?;
+    if let Some(file) = input {
+        command
+            .stdin(Stdio::from(file.try_clone().map_err(|error| {
+                format!("could not clone grid console: {error}")
+            })?));
+    } else if pipe_stdin {
         command.stdin(Stdio::piped());
     } else {
         command.stdin(Stdio::null());
@@ -1171,7 +1232,14 @@ fn spawn_proc(
             return Err(format!("could not start {}: {error}", binary.display()));
         }
     };
-    let stdin = child.stdin.take();
+    let stdin = console
+        .map(|file| Box::new(file) as Box<dyn std::io::Write>)
+        .or_else(|| {
+            child
+                .stdin
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn std::io::Write>)
+        });
     let tracked = match launch.record(&child) {
         Ok(tracked) => tracked,
         Err(error) => {
@@ -1187,6 +1255,7 @@ fn spawn_proc(
         stdin,
         log: log.to_path_buf(),
         tracked,
+        detached: false,
     })
 }
 
@@ -1321,6 +1390,7 @@ mod tests {
             x: HOME_X,
             y: HOME_Y,
             http_bind: HOME_BIND,
+            advertised: ADVERTISED,
             udp_bind: ADVERTISED,
             http_port: 9000,
             regions_dir: "/tmp/ferroan-regions",
@@ -1352,6 +1422,7 @@ mod tests {
     #[test]
     fn the_robust_ini_binds_its_own_address_and_has_no_password() {
         let ini = robust_ini(
+            ROBUST_BIND,
             8002,
             8003,
             "/tmp/ferroan-robust.db",
@@ -1377,6 +1448,34 @@ mod tests {
         assert!(ini.contains("DefaultLibrary = \"/tmp/Libraries.xml\""));
         assert!(!ini.contains("password"));
         assert!(plain("bad;path", "database").is_err());
+    }
+
+    #[test]
+    fn persistent_grid_config_advertises_and_trusts_its_direct_bind() {
+        for bind in [Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 0, 2, 7)] {
+            let mut region = sample_region(None);
+            region.http_bind = bind;
+            region.udp_bind = bind;
+            region.advertised = bind;
+            let server = region_server_ini(&region).unwrap();
+            assert!(server.contains(&format!("bind_ip_address = \"{bind}\"")));
+            assert!(server.contains(&format!("ControlPlaneTrustedHosts = \"{bind}\"")));
+            assert!(server.contains(&format!("BaseHostname = \"{bind}\"")));
+            let regions = regions_ini(&region);
+            assert!(regions.contains(&format!("InternalAddress = {bind}")));
+            assert!(regions.contains(&format!("ExternalHostName = {bind}")));
+            let robust = robust_ini(
+                bind,
+                8002,
+                8003,
+                "/tmp/grid.db",
+                "/tmp/library.xml",
+                "/tmp/assets.xml",
+            )
+            .unwrap();
+            assert!(robust.contains(&format!("bind_ip_address = \"{bind}\"")));
+            assert!(robust.contains(&format!("login = http://{bind}:8002/")));
+        }
     }
 
     #[test]
