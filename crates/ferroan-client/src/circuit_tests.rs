@@ -360,11 +360,11 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
         assert_eq!(parse_packet(actual).unwrap().sequence, 4);
         assert_eq!(state.sequence.peek(), 5);
         assert!(state.unacked.contains(4));
-        assert!(
-            sent.iter().all(
-                |bytes| parse_packet(bytes).unwrap().id != ferroan_protocol::msgs::KickUser::ID
-            )
-        );
+        assert!(sent.iter().all(|bytes| {
+            let id = parse_packet(bytes).unwrap().id;
+            id != ferroan_protocol::msgs::KickUser::ID
+                && id != ferroan_protocol::msgs::DisableSimulator::ID
+        }));
     }
 
     // With no incoming ACK at all, the real serving loop must still complete.
@@ -393,13 +393,28 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
     .expect("logout must not wait for an ACK")
     .unwrap();
     assert!(io.incoming.lock().unwrap().is_empty());
+    let sent = io.sent.lock().unwrap();
     assert!(
-        io.sent
-            .lock()
-            .unwrap()
-            .iter()
+        sent.iter()
             .any(|bytes| parse_packet(bytes).unwrap().id == LogoutReply::ID)
     );
+    assert!(sent.iter().all(|bytes| {
+        let id = parse_packet(bytes).unwrap().id;
+        id != ferroan_protocol::msgs::KickUser::ID
+            && id != ferroan_protocol::msgs::DisableSimulator::ID
+    }));
+}
+
+#[test]
+fn captured_disable_simulator_is_the_csharp_constructor_datagram() {
+    let packet = parse_packet(include_bytes!(
+        "../../../fixtures/circuit/disable-simulator.bin"
+    ))
+    .unwrap();
+    assert_eq!(packet.id, ferroan_protocol::msgs::DisableSimulator::ID);
+    assert_eq!(packet.flags, ferroan_protocol::PacketFlags::RELIABLE);
+    assert_eq!(packet.sequence, 0);
+    assert!(packet.body.is_empty());
 }
 
 #[test]

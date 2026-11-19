@@ -8,7 +8,7 @@
 
 use ferroan_protocol::msgs::{
     AlertMessage, AvatarAppearance, ChildAgentUpdate, ImprovedInstantMessage, InviteGroupResponse,
-    RegionHandshake, RegionInfo, SimStatus, TransferInventory,
+    RegionHandshake, RegionInfo, SimStatus, TransferInventory, improved_instant_message,
 };
 use ferroan_protocol::{Msg, Writer, parse_packet, reencode_body};
 
@@ -111,7 +111,7 @@ fn im_estate_without_metadata_matches_pinned_sender_layout() {
 }
 
 #[test]
-fn optional_singles_reject_partially_present_bytes() {
+fn optional_singles_ignore_partially_present_bytes() {
     for (name, id, width) in [
         ("ImprovedInstantMessage", ImprovedInstantMessage::ID, 4),
         ("InviteGroupResponse", InviteGroupResponse::ID, 4),
@@ -121,13 +121,57 @@ fn optional_singles_reject_partially_present_bytes() {
         let base = oracle_body(name);
         for present in 1..width {
             let mut bytes = base.clone();
-            bytes.resize(bytes.len() + present, 0);
-            assert!(
-                reencode_body(id, &bytes).is_err(),
+            bytes.resize(bytes.len() + present, 0x5a);
+            assert_eq!(
+                reencode_body(id, &bytes).unwrap(),
+                base,
                 "{name}: {present}/{width}"
             );
         }
     }
+    // A partial Variable block is still an error. RegionHandshake's trailing
+    // RegionInfo4 is a count plus two U64s. A count with only part of that
+    // payload fails. A count and nothing else is a zero-filled field at EOF,
+    // which Reader::take still accepts.
+    let full = oracle_body("RegionHandshake");
+    let mut partial = full[..full.len() - 17].to_vec();
+    partial.push(1);
+    partial.extend_from_slice(&[0, 0, 0, 0]);
+    assert!(reencode_body(RegionHandshake::ID, &partial).is_err());
+}
+
+#[test]
+fn populated_trailing_blocks_are_kept_and_only_an_empty_suffix_is_omitted() {
+    let kept = ImprovedInstantMessage {
+        omitted_trailing_blocks: 2,
+        estate_block: improved_instant_message::EstateBlock { estate_id: 7 },
+        meta_data: vec![improved_instant_message::MetaData {
+            data: b"x".to_vec(),
+        }],
+        ..ImprovedInstantMessage::default()
+    };
+    let bytes = encoded(&kept);
+    let decoded = ImprovedInstantMessage::decode(&bytes).unwrap();
+    assert_eq!(decoded.estate_block.estate_id, 7);
+    assert_eq!(decoded.meta_data[0].data, b"x");
+    assert_eq!(encoded(&decoded), bytes);
+
+    // default() keeps the four zero EstateBlock bytes and omits empty
+    // MetaData. Asking to omit two trailing blocks drops that empty estate
+    // too. The oracle prefix is a populated sender body, so it is not the
+    // empty encoding.
+    let both_empty = ImprovedInstantMessage {
+        omitted_trailing_blocks: 2,
+        ..ImprovedInstantMessage::default()
+    };
+    let shorter = encoded(&both_empty);
+    let decoded_empty = ImprovedInstantMessage::decode(&shorter).unwrap();
+    assert_eq!(decoded_empty.omitted_trailing_blocks, 2);
+    assert_eq!(decoded_empty.estate_block.estate_id, 0);
+    assert!(decoded_empty.meta_data.is_empty());
+    let mut with_estate = shorter.clone();
+    with_estate.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(encoded(&ImprovedInstantMessage::default()), with_estate);
 }
 
 #[test]

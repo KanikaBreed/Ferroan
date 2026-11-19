@@ -398,7 +398,7 @@ pub mod msgs {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-pub use msgs::{message_info, reencode_body, scrub_body};
+pub use msgs::{IdCheck, id_check, message_info, reencode_body, scrub_body};
 pub use packet::{reencode_datagram, scrub_datagram};
 
 #[cfg(test)]
@@ -413,6 +413,40 @@ mod tests {
         assert_eq!(UseCircuitCode::ID, MsgId::Low(3));
         const { assert!(ObjectUpdate::ZEROCODED) };
         assert_eq!(message_info(MsgId::High(1)).unwrap().name, "StartPingCheck");
+    }
+
+    #[test]
+    fn id_checks_follow_the_agent_data_rule() {
+        assert_eq!(
+            id_check(SetAlwaysRun::ID),
+            Some(IdCheck {
+                agent: 0,
+                session: 16
+            })
+        );
+        for message in [
+            ChildAgentUpdate::ID,
+            ChildAgentAlive::ID,
+            ChildAgentPositionUpdate::ID,
+        ] {
+            assert_eq!(
+                id_check(message),
+                Some(IdCheck {
+                    agent: 12,
+                    session: 28
+                })
+            );
+        }
+        assert_eq!(
+            id_check(RemoveAttachment::ID),
+            Some(IdCheck {
+                agent: 0,
+                session: 16
+            })
+        );
+        assert!(id_check(UseCircuitCode::ID).is_none());
+        assert!(id_check(PacketAck::ID).is_none());
+        assert!(id_check(DisableSimulator::ID).is_none());
     }
 
     #[test]

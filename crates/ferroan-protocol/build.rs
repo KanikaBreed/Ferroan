@@ -82,6 +82,97 @@ fn optional_suffix(m: &Message) -> usize {
         .count()
 }
 
+fn fixed_width(ty: &VarType) -> Option<usize> {
+    match ty {
+        VarType::Simple(_, "bool" | "u8" | "i8") => Some(1),
+        VarType::Simple(_, "u16" | "i16" | "ipport") => Some(2),
+        VarType::Simple(_, "u32" | "i32" | "f32" | "ipaddr") => Some(4),
+        VarType::Simple(_, "u64" | "i64" | "f64") => Some(8),
+        VarType::Simple(_, "vec3" | "quat") => Some(12),
+        VarType::Simple(_, "vec4" | "uuid") => Some(16),
+        VarType::Simple(_, "dvec3") => Some(24),
+        VarType::Fixed(n) => Some(*n),
+        VarType::Variable(_) => None,
+        VarType::Simple(_, other) => panic!("unknown field width {other}"),
+    }
+}
+
+/// A requested omit applies only while the block is empty. Variable emptiness
+/// is an empty collection; a vector of default elements is still data.
+fn empty_block_expr(modname: &str, block: &Block) -> String {
+    let field = snake(&block.name);
+    match block.kind {
+        BlockKind::Variable => format!("self.{field}.is_empty()"),
+        BlockKind::Single => {
+            format!("self.{field} == {modname}::{}::default()", block.name)
+        }
+        BlockKind::Multiple(_) => format!(
+            "self.{field}.iter().all(|block| *block == {modname}::{}::default())",
+            block.name
+        ),
+    }
+}
+
+/// libopenmetaverse `NeedValidateIDs`: an AgentData single that contains both
+/// AgentID and SessionID. Offsets are into the message body.
+fn id_offsets(message: &Message) -> Option<(usize, usize)> {
+    let agent_at = message.blocks.iter().position(|block| {
+        block.name == "AgentData"
+            && matches!(block.kind, BlockKind::Single)
+            && block.vars.iter().any(|var| var.name == "AgentID")
+            && block.vars.iter().any(|var| var.name == "SessionID")
+    })?;
+    let mut offset = 0usize;
+    for block in &message.blocks[..agent_at] {
+        let width = match block.kind {
+            BlockKind::Single => fixed_width_block(message, block),
+            BlockKind::Multiple(count) => fixed_width_block(message, block) * count,
+            BlockKind::Variable => panic!(
+                "{} variable block {} precedes AgentData ids",
+                message.name, block.name
+            ),
+        };
+        offset += width;
+    }
+    let mut agent = None;
+    let mut session = None;
+    let mut inner = offset;
+    for var in &message.blocks[agent_at].vars {
+        if agent.is_some() && session.is_some() {
+            break;
+        }
+        let Some(width) = fixed_width(&var.ty) else {
+            panic!(
+                "{} variable field {}.{} precedes agent ids",
+                message.name, message.blocks[agent_at].name, var.name
+            );
+        };
+        if var.name == "AgentID" {
+            agent = Some(inner);
+        }
+        if var.name == "SessionID" {
+            session = Some(inner);
+        }
+        inner += width;
+    }
+    Some((agent.expect("AgentID"), session.expect("SessionID")))
+}
+
+fn fixed_width_block(message: &Message, block: &Block) -> usize {
+    block
+        .vars
+        .iter()
+        .map(|var| {
+            fixed_width(&var.ty).unwrap_or_else(|| {
+                panic!(
+                    "{} variable field {}.{} precedes AgentData ids",
+                    message.name, block.name, var.name
+                )
+            })
+        })
+        .sum()
+}
+
 fn tokenize(src: &str) -> Vec<String> {
     let mut toks = Vec::new();
     for line in src.lines() {
@@ -422,14 +513,38 @@ fn generate(msgs: &[Message]) -> String {
         let _ = writeln!(s, "    const ZEROCODED: bool = {};", m.zerocoded);
         let _ = writeln!(s, "    const TRUSTED: bool = {};", m.trusted);
         let _ = writeln!(s, "    fn encode_body(&self, w: &mut Writer) {{");
+        if optional != 0 {
+            // Omit a requested trailing suffix only while those blocks are
+            // empty. A block that holds data is written, and so is everything
+            // before it; an empty block is still written when the caller sets
+            // omitted_trailing_blocks to zero.
+            let _ = writeln!(
+                s,
+                "        let requested_omit = self.omitted_trailing_blocks.min({optional});"
+            );
+            let _ = writeln!(s, "        let mut omit_trailing = 0usize;");
+            let mut indent = 8;
+            for block in m.blocks.iter().rev().take(optional) {
+                let pred = empty_block_expr(&modname, block);
+                let _ = writeln!(
+                    s,
+                    "{:indent$}if requested_omit > omit_trailing && {pred} {{",
+                    "",
+                    indent = indent
+                );
+                indent += 4;
+                let _ = writeln!(s, "{:indent$}omit_trailing += 1;", "", indent = indent);
+            }
+            for _ in 0..optional {
+                indent -= 4;
+                let _ = writeln!(s, "{:indent$}}}", "", indent = indent);
+            }
+        }
         for (index, b) in m.blocks.iter().enumerate() {
             let f = snake(&b.name);
             if index >= optional_start {
                 let remaining = m.blocks.len() - index;
-                let _ = writeln!(
-                    s,
-                    "        if self.omitted_trailing_blocks.min({optional}) >= {remaining} {{ return; }}"
-                );
+                let _ = writeln!(s, "        if omit_trailing >= {remaining} {{ return; }}");
             }
             match b.kind {
                 BlockKind::Single => {
@@ -455,43 +570,69 @@ fn generate(msgs: &[Message]) -> String {
             s,
             "    fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {{"
         );
+        // A short optional Single is not zero-filled. That block and every
+        // later optional block count as omitted, matching libopenmetaverse
+        // FromBytes ignoring bytes past its shorter template. The flag exists
+        // only when a later block must see it; a last-block Single just
+        // returns default, and a Variable-only suffix never sets it.
+        let stops_later = m.blocks.iter().enumerate().any(|(index, b)| {
+            index >= optional_start
+                && index + 1 < m.blocks.len()
+                && matches!(b.kind, BlockKind::Single)
+        });
         if optional != 0 {
-            let _ = writeln!(s, "        let mut omitted_trailing_blocks = 0;");
+            let _ = writeln!(s, "        let mut omitted_trailing_blocks = 0usize;");
+            if stops_later {
+                let _ = writeln!(s, "        let mut stop_trailing = false;");
+            }
         }
         for (index, b) in m.blocks.iter().enumerate() {
             let f = snake(&b.name);
             let _ = writeln!(s, "        let {f} = {{");
             if index >= optional_start {
-                let _ = writeln!(
-                    s,
-                    "            if r.remaining() == 0 {{ omitted_trailing_blocks += 1; Default::default() }} else {{"
-                );
+                if stops_later {
+                    let _ = writeln!(
+                        s,
+                        "            if stop_trailing || r.remaining() == 0 {{ omitted_trailing_blocks += 1; Default::default() }} else {{"
+                    );
+                } else {
+                    let _ = writeln!(
+                        s,
+                        "            if r.remaining() == 0 {{ omitted_trailing_blocks += 1; Default::default() }} else {{"
+                    );
+                }
             }
             match b.kind {
                 BlockKind::Single => {
                     if index >= optional_start {
-                        // All viewer-only Singles are fixed-width. Reject a
-                        // partial block instead of applying Reader's legacy
-                        // zero fill to a missing field inside that block.
                         let minimum: usize = b
                             .vars
                             .iter()
-                            .map(|v| match v.ty {
-                                VarType::Simple(_, "bool" | "u8" | "i8") => 1,
-                                VarType::Simple(_, "u32" | "i32") => 4,
-                                VarType::Simple(_, "u64" | "i64") => 8,
-                                _ => panic!(
-                                    "unexpected optional Single layout {}.{}",
-                                    m.name, b.name
-                                ),
+                            .map(|v| {
+                                fixed_width(&v.ty).unwrap_or_else(|| {
+                                    panic!(
+                                        "unexpected optional Single layout {}.{}",
+                                        m.name, b.name
+                                    )
+                                })
                             })
                             .sum();
-                        let _ = writeln!(
-                            s,
-                            "            if r.remaining() < {minimum} {{ return Err(DecodeError::Eof); }}"
-                        );
+                        if index + 1 < m.blocks.len() {
+                            let _ = writeln!(
+                                s,
+                                "            if r.remaining() < {minimum} {{ stop_trailing = true; omitted_trailing_blocks += 1; Default::default() }} else {{ {modname}::{}::decode(r)? }}",
+                                b.name
+                            );
+                        } else {
+                            let _ = writeln!(
+                                s,
+                                "            if r.remaining() < {minimum} {{ omitted_trailing_blocks += 1; Default::default() }} else {{ {modname}::{}::decode(r)? }}",
+                                b.name
+                            );
+                        }
+                    } else {
+                        let _ = writeln!(s, "            {modname}::{}::decode(r)?", b.name);
                     }
-                    let _ = writeln!(s, "            {modname}::{}::decode(r)?", b.name);
                 }
                 BlockKind::Multiple(n) => {
                     let _ = writeln!(
@@ -596,6 +737,40 @@ fn generate(msgs: &[Message]) -> String {
         );
     }
     s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
+
+    // Body offsets of AgentID and SessionID. None when the template does not
+    // mark the message NeedValidateIDs.
+    s.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
+    s.push_str("pub struct IdCheck {\n    pub agent: usize,\n    pub session: usize,\n}\n");
+    s.push_str("pub fn id_check(id: MsgId) -> Option<IdCheck> {\n    match id {\n");
+    let mut checked = 0usize;
+    let mut seen_ids = std::collections::BTreeSet::new();
+    for m in msgs {
+        let Some((agent, session)) = id_offsets(m) else {
+            continue;
+        };
+        let id = match m.freq.as_str() {
+            "High" => format!("MsgId::High({})", m.number),
+            "Medium" => format!("MsgId::Medium({})", m.number),
+            _ => format!("MsgId::Low({})", m.number & 0xFFFF),
+        };
+        if !seen_ids.insert(id.clone()) {
+            panic!("duplicate NeedValidateIDs message id {id} ({})", m.name);
+        }
+        let _ = writeln!(
+            s,
+            "        {id} => Some(IdCheck {{ agent: {agent}, session: {session} }}),"
+        );
+        checked += 1;
+    }
+    // libopenmetaverse generates 229 Packet classes with NeedValidateIDs.
+    // The same AgentData rule also matches AvatarPickerRequestBackend,
+    // RemoveAttachment and UpdateAttachment, which have no generated class.
+    assert_eq!(
+        checked, 232,
+        "NeedValidateIDs messages in message_template.msg"
+    );
+    s.push_str("        _ => None,\n    }\n}\n");
     s
 }
 

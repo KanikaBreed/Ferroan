@@ -43,7 +43,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferroan_client::{CapsRegistry, CircuitServer};
+use ferroan_client::{CapsRegistry, CircuitServer, CircuitStop};
 use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
@@ -286,17 +286,41 @@ async fn dispatch_circuits(
             let arrival = config.arrival(agent.start_pos);
             let (report, mut report_ready) = oneshot::channel();
             let (opened, mut opening) = oneshot::channel();
-            let serving = circuit.serve_login(expect, arrival, report, opened);
+            let (close_tx, close_rx) = oneshot::channel();
+            let serving = circuit.serve_login(expect, arrival, report, opened, close_rx);
             tokio::pin!(serving);
+            let mut close_tx = Some(close_tx);
             let mut reported = false;
             let mut connected = false;
             let deadline = agent.accepted_at + config.login_connect_wait;
             loop {
                 tokio::select! {
                     biased;
-                    _ = &mut stop => { stopping = true; agents.close(); break; }
+                    _ = &mut stop => {
+                        stopping = true;
+                        agents.close();
+                        // Scene.Close kicks a connected viewer. An unopened
+                        // login is dropped with no DisableSimulator.
+                        if connected && let Some(tx) = close_tx.take() {
+                            let _ = tx.send(CircuitStop::Shutdown);
+                            match (&mut serving).await {
+                                Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                                Err(error) => {
+                                    eprintln!("ferroan-region: circuit ended: {error}")
+                                }
+                            }
+                        }
+                        break;
+                    }
                     _ = agent.replaced() => {
                         println!("ferroan-region: circuit replaced by a new login");
+                        if let Some(tx) = close_tx.take() {
+                            let _ = tx.send(CircuitStop::Disable);
+                        }
+                        match (&mut serving).await {
+                            Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                            Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                        }
                         break;
                     }
                     _ = &mut opening, if !connected => { connected = true; }
@@ -477,8 +501,8 @@ mod tests {
     use ferroan_client::CircuitExpect;
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{
-        AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, LogoutReply,
-        LogoutRequest, RegionHandshake, StartPingCheck, UseCircuitCode,
+        AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, DisableSimulator,
+        KickUser, LogoutReply, LogoutRequest, RegionHandshake, StartPingCheck, UseCircuitCode,
     };
     use ferroan_protocol::{Msg, build_packet, parse_packet};
     use serde_json::{Value, json};
@@ -1413,6 +1437,105 @@ mod tests {
             .presence_missing
             .store(false, std::sync::atomic::Ordering::Relaxed);
         harness.admit(true, false).await;
+        harness.finish().await.unwrap();
+    }
+
+    async fn wait_id(socket: &tokio::net::UdpSocket, id: ferroan_protocol::MsgId) {
+        let mut buf = [0u8; 4096];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let len = socket.recv(&mut buf).await.unwrap();
+                if parse_packet(&buf[..len]).unwrap().id == id {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn closing_packets(buf: &[u8]) -> Option<ferroan_protocol::IncomingPacket> {
+        let packet = parse_packet(buf).unwrap();
+        matches!(packet.id, KickUser::ID | DisableSimulator::ID).then_some(packet)
+    }
+
+    #[tokio::test]
+    async fn shutdown_kicks_then_disables_and_timeout_or_replacement_only_disables() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        wait_id(&socket, RegionHandshake::ID).await;
+        harness.finish().await.unwrap();
+        let mut order = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_millis(400);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(50), socket.recv(&mut buf)).await {
+                Ok(Ok(len)) => {
+                    if let Some(packet) = closing_packets(&buf[..len]) {
+                        if packet.id == KickUser::ID {
+                            let kick = packet.decode::<KickUser>().unwrap();
+                            assert_eq!(kick.user_info.reason, b"The simulator is going down.\0");
+                            assert_eq!(kick.target_block.target_ip, [0, 0, 0, 0]);
+                            assert_eq!(kick.target_block.target_port, 0);
+                            assert!(packet.reliable());
+                        }
+                        if packet.id == DisableSimulator::ID {
+                            assert!(packet.reliable() && packet.body.is_empty());
+                        }
+                        order.push(packet.id);
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(order, vec![KickUser::ID, DisableSimulator::ID]);
+
+        let mut harness = Harness::new(true, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        let mut order = Vec::new();
+        let mut buf = [0u8; 4096];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let len = socket.recv(&mut buf).await.unwrap();
+                if let Some(packet) = closing_packets(&buf[..len]) {
+                    order.push(packet.id);
+                    if packet.id == DisableSimulator::ID {
+                        assert!(packet.reliable() && packet.body.is_empty());
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(order, vec![DisableSimulator::ID]);
+        harness.finish().await.unwrap();
+
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        wait_id(&socket, RegionHandshake::ID).await;
+        let next = harness.admit(true, false).await;
+        let mut order = Vec::new();
+        let mut buf = [0u8; 4096];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let len = socket.recv(&mut buf).await.unwrap();
+                if let Some(packet) = closing_packets(&buf[..len]) {
+                    order.push(packet.id);
+                    if packet.id == DisableSimulator::ID {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(order, vec![DisableSimulator::ID]);
+        let replacement = open(&harness, next).await;
+        wait_id(&replacement, RegionHandshake::ID).await;
         harness.finish().await.unwrap();
     }
 }

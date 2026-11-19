@@ -1,0 +1,12 @@
+{
+  "package": "UtopiaSkye.OpenMetaverse 1.2.9",
+  "libopenmetaverse": "a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b",
+  "method": "DisableSimulatorPacket.ToBytes",
+  "message": "DisableSimulator",
+  "id": 152,
+  "reliable": true,
+  "zerocoded": false,
+  "sequence": 0,
+  "body": "empty",
+  "note": "Sequence 0 is the value the constructor leaves. The region stamps the live sequence when it sends. Pin 40432e0 CloseWithoutChecks and SendShutdownConnectionNotice send this packet."
+}
