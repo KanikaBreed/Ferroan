@@ -7,6 +7,8 @@
 //! status, content type and `Content-Range` are compared byte for byte.
 //! Mismatched bodies are written under the grid root and are not printed.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::Path;
