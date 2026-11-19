@@ -48,7 +48,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10s |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
-| Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | IN PROGRESS (`feat/http-form-policy`) |
+| Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | DONE (#90) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | DONE (#81) |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | READY after Q10h |
