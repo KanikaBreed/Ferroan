@@ -62,7 +62,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
-| Q24 | P1.1: user accounts | IN PROGRESS |
+| Q24 | P1.1: user accounts | DONE (#83) |
 | Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
 | Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
 | Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
