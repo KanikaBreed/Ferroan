@@ -12,7 +12,8 @@
 //   (GetExpiredPackets), OpenSim-NGC/OpenSim-Tranquillity
 //   @ 858321883f5487a5d192d36ea9d7b90fa468310c.
 // C# retries until its client inactivity timeout, without a retry-count cutoff.
-// The bounded retry policies here are Ferroan/Aurora policies, not that C# limit.
+// The count-limited Resend policies remain Ferroan/Aurora bot policies;
+// insert_until_ack selects the server's inactivity-bounded lifetime instead.
 
 //! Shared LLUDP reliability state. Callers retain their own ack scheduling,
 //! packet framing, transport errors and decisions about retry exhaustion.
@@ -109,6 +110,7 @@ struct Unacked<T> {
     sent: Instant,
     retries: u8,
     policy: Resend,
+    retry_limit: Option<u8>,
 }
 
 pub struct ReliableWindow<T> {
@@ -165,8 +167,25 @@ impl<T> ReliableWindow<T> {
                 sent: now,
                 retries: 0,
                 policy,
+                retry_limit: Some(policy.max_retries),
             },
         );
+        Ok(())
+    }
+
+    /// Server policy: retain reliable packets until acknowledged or the owning
+    /// circuit expires. The caller supplies its current ping-derived RTO to poll.
+    /// Retry accounting saturates without changing that policy or the window bound.
+    pub fn insert_until_ack(
+        &mut self,
+        sequence: u32,
+        payload: T,
+        now: Instant,
+    ) -> Result<(), WindowFull> {
+        self.insert(sequence, payload, now, Resend::DEFAULT)?;
+        if let Some(packet) = self.packets.get_mut(&sequence) {
+            packet.retry_limit = None;
+        }
         Ok(())
     }
 
@@ -177,6 +196,8 @@ impl<T> ReliableWindow<T> {
     }
 
     pub fn oldest_or(&self, fallback: u32) -> u32 {
+        // Pinned UnackedPacketCollection uses a SortedDictionary<uint,...>;
+        // its first entry is numeric minimum, including across sequence wrap.
         self.packets.keys().min().copied().unwrap_or(fallback)
     }
 
@@ -211,10 +232,13 @@ impl<T: Clone> ReliableWindow<T> {
             {
                 continue;
             }
-            if packet.retries >= packet.policy.max_retries {
+            if packet
+                .retry_limit
+                .is_some_and(|limit| packet.retries >= limit)
+            {
                 batch.dropped.push(sequence);
             } else {
-                packet.retries += 1;
+                packet.retries = packet.retries.saturating_add(1);
                 packet.sent = now;
                 batch.resend.push((sequence, packet.payload.clone()));
             }
@@ -299,5 +323,39 @@ mod tests {
             window.time_until_due(now + Duration::from_secs(4), Duration::from_secs(1)),
             Duration::from_secs(1)
         );
+    }
+
+    #[test]
+    fn oldest_matches_csharp_numeric_order_across_sequence_wrap() {
+        let now = Instant::now();
+        let mut window = ReliableWindow::default();
+        for sequence in [u32::MAX - 1, u32::MAX, 0, 1] {
+            window.insert_until_ack(sequence, (), now).unwrap();
+        }
+        assert_eq!(window.oldest_or(99), 0);
+        window.acknowledge([u32::MAX - 1, 0]);
+        assert_eq!(window.oldest_or(99), 1);
+        window.acknowledge([u32::MAX]);
+        assert_eq!(window.oldest_or(99), 1);
+        window.insert_until_ack(0, (), now).unwrap();
+        assert_eq!(window.oldest_or(99), 0);
+        window.acknowledge([1, 0]);
+        assert_eq!(window.oldest_or(99), 99);
+    }
+
+    #[test]
+    fn server_policy_retains_packet_after_retry_counter_saturates() {
+        let now = Instant::now();
+        let mut window = ReliableWindow::default();
+        window.insert_until_ack(1, (), now).unwrap();
+        for retry in 1..=300 {
+            let batch = window.poll(now + Duration::from_secs(retry), Duration::from_secs(1));
+            assert_eq!(batch.resend, vec![(1, ())]);
+            assert!(batch.dropped.is_empty());
+        }
+        assert_eq!(window.retry_count(1), Some(u8::MAX));
+        assert_eq!(window.len(), 1);
+        window.acknowledge([1]);
+        assert!(window.is_empty());
     }
 }

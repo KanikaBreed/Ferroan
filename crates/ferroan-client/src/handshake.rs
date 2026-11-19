@@ -209,7 +209,7 @@ mod tests {
             HandshakeConfig::for_region(Uuid::from_u128(0x6d1a7f4e0c3b4f539a1e5f0e3c2a9b01));
         config.sim_name = "Ferroan Test".to_owned();
         config.estate_owner = Uuid::from_u128(0x4f0c8d2e7a514b8e9c3d2e6f1a0b7c55);
-        config.cache_id = Uuid::from_u128(0x00795643ab6b490fa9dc3a0ccf4b9ca1);
+        config.cache_id = Uuid::from_u128(0x82c1d49a65874da49401b9443137dee9);
         let handshake = config.build(true, false);
         let mut writer = Writer::new();
         RegionHandshake::ID.encode(&mut writer.buf);

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use ferroan_capture::{Kind, Record, check_udp, read_capture, redact_records, write_capture};
 use ferroan_protocol::msgs::{
-    LogoutReply, LogoutRequest, PacketAck, RegionHandshake, UseCircuitCode,
+    KickUser, KillObject, LogoutReply, PacketAck, RegionHandshake, UseCircuitCode,
 };
 use ferroan_protocol::{Msg, message_info, parse_packet};
 use serde_json::{Value, json};
@@ -31,6 +31,15 @@ pub fn generate(path: &Path) -> Result<String, String> {
     let evidence = select(&records)?;
     let target = crate::repo_root().join("fixtures/circuit");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    for name in ["kick-user", "kill-object"] {
+        if !evidence.packets.iter().any(|(found, _)| *found == name) {
+            match fs::remove_file(target.join(format!("{name}.bin"))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
     for (name, record) in &evidence.packets {
         fs::write(target.join(format!("{name}.bin")), &record.bytes)
             .map_err(|error| error.to_string())?;
@@ -79,7 +88,7 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
         if record.kind == Kind::UdpOut {
             outgoing.push(json!({"record": index, "message": name, "sequence": packet.sequence, "flags": packet.flags, "appended_acks": packet.acks}));
         }
-        let keep = if record.kind == Kind::UdpIn && packet.id == UseCircuitCode::ID {
+        if record.kind == Kind::UdpIn && packet.id == UseCircuitCode::ID {
             let ucc = packet
                 .decode::<UseCircuitCode>()
                 .map_err(|error| error.to_string())?;
@@ -87,7 +96,6 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
                 return Err("capture is not the local harness test account".to_string());
             }
             ucc_sequence.get_or_insert(packet.sequence);
-            true
         } else if record.kind == Kind::UdpOut && packet.id == RegionHandshake::ID {
             let decoded = packet
                 .decode::<RegionHandshake>()
@@ -103,16 +111,12 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
             if handshake.is_none() {
                 handshake = Some(decoded);
             }
-            true
-        } else {
-            (record.kind == Kind::UdpOut
-                && (packet.id == PacketAck::ID || packet.id == LogoutReply::ID))
-                || (record.kind == Kind::UdpIn && packet.id == LogoutRequest::ID)
-        };
-        if keep {
-            trace.push(record.clone());
-            order.push(json!({"record": index, "message": name, "direction": if record.kind == Kind::UdpOut { "out" } else { "in" }}));
         }
+        // Keep the complete socket context. Tests drive actual inbound
+        // requests rather than fabricating ACK queues or sequence counters;
+        // shutdown-only packets must also remain visible in the evidence.
+        trace.push(record.clone());
+        order.push(json!({"record": index, "message": name, "direction": if record.kind == Kind::UdpOut { "out" } else { "in" }}));
     }
     let ucc_sequence = ucc_sequence.ok_or("capture has no UseCircuitCode")?;
     let handshake = handshake.ok_or("capture has no RegionHandshake")?;
@@ -136,6 +140,10 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
             Some("region-handshake")
         } else if packet.id == LogoutReply::ID {
             Some("logout-reply")
+        } else if record.kind == Kind::UdpOut && packet.id == KickUser::ID {
+            Some("kick-user")
+        } else if record.kind == Kind::UdpOut && packet.id == KillObject::ID {
+            Some("kill-object")
         } else {
             None
         };
@@ -157,6 +165,21 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
             ));
         }
     }
+    let shutdown_kicks = trace
+        .iter()
+        .filter(|record| record.kind == Kind::UdpOut)
+        .filter_map(|record| parse_packet(&record.bytes).ok())
+        .filter(|packet| packet.id == KickUser::ID)
+        .map(|packet| {
+            packet.decode::<KickUser>().map(|message| json!({
+            "sequence": packet.sequence,
+            "reason": String::from_utf8_lossy(&message.user_info.reason).trim_end_matches('\0'),
+            "target_ip": message.target_block.target_ip,
+            "target_port": message.target_block.target_port,
+        }))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     let manifest = json!({
         "tranquillity": PIN,
         "provenance": provenance,
@@ -164,6 +187,7 @@ fn select(records: &[Record]) -> Result<Evidence, String> {
         "redaction": "ferroan_protocol::scrub_datagram (P0.10d); no further field normalization",
         "outgoing_sequence": outgoing,
         "selected_records": order,
+        "kick_evidence": shutdown_kicks,
         "handshake_configuration": {
             "sim_name": handshake.region_info.sim_name,
             "sim_access": handshake.region_info.sim_access,
@@ -232,7 +256,12 @@ mod tests {
         let records = read_capture(include_bytes!("../../fixtures/circuit/sequence.cap")).unwrap();
         let without_logout: Vec<_> = records
             .into_iter()
-            .filter(|record| parse_packet(&record.bytes).unwrap().id != LogoutReply::ID)
+            .filter(|record| {
+                let id = parse_packet(&record.bytes).unwrap().id;
+                id != LogoutReply::ID
+                    && id != ferroan_protocol::msgs::AgentMovementComplete::ID
+                    && (record.kind == Kind::UdpOut || id == UseCircuitCode::ID)
+            })
             .collect();
         // The test capture's identities have already been folded. Restore only
         // the known local account for the extractor's source-account check.

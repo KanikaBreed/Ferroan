@@ -100,6 +100,8 @@ Q10d to Q10f were added on 18 November 2026 from a review of #25 to #37 at `ebda
 
 Q10d: [PR #44](https://github.com/KanikaBreed/Ferroan/pull/44), taken independently after the manager's Q10 hold in #43. All thirteen findings were confirmed and addressed. [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899638) passed Linux 2m37s, Windows 4m35s and macOS 1m26s; [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44421899822) passed in 9m44s. Recovery passed 200 consecutive default-parallel runs in 218 seconds. TASKS.md records test names, captures, startup interruption, database isolation and asset checks. Firestorm remains pending. Q10 and #41 remain held for the upstream fix.
 
+Q10e review qualifications at `8583218`: finding 4's `KickUser` is a simulator-shutdown artifact, confirmed by the fresh C# capture's reason `The simulator is going down.` and `Scene.Close`; ordinary `CloseAgent(false)` does not call `Kick`. No ordinary-logout kick is added. `KillObject` needs the avatar local ID and scene broadcast path in P2.0f. Finding 5 is incorrect: `UnackedPacketCollection` uses a `SortedDictionary<uint, OutgoingPacket>` and selects its first numeric key. Ferroan already matches that ordering, which is retained with wraparound coverage. Findings 1–3 and 6 are confirmed.
+
 Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranquillity's three asset backends. They come after P2.0j, so they run while the maintainer does G2 (rule 7). G1 follows Q39.
 
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.

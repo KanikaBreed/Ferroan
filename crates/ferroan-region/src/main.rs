@@ -98,7 +98,8 @@ async fn serve(config: RegionConfig) -> Result<(), RunError> {
     // remain in the socket until Robust supplies the matching circuit.
     let circuit = CircuitServer::bind_at(config.udp_bind)
         .await?
-        .with_handshake(config.handshake.clone());
+        .with_handshake(config.handshake.clone())
+        .with_timing(config.circuit_timing)?;
     let listener = TcpListener::bind(config.http_bind).await?;
     let caps = CapsRegistry::new(&config.server_uri)?;
     let (accepted, mut agents) = mpsc::channel(1);
@@ -128,19 +129,21 @@ async fn serve(config: RegionConfig) -> Result<(), RunError> {
     );
     let circuit_config = config.clone();
     let mut circuits = tokio::spawn(async move {
-        while let Some(agent) = agents.recv().await {
-            match circuit
-                .serve_one_with_arrival(
-                    agent.expect,
-                    circuit_config.arrival(agent.start_pos),
-                    Duration::from_secs(300),
-                )
-                .await
-            {
-                Ok(()) => println!("ferroan-region: LogoutReply sent"),
-                Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+        while let Some(mut agent) = agents.recv().await {
+            let expect = agent.expect;
+            let arrival = circuit_config.arrival(agent.start_pos);
+            tokio::select! {
+                biased;
+                // Scene.NewUserConnection closes a stale root connection before
+                // accepting its replacement. Drop the old serving future here
+                // before the next loop iteration can read the shared UDP socket.
+                _ = agent.replaced() => println!("ferroan-region: circuit replaced by a new login"),
+                result = circuit.serve_one_with_arrival(expect, arrival) => match result {
+                    Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                    Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                },
             }
-            // The accepted agent owns the seed and the one-circuit reservation.
+            // A generation-scoped lease never clears a replacement's seed.
             drop(agent);
         }
     });
