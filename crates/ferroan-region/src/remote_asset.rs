@@ -40,6 +40,18 @@ use uuid::Uuid;
 
 pub const MAX_ASSET_BODY: usize = 16 * 1024 * 1024;
 
+/// A transport or size failure. The reply body is not kept.
+#[derive(Debug)]
+pub struct AssetFailure;
+
+impl std::fmt::Display for AssetFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("asset service request failed")
+    }
+}
+
+impl std::error::Error for AssetFailure {}
+
 #[derive(Clone)]
 pub struct AssetClient {
     base: String,
@@ -57,19 +69,19 @@ impl AssetClient {
     }
 
     /// Missing, empty, or undecodable assets are `Ok(None)`.
-    pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, ()> {
+    pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, AssetFailure> {
         let response = self
             .http
             .get(format!("{}/assets/{id}", self.base))
             .timeout(Duration::from_secs(30))
             .send()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| AssetFailure)?;
         if !response.status().is_success() {
             return Ok(None);
         }
         let bytes = read_limited(response).await?;
-        let decoded = decode_asset(&bytes).map_err(|_| ())?;
+        let decoded = decode_asset(&bytes).map_err(|_| AssetFailure)?;
         if decoded.data_nil || decoded.asset.data.is_empty() {
             return Ok(None);
         }
@@ -77,7 +89,7 @@ impl AssetClient {
     }
 
     /// POST an `AssetBase` document. Success requires the service to echo the id.
-    pub async fn store(&self, asset: &Asset) -> Result<bool, ()> {
+    pub async fn store(&self, asset: &Asset) -> Result<bool, AssetFailure> {
         let response = self
             .http
             .post(format!("{}/assets/", self.base))
@@ -86,7 +98,7 @@ impl AssetClient {
             .body(encode_asset(asset))
             .send()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| AssetFailure)?;
         if !response.status().is_success() {
             return Ok(false);
         }
@@ -99,17 +111,17 @@ impl AssetClient {
     }
 }
 
-async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, ()> {
+async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, AssetFailure> {
     if response
         .content_length()
         .is_some_and(|length| length > MAX_ASSET_BODY as u64)
     {
-        return Err(());
+        return Err(AssetFailure);
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| AssetFailure)? {
         if bytes.len().saturating_add(chunk.len()) > MAX_ASSET_BODY {
-            return Err(());
+            return Err(AssetFailure);
         }
         bytes.extend_from_slice(&chunk);
     }

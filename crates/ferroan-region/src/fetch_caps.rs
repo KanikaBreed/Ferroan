@@ -523,7 +523,7 @@ impl FetchCaps {
         let asset = match client.get(asset_id).await {
             Ok(Some(asset)) => asset,
             Ok(None) => return plain(StatusCode::NOT_FOUND, Vec::new()),
-            Err(()) => return plain(StatusCode::NOT_FOUND, Vec::new()),
+            Err(_) => return plain(StatusCode::NOT_FOUND, Vec::new()),
         };
         if type_code == 57 && asset.type_code == 0 {
             return plain(StatusCode::NOT_FOUND, Vec::new());
