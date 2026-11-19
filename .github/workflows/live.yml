@@ -120,6 +120,8 @@ jobs:
         run: cargo xtask live run assets grid --rust assets --db sqlite
       - name: Compare C# and Ferroan asset services
         run: cargo xtask live compare assets
+      - name: Compare C# and Ferroan user account services
+        run: cargo xtask live compare accounts
       - name: Check persistent mixed-grid login, relogin and cleanup
         run: cargo xtask live persistent-grid-check
       - name: Check the persistent Ferroan asset setup

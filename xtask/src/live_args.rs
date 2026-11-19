@@ -55,6 +55,12 @@ impl RunSpec {
 
 pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> {
     for service in services {
+        if service == "accounts" {
+            return Err(
+                "accounts is compared with live compare accounts; grid --rust accounts is not wired because Robust login uses the in-process user account service"
+                    .to_string(),
+            );
+        }
         if service != "assets" {
             return Err(format!(
                 "{service} is not served by this harness yet; P1.0 wires assets"
@@ -158,12 +164,13 @@ fn compare_service(service: &str, db: Database) -> ExitCode {
     if let Err(error) = db.require_ready() {
         return live::finish(Err(error));
     }
-    if service != "assets" {
-        return live::finish(Err(format!(
-            "live compare serves assets in this row; {service} is not wired yet"
-        )));
+    match service {
+        "assets" => crate::assets::compare(),
+        "accounts" => crate::accounts::compare(),
+        _ => live::finish(Err(format!(
+            "live compare serves assets and accounts; {service} is not wired yet"
+        ))),
     }
-    crate::assets::compare()
 }
 
 fn fixture(kind: Fixture, path: &str) -> ExitCode {
@@ -229,6 +236,20 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
             }
             Ok(Command::Compare {
                 service: "assets".to_string(),
+                db: flags.db,
+            })
+        }
+        ["accounts", rest @ ..] => {
+            let flags = flags(rest)?;
+            if flags.running
+                || flags.region_ferroan
+                || flags.bind.is_some()
+                || flags.rust_services.is_some()
+            {
+                return Err(ParseFail::Usage);
+            }
+            Ok(Command::Compare {
+                service: "accounts".to_string(),
                 db: flags.db,
             })
         }
@@ -423,6 +444,16 @@ mod tests {
             }
             other => panic!("expected compare, got {other:?}"),
         }
+        match parse(&["accounts"]).unwrap() {
+            Command::Compare { service, db } => {
+                assert_eq!(service, "accounts");
+                assert_eq!(db, Database::Sqlite);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        let error = require_known_services(&["accounts".into()]).unwrap_err();
+        assert!(error.contains("live compare accounts"));
+        assert!(error.contains("in-process"));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 # ferroan-services
 
-The asset service a Tranquillity region calls on Robust.
+Grid services. This crate holds the asset service and the user-account service, including user aliases. `ferroan-robust` mounts a service only when its ini section is present.
+
+The asset service is what a Tranquillity region calls on Robust.
 
 The routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`:
 
@@ -35,3 +37,15 @@ The filesystem default-asset loader, FSAssets (`XAssetService`), the `show asset
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 
 Ordinary CI compares the committed asset XML and SQLite fixtures in Rust tests. The [Linux live workflow](../../.github/workflows/live.yml) runs the C# asset oracle, compares texture and inventory traffic against both services, and checks a persistent C# region using `ferroan-robust`. The maintainer's Firestorm asset check is recorded under G0 in [TASKS.md](../../TASKS.md).
+
+## Pattern for a Robust service
+
+P1.2 through P1.12 follow the user-account layout.
+
+1. One module directory under `crates/ferroan-services/src/<service>/`: `mod.rs`, `model.rs`, `store.rs`, `service.rs`, `http.rs`, `open.rs`, and `commands.rs` when the C# service registers console commands.
+2. The store speaks SQLite through `ferroan_db::Pool` and parameterised sqlx queries. It does not run migrations and it does not keep a shared column-name cache. MySQL and PostgreSQL wait until their CI containers exist (P1.A1, #59).
+3. HTTP is a POST of a ServerUtils form. Parse it with `ferroan_http::parse_query_string`. Reply with `ferroan_http::build_xml_response` and content type `application/xml`, except the fixed Failure bytes the handler uses.
+4. `ferroan-robust` mounts that router only when the ini section is present. An asset-only ini still starts.
+5. `cargo xtask live compare <service>` starts the C# connector and `ferroan-robust` against copies of the same SQLite fixture, sends the same forms, and compares the HTTP after folding fields that are the current time.
+
+User accounts are that pattern: `src/account/` for `POST /accounts`, `src/alias/` for `POST /useralias`, and `cargo xtask live compare accounts`. The alias table has no SQLite migration in the pin, so the compare covers accounts only.

@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-robust"
-description = "Grid services process. This build serves the asset service."
+description = "Grid services process. This build serves assets and user accounts."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

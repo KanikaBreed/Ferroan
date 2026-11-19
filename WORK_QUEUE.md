@@ -62,7 +62,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
-| Q24 | P1.1: user accounts | READY after Q21 |
+| Q24 | P1.1: user accounts | IN PROGRESS |
 | Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
 | Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
 | Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
@@ -138,6 +138,11 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-19, Q24: SQLite has no UserAlias data class or migration. The MySQL migration is the only schema. Rust tests create that table. `live compare accounts` covers user accounts, not aliases, because C# SQLite cannot load the alias plugin. A stored NULL description is read back as an empty string, so the XML element is present. There is no live alias comparison to check C#'s null skip.
+- 2026-11-19, Q24: SQLite `GetUsersWhere` returns null, so `getmultiaccounts` is empty on SQLite. The short-word search skips the word that slides into the current index. `UserCountry` is not a SQLite column, so a non-empty country makes the store return false. These match the pin and are not new Tranquillity bugs. TB8 is already recorded: sqlx uses a fixed column list, so a query cannot see a half-built name list.
+- 2026-11-19, Q24: `grid --rust accounts` is not wired. Robust login uses the in-process user-account module, and the two processes must not share one SQLite file. `cargo xtask live compare accounts` is the standalone HTTP comparison. `--db mysql` and `--db pgsql` still stop before any process and say they need P1.A1 (#59).
+- 2026-11-19, Q24: `ferroan-http` caps a POST body at 1 MiB and answers 413. Tranquillity does not cap that body.
 
 - 2026-11-19, Q10r: the row says the region reaches Robust's library over HTTP. At pin `40432e0`, `LibraryService` is an in-process tree loaded from `DefaultLibrary` Nini XML (`Libraries.xml` and the folder/item files it names), owner `11111111-1111-0000-0000-000100bba000`. `FetchLibDescendents2`, `FetchLib2` and library-owner folders in `FetchInventoryDescendents2` read that tree. There is no library HTTP service. Ferroan loads the same file and does not add an inventory or asset database. `ReadItemFromConfig` stores `GroupPermissions` from the key `basePermissions` (default 0), not `groupPermissions`; Ferroan does the same.
 - 2026-11-19, Q10r: a fetch with bad folders writes a second `<map>` after the folders map, still inside one `<llsd>`. Ferroan's LLSD reader keeps the first value, so the success path is one map and a bad-folder reply is one standard map containing both `folders` and `bad_folders`. The live comparison uses folders that exist.

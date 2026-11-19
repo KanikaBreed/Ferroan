@@ -1,22 +1,26 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The grid-services process. This build listens for the asset routes and
-//! nothing else.
+//! The grid-services process. This build listens for the asset, user-account
+//! and user-alias routes whose ini sections are present.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
 //! directory. Repeat `--inifile` for extra files. `--inidirectory` defaults
 //! to `config` and is skipped when that directory is absent.
 //!
-//! The asset database must already be a Tranquillity SQLite file at
-//! AssetStore version 6. This program does not create or migrate it.
+//! An asset database must already be a Tranquillity SQLite file at AssetStore
+//! version 6. A user-account database must already be at UserAccount version
+//! 4. This program does not create or migrate either file. User aliases need
+//! a table the pin does not ship for SQLite; the process refuses to start
+//! that section until the table exists.
 
 use std::env;
 use std::process::ExitCode;
 
+use axum::Router;
 use ferroan_config::GridLoad;
-use ferroan_services::{AssetHttp, listen_address, network_port};
+use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, listen_address, network_port};
 use tokio::net::TcpListener;
 
 fn main() -> ExitCode {
@@ -42,14 +46,44 @@ fn run() -> Result<(), String> {
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async move {
-        let http = AssetHttp::open(&resolved.config)
-            .await
-            .map_err(|error| error.to_string())?;
-        let router = http.into_router();
+        let config = &resolved.config;
+        let assets = config.section_names().any(|name| name == "AssetService");
+        let accounts = config
+            .section_names()
+            .any(|name| name == "UserAccountService");
+        let aliases = config
+            .section_names()
+            .any(|name| name == "UserAliasService");
+        if !assets && !accounts && !aliases {
+            return Err(
+                "no AssetService, UserAccountService or UserAliasService section".to_string(),
+            );
+        }
+        let mut router = Router::new();
+        if assets {
+            let http = AssetHttp::open(config)
+                .await
+                .map_err(|error| error.to_string())?;
+            router = router.merge(http.into_router());
+            eprintln!("ferroan-robust: asset service on {listen}:{port}");
+        }
+        if accounts {
+            let http = AccountHttp::open(config)
+                .await
+                .map_err(|error| error.to_string())?;
+            router = router.merge(http.into_router());
+            eprintln!("ferroan-robust: user account service on {listen}:{port}");
+        }
+        if aliases {
+            let http = AliasHttp::open(config)
+                .await
+                .map_err(|error| error.to_string())?;
+            router = router.merge(http.into_router());
+            eprintln!("ferroan-robust: user alias service on {listen}:{port}");
+        }
         let listener = TcpListener::bind((listen, port))
             .await
             .map_err(|error| error.to_string())?;
-        eprintln!("ferroan-robust: asset service on {listen}:{port}");
         axum_serve(listener, router).await
     })
 }
