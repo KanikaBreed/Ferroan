@@ -381,6 +381,51 @@ fn start_grid(database: &Path, port: u16, log: &Path, load: bool) -> Result<Owne
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn seed_library_database() -> Result<PathBuf, String> {
+    seed_database()
+}
+
+/// `ferroan-robust` on `127.0.0.1`, serving the copied SQLite asset store.
+#[cfg(target_os = "linux")]
+pub(crate) fn start_sqlite_asset_service(
+    database: &Path,
+    port: u16,
+    log: &Path,
+    ini_path: &Path,
+) -> Result<Owned, String> {
+    let binary = live::build_binary("ferroan-robust")?;
+    let empty = ini_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("assets-empty");
+    fs::create_dir_all(&empty)
+        .map_err(|error| format!("could not create {}: {error}", empty.display()))?;
+    let db = database.display();
+    let ini = format!(
+        "[Network]\n    port = {port}\n    bind_ip_address = \"127.0.0.1\"\n\n[AssetService]\n    \
+         LocalServiceModule = \"OpenSim.Services.AssetService.dll:AssetService\"\n    \
+         StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+         ConnectionString = \"Data Source={db};Version=3;\"\n"
+    );
+    live::write_secret(ini_path, &ini)?;
+    let ini_arg = ini_path.to_str().ok_or("asset ini path is not utf-8")?;
+    let empty_arg = empty.to_str().ok_or("asset config path is not utf-8")?;
+    let mut server = spawn_owned(
+        &binary,
+        &["--inimaster", ini_arg, "--inidirectory", empty_arg],
+        &repo_root(),
+        log,
+        false,
+        true,
+    )?;
+    if let Err(error) = wait_service(&mut server, "ferroan", port, log) {
+        stop_owned(&mut server);
+        return Err(error);
+    }
+    Ok(server)
+}
+
+#[cfg(target_os = "linux")]
 fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String> {
     let binary = live::build_binary("ferroan-robust")?;
     let run = live::scratch_run();

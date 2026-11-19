@@ -44,6 +44,7 @@ mod grid_state;
 mod http_oracle;
 mod inventory_probe;
 mod live;
+mod live_args;
 mod live_proxy;
 mod oracle;
 mod oracle_reference;
@@ -79,11 +80,12 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
        cargo xtask live persistent-grid-check
        cargo xtask live down
-       cargo xtask live run <scenario>|all [grid]
+       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]
        cargo xtask live run ferrobot [grid [--region ferroan]]
        cargo xtask live run assets grid --region ferroan
+       cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
        cargo xtask live region-parity-fixtures <capture-dir>
@@ -92,11 +94,21 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live arrival-fixtures <udp-capture>
        cargo xtask live trailing-fixtures <udp-capture>
        cargo xtask live run assets --running
-       cargo xtask live assets";
+       cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
+       cargo xtask live assets [--db sqlite|mysql|pgsql]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    if refs.first() == Some(&"live") {
+        return match live_args::dispatch(&refs[1..]) {
+            live_args::Outcome::Exit(code) => code,
+            live_args::Outcome::Usage => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
     match refs.as_slice() {
         ["check"] => check(false),
         ["pin3", "generate"] => pin3_oracle::run(true),
@@ -129,42 +141,6 @@ fn main() -> ExitCode {
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
-        ["live", "build"] => live::build(),
-        ["live", "up"] => live::up(false),
-        ["live", "up", "--assets", "ferroan"] => live::up(true),
-        ["live", "up", "grid", "--region", "ferroan"] => grid::up(std::net::Ipv4Addr::LOCALHOST),
-        ["live", "up", "grid", "--region", "ferroan", "--bind", bind] => {
-            match bind.parse::<std::net::Ipv4Addr>() {
-                Ok(bind) => grid::up(bind),
-                Err(_) => live::finish(Err("--bind requires an IPv4 address".into())),
-            }
-        }
-        ["live", "persistent-grid-check"] => grid_smoke::run(),
-        ["live", "down"] => live::down(),
-        ["live", "run", scenario] => live::run(scenario),
-        ["live", "run", scenario, "grid"] => grid::run(scenario),
-        ["live", "run", scenario, "grid", "--region", "ferroan"] => grid::run_ferroan(scenario),
-        ["live", "caps-fixtures", directory] => {
-            live::finish(caps_fixtures::generate(Path::new(directory)))
-        }
-        ["live", "login-fixtures", directory] => grid::login_fixtures(Path::new(directory)),
-        ["live", "root-arrival-fixtures", directory] => {
-            grid::root_arrival_fixtures(std::path::Path::new(directory))
-        }
-        ["live", "region-parity-fixtures", directory] => {
-            grid::parity_fixtures(Path::new(directory))
-        }
-        ["live", "circuit-fixtures", capture] => {
-            live::finish(circuit_fixtures::generate(Path::new(capture)))
-        }
-        ["live", "arrival-fixtures", capture] => {
-            live::finish(arrival_fixtures::generate(Path::new(capture)))
-        }
-        ["live", "trailing-fixtures", capture] => {
-            live::finish(trailing_fixtures::generate(Path::new(capture)))
-        }
-        ["live", "run", "assets", "--running"] => live::run_running_assets(),
-        ["live", "assets"] => assets::compare(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
