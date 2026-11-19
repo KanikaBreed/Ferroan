@@ -35,7 +35,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q9 | P2.0b2: the event queue as Tranquillity answers it, with the review of #21 | DONE (#32) |
 | Q10a | P2.0d2: login arrival (`AgentMovementComplete`) | DONE (#35) |
 | Q10c | P0.10j: trailing blocks Tranquillity sends beyond libopenmetaverse's template (`ImprovedInstantMessage` and seven more) | DONE (#40) |
-| Q10p | Pin3: move the Tranquillity pin to the maintainer's `dev-build` (`40432e0`, D21), which carries their eight open C# PRs | READY |
+| Q10p | Pin3: move the Tranquillity pin to the maintainer's `dev-build` (`40432e0`, D21), which carries their eight open C# PRs | IN PROGRESS (chore/pin3) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | READY after Q10p |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
