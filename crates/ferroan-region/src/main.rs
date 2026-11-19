@@ -140,9 +140,11 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         .with_handshake(config.handshake.clone())
         .with_timing(config.circuit_timing)?;
     let listener = TcpListener::bind(config.http_bind).await?;
-    // ActivityDetector.AddRegion clears users stranded by a previous process.
-    // Finish before exposing admission: stale Robust registration may still
-    // address this listener. An older Robust's refusal is nonfatal, as in C#.
+    // PresenceDetector.AddRegion and ActivityDetector.AddRegion clear users
+    // stranded by a previous process. Finish before exposing admission: stale
+    // Robust registration may still address this listener. A refusal is
+    // nonfatal, as in C#.
+    notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;
     notify_startup(
         &GridUserClient::new(&config.grid_user_server_uri),
         config.id,
@@ -225,6 +227,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
             outcome = Err(error);
         }
     }
+    // PresenceDetector.RemoveRegion. A failure is logged and shutdown continues.
+    notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;
     let deregistered = grid.deregister(config.id).await;
     let _ = stop_http.send(());
     if !http.is_finished()
@@ -243,6 +247,12 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
 async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     if let Err(error) = grid_user.logged_out_region(region).await {
         eprintln!("ferroan-region: startup GridUser cleanup failed: {error}");
+    }
+}
+
+async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
+    if let Err(error) = presence.logout_region(region).await {
+        eprintln!("ferroan-region: Presence logoutregion failed: {error}");
     }
 }
 
@@ -304,6 +314,7 @@ async fn dispatch_circuits(
                             let reporting = async {
                                 let _guard = agent.lock_lifecycle().await;
                                 if agent.is_current() {
+                                    agent.mark_root();
                                     notify_root_arrival(&grid_user, &presence, &config, &agent).await;
                                 }
                             };
@@ -491,6 +502,7 @@ mod tests {
         udp: SocketAddr,
         requests: Arc<Mutex<Vec<FieldMap>>>,
         presence_missing: Arc<std::sync::atomic::AtomicBool>,
+        fail_presence_logout: Arc<std::sync::atomic::AtomicBool>,
         sessions: Arc<Mutex<std::collections::HashSet<String>>>,
         online: Arc<std::sync::atomic::AtomicBool>,
         stop: Option<oneshot::Sender<()>>,
@@ -540,6 +552,8 @@ mod tests {
             let service_sessions = sessions.clone();
             let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
             let service_online = online.clone();
+            let fail_presence_logout = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let fail_logout = fail_presence_logout.clone();
             let app = axum::Router::new().fallback(move |body: String| {
                 let fields = ferroan_http::parse_query_string(&body).unwrap();
                 let method = match &fields["METHOD"] { Field::Str(s) => s.clone(), _ => panic!() };
@@ -549,6 +563,7 @@ mod tests {
                 let missing = missing.clone();
                 let sessions = service_sessions.clone();
                 let online = service_online.clone();
+                let fail_logout = fail_logout.clone();
                 async move {
                     if method == "report" && let Some(gate) = report_gate {
                         gate.acquire_owned().await.unwrap().forget();
@@ -561,7 +576,10 @@ mod tests {
                         "<ServerResponse><result type=\"List\"><UserID>00000000-0000-4000-8000-000000000001</UserID><RegionID>00000000-0000-0000-0000-000000000000</RegionID></result></ServerResponse>"
                     } else if method == "getgriduserinfo" {
                         "<ServerResponse><result type=\"List\"><Online>True</Online><LastRegionID>00000000-0000-4000-8000-000000000900</LastRegionID><LastPosition>&lt;1, 2, 3&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt></result></ServerResponse>"
-                    } else if (fail_grid_user && method == "loggedout") || (fail_arrival && matches!(method.as_str(), "report" | "setposition")) {
+                    } else if (method == "logout" && fail_logout.load(std::sync::atomic::Ordering::Relaxed))
+                        || (fail_grid_user && method == "loggedout")
+                        || (fail_arrival && matches!(method.as_str(), "report" | "setposition"))
+                    {
                         "<ServerResponse><result>Failure</result></ServerResponse>"
                     } else {
                         "<ServerResponse><result>Success</result></ServerResponse>"
@@ -615,6 +633,7 @@ mod tests {
                 udp,
                 requests,
                 presence_missing,
+                fail_presence_logout,
                 sessions,
                 online,
                 stop: Some(stop),
@@ -1280,5 +1299,120 @@ mod tests {
             );
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn presence_logoutregion_matches_csharp_and_ignores_failure() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/pin3/login-robustness.json"))
+                .unwrap();
+        let region = fixture["logout_region"]["region"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        for reply in [
+            fixture["logout_region"]["calls"][0]["response"]
+                .as_str()
+                .unwrap(),
+            "<ServerResponse><result>Failure</result></ServerResponse>",
+        ] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let recorded = seen.clone();
+            let body_reply = reply.to_owned();
+            let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+                recorded.lock().unwrap().push((uri.path().to_owned(), body));
+                let body_reply = body_reply.clone();
+                async move { body_reply }
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            notify_region_presence(&PresenceClient::new(&base), region).await;
+            server.abort();
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, fixture["logout_region"]["calls"][0]["path"]);
+            assert_eq!(
+                seen[0].1,
+                fixture["logout_region"]["calls"][0]["request"]
+                    .as_str()
+                    .unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn presence_logout_failure_keeps_the_dispatcher_and_the_next_login() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        harness
+            .fail_presence_logout
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = expect.agent_id;
+        logout.agent_data.session_id = expect.session_id;
+        send(&socket, &logout, 3).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !harness.running.as_ref().unwrap().is_finished(),
+            "a Presence logout Failure must not stop the dispatcher"
+        );
+        harness
+            .fail_presence_logout
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        harness.admit(true, false).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_presence_on_a_root_replacement_still_logs_the_old_root_out() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        harness
+            .presence_missing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut body: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/region-login/create-agent.request.json"
+        ))
+        .unwrap();
+        body["caps_path"] = json!(Uuid::from_u128(10).to_string());
+        body["circuit_code"] = json!("2");
+        body["session_id"] = json!(Uuid::from_u128(11).to_string());
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .post(format!(
+                "{}/agent/{}/",
+                harness.base,
+                body["agent_id"].as_str().unwrap()
+            ))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_ne!(value.get("success"), Some(&json!(true)));
+        assert!(harness.count("loggedout") >= 1);
+        assert!(harness.count("logout") >= 1);
+        harness
+            .presence_missing
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        harness.admit(true, false).await;
+        harness.finish().await.unwrap();
     }
 }

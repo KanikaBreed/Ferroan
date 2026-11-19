@@ -28,7 +28,8 @@ static class Program
             Dictionary<string, JsonObject> cases = new()
             {
                 ["lifecycle.json"] = LifecycleCases.Capture(),
-                ["trust.json"] = TrustCases.Capture()
+                ["trust.json"] = TrustCases.Capture(),
+                ["login-robustness.json"] = LoginRobustnessCases.Capture()
             };
             Console.SetOut(report);
             Directory.CreateDirectory(directory);
@@ -39,8 +40,8 @@ static class Program
                 Publish(Path.Combine(directory, name), json, args[0]);
             }
             Publish(Path.Combine(directory, "manifest.txt"),
-                "format 1\nrevision " + args[3] + "\nsource actual pinned Scene, LLClientView, ActivityDetector, GridUserServicesConnector and ControlPlaneAccess\n\nlifecycle.json\ntrust.json\n", args[0]);
-            Console.WriteLine("pin3 oracle: " + args[0] + " passed (lifecycle, close, startup and trust observations)");
+                "format 1\nrevision " + args[3] + "\nsource actual pinned Scene, LLClientView, ActivityDetector, GridUserServicesConnector, PresenceServicesConnector, ServiceAuth, AgentSimpleHandler and ControlPlaneAccess\n\nlifecycle.json\ntrust.json\nlogin-robustness.json\n", args[0]);
+            Console.WriteLine("pin3 oracle: " + args[0] + " passed (lifecycle, close, startup, trust and login-robustness observations)");
             return 0;
         }
         catch (Exception error)

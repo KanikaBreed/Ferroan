@@ -1,0 +1,92 @@
+{
+  "logout_region": {
+    "region": "00000000-0000-4000-8000-0000000010a0",
+    "calls": [
+      {
+        "method": "POST",
+        "path": "/presence",
+        "content_type": "application/x-www-form-urlencoded",
+        "request": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logoutregion\u0026RegionID=00000000-0000-4000-8000-0000000010a0",
+        "status": 200,
+        "response": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003ESuccess\u003C/result\u003E\u003C/ServerResponse\u003E"
+      },
+      {
+        "method": "POST",
+        "path": "/presence",
+        "content_type": "application/x-www-form-urlencoded",
+        "request": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logoutregion\u0026RegionID=00000000-0000-4000-8000-0000000010a0",
+        "status": 200,
+        "response": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult\u003ESuccess\u003C/result\u003E\u003C/ServerResponse\u003E"
+      }
+    ]
+  },
+  "logins_disabled": {
+    "accepted": false,
+    "reason": "Logins to this region are disabled",
+    "presence_session": true,
+    "circuit": false
+  },
+  "auth_types": {
+    "network": [
+      {
+        "auth": "None",
+        "result": "CompoundAuthentication",
+        "names": [
+          "DisallowllHTTPRequest"
+        ],
+        "adds_authorization": false
+      },
+      {
+        "auth": "none",
+        "result": "CompoundAuthentication",
+        "names": [
+          "DisallowllHTTPRequest"
+        ],
+        "adds_authorization": false
+      },
+      {
+        "auth": "",
+        "result": "CompoundAuthentication",
+        "names": [
+          "DisallowllHTTPRequest"
+        ],
+        "adds_authorization": false
+      },
+      {
+        "auth": "TrustedGridAuthentication",
+        "result": "CompoundAuthentication",
+        "names": [
+          "DisallowllHTTPRequest",
+          "TrustedGrid"
+        ],
+        "adds_authorization": false
+      },
+      {
+        "auth": "BasicHttpAuthentication",
+        "result": "CompoundAuthentication",
+        "names": [
+          "DisallowllHTTPRequest",
+          "BasicHttp"
+        ],
+        "adds_authorization": true
+      }
+    ]
+  },
+  "refused_post": [
+    {
+      "name": "untrusted",
+      "status": 403,
+      "content_type": "application/json",
+      "keep_alive": false,
+      "body_length": 0
+    },
+    {
+      "name": "script-marker",
+      "status": 403,
+      "content_type": "application/json",
+      "keep_alive": false,
+      "body_length": 0
+    }
+  ],
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5"
+}

@@ -770,8 +770,9 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         } else {
             String::new()
         };
+        let logout_region = login_capture::compare_logout_region(&root)?;
         Ok(format!(
-            "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{proxy_report}",
+            "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{logout_region}\n{proxy_report}",
             report.lines
         ))
     } else {

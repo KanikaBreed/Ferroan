@@ -82,7 +82,29 @@ impl PresenceClient {
     /// Scene.VerifyUserPresence checks the returned UserID, not RegionID.
     /// Missing/malformed/failed replies must never authorize admission.
     pub async fn verify(&self, agent_id: Uuid, session_id: Uuid) -> Result<bool, GridError> {
-        let reply = service_form(&self.endpoint, &presence_fields("getagent", session_id)).await?;
+        self.verify_within(agent_id, session_id, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    /// `timeout` is the caller's remaining CreateAgent budget. Zero does not
+    /// mean "no deadline": reqwest treats that as unlimited.
+    pub async fn verify_within(
+        &self,
+        agent_id: Uuid,
+        session_id: Uuid,
+        timeout: std::time::Duration,
+    ) -> Result<bool, GridError> {
+        if timeout.is_zero() {
+            return Err(GridError::Rejected {
+                message: "presence verify budget exhausted".into(),
+            });
+        }
+        let reply = service_form_within(
+            &self.endpoint,
+            &presence_fields("getagent", session_id),
+            timeout,
+        )
+        .await?;
         match reply.get("result") {
             Some(Field::Map(presence)) => Ok(
                 matches!(presence.get("UserID"), Some(Field::Str(user)) if user == &agent_id.to_string()),
@@ -94,6 +116,13 @@ impl PresenceClient {
 
     pub async fn logout(&self, session_id: Uuid) -> Result<(), GridError> {
         service_result(&service_form(&self.endpoint, &presence_fields("logout", session_id)).await?)
+    }
+
+    /// PresenceDetector.AddRegion and RemoveRegion. The connector sends no SessionID.
+    pub async fn logout_region(&self, region_id: Uuid) -> Result<(), GridError> {
+        let mut fields = service_fields("logoutregion");
+        fields.insert("RegionID".into(), Field::Str(region_id.to_string()));
+        service_result(&service_form(&self.endpoint, &fields).await?)
     }
 
     pub async fn report_agent(&self, session_id: Uuid, region_id: Uuid) -> Result<(), GridError> {
@@ -193,9 +222,17 @@ fn parse_vector(text: &str) -> Option<[f32; 3]> {
 // EnsureSuccessStatusCode in SynchronousRestFormsRequester is essential here:
 // an error response containing an otherwise valid UserID must not admit an agent.
 async fn service_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, GridError> {
+    service_form_within(endpoint, fields, std::time::Duration::from_secs(30)).await
+}
+
+async fn service_form_within(
+    endpoint: &str,
+    fields: &FieldMap,
+    timeout: std::time::Duration,
+) -> Result<FieldMap, GridError> {
     let body = ferroan_http::build_query_string(fields)?;
     let mut response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(timeout)
         .build()?
         .post(endpoint)
         .header(
@@ -558,6 +595,18 @@ mod tests {
             .await
             .unwrap();
         PresenceClient::new(&base).logout(session).await.unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/pin3/login-robustness.json"))
+                .unwrap();
+        let region_logout = fixture["logout_region"]["region"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        PresenceClient::new(&base)
+            .logout_region(region_logout)
+            .await
+            .unwrap();
         serving.abort();
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].0, "/griduser");
@@ -574,6 +623,16 @@ mod tests {
                 "/presence".into(),
                 format!("VERSIONMIN=1&VERSIONMAX=1&METHOD=logout&SessionID={session}")
             )
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/pin3/login-robustness.json"))
+                .unwrap();
+        assert_eq!(requests[2].0, "/presence");
+        assert_eq!(
+            requests[2].1,
+            fixture["logout_region"]["calls"][0]["request"]
+                .as_str()
+                .unwrap()
         );
         for xml in [
             "<ServerResponse><result>Failure</result></ServerResponse>",
