@@ -1233,8 +1233,9 @@ fn create_account(
 
 /// The in-process `create user` command is registered by `UserAccountService`.
 /// With the remote connector, the account row is `POST /accounts`, the
-/// password is `POST /auth` on C# Robust, and the inventory skeleton is
-/// `POST /xinventory`. None of these requests is written to a log.
+/// password is `POST /auth/plain` on C# Robust, and the inventory skeleton is
+/// `POST /xinventory`. `AuthenticationServicesConnector` posts to `/auth/plain`;
+/// `/auth` itself returns an empty body. None of these requests is written to a log.
 #[cfg(target_os = "linux")]
 fn provision_remote_account(
     account_uri: &str,
@@ -1261,7 +1262,7 @@ fn provision_remote_account(
     }
     let auth = post_form(
         SocketAddr::from((ROBUST_BIND, private_port)),
-        "/auth",
+        "/auth/plain",
         &format!("METHOD=setpassword&PRINCIPAL={uuid}&PASSWORD={password}"),
     )?;
     if auth.contains(password) {
