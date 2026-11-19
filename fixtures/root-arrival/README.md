@@ -1,7 +1,7 @@
 # Root-arrival service reporting
 
 These requests, replies and online observations were captured from Tranquillity
-`858321883f5487a5d192d36ea9d7b90fa468310c` on the local test grid.
+`40432e0f83d3802434f898a4e28687bd977d5cf5` on the local test grid.
 
 ```sh
 cargo xtask live build
@@ -15,7 +15,7 @@ cargo xtask live run login grid --region ferroan
 position, look)`; its connector does not transmit the unused session argument.
 Both run synchronously for this fresh login before
 `ScenePresence.CompleteMovement` sends `AgentMovementComplete`. The capture
-records Presence first (record 28), then GridUser (record 30). Form field order,
+records Presence first (record 32), then GridUser (record 34). Form field order,
 percent escaping, response status, content type and XML bytes are retained.
 The test agent/region and generated session UUIDs use the same placeholders as
 [the earlier region login fixtures](../region-login/README.md).

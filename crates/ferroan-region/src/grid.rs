@@ -36,7 +36,9 @@
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (VerifyUserPresence)
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   Source/OpenSim.Services.Interfaces/IGridUserService.cs (GridUserInfo)
+//   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -106,6 +108,13 @@ pub struct GridUserClient {
     endpoint: String,
 }
 
+pub struct GridUserLocation {
+    pub online: bool,
+    pub region_id: Uuid,
+    pub position: [f32; 3],
+    pub look_at: [f32; 3],
+}
+
 impl GridUserClient {
     pub fn new(base_uri: &str) -> Self {
         Self {
@@ -113,6 +122,32 @@ impl GridUserClient {
             // raw configured URI. Configuration rejects nonroot URL paths.
             endpoint: format!("{}/griduser", base_uri.trim_end_matches('/')),
         }
+    }
+
+    pub async fn logged_out_region(&self, region_id: Uuid) -> Result<(), GridError> {
+        let mut fields =
+            position_fields("loggedoutregion", Uuid::nil(), region_id, [0.; 3], [0.; 3])?;
+        fields.insert("UserID".into(), Field::Str(String::new()));
+        service_result(&service_form(&self.endpoint, &fields).await?)
+    }
+
+    pub async fn location(&self, agent_id: Uuid) -> Result<Option<GridUserLocation>, GridError> {
+        let mut fields = service_fields("getgriduserinfo");
+        fields.insert("UserID".into(), Field::Str(agent_id.to_string()));
+        let reply = service_form(&self.endpoint, &fields).await?;
+        let Some(Field::Map(info)) = reply.get("result") else {
+            return Ok(None);
+        };
+        let text = |key: &str| match info.get(key) {
+            Some(Field::Str(value)) => value.as_str(),
+            _ => "",
+        };
+        Ok(Some(GridUserLocation {
+            online: text("Online").eq_ignore_ascii_case("true"),
+            region_id: text("LastRegionID").parse().unwrap_or(Uuid::nil()),
+            position: parse_vector(text("LastPosition")).unwrap_or([0.; 3]),
+            look_at: parse_vector(text("LastLookAt")).unwrap_or([0.; 3]),
+        }))
     }
 
     /// The C# connector does not transmit SessionID. Callers must serialize
@@ -140,6 +175,19 @@ impl GridUserClient {
         let fields = position_fields("setposition", agent_id, region_id, position, look_at)?;
         service_result(&service_form(&self.endpoint, &fields).await?)
     }
+}
+
+fn parse_vector(text: &str) -> Option<[f32; 3]> {
+    let text = text.trim().strip_prefix('<')?.strip_suffix('>')?;
+    let mut parts = text.split(',');
+    let mut values = [0.; 3];
+    for value in &mut values {
+        *value = parts.next()?.trim().parse::<f32>().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+    }
+    parts.next().is_none().then_some(values)
 }
 
 // EnsureSuccessStatusCode in SynchronousRestFormsRequester is essential here:
@@ -435,7 +483,7 @@ mod tests {
         let presence = PresenceClient::new(&base);
         assert!(presence.verify(agent, session).await.unwrap());
         GridUserClient::new(&base)
-            .logged_out(agent, region, [128., 128., 26.033272], [0.; 3])
+            .logged_out(agent, region, [128., 128., 26.034952], [0.; 3])
             .await
             .unwrap();
         presence.logout(session).await.unwrap();

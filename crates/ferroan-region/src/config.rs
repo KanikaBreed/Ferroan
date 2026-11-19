@@ -35,7 +35,7 @@
 //   Source/OpenSim.Framework/Util.cs (GetConfigVarFromSections)
 //   Source/OpenSim.Framework/ServiceAuth/ServiceAuth.cs (Create)
 //   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -90,6 +90,9 @@ pub struct RegionConfig {
     pub estate_owner: Uuid,
     pub handshake: HandshakeConfig,
     pub circuit_timing: CircuitTiming,
+    /// Deadline for ViaLogin circuits which have not opened a viewer connection.
+    /// Zero retains the C# legacy behavior of waiting until region shutdown.
+    pub login_connect_wait: std::time::Duration,
     /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
     pub channel_version: String,
     pub region_secret: Uuid,
@@ -281,6 +284,7 @@ impl RegionConfig {
             estate_owner,
             handshake,
             circuit_timing: circuit_timing(server)?,
+            login_connect_wait: login_connect_wait(server)?,
             channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
         })
@@ -300,6 +304,22 @@ impl RegionConfig {
             channel_version: self.channel_version.clone(),
         }
     }
+}
+
+fn login_connect_wait(server: &Config) -> Result<std::time::Duration, RegionConfigError> {
+    let seconds = server
+        .get("Startup", "LoginConnectWaitSeconds")
+        .unwrap_or("120")
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| {
+            value(
+                "Startup",
+                "LoginConnectWaitSeconds",
+                "expected signed 32-bit seconds",
+            )
+        })?;
+    Ok(std::time::Duration::from_secs(seconds.max(0) as u64))
 }
 
 fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
@@ -553,6 +573,30 @@ mod tests {
 
     fn regions() -> Config {
         Config::parse("[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\nLocation=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\nExternalHostName=127.0.0.1\n").unwrap()
+    }
+
+    #[test]
+    fn login_connect_wait_matches_csharp_default_zero_and_negative_settings() {
+        let mut server = server();
+        assert_eq!(
+            RegionConfig::from_configs(&server, &regions())
+                .unwrap()
+                .login_connect_wait,
+            Duration::from_secs(120)
+        );
+        for (setting, expected) in [("0", 0), ("-1", 0), ("17", 17)] {
+            server.set("Startup", "LoginConnectWaitSeconds", setting);
+            assert_eq!(
+                RegionConfig::from_configs(&server, &regions())
+                    .unwrap()
+                    .login_connect_wait,
+                Duration::from_secs(expected)
+            );
+        }
+        for invalid in ["not seconds", "2147483648"] {
+            server.set("Startup", "LoginConnectWaitSeconds", invalid);
+            assert!(RegionConfig::from_configs(&server, &regions()).is_err());
+        }
     }
 
     #[test]

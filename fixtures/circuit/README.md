@@ -1,7 +1,7 @@
 # C# circuit packet evidence
 
 These datagrams were captured from the local test region at Tranquillity
-`858321883f5487a5d192d36ea9d7b90fa468310c`, using `cargo xtask live run login grid`.
+`40432e0f83d3802434f898a4e28687bd977d5cf5`, using `cargo xtask live run login grid`.
 The capture patch only records datagrams at the C# socket boundary. The source
 checkout remains unchanged; the patch is applied to the harness's scratch copy.
 
@@ -31,15 +31,17 @@ The individual `.bin` files contain complete LLUDP datagrams:
 - `packet-ack.bin`: immediate `UseCircuitCode` ACK, sequence 0, unreliable.
 - `region-handshake.bin`: first normal outbound packet, sequence 1, reliable
   and zero-coded, with one RegionInfo4 block.
-- `packet-ack-established.bin`: ordinary queued ACK, sequence 23, unreliable;
+- `packet-ack-established.bin`: ordinary queued ACK, sequence 8, unreliable;
   established ACKs participate in the outbound sequence.
 - `logout-reply.bin`: sequence 25, reliable and zero-coded, with one nil
   inventory item UUID.
-- `kick-user.bin`: sequence 26, with the captured reason
+- `shutdown-kick-8583218.bin`: historical sequence 26, with the captured reason
   `The simulator is going down.`. This is the shutdown path's notice,
-  not an ordinary logout response. The manifest records the reason.
+  not an ordinary logout response. [historical-shutdown.json](historical-shutdown.json)
+  records its original `8583218` capture and the current source audit; it is
+  absent from the new normal-login capture.
 
-The fresh 55-datagram capture has no `KillObject`; the earlier selected trace's
+The fresh 54-datagram capture has no `KillObject`; the earlier selected trace's
 manifest showed one after shutdown. `Scene.RemoveClient` broadcasts it for the
 avatar's local ID. That scene/avatar behavior remains assigned to P2.0f.
 The generator retains these tail packets when present and removes obsolete
@@ -63,5 +65,5 @@ ACK queue. They flush ACKs at the recorded batch boundary, compare every wire
 byte except the four outbound sequence bytes, and independently assert Rust's
 consecutive sequence allocation. The Rust region does not emit C#'s intervening
 terrain/appearance/world packets yet, so its ACK/logout sequences are 3/4
-rather than 23/25. Arrival's separate capture still matches the full datagram
+rather than 8/25. Arrival's separate capture still matches the full datagram
 after its documented identity and timestamp folding.

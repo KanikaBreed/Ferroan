@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Local test-grid probes of AgentHandlers, Scene.VerifyUserPresence and Robust's
-//! Presence/GridUser HTTP services at Tranquillity 858321883f5487a5d192d36ea9d7b90fa468310c.
+//! Presence/GridUser HTTP services at Tranquillity 40432e0f83d3802434f898a4e28687bd977d5cf5.
 //! Requests contain only committed fixture identities. Responses retain status,
 //! content type and parsed JSON; only the test region name/UUID are folded.
 
@@ -16,7 +16,7 @@ use std::{
 };
 
 const LIMIT: usize = 1024 * 1024;
-const PIN: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";
+const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
 const CASES: &[&str] = &[
@@ -134,22 +134,64 @@ pub(super) fn vector(text: &str) -> Option<[f32; 3]> {
     parts.next().is_none().then_some(vector)
 }
 
+/// Grid scenarios reuse accounts. A wire LogoutReply precedes asynchronous
+/// service cleanup, so never let the next scenario log in before both services
+/// settle. Standalone keeps using the bot's ordinary scenario runner.
+pub async fn run_scenarios<'a, F, Fut>(
+    scenario: &'a str,
+    private_uri: &str,
+    mut run: F,
+) -> Result<String, String>
+where
+    F: FnMut(&'a str) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut names =
+        ferroan_bot::scenario::selection(scenario).map_or_else(|| vec![scenario], <[_]>::to_vec);
+    if scenario == "all" {
+        names.push("neighbour");
+    }
+    let mut lines = Vec::new();
+    for name in names {
+        let result = async {
+            let line = run(name).await?;
+            offline(private_uri).await?;
+            if name == "chat" {
+                offline_user(private_uri, crate::live::CHAT_USER).await?;
+            }
+            Ok::<_, String>(line)
+        }
+        .await;
+        match result {
+            Ok(line) => lines.push(
+                line.strip_suffix("\nlive: run passed")
+                    .unwrap_or(&line)
+                    .to_owned(),
+            ),
+            Err(error) => {
+                lines.push(format!("{name}: fail ({error})"));
+                return Err(lines.join("\n"));
+            }
+        }
+    }
+    lines.push("live: run passed".into());
+    Ok(lines.join("\n"))
+}
+
 pub async fn offline(private_uri: &str) -> Result<(), String> {
+    offline_user(private_uri, crate::live::ESTATE_OWNER).await
+}
+
+async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
     // ActivityDetector can finish after LogoutReply; observe bounded eventual
     // service state rather than accepting the viewer acknowledgement as proof.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let mut grid = fields("getgriduserinfo");
-        grid.insert(
-            "UserID".into(),
-            Field::Str(crate::live::ESTATE_OWNER.into()),
-        );
+        grid.insert("UserID".into(), Field::Str(user.into()));
         let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid).await?;
         let mut presence = fields("getagents");
-        presence.insert(
-            "uuids".into(),
-            Field::List(vec![crate::live::ESTATE_OWNER.into()]),
-        );
+        presence.insert("uuids".into(), Field::List(vec![user.into()]));
         let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence).await?;
         let grid_offline = matches!(grid.get("result"), Some(Field::Map(info)) if matches!(info.get("Online"), Some(Field::Str(value)) if value.eq_ignore_ascii_case("false")));
         let presence_empty =
@@ -215,6 +257,26 @@ fn fields(method: &str) -> FieldMap {
         .into_iter()
         .map(|(key, value)| (key.to_string(), Field::Str(value.to_string())))
         .collect()
+}
+
+/// A deliberate query for a fixed nonexistent test session. A dedicated proxy
+/// records it separately from CreateAgent's concurrent inventory prefetch.
+pub async fn missing_presence(private_uri: &str) -> Result<(), String> {
+    let mut request = fields("getagent");
+    request.insert(
+        "SessionID".into(),
+        Field::Str("00000000-0000-4000-8000-000000000004".into()),
+    );
+    let reply = post_before(
+        tokio::time::Instant::now() + Duration::from_secs(10),
+        &format!("{private_uri}/presence"),
+        &request,
+    )
+    .await?;
+    if !matches!(reply.get("result"), Some(Field::Str(value)) if value == "null") {
+        return Err("isolated missing-session probe unexpectedly found a Presence".into());
+    }
+    Ok(())
 }
 
 fn cases() -> Result<Vec<(&'static str, &'static str, Value)>, String> {
@@ -421,6 +483,101 @@ pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn next_scenario_login_waits_for_griduser_and_presence_to_settle() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let (waiting, held) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let service = tokio::spawn(async move {
+            let mut waiting = Some(waiting);
+            let mut released = Some(released);
+            // First only Presence is clear; then only GridUser is offline.
+            // The third round is held until the test allows both to settle.
+            for index in 0..6 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = std::str::from_utf8(&request[..end]).unwrap();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(request.contains(if index % 2 == 0 {
+                    "METHOD=getgriduserinfo"
+                } else {
+                    "METHOD=getagents"
+                }));
+                if index == 5 {
+                    waiting.take().unwrap().send(()).unwrap();
+                    released.take().unwrap().await.unwrap();
+                }
+                let result = match index {
+                    0 => "<result type=\"List\"><Online>True</Online></result>",
+                    2 | 4 => "<result type=\"List\"><Online>False</Online></result>",
+                    3 => "<result type=\"List\"><UserID>still-present</UserID></result>",
+                    _ => "<result>null</result>",
+                };
+                let body = format!("<ServerResponse>{result}</ServerResponse>");
+                socket.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                ).as_bytes()).await.unwrap();
+            }
+        });
+        let logins = Arc::new(Mutex::new(Vec::new()));
+        let attempted = logins.clone();
+        let runner = tokio::spawn(async move {
+            run_scenarios("all", &uri, |name| {
+                attempted.lock().unwrap().push(name.to_owned());
+                // Each successful scenario includes its strict LogoutReply.
+                // Stop at the next login attempt: no virtual world is needed
+                // to prove the production scenario scheduler's ordering.
+                std::future::ready(if name == "login" {
+                    Ok("login: pass\nlive: run passed".into())
+                } else {
+                    Err("stopped at next login attempt".into())
+                })
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), held)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*logins.lock().unwrap(), ["login"]);
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), runner)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .contains("walk: fail (stopped at next login attempt)")
+        );
+        assert_eq!(*logins.lock().unwrap(), ["login", "walk"]);
+        service.await.unwrap();
+    }
 
     #[test]
     fn online_probe_requires_current_identity_region_exact_position_and_live_state() {

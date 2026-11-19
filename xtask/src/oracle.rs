@@ -18,7 +18,7 @@ pub enum CommandKind {
 
 pub fn run(kind: CommandKind, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
-    let reference = match reference_root() {
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("oracle: {error}");

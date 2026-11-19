@@ -7,7 +7,7 @@ cargo xtask check              # links, formatting, clippy, tests
 cargo xtask check --docs-only  # Markdown links only
 ```
 
-The command is the same on every platform. [Ordinary CI](../.github/workflows/ci.yml) runs it on Linux, Windows and macOS, using committed fixtures without the C# references or .NET SDK. The separate [Linux live workflow](../.github/workflows/live.yml) installs .NET, checks out the pinned references, verifies the five C# oracles and runs real servers. It does not rerun the whole Rust test suite with those references present.
+The command is the same on every platform. [Ordinary CI](../.github/workflows/ci.yml) runs it on Linux, Windows and macOS, using committed fixtures without the C# references or .NET SDK. The separate [Linux live workflow](../.github/workflows/live.yml) installs .NET, checks out the pinned references, verifies the C# oracles and runs real servers. It does not rerun the whole Rust test suite with those references present.
 
 ## The C# oracle
 
@@ -30,6 +30,8 @@ The command is the same on every platform. [Ordinary CI](../.github/workflows/ci
 `cargo xtask asset generate` and `verify` build [tools/asset-oracle](../tools/asset-oracle/README.md) and serialize `AssetBase` with Tranquillity's `ServerUtils.SerializeResult`. The documents are committed under [fixtures/asset](../fixtures/asset/README.md). The Linux live workflow runs `asset verify`. `ferroan-services` tests encode to those bytes and serve them from a copy of the AssetStore SQLite fixture. The live workflow also runs `cargo xtask live assets`, comparing texture and inventory HTTP with the C# and Rust asset services. The maintainer's Firestorm G0 check is recorded separately in [TASKS.md](../TASKS.md); no Aurora viewer check is claimed.
 
 ## Session captures
+
+`cargo xtask pin3 generate` and `verify` run the actual pinned C# login watcher, close callbacks, GridUser connector and trusted-host parser. [Pin3 fixtures](../fixtures/pin3/README.md) distinguish captured behavior from injected DNS answers, service responses and clocks. Rust tests compare lifecycle states, startup request bytes, host parsing and refresh decisions to those observations. Separate tests enforce bounded DNS work, cancellation throttling and concurrent snapshot access. This oracle builds its own scratch source copy; `FERROAN_REF` remains read-only. [The source review](PIN3_REVIEW.md) explains which changed C# paths remain outside the implemented Rust scope.
 
 `ferroan-capture check` decodes every UDP record in a capture and requires the same bytes back. The steps, the Tranquillity patch and the redaction rules are in [CAPTURES.md](CAPTURES.md). Ordinary CI runs synthetic packet tests, local HTTP proxy tests, and `the_harness_session_replays` on [fixtures/captures/session.cap](../fixtures/captures/session.cap). The Linux live workflow records fresh Tranquillity sessions and checks them before redaction and replay. Raw captures are not committed; committed files are the reviewed, scrubbed encoding. Passing the existing fixtures does not establish support for packet variants absent from them.
 
@@ -71,6 +73,12 @@ These are planned checks under [D18](DECISIONS.md), not current commands or CI j
 For harness changes in P0.10g, run `cargo xtask live run all grid` three consecutive times locally and once in CI. Interrupt a separate grid run after both regions have started, verify another start refuses its surviving processes, then use `cargo xtask live down` and verify those processes exit. Unit tests cover reply holds beyond the former proxy and bot timeouts, stale return-hop evidence, destination changes after opening a circuit, process ownership mismatches, and passwords spanning a log-tail cut.
 
 ## Honest status
+
+`next_scenario_login_waits_for_griduser_and_presence_to_settle` runs the grid
+scenario scheduler against controlled HTTP service replies. It first leaves
+only GridUser online, then only Presence populated, then holds the final empty
+Presence reply. The next scenario's login is attempted only after that reply
+is released. The live grid run covers the same boundary against pinned C#.
 
 P0.10k checks standalone followed by grid mode and verifies three separate SQLite files, interruption during standalone startup followed by `live down`, forced proxy failure, and 200 repeated `grid_state` test runs with the default parallel test runner. CAPS fixture comparisons serve the production `CapsRegistry::router()`. The event-poll hold and proxy default timeout are checked against the C# manifest's measured hold; transport connection headers and event URL shape come from that capture too. Circuit, arrival and CAPS extraction require the pinned C# channel/version on the matching login circuit.
 

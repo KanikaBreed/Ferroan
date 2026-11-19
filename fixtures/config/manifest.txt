@@ -1,6 +1,6 @@
 format 1
 nini 0.9.2.16
-revision 858321883f5487a5d192d36ea9d7b90fa468310c
+revision 40432e0f83d3802434f898a4e28687bd977d5cf5
 
 parse-basic
 parse-section-replace

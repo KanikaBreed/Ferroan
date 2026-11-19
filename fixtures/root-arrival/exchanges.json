@@ -1,7 +1,7 @@
 {
   "source": "csharp",
-  "revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
-  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)",
+  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)",
   "services": {
     "presence-report": {
       "method": "POST",
@@ -15,7 +15,7 @@
       "response_content_encoding": "",
       "response_x_content_encoding": "",
       "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>",
-      "record_index": 28
+      "record_index": 32
     },
     "griduser-setposition": {
       "method": "POST",
@@ -29,12 +29,12 @@
       "response_content_encoding": "",
       "response_x_content_encoding": "",
       "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>",
-      "record_index": 30
+      "record_index": 34
     }
   },
   "online": {
     "source": "csharp",
-    "revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+    "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
     "online": true,
     "presence_region": "00000000-0000-4000-8000-000000000002",
     "last_region": "00000000-0000-4000-8000-000000000002",

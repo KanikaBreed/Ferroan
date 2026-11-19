@@ -57,13 +57,23 @@ jobs:
             git clone "$url" "$dest"
             git -C "$dest" checkout --detach "$rev"
           }
+          repository() {
+            awk -v name="$1" -F'|' '
+              index($0, "`" name "`") {
+                if (match($3, /https:\/\/github.com\/[^)]+/)) {
+                  print substr($3, RSTART, RLENGTH) ".git"
+                  exit
+                }
+              }
+            ' docs/REFERENCES.md
+          }
           tranq="$(pin OpenSim-Tranquillity)"
           meta="$(pin libopenmetaverse)"
           test -n "$tranq" && test -n "$meta"
           root="${RUNNER_TEMP}/ferroan-ref"
-          clone_at https://github.com/OpenSim-NGC/OpenSim-Tranquillity.git \
+          clone_at "$(repository OpenSim-Tranquillity)" \
             "$root/OpenSim-Tranquillity" "$tranq"
-          clone_at https://github.com/OpenSim-NGC/libopenmetaverse.git \
+          clone_at "$(repository libopenmetaverse)" \
             "$root/libopenmetaverse" "$meta"
           echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
       - name: Restore the Tranquillity build
@@ -81,6 +91,7 @@ jobs:
           cargo xtask config verify
           cargo xtask http verify
           cargo xtask asset verify
+          cargo xtask pin3 verify
       - name: Run the live harness
         run: |
           set -euo pipefail

@@ -31,7 +31,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         look_at: [0.99, 0.042, 0.0],
         region_handle: 1_099_511_628_032_000,
         channel_version:
-            "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)".into(),
+            "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)".into(),
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);
@@ -236,7 +236,7 @@ fn captured_config() -> HandshakeConfig {
         HandshakeConfig::for_region(Uuid::from_u128(0x6d1a7f4e0c3b4f539a1e5f0e3c2a9b01));
     config.sim_name = "Ferroan Test".to_string();
     config.estate_owner = Uuid::from_u128(0x4f0c8d2e7a514b8e9c3d2e6f1a0b7c55);
-    config.cache_id = Uuid::from_u128(0x82c1d49a65874da49401b9443137dee9);
+    config.cache_id = Uuid::from_u128(0xa99d0f3fee1a464cb6e6c9585885a0e5);
     config
 }
 
@@ -404,10 +404,12 @@ async fn logout_send_path_matches_csharp_bytes_and_finishes_without_ack() {
 
 #[test]
 fn captured_kick_is_a_shutdown_notice_not_the_ordinary_logout_tail() {
-    let kick = parse_packet(include_bytes!("../../../fixtures/circuit/kick-user.bin"))
-        .unwrap()
-        .decode::<ferroan_protocol::msgs::KickUser>()
-        .unwrap();
+    let kick = parse_packet(include_bytes!(
+        "../../../fixtures/circuit/shutdown-kick-8583218.bin"
+    ))
+    .unwrap()
+    .decode::<ferroan_protocol::msgs::KickUser>()
+    .unwrap();
     assert_eq!(kick.user_info.reason, b"The simulator is going down.\0");
     // Scene.Close emits this exact notice during simulator shutdown. Ordinary
     // Scene.CloseAgent(false) does not call Kick; KillObject needs the avatar

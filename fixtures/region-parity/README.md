@@ -1,7 +1,7 @@
 # Region admission and logout evidence
 
 `exchanges.json` contains six HTTP probes captured from the local C# region at
-Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`, plus four unambiguous
+Tranquillity `40432e0f83d3802434f898a4e28687bd977d5cf5`, plus four unambiguous
 Presence/GridUser service exchanges from that login, logout and probe run.
 
 ```sh
@@ -28,7 +28,11 @@ The service exchanges preserve form-field order and XML bytes, replacing the
 test agent/region UUIDs and generated session UUID with the same placeholders as
 [the baseline login fixtures](../region-login/README.md). Source pairs are
 selected only when no earlier request is outstanding and the following record
-is its response. No password, live session ID or raw capture is committed.
+is its response. The missing-session Presence case uses a separate one-exchange
+proxy to the same C# Robust backend: CreateAgent's concurrent inventory prefetch
+can interleave with that lookup on the normal service proxy. Its explicit
+`capture_source` records this distinction; ambiguous pairs are still rejected.
+No password, live session ID or raw capture is committed.
 
 `AgentHandlers.cs`, `Scene.cs::VerifyUserPresence`, `PresenceServerPostHandler.cs`
 and `GridUserServerPostHandler.cs` define these responses. The service calls come

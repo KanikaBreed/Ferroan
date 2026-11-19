@@ -24,3 +24,4 @@ workspace = true
 
 [dev-dependencies]
 ferroan-protocol = { path = "../ferroan-protocol" }
+tokio = { version = "1", features = ["test-util"] }

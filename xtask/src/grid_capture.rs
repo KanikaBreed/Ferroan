@@ -24,6 +24,8 @@ const SECURE_SESSION: &str = "00000000-0000-4000-8000-000000000005";
 const CAPS: &str = "00000000000040008000000000000006";
 
 pub fn generate(directory: &Path) -> Result<String, String> {
+    let provenance =
+        crate::arrival_fixtures::csharp_provenance(&records(&directory.join("capture-udp.cap"))?)?;
     let exchanges = extract(directory, true)?;
     let target = crate::repo_root().join("fixtures/region-login");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
@@ -57,6 +59,21 @@ pub fn generate(directory: &Path) -> Result<String, String> {
         ),
     )
     .map_err(|error| error.to_string())?;
+    let manifest = json!({
+        "revision":crate::arrival_fixtures::PIN,
+        "source":"cargo xtask live run login grid",
+        "exchanges":["register","deregister","query-access","create-agent"],
+        "normalization":"Test identity and endpoint folding described in README.md; form ordering, status, content type and decoded bodies retained.",
+        "provenance":provenance,
+    });
+    fs::write(
+        target.join("manifest.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     Ok("login fixtures: four C# request/reply exchanges scrubbed".to_string())
 }
 
@@ -87,7 +104,7 @@ pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> 
 pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
     use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
     const CHANNEL: &[u8] =
-        b"OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)\0";
+        b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
     for record in records(&directory.join("capture-udp.cap"))? {
         if record.kind != Kind::UdpOut {
             continue;
@@ -261,6 +278,37 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
             captured["record_index"] = json!(index);
         }
         output.insert(name.into(), captured);
+    }
+    if !root_arrival && directory.join("proxy-presence-missing.cap").exists() {
+        let isolated = self::records(&directory.join("proxy-presence-missing.cap"))?;
+        if isolated.len() != 2 || isolated[0].kind != Kind::HttpRequest {
+            return Err("isolated Presence capture must contain exactly one exchange".into());
+        }
+        let request = Message::parse(&isolated[0].bytes)?;
+        let reply = paired(&isolated, 0)?;
+        let fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
+        let response = reply.text()?;
+        let decoded =
+            ferroan_http::parse_xml_response(&response).map_err(|error| error.to_string())?;
+        if request.method != "POST"
+            || request.path != "/presence"
+            || text_field(&fields, "METHOD")? != "getagent"
+            || text_field(&fields, "SessionID")? != SESSION
+            || !matches!(decoded.get("result"), Some(Field::Str(value)) if value == "null")
+        {
+            return Err("isolated capture is not the missing test-session Presence query".into());
+        }
+        let mut captured = exchange(
+            &request,
+            &reply,
+            json!(build_query_string(&fields).map_err(|error| error.to_string())?),
+            json!(normalizer.text(&response)),
+            &normalizer,
+        );
+        captured["capture_source"] = json!(
+            "Explicit missing-session query through an isolated one-exchange proxy to the same live C# Robust backend; not inferred from overlapping CreateAgent inventory traffic."
+        );
+        output.insert("presence-missing".into(), captured);
     }
     let required: &[&str] = if root_arrival {
         &["presence-report", "griduser-setposition"]

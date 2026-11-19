@@ -19,7 +19,7 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
 
 fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
-    let reference = match reference_root() {
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("config: {error}");

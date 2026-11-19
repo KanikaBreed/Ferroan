@@ -16,12 +16,12 @@ use ferroan_protocol::{Msg, parse_packet};
 use serde_json::{Value, json};
 
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
-const PIN: &str = "858321883f5487a5d192d36ea9d7b90fa468310c";
+pub(crate) const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
 const HOME_HANDLE: u64 = (256_000u64 << 32) | 256_000;
 // LLClientView.MoveAgentIntoRegion carries Scene.GetSimulatorVersion(), including
 // the pinned C# build version. The Rust harness uses the same region name/UUID.
 const CSHARP_CHANNEL: &[u8] =
-    b"OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)\0";
+    b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
 
 pub(crate) fn csharp_provenance(records: &[Record]) -> Result<Value, String> {
     let (_, manifest) = select(records)?;

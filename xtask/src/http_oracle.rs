@@ -19,7 +19,7 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
 
 fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
-    let reference = match reference_root() {
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("http: {error}");
@@ -74,7 +74,7 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn reference_root() -> Result<PathBuf, String> {
+pub(crate) fn reference_root() -> Result<PathBuf, String> {
     match env::var("FERROAN_REF") {
         Ok(value) if !value.is_empty() => Ok(expand_user(&value)),
         Ok(_) | Err(_) => home_dir().map(|home| home.join("Git/reference")),
@@ -100,7 +100,7 @@ fn expand_user(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
+pub(crate) fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
     let text = fs::read_to_string(root.join("docs/REFERENCES.md"))
         .map_err(|error| format!("could not read docs/REFERENCES.md: {error}"))?;
     let pinned = pinned_revision(&text)?;
@@ -191,7 +191,7 @@ fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn dotnet(
+pub(crate) fn dotnet(
     root: &Path,
     reference: &Path,
     artifacts: &Path,

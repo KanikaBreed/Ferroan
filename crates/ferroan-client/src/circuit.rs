@@ -39,7 +39,8 @@
 //     (OnMakeRootAgent, DoOnMakeRootAgent)
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
 //     (OnMakeRootAgent, DoOnMakeRootAgent)
-//   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
+//   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -185,6 +186,7 @@ struct State {
     arrival: ArrivalConfig,
     arrived: bool,
     root_arrival: Option<oneshot::Sender<RootArrival>>,
+    connection_opened: Option<oneshot::Sender<()>>,
     arrival_completion: Option<oneshot::Receiver<()>>,
     timing: CircuitTiming,
     rto: Duration,
@@ -219,6 +221,7 @@ impl State {
             arrival,
             arrived: false,
             root_arrival: None,
+            connection_opened: None,
             arrival_completion: None,
             timing,
             rto: timing.default_rto,
@@ -251,7 +254,11 @@ impl State {
             } else {
                 self.timing.ack_timeout
             };
-            if now.duration_since(self.last_received) > timeout {
+            // A ViaLogin circuit is not a connected client yet. The region's
+            // LoginConnectWait watcher owns its pre-connection lifetime.
+            if (self.peer.is_some() || self.connection_opened.is_none())
+                && now.duration_since(self.last_received) > timeout
+            {
                 return Err(CircuitError::Timeout);
             }
             if let Some(peer) = self.peer {
@@ -396,6 +403,9 @@ impl State {
             }
             self.peer = Some(from);
             self.last_received = Instant::now();
+            if let Some(connected) = self.connection_opened.take() {
+                let _ = connected.send(());
+            }
             if packet.reliable() {
                 self.recent.note(packet.sequence);
             }
@@ -597,7 +607,7 @@ impl CircuitServer {
         expect: CircuitExpect,
         arrival: ArrivalConfig,
     ) -> Result<(), CircuitError> {
-        self.serve_with_reporting(expect, arrival, None).await
+        self.serve_with_reporting(expect, arrival, None, None).await
     }
 
     /// Serve one accepted generation and notify its dispatcher exactly once
@@ -611,7 +621,20 @@ impl CircuitServer {
         arrival: ArrivalConfig,
         root_arrival: oneshot::Sender<RootArrival>,
     ) -> Result<(), CircuitError> {
-        self.serve_with_reporting(expect, arrival, Some(root_arrival))
+        self.serve_with_reporting(expect, arrival, Some(root_arrival), None)
+            .await
+    }
+
+    /// A ViaLogin circuit waits for the region's login-connect deadline until
+    /// its first valid UseCircuitCode; thereafter ordinary inactivity applies.
+    pub async fn serve_login(
+        &self,
+        expect: CircuitExpect,
+        arrival: ArrivalConfig,
+        root_arrival: oneshot::Sender<RootArrival>,
+        connected: oneshot::Sender<()>,
+    ) -> Result<(), CircuitError> {
+        self.serve_with_reporting(expect, arrival, Some(root_arrival), Some(connected))
             .await
     }
 
@@ -620,6 +643,7 @@ impl CircuitServer {
         expect: CircuitExpect,
         arrival: ArrivalConfig,
         root_arrival: Option<oneshot::Sender<RootArrival>>,
+        connected: Option<oneshot::Sender<()>>,
     ) -> Result<(), CircuitError> {
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
@@ -635,6 +659,7 @@ impl CircuitServer {
             arrival,
             self.timing,
             root_arrival,
+            connected,
         )
         .await
     }
@@ -647,7 +672,7 @@ async fn serve_socket(
     arrival: ArrivalConfig,
     timing: CircuitTiming,
 ) -> Result<(), CircuitError> {
-    serve_socket_reporting(sock, expect, handshake, arrival, timing, None).await
+    serve_socket_reporting(sock, expect, handshake, arrival, timing, None, None).await
 }
 
 async fn serve_socket_reporting(
@@ -657,9 +682,11 @@ async fn serve_socket_reporting(
     arrival: ArrivalConfig,
     timing: CircuitTiming,
     root_arrival: Option<oneshot::Sender<RootArrival>>,
+    connected: Option<oneshot::Sender<()>>,
 ) -> Result<(), CircuitError> {
     let mut state = State::with_timing(handshake, arrival, timing);
     state.root_arrival = root_arrival;
+    state.connection_opened = connected;
     let mut buf = [0u8; MAX_DATAGRAM];
     loop {
         state.maintain(sock).await?;

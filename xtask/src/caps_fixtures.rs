@@ -288,7 +288,7 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         }
     }
     let manifest = json!({
-        "tranquillity": "858321883f5487a5d192d36ea9d7b90fa468310c",
+        "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
         "source": "cargo xtask live run caps grid",
         "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
         "event_queue_url": EVENT_URL,

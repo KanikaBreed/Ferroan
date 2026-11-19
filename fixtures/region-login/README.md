@@ -1,12 +1,17 @@
 # Region login control-plane fixtures
 
 These are request/reply exchanges captured from the local C# test grid at
-Tranquillity revision `858321883f5487a5d192d36ea9d7b90fa468310c`. They cover
+Tranquillity revision `40432e0f83d3802434f898a4e28687bd977d5cf5`. They cover
 GridService registration and deregistration, SimulationService QueryAccess and
 CreateAgent. `exchanges.json` also retains the method, path, status, content types
 and request and response compression headers. The individual files are used by the region
 crate's byte and HTTP tests. JSON bodies are decoded and serialized as compact
 JSON; XML response bytes and form field order are preserved.
+
+[manifest.json](manifest.json) records the pin and the matching captured C#
+arrival channel used to validate provenance before extraction. The four
+normalized exchanges were recaptured for Pin3 and remain byte-identical to
+their earlier versions.
 
 Regenerate with the pinned reference and the .NET SDK available:
 
