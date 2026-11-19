@@ -30,6 +30,7 @@
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
 //! The live CI job runs standalone and grid mode.
 
+mod accounts;
 mod arrival_fixtures;
 mod asset_oracle;
 mod assets;
@@ -95,7 +96,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live trailing-fixtures <udp-capture>
        cargo xtask live run assets --running
        cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
-       cargo xtask live assets [--db sqlite|mysql|pgsql]";
+       cargo xtask live assets [--db sqlite|mysql|pgsql]
+       cargo xtask live accounts [--db sqlite|mysql|pgsql]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
