@@ -41,7 +41,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
-| Q10g | P2.0d4: root-arrival Presence and GridUser reporting | READY after Q10f |
+| Q10g | P2.0d4: root-arrival Presence and GridUser reporting | IN PROGRESS (fix/root-arrival-reporting) |
 | Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | READY after Q10g |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
