@@ -118,6 +118,10 @@ jobs:
           cargo xtask live run ferrobot grid --region ferroan
       - name: Run grid mode with the Rust asset service
         run: cargo xtask live run assets grid --rust assets --db sqlite
+      - name: Check login with the Rust user account service
+        run: cargo xtask live run login grid --rust accounts
+      - name: Check login with Rust assets and user accounts
+        run: cargo xtask live run login grid --rust assets,accounts
       - name: Compare C# and Ferroan asset services
         run: cargo xtask live compare assets
       - name: Compare C# and Ferroan user account services

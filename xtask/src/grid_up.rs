@@ -121,7 +121,10 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         &grid.passwords,
         bind,
         Some(&console),
-        None,
+        ServiceUris {
+            asset: None,
+            account: None,
+        },
     )?);
     for (first, last, secret, email, id) in [
         (
@@ -192,6 +195,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 private_proxy: private_port,
                 capture: None,
                 asset_uri: None,
+                account_uri: None,
             },
             &grid.passwords,
         )?;
