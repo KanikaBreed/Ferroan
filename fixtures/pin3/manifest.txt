@@ -1,6 +1,7 @@
 format 1
 revision 40432e0f83d3802434f898a4e28687bd977d5cf5
-source actual pinned Scene, LLClientView, ActivityDetector, GridUserServicesConnector and ControlPlaneAccess
+source actual pinned Scene, LLClientView, ActivityDetector, GridUserServicesConnector, PresenceServicesConnector, ServiceAuth, AgentSimpleHandler and ControlPlaneAccess
 
 lifecycle.json
 trust.json
+login-robustness.json

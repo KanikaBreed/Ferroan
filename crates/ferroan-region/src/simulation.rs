@@ -59,7 +59,9 @@
 //   OpenMetaverse.StructuredData/StructuredData.cs (OSD boolean/real conversions)
 //   and OpenMetaverse.StructuredData/JSON/JsonWriter.cs (real-number formatting)
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
-// Ferroan changes: bounded local login admission, one active circuit, gzip limits.
+// Ferroan changes: bounded local login admission, one active circuit, gzip limits,
+// a single CreateAgent budget under Robust's 30 s connector timeout, and an
+// empty JSON 403 for a refused control-plane POST.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -125,18 +127,31 @@ pub struct SimulationState {
     control_plane: ControlPlaneAccess,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     admission_open: Arc<AtomicBool>,
+    /// One envelope for the lifecycle-lock wait and the Presence verify.
+    /// Robust's CreateAgent connector gives up at 30 s; this stays under it.
+    /// Tests shorten it. It is not a configuration key.
+    create_agent_budget: Duration,
 }
 
 struct ActiveSession {
     agent_id: Uuid,
     session_id: Uuid,
     generation: Uuid,
-    cancel: oneshot::Sender<()>,
+    /// Set when this circuit's root arrival is accepted, before the root reports.
+    root: bool,
+    cancel: Option<oneshot::Sender<()>>,
+    /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
+    /// completes it after logout notification.
+    logout_done: Option<oneshot::Receiver<()>>,
 }
 
 /// Keeps the accepted seed and circuit reserved until logout, timeout or failure.
 /// Do not log this value: it includes session credentials received from Robust.
 pub struct AcceptedAgent {
+    /// Completed when this agent is dropped, after its logout notification.
+    /// Nothing reads the sender; dropping it is the signal.
+    #[allow(dead_code)]
+    logout_done: Option<oneshot::Sender<()>>,
     pub accepted_at: tokio::time::Instant,
     pub expect: CircuitExpect,
     pub secure_session_id: Uuid,
@@ -178,6 +193,20 @@ impl AcceptedAgent {
     /// drop the old UDP-serving future before starting the replacement.
     pub async fn replaced(&mut self) {
         let _ = (&mut self.cancelled).await;
+    }
+
+    /// The circuit report is in hand and this generation is still the active one.
+    pub fn mark_root(&self) {
+        let mut active = self
+            ._lease
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(session) = active.as_mut()
+            && session.generation == self._lease.generation
+        {
+            session.root = true;
+        }
     }
 }
 
@@ -221,6 +250,7 @@ impl SimulationState {
             control_plane: config.control_plane.clone(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             admission_open: Arc::new(AtomicBool::new(true)),
+            create_agent_budget: Duration::from_secs(25),
         }
     }
 
@@ -271,8 +301,10 @@ impl SimulationState {
             .sender
             .try_reserve()
             .map_err(|_| "Region is not accepting logins")?;
-        if let Some(previous) = active.take() {
-            let _ = previous.cancel.send(());
+        if let Some(mut previous) = active.take() {
+            if let Some(cancel) = previous.cancel.take() {
+                let _ = cancel.send(());
+            }
             self.caps.clear();
         }
         let path = format!("/CAPS/{}0000/", fields.caps_path);
@@ -281,11 +313,14 @@ impl SimulationState {
         }
         let generation = Uuid::new_v4();
         let (cancel, cancelled) = oneshot::channel();
+        let (logout_done, logout_wait) = oneshot::channel();
         *active = Some(ActiveSession {
             agent_id: fields.agent_id,
             session_id: fields.session_id,
             generation,
-            cancel,
+            root: false,
+            cancel: Some(cancel),
+            logout_done: Some(logout_wait),
         });
         let lease = SessionLease {
             active: self.active.clone(),
@@ -294,6 +329,7 @@ impl SimulationState {
             lifecycle: self.lifecycle.clone(),
         };
         let accepted = AcceptedAgent {
+            logout_done: Some(logout_done),
             accepted_at: tokio::time::Instant::now(),
             expect: CircuitExpect {
                 agent_id: fields.agent_id,
@@ -314,6 +350,23 @@ impl SimulationState {
         drop(active);
         permit.send(accepted);
         Ok(())
+    }
+
+    /// A failed verify of an existing root closes that root. The session stays
+    /// until the dispatcher drops the generation lease after `notify_logout`.
+    fn begin_root_close(&self, agent: Uuid) -> Option<oneshot::Receiver<()>> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let session = active.as_mut()?;
+        if session.agent_id != agent || !session.root {
+            return None;
+        }
+        if let Some(cancel) = session.cancel.take() {
+            let _ = cancel.send(());
+        }
+        session.logout_done.take()
     }
 }
 
@@ -336,7 +389,7 @@ async fn handle(
         && (request.headers().contains_key("x-secondlife-shard")
             || !state.control_plane.allows(peer.ip()).await)
     {
-        return (StatusCode::FORBIDDEN, [(header::CONNECTION, "close")], "").into_response();
+        return forbidden();
     }
     if agent.is_nil() || (method == "QUERYACCESS" && region.is_none_or(|id| id.is_nil())) {
         return bare(StatusCode::BAD_REQUEST);
@@ -370,17 +423,45 @@ async fn handle(
         Err(_) => return bare(StatusCode::BAD_REQUEST),
     };
     fields.clamp_position(state.region_size);
-    let Ok(_lifecycle) =
-        tokio::time::timeout(Duration::from_secs(15), state.lifecycle.lock()).await
-    else {
-        return create_refused("Region is busy completing a login or logout", peer);
+    // Scene.NewUserConnection checks LoginsEnabled before VerifyUserPresence.
+    // The single-agent limit is a Ferroan refusal and uses the same early point.
+    if let Some(reason) = state.admission_refusal(agent) {
+        return create_refused(reason, peer);
+    }
+    // SimulationServiceConnector.CreateAgent posts with a 30 s timeout. The
+    // lock wait and the Presence verify share one shorter budget so Robust
+    // does not time out and retry a login this region then accepts.
+    let deadline = tokio::time::Instant::now() + state.create_agent_budget;
+    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
+    let busy = "Region is busy completing a login or logout";
+    let lock_wait = remaining();
+    if lock_wait.is_zero() {
+        return create_refused(busy, peer);
+    }
+    let Ok(lifecycle) = tokio::time::timeout(lock_wait, state.lifecycle.lock()).await else {
+        return create_refused(busy, peer);
     };
-    if !state
+    let verify_budget = remaining();
+    if verify_budget.is_zero() {
+        // Do not call Presence with a zero timeout: reqwest treats that as unlimited.
+        // A budget that expired before verify does not close the current root.
+        return create_refused(busy, peer);
+    }
+    let verified = state
         .presence
-        .verify(fields.agent_id, fields.session_id)
+        .verify_within(fields.agent_id, fields.session_id, verify_budget)
         .await
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    if !verified {
+        drop(lifecycle);
+        // Successive logins still verify before replacing. Only a failed verify
+        // of an existing root closes that root and waits for its LoggedOut.
+        if let Some(done) = state.begin_root_close(agent) {
+            let wait = remaining();
+            if !wait.is_zero() {
+                let _ = tokio::time::timeout(wait, done).await;
+            }
+        }
         return create_refused(
             &format!(
                 "Failed to verify user presence in the grid for {} {}, access denied to region {}.",
@@ -389,12 +470,24 @@ async fn handle(
             peer,
         );
     }
+    let _lifecycle = lifecycle;
     let answer = match state.accept(fields) {
         Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
     };
     json_reply(answer, true)
+}
+
+fn forbidden() -> Response {
+    // AgentSimpleHandler sets Content-Type application/json, then Authorize
+    // answers 403 with an empty buffer. A string body would replace that type.
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONNECTION, "close")
+        .body(axum::body::Body::empty())
+        .expect("static forbidden response")
 }
 
 fn create_refused(reason: &str, peer: SocketAddr) -> Response {
@@ -1344,5 +1437,309 @@ mod tests {
             answer["reason"],
             "Your region is running a old version of opensim no longer supported. Consider updating it"
         );
+    }
+
+    fn login_robustness() -> Value {
+        serde_json::from_str(include_str!("../../../fixtures/pin3/login-robustness.json")).unwrap()
+    }
+
+    fn presence_server(
+        reply: String,
+        delay: Duration,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = reply.clone();
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::Relaxed);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    reply
+                }
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (base, task)
+    }
+
+    async fn post_create(base: &str, body: &str) -> (Value, std::time::Duration) {
+        let started = std::time::Instant::now();
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .build()
+            .unwrap()
+            .post(base)
+            .header("content-type", "application/json")
+            .body(body.to_owned())
+            .send()
+            .await
+            .expect("CreateAgent exceeded its budget");
+        let elapsed = started.elapsed();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        (value, elapsed)
+    }
+
+    #[test]
+    fn create_agent_budget_stays_under_the_robust_connector_timeout() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        assert_eq!(state.create_agent_budget, Duration::from_secs(25));
+    }
+
+    #[tokio::test]
+    async fn delayed_presence_create_agent_finishes_inside_the_robust_timeout() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, task) = presence_server(
+            "<ServerResponse><result>null</result></ServerResponse>".into(),
+            Duration::from_secs(30),
+            hits.clone(),
+        );
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let mut state = SimulationState::new(&test_config(&base, region), caps, sender);
+        state.create_agent_budget = Duration::from_millis(200);
+        let app = state.router();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http = format!("http://{}", listener.local_addr().unwrap());
+        let serving = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let (value, elapsed) = post_create(&format!("{http}/agent/{agent}/"), CREATE_REQUEST).await;
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "CreateAgent took {elapsed:?}"
+        );
+        assert_ne!(value.get("success"), Some(&Value::Bool(true)));
+        assert!(
+            value["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Failed to verify user presence")
+        );
+        assert!(hits.load(Ordering::Relaxed) >= 1);
+        serving.abort();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn exhausted_create_agent_budget_refuses_busy_without_closing_a_root() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, task) = presence_server(
+            presence_reply(Uuid::from_u128(1)),
+            Duration::ZERO,
+            hits.clone(),
+        );
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut state = SimulationState::new(&test_config(&base, region), caps, sender);
+        state.create_agent_budget = Duration::ZERO;
+        state.accept(synthetic_agent()).unwrap();
+        let mut root = receiver.recv().await.unwrap();
+        root.mark_root();
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{}/", Uuid::from_u128(1)))
+            .body(axum::body::Body::from(create_body_for(
+                synthetic_agent(),
+                region,
+            )))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["reason"],
+            "Region is busy completing a login or logout"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            root.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        state.create_agent_budget = Duration::from_millis(200);
+        let (release_tx, release_rx) = oneshot::channel();
+        let lifecycle = state.lifecycle.clone();
+        let holder = tokio::spawn(async move {
+            let guard = lifecycle.lock_owned().await;
+            let _ = release_rx.await;
+            drop(guard);
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state.lifecycle.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lifecycle lock was not taken");
+        let started = std::time::Instant::now();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{}/", Uuid::from_u128(1)))
+            .body(axum::body::Body::from(create_body_for(
+                synthetic_agent(),
+                region,
+            )))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["reason"],
+            "Region is busy completing a login or logout"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            root.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let _ = release_tx.send(());
+        holder.await.unwrap();
+        task.abort();
+    }
+
+    fn create_body_for(fields: AgentFields, region: Uuid) -> String {
+        json!({
+            "agent_id": fields.agent_id.to_string(),
+            "session_id": fields.session_id.to_string(),
+            "secure_session_id": fields.secure_session_id.to_string(),
+            "circuit_code": fields.circuit_code.to_string(),
+            "caps_path": fields.caps_path,
+            "start_pos": format!("<{}, {}, {}>", fields.start_pos[0], fields.start_pos[1], fields.start_pos[2]),
+            "first_name": fields.first_name,
+            "last_name": fields.last_name,
+            "destination_uuid": region.to_string(),
+            "destination_name": "Fixture Region",
+            "teleport_flags": "128",
+            "child": false,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn admission_is_refused_before_presence_verify() {
+        let fixture = login_robustness();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, task) = presence_server(
+            presence_reply(Uuid::from_u128(1)),
+            Duration::ZERO,
+            hits.clone(),
+        );
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config(&base, region), caps, sender);
+        state.stop_accepting();
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{agent}/"))
+            .body(axum::body::Body::from(CREATE_REQUEST))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["reason"], fixture["logins_disabled"]["reason"]);
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+
+        let (sender, mut occupied) = mpsc::channel(1);
+        let open = SimulationState::new(
+            &test_config(&base, region),
+            CapsRegistry::new("http://127.0.0.1:8002").unwrap(),
+            sender,
+        );
+        let mut other = synthetic_agent();
+        other.agent_id = Uuid::from_u128(9);
+        open.accept(other).unwrap();
+        let _occupied = occupied.recv().await.unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{agent}/"))
+            .body(axum::body::Body::from(CREATE_REQUEST))
+            .unwrap();
+        let response = handle(State(open), ConnectInfo(peer), request).await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["reason"], "Region already has an active login");
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn refused_post_matches_csharp_json_403() {
+        let fixture = login_robustness();
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state =
+            SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
+        for case in fixture["refused_post"].as_array().unwrap() {
+            let peer: SocketAddr = if case["name"] == "untrusted" {
+                "192.0.2.1:9".parse().unwrap()
+            } else {
+                "127.0.0.1:9".parse().unwrap()
+            };
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri(format!("/agent/{agent}/"));
+            if case["name"] == "script-marker" {
+                builder = builder.header("x-secondlife-shard", "OpenSim");
+            }
+            let request = builder
+                .body(axum::body::Body::from(CREATE_REQUEST))
+                .unwrap();
+            let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+            assert_eq!(
+                response.status().as_u16(),
+                case["status"].as_u64().unwrap() as u16
+            );
+            assert_eq!(
+                response.headers()["content-type"],
+                case["content_type"].as_str().unwrap()
+            );
+            assert_eq!(response.headers()["connection"], "close");
+            assert_eq!(case["keep_alive"], false);
+            let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+            assert_eq!(body.len(), case["body_length"].as_u64().unwrap() as usize);
+        }
     }
 }

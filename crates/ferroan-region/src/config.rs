@@ -416,8 +416,11 @@ fn load_regions(directory: &Path) -> Result<Config, RegionConfigError> {
 
 fn reject_unsupported_auth(config: &Config) -> Result<(), RegionConfigError> {
     // ServiceAuth.Create uses Network first and the service section last.
-    // Reject unsupported authentication explicitly instead of silently sending
-    // unauthenticated service requests or exposing an unauthenticated listener.
+    // At the pin, None, none, an empty value and TrustedGridAuthentication add
+    // no Authorization header (TrustedGrid's signer is null). This region
+    // accepts those four and does not implement signing. BasicHttpAuthentication
+    // adds credentials, and any other value is refused: C#'s default branch
+    // accepts unknown names, which this row does not ask for.
     for section in [
         "Network",
         "GridService",
@@ -430,11 +433,11 @@ fn reject_unsupported_auth(config: &Config) -> Result<(), RegionConfigError> {
             .get(section, "AuthType")
             .or_else(|| config.get("Network", "AuthType"))
             .unwrap_or("None");
-        if setting != "None" {
+        if !matches!(setting, "None" | "none" | "" | "TrustedGridAuthentication") {
             return Err(value(
                 section,
                 "AuthType",
-                "only None is supported by this region",
+                "only None, none, an empty value, or TrustedGridAuthentication is supported by this region",
             ));
         }
     }
@@ -910,38 +913,53 @@ mod tests {
 
     #[test]
     fn unsupported_auth_is_refused_for_network_and_each_used_service_without_secrets() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/pin3/login-robustness.json"))
+                .unwrap();
         for section in [
             "Network",
             "GridService",
             "PresenceService",
             "GridUserService",
+            "InventoryService",
+            "AssetService",
         ] {
-            for auth in [
-                "BasicHttpAuthentication",
-                "TrustedGridAuthentication",
-                "none",
-                "",
-            ] {
+            for entry in fixture["auth_types"]["network"].as_array().unwrap() {
+                let auth = entry["auth"].as_str().unwrap();
                 let mut config = server();
                 config.set(section, "AuthType", auth);
                 config.set(section, "HttpAuthPassword", "private-test-value");
-                let error = RegionConfig::from_configs(&config, &regions())
-                    .err()
-                    .unwrap();
-                assert!(matches!(
-                    error,
-                    RegionConfigError::Value {
-                        key: "AuthType",
-                        ..
-                    }
-                ));
-                assert!(!error.to_string().contains("private-test-value"));
+                let result = RegionConfig::from_configs(&config, &regions());
+                if entry["adds_authorization"].as_bool() == Some(true) {
+                    let error = result.err().unwrap();
+                    assert!(
+                        matches!(
+                            error,
+                            RegionConfigError::Value {
+                                key: "AuthType",
+                                ..
+                            }
+                        ),
+                        "{section} {auth}"
+                    );
+                    assert!(!error.to_string().contains("private-test-value"));
+                } else {
+                    assert!(result.is_ok(), "{section} {auth}");
+                }
             }
+            let mut config = server();
+            config.set(section, "AuthType", "NotAServiceAuthValue");
+            let error = RegionConfig::from_configs(&config, &regions())
+                .err()
+                .unwrap();
+            assert!(matches!(
+                error,
+                RegionConfigError::Value {
+                    key: "AuthType",
+                    ..
+                }
+            ));
         }
-        let mut config = server();
-        config.set("Network", "AuthType", "None");
-        config.set("PresenceService", "AuthType", "None");
-        assert!(RegionConfig::from_configs(&config, &regions()).is_ok());
     }
 
     #[test]

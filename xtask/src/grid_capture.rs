@@ -190,6 +190,54 @@ pub(super) fn compare_root_arrival(directory: &Path) -> Result<String, String> {
     )
 }
 
+/// Presence `logoutregion` at Ferroan region start and stop.
+pub(super) fn compare_logout_region(directory: &Path) -> Result<String, String> {
+    let fixture: Value = serde_json::from_slice(&bounded(
+        &crate::repo_root().join("fixtures/pin3/login-robustness.json"),
+        MAX_BODY,
+    )?)
+    .map_err(|error| error.to_string())?;
+    let fixture_region = fixture["logout_region"]["region"]
+        .as_str()
+        .ok_or("logoutregion fixture has no region")?;
+    let expected = fixture["logout_region"]["calls"][0]["request"]
+        .as_str()
+        .ok_or("logoutregion fixture has no request")?
+        .replace(fixture_region, crate::live::REGION_UUID);
+    let records = records(&directory.join("proxy-robust-private.cap"))?;
+    let mut found = 0usize;
+    for record in &records {
+        if record.kind != Kind::HttpRequest {
+            continue;
+        }
+        let request = Message::parse(&record.bytes)?;
+        if request.method != "POST" || request.path != "/presence" {
+            continue;
+        }
+        let fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
+        if text_field(&fields, "METHOD").unwrap_or_default() != "logoutregion" {
+            continue;
+        }
+        if text_field(&fields, "RegionID")? != crate::live::REGION_UUID {
+            continue;
+        }
+        if fields.contains_key("SessionID") {
+            return Err("logoutregion capture includes SessionID".into());
+        }
+        let body = request.text()?;
+        if body != expected {
+            return Err("logoutregion form differs from the C# fixture".into());
+        }
+        found += 1;
+    }
+    if found != 2 {
+        return Err(format!(
+            "expected two Presence logoutregion calls for the Ferroan region, found {found}"
+        ));
+    }
+    Ok("presence logoutregion: start and stop match the C# form".into())
+}
+
 fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Value, String> {
     let records = records(&directory.join("proxy-robust-private.cap"))?;
     let normalizer = Normalizer {

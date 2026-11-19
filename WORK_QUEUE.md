@@ -47,7 +47,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | READY after Q24 (scope revised, see below) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
-| Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | READY after Q10r |
+| Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | IN PROGRESS (`fix/login-robustness`) |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | READY after Q10h |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
 | Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
@@ -157,6 +157,7 @@ Each item's scope and acceptance is its row in TASKS.md. The rows were revised o
 - 2026-11-19, Pin3 documentation mapping: the Pin3 row asks for notes in "Phase 3 land rows", but TASKS.md has no Phase 3 or land rows yet, and PLAN.md assigns land/estate modules to Phase 5 (Phase 3 is physics). The source notes are retained under TASKS.md's future-phase paragraph and in `docs/PIN3_REVIEW.md`; the manager can attach them when adding those rows. No task scope or queue order was changed.
 
 - 2026-11-19, Pin3 oracle development: the initial new-oracle verify reported `trust.json differs from the C# observation` after the capture driver was expanded to include its DNS answer inputs and additional actual .NET IP parsing observations. The fixtures are regenerated for the expanded driver and then verified again. This is an explicit fixture-schema update, not a flaky retry; the initial log remains `.scratch/pin3-oracle-verify.log`.
+- 2026-11-19, Q10i: the review at `1076a0a` says `dispatch_circuits` treats a `notify_logout` error as fatal. On `main` at `82d6a98` the dispatcher already logs that error and returns `Ok(())`. Finding 1's remaining work is a Presence `Failure` reply and the next login. Finding 4 keeps verify-then-accept on the success path (D22); a failed verify of an existing root still closes that root. No TB row: close-before-verify is intentional C# behavior, not a Tranquillity defect. `AuthType` accepts the four values the row names (`None`, `none`, empty, `TrustedGridAuthentication`) and still refuses other values, including `BasicHttpAuthentication`. C#'s default branch accepts any other string; that wider acceptance is not in the row.
 
 - 2026-11-19, Q10h caller audit: the Q10f shared-client note generalized `MakeRequest`'s status check to the separate `MakePostRequest` helper. Actual pinned C# Grid registration/deregistration accepts valid success XML on HTTP 302 without Location and HTTP 500; Presence/GridUser rejects those bodies. Recorded as TB10 in `docs/TRANQUILLITY_BUGS.md`; the scope contradiction and proposed manager actions are under Q10h above. No C# checkout was changed and no upstream issue was filed.
 
