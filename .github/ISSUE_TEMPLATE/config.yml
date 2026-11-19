@@ -1,1 +1,11 @@
 blank_issues_enabled: true
+contact_links:
+  - name: Questions and help
+    url: https://github.com/KanikaBreed/Ferroan/discussions/categories/q-a
+    about: Ask about setup, the plan or the code in Discussions (Q&A).
+  - name: Ideas
+    url: https://github.com/KanikaBreed/Ferroan/discussions/categories/ideas
+    about: Propose work that doesn't fit an existing task yet.
+  - name: Tasks open for contributors
+    url: https://github.com/KanikaBreed/Ferroan/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready
+    about: Issues labelled agent-ready, with full briefs. Claim one by commenting on it.

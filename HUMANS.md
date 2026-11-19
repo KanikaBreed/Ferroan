@@ -44,7 +44,9 @@ Put temporary logs in `.scratch/`, which Git ignores.
 4. If you have to stop, say so on the issue and push what you have. Nobody should have to guess where a task stands.
 5. If the brief is wrong, too big, or blocked by something else, say so on the issue before changing the scope.
 
-Want to take on something with no issue yet? Ask in an issue first. The manager writes the brief, so the work fits the plan and doesn't collide with the queue.
+Questions about setup, the plan or the code go in [Discussions](https://github.com/KanikaBreed/Ferroan/discussions) (Q&A). Ideas that don't fit an existing task go in its Ideas category.
+
+Want to take on something with no issue yet? Ask in [Discussions](https://github.com/KanikaBreed/Ferroan/discussions) first. The manager writes the brief, so the work fits the plan and doesn't collide with the queue.
 
 ## Contributing with your agent
 
