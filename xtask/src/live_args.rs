@@ -44,6 +44,10 @@ pub(crate) struct RunSpec {
 }
 
 impl RunSpec {
+    /// True when this grid run serves assets from `ferroan-robust`.
+    ///
+    /// The caller lives in the Linux harness. Tests compile it too.
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn rust_assets(&self) -> bool {
         self.rust_services.iter().any(|service| service == "assets")
     }
