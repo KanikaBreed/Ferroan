@@ -39,6 +39,8 @@
 //! return 502, while removal wakes them with 404. Event delivery advances one
 //! id per batch. See event_queue for crossing-marker limitations and bounds.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::event_queue::{EventQueue, EventQueueError, PollReply};
@@ -54,6 +56,84 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 const SEED_MIME: &str = "text/html;charset=UTF-8";
+
+/// Inventory and asset bodies. A seed stays on the smaller limit below.
+const CAP_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Where a granted capability is answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapTarget {
+    /// A path on this region's HTTP listener, allocated when the agent is accepted.
+    Local,
+    /// Returned in the seed and not handled here.
+    External(String),
+}
+
+/// Capabilities added beside `EventQueueGet`.
+///
+/// The seed includes a name only when the client asked for it. An empty set
+/// leaves the existing seed and event queue unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CapGrantSet {
+    grants: Vec<(String, CapTarget)>,
+}
+
+impl CapGrantSet {
+    pub fn grant(&mut self, name: impl Into<String>, target: CapTarget) {
+        let name = name.into();
+        if let Some(existing) = self.grants.iter_mut().find(|(found, _)| found == &name) {
+            existing.1 = target;
+        } else {
+            self.grants.push((name, target));
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &CapTarget)> {
+        self.grants
+            .iter()
+            .map(|(name, target)| (name.as_str(), target))
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.grants.iter().any(|(found, _)| found == name)
+    }
+}
+
+/// One request for a local capability, including an uploader path.
+pub struct CapExchange {
+    pub name: String,
+    pub path: String,
+    pub method: String,
+    pub query: String,
+    pub range: Option<String>,
+    pub body: Vec<u8>,
+    pub agent_id: Uuid,
+}
+
+/// The region's answer. `handled: false` becomes the ordinary 404.
+pub struct CapAnswer {
+    pub handled: bool,
+    pub status: StatusCode,
+    pub content_type: String,
+    pub body: Vec<u8>,
+    pub content_range: Option<String>,
+}
+
+impl CapAnswer {
+    pub fn miss() -> Self {
+        Self {
+            handled: false,
+            status: StatusCode::NOT_FOUND,
+            content_type: SEED_MIME.to_owned(),
+            body: Vec::new(),
+            content_range: None,
+        }
+    }
+}
+
+/// Region handler for local capability paths.
+pub type CapService =
+    Arc<dyn Fn(CapExchange) -> Pin<Box<dyn Future<Output = CapAnswer> + Send>> + Send + Sync>;
 
 /// Seed and poll bodies larger than this are refused. A seed is a short list
 /// of capability names.
@@ -75,9 +155,18 @@ pub enum CapsError {
 }
 
 #[derive(Clone)]
+struct GrantedCap {
+    name: String,
+    url: String,
+    path: Option<String>,
+}
+
+#[derive(Clone)]
 struct CapsState {
     event_queue_url: String,
     queue: EventQueue,
+    agent_id: Uuid,
+    granted: Vec<GrantedCap>,
 }
 
 #[derive(Clone)]
@@ -96,6 +185,8 @@ struct RegisteredCaps {
 pub struct CapsRegistry {
     base_url: String,
     active: Arc<Mutex<Option<RegisteredCaps>>>,
+    grants: CapGrantSet,
+    service: Option<CapService>,
 }
 
 impl CapsRegistry {
@@ -112,10 +203,28 @@ impl CapsRegistry {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
             active: Arc::new(Mutex::new(None)),
+            grants: CapGrantSet::default(),
+            service: None,
         })
     }
 
+    /// Seed grants beyond `EventQueueGet`. Local names are answered by `service`.
+    pub fn with_grants(
+        base_url: &str,
+        grants: CapGrantSet,
+        service: Option<CapService>,
+    ) -> Result<Self, CapsError> {
+        let mut registry = Self::new(base_url)?;
+        registry.grants = grants;
+        registry.service = service;
+        Ok(registry)
+    }
+
     pub fn register(&self, seed_path: &str) -> Result<(), CapsError> {
+        self.register_agent(seed_path, Uuid::nil())
+    }
+
+    pub fn register_agent(&self, seed_path: &str, agent_id: Uuid) -> Result<(), CapsError> {
         if seed_path.len() > 512
             || !seed_path.starts_with("/CAPS/")
             || !seed_path.ends_with("0000/")
@@ -133,11 +242,39 @@ impl CapsRegistry {
             return Err(CapsError::Occupied);
         }
         let events_path = format!("/CE/{}", Uuid::new_v4());
+        let mut granted = Vec::new();
+        for (name, target) in self.grants.iter() {
+            if name.len() > MAX_SEED_NAME_LEN {
+                continue;
+            }
+            match target {
+                CapTarget::Local => {
+                    let path = format!("/{}", Uuid::new_v4());
+                    granted.push(GrantedCap {
+                        name: name.to_owned(),
+                        url: format!("{}{path}", self.base_url),
+                        path: Some(path),
+                    });
+                }
+                CapTarget::External(url) => {
+                    if url.len() > 2048 {
+                        continue;
+                    }
+                    granted.push(GrantedCap {
+                        name: name.to_owned(),
+                        url: url.clone(),
+                        path: None,
+                    });
+                }
+            }
+        }
         *active = Some(RegisteredCaps {
             seed_path: seed_path.to_owned(),
             state: CapsState {
                 event_queue_url: format!("{}{events_path}", self.base_url),
                 queue: EventQueue::new(),
+                agent_id,
+                granted,
             },
             events_path,
         });
@@ -178,18 +315,39 @@ impl CapsRegistry {
 }
 
 async fn registered_caps(State(registry): State<CapsRegistry>, request: Request) -> Response {
-    let active = registry
-        .active
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone();
+    let (active, service) = {
+        let active = registry
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        (active, registry.service.clone())
+    };
     // C# checks poll routes before the global OPTIONS handler.
     if let Some(active) = active {
         if request.uri().path() == active.events_path {
             return poll(State(active.state), request).await;
         }
         if request.uri().path() == active.seed_path {
-            return seed(State(active.state), request).await;
+            return seed(State(active.state.clone()), request).await;
+        }
+        let path = request.uri().path().to_owned();
+        let named = active
+            .state
+            .granted
+            .iter()
+            .find(|cap| cap.path.as_deref() == Some(path.as_str()))
+            .map(|cap| cap.name.clone());
+        if (named.is_some() || is_uuid_path(&path))
+            && let Some(service) = service
+        {
+            return call_cap(
+                service,
+                active.state.agent_id,
+                named.unwrap_or_default(),
+                request,
+            )
+            .await;
         }
     }
     if request.method() == Method::OPTIONS {
@@ -229,6 +387,8 @@ impl CapsServer {
         let state = CapsState {
             event_queue_url: event_queue_url.clone(),
             queue: EventQueue::new(),
+            agent_id: Uuid::nil(),
+            granted: Vec::new(),
         };
         let queue = state.queue.clone();
         let app = Router::new()
@@ -301,7 +461,75 @@ async fn seed(State(state): State<CapsState>, request: Request) -> Response {
     if want {
         map.insert("EventQueueGet", state.event_queue_url);
     }
+    for name in names {
+        let text = name.to_osd_string();
+        if text == "EventQueueGet" {
+            continue;
+        }
+        if let Some(cap) = state.granted.iter().find(|cap| cap.name == text) {
+            map.insert(text, cap.url.clone());
+        }
+    }
     response(StatusCode::OK, SEED_MIME, to_xml(&map))
+}
+
+fn is_uuid_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let widths = [8, 4, 4, 4, 12];
+    widths.into_iter().all(|width| {
+        parts.next().is_some_and(|part| {
+            part.len() == width && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    }) && parts.next().is_none()
+}
+
+async fn call_cap(service: CapService, agent_id: Uuid, name: String, request: Request) -> Response {
+    let method = request.method().to_string();
+    let path = request.uri().path().to_owned();
+    let query = request.uri().query().unwrap_or("").to_owned();
+    let range = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = match read_body(request.into_body(), CAP_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(error) => return error.into_response(),
+    };
+    let answer = service(CapExchange {
+        name,
+        path,
+        method,
+        query,
+        range,
+        body: bytes.to_vec(),
+        agent_id,
+    })
+    .await;
+    if !answer.handled {
+        return response(StatusCode::NOT_FOUND, SEED_MIME, Vec::new());
+    }
+    let mut response = (
+        answer.status,
+        [(header::CONTENT_TYPE, answer.content_type)],
+        answer.body,
+    )
+        .into_response();
+    if let Some(range) = answer.content_range
+        && let Ok(value) = axum::http::HeaderValue::from_str(&range)
+    {
+        response.headers_mut().insert(header::CONTENT_RANGE, value);
+    }
+    if !answer.status.is_success() && answer.status != StatusCode::NOT_FOUND {
+        response.headers_mut().insert(
+            header::CONNECTION,
+            axum::http::HeaderValue::from_static("close"),
+        );
+    }
+    response
 }
 
 async fn poll(State(state): State<CapsState>, request: Request) -> Response {
@@ -387,6 +615,8 @@ mod tests {
         let state = CapsState {
             event_queue_url: "http://example.invalid/CE/test".into(),
             queue: EventQueue::new(),
+            agent_id: Uuid::nil(),
+            granted: Vec::new(),
         };
         // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
         let request = Request::builder()

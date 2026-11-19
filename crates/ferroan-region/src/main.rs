@@ -40,11 +40,13 @@
 use std::env;
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ferroan_client::{CapsRegistry, CircuitServer};
 use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
+use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{AcceptedAgent, SimulationState};
 use tokio::net::TcpListener;
@@ -146,7 +148,12 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         config.id,
     )
     .await;
-    let caps = CapsRegistry::new(&config.server_uri)?;
+    let fetch = Arc::new(FetchCaps::new(&config));
+    let caps = CapsRegistry::with_grants(
+        &config.server_uri,
+        config.cap_grants.clone(),
+        Some(fetch.service()),
+    )?;
     let (accepted, agents) = mpsc::channel(1);
     let simulation = SimulationState::new(&config, caps.clone(), accepted);
     let app = simulation.clone().router().merge(caps.router());

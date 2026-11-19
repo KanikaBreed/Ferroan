@@ -42,6 +42,7 @@ mod grid;
 mod grid_smoke;
 mod grid_state;
 mod http_oracle;
+mod inventory_probe;
 mod live;
 mod live_proxy;
 mod oracle;
@@ -82,6 +83,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]
        cargo xtask live run ferrobot [grid [--region ferroan]]
+       cargo xtask live run assets grid --region ferroan
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
        cargo xtask live region-parity-fixtures <capture-dir>

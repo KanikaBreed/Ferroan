@@ -12,7 +12,9 @@ mod event_queue;
 mod handshake;
 
 pub use arrival::ArrivalConfig;
-pub use caps::{CapsError, CapsRegistry, CapsServer};
+pub use caps::{
+    CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry, CapsServer,
+};
 pub use circuit::{CircuitError, CircuitExpect, CircuitServer, CircuitTiming, RootArrival};
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;
