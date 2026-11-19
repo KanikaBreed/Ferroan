@@ -44,10 +44,10 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | READY (scope revised, see below) |
+| Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | READY after Q10h |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | READY after Q10i |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
-| Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
