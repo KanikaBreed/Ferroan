@@ -16,6 +16,11 @@ pub(crate) struct Proxies {
 }
 
 impl Proxies {
+    /// Start and join the grid's UDP recorder on the same owned runtime.
+    pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
     pub(crate) fn start(
         binds: &[(SocketAddr, SocketAddr, PathBuf)],
     ) -> Result<(Vec<SocketAddr>, Self), String> {

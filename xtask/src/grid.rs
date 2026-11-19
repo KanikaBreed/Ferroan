@@ -662,7 +662,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
                 })
             })
     } else {
-run_bot(
+        run_bot(
         scenario,
         &format!("http://{ROBUST_BIND}:{robust_public}/"),
         &estate,
