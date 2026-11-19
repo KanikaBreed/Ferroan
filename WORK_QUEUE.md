@@ -48,7 +48,7 @@ The manager removes this section when the queue is running again.
 | Q10p | Pin3: move the Tranquillity pin to the maintainer's `dev-build` (`40432e0`, D21), which carries their eight open C# PRs | DONE (#56) |
 | Q10 | P0.10h: Ferrobot as the second test client in the live harness | DONE (#58) |
 | Q10b | P0.10i: follow-ups from Q7 to Q9 (LLSD binary, dropped-ID queue, documentation) | DONE (#37) |
-| Q10q | P0.10m: `cargo xtask live up grid --region ferroan`, a grid that stays up for the maintainer's Firestorm tests | READY after Q10 |
+| Q10q | P0.10m: `cargo xtask live up grid --region ferroan`, a grid that stays up for the maintainer's Firestorm tests | DONE (#77) |
 | Q10r | P2.0d7: inventory and asset fetch capabilities on the Ferroan region | READY after Q10q |
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
@@ -148,6 +148,10 @@ Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
 
 ## Found while working
+
+- 2026-11-19, Q10q second local smoke: the bot reached the Ferroan region, then failed before logout because the new smoke harness supplied an empty region-log path; the existing scenario reads that log before enforcing its strict wire-reply policy. The smoke now supplies the actual home-region log, with `require_logout_reply` still enabled. Diagnostics are retained in `.scratch/q10q-second-smoke/`; this is a harness setup correction, not a C# failure or a loosened logout check.
+
+- 2026-11-19, Q10q local smoke development: the first persistent grid started all three servers and `live down` cleaned them up, but the new report parser rejected duplicate `ferrobot:` build-progress lines before the connection report. The parser now recognizes report fields explicitly and retains duplicate-field rejection for those fields; a regression includes the real build-progress prefix. The initial diagnostic is retained in `.scratch/q10q-live.log`. This is a parser correction before another run, not a silent flaky retry.
 
 - 2026-11-19, Pin3 harness race: [live CI run 44470003777](https://github.com/KanikaBreed/Ferroan/actions/runs/44470003777) passed grid login, then refused walk with "You appear to be already logged in". Pin3 sends LogoutReply before asynchronous Presence/GridUser cleanup finishes; the harness immediately reused the account for the next scenario. This is harness sequencing, not a C# bug. Grid mode now runs each selected scenario separately and polls the bounded GridUser-offline/Presence-empty state before the next login, including the chat account after chat. The strict LogoutReply check remains unchanged. `next_scenario_login_waits_for_griduser_and_presence_to_settle` holds the final service response and proves the next login is not attempted while either service is unsettled. The failed run is retained; no silent retry or blind delay was added.
 

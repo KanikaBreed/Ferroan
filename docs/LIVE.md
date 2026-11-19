@@ -59,6 +59,34 @@ These are required report lines, not a claim that an unrun validation passed; [T
 
 Ferrobot's region HTTP passes through capture proxies; C# UDP uses the existing capture patch. The Rust-region variant uses a bounded loopback UDP relay for its single test circuit. Captures must pass `check`, `redact` and `replay` without filtering unsupported packets. The relay records original datagrams before forwarding, and the private raw capture stays in scratch. API control requests are not part of region-traffic fixtures. Ferrobot bugs must be recorded and reported upstream with the maintainer's agreement, never patched or silently worked around here.
 
+## Keeping the Ferroan region up
+
+```sh
+cargo xtask live build
+cargo xtask live up grid --region ferroan
+```
+
+This leaves C# Robust, the C# neighbour and the Ferroan home region running for
+the maintainer's [informal Firestorm checks](MANUAL_CHECKS.md#firestorm-on-the-ferroan-region-before-g2).
+Use the printed Robust login URL, account name and password file path. The
+report also identifies each process's ports and the Ferroan commit. The
+password stays in scratch and is never printed. These direct listeners do not
+record captures. All listeners default to `127.0.0.1`.
+
+To use a trusted test network explicitly, add `--bind <IPv4>` with a concrete
+address assigned to this machine. The command binds and advertises that address
+and warns that the test grid, including Robust's private services, is exposed
+beyond loopback. Wildcard, broadcast and multicast addresses are refused.
+Automated checks use loopback; external-network access is not part of them.
+
+Run `cargo xtask live down` from the same worktree after logging out, or to
+recover an interrupted launch. Stop this setup before starting other live
+commands. `cargo xtask live persistent-grid-check` automates startup, two bot
+logins through the printed URL, strict LogoutReply checks and bounded service
+cleanup between sessions, then shutdown and process/listener cleanup checks.
+The CI live job runs this check. Firestorm observations remain pending until
+the maintainer records them; this command does not pass G2.
+
 ## Keeping the Ferroan asset service up
 
 ```sh

@@ -39,6 +39,7 @@ mod config_oracle;
 mod ferrobot;
 mod ferrobot_build;
 mod grid;
+mod grid_smoke;
 mod grid_state;
 mod http_oracle;
 mod live;
@@ -74,6 +75,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask pin3 generate|verify
        cargo xtask live build
        cargo xtask live up [--assets ferroan]
+       cargo xtask live up grid --region ferroan [--bind <IPv4>]
+       cargo xtask live persistent-grid-check
        cargo xtask live down
        cargo xtask live run <scenario>|all [grid]
        cargo xtask live run login grid --region ferroan
@@ -127,6 +130,14 @@ fn main() -> ExitCode {
         ["live", "build"] => live::build(),
         ["live", "up"] => live::up(false),
         ["live", "up", "--assets", "ferroan"] => live::up(true),
+        ["live", "up", "grid", "--region", "ferroan"] => grid::up(std::net::Ipv4Addr::LOCALHOST),
+        ["live", "up", "grid", "--region", "ferroan", "--bind", bind] => {
+            match bind.parse::<std::net::Ipv4Addr>() {
+                Ok(bind) => grid::up(bind),
+                Err(_) => live::finish(Err("--bind requires an IPv4 address".into())),
+            }
+        }
+        ["live", "persistent-grid-check"] => grid_smoke::run(),
         ["live", "down"] => live::down(),
         ["live", "run", scenario] => live::run(scenario),
         ["live", "run", scenario, "grid"] => grid::run(scenario),

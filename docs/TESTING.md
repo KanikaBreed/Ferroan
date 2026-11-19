@@ -57,6 +57,14 @@ Ferrobot is the pinned external second test client ([D17](DECISIONS.md), P0.10h)
 
 The commands and pass lines are in [LIVE.md](LIVE.md#ferrobot); completed local and CI runs belong in [TASKS.md](../TASKS.md), and unrun acceptance remains pending. Automation comes first ([D15](DECISIONS.md)): Firestorm is used by hand at phase gates, following [MANUAL_CHECKS.md](MANUAL_CHECKS.md). `ring` is allowed by [D16](DECISIONS.md).
 
+The persistent mixed-grid check, `cargo xtask live persistent-grid-check`,
+executes `live up grid --region ferroan` as a separate process and parses its
+printed login URL and credential file path. Two fresh bot logins require
+LogoutReply and bounded GridUser/Presence cleanup between sessions. It then
+executes `live down` and verifies the recorded processes and their TCP/UDP
+listeners are gone. This runs in the live CI job; viewer rendering remains a
+maintainer check.
+
 ## Evidence by kind of change
 
 | Change | Evidence expected |
