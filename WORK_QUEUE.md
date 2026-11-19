@@ -53,13 +53,14 @@ The manager removes this section when the queue is running again.
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
-| Q11 | P0.11: container images and the example compose grid | READY after Q10k |
+| Q11 | P0.11: container images and the example compose grid | READY after Q10s |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
-| Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | READY after Q10i (scope revised, see below) |
+| Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | READY after Q24 (scope revised, see below) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q10i | P2.0d6: region login robustness (a failed logout stops the region), `logoutregion`, CreateAgent timing | READY after Q10r |
 | Q10j | P2.0a4: circuit close and validation as C# does it (`DisableSimulator`, shutdown `KickUser`) | READY after Q10h |
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
+| Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
@@ -68,21 +69,21 @@ The manager removes this section when the queue is running again.
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | EXTERNAL (#59, #60, #61) |
-| Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | READY after Q20 |
+| Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | READY after Q10i |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
-| Q24 | P1.1: user accounts | READY after Q23 |
-| Q25 | P1.2: authentication and authorization | READY after Q24 |
-| Q26 | P1.3: grid user, presence and agent preferences | READY after Q25 |
-| Q27 | P1.4: avatars and baked textures | READY after Q26 |
-| Q28 | P1.5: inventory and the library | READY after Q27 |
-| Q29 | P1.6: grid service | READY after Q28 |
-| Q30 | P1.7: map tiles | READY after Q29 |
-| Q31 | P1.8: friends and the mute list | READY after Q30 |
-| Q32 | P1.9: offline IM | READY after Q31 |
-| Q33 | P1.10: Groups V2 | READY after Q32 |
-| Q34 | P1.11: profiles and search | READY after Q33 |
-| Q35 | P1.12: estates and Experiences over Robust | READY after Q34 |
+| Q24 | P1.1: user accounts | READY after Q21 |
+| Q25 | P1.2: authentication and authorization | EXTERNAL (#65) |
+| Q26 | P1.3: grid user, presence and agent preferences | EXTERNAL (#66) |
+| Q27 | P1.4: avatars and baked textures | EXTERNAL (#67) |
+| Q28 | P1.5: inventory and the library | EXTERNAL (#68) |
+| Q29 | P1.6: grid service | EXTERNAL (#69) |
+| Q30 | P1.7: map tiles | EXTERNAL (#70) |
+| Q31 | P1.8: friends and the mute list | EXTERNAL (#71) |
+| Q32 | P1.9: offline IM | EXTERNAL (#72) |
+| Q33 | P1.10: Groups V2 | EXTERNAL (#73) |
+| Q34 | P1.11: profiles and search | EXTERNAL (#74) |
+| Q35 | P1.12: estates and Experiences over Robust | EXTERNAL (#75) |
 | Q36 | P1.13: login | READY after Q35 |
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
@@ -115,6 +116,8 @@ When Q10 resumes from #41: Q10f's PR uses TB5 for the C# trusted-host parsing bu
 Q10i to Q10k (manager, 19 November 2026) come from the manager's review of #40 to #48 at `1076a0a`. Q10i part (1) is the one high-severity finding: a failed logout call to Robust stops the whole region. Do it first. Verify each finding against the C# before fixing it, and record any you reject, with the reason, in the PR and the row.
 
 Q10q and Q10r, and the new order (manager, 19 November 2026, at the maintainer's request): the maintainer wants to log in to the Ferroan region with Firestorm before G2. After Q10, the order is Q10q (a grid that stays up), Q10r (inventory and texture capabilities, so Firestorm's inventory window and textures work), Q10i (a failed logout no longer stops the region), Q10h, Q10j, Q10k, then Q11 to Q13, then Q14 onward. Q11 now waits for Q10k so that the login work comes first. These Firestorm sessions are informal maintainer checks, not a gate: record what the maintainer reports, and never mark a viewer check as passed yourself.
+
+Phase 1 opened to outside contributors (manager, 19 November 2026, at the maintainer's request): after Q10i, the coder takes Q21 (P1.0, the Phase 1 harness) and Q24 (P1.1, user accounts), then Q10h, Q10j, Q10k, Q10s, Q11 to Q13, and Q14 onward. P1.0 no longer waits for P1.A1: build it on SQLite with the asset service that exists, and add the MySQL and PostgreSQL runs of `--rust assets` when #59 merges. P1.1 sets the pattern every later service follows, so keep its module layout, store code and `live compare` use plain enough to copy. Q25 to Q35 (P1.2 to P1.12) are `EXTERNAL`, as issues #65 to #75, labelled `blocked` until P1.0 and P1.1 are DONE. The manager then relabels them `agent-ready`. If one of them sits unclaimed when Q36 (P1.13, login) would otherwise be next, the manager moves it back to the coder rather than letting the queue stall. Q22 and Q23 (P1.A2, P1.A3) still wait for P1.A1.
 
 Q10h READY again (manager, 19 November 2026): the coder's audit was right, and the first version of the row overstated C#. The row now takes the first proposed fix: keep both C# helper policies, with a checked status for Presence and GridUser and an unchecked one for Grid register and deregister, and capture both. Grid's missing check is TB10. The maintainer may fix it upstream, and Ferroan follows through a pin move. No compatibility change is authorized here. Resume from `1716151`.
 
