@@ -9,6 +9,21 @@ cargo xtask check --docs-only  # Markdown links only
 
 The command is the same on every platform. [Ordinary CI](../.github/workflows/ci.yml) runs it on Linux, Windows and macOS, using committed fixtures without the C# references or .NET SDK. The separate [Linux live workflow](../.github/workflows/live.yml) installs .NET, checks out the pinned references, verifies the C# oracles and runs real servers. It does not rerun the whole Rust test suite with those references present.
 
+## The Rust toolchain
+
+[`rust-toolchain.toml`](../rust-toolchain.toml) pins the compiler. `cargo` in this repository uses that file, which also selects the `minimal` profile and the `clippy` and `rustfmt` components. Do not change the machine's default with `rustup default` or a directory override.
+
+The "Set up Rust" step in ordinary CI and the live workflow prints `rustup show`, `rustc --version` and `cargo clippy --version`. Those lines are the evidence that the pin is the compiler that ran.
+
+To move the pin:
+
+1. On a branch, set `channel` to `stable` and push. Do not merge that revision.
+2. Read `rustc --version` and `cargo clippy --version` from "Set up Rust" on Linux, Windows and macOS.
+3. Set `channel` to the `1.x.y` triple those lines name. If the three platforms disagree, pin the newest triple a runner printed, record every line, and say why. Keep `profile = "minimal"` and the `clippy` and `rustfmt` components.
+4. `cargo xtask check` on Linux, Windows and macOS must print that compiler. Record the lines in the task row.
+
+The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`, Linux and Windows printed `rustc 1.99.1` and macOS printed `rustc 1.100.0`. The file makes all three install `1.100.0`.
+
 ## The C# oracle
 
 `cargo xtask oracle build`, `generate` and `verify` build [tools/reference-oracle](../tools/reference-oracle/README.md) against the pinned libopenmetaverse checkout and read or write [fixtures/oracle](../fixtures/oracle/README.md). `FERROAN_REF` selects the checkout root and defaults to `~/Git/reference`. The fixtures are committed. Packet fixtures are one datagram per message in the template; the layout is in [PROTOCOL.md](PROTOCOL.md). The Linux live workflow runs `cargo xtask oracle verify` with .NET SDK 10. The reference checkout is only read; build output goes under `.scratch/`.
