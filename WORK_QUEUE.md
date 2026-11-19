@@ -52,6 +52,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (done b
 | Q10k | P0.10l: harness evidence that cannot be built from Rust bytes | READY after Q10j |
 | Q10s | P0.10n: quality guards: no `unwrap` on outside input (clippy), `TCP_NODELAY` as C# sets it, a pinned toolchain, known-difference tests, record-twice captures | READY after Q10k |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
+| Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
@@ -139,6 +140,8 @@ Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranqui
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
+
+Q13a (manager, 19 November 2026, at the maintainer's request): the maintainer wants proper readouts when errors happen or a soft or hard limit is hit, so problems can be diagnosed and fixed from the data. It builds on Q12's metrics and Q13's logging, and retrofits every limit already in the code (for example the 1 MiB POST body, the 64-folder and 256-item fetch caps, the D19 and D20 bounds, packet, LLSD, queue and retry bounds). From Q13a on, AGENTS.md §6 requires new limits to report the same way.
 
 ## Found while working
 

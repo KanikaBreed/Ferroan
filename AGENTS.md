@@ -43,7 +43,7 @@ Check `git worktree list` before creating or reusing one. Put temporary logs in 
 ## 6. Rust quality
 
 - Structured errors for anything from outside: packets, HTTP bodies, database rows, archives, configuration. No `unwrap()` or `expect()` on external input; tests and documented internal invariants may use them.
-- Bound every size that comes from outside: packet and LLSD sizes, queue depths, retries, cache sizes, archive entries.
+- Bound every size that comes from outside: packet and LLSD sizes, queue depths, retries, cache sizes, archive entries. Once the diagnostics helper exists (P0.13a), every bound reports through it with a stable limit id listed in `docs/LIMITS.md`, so a limit hit always leaves a readout.
 - Networking and services run on tokio. The region frame loop, Jolt and the SLua engine each run on their own threads, not as async tasks ([D6](docs/DECISIONS.md)).
 - Keep dependencies maintained, justified and licence-compatible with GPL-3.0-or-later (no AGPL). Commit `Cargo.lock`.
 - Prefer explicit byte order and checked lengths. Round-tripping only our own encoder and decoder proves nothing: check against bytes captured from the C# server.
