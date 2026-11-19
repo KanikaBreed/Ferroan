@@ -27,12 +27,17 @@
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
 //     (PacketReceived, HandleUseCircuitCode, SendAckImmediate, SendAcks,
 //      CompletePing, SendPing, HandleUnacked, OutgoingPacketHandler,
-//      SendPacketFinal, LogoutHandler)
+//      SendPacketFinal, LogoutHandler, DeactivateClientDueToTimeout, AddClient)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
-//     (constructor, UpdateRoundTrip)
+//     (constructor, UpdateRoundTrip, TickLastPacketReceived)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (SendLogoutPacket, CloseWithoutChecks, HandleCompleteAgentMovement,
+//     (SendLogoutPacket, Close, CloseWithoutChecks, Kick,
+//      SendShutdownConnectionNotice, HandleCompleteAgentMovement,
 //      HandleAgentPause, HandleAgentResume)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/UnackedPacketCollection.cs
+//     (Oldest, GetExpiredPackets)
+//   Source/OpenSim.Region.Framework/Scenes/Scene.cs
+//     (Close, CloseAgent, NewUserConnection)
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs
 //     (MakeRootAgent, CompleteMovement)
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
@@ -51,9 +56,9 @@
 
 use crate::{ArrivalConfig, HandshakeConfig};
 use ferroan_protocol::msgs::{
-    AgentHeightWidth, AgentPause, AgentResume, AgentThrottle, CompleteAgentMovement,
-    CompletePingCheck, LogoutReply, LogoutRequest, PacketAck, RegionHandshakeReply, StartPingCheck,
-    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    AgentPause, AgentResume, CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser,
+    LogoutReply, LogoutRequest, PacketAck, StartPingCheck, UseCircuitCode, logout_reply,
+    packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -64,6 +69,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
@@ -149,7 +155,21 @@ pub enum CircuitError {
     InvalidArrival,
     #[error("circuit timing must be positive and fit the C# millisecond clock")]
     InvalidTiming,
+    #[error("circuit closed")]
+    Closed,
 }
+
+/// Why the region stopped a live circuit. Ordinary logout is not one of these:
+/// `LogoutHandler` closes with `sendStop` false and does not send either packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitStop {
+    /// `CloseAgent(id, true)`: reliable `DisableSimulator` to the current peer.
+    Disable,
+    /// `Scene.Close`: reliable `KickUser`, then `DisableSimulator`.
+    Shutdown,
+}
+
+type PendingUseCircuit = Mutex<Option<(SocketAddr, Vec<u8>)>>;
 
 // This private boundary permits deterministic peer-error tests without
 // depending on OS-specific ICMP timing. It adds no alternative transport.
@@ -196,6 +216,9 @@ struct State {
     last_ping: Option<Instant>,
     ping_ms: u32,
     last_received: Instant,
+    /// Last numeric-minimum unacked sequence. C# does not clear this when the
+    /// window becomes empty, so a later ping still reports it.
+    last_oldest: u32,
     paused: bool,
 }
 impl State {
@@ -231,6 +254,7 @@ impl State {
             last_ping: None,
             ping_ms: 20,
             last_received: now,
+            last_oldest: 0,
             paused: false,
         }
     }
@@ -254,14 +278,20 @@ impl State {
             } else {
                 self.timing.ack_timeout
             };
-            // A ViaLogin circuit is not a connected client yet. The region's
-            // LoginConnectWait watcher owns its pre-connection lifetime.
-            if (self.peer.is_some() || self.connection_opened.is_none())
+            // AckTimeout starts when the viewer is mapped, which is when C#
+            // constructs LLUDPClient inside HandleUseCircuitCode. LoginConnectWait
+            // owns an unopened ViaLogin circuit. serve_one has no peer until then
+            // either, so it does not inherit a timeout from the moment serving began.
+            if let Some(peer) = self.peer
                 && now.duration_since(self.last_received) > timeout
             {
+                self.send_disable(sock, peer).await?;
                 return Err(CircuitError::Timeout);
             }
             if let Some(peer) = self.peer {
+                if !self.unacked.is_empty() {
+                    self.last_oldest = self.unacked.oldest_or(self.last_oldest);
+                }
                 let batch = self.unacked.poll(now.into_std(), self.rto);
                 for (seq, payload) in batch.resend {
                     let mut bytes = Vec::new();
@@ -295,10 +325,13 @@ impl State {
         sock: &impl DatagramIo,
         peer: SocketAddr,
     ) -> Result<(), CircuitError> {
+        if !self.unacked.is_empty() {
+            self.last_oldest = self.unacked.oldest_or(self.last_oldest);
+        }
         let ping = StartPingCheck {
             ping_id: start_ping_check::PingID {
                 ping_id: self.ping_sequence,
-                oldest_unacked: self.unacked.oldest_or(0),
+                oldest_unacked: self.unacked.oldest_or(self.last_oldest),
             },
         };
         self.ping_sequence = self.ping_sequence.wrapping_add(1);
@@ -357,6 +390,42 @@ impl State {
         packet::build_packet(&ack, 0, false, false, &[], &mut bytes);
         let _ = sock.send_to(&bytes, to).await;
     }
+    async fn send_disable(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+    ) -> Result<(), CircuitError> {
+        self.send_message(sock, to, &DisableSimulator::default(), true)
+            .await
+    }
+    async fn send_kick(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+        expect: &CircuitExpect,
+    ) -> Result<(), CircuitError> {
+        // Scene.Kick sets TargetIP and TargetPort to 0. The historical capture's
+        // loopback address is not what the pin writes.
+        let mut kick = KickUser::default();
+        kick.user_info.agent_id = expect.agent_id;
+        kick.user_info.session_id = expect.session_id;
+        kick.user_info.reason = ferroan_protocol::str_field("The simulator is going down.");
+        self.send_message(sock, to, &kick, true).await
+    }
+    async fn finish_close(
+        &mut self,
+        sock: &impl DatagramIo,
+        expect: &CircuitExpect,
+        kind: CircuitStop,
+    ) -> Result<(), CircuitError> {
+        if let Some(peer) = self.peer {
+            if kind == CircuitStop::Shutdown {
+                self.send_kick(sock, peer, expect).await?;
+            }
+            self.send_disable(sock, peer).await?;
+        }
+        Err(CircuitError::Closed)
+    }
     async fn flush_acks(
         &mut self,
         sock: &impl DatagramIo,
@@ -386,6 +455,13 @@ impl State {
         wire_len: usize,
     ) -> Result<bool, CircuitError> {
         if self.peer.is_some_and(|peer| peer != from) {
+            // SendAckImmediate answers UseCircuitCode before HandleUseCircuitCode
+            // decides whether this endpoint may replace the mapped client.
+            // The serve loop also keeps the datagram for the next serve: an ACK
+            // alone would stop a reliable viewer from resending it.
+            if packet.id == UseCircuitCode::ID {
+                Self::immediate_ack(sock, from, packet.sequence).await;
+            }
             return Ok(false);
         }
         if self.peer.is_none() {
@@ -523,40 +599,34 @@ fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool 
     agent_id == expect.agent_id && session_id == expect.session_id
 }
 fn valid_packet_ids(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
-    macro_rules! check {
-        ($message:ty) => {
-            packet.decode::<$message>().is_ok_and(|message| {
-                same_agent(
-                    message.agent_data.agent_id,
-                    message.agent_data.session_id,
-                    expect,
-                )
-            })
-        };
-    }
-    if packet.id == RegionHandshakeReply::ID {
-        check!(RegionHandshakeReply)
-    } else if packet.id == CompleteAgentMovement::ID {
-        check!(CompleteAgentMovement)
-    } else if packet.id == AgentThrottle::ID {
-        check!(AgentThrottle)
-    } else if packet.id == AgentHeightWidth::ID {
-        check!(AgentHeightWidth)
-    } else if packet.id == LogoutRequest::ID {
-        check!(LogoutRequest)
-    } else if packet.id == AgentPause::ID {
-        check!(AgentPause)
-    } else if packet.id == AgentResume::ID {
-        check!(AgentResume)
-    } else {
-        true
-    }
+    // NeedValidateIDs is every template message whose AgentData block carries
+    // both ids. A short body cannot hold them and is dropped before ACKs.
+    let Some(check) = ferroan_protocol::id_check(packet.id) else {
+        return true;
+    };
+    let (Some(agent), Some(session)) = (
+        uuid_at(&packet.body, check.agent),
+        uuid_at(&packet.body, check.session),
+    ) else {
+        return false;
+    };
+    same_agent(agent, session, expect)
+}
+
+fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
+    let bytes = body.get(offset..offset + 16)?;
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(bytes);
+    Some(Uuid::from_bytes(raw))
 }
 /// One UDP listener with the region settings to announce.
 pub struct CircuitServer {
     socket: UdpSocket,
     handshake: HandshakeConfig,
     timing: CircuitTiming,
+    /// Latest UseCircuitCode seen from an endpoint other than the one being
+    /// served. The next serve, whose peer is still unset, consumes it once.
+    pending_login: PendingUseCircuit,
 }
 impl CircuitServer {
     pub async fn bind() -> Result<Self, CircuitError> {
@@ -567,6 +637,7 @@ impl CircuitServer {
             socket: UdpSocket::bind(address).await?,
             handshake: HandshakeConfig::for_region(Uuid::nil()),
             timing: CircuitTiming::default(),
+            pending_login: Mutex::new(None),
         })
     }
     pub fn with_handshake(mut self, handshake: HandshakeConfig) -> Self {
@@ -607,7 +678,8 @@ impl CircuitServer {
         expect: CircuitExpect,
         arrival: ArrivalConfig,
     ) -> Result<(), CircuitError> {
-        self.serve_with_reporting(expect, arrival, None, None).await
+        self.serve_with_reporting(expect, arrival, None, None, None)
+            .await
     }
 
     /// Serve one accepted generation and notify its dispatcher exactly once
@@ -621,7 +693,7 @@ impl CircuitServer {
         arrival: ArrivalConfig,
         root_arrival: oneshot::Sender<RootArrival>,
     ) -> Result<(), CircuitError> {
-        self.serve_with_reporting(expect, arrival, Some(root_arrival), None)
+        self.serve_with_reporting(expect, arrival, Some(root_arrival), None, None)
             .await
     }
 
@@ -633,9 +705,16 @@ impl CircuitServer {
         arrival: ArrivalConfig,
         root_arrival: oneshot::Sender<RootArrival>,
         connected: oneshot::Sender<()>,
+        stop: oneshot::Receiver<CircuitStop>,
     ) -> Result<(), CircuitError> {
-        self.serve_with_reporting(expect, arrival, Some(root_arrival), Some(connected))
-            .await
+        self.serve_with_reporting(
+            expect,
+            arrival,
+            Some(root_arrival),
+            Some(connected),
+            Some(stop),
+        )
+        .await
     }
 
     async fn serve_with_reporting(
@@ -644,6 +723,7 @@ impl CircuitServer {
         arrival: ArrivalConfig,
         root_arrival: Option<oneshot::Sender<RootArrival>>,
         connected: Option<oneshot::Sender<()>>,
+        stop: Option<oneshot::Receiver<CircuitStop>>,
     ) -> Result<(), CircuitError> {
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
@@ -658,12 +738,25 @@ impl CircuitServer {
             handshake,
             arrival,
             self.timing,
-            root_arrival,
-            connected,
+            ServeExtra {
+                root_arrival,
+                connected,
+                pending: Some(&self.pending_login),
+                stop,
+            },
         )
         .await
     }
 }
+
+/// Signals that belong to one serve and are absent in the plain test helper.
+struct ServeExtra<'a> {
+    root_arrival: Option<oneshot::Sender<RootArrival>>,
+    connected: Option<oneshot::Sender<()>>,
+    pending: Option<&'a PendingUseCircuit>,
+    stop: Option<oneshot::Receiver<CircuitStop>>,
+}
+
 #[cfg(test)]
 async fn serve_socket(
     sock: &impl DatagramIo,
@@ -672,7 +765,35 @@ async fn serve_socket(
     arrival: ArrivalConfig,
     timing: CircuitTiming,
 ) -> Result<(), CircuitError> {
-    serve_socket_reporting(sock, expect, handshake, arrival, timing, None, None).await
+    serve_socket_reporting(
+        sock,
+        expect,
+        handshake,
+        arrival,
+        timing,
+        ServeExtra {
+            root_arrival: None,
+            connected: None,
+            pending: None,
+            stop: None,
+        },
+    )
+    .await
+}
+
+fn take_stop(stop: &mut Option<oneshot::Receiver<CircuitStop>>) -> Option<CircuitStop> {
+    let rx = stop.as_mut()?;
+    match rx.try_recv() {
+        Ok(kind) => {
+            *stop = None;
+            Some(kind)
+        }
+        Err(oneshot::error::TryRecvError::Empty) => None,
+        Err(oneshot::error::TryRecvError::Closed) => {
+            *stop = None;
+            None
+        }
+    }
 }
 
 async fn serve_socket_reporting(
@@ -681,22 +802,51 @@ async fn serve_socket_reporting(
     handshake: HandshakeConfig,
     arrival: ArrivalConfig,
     timing: CircuitTiming,
-    root_arrival: Option<oneshot::Sender<RootArrival>>,
-    connected: Option<oneshot::Sender<()>>,
+    mut extra: ServeExtra<'_>,
 ) -> Result<(), CircuitError> {
     let mut state = State::with_timing(handshake, arrival, timing);
-    state.root_arrival = root_arrival;
-    state.connection_opened = connected;
+    state.root_arrival = extra.root_arrival;
+    state.connection_opened = extra.connected;
     let mut buf = [0u8; MAX_DATAGRAM];
     loop {
         state.maintain(sock).await?;
+        if let Some(kind) = take_stop(&mut extra.stop) {
+            return state.finish_close(sock, &expect, kind).await;
+        }
+        // Only a serve that has not mapped a peer may consume a UseCircuitCode
+        // saved while the previous circuit was still running.
+        if state.peer.is_none() {
+            let queued = extra.pending.and_then(|slot| slot.lock().unwrap().take());
+            if let Some((from, bytes)) = queued {
+                if let Ok(packet) = packet::parse_packet(&bytes)
+                    && state
+                        .handle(sock, from, &expect, &packet, bytes.len())
+                        .await?
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+        }
         let wait = state.time_until_work();
         if wait.is_zero() {
             continue;
         }
         // Reporting belongs to the scene transition, not the UDP transport.
         // Keep ACKs, pings, retries and inactivity alive while services finish.
+        // A dropped stop sender is not a shutdown: the branch then stays pending.
         let received = tokio::select! {
+            biased;
+            stopped = std::future::poll_fn(|cx| match extra.stop.as_mut() {
+                Some(rx) => std::pin::Pin::new(rx).poll(cx),
+                None => std::task::Poll::Pending,
+            }), if extra.stop.is_some() => {
+                extra.stop = None;
+                if let Ok(kind) = stopped {
+                    return state.finish_close(sock, &expect, kind).await;
+                }
+                continue;
+            }
             _ = async {
                 match &mut state.arrival_completion {
                     Some(completion) => { let _ = completion.await; }
@@ -724,6 +874,15 @@ async fn serve_socket_reporting(
         let Ok(packet) = packet::parse_packet(&buf[..len]) else {
             continue;
         };
+        if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
+            // Store before the ACK so a test that waits for the ACK can already
+            // see the datagram queued for the replacement serve.
+            if let Some(slot) = extra.pending {
+                *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+            }
+            State::immediate_ack(sock, from, packet.sequence).await;
+            continue;
+        }
         if state.handle(sock, from, &expect, &packet, len).await? {
             return Ok(());
         }
@@ -955,5 +1114,84 @@ mod tests {
         }
         assert!(saw_logout);
         running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn foreign_use_circuit_code_is_acked_and_served_next() {
+        let server = std::sync::Arc::new(CircuitServer::bind().await.unwrap());
+        let addr = server.local_addr().unwrap();
+        let expect = expect_agent();
+        let first = {
+            let server = std::sync::Arc::clone(&server);
+            tokio::spawn(async move { server.serve_one(expect, Duration::from_secs(5)).await })
+        };
+        let viewer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        send(&viewer, addr, 1, &use_circuit(1, 2, 42), true).await;
+        let mut buf = [0u8; 4096];
+        let mut saw_handshake = false;
+        let start = Instant::now();
+        while !saw_handshake && start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(&viewer, &mut buf, Duration::from_millis(200)).await
+                && packet.id == RegionHandshake::ID
+            {
+                saw_handshake = true;
+            }
+        }
+        assert!(saw_handshake);
+
+        let other = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        send(&other, addr, 4, &use_circuit(1, 2, 42), true).await;
+        let mut acked = false;
+        let start = Instant::now();
+        while !acked && start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(&other, &mut buf, Duration::from_millis(200)).await
+                && packet.id == PacketAck::ID
+            {
+                assert_eq!(packet.sequence, 0);
+                assert!(!packet.reliable());
+                acked = true;
+            }
+        }
+        assert!(acked, "foreign UseCircuitCode was not acked");
+
+        let mut ping = StartPingCheck::default();
+        ping.ping_id.ping_id = 3;
+        send(&viewer, addr, 2, &ping, false).await;
+        let mut pong = false;
+        let start = Instant::now();
+        while !pong && start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(&viewer, &mut buf, Duration::from_millis(200)).await
+                && packet.id == CompletePingCheck::ID
+            {
+                pong = true;
+            }
+        }
+        assert!(pong, "mapped viewer lost the circuit");
+
+        let mut request = LogoutRequest::default();
+        request.agent_data.agent_id = expect.agent_id;
+        request.agent_data.session_id = expect.session_id;
+        send(&viewer, addr, 3, &request, true).await;
+        first.await.unwrap().unwrap();
+
+        let second = {
+            let server = std::sync::Arc::clone(&server);
+            tokio::spawn(async move { server.serve_one(expect, Duration::from_secs(5)).await })
+        };
+        let mut handed = false;
+        let start = Instant::now();
+        while !handed && start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(&other, &mut buf, Duration::from_millis(200)).await
+                && packet.id == RegionHandshake::ID
+            {
+                handed = true;
+            }
+        }
+        assert!(handed, "queued UseCircuitCode was not served");
+        let mut request = LogoutRequest::default();
+        request.agent_data.agent_id = expect.agent_id;
+        request.agent_data.session_id = expect.session_id;
+        send(&other, addr, 5, &request, true).await;
+        second.await.unwrap().unwrap();
     }
 }

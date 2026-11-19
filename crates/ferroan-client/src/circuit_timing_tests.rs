@@ -10,13 +10,14 @@ use ferroan_protocol::{build_packet, parse_packet};
 use std::sync::Mutex;
 
 #[derive(Default)]
-struct RecordedIo(Mutex<Vec<Vec<u8>>>);
+struct RecordedIo(Mutex<Vec<Vec<u8>>>, Mutex<Vec<SocketAddr>>);
 impl DatagramIo for RecordedIo {
     async fn recv_from(&self, _: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         std::future::pending().await
     }
-    async fn send_to(&self, bytes: &[u8], _: SocketAddr) -> io::Result<usize> {
+    async fn send_to(&self, bytes: &[u8], to: SocketAddr) -> io::Result<usize> {
         self.0.lock().unwrap().push(bytes.to_vec());
+        self.1.lock().unwrap().push(to);
         Ok(bytes.len())
     }
 }
@@ -115,6 +116,19 @@ async fn initial_resend_schedule_retains_unacked_until_strict_inactivity_deadlin
         Err(CircuitError::Timeout)
     ));
     assert_eq!(state.unacked.retry_count(1), Some(60));
+    let sent = io.0.lock().unwrap();
+    let disable = sent.iter().rev().find_map(|bytes| {
+        let packet = parse_packet(bytes).unwrap();
+        (packet.id == ferroan_protocol::msgs::DisableSimulator::ID).then_some(packet)
+    });
+    let disable = disable.expect("timeout sends DisableSimulator");
+    assert!(disable.reliable());
+    assert!(disable.body.is_empty());
+    assert!(
+        !sent.iter().any(|bytes| {
+            parse_packet(bytes).unwrap().id == ferroan_protocol::msgs::KickUser::ID
+        })
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -282,4 +296,218 @@ async fn configured_initial_rto_and_inactivity_are_used_by_the_send_path() {
         state.maintain(&io).await,
         Err(CircuitError::Timeout)
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn inactivity_starts_at_use_circuit_code_not_at_serve_start() {
+    let mut state = State::with_timing(
+        HandshakeConfig::for_region(identity().region_id),
+        ArrivalConfig::default(),
+        CircuitTiming::default(),
+    );
+    let io = RecordedIo::default();
+    for _ in 0..700 {
+        tokio::time::advance(RESEND_INTERVAL).await;
+        state.maintain(&io).await.unwrap();
+    }
+    assert!(state.peer.is_none());
+    assert!(io.0.lock().unwrap().is_empty());
+    let mut login = UseCircuitCode::default();
+    login.circuit_code.id = identity().agent_id;
+    login.circuit_code.session_id = identity().session_id;
+    login.circuit_code.code = identity().circuit_code;
+    deliver(&mut state, &io, peer(), &login).await;
+    tick(&mut state, &io, 600).await;
+    tokio::time::advance(RESEND_INTERVAL).await;
+    assert!(matches!(
+        state.maintain(&io).await,
+        Err(CircuitError::Timeout)
+    ));
+    assert!(io.0.lock().unwrap().iter().any(|bytes| {
+        let packet = parse_packet(bytes).unwrap();
+        packet.id == ferroan_protocol::msgs::DisableSimulator::ID && packet.reliable()
+    }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn ping_keeps_the_last_oldest_after_the_window_empties() {
+    let (mut state, io) = connected().await;
+    tick(&mut state, &io, 1).await;
+    assert_eq!(state.last_oldest, 1);
+    let ack = PacketAck {
+        omitted_trailing_blocks: 0,
+        packets: vec![packet_ack::Packets { id: 1 }],
+    };
+    deliver(&mut state, &io, peer(), &ack).await;
+    assert!(state.unacked.is_empty());
+    tick(&mut state, &io, 49).await;
+    let pings: Vec<_> = io
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|bytes| {
+            let packet = parse_packet(bytes).unwrap();
+            (packet.id == StartPingCheck::ID).then(|| packet.decode::<StartPingCheck>().unwrap())
+        })
+        .collect();
+    assert!(!pings.is_empty());
+    assert!(pings.iter().all(|ping| ping.ping_id.oldest_unacked == 1));
+}
+
+#[tokio::test]
+async fn shutdown_sends_kick_then_disable_and_an_unmapped_close_sends_nothing() {
+    let (mut state, io) = connected().await;
+    let error = state
+        .finish_close(&io, &identity(), CircuitStop::Shutdown)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CircuitError::Closed));
+    {
+        let sent = io.0.lock().unwrap();
+        let closing: Vec<_> = sent
+            .iter()
+            .filter_map(|bytes| {
+                let packet = parse_packet(bytes).unwrap();
+                matches!(
+                    packet.id,
+                    ferroan_protocol::msgs::KickUser::ID
+                        | ferroan_protocol::msgs::DisableSimulator::ID
+                )
+                .then_some(packet)
+            })
+            .collect();
+        assert_eq!(closing.len(), 2);
+        assert_eq!(closing[0].id, ferroan_protocol::msgs::KickUser::ID);
+        assert!(closing[0].reliable());
+        let kick = closing[0]
+            .decode::<ferroan_protocol::msgs::KickUser>()
+            .unwrap();
+        assert_eq!(kick.target_block.target_ip, [0, 0, 0, 0]);
+        assert_eq!(kick.target_block.target_port, 0);
+        assert_eq!(kick.user_info.agent_id, identity().agent_id);
+        assert_eq!(kick.user_info.session_id, identity().session_id);
+        assert_eq!(kick.user_info.reason, b"The simulator is going down.\0");
+        assert_eq!(closing[1].id, ferroan_protocol::msgs::DisableSimulator::ID);
+        assert!(closing[1].reliable());
+        assert!(closing[1].body.is_empty());
+    }
+
+    let mut idle = State::with_timing(
+        HandshakeConfig::for_region(identity().region_id),
+        ArrivalConfig::default(),
+        CircuitTiming::default(),
+    );
+    let quiet = RecordedIo::default();
+    let error = idle
+        .finish_close(&quiet, &identity(), CircuitStop::Shutdown)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CircuitError::Closed));
+    assert!(quiet.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn other_endpoint_use_circuit_code_is_acked_without_moving_the_peer() {
+    let (mut state, io) = connected().await;
+    let before = io.0.lock().unwrap().len();
+    let other: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+    let mut login = UseCircuitCode::default();
+    login.circuit_code.id = identity().agent_id;
+    login.circuit_code.session_id = identity().session_id;
+    login.circuit_code.code = identity().circuit_code;
+    let mut bytes = Vec::new();
+    build_packet(&login, 7, true, false, &[], &mut bytes);
+    assert!(
+        !state
+            .handle(
+                &io,
+                other,
+                &identity(),
+                &parse_packet(&bytes).unwrap(),
+                bytes.len()
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(state.peer, Some(peer()));
+    let sent = io.0.lock().unwrap();
+    let destinations = io.1.lock().unwrap();
+    assert_eq!(destinations[before], other);
+    let ack = parse_packet(&sent[before]).unwrap();
+    assert_eq!(ack.id, PacketAck::ID);
+    assert_eq!(ack.sequence, 0);
+    assert!(!ack.reliable());
+}
+
+#[tokio::test(start_paused = true)]
+async fn id_mismatch_and_a_short_body_are_dropped_before_ack() {
+    let (mut state, io) = connected().await;
+    let mut always = ferroan_protocol::msgs::SetAlwaysRun::default();
+    always.agent_data.agent_id = Uuid::from_u128(99);
+    always.agent_data.session_id = identity().session_id;
+    let mut bytes = Vec::new();
+    build_packet(&always, 50, true, false, &[], &mut bytes);
+    assert!(
+        !state
+            .handle(
+                &io,
+                peer(),
+                &identity(),
+                &parse_packet(&bytes).unwrap(),
+                bytes.len()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(!state.pending_acks.contains(&50));
+    assert_eq!(state.last_received, Instant::now());
+
+    always.agent_data.agent_id = identity().agent_id;
+    let mut bytes = Vec::new();
+    build_packet(&always, 51, true, false, &[], &mut bytes);
+    assert!(
+        !state
+            .handle(
+                &io,
+                peer(),
+                &identity(),
+                &parse_packet(&bytes).unwrap(),
+                bytes.len()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(state.pending_acks.contains(&51));
+
+    let mut bytes = Vec::new();
+    build_packet(&always, 52, true, false, &[], &mut bytes);
+    bytes.truncate(16);
+    let short = parse_packet(&bytes).unwrap();
+    assert_eq!(short.id, ferroan_protocol::msgs::SetAlwaysRun::ID);
+    assert!(
+        !state
+            .handle(&io, peer(), &identity(), &short, bytes.len())
+            .await
+            .unwrap()
+    );
+    assert!(!state.pending_acks.contains(&52));
+
+    // LogoutRequest is one of the seven types already checked before this row.
+    let logout = LogoutRequest::default();
+    let mut bytes = Vec::new();
+    build_packet(&logout, 53, true, false, &[], &mut bytes);
+    assert!(
+        !state
+            .handle(
+                &io,
+                peer(),
+                &identity(),
+                &parse_packet(&bytes).unwrap(),
+                bytes.len()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(!state.pending_acks.contains(&53));
 }

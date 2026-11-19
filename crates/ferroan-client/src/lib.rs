@@ -15,6 +15,8 @@ pub use arrival::ArrivalConfig;
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry, CapsServer,
 };
-pub use circuit::{CircuitError, CircuitExpect, CircuitServer, CircuitTiming, RootArrival};
+pub use circuit::{
+    CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, RootArrival,
+};
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;

@@ -39,7 +39,13 @@ The individual `.bin` files contain complete LLUDP datagrams:
   `The simulator is going down.`. This is the shutdown path's notice,
   not an ordinary logout response. [historical-shutdown.json](historical-shutdown.json)
   records its original `8583218` capture and the current source audit; it is
-  absent from the new normal-login capture.
+  absent from the new normal-login capture. The pin's `Kick` writes target
+  address 0 and port 0; this file keeps the captured loopback address.
+- `disable-simulator.bin`: `DisableSimulatorPacket.ToBytes()` from
+  UtopiaSkye.OpenMetaverse 1.2.9, the same bytes as libopenmetaverse
+  `a3596616`. It is a 10-byte reliable datagram, sequence 0, empty body.
+  [disable-simulator.json](disable-simulator.json) records that constructor
+  value. The region stamps the live sequence when it sends.
 
 The fresh 54-datagram capture has no `KillObject`; the earlier selected trace's
 manifest showed one after shutdown. `Scene.RemoveClient` broadcasts it for the
