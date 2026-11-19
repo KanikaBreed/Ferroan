@@ -77,6 +77,103 @@ pub fn compare(directory: &Path) -> Result<String, String> {
 
 /// Q10f service exchanges selected from the real C# login/logout and probes.
 pub(super) fn service_exchanges(directory: &Path) -> Result<Value, String> {
+    service_exchanges_selected(directory, false)
+}
+
+pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> {
+    service_exchanges_selected(directory, true)
+}
+
+pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
+    use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
+    const CHANNEL: &[u8] =
+        b"OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)\0";
+    for record in records(&directory.join("capture-udp.cap"))? {
+        if record.kind != Kind::UdpOut {
+            continue;
+        }
+        let packet =
+            parse_packet(&record.bytes).map_err(|_| "invalid root-arrival capture datagram")?;
+        if packet.id != AgentMovementComplete::ID {
+            continue;
+        }
+        let arrival = packet
+            .decode::<AgentMovementComplete>()
+            .map_err(|_| "invalid captured root arrival")?;
+        if arrival.sim_data.channel_version != CHANNEL {
+            return Err("root-arrival capture lacks the pinned C# channel/version marker".into());
+        }
+        return Ok(
+            json!({"channel_version":String::from_utf8_lossy(CHANNEL).trim_end_matches('\0'), "arrival_position":arrival.data.position.to_array(), "arrival_look_at":arrival.data.look_at.to_array(), "arrival_handle":arrival.data.region_handle}),
+        );
+    }
+    Err("root-arrival capture has no outgoing arrival".into())
+}
+
+pub(super) fn compare_root_arrival(directory: &Path) -> Result<String, String> {
+    let mut actual = root_arrival_exchanges(directory)?;
+    let baseline: Value = serde_json::from_slice(&bounded(
+        &crate::repo_root().join("fixtures/root-arrival/exchanges.json"),
+        MAX_BODY,
+    )?)
+    .map_err(|error| error.to_string())?;
+    let mut expected = baseline["services"].clone();
+    for name in ["presence-report", "griduser-setposition"] {
+        actual[name]
+            .as_object_mut()
+            .ok_or("missing root-arrival actual exchange")?
+            .remove("record_index");
+        expected[name]
+            .as_object_mut()
+            .ok_or("missing root-arrival baseline exchange")?
+            .remove("record_index");
+        if name == "griduser-setposition" {
+            let mut fields = parse_query_string(
+                actual[name]["request"]
+                    .as_str()
+                    .ok_or("root-arrival form is not text")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let expected_fields = parse_query_string(
+                expected[name]["request"]
+                    .as_str()
+                    .ok_or("root-arrival fixture form is not text")?,
+            )
+            .map_err(|error| error.to_string())?;
+            // The online observer checked this run's exact position against its
+            // UDP arrival. Terrain-adjusted C# Z is pending P2.0e; retain every
+            // other field and the exact field ordering in this wire comparison.
+            let actual_position = super::login_probe::vector(&text_field(&fields, "Position")?)
+                .ok_or("invalid root-arrival position")?;
+            let expected_position =
+                super::login_probe::vector(&text_field(&expected_fields, "Position")?)
+                    .ok_or("invalid root-arrival fixture position")?;
+            if actual_position[..2] != expected_position[..2] {
+                return Err("root-arrival form XY differs from C#".into());
+            }
+            fields.insert(
+                "Position".into(),
+                expected_fields
+                    .get("Position")
+                    .ok_or("missing fixture position")?
+                    .clone(),
+            );
+            actual[name]["request"] =
+                json!(build_query_string(&fields).map_err(|error| error.to_string())?);
+        }
+        if actual[name] != expected[name] {
+            return Err(format!(
+                "root-arrival HTTP differs for {name}; inspect private grid captures"
+            ));
+        }
+    }
+    Ok(
+        "root arrival http: Presence report and GridUser setposition match C# (terrain Z pending)"
+            .into(),
+    )
+}
+
+fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Value, String> {
     let records = records(&directory.join("proxy-robust-private.cap"))?;
     let normalizer = Normalizer {
         home_port: String::new(),
@@ -93,7 +190,10 @@ pub(super) fn service_exchanges(directory: &Path) -> Result<Value, String> {
         }
         let mut fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
         let method = text_field(&fields, "METHOD")?;
-        if !matches!(method.as_str(), "getagent" | "logout" | "loggedout") {
+        if !matches!(
+            method.as_str(),
+            "getagent" | "logout" | "loggedout" | "report" | "setposition"
+        ) {
             continue;
         }
         // Never infer pairing through concurrent requests. Later unambiguous
@@ -121,8 +221,22 @@ pub(super) fn service_exchanges(directory: &Path) -> Result<Value, String> {
             {
                 "griduser-loggedout"
             }
+            ("/presence", "report", _)
+                if text_field(&fields, "RegionID")? == crate::live::REGION_UUID =>
+            {
+                "presence-report"
+            }
+            ("/griduser", "setposition", _)
+                if text_field(&fields, "UserID")? == crate::live::ESTATE_OWNER
+                    && text_field(&fields, "RegionID")? == crate::live::REGION_UUID =>
+            {
+                "griduser-setposition"
+            }
             _ => continue,
         };
+        if root_arrival != matches!(name, "presence-report" | "griduser-setposition") {
+            continue;
+        }
         if output.contains_key(name) {
             continue;
         }
@@ -136,24 +250,30 @@ pub(super) fn service_exchanges(directory: &Path) -> Result<Value, String> {
                 normalizer.text(value)
             };
         }
-        output.insert(
-            name.into(),
-            exchange(
-                &request,
-                &reply,
-                Value::String(build_query_string(&fields).map_err(|error| error.to_string())?),
-                Value::String(normalizer.text(&response)),
-                &normalizer,
-            ),
+        let mut captured = exchange(
+            &request,
+            &reply,
+            Value::String(build_query_string(&fields).map_err(|error| error.to_string())?),
+            Value::String(normalizer.text(&response)),
+            &normalizer,
         );
+        if root_arrival {
+            captured["record_index"] = json!(index);
+        }
+        output.insert(name.into(), captured);
     }
-    for name in [
-        "presence-get",
-        "presence-missing",
-        "presence-logout",
-        "griduser-loggedout",
-    ] {
-        if !output.contains_key(name) {
+    let required: &[&str] = if root_arrival {
+        &["presence-report", "griduser-setposition"]
+    } else {
+        &[
+            "presence-get",
+            "presence-missing",
+            "presence-logout",
+            "griduser-loggedout",
+        ]
+    };
+    for name in required {
+        if !output.contains_key(*name) {
             return Err(format!("C# capture has no unambiguous {name} exchange"));
         }
     }

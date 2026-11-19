@@ -23,10 +23,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-// Logout behavior ported from
+// Root-arrival and logout behavior ported from
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
 //   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (Lookat)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs (ping and outgoing workers)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs (async movement dispatch)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Ferroan changes: async lifecycle, generation-safe cleanup and process orchestration.
 // Copyright (c) 2026 Ferroan contributors
@@ -188,9 +190,10 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     simulation.stop_accepting();
     let _ = stop_circuits.send(());
     if !circuits_consumed {
-        // One active + one queued generation; at most one GridUser and two
-        // Presence notifications, each bounded at 30s, plus an admission request.
-        let drained = tokio::time::timeout(Duration::from_secs(125), &mut circuits).await;
+        // One active + one queued generation; two in-flight arrival writes,
+        // one GridUser and two Presence logout writes, plus admission, each
+        // bounded at 30s. Shutdown never cancels a write ahead of its cleanup.
+        let drained = tokio::time::timeout(Duration::from_secs(185), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
             Ok(Ok(Err(error))) => Some(RunError::Grid(error)),
@@ -249,14 +252,58 @@ async fn dispatch_circuits(
         if !stopping {
             let expect = agent.expect;
             let arrival = config.arrival(agent.start_pos);
-            tokio::select! {
-                biased;
-                _ = &mut stop => { stopping = true; agents.close(); }
-                _ = agent.replaced() => println!("ferroan-region: circuit replaced by a new login"),
-                result = circuit.serve_one_with_arrival(expect, arrival) => match result {
-                    Ok(()) => println!("ferroan-region: LogoutReply sent"),
-                    Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
-                },
+            let (report, mut report_ready) = oneshot::channel();
+            let serving = circuit.serve_one_with_arrival_reporting(expect, arrival, report);
+            tokio::pin!(serving);
+            let mut reported = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut stop => { stopping = true; agents.close(); break; }
+                    _ = agent.replaced() => {
+                        println!("ferroan-region: circuit replaced by a new login");
+                        break;
+                    }
+                    report = &mut report_ready, if !reported => {
+                        reported = true;
+                        if let Ok(report) = report {
+                            // C# runs movement callbacks separately from ping,
+                            // ACK and resend handling. Keep polling UDP during
+                            // HTTP, but defer cancellation until writes finish.
+                            let reporting = async {
+                                let _guard = agent.lock_lifecycle().await;
+                                if agent.is_current() {
+                                    notify_root_arrival(&grid_user, &presence, &config, &agent).await;
+                                }
+                            };
+                            tokio::pin!(reporting);
+                            let ended = tokio::select! {
+                                _ = &mut reporting => None,
+                                result = &mut serving => {
+                                    // A logout or timeout cannot cancel a write
+                                    // which could otherwise race its cleanup.
+                                    reporting.await;
+                                    Some(result)
+                                }
+                            };
+                            report.complete();
+                            if let Some(result) = ended {
+                                match result {
+                                    Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                                    Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    result = &mut serving => {
+                        match result {
+                            Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                            Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                        }
+                        break;
+                    }
+                }
             }
         }
         // Keep the generation lease and admission gate throughout both HTTP
@@ -275,6 +322,31 @@ async fn dispatch_circuits(
     match failure {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+async fn notify_root_arrival(
+    grid_user: &GridUserClient,
+    presence: &PresenceClient,
+    config: &RegionConfig,
+    agent: &AcceptedAgent,
+) {
+    // The two OnMakeRootAgent detectors ignore their connector's bool result.
+    // Failure is observable in diagnostics, but does not deny viewer arrival
+    // or skip the other detector. The accepted local user is already known.
+    if let Err(error) = presence
+        .report_agent(agent.expect.session_id, config.id)
+        .await
+    {
+        eprintln!("ferroan-region: root Presence report failed: {error}");
+    }
+    // ScenePresence.Lookat still has its initial zero camera axis; the nonzero
+    // CompleteMovement fallback belongs only to the viewer arrival packet.
+    if let Err(error) = grid_user
+        .set_last_position(agent.expect.agent_id, config.id, agent.start_pos, [0.0; 3])
+        .await
+    {
+        eprintln!("ferroan-region: root GridUser position report failed: {error}");
     }
 }
 
@@ -327,7 +399,13 @@ fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferroan_client::CircuitExpect;
     use ferroan_http::{Field, FieldMap};
+    use ferroan_protocol::msgs::{
+        AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, LogoutReply,
+        LogoutRequest, StartPingCheck, UseCircuitCode,
+    };
+    use ferroan_protocol::{Msg, build_packet, parse_packet};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -336,6 +414,7 @@ mod tests {
         state: SimulationState,
         sender: mpsc::Sender<AcceptedAgent>,
         base: String,
+        udp: SocketAddr,
         requests: Arc<Mutex<Vec<FieldMap>>>,
         stop: Option<oneshot::Sender<()>>,
         running: Option<tokio::task::JoinHandle<Result<(), GridError>>>,
@@ -350,16 +429,29 @@ mod tests {
     }
     impl Harness {
         async fn new(short_timeout: bool, fail_grid_user: bool) -> Self {
+            Self::with_arrival_control(short_timeout, fail_grid_user, false, None).await
+        }
+
+        async fn with_arrival_control(
+            short_timeout: bool,
+            fail_grid_user: bool,
+            fail_arrival: bool,
+            report_gate: Option<Arc<tokio::sync::Semaphore>>,
+        ) -> Self {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let seen = requests.clone();
             let app = axum::Router::new().fallback(move |body: String| {
                 let fields = ferroan_http::parse_query_string(&body).unwrap();
                 let method = match &fields["METHOD"] { Field::Str(s) => s.clone(), _ => panic!() };
                 seen.lock().unwrap().push(fields);
+                let report_gate = report_gate.clone();
                 async move {
+                    if method == "report" && let Some(gate) = report_gate {
+                        gate.acquire_owned().await.unwrap().forget();
+                    }
                     if method == "getagent" {
                         "<ServerResponse><result type=\"List\"><UserID>00000000-0000-4000-8000-000000000001</UserID><RegionID>00000000-0000-0000-0000-000000000000</RegionID></result></ServerResponse>"
-                    } else if fail_grid_user && method == "loggedout" {
+                    } else if (fail_grid_user && method == "loggedout") || (fail_arrival && matches!(method.as_str(), "report" | "setposition")) {
                         "<ServerResponse><result>Failure</result></ServerResponse>"
                     } else {
                         "<ServerResponse><result>Success</result></ServerResponse>"
@@ -398,6 +490,7 @@ mod tests {
                 .with_timing(config.circuit_timing)
                 .unwrap();
             let (stop, stopped) = oneshot::channel();
+            let udp = circuit.local_addr().unwrap();
             let running = tokio::spawn(dispatch_circuits(circuit, config, agents, stopped));
             let tasks = vec![
                 mock.abort_handle(),
@@ -408,6 +501,7 @@ mod tests {
                 state,
                 sender,
                 base,
+                udp,
                 requests,
                 stop: Some(stop),
                 running: Some(running),
@@ -415,7 +509,7 @@ mod tests {
             }
         }
 
-        async fn admit(&self, replacement: bool, same_session: bool) {
+        async fn admit(&self, replacement: bool, same_session: bool) -> CircuitExpect {
             let mut body: Value = serde_json::from_str(include_str!(
                 "../../../fixtures/region-login/create-agent.request.json"
             ))
@@ -451,6 +545,12 @@ mod tests {
             })
             .await
             .unwrap();
+            CircuitExpect {
+                agent_id: body["agent_id"].as_str().unwrap().parse().unwrap(),
+                session_id: body["session_id"].as_str().unwrap().parse().unwrap(),
+                circuit_code: body["circuit_code"].as_str().unwrap().parse().unwrap(),
+                region_id: "00000000-0000-4000-8000-000000000002".parse().unwrap(),
+            }
         }
 
         fn count(&self, method: &str) -> usize {
@@ -464,11 +564,273 @@ mod tests {
 
         async fn finish(&mut self) -> Result<(), GridError> {
             self.state.stop_accepting();
-            let _ = self.stop.take().unwrap().send(());
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
             tokio::time::timeout(Duration::from_secs(3), self.running.take().unwrap())
                 .await
                 .unwrap()
                 .unwrap()
+        }
+    }
+
+    async fn send<M: Msg>(socket: &tokio::net::UdpSocket, message: &M, sequence: u32) {
+        let mut wire = Vec::new();
+        build_packet(message, sequence, true, false, &[], &mut wire);
+        socket.send(&wire).await.unwrap();
+    }
+
+    async fn open(harness: &Harness, expect: CircuitExpect) -> tokio::net::UdpSocket {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(harness.udp).await.unwrap();
+        let mut message = UseCircuitCode::default();
+        message.circuit_code.id = expect.agent_id;
+        message.circuit_code.session_id = expect.session_id;
+        message.circuit_code.code = expect.circuit_code;
+        send(&socket, &message, 1).await;
+        socket
+    }
+
+    async fn movement(socket: &tokio::net::UdpSocket, expect: CircuitExpect, sequence: u32) {
+        let mut message = CompleteAgentMovement::default();
+        message.agent_data.agent_id = expect.agent_id;
+        message.agent_data.session_id = expect.session_id;
+        message.agent_data.circuit_code = expect.circuit_code;
+        send(socket, &message, sequence).await;
+    }
+
+    async fn wait_arrival(socket: &tokio::net::UdpSocket) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut bytes = [0; 4096];
+            loop {
+                let len = socket.recv(&mut bytes).await.unwrap();
+                if parse_packet(&bytes[..len]).unwrap().id == AgentMovementComplete::ID {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn validated_arrival_reports_once_and_service_failure_does_not_deny_arrival() {
+        for fail_arrival in [false, true] {
+            let mut harness = Harness::with_arrival_control(false, false, fail_arrival, None).await;
+            let expect = harness.admit(false, false).await;
+            assert_eq!(harness.count("report"), 0);
+            assert_eq!(harness.count("setposition"), 0);
+            let socket = open(&harness, expect).await;
+            movement(
+                &socket,
+                CircuitExpect {
+                    circuit_code: expect.circuit_code + 1,
+                    ..expect
+                },
+                2,
+            )
+            .await;
+            movement(&socket, expect, 3).await;
+            wait_arrival(&socket).await;
+            // A duplicate sequence and a distinct valid movement must not run
+            // root detectors again; a subsequent replacement does run them.
+            movement(&socket, expect, 3).await;
+            movement(&socket, expect, 4).await;
+            let next = harness.admit(true, false).await;
+            assert_eq!(harness.count("report"), 1);
+            assert_eq!(harness.count("setposition"), 1);
+            let second = open(&harness, next).await;
+            movement(&second, next, 2).await;
+            wait_arrival(&second).await;
+            assert_eq!(harness.count("report"), 2);
+            assert_eq!(harness.count("setposition"), 2);
+            harness.finish().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_finishes_arrival_writes_before_logout() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut harness =
+            Harness::with_arrival_control(false, false, false, Some(gate.clone())).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("report") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        harness.state.stop_accepting();
+        harness.stop.take().unwrap().send(()).unwrap();
+        assert_eq!(harness.count("loggedout"), 0);
+        gate.add_permits(1);
+        harness.finish().await.unwrap();
+        let methods: Vec<_> = harness
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| f["METHOD"].clone())
+            .collect();
+        assert_eq!(
+            methods,
+            ["getagent", "report", "setposition", "loggedout", "logout"]
+                .map(|s| Field::Str(s.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn held_arrival_backend_does_not_block_udp_ping_handling() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut harness =
+            Harness::with_arrival_control(false, false, false, Some(gate.clone())).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("report") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut ping = StartPingCheck::default();
+        ping.ping_id.ping_id = 73;
+        send(&socket, &ping, 3).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = [0; 4096];
+            loop {
+                let len = socket.recv(&mut bytes).await.unwrap();
+                let packet = parse_packet(&bytes[..len]).unwrap();
+                assert_ne!(
+                    packet.id,
+                    AgentMovementComplete::ID,
+                    "arrival must await reporting"
+                );
+                if packet.id == CompletePingCheck::ID {
+                    assert_eq!(
+                        packet
+                            .decode::<CompletePingCheck>()
+                            .unwrap()
+                            .ping_id
+                            .ping_id,
+                        73
+                    );
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("UDP ping response blocked behind service report");
+        assert_eq!(harness.count("setposition"), 0);
+        gate.add_permits(1);
+        wait_arrival(&socket).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_during_pending_arrival_finishes_writes_before_cleanup() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut harness =
+            Harness::with_arrival_control(false, false, false, Some(gate.clone())).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("report") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = expect.agent_id;
+        logout.agent_data.session_id = expect.session_id;
+        send(&socket, &logout, 3).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = [0; 4096];
+            loop {
+                let len = socket.recv(&mut bytes).await.unwrap();
+                let packet = parse_packet(&bytes[..len]).unwrap();
+                assert_ne!(packet.id, AgentMovementComplete::ID);
+                if packet.id == LogoutReply::ID {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(harness.count("loggedout"), 0);
+        gate.add_permits(1);
+        harness.finish().await.unwrap();
+        let methods: Vec<_> = harness
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| f["METHOD"].clone())
+            .collect();
+        assert_eq!(
+            methods,
+            ["getagent", "report", "setposition", "loggedout", "logout"]
+                .map(|s| Field::Str(s.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_waits_for_root_writes_and_old_generation_cannot_report_again() {
+        for same_session in [false, true] {
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let mut harness =
+                Harness::with_arrival_control(false, false, false, Some(gate.clone())).await;
+            let expect = harness.admit(false, false).await;
+            let socket = open(&harness, expect).await;
+            movement(&socket, expect, 2).await;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while harness.count("report") == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            {
+                let admission = harness.admit(true, same_session);
+                tokio::pin!(admission);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), &mut admission)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    harness.count("getagent"),
+                    1,
+                    "replacement verification must wait behind reporting"
+                );
+                gate.add_permits(1);
+                admission.await;
+            }
+            // A late movement from the superseded circuit cannot trigger
+            // another old write. Shutdown drains the accepted replacement.
+            movement(&socket, expect, 3).await;
+            harness.finish().await.unwrap();
+            assert_eq!(harness.count("report"), 1);
+            assert_eq!(harness.count("setposition"), 1);
+            assert_eq!(harness.count("loggedout"), 1);
+            assert_eq!(harness.count("logout"), 1 + usize::from(!same_session));
+            let methods: Vec<_> = harness
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|f| f["METHOD"].clone())
+                .collect();
+            assert_eq!(
+                &methods[..4],
+                ["getagent", "report", "setposition", "getagent"].map(|s| Field::Str(s.into()))
+            );
         }
     }
 

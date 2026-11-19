@@ -1,0 +1,63 @@
+{
+  "source": "csharp",
+  "revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.132-alpha+858321883f (X64/Unix/DotNet)",
+  "services": {
+    "presence-report": {
+      "method": "POST",
+      "path": "/presence",
+      "request_content_type": "application/x-www-form-urlencoded",
+      "request_content_encoding": "",
+      "request_x_content_encoding": "",
+      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=report&SessionID=00000000-0000-4000-8000-000000000004&RegionID=00000000-0000-4000-8000-000000000002",
+      "status": 200,
+      "response_content_type": "application/xml",
+      "response_content_encoding": "",
+      "response_x_content_encoding": "",
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>",
+      "record_index": 28
+    },
+    "griduser-setposition": {
+      "method": "POST",
+      "path": "/griduser",
+      "request_content_type": "application/x-www-form-urlencoded",
+      "request_content_encoding": "",
+      "request_x_content_encoding": "",
+      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=setposition&UserID=00000000-0000-4000-8000-000000000001&RegionID=00000000-0000-4000-8000-000000000002&Position=%3c128%2c+128%2c+25.960001%3e&LookAt=%3c0%2c+0%2c+0%3e",
+      "status": 200,
+      "response_content_type": "application/xml",
+      "response_content_encoding": "",
+      "response_x_content_encoding": "",
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>",
+      "record_index": 30
+    }
+  },
+  "online": {
+    "source": "csharp",
+    "revision": "858321883f5487a5d192d36ea9d7b90fa468310c",
+    "online": true,
+    "presence_region": "00000000-0000-4000-8000-000000000002",
+    "last_region": "00000000-0000-4000-8000-000000000002",
+    "last_position": [
+      128.0,
+      128.0,
+      25.96000099182129
+    ],
+    "last_look_at": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "arrival_position": [
+      128.0,
+      128.0,
+      25.96000099182129
+    ],
+    "arrival_look_at": [
+      0.9900000095367432,
+      0.041999999433755875,
+      0.0
+    ],
+    "arrival_handle": 1099511628032000
+  }
+}

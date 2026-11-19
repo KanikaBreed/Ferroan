@@ -33,7 +33,12 @@
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (SendLogoutPacket, CloseWithoutChecks, HandleCompleteAgentMovement,
 //      HandleAgentPause, HandleAgentResume)
-//   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (MakeRootAgent)
+//   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs
+//     (MakeRootAgent, CompleteMovement)
+//   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/Presence/PresenceDetector.cs
+//     (OnMakeRootAgent, DoOnMakeRootAgent)
+//   Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/GridUser/ActivityDetector.cs
+//     (OnMakeRootAgent, DoOnMakeRootAgent)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
@@ -60,6 +65,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -109,6 +115,23 @@ pub struct CircuitExpect {
     pub session_id: Uuid,
     pub circuit_code: u32,
     pub region_id: Uuid,
+}
+
+/// One validated root transition, before AgentMovementComplete is sent.
+///
+/// The region dispatcher completes its bounded Presence/GridUser work under
+/// the accepted generation's lifecycle lock, then consumes this token. Dropping
+/// the token also releases arrival: C#'s detectors do not turn service failures
+/// into a failed movement. Dropping the circuit future cancels the continuation.
+/// The token carries no credentials and is emitted at most once per circuit.
+pub struct RootArrival {
+    completed: oneshot::Sender<()>,
+}
+
+impl RootArrival {
+    pub fn complete(self) {
+        let _ = self.completed.send(());
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -161,6 +184,8 @@ struct State {
     handshake: HandshakeConfig,
     arrival: ArrivalConfig,
     arrived: bool,
+    root_arrival: Option<oneshot::Sender<RootArrival>>,
+    arrival_completion: Option<oneshot::Receiver<()>>,
     timing: CircuitTiming,
     rto: Duration,
     resend_at: Instant,
@@ -193,6 +218,8 @@ impl State {
             handshake,
             arrival,
             arrived: false,
+            root_arrival: None,
+            arrival_completion: None,
             timing,
             rto: timing.default_rto,
             resend_at: now + RESEND_INTERVAL,
@@ -415,13 +442,18 @@ impl State {
                 && let Ok(movement) = packet.decode::<CompleteAgentMovement>()
                 && movement.agent_data.circuit_code == expect.circuit_code
             {
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as u32;
-                let reply = self.arrival.build(expect, timestamp);
-                self.send_message(sock, from, &reply, true).await?;
+                // MakeRootAgent marks the child->root transition and triggers
+                // its detectors before CompleteMovement sends the arrival.
+                // Reserve the transition before starting service reporting so
+                // duplicates cannot produce a second notification or packet.
                 self.arrived = true;
+                if let Some(notify) = self.root_arrival.take() {
+                    let (completed, completion) = oneshot::channel();
+                    let _ = notify.send(RootArrival { completed });
+                    self.arrival_completion = Some(completion);
+                } else {
+                    self.send_arrival(sock, from, expect).await?;
+                }
             }
         } else if packet.id == AgentPause::ID {
             self.paused = true;
@@ -462,6 +494,19 @@ impl State {
             return Ok(true);
         }
         Ok(false)
+    }
+    async fn send_arrival(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+        expect: &CircuitExpect,
+    ) -> Result<(), CircuitError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let reply = self.arrival.build(expect, timestamp);
+        self.send_message(sock, to, &reply, true).await
     }
 }
 fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool {
@@ -552,6 +597,30 @@ impl CircuitServer {
         expect: CircuitExpect,
         arrival: ArrivalConfig,
     ) -> Result<(), CircuitError> {
+        self.serve_with_reporting(expect, arrival, None).await
+    }
+
+    /// Serve one accepted generation and notify its dispatcher exactly once
+    /// when validated movement makes it root. The dispatcher must complete or
+    /// drop the token after bounded service work before arrival can be sent.
+    /// Keep the receiver local to this generation; do not forward it to a
+    /// detached task that could outlive circuit replacement or logout.
+    pub async fn serve_one_with_arrival_reporting(
+        &self,
+        expect: CircuitExpect,
+        arrival: ArrivalConfig,
+        root_arrival: oneshot::Sender<RootArrival>,
+    ) -> Result<(), CircuitError> {
+        self.serve_with_reporting(expect, arrival, Some(root_arrival))
+            .await
+    }
+
+    async fn serve_with_reporting(
+        &self,
+        expect: CircuitExpect,
+        arrival: ArrivalConfig,
+        root_arrival: Option<oneshot::Sender<RootArrival>>,
+    ) -> Result<(), CircuitError> {
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
         }
@@ -559,9 +628,18 @@ impl CircuitServer {
         if handshake.region_id.is_nil() {
             handshake.region_id = expect.region_id;
         }
-        serve_socket(&self.socket, expect, handshake, arrival, self.timing).await
+        serve_socket_reporting(
+            &self.socket,
+            expect,
+            handshake,
+            arrival,
+            self.timing,
+            root_arrival,
+        )
+        .await
     }
 }
+#[cfg(test)]
 async fn serve_socket(
     sock: &impl DatagramIo,
     expect: CircuitExpect,
@@ -569,7 +647,19 @@ async fn serve_socket(
     arrival: ArrivalConfig,
     timing: CircuitTiming,
 ) -> Result<(), CircuitError> {
+    serve_socket_reporting(sock, expect, handshake, arrival, timing, None).await
+}
+
+async fn serve_socket_reporting(
+    sock: &impl DatagramIo,
+    expect: CircuitExpect,
+    handshake: HandshakeConfig,
+    arrival: ArrivalConfig,
+    timing: CircuitTiming,
+    root_arrival: Option<oneshot::Sender<RootArrival>>,
+) -> Result<(), CircuitError> {
     let mut state = State::with_timing(handshake, arrival, timing);
+    state.root_arrival = root_arrival;
     let mut buf = [0u8; MAX_DATAGRAM];
     loop {
         state.maintain(sock).await?;
@@ -577,7 +667,24 @@ async fn serve_socket(
         if wait.is_zero() {
             continue;
         }
-        let (len, from) = match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
+        // Reporting belongs to the scene transition, not the UDP transport.
+        // Keep ACKs, pings, retries and inactivity alive while services finish.
+        let received = tokio::select! {
+            _ = async {
+                match &mut state.arrival_completion {
+                    Some(completion) => { let _ = completion.await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                state.arrival_completion = None;
+                if let Some(peer) = state.peer {
+                    state.send_arrival(sock, peer, &expect).await?;
+                }
+                continue;
+            }
+            received = tokio::time::timeout(wait, sock.recv_from(&mut buf)) => received,
+        };
+        let (len, from) = match received {
             Ok(Ok(received)) => received,
             Ok(Err(_)) => {
                 // Includes Windows WSAECONNRESET; back off to avoid spinning
@@ -595,6 +702,10 @@ async fn serve_socket(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "circuit_root_tests.rs"]
+mod root_tests;
 
 #[cfg(test)]
 #[path = "circuit_timing_tests.rs"]
