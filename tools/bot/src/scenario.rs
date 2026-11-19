@@ -165,6 +165,69 @@ async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
     Ok("login: pass".to_string())
 }
 
+/// The current circuit's root-arrival data. Session identity stays private to
+/// the test harness and must not be printed or included in public reports.
+pub struct RootArrival {
+    pub agent_id: Uuid,
+    pub session_id: Uuid,
+    pub region_id: Uuid,
+    pub position: [f32; 3],
+    pub look_at: [f32; 3],
+    pub region_handle: u64,
+}
+
+/// Inspect service state after the actual arrival and before logout. Continue
+/// driving the circuit during the bounded observer, then attempt logout even
+/// when the observer fails. Ordinary scenarios do not need a service observer.
+pub async fn run_login_observed<F, Fut>(harness: &Harness, observe: F) -> Result<String, String>
+where
+    F: FnOnce(RootArrival) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    harness.http_trace.scope(async {
+        let http = login::http_client().map_err(|error| error.to_string())?;
+        let (mut session, _) = enter(&http, harness, &harness.owner).await?;
+        let observed = async {
+            let region = session.region_id().ok_or("the handshake set no region")?;
+            if region != harness.region_id { return Err("arrival region differs from the test region".to_owned()); }
+            let mut arrival = None;
+            while let Some(packet) = session.poll_inbox() {
+                if packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID {
+                    let message = packet.decode::<ferroan_protocol::msgs::AgentMovementComplete>().map_err(|_| "invalid arrival message")?;
+                    if message.agent_data.agent_id == session.agent().agent_id && message.agent_data.session_id == session.agent().session_id {
+                        arrival = Some(message);
+                    }
+                }
+            }
+            let arrival = arrival.ok_or("the ready circuit has no current arrival message")?;
+            let future = observe(RootArrival {
+                agent_id: arrival.agent_data.agent_id,
+                session_id: arrival.agent_data.session_id,
+                region_id: region,
+                position: arrival.data.position.to_array(),
+                look_at: arrival.data.look_at.to_array(),
+                region_handle: arrival.data.region_handle,
+            });
+            tokio::pin!(future);
+            let deadline = tokio::time::sleep(Duration::from_secs(15));
+            tokio::pin!(deadline);
+            loop {
+                tokio::select! {
+                    result = &mut future => break result,
+                    _ = &mut deadline => break Err("online service observer exceeded fifteen seconds".to_owned()),
+                    result = session.drive(STEP) => { result.map_err(|error| error.to_string())?; while session.poll_inbox().is_some() {} }
+                }
+            }
+        }.await;
+        let logout = leave(harness, &mut session, &harness.owner).await;
+        match (observed, logout) {
+            (Ok(line), Ok(())) => Ok(format!("login: pass\n{line}\nlive: run passed")),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(logout)) => Err(format!("{error}\nlogout: {logout}")),
+        }
+    }).await
+}
+
 async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
     let (mut session, _) = enter(http, harness, &harness.owner).await?;
     let agent = session.agent();

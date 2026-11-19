@@ -94,6 +94,10 @@ pub fn parity_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(login_probe::generate(directory))
 }
 
+pub fn root_arrival_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(login_probe::generate_root_arrival(directory))
+}
+
 fn run_inner(scenario: &str, ferroan: bool) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
@@ -609,6 +613,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
         &chat,
         &home_log,
         ferroan,
+        Some((&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan)),
     ).and_then(|mut report| {
         if scenario == "login" {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
@@ -616,7 +621,7 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
             if ferroan {
                 runtime.block_on(login_probe::offline(&private_uri))?;
-                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true)?;
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, Some((&private_uri, &root, true)))?;
                 runtime.block_on(login_probe::offline(&private_uri))?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
@@ -637,8 +642,13 @@ fn run_linux(scenario: &str, ferroan: bool) -> Result<String, String> {
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
     if ferroan {
         let comparison = login_capture::compare(&root)?;
+        let arrival = if scenario == "login" {
+            login_capture::compare_root_arrival(&root)?
+        } else {
+            String::new()
+        };
         Ok(format!(
-            "{}\nlogout: LogoutReply\n{comparison}\n{proxy_report}",
+            "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{proxy_report}",
             report.lines
         ))
     } else {
@@ -673,6 +683,7 @@ fn run_bot(
     chat: &str,
     region_log: &Path,
     strict_logout: bool,
+    online: Option<(&str, &Path, bool)>,
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
@@ -689,7 +700,16 @@ fn run_bot(
         .enable_all()
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
-    let lines = runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?;
+    let lines = if scenario == "login"
+        && let Some((private_uri, directory, ferroan)) = online
+    {
+        runtime.block_on(ferroan_bot::scenario::run_login_observed(
+            &harness,
+            |arrival| login_probe::online(private_uri, directory, ferroan, arrival),
+        ))?
+    } else {
+        runtime.block_on(ferroan_bot::scenario::run(scenario, &harness))?
+    };
     Ok(BotReport {
         lines,
         http: harness.http_trace.records(),

@@ -41,7 +41,7 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
-| Q10g | P2.0d4: root-arrival Presence and GridUser reporting | READY after Q10f |
+| Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | READY after Q10g |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
@@ -150,7 +150,7 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 
 - 2026-11-18, Q10f: shared `ferroan_http::post_form` parses XML without checking HTTP success, whereas pinned `WebUtil.SynchronousRestFormsRequester` calls `EnsureSuccessStatusCode`. The new region Presence/GridUser clients and their offline-state probe check status locally, so a 500 response containing plausible XML cannot authorize admission or prove logout. Proposed separate HTTP follow-up: audit shared-client callers, capture failed-status behavior, and add status validation there. Existing unrelated callers were not changed.
 
-- 2026-11-18, Q10f detector review: the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
+- 2026-11-18, Q10f detector review (**resolved by Q10g, #48**): the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
 
 ## Waiting on the maintainer
 

@@ -13,6 +13,6 @@ mod handshake;
 
 pub use arrival::ArrivalConfig;
 pub use caps::{CapsError, CapsRegistry, CapsServer};
-pub use circuit::{CircuitError, CircuitExpect, CircuitServer, CircuitTiming};
+pub use circuit::{CircuitError, CircuitExpect, CircuitServer, CircuitTiming, RootArrival};
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;

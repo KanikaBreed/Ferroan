@@ -59,7 +59,7 @@ pub enum GridError {
     Rejected { message: String },
     #[error("grid service reply has no recognized Result")]
     InvalidReply,
-    #[error("logout position or look direction is not finite")]
+    #[error("reported position or look direction is not finite")]
     InvalidPosition,
     #[error("region service HTTP request failed")]
     Transport(#[from] reqwest::Error),
@@ -93,6 +93,12 @@ impl PresenceClient {
     pub async fn logout(&self, session_id: Uuid) -> Result<(), GridError> {
         service_result(&service_form(&self.endpoint, &presence_fields("logout", session_id)).await?)
     }
+
+    pub async fn report_agent(&self, session_id: Uuid, region_id: Uuid) -> Result<(), GridError> {
+        let mut fields = presence_fields("report", session_id);
+        fields.insert("RegionID".into(), Field::Str(region_id.to_string()));
+        service_result(&service_form(&self.endpoint, &fields).await?)
+    }
 }
 
 #[derive(Clone)]
@@ -118,7 +124,20 @@ impl GridUserClient {
         position: [f32; 3],
         look_at: [f32; 3],
     ) -> Result<(), GridError> {
-        let fields = logout_fields(agent_id, region_id, position, look_at)?;
+        let fields = position_fields("loggedout", agent_id, region_id, position, look_at)?;
+        service_result(&service_form(&self.endpoint, &fields).await?)
+    }
+
+    /// ActivityDetector passes UUID.Zero as session; the remote connector
+    /// omits that parameter and writes the known local user's last location.
+    pub async fn set_last_position(
+        &self,
+        agent_id: Uuid,
+        region_id: Uuid,
+        position: [f32; 3],
+        look_at: [f32; 3],
+    ) -> Result<(), GridError> {
+        let fields = position_fields("setposition", agent_id, region_id, position, look_at)?;
         service_result(&service_form(&self.endpoint, &fields).await?)
     }
 }
@@ -171,7 +190,8 @@ fn presence_fields(method: &str, session: Uuid) -> FieldMap {
     fields
 }
 
-fn logout_fields(
+fn position_fields(
+    method: &str,
     agent: Uuid,
     region: Uuid,
     position: [f32; 3],
@@ -185,7 +205,7 @@ fn logout_fields(
         return Err(GridError::InvalidPosition);
     }
     let vector = |v: [f32; 3]| format!("<{}, {}, {}>", v[0], v[1], v[2]);
-    let mut fields = service_fields("loggedout");
+    let mut fields = service_fields(method);
     for (key, value) in [
         ("UserID", agent.to_string()),
         ("RegionID", region.to_string()),
@@ -286,6 +306,75 @@ fn check_result(reply: &FieldMap) -> Result<(), GridError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn root_arrival_forms_match_captured_csharp_exchanges() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/root-arrival/exchanges.json"
+        ))
+        .unwrap();
+        let queue = Arc::new(Mutex::new(VecDeque::from([
+            fixture["services"]["presence-report"].clone(),
+            fixture["services"]["griduser-setposition"].clone(),
+        ])));
+        let remaining = queue.clone();
+        let app = axum::Router::new().fallback(
+            move |method: axum::http::Method,
+                  uri: axum::http::Uri,
+                  headers: axum::http::HeaderMap,
+                  body: String| {
+                let captured = queue.lock().unwrap().pop_front().unwrap();
+                assert_eq!(method.as_str(), captured["method"].as_str().unwrap());
+                assert_eq!(uri.path(), captured["path"].as_str().unwrap());
+                assert_eq!(
+                    headers["content-type"],
+                    captured["request_content_type"].as_str().unwrap()
+                );
+                assert_eq!(body, captured["request"].as_str().unwrap());
+                assert!(!headers.contains_key("content-encoding"));
+                assert!(!headers.contains_key("x-content-encoding"));
+                async move {
+                    (
+                        axum::http::StatusCode::from_u16(
+                            captured["status"].as_u64().unwrap() as u16
+                        )
+                        .unwrap(),
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            captured["response_content_type"]
+                                .as_str()
+                                .unwrap()
+                                .to_owned(),
+                        )],
+                        captured["response"].as_str().unwrap().to_owned(),
+                    )
+                }
+            },
+        );
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let agent = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+        let session = "00000000-0000-4000-8000-000000000004".parse().unwrap();
+        let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        PresenceClient::new(&base)
+            .report_agent(session, region)
+            .await
+            .unwrap();
+        GridUserClient::new(&base)
+            .set_last_position(
+                agent,
+                region,
+                [128., 128., f32::from_bits(0x41cf_ae15)],
+                [0.; 3],
+            )
+            .await
+            .unwrap();
+        assert!(remaining.lock().unwrap().is_empty());
+        serving.abort();
+    }
 
     #[tokio::test]
     async fn presence_and_logout_forms_match_captured_csharp_exchanges() {
@@ -445,7 +534,7 @@ mod tests {
         ] {
             assert!(service_result(&ferroan_http::parse_xml_response(xml).unwrap()).is_err());
         }
-        assert!(logout_fields(agent, region, [f32::NAN, 0., 0.], [0.; 3]).is_err());
+        assert!(position_fields("loggedout", agent, region, [f32::NAN, 0., 0.], [0.; 3]).is_err());
     }
 
     #[tokio::test]

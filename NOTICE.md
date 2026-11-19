@@ -51,6 +51,8 @@ Q10f's region admission, configuration and service clients follow Tranquillity `
 
 Q10f URI normalization and failed-status handling additionally follow `Source/OpenSim.Framework/GridInfo.cs` (`OSHHTPHost`) and `WebUtil.cs` (`SynchronousRestFormsRequester`) at that same Tranquillity pin, retaining the BSD source notices.
 
+Q10g additionally follows the root-transition ordering in `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs` (`MakeRootAgent`, `CompleteMovement`) and the `DoOnMakeRootAgent` methods in the Presence/GridUser detectors above, with `PresenceServicesConnector.ReportAgent` and `GridUserServicesConnector.SetLastPosition`, at Tranquillity `858321883f5487a5d192d36ea9d7b90fa468310c`. The affected files retain their original BSD notices. The bot observer and online-state probes are original Ferroan test code.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

@@ -28,6 +28,112 @@ const CASES: &[&str] = &[
     "query-legacy",
 ];
 
+pub async fn online(
+    private_uri: &str,
+    directory: &Path,
+    ferroan: bool,
+    arrival: ferroan_bot::scenario::RootArrival,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut grid = fields("getgriduserinfo");
+        grid.insert("UserID".into(), Field::Str(arrival.agent_id.to_string()));
+        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid).await?;
+        let mut presence = fields("getagent");
+        presence.insert(
+            "SessionID".into(),
+            Field::Str(arrival.session_id.to_string()),
+        );
+        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence).await?;
+        if let (Some(Field::Map(grid)), Some(Field::Map(presence))) =
+            (grid.get("result"), presence.get("result"))
+        {
+            let position = match grid.get("LastPosition") {
+                Some(Field::Str(value)) => vector(value),
+                _ => None,
+            };
+            let look = match grid.get("LastLookAt") {
+                Some(Field::Str(value)) => vector(value),
+                _ => None,
+            };
+            if online_matches(grid, presence, &arrival) {
+                let observation = json!({"source":if ferroan {"ferroan"} else {"csharp"},"revision":PIN,"online":true,"presence_region":REGION,"last_region":REGION,"last_position":position,"last_look_at":look,"arrival_position":arrival.position,"arrival_look_at":arrival.look_at,"arrival_handle":arrival.region_handle});
+                fs::write(
+                    directory.join("root-arrival-online.json"),
+                    serde_json::to_vec_pretty(&observation).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                if ferroan {
+                    let baseline =
+                        read(&crate::repo_root().join("fixtures/root-arrival/exchanges.json"))?;
+                    for key in [
+                        "online",
+                        "presence_region",
+                        "last_region",
+                        "last_look_at",
+                        "arrival_look_at",
+                        "arrival_handle",
+                    ] {
+                        if observation[key] != baseline["online"][key] {
+                            return Err(format!("root-arrival {key} differs from C#"));
+                        }
+                    }
+                    for axis in 0..2 {
+                        if observation["last_position"][axis]
+                            != baseline["online"]["last_position"][axis]
+                        {
+                            return Err("root-arrival XY differs from C#".into());
+                        }
+                    }
+                }
+                return Ok("root arrival: Presence region and GridUser online/last region/position match current AgentMovementComplete; stored look is zero".into());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("root-arrival services did not settle to the current online circuit region and position".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn online_matches(
+    grid: &FieldMap,
+    presence: &FieldMap,
+    arrival: &ferroan_bot::scenario::RootArrival,
+) -> bool {
+    let text = |map: &FieldMap, key: &str, expected: &str| matches!(map.get(key), Some(Field::Str(value)) if value == expected);
+    let position = match grid.get("LastPosition") {
+        Some(Field::Str(value)) => vector(value),
+        _ => None,
+    };
+    let look = match grid.get("LastLookAt") {
+        Some(Field::Str(value)) => vector(value),
+        _ => None,
+    };
+    // Vector3.ToString uses Single.ToString(EnUsCulture). At the pinned .NET
+    // runtime those values round trip; compare parsed singles without epsilon.
+    text(grid, "Online", "True")
+        && text(grid, "UserID", &arrival.agent_id.to_string())
+        && text(presence, "UserID", &arrival.agent_id.to_string())
+        && text(presence, "RegionID", &arrival.region_id.to_string())
+        && text(grid, "LastRegionID", &arrival.region_id.to_string())
+        && position == Some(arrival.position)
+        && look == Some([0.0; 3])
+}
+
+pub(super) fn vector(text: &str) -> Option<[f32; 3]> {
+    let text = text.strip_prefix('<')?.strip_suffix('>')?;
+    let mut parts = text.split(',');
+    let mut vector = [0.0_f32; 3];
+    for value in &mut vector {
+        *value = parts.next()?.trim().parse().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+    }
+    parts.next().is_none().then_some(vector)
+}
+
 pub async fn offline(private_uri: &str) -> Result<(), String> {
     // ActivityDetector can finish after LogoutReply; observe bounded eventual
     // service state rather than accepting the viewer acknowledgement as proof.
@@ -282,9 +388,105 @@ pub fn generate(directory: &Path) -> Result<String, String> {
     Ok("region parity fixtures: six C# HTTP answers captured".into())
 }
 
+pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
+    let online = read(&directory.join("root-arrival-online.json"))?;
+    if online["source"] != "csharp" || online["revision"] != PIN {
+        return Err("root-arrival fixtures require pinned C# observations".into());
+    }
+    let marker = super::login_capture::root_arrival_marker(directory)?;
+    for key in ["arrival_position", "arrival_look_at", "arrival_handle"] {
+        if marker[key] != online[key] {
+            return Err(format!(
+                "online {key} does not match the captured C# arrival"
+            ));
+        }
+    }
+    let root_arrival = json!({"source":"csharp", "revision":PIN,"channel_version":marker["channel_version"],"services":super::login_capture::root_arrival_exchanges(directory)?,"online":online});
+    let target = crate::repo_root().join("fixtures/root-arrival");
+    fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    fs::write(
+        target.join("exchanges.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&root_arrival).map_err(|error| error.to_string())?
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(
+        "root-arrival fixtures: two C# HTTP exchanges and online service observation captured"
+            .into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn online_probe_requires_current_identity_region_exact_position_and_live_state() {
+        let fixture: Value =
+            serde_json::from_slice(include_bytes!("../../fixtures/root-arrival/exchanges.json"))
+                .unwrap();
+        let form = ferroan_http::parse_query_string(
+            fixture["services"]["griduser-setposition"]["request"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let Field::Str(position) = &form["Position"] else {
+            panic!("fixture position");
+        };
+        let arrival = ferroan_bot::scenario::RootArrival {
+            agent_id: uuid::Uuid::parse_str(AGENT).unwrap(),
+            session_id: uuid::Uuid::from_u128(4),
+            region_id: uuid::Uuid::parse_str(REGION).unwrap(),
+            position: [128.0, 128.0, f32::from_bits(0x41cf_ae15)],
+            look_at: [0.99, 0.042, 0.0],
+            region_handle: 1_099_511_628_032_000,
+        };
+        let grid: FieldMap = [
+            ("UserID", AGENT),
+            ("LastRegionID", REGION),
+            ("Online", "True"),
+            ("LastPosition", position),
+            ("LastLookAt", "<0, 0, 0>"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), Field::Str(v.into())))
+        .collect();
+        let presence: FieldMap = [("UserID", AGENT), ("RegionID", REGION)]
+            .into_iter()
+            .map(|(k, v)| (k.into(), Field::Str(v.into())))
+            .collect();
+        assert!(online_matches(&grid, &presence, &arrival));
+        for (key, value) in [
+            ("UserID", "wrong"),
+            ("LastRegionID", "00000000-0000-0000-0000-000000000000"),
+            ("Online", "False"),
+            ("LastPosition", "<128, 128, 25.96>"),
+            ("LastLookAt", "<0.99, 0.042, 0>"),
+        ] {
+            let mut stale = grid.clone();
+            stale.insert(key.into(), Field::Str(value.into()));
+            assert!(!online_matches(&stale, &presence, &arrival), "{key}");
+        }
+        for key in ["UserID", "RegionID"] {
+            let mut wrong = presence.clone();
+            wrong.insert(key.into(), Field::Str("wrong".into()));
+            assert!(!online_matches(&grid, &wrong, &arrival));
+        }
+        for invalid in ["128, 128, 0", "<0, 0>", "<0, 0, 0, 1>", "<NaN, 0, 0>"] {
+            assert!(vector(invalid).is_none());
+        }
+        assert_eq!(
+            fixture["online"]["last_position"],
+            fixture["online"]["arrival_position"]
+        );
+        assert_ne!(
+            fixture["online"]["last_look_at"],
+            fixture["online"]["arrival_look_at"]
+        );
+    }
 
     #[test]
     fn probes_keep_the_captured_request_shapes_and_double_precision() {
