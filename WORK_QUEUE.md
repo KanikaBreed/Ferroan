@@ -41,6 +41,8 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`.
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | READY after Q10e |
 | Q11 | P0.11: container images and the example compose grid | READY after Q10f |
+| Q10g | P2.0d4: root-arrival Presence and GridUser reporting | READY after Q10f |
+| Q10h | P2.0d5: the shared HTTP form client checks the status as C# does | READY after Q10g |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q13 |
@@ -89,6 +91,10 @@ Q10 historical blocker (#33, 18 November 2026, `feat/ferrobot-harness`; resolved
 The Q10 fix proposed in #33 (implemented as Q10a in #35) was for the manager to add a prerequisite for the Rust region to send the reliable arrival packet from Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs::MoveAgentIntoRegion` and its login call path at `858321883f5487a5d192d36ea9d7b90fa468310c`, carrying the actual agent/session, position/look, region handle, timestamp and channel/version. Require captured C# byte evidence and fresh `AgentMovementComplete` in `ferroan-bot` readiness. Requeue Q10 afterward. At that attempt Q11–Q39 were ineligible through their ordered dependency on Q10; no item was skipped into implementation.
 
 Q10a and Q10b were added on 18 November 2026 from the Q10 blocker and "Found while working". Q10a is the prerequisite the blocker proposed. Q10 then resumes from its preserved partial work. Q10b waits only on Q10a, so it still runs if Q10 blocks again. Q11 also needs Q10 through its TASKS.md dependencies.
+
+Q10g and Q10h (added 18 November 2026, from Q10f's Found while working) sit below Q11 in the table, but come first: Q11 depends on P0.10h, which is BLOCKED, so Q11 is not eligible until Q10 resumes. After Q10h, the next eligible items are Q14 onward (P2.0e to P2.0j), which do not depend on Q10.
+
+When Q10 resumes from #41: Q10f's PR uses TB5 for the C# trusted-host parsing bug. #41's logout race takes the next free TB number when its conflict with `main` is resolved.
 
 Q10 BLOCKED by the manager (18 November 2026): the live CI failure on #41 (C# standalone gets no `LogoutReply`; runs 44405800874 and 44408547716) is a confirmed Tranquillity login issue, and the maintainer has a C# fix coming. Do not investigate it further, and do not retry #41's live job. Leave #41 open as it is and continue with Q10d. When the fix is on Tranquillity `develop`, the manager queues a pin move. After that, Q10 resumes from #41 with the strict logout-reply check unchanged. When resuming, merge `main` into the branch and keep `main`'s versions of the Q10 and P0.10h status lines.
 
