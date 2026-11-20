@@ -141,6 +141,9 @@ jobs:
       - name: Stop the persistent region and asset service
         if: always()
         run: cargo xtask live down
+      - name: Build OpenSim.ConsoleClient and read a Ferroan console
+        if: success()
+        run: cargo xtask console-client
       - name: Build images and smoke the example grid
         if: success()
         run: cargo xtask docker smoke

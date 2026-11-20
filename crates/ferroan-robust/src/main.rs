@@ -40,8 +40,13 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let load = arguments()?;
     let resolved = load.load().map_err(|error| error.to_string())?;
+    let settings =
+        ferroan_log::Settings::from_config("ferroan-robust", &resolved.config, None, None)
+            .map_err(|error| error.to_string())?;
+    let log_guard = ferroan_log::install(&settings).map_err(|error| error.to_string())?;
     for warning in &resolved.warnings {
-        eprintln!("ferroan-robust: include not found: {}", warning.value);
+        let missing = &warning.value;
+        tracing::warn!("ferroan-robust: include not found: {missing}");
     }
     let port = network_port(&resolved.config).map_err(|error| error.to_string())?;
     let listen = listen_address(&resolved.config).map_err(|error| error.to_string())?;
@@ -71,7 +76,7 @@ fn run() -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             pools = pools.asset(http.clone());
             router = router.merge(http.into_router());
-            eprintln!("ferroan-robust: asset service on {listen}:{port}");
+            tracing::info!("ferroan-robust: asset service on {listen}:{port}");
         }
         if accounts {
             let http = AccountHttp::open(config)
@@ -79,7 +84,7 @@ fn run() -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             pools = pools.account(http.clone());
             router = router.merge(http.into_router());
-            eprintln!("ferroan-robust: user account service on {listen}:{port}");
+            tracing::info!("ferroan-robust: user account service on {listen}:{port}");
         }
         if aliases {
             let http = AliasHttp::open(config)
@@ -87,7 +92,10 @@ fn run() -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             pools = pools.alias(http.clone());
             router = router.merge(http.into_router());
-            eprintln!("ferroan-robust: user alias service on {listen}:{port}");
+            tracing::info!("ferroan-robust: user alias service on {listen}:{port}");
+        }
+        if let Some(console) = log_guard.console_router() {
+            router = router.merge(console);
         }
         router = router.merge(status::status_router(config));
         let meters = std::sync::Arc::new(status::RobustMeters::new(pools));

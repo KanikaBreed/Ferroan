@@ -1,0 +1,21 @@
+[package]
+name = "ferroan-log"
+description = "Logging hooks for Ferroan servers: stdout, LOGDIR, JSON, OTLP and the remote console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+ferroan-config = { path = "../ferroan-config" }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
+[lints]
+workspace = true

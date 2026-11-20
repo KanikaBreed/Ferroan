@@ -11,8 +11,10 @@ publish.workspace = true
 axum = "0.8"
 ferroan-config = { path = "../ferroan-config" }
 ferroan-http = { path = "../ferroan-http" }
+ferroan-log = { path = "../ferroan-log" }
 ferroan-services = { path = "../ferroan-services" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

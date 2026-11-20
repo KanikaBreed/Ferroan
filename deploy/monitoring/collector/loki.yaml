@@ -1,0 +1,39 @@
+# Default collector: OTLP from Ferroan and plain files under /var/log/ferroan
+# (container stdout copied or mounted there). Logs go to Loki. Traces and
+# metrics stay on the debug exporter; Loki's OTLP endpoint stores logs.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+  filelog:
+    include:
+      - /var/log/ferroan/*.log
+    start_at: beginning
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  otlphttp/loki:
+    endpoint: http://127.0.0.1:3100/otlp
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp, filelog]
+      processors: [batch]
+      exporters: [otlphttp/loki]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

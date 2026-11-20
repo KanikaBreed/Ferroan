@@ -728,6 +728,16 @@ async fn companion(
         .run_until_ready(&http, &login.seed_capability, Duration::from_secs(30))
         .await
         .map_err(|_| "companion handshake failed")?;
+    if let Err(error) = ferroan_bot::scan_login(
+        &harness.chat.password,
+        &login.session_id.to_string(),
+        &login.secure_session_id.to_string(),
+        &login.seed_capability,
+        &harness.region_log,
+    ) {
+        let _ = session.logout(Duration::from_secs(10)).await;
+        return Err(error);
+    }
     let result = exchange(&mut session, harness, api, ferrobot, lines).await;
     let logout = session.logout(Duration::from_secs(10)).await;
     result?;

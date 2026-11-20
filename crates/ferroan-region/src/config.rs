@@ -107,6 +107,8 @@ pub struct RegionConfig {
     pub library_file: Option<PathBuf>,
     pub cap_grants: CapGrantSet,
     pub monitoring: MonitoringSettings,
+    /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
+    pub logs: ferroan_log::Settings,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -325,6 +327,13 @@ impl RegionConfig {
             library_file: None,
             cap_grants: crate::caps_policy::cap_grants(server),
             monitoring: monitoring_settings(server)?,
+            logs: ferroan_log::Settings::from_config(
+                "ferroan-region",
+                server,
+                Some(name),
+                Some(id),
+            )
+            .map_err(log_config_error)?,
         })
     }
 
@@ -459,6 +468,29 @@ fn reject_unsupported_auth(config: &Config) -> Result<(), RegionConfigError> {
         }
     }
     Ok(())
+}
+
+fn log_config_error(error: ferroan_log::LogError) -> RegionConfigError {
+    match error {
+        ferroan_log::LogError::Format => {
+            value("Monitoring", "LogFormat", "must be json, plain or text")
+        }
+        ferroan_log::LogError::Endpoint => value(
+            "Monitoring",
+            "OtlpEndpoint",
+            "must be an http URL without credentials",
+        ),
+        ferroan_log::LogError::Origin => value(
+            "Network",
+            "ConsoleAllowedOrigin",
+            "is not a valid header value",
+        ),
+        ferroan_log::LogError::Directory(_)
+        | ferroan_log::LogError::Export(_)
+        | ferroan_log::LogError::AlreadyInstalled => {
+            value("Monitoring", "OtlpEndpoint", "could not be applied")
+        }
+    }
 }
 
 fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {

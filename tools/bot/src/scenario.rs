@@ -981,6 +981,13 @@ async fn enter(
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
         .await
         .map_err(|error| error.to_string())?;
+    crate::redact_scan::scan_login(
+        &account.password,
+        &response.session_id.to_string(),
+        &response.secure_session_id.to_string(),
+        &response.seed_capability,
+        &harness.region_log,
+    )?;
     Ok((session, response))
 }
 
