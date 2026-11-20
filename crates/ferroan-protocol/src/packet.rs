@@ -24,6 +24,8 @@
 //! matching `Helpers.ZeroDecode`. The send path keeps the zerocoded form only
 //! when it is not larger than the raw packet (`LLUDPServer.SendPacketData`).
 
+use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_ZERO_EXPANSION};
+
 use crate::{DecodeError, Msg, MsgId, Writer};
 
 pub struct PacketFlags;
@@ -85,7 +87,15 @@ fn zero_decode(src: &[u8], out: &mut Vec<u8>) -> Result<(), DecodeError> {
             return Err(DecodeError::Malformed("zero run missing a count"));
         };
         let add = count as usize;
-        if out.len() + add > MAX_ZERO_EXPANSION {
+        let expanded = out.len().saturating_add(add);
+        if expanded > MAX_ZERO_EXPANSION {
+            ferroan_diag::refuse(
+                UDP_ZERO_EXPANSION,
+                Kind::Hard,
+                MAX_ZERO_EXPANSION as u64,
+                expanded as u64,
+                "udp",
+            );
             return Err(DecodeError::Malformed("zero expansion too large"));
         }
         out.resize(out.len() + add, 0);
@@ -127,6 +137,13 @@ fn zero_encode(src: &[u8], out: &mut Vec<u8>) {
 /// Parse a raw datagram.
 pub fn parse_packet(data: &[u8]) -> Result<IncomingPacket, DecodeError> {
     if data.len() > MAX_DATAGRAM {
+        ferroan_diag::refuse(
+            UDP_DATAGRAM,
+            Kind::Hard,
+            MAX_DATAGRAM as u64,
+            data.len() as u64,
+            "udp",
+        );
         return Err(DecodeError::Malformed("packet too large"));
     }
     if data.len() < HEADER_SIZE + 1 {

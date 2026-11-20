@@ -46,6 +46,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
 use ferroan_client::{CapAnswer, CapExchange, CapService};
+use ferroan_diag::{
+    self, INVENTORY_FETCH_FOLDERS, INVENTORY_FETCH_ITEMS, INVENTORY_FETCH_LLSD, Kind,
+};
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_services::{Asset, content_type};
 use uuid::Uuid;
@@ -188,6 +191,7 @@ impl FetchCaps {
             return CapAnswer::miss();
         }
         let Ok(body) = from_xml(&exchange.body) else {
+            ferroan_diag::log_malformed(&exchange.name, &exchange.body);
             return llsd_ok(empty_folders());
         };
         let folders = body.get("folders");
@@ -195,6 +199,16 @@ impl FetchCaps {
             return llsd_ok(empty_folders());
         }
         if folders.as_array().len() > MAX_FOLDERS {
+            let agent = exchange.agent_id.to_string();
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: INVENTORY_FETCH_FOLDERS,
+                kind: Kind::Hard,
+                configured: MAX_FOLDERS as u64,
+                observed: folders.as_array().len() as u64,
+                action: ferroan_diag::Action::Refuse,
+                route: &exchange.name,
+                agent_id: Some(&agent),
+            });
             return refused();
         }
         let mut requested = Vec::new();
@@ -437,6 +451,7 @@ impl FetchCaps {
             return plain(StatusCode::NOT_FOUND, Vec::new());
         }
         let Ok(body) = from_xml(&exchange.body) else {
+            ferroan_diag::log_malformed(&exchange.name, &exchange.body);
             return refused();
         };
         let items = body.get("items");
@@ -444,6 +459,16 @@ impl FetchCaps {
             return refused();
         }
         if items.as_array().len() > MAX_ITEM_IDS {
+            let agent = exchange.agent_id.to_string();
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: INVENTORY_FETCH_ITEMS,
+                kind: Kind::Hard,
+                configured: MAX_ITEM_IDS as u64,
+                observed: items.as_array().len() as u64,
+                action: ferroan_diag::Action::Refuse,
+                route: &exchange.name,
+                agent_id: Some(&agent),
+            });
             return refused();
         }
         let mut ids = Vec::new();
@@ -974,6 +999,13 @@ fn empty_folders() -> Llsd {
 fn llsd_ok(body: Llsd) -> CapAnswer {
     let bytes = to_xml(&body);
     if bytes.len() > MAX_LLSD {
+        ferroan_diag::refuse(
+            INVENTORY_FETCH_LLSD,
+            Kind::Hard,
+            MAX_LLSD as u64,
+            bytes.len() as u64,
+            "inventory",
+        );
         return refused();
     }
     CapAnswer {

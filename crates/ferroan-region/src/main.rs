@@ -144,6 +144,15 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     // Bind both sockets before advertising the region. Early viewer datagrams
     // remain in the socket until Robust supplies the matching circuit.
     let meters = Arc::new(RegionMeters::new());
+    ferroan_diag::set_context("ferroan-region", &config.name);
+    ferroan_diag::set_configuration(&format!(
+        "server=ferroan-region name={} id={} http_bind={} udp_bind={}",
+        config.name, config.id, config.http_bind, config.udp_bind
+    ));
+    ferroan_diag::set_snapshot({
+        let meters = Arc::clone(&meters);
+        Arc::new(move || meters.diag_lines())
+    });
     let circuit = CircuitServer::bind_at(config.udp_bind)
         .await?
         .with_handshake(config.handshake.clone())

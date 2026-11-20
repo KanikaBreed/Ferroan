@@ -44,6 +44,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ferroan_diag::{self, EVENT_BYTES, EVENT_QUEUE, EVENT_QUEUE_BYTES, Kind};
 use ferroan_llsd::{Llsd, to_xml};
 use tokio::sync::{Notify, Semaphore};
 use tokio::time::Instant;
@@ -108,6 +109,13 @@ impl EventQueue {
         check_size(&event, 0, &mut 0, &mut 0)?;
         let encoded = to_xml(&event);
         if encoded.len() > MAX_EVENT_BYTES {
+            ferroan_diag::refuse(
+                EVENT_BYTES,
+                Kind::Hard,
+                MAX_EVENT_BYTES as u64,
+                encoded.len() as u64,
+                "event-queue",
+            );
             return Err(EventQueueError::EventLimit);
         }
         // to_xml always emits exactly one <llsd>...</llsd> wrapper.
@@ -119,12 +127,38 @@ impl EventQueue {
         if state.closed {
             return Err(EventQueueError::Closed);
         }
-        if state.events.len() >= MAX_EVENTS || state.bytes + inner.len() > MAX_QUEUE_BYTES {
+        if state.events.len() >= MAX_EVENTS {
+            ferroan_diag::refuse(
+                EVENT_QUEUE,
+                Kind::Soft,
+                MAX_EVENTS as u64,
+                state.events.len() as u64,
+                "event-queue",
+            );
+            return Err(EventQueueError::Full);
+        }
+        if state.bytes + inner.len() > MAX_QUEUE_BYTES {
+            ferroan_diag::refuse(
+                EVENT_QUEUE_BYTES,
+                Kind::Soft,
+                MAX_QUEUE_BYTES as u64,
+                (state.bytes + inner.len()) as u64,
+                "event-queue",
+            );
             return Err(EventQueueError::Full);
         }
         state.bytes += inner.len();
         state.events.push_back(inner);
+        let queued = state.events.len() as u64;
+        let queued_bytes = state.bytes as u64;
         drop(state);
+        ferroan_diag::observe(EVENT_QUEUE, MAX_EVENTS as u64, queued, "event-queue");
+        ferroan_diag::observe(
+            EVENT_QUEUE_BYTES,
+            MAX_QUEUE_BYTES as u64,
+            queued_bytes,
+            "event-queue",
+        );
         self.changed.notify_waiters();
         Ok(())
     }

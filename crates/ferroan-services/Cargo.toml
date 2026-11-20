@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 axum = "0.8"
 ferroan-config = { path = "../ferroan-config" }
+ferroan-diag = { path = "../ferroan-diag" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-http = { path = "../ferroan-http" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }

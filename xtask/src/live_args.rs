@@ -86,6 +86,7 @@ enum Command {
     RunningAssets { db: Database },
     Compare { service: String, db: Database },
     Fixture { kind: Fixture, path: String },
+    Diag { urls: Vec<String> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +145,7 @@ fn execute(command: Command) -> ExitCode {
         },
         Command::Compare { service, db } => compare_service(&service, db),
         Command::Fixture { kind, path } => fixture(kind, &path),
+        Command::Diag { urls } => crate::diag_fetch::run(&urls),
     }
 }
 
@@ -216,6 +218,9 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
         }
         ["persistent-grid-check"] => Ok(Command::PersistentGridCheck),
         ["down"] => Ok(Command::Down),
+        ["diag", rest @ ..] => Ok(Command::Diag {
+            urls: rest.iter().map(|url| (*url).to_owned()).collect(),
+        }),
         ["record-twice"] => Ok(Command::RecordTwice),
         ["run", rest @ ..] => parse_run(rest),
         ["compare", service, rest @ ..] => {

@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+ferroan-diag = { path = "../ferroan-diag" }
 indexmap = "2.11.4"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 thiserror = "2.0.21"

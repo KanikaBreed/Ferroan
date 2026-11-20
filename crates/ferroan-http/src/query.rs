@@ -34,6 +34,8 @@
 
 //! `ServerUtils.ParseQueryString` and `BuildQueryString`.
 
+use ferroan_diag::{self, HTTP_FIELDS, HTTP_LIST_ITEMS, HTTP_QUERY_BYTES, Kind};
+
 use crate::error::HttpError;
 use crate::value::{Field, FieldMap};
 use crate::{MAX_FIELDS, MAX_QUERY_BYTES};
@@ -168,6 +170,13 @@ pub fn parse_query_string_limited(
     max_fields: usize,
 ) -> Result<FieldMap, HttpError> {
     if query.len() > max_bytes {
+        ferroan_diag::refuse(
+            HTTP_QUERY_BYTES,
+            Kind::Hard,
+            max_bytes as u64,
+            query.len() as u64,
+            "query",
+        );
         return Err(HttpError::Limit {
             what: "query",
             limit: max_bytes,
@@ -196,6 +205,13 @@ pub fn parse_query_string_limited(
             match result.get_mut(bare) {
                 Some(Field::List(list)) => {
                     if list.len() >= MAX_LIST_ITEMS {
+                        ferroan_diag::refuse(
+                            HTTP_LIST_ITEMS,
+                            Kind::Hard,
+                            MAX_LIST_ITEMS as u64,
+                            (list.len() + 1) as u64,
+                            "query",
+                        );
                         return Err(HttpError::Limit {
                             what: "query list",
                             limit: MAX_LIST_ITEMS,
@@ -207,6 +223,13 @@ pub fn parse_query_string_limited(
                 Some(_) => {}
                 None => {
                     if result.len() >= max_fields {
+                        ferroan_diag::refuse(
+                            HTTP_FIELDS,
+                            Kind::Hard,
+                            max_fields as u64,
+                            (result.len() + 1) as u64,
+                            "query",
+                        );
                         return Err(HttpError::Limit {
                             what: "query fields",
                             limit: max_fields,
@@ -218,6 +241,13 @@ pub fn parse_query_string_limited(
             }
         } else if !result.contains_key(&name) {
             if result.len() >= max_fields {
+                ferroan_diag::refuse(
+                    HTTP_FIELDS,
+                    Kind::Hard,
+                    max_fields as u64,
+                    (result.len() + 1) as u64,
+                    "query",
+                );
                 return Err(HttpError::Limit {
                     what: "query fields",
                     limit: max_fields,

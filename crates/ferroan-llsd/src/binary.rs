@@ -8,6 +8,8 @@
 //
 //! LLSD binary format (`application/llsd+binary`), as used by mesh asset headers.
 
+use ferroan_diag::{self, Kind, LLSD_BINARY_DEPTH};
+
 use crate::number::{seconds_to_ticks, ticks_to_seconds};
 use crate::{Budget, Llsd, LlsdError, MAP_ENTRY_COST, Map, VALUE_COST};
 use uuid::Uuid;
@@ -91,6 +93,13 @@ impl<'a> Reader<'a> {
 
     fn value(&mut self, depth: usize) -> Result<Llsd, LlsdError> {
         if depth > MAX_DEPTH {
+            ferroan_diag::refuse(
+                LLSD_BINARY_DEPTH,
+                Kind::Hard,
+                MAX_DEPTH as u64,
+                depth as u64,
+                "llsd",
+            );
             return Err(LlsdError::Invalid("nesting too deep"));
         }
         let t = self.u8()?;

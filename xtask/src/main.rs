@@ -3,9 +3,10 @@
 
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! `check` verifies that every Markdown link to a local file resolves, then
-//! runs formatting, clippy (warnings denied) and the workspace tests. With
-//! `--docs-only` it stops after the Markdown check.
+//! `check` verifies that every Markdown link to a local file resolves and that
+//! every limit id is listed in `docs/LIMITS.md` and named from a call site,
+//! then runs formatting, clippy (warnings denied) and the workspace tests.
+//! With `--docs-only` it stops after the Markdown and limit-id checks.
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
 //! `verify`. The Linux live workflow runs `verify` against pinned references.
@@ -45,6 +46,7 @@ mod caps_fixtures;
 mod circuit_fixtures;
 mod config_oracle;
 mod console_client;
+mod diag_fetch;
 mod docker;
 mod ferrobot;
 mod ferrobot_build;
@@ -53,6 +55,8 @@ mod grid_smoke;
 mod grid_state;
 mod http_oracle;
 mod inventory_probe;
+mod limit_ids;
+mod limits_probe;
 mod live;
 mod live_args;
 mod live_proxy;
@@ -94,9 +98,11 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
        cargo xtask live persistent-grid-check
+       cargo xtask live diag [url...]
        cargo xtask live down
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
+       cargo xtask live run limits grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]
        cargo xtask live run ferrobot [grid [--region ferroan]]
        cargo xtask live run assets grid --region ferroan
@@ -176,7 +182,7 @@ fn main() -> ExitCode {
 
 fn check(docs_only: bool) -> ExitCode {
     let root = repo_root();
-    if !check_markdown(&root) {
+    if !check_markdown(&root) || !limit_ids::check(&root) {
         return ExitCode::FAILURE;
     }
     if docs_only {

@@ -21,6 +21,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use ferroan_diag::{self, Kind, UDP_RETRIES, UDP_UNACKED};
+
 pub const MAX_UNACKED: usize = 256;
 pub const DEDUPE_WINDOW: usize = 2048;
 
@@ -156,6 +158,9 @@ impl<T> ReliableWindow<T> {
         policy: Resend,
     ) -> Result<(), WindowFull> {
         if self.packets.len() >= MAX_UNACKED && !self.packets.contains_key(&sequence) {
+            let count = self.packets.len() as u64;
+            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
+            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
             return Err(WindowFull {
                 count: self.packets.len(),
             });
@@ -169,6 +174,12 @@ impl<T> ReliableWindow<T> {
                 policy,
                 retry_limit: Some(policy.max_retries),
             },
+        );
+        ferroan_diag::observe(
+            UDP_UNACKED,
+            MAX_UNACKED as u64,
+            self.packets.len() as u64,
+            "udp",
         );
         Ok(())
     }
@@ -226,17 +237,18 @@ impl<T: Clone> ReliableWindow<T> {
             resend: Vec::new(),
             dropped: Vec::new(),
         };
+        let mut drop_limit = Resend::DEFAULT.max_retries;
         for (&sequence, packet) in &mut self.packets {
             if now.saturating_duration_since(packet.sent)
                 < packet.policy.timeout.unwrap_or(fallback)
             {
                 continue;
             }
-            if packet
-                .retry_limit
-                .is_some_and(|limit| packet.retries >= limit)
+            if let Some(limit) = packet.retry_limit
+                && packet.retries >= limit
             {
                 batch.dropped.push(sequence);
+                drop_limit = limit;
             } else {
                 packet.retries = packet.retries.saturating_add(1);
                 packet.sent = now;
@@ -244,6 +256,15 @@ impl<T: Clone> ReliableWindow<T> {
             }
         }
         self.acknowledge(batch.dropped.iter().copied());
+        if !batch.dropped.is_empty() {
+            ferroan_diag::drop_bound(
+                UDP_RETRIES,
+                Kind::Soft,
+                u64::from(drop_limit),
+                batch.dropped.len() as u64,
+                "udp",
+            );
+        }
         batch
     }
 }

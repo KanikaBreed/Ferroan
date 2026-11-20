@@ -12,6 +12,7 @@
 //! instructions, DOCTYPE skipping and the predefined/numeric entities.
 //! It is intentionally strict about structure but tolerant about whitespace.
 
+use ferroan_diag::{self, Kind, LLSD_XML_DEPTH};
 use std::fmt;
 
 const MAX_DEPTH: usize = 256;
@@ -158,6 +159,13 @@ impl<'a> Parser<'a> {
 
     fn element(&mut self, depth: usize) -> Result<Element, XmlError> {
         if depth > MAX_DEPTH {
+            ferroan_diag::refuse(
+                LLSD_XML_DEPTH,
+                Kind::Hard,
+                MAX_DEPTH as u64,
+                depth as u64,
+                "llsd",
+            );
             return Err(self.err("nesting too deep"));
         }
         if self.peek() != Some(b'<') {

@@ -12,6 +12,8 @@ use ferroan_llsd::{Llsd, from_xml, to_xml};
 use reqwest::header::CONTENT_TYPE;
 use std::time::Duration;
 
+use ferroan_diag::{self, HTTP_RESPONSE_BODY, Kind};
+
 use crate::MAX_XML_CHARS;
 use crate::error::{HttpError, scrub};
 use crate::query::build_query_string;
@@ -167,6 +169,13 @@ async fn bounded_response_bytes(
         };
         let next = buf.len().saturating_add(chunk.len());
         if next > limit {
+            ferroan_diag::refuse(
+                HTTP_RESPONSE_BODY,
+                Kind::Hard,
+                limit as u64,
+                next as u64,
+                "reply",
+            );
             return Err(HttpError::Limit {
                 what: "reply",
                 limit,

@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 axum = "0.8"
 ferroan-config = { path = "../ferroan-config" }
+ferroan-diag = { path = "../ferroan-diag" }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }

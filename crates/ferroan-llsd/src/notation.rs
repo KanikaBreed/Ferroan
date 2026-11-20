@@ -13,6 +13,8 @@
 //! LGPL 2.1): same tokens, delimiters and string escapes. Parsing stops after
 //! the first value; trailing bytes (the sender's NUL) are ignored.
 
+use ferroan_diag::{self, Kind, LLSD_NOTATION_DEPTH};
+
 use crate::{Budget, Llsd, LlsdError, MAP_ENTRY_COST, Map, VALUE_COST};
 use uuid::Uuid;
 
@@ -59,6 +61,13 @@ impl<'a> Parser<'a> {
 
     fn value(&mut self, depth: usize) -> Result<Llsd, LlsdError> {
         if depth == 0 {
+            ferroan_diag::refuse(
+                LLSD_NOTATION_DEPTH,
+                Kind::Hard,
+                MAX_DEPTH as u64,
+                (MAX_DEPTH as u64).saturating_add(1),
+                "llsd",
+            );
             return Err(LlsdError::Invalid("notation nested too deeply"));
         }
         self.skip_space();

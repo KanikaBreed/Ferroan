@@ -587,15 +587,18 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if ferroan
         && !matches!(
             scenario,
-            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets"
+            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets" | "limits"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory and assets scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets and limits scenarios"
                 .to_string(),
         );
     }
-    if !matches!(scenario, "neighbour" | "caps" | "ferrobot")
+    if scenario == "limits" && !ferroan {
+        return Err("the limits scenario runs on the Ferroan region".to_string());
+    }
+    if !matches!(scenario, "neighbour" | "caps" | "ferrobot" | "limits")
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -904,6 +907,30 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 // Read the complete proxy evidence after grid.stop drains it.
                 http: Vec::new(),
             })
+    } else if scenario == "limits" {
+        if !ferroan {
+            return Err("the limits scenario runs on the Ferroan region".to_string());
+        }
+        let Some(metrics_port) = region_metrics else {
+            return Err("the limits scenario needs the region metrics listener".to_string());
+        };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|error| format!("could not start limits runtime: {error}"))?;
+        let line = runtime.block_on(crate::limits_probe::run(
+            &format!("http://{ROBUST_BIND}:{robust_public}/"),
+            &estate,
+            home_port,
+            &format!("http://127.0.0.1:{metrics_port}"),
+            &home_log,
+            &format!("http://{ADVERTISED}:{private_proxy}"),
+        ))?;
+        Ok(BotReport {
+            lines: line,
+            http: Vec::new(),
+        })
     } else {
         let status = region_metrics.map(|port| {
             (
@@ -988,6 +1015,16 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         Ok(())
     };
+    let failed = report.is_err()
+        || relay_result.is_err()
+        || scrape.is_err()
+        || smoke_logs.is_err()
+        || redaction.is_err();
+    let diag_note = if failed && ferroan {
+        collect_diag(region_metrics, robust_metrics)
+    } else {
+        String::new()
+    };
     let cleanup = grid.stop();
     let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction) {
         (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(())) => {
@@ -1002,7 +1039,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             report
         }
         (report, relay, cleanup, scrape, smoke, redaction) => {
-            return Err([
+            let mut parts = [
                 report.err(),
                 relay.err(),
                 cleanup.err(),
@@ -1012,8 +1049,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             ]
             .into_iter()
             .flatten()
-            .collect::<Vec<_>>()
-            .join("\n"));
+            .collect::<Vec<_>>();
+            if !diag_note.is_empty() {
+                parts.push(diag_note);
+            }
+            return Err(parts.join("\n"));
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
@@ -1025,6 +1065,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let capture =
             live::finish_capture(&root.join("capture-udp.cap"), &http, &[&estate, &chat])?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
+    } else if ferroan && scenario == "limits" {
+        Ok(format!("{}\n{proxy_report}", report.lines))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
         let arrival = if scenario == "login" {
@@ -1044,6 +1086,37 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             &[&estate, &chat],
         )?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_diag(region: Option<u16>, robust: Option<u16>) -> String {
+    let dir = live::live_root().join("diag");
+    if let Err(error) = fs::create_dir_all(&dir) {
+        return format!("diag dir: {error}");
+    }
+    let mut notes = Vec::new();
+    for (name, port) in [("region", region), ("robust", robust)] {
+        let Some(port) = port else {
+            continue;
+        };
+        let base = format!("http://127.0.0.1:{port}");
+        match http_get_url(&base, "/diag") {
+            Ok((200, body)) => {
+                let path = dir.join(format!("{name}.txt"));
+                match fs::write(&path, body) {
+                    Ok(()) => notes.push(format!("{name} diag {}", path.display())),
+                    Err(error) => notes.push(format!("{name} diag write: {error}")),
+                }
+            }
+            Ok((code, _)) => notes.push(format!("{name} diag status {code}")),
+            Err(error) => notes.push(format!("{name} diag failed: {error}")),
+        }
+    }
+    if notes.is_empty() {
+        "diag: no metrics listener".to_owned()
+    } else {
+        notes.join("; ")
     }
 }
 

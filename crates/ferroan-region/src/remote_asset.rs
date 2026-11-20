@@ -35,6 +35,7 @@
 
 use std::time::Duration;
 
+use ferroan_diag::{self, ASSET_REMOTE_BODY, Kind};
 use ferroan_services::{Asset, decode_asset, encode_asset};
 use uuid::Uuid;
 
@@ -112,15 +113,30 @@ impl AssetClient {
 }
 
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, AssetFailure> {
-    if response
+    if let Some(length) = response
         .content_length()
-        .is_some_and(|length| length > MAX_ASSET_BODY as u64)
+        .filter(|length| *length > MAX_ASSET_BODY as u64)
     {
+        ferroan_diag::refuse(
+            ASSET_REMOTE_BODY,
+            Kind::Hard,
+            MAX_ASSET_BODY as u64,
+            length,
+            "asset",
+        );
         return Err(AssetFailure);
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| AssetFailure)? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_ASSET_BODY {
+        let next = bytes.len().saturating_add(chunk.len());
+        if next > MAX_ASSET_BODY {
+            ferroan_diag::refuse(
+                ASSET_REMOTE_BODY,
+                Kind::Hard,
+                MAX_ASSET_BODY as u64,
+                next as u64,
+                "asset",
+            );
             return Err(AssetFailure);
         }
         bytes.extend_from_slice(&chunk);

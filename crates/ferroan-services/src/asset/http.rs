@@ -32,6 +32,7 @@ use axum::extract::{DefaultBodyLimit, OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use ferroan_diag::{self, HTTP_ASSET_BODY, Kind};
 use ferroan_http::MAX_XML_CHARS;
 
 use super::model::{MAPTILE, parse_id};
@@ -324,7 +325,19 @@ fn too_large() -> Response {
 async fn read_body(limit: usize, body: Body) -> Option<axum::body::Bytes> {
     // `None` means the body exceeded `limit`. A `Result` whose error is a
     // `Response` trips clippy 1.99 `result_large_err`.
-    axum::body::to_bytes(body, limit).await.ok()
+    match axum::body::to_bytes(body, limit).await {
+        Ok(bytes) => Some(bytes),
+        Err(_) => {
+            ferroan_diag::refuse(
+                HTTP_ASSET_BODY,
+                Kind::Hard,
+                limit as u64,
+                (limit as u64).saturating_add(1),
+                "asset",
+            );
+            None
+        }
+    }
 }
 
 impl AssetStore {

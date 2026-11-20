@@ -18,6 +18,9 @@
 //! is set; Ferroan writes the decimal number so the row can still be fetched.
 //! `ContentType` is derived from `Type`.
 
+use ferroan_diag::{
+    self, ASSET_XML_DEPTH, ASSET_XML_ELEMENTS, ASSET_XML_NAME, HTTP_XML_CHARS, Kind,
+};
 use ferroan_http::MAX_XML_CHARS;
 use uuid::Uuid;
 
@@ -376,6 +379,13 @@ struct Parser<'a> {
 
 fn parse_document(bytes: &[u8]) -> Result<Node, XmlError> {
     if bytes.len() > MAX_XML_CHARS {
+        ferroan_diag::refuse(
+            HTTP_XML_CHARS,
+            Kind::Hard,
+            MAX_XML_CHARS as u64,
+            bytes.len() as u64,
+            "asset",
+        );
         return Err(XmlError::Limit);
     }
     let bytes = bytes.strip_prefix(&BOM).unwrap_or(bytes);
@@ -439,7 +449,24 @@ impl<'a> Parser<'a> {
     }
 
     fn element(&mut self) -> Result<Node, XmlError> {
-        if self.depth >= MAX_DEPTH || self.elements >= MAX_ELEMENTS {
+        if self.depth >= MAX_DEPTH {
+            ferroan_diag::refuse(
+                ASSET_XML_DEPTH,
+                Kind::Hard,
+                MAX_DEPTH as u64,
+                self.depth as u64,
+                "asset",
+            );
+            return Err(XmlError::Limit);
+        }
+        if self.elements >= MAX_ELEMENTS {
+            ferroan_diag::refuse(
+                ASSET_XML_ELEMENTS,
+                Kind::Hard,
+                MAX_ELEMENTS as u64,
+                self.elements as u64,
+                "asset",
+            );
             return Err(XmlError::Limit);
         }
         self.depth += 1;
@@ -527,6 +554,13 @@ impl<'a> Parser<'a> {
             self.bump()?;
         }
         if self.index - start > 128 {
+            ferroan_diag::refuse(
+                ASSET_XML_NAME,
+                Kind::Hard,
+                128,
+                (self.index - start) as u64,
+                "asset",
+            );
             return Err(XmlError::Limit);
         }
         Ok(self.text[start..self.index].to_string())

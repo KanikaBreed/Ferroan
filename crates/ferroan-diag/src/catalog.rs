@@ -1,0 +1,47 @@
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Stable limit ids. `docs/LIMITS.md` must list every one, and `cargo xtask
+//! check` fails when a const here is missing from that file or from a call site.
+
+pub const HTTP_POST_BODY: &str = "http.post-body";
+pub const HTTP_ASSET_BODY: &str = "http.asset-body";
+pub const HTTP_XML_CHARS: &str = "http.xml-chars";
+pub const HTTP_XML_DEPTH: &str = "http.xml-depth";
+pub const HTTP_QUERY_BYTES: &str = "http.query-bytes";
+pub const HTTP_FIELDS: &str = "http.fields";
+pub const HTTP_LIST_ITEMS: &str = "http.list-items";
+pub const HTTP_RESPONSE_BODY: &str = "http.response-bytes";
+pub const INVENTORY_FETCH_FOLDERS: &str = "inventory.fetch-folders";
+pub const INVENTORY_FETCH_ITEMS: &str = "inventory.fetch-items";
+pub const INVENTORY_FETCH_LLSD: &str = "inventory.fetch-llsd";
+pub const INVENTORY_REPLY: &str = "inventory.reply";
+pub const UDP_DATAGRAM: &str = "udp.datagram";
+pub const UDP_ZERO_EXPANSION: &str = "udp.zero-expansion";
+pub const UDP_UNACKED: &str = "udp.unacked";
+pub const UDP_RETRIES: &str = "udp.retries";
+pub const EVENT_BYTES: &str = "event.bytes";
+pub const EVENT_QUEUE: &str = "event.queue";
+pub const EVENT_QUEUE_BYTES: &str = "event.queue-bytes";
+pub const CONTROL_HOSTS: &str = "control.hosts";
+pub const CONTROL_HOST_BYTES: &str = "control.host-bytes";
+pub const CONTROL_ADDRESSES: &str = "control.addresses";
+pub const TIMER_MILLISECONDS: &str = "timer.milliseconds";
+pub const TIMER_SECONDS: &str = "timer.seconds";
+pub const LIBRARY_FILES: &str = "library.files";
+pub const LIBRARY_FILE_BYTES: &str = "library.file-bytes";
+pub const LIBRARY_TOTAL_BYTES: &str = "library.total-bytes";
+pub const ASSET_REMOTE_BODY: &str = "asset.remote-body";
+pub const ASSET_XML_DEPTH: &str = "asset.xml-depth";
+pub const ASSET_XML_ELEMENTS: &str = "asset.xml-elements";
+pub const ASSET_XML_NAME: &str = "asset.xml-name";
+pub const OTLP_QUEUE: &str = "otlp.queue";
+pub const LLSD_PARSED_BYTES: &str = "llsd.parsed-bytes";
+pub const LLSD_BINARY_DEPTH: &str = "llsd.binary-depth";
+pub const LLSD_XML_DEPTH: &str = "llsd.xml-depth";
+pub const LLSD_NOTATION_DEPTH: &str = "llsd.notation-depth";
+pub const DB_POOL: &str = "db.pool";
+pub const TEXTURE_BYTES: &str = "texture.bytes";
+pub const TEXTURE_FACES: &str = "texture.faces";
+pub const TEXTURE_BITFIELD: &str = "texture.bitfield";
+pub const EXTRA_BYTES: &str = "extra.bytes";

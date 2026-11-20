@@ -108,6 +108,8 @@ jobs:
           cargo xtask live run all grid
       - name: Check login through Robust onto the Ferroan region
         run: cargo xtask live run login grid --region ferroan
+      - name: Trip POST-body, datagram and fetch-folder limits
+        run: cargo xtask live run limits grid --region ferroan
       - name: Check seed and held event polls against C# and Ferroan
         run: |
           set -euo pipefail
@@ -147,3 +149,13 @@ jobs:
       - name: Build images and smoke the example grid
         if: success()
         run: cargo xtask docker smoke
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true

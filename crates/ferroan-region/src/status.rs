@@ -133,6 +133,18 @@ impl RegionMeters {
         self.udp.clone()
     }
 
+    /// Circuits, agent counts and UDP totals for a diagnostic dump.
+    pub fn diag_lines(&self) -> String {
+        format!(
+            "circuits: {}\nroot_agents: {}\nchild_agents: {}\npackets_in: {}\nunacked: {}\n",
+            self.circuits.load(Ordering::Relaxed),
+            self.root_agents.load(Ordering::Relaxed),
+            self.child_agents.load(Ordering::Relaxed),
+            self.udp.packets_in.load(Ordering::Relaxed),
+            self.udp.unacked.load(Ordering::Relaxed),
+        )
+    }
+
     pub fn set_managed_prefix(&self, prefix: &str) {
         *self
             .managed_prefix
@@ -249,6 +261,7 @@ pub fn region_router(state: StatusState) -> Router {
 pub fn metrics_router(meters: Arc<RegionMeters>) -> Router {
     Router::new()
         .route("/metrics", get(metrics))
+        .route("/diag", get(diag))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .with_state(meters)
@@ -491,6 +504,14 @@ async fn metrics(State(meters): State<Arc<RegionMeters>>) -> Response {
     )
 }
 
+async fn diag() -> Response {
+    raw(
+        StatusCode::OK,
+        Some("text/plain; charset=utf-8"),
+        ferroan_diag::render(),
+    )
+}
+
 async fn healthz() -> Response {
     raw(StatusCode::OK, Some("text/plain"), "ok\n")
 }
@@ -620,6 +641,7 @@ fn prometheus(meters: &RegionMeters) -> String {
         "1 after the region is registered with the grid.",
         registered,
     );
+    text.push_str(&ferroan_diag::metrics());
     text
 }
 
