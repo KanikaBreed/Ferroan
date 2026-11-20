@@ -55,6 +55,10 @@ pub fn run(scenario: &str) -> ExitCode {
     finish(run_inner(scenario))
 }
 
+pub fn record_twice() -> ExitCode {
+    finish(record_twice_inner())
+}
+
 pub(crate) fn finish(result: Result<String, String>) -> ExitCode {
     match result {
         Ok(message) => {
@@ -112,6 +116,17 @@ fn run_inner(scenario: &str) -> Result<String, String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = scenario;
+        Err("cargo xtask live runs on Linux".to_string())
+    }
+}
+
+fn record_twice_inner() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        record_twice_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -661,6 +676,70 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         &[&started.password, &outcome.chat_password],
     )?;
     Ok(format!("{}\n{capture}", outcome.report))
+}
+
+#[cfg(target_os = "linux")]
+fn record_twice_linux() -> Result<String, String> {
+    if ferroan_bot::scenario::selection("login").is_none() {
+        return Err("unknown scenario login".to_string());
+    }
+    if let Some(pid) = standalone_is_up()? {
+        return Err(format!(
+            "the region is already up (pid {pid}); cargo xtask live down stops it"
+        ));
+    }
+    ensure_region_built()?;
+    let started_at = Instant::now();
+    let _state = crate::grid_state::claim()?;
+    let mut started = start_region(true, None, true)?;
+    let mut secrets = vec![started.password.clone()];
+    let outcome: Result<(String, String, Vec<u8>), String> = (|| {
+        let chat_password = generate_password()?;
+        secrets.push(chat_password.clone());
+        create_chat_user(&mut started, &chat_password)?;
+        let first = run_scenarios_with_accounts(
+            started.public_port,
+            &started.password,
+            &chat_password,
+            &started.log,
+            "login",
+        )?;
+        let second = run_scenarios_with_accounts(
+            started.public_port,
+            &started.password,
+            &chat_password,
+            &started.log,
+            "login",
+        )?;
+        let bytes = fs::read(capture_path())
+            .map_err(|error| format!("could not read the region UDP capture: {error}"))?;
+        Ok((first.report, second.report, bytes))
+    })();
+    let cleanup = stop_started(&mut started);
+    let secret_refs: Vec<&str> = secrets.iter().map(|secret| secret.as_str()).collect();
+    let (first, second, bytes) = match outcome {
+        Ok(value) => {
+            cleanup.map_err(|error| redact_secrets(&error, &secret_refs))?;
+            value
+        }
+        Err(error) => {
+            let mut text = redact_secrets(&error, &secret_refs);
+            if let Err(cleanup) = cleanup {
+                text.push('\n');
+                text.push_str(&redact_secrets(&cleanup, &secret_refs));
+            }
+            return Err(text);
+        }
+    };
+    let seconds = started_at.elapsed().as_secs();
+    match crate::twice::compare_capture(&bytes) {
+        Ok(report) => Ok(format!(
+            "{first}\n{second}\n{report}\nrecord-twice: {seconds}s"
+        )),
+        Err(error) => Err(format!(
+            "{first}\n{second}\n{error}\nrecord-twice: {seconds}s"
+        )),
+    }
 }
 
 #[cfg(target_os = "linux")]

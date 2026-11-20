@@ -103,6 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo xtask live build
+          cargo xtask live record-twice
           cargo xtask live run all
           cargo xtask live run all grid
       - name: Check login through Robust onto the Ferroan region

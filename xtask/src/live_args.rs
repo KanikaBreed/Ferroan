@@ -82,6 +82,7 @@ enum Command {
     PersistentGridCheck,
     Down,
     Run(RunSpec),
+    RecordTwice,
     RunningAssets { db: Database },
     Compare { service: String, db: Database },
     Fixture { kind: Fixture, path: String },
@@ -136,6 +137,7 @@ fn execute(command: Command) -> ExitCode {
         Command::PersistentGridCheck => crate::grid_smoke::run(),
         Command::Down => live::down(),
         Command::Run(spec) => run_spec(spec),
+        Command::RecordTwice => live::record_twice(),
         Command::RunningAssets { db } => match db.require_ready() {
             Ok(()) => live::run_running_assets(),
             Err(error) => live::finish(Err(error)),
@@ -214,6 +216,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
         }
         ["persistent-grid-check"] => Ok(Command::PersistentGridCheck),
         ["down"] => Ok(Command::Down),
+        ["record-twice"] => Ok(Command::RecordTwice),
         ["run", rest @ ..] => parse_run(rest),
         ["compare", service, rest @ ..] => {
             if service.starts_with('-') {
@@ -476,6 +479,8 @@ mod tests {
     #[test]
     fn existing_live_forms_still_parse() {
         assert!(matches!(parse(&["build"]), Ok(Command::Build)));
+        assert!(matches!(parse(&["record-twice"]), Ok(Command::RecordTwice)));
+        assert!(parse(&["record-twice", "login"]).is_err());
         assert!(matches!(
             parse(&["up"]),
             Ok(Command::Up {
