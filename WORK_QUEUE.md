@@ -63,7 +63,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | DONE (#108) |
 | Q10v | Pin5: move the Tranquillity pin to the maintainer's `dev-build` roll-up `c70fee2` (28 open upstream PRs, TB1 and TB10 to TB18 fixed) | DONE (#112) |
 | Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | DONE (#114) |
-| Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | READY after Q10u |
+| Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | READY after Q10u |
+| Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | READY after Q10x |
+| Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | READY after Q10y |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | READY after Q10w |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
@@ -201,6 +203,8 @@ Q10s5 rule revised (manager, 20 November 2026): the block is right, and the faul
 Q10s5 (20 November 2026, `feat/record-twice`): three local pairs at pin `f67db54399` passed in 17s, 15s and 17s after the region binary existed. `KillObject` is reported, not an exact count: one healthy pair had outbound counts 1 and 0. `RegionHandshakeReply` and `AgentMovementComplete` may swap. Arrival Z is wildcarded. The comparison is on the live job. PR #103. Windows and macOS checks on `0c5cfc5` failed because the comparator is only called on Linux; `twice.rs` allows that unused code off Linux, as `inventory_probe.rs` does, and its tests still run.
 
 Proposed fix: the maintainer names the messages whose order and count the report compares. The handshake through `AvatarAnimation`, plus `LogoutRequest` and `LogoutReply`, matched. Timer traffic (`StartPingCheck`, `CompletePingCheck`, `CoarseLocationUpdate`, `SimStats`, `SimulatorViewerTimeMessage`) and the bulk sends that race the client's `PacketAck` (`ParcelOverlay`, `LayerData`, `ImprovedTerseObjectUpdate`) did not keep a stable order. Until that set is named, do not put the comparison on the required live job.
+
+Q10x (manager, 20 November 2026, at the maintainer's request): CI is the slowest part of every item, and docs-only PRs wait the full 32-minute live run. Q10x makes docs-only PRs pass in under a minute and splits the live job into parallel jobs, with the four required check names unchanged. It goes straight after Q10u so every later item gets the faster CI. Q10y then moves the heaviest of the new jobs (images and docker smoke) to the maintainer's 8-core Arch machine, behind the `FERROAN_SELF_HOSTED` variable and never for fork PRs; the maintainer registers the runner.
 
 Q13c (manager, 20 November 2026, at the maintainer's request for a code review): a review of the code PRs merged today found that raw request bytes can carry session ids into the diagnostics ring, dumps and crash files, plus four unbounded or lossy pieces in logging and metrics. Each finding was checked against the code; the list is the P0.13c row. It comes straight after Q10w because the first one leaks secrets into files the maintainer will share when reporting problems.
 
