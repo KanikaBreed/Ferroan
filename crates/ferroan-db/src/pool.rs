@@ -47,6 +47,16 @@ impl std::fmt::Debug for Pool {
 }
 
 impl Pool {
+    /// Connections in the pool, then how many of those are idle.
+    pub fn occupancy(&self) -> (u32, u32) {
+        let (open, idle) = match &self.inner {
+            Inner::Sqlite(pool) => (pool.size(), pool.num_idle()),
+            Inner::Mysql(pool) => (pool.size(), pool.num_idle()),
+            Inner::Postgres(pool) => (pool.size(), pool.num_idle()),
+        };
+        (open, u32::try_from(idle).unwrap_or(u32::MAX))
+    }
+
     /// The SQLite pool, when this connection is SQLite.
     pub fn sqlite(&self) -> Option<&sqlx::sqlite::SqlitePool> {
         match &self.inner {

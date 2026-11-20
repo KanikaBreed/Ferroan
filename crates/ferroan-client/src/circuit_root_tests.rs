@@ -266,6 +266,7 @@ async fn held_reporting_keeps_transport_running_and_allows_completion_logout_or_
                     ack_timeout: Duration::from_secs(10),
                     ..CircuitTiming::default()
                 },
+                None,
                 ServeExtra {
                     root_arrival: Some(notify),
                     connected: None,

@@ -51,6 +51,9 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{AcceptedAgent, SimulationState};
+use ferroan_region::status::{
+    RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
+};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
@@ -137,11 +140,17 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut shutdown = tokio::spawn(shutdown_signal()?);
     // Bind both sockets before advertising the region. Early viewer datagrams
     // remain in the socket until Robust supplies the matching circuit.
+    let meters = Arc::new(RegionMeters::new());
     let circuit = CircuitServer::bind_at(config.udp_bind)
         .await?
         .with_handshake(config.handshake.clone())
-        .with_timing(config.circuit_timing)?;
+        .with_timing(config.circuit_timing)?
+        .with_udp_counters(meters.udp());
     let listener = TcpListener::bind(config.http_bind).await?;
+    let metrics_listener = match config.monitoring.metrics_listen {
+        Some(listen) => Some(TcpListener::bind(listen).await?),
+        None => None,
+    };
     // PresenceDetector.AddRegion and ActivityDetector.AddRegion clear users
     // stranded by a previous process. Finish before exposing admission: stale
     // Robust registration may still address this listener. A refusal is
@@ -159,8 +168,21 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         Some(fetch.service()),
     )?;
     let (accepted, agents) = mpsc::channel(1);
-    let simulation = SimulationState::new(&config, caps.clone(), accepted);
-    let app = simulation.clone().router().merge(caps.router());
+    let simulation = SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    let status = StatusState::new(
+        config.id,
+        config.name.clone(),
+        &config.monitoring,
+        meters.clone(),
+    );
+    let app = with_request_counts(
+        simulation
+            .clone()
+            .router()
+            .merge(caps.router())
+            .merge(region_router(status)),
+        meters.clone(),
+    );
     let (stop_http, stopped) = oneshot::channel();
     let mut http = tokio::spawn(async move {
         axum::serve(
@@ -172,13 +194,35 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         })
         .await
     });
+    let (stop_metrics, mut metrics_task) = if let Some(listener) = metrics_listener {
+        let metrics = metrics_router(meters.clone());
+        let (stop_metrics, stopped_metrics) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            axum::serve(ferroan_http::accepted_nodelay(listener), metrics)
+                .with_graceful_shutdown(async {
+                    let _ = stopped_metrics.await;
+                })
+                .await
+        });
+        (Some(stop_metrics), Some(task))
+    } else {
+        (None, None)
+    };
     let grid = GridClient::new(&config);
     if let Err(error) = grid.register(&config).await {
         let _ = stop_http.send(());
         http.abort();
         let _ = http.await;
+        if let Some(stop) = stop_metrics {
+            let _ = stop.send(());
+        }
+        if let Some(task) = metrics_task.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
         return Err(error.into());
     }
+    meters.set_registered(true);
     println!(
         "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
         config.name
@@ -231,7 +275,20 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     }
     // PresenceDetector.RemoveRegion. A failure is logged and shutdown continues.
     notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;
+    meters.set_registered(false);
     let deregistered = grid.deregister(config.id).await;
+    if let Some(stop) = stop_metrics {
+        let _ = stop.send(());
+    }
+    if let Some(task) = metrics_task.as_mut()
+        && !task.is_finished()
+        && tokio::time::timeout(Duration::from_secs(5), &mut *task)
+            .await
+            .is_err()
+    {
+        task.abort();
+        let _ = task.await;
+    }
     let _ = stop_http.send(());
     if !http.is_finished()
         && tokio::time::timeout(Duration::from_secs(5), &mut http)

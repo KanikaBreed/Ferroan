@@ -106,6 +106,22 @@ pub struct RegionConfig {
     /// Resolved by [`Self::load`] against the region directory. [`Self::from_configs`] leaves this empty.
     pub library_file: Option<PathBuf>,
     pub cap_grants: CapGrantSet,
+    pub monitoring: MonitoringSettings,
+}
+
+/// Status and metrics settings. Not `Debug`: the managed-stats password is private.
+#[derive(Clone)]
+pub struct MonitoringSettings {
+    /// `[Monitoring] Enabled`. Absent means true, as in `MonitorModule`.
+    pub monitor_enabled: bool,
+    /// Loopback metrics listener. `None` unless `[Monitoring] Metrics` is true.
+    pub metrics_listen: Option<SocketAddr>,
+    /// `Startup.ManagedStatsRemoteFetchURI`. Empty leaves the route unregistered.
+    pub managed_stats_uri: String,
+    /// `Startup.ManagedStatsRemoteFetchPassword`. Empty means the route is open.
+    pub managed_stats_password: String,
+    /// `[WebStats] enabled`. Absent means false.
+    pub web_stats: bool,
 }
 
 impl RegionConfig {
@@ -308,6 +324,7 @@ impl RegionConfig {
             library_name,
             library_file: None,
             cap_grants: crate::caps_policy::cap_grants(server),
+            monitoring: monitoring_settings(server)?,
         })
     }
 
@@ -555,6 +572,76 @@ fn ip(
     }
     text.parse()
         .map_err(|_| value(section, key, "expected an IP address"))
+}
+
+fn monitoring_settings(server: &Config) -> Result<MonitoringSettings, RegionConfigError> {
+    let monitor_enabled = match server.get("Monitoring", "Enabled") {
+        None => true,
+        Some(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" => true,
+            "false" => false,
+            _ => {
+                return Err(value("Monitoring", "Enabled", "expected true or false"));
+            }
+        },
+    };
+    let metrics_listen = if boolean(server, "Monitoring", "Metrics")? {
+        Some(metrics_listen_address(server)?)
+    } else {
+        None
+    };
+    let managed_stats_uri = server
+        .get("Startup", "ManagedStatsRemoteFetchURI")
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if !managed_stats_uri.is_empty()
+        && (managed_stats_uri.len() > 64
+            || !managed_stats_uri
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+    {
+        return Err(value(
+            "Startup",
+            "ManagedStatsRemoteFetchURI",
+            "expected one ASCII path segment",
+        ));
+    }
+    let managed_stats_password = server
+        .get("Startup", "ManagedStatsRemoteFetchPassword")
+        .unwrap_or("")
+        .to_owned();
+    if managed_stats_password.len() > 256
+        || managed_stats_password
+            .bytes()
+            .any(|byte| byte == b'\n' || byte == b'\r' || byte == 0)
+    {
+        return Err(value(
+            "Startup",
+            "ManagedStatsRemoteFetchPassword",
+            "expected a single line of at most 256 bytes",
+        ));
+    }
+    Ok(MonitoringSettings {
+        monitor_enabled,
+        metrics_listen,
+        managed_stats_uri,
+        managed_stats_password,
+        web_stats: boolean(server, "WebStats", "enabled")?,
+    })
+}
+
+fn metrics_listen_address(server: &Config) -> Result<SocketAddr, RegionConfigError> {
+    match server
+        .get("Monitoring", "Listen")
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        None => Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, 9109))),
+        Some(text) => text
+            .parse()
+            .map_err(|_| value("Monitoring", "Listen", "expected host:port")),
+    }
 }
 
 fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {

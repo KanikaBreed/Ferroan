@@ -1,0 +1,38 @@
+groups:
+  - name: ferroan
+    rules:
+      - alert: FerroanRegionDown
+        expr: up{job="ferroan-region"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Ferroan region metrics are down
+      - alert: FerroanRegionUnregistered
+        expr: ferroan_region_registered == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Ferroan region is not registered with the grid
+      - alert: FerroanFrameTimeHigh
+        expr: ferroan_region_frame_seconds > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ferroan region frame time is high
+      - alert: FerroanResendRateHigh
+        expr: rate(ferroan_region_udp_resends_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ferroan region UDP resend rate is high
+      - alert: FerroanRobustErrorRate
+        expr: sum(rate(ferroan_robust_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(ferroan_robust_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ferroan Robust error rate is high

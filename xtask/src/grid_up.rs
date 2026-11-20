@@ -197,6 +197,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 capture: None,
                 asset_uri: None,
                 account_uri: None,
+                metrics_port: None,
             },
             &grid.passwords,
             false,

@@ -19,6 +19,7 @@ pub use caps::{
 };
 pub use circuit::{
     CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, RootArrival,
+    UdpCounters,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;

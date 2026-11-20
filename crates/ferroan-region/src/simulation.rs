@@ -81,6 +81,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
+use crate::status::RegionMeters;
 use axum::{
     Router,
     body::to_bytes,
@@ -131,6 +132,7 @@ pub struct SimulationState {
     /// Robust's CreateAgent connector gives up at 30 s; this stays under it.
     /// Tests shorten it. It is not a configuration key.
     create_agent_budget: Duration,
+    meters: Arc<RegionMeters>,
 }
 
 struct ActiveSession {
@@ -206,6 +208,7 @@ impl AcceptedAgent {
             && session.generation == self._lease.generation
         {
             session.root = true;
+            self._lease.meters.set_agents(1, 0, 1);
         }
     }
 }
@@ -215,6 +218,7 @@ struct SessionLease {
     generation: Uuid,
     caps: CapsRegistry,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
+    meters: Arc<RegionMeters>,
 }
 
 impl Drop for SessionLease {
@@ -229,6 +233,7 @@ impl Drop for SessionLease {
         {
             self.caps.clear();
             *active = None;
+            self.meters.set_agents(0, 0, 0);
         }
     }
 }
@@ -238,6 +243,15 @@ impl SimulationState {
         config: &RegionConfig,
         caps: CapsRegistry,
         sender: mpsc::Sender<AcceptedAgent>,
+    ) -> Self {
+        Self::with_meters(config, caps, sender, Arc::new(RegionMeters::new()))
+    }
+
+    pub fn with_meters(
+        config: &RegionConfig,
+        caps: CapsRegistry,
+        sender: mpsc::Sender<AcceptedAgent>,
+        meters: Arc<RegionMeters>,
     ) -> Self {
         Self {
             region_id: config.id,
@@ -251,7 +265,12 @@ impl SimulationState {
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             admission_open: Arc::new(AtomicBool::new(true)),
             create_agent_budget: Duration::from_secs(25),
+            meters,
         }
+    }
+
+    pub fn meters(&self) -> Arc<RegionMeters> {
+        self.meters.clone()
     }
 
     pub fn stop_accepting(&self) {
@@ -327,7 +346,9 @@ impl SimulationState {
             generation,
             caps: self.caps.clone(),
             lifecycle: self.lifecycle.clone(),
+            meters: self.meters.clone(),
         };
+        self.meters.set_agents(0, 0, 1);
         let accepted = AcceptedAgent {
             logout_done: Some(logout_done),
             accepted_at: tokio::time::Instant::now(),

@@ -58,6 +58,10 @@ pub struct AccountService {
 }
 
 impl AccountService {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.store.pool_occupancy()
+    }
+
     pub async fn open(store: AccountStore, clock: Arc<dyn Clock>) -> Result<Self, StoreError> {
         let service = Self { store, clock };
         service.store.ensure_god(service.clock.unix_time()).await?;

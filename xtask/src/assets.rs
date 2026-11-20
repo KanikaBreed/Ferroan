@@ -397,6 +397,7 @@ pub(crate) fn start_grid_services(
     asset_database: Option<&Path>,
     account_database: Option<&Path>,
     port: u16,
+    metrics_port: Option<u16>,
     log: &Path,
     ini_path: &Path,
     docker: bool,
@@ -436,6 +437,11 @@ pub(crate) fn start_grid_services(
              StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
              ConnectionString = \"Data Source={db};Version=3;\"\n    \
              AllowCreateUser = true\n"
+        ));
+    }
+    if let Some(metrics) = metrics_port {
+        ini.push_str(&format!(
+            "\n[Monitoring]\n    Metrics = true\n    Listen = \"127.0.0.1:{metrics}\"\n"
         ));
     }
     live::write_secret(ini_path, &ini)?;

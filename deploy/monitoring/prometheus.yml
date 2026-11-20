@@ -1,0 +1,14 @@
+# Scrape the example grid. Prometheus does not expand environment variables.
+# Point [Monitoring] Listen at these loopback ports: region 127.0.0.1:9109,
+# ferroan-robust 127.0.0.1:9110. The additions stay off until Metrics is set.
+global:
+  scrape_interval: 15s
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: ferroan-region
+    static_configs:
+      - targets: ["127.0.0.1:9109"]
+  - job_name: ferroan-robust
+    static_configs:
+      - targets: ["127.0.0.1:9110"]
