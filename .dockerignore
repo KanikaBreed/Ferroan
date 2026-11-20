@@ -1,0 +1,10 @@
+# Rust image context only. Tranquillity's Dockerfiles are built from the pin
+# checkout, which does not use this file.
+.git
+.github
+.scratch
+target
+fixtures
+docs
+deploy
+*.md

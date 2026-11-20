@@ -125,6 +125,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
             asset: None,
             account: None,
         },
+        false,
     )?);
     for (first, last, secret, email, id) in [
         (
@@ -198,6 +199,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 account_uri: None,
             },
             &grid.passwords,
+            false,
         )?;
         if ferroan {
             grid.home = Some(process);

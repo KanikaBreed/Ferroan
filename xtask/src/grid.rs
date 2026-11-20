@@ -119,7 +119,7 @@ pub fn root_arrival_fixtures(directory: &Path) -> std::process::ExitCode {
 fn run_inner(spec: &crate::live_args::RunSpec) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(spec)
+        run_linux(spec, false)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -485,6 +485,8 @@ struct Proc {
     log: PathBuf,
     tracked: crate::grid_state::Tracked,
     detached: bool,
+    container: Option<String>,
+    listen_pid: u32,
 }
 
 #[cfg(target_os = "linux")]
@@ -493,6 +495,9 @@ impl Drop for Proc {
         drop(self.stdin.take());
         if self.detached {
             return;
+        }
+        if let Some(name) = self.container.take() {
+            crate::docker::stop_container(&name);
         }
         stop_child(&mut self.child);
         if let Err(error) = self.tracked.forget() {
@@ -569,7 +574,12 @@ fn require_started_mut<'a, T>(slot: &'a mut Option<T>, what: &str) -> Result<&'a
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
+pub(crate) fn run_docker(spec: &crate::live_args::RunSpec) -> Result<String, String> {
+    run_linux(spec, true)
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, String> {
     let scenario = spec.scenario.as_str();
     let ferroan = spec.ferroan_region;
     let rust_assets = spec.rust_assets();
@@ -728,6 +738,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
             port,
             &root.join(log_name),
             &root.join(ini_name),
+            docker,
         )?);
         if rust_assets {
             println!("live: rust assets on {uri}");
@@ -754,6 +765,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
             asset: asset_uri.as_deref(),
             account: account_uri.as_deref(),
         },
+        docker,
     )?);
     if rust_accounts {
         let log = require_started(&grid.robust, "Robust")?.log.clone();
@@ -823,6 +835,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
             account_uri: account_uri.clone(),
         },
         &grid.passwords,
+        docker,
     )?);
     println!("live: grid region {NEIGHBOUR_NAME} on {NEIGHBOUR_BIND}:{neighbour_port}");
     grid.neighbour = Some(start_region(
@@ -848,6 +861,7 @@ fn run_linux(spec: &crate::live_args::RunSpec) -> Result<String, String> {
             account_uri: account_uri.clone(),
         },
         &grid.passwords,
+        docker,
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
     let report = if let Some(executable) = ferrobot_binary {
@@ -1077,6 +1091,7 @@ fn start_robust(
     private_port: u16,
     passwords: &[String],
     services: ServiceUris<'_>,
+    docker: bool,
 ) -> Result<Proc, String> {
     start_robust_at(
         root,
@@ -1086,10 +1101,13 @@ fn start_robust(
         ROBUST_BIND,
         None,
         services,
+        docker,
     )
 }
 
 #[cfg(target_os = "linux")]
+// Host and container launches share this list; splitting it would duplicate the ini.
+#[allow(clippy::too_many_arguments)]
 fn start_robust_at(
     root: &Path,
     public_port: u16,
@@ -1098,6 +1116,7 @@ fn start_robust_at(
     bind: Ipv4Addr,
     console: Option<&fs::File>,
     services: ServiceUris<'_>,
+    docker: bool,
 ) -> Result<Proc, String> {
     let binary = live::grid_server_binary();
     if !binary.is_file() {
@@ -1130,21 +1149,55 @@ fn start_robust_at(
     let log = root.join("robust.log");
     let ini_arg = ini_path.to_str().ok_or("robust ini path is not utf-8")?;
     let empty_arg = empty.to_str().ok_or("robust config path is not utf-8")?;
-    let mut proc = spawn_proc_with_input(
-        &binary,
-        &[
-            "--inimaster",
-            ini_arg,
-            "--inidirectory",
-            empty_arg,
-            "--console",
-            "basic",
-        ],
-        binary.parent().unwrap_or(Path::new(".")),
-        &log,
-        true,
-        console,
-    )?;
+    let mut proc = if docker {
+        // grid-start.sh cds to /app and passes --inifile. The harness ini is
+        // the master file, so smoke runs the image's dotnet binary with the
+        // same --inimaster arguments as the host GridServer.
+        let workdir = binary
+            .parent()
+            .ok_or("the grid publish directory is missing")?;
+        let args = vec![
+            "/app/OpenSim.Server.GridServer.dll".to_string(),
+            "--inimaster".to_string(),
+            ini_arg.to_string(),
+            "--inidirectory".to_string(),
+            empty_arg.to_string(),
+            "--console".to_string(),
+            "basic".to_string(),
+        ];
+        let mounts = docker_mounts(crate::docker::NAME_ROBUST)?;
+        let secrets: Vec<&str> = passwords.iter().map(String::as_str).collect();
+        let attached = crate::docker::launch(crate::docker::LaunchRequest {
+            name: crate::docker::NAME_ROBUST,
+            image: crate::docker::CSHARP_GRID_IMAGE,
+            entrypoint: Some("dotnet"),
+            args: &args,
+            workdir,
+            log: &log,
+            pipe_stdin: true,
+            detach: false,
+            mounts: &mounts,
+            track: true,
+            redact: &secrets,
+        })?;
+        proc_from_attached(attached, &log)?
+    } else {
+        spawn_proc_with_input(
+            &binary,
+            &[
+                "--inimaster",
+                ini_arg,
+                "--inidirectory",
+                empty_arg,
+                "--console",
+                "basic",
+            ],
+            binary.parent().unwrap_or(Path::new(".")),
+            &log,
+            true,
+            console,
+        )?
+    };
     wait_log(
         &mut proc.child,
         &log,
@@ -1152,8 +1205,8 @@ fn start_robust_at(
         live::START_TIMEOUT,
         passwords,
     )?;
-    live::require_listen(proc.child.id(), bind, public_port)?;
-    live::require_listen(proc.child.id(), bind, private_port)?;
+    live::require_listen(proc.listen_pid, bind, public_port)?;
+    live::require_listen(proc.listen_pid, bind, private_port)?;
     Ok(proc)
 }
 
@@ -1370,13 +1423,16 @@ fn start_region(
     password: &str,
     spec: RegionStart,
     passwords: &[String],
+    docker: bool,
 ) -> Result<Proc, String> {
-    let binary = if spec.ferroan {
+    let binary = if spec.ferroan && !docker {
         live::build_binary("ferroan-region")?
+    } else if spec.ferroan {
+        PathBuf::new()
     } else {
         publish.join("OpenSim.Server.RegionServer")
     };
-    if !binary.is_file() {
+    if (!docker || !spec.ferroan) && !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
@@ -1434,13 +1490,52 @@ fn start_region(
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = cwd.join("region.log");
     let config_arg = config.to_str().ok_or("region config path is not utf-8")?;
-    let mut proc = spawn_proc(
-        &binary,
-        &["--inidirectory", config_arg, "--background"],
-        cwd,
-        &log,
-        false,
-    )?;
+    let mut proc = if docker {
+        // region-start.sh cds to /app. The prepared working directory holds
+        // the harness ini and the config-include links, so the image process
+        // uses that directory and the same arguments as the host region.
+        let name = if spec.ferroan {
+            crate::docker::NAME_HOME
+        } else {
+            crate::docker::NAME_NEIGHBOUR
+        };
+        let image = if spec.ferroan {
+            crate::docker::REGION_IMAGE
+        } else {
+            crate::docker::CSHARP_REGION_IMAGE
+        };
+        let mut args = Vec::new();
+        if !spec.ferroan {
+            args.push("/app/OpenSim.Server.RegionServer.dll".to_string());
+        }
+        args.push("--inidirectory".to_string());
+        args.push(config_arg.to_string());
+        args.push("--background".to_string());
+        let mounts = docker_mounts(name)?;
+        let secrets: Vec<&str> = passwords.iter().map(String::as_str).collect();
+        let attached = crate::docker::launch(crate::docker::LaunchRequest {
+            name,
+            image,
+            entrypoint: (!spec.ferroan).then_some("dotnet"),
+            args: &args,
+            workdir: cwd,
+            log: &log,
+            pipe_stdin: false,
+            detach: false,
+            mounts: &mounts,
+            track: true,
+            redact: &secrets,
+        })?;
+        proc_from_attached(attached, &log)?
+    } else {
+        spawn_proc(
+            &binary,
+            &["--inidirectory", config_arg, "--background"],
+            cwd,
+            &log,
+            false,
+        )?
+    };
     let ready = format!(
         "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
         region.name
@@ -1452,9 +1547,57 @@ fn start_region(
         live::START_TIMEOUT,
         passwords,
     )?;
-    live::require_listen(proc.child.id(), region.http_bind, region.http_port)?;
-    live::require_udp(proc.child.id(), region.udp_bind, region.http_port)?;
+    live::require_listen(proc.listen_pid, region.http_bind, region.http_port)?;
+    live::require_udp(proc.listen_pid, region.udp_bind, region.http_port)?;
     Ok(proc)
+}
+
+#[cfg(target_os = "linux")]
+fn docker_mounts(name: &str) -> Result<Vec<crate::docker::Mount>, String> {
+    let live_root = live::live_root();
+    fs::create_dir_all(&live_root)
+        .map_err(|error| format!("could not create {}: {error}", live_root.display()))?;
+    let logdata = live_root.join("docker-log").join(name);
+    fs::create_dir_all(&logdata)
+        .map_err(|error| format!("could not create {}: {error}", logdata.display()))?;
+    Ok(vec![
+        crate::docker::Mount {
+            host: live_root.clone(),
+            container: live_root,
+            read_only: false,
+        },
+        crate::docker::Mount {
+            host: logdata,
+            container: PathBuf::from("/app/logdata"),
+            read_only: false,
+        },
+    ])
+}
+
+#[cfg(target_os = "linux")]
+fn proc_from_attached(attached: crate::docker::Attached, log: &Path) -> Result<Proc, String> {
+    let crate::docker::Attached {
+        child,
+        stdin,
+        name,
+        listen_pid,
+        tracked,
+    } = attached;
+    let tracked = tracked.ok_or("docker grid launch was not recorded")?;
+    let listen_pid = if listen_pid == 0 {
+        child.id()
+    } else {
+        listen_pid
+    };
+    Ok(Proc {
+        child,
+        stdin: stdin.map(|pipe| Box::new(pipe) as Box<dyn std::io::Write>),
+        log: log.to_path_buf(),
+        tracked,
+        detached: false,
+        container: Some(name),
+        listen_pid,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1744,12 +1887,15 @@ fn spawn_proc_with_input(
             return Err(error);
         }
     };
+    let listen_pid = child.id();
     Ok(Proc {
         child,
         stdin,
         log: log.to_path_buf(),
         tracked,
         detached: false,
+        container: None,
+        listen_pid,
     })
 }
 

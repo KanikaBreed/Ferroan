@@ -17,7 +17,7 @@ jobs:
   checks:
     name: checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -34,3 +34,6 @@ jobs:
           cargo clippy --version
       - name: Check documentation and Rust workspace
         run: cargo xtask check
+      - name: Build container images
+        if: runner.os == 'Linux'
+        run: cargo xtask docker build

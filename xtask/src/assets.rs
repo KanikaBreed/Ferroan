@@ -138,6 +138,8 @@ pub(crate) struct Owned {
     stdin: Option<std::process::ChildStdin>,
     stop_on_drop: bool,
     tracked: Option<crate::grid_state::Tracked>,
+    container: Option<String>,
+    listen_pid: u32,
 }
 
 #[cfg(target_os = "linux")]
@@ -197,7 +199,7 @@ fn wait_service(server: &mut Owned, name: &str, port: u16, log: &Path) -> Result
         {
             return Err(format!("the {name} asset service exited\n{}", tail(log)));
         }
-        if live::require_http_loopback(server.child.id(), port).is_ok() {
+        if live::require_http_loopback(server.listen_pid, port).is_ok() {
             return Ok(());
         }
         if started.elapsed() > Duration::from_secs(60) {
@@ -262,7 +264,7 @@ fn seed_database() -> Result<PathBuf, String> {
     fs::create_dir_all(&run)
         .map_err(|error| format!("could not create {}: {error}", run.display()))?;
     let seed = run.join("asset-seed.db");
-    if asset_present(&seed)? {
+    if library_texture_stored(&seed)? {
         return Ok(seed);
     }
     let fixture = repo_root().join("fixtures/db/sqlite/AssetStore.db");
@@ -273,7 +275,7 @@ fn seed_database() -> Result<PathBuf, String> {
     let mut server = start_grid(&seed, port, &log, true)?;
     let started = Instant::now();
     loop {
-        if asset_present(&seed)? {
+        if library_texture_stored(&seed)? {
             break;
         }
         if server
@@ -296,14 +298,14 @@ fn seed_database() -> Result<PathBuf, String> {
         .arg(&seed)
         .arg("PRAGMA wal_checkpoint(TRUNCATE);")
         .output();
-    if !asset_present(&seed)? {
+    if !library_texture_stored(&seed)? {
         return Err("the library texture disappeared after the loader stopped".to_string());
     }
     Ok(seed)
 }
 
 #[cfg(target_os = "linux")]
-fn asset_present(database: &Path) -> Result<bool, String> {
+pub(crate) fn library_texture_stored(database: &Path) -> Result<bool, String> {
     if !database.is_file() {
         return Ok(false);
     }
@@ -397,11 +399,16 @@ pub(crate) fn start_grid_services(
     port: u16,
     log: &Path,
     ini_path: &Path,
+    docker: bool,
 ) -> Result<Owned, String> {
     if asset_database.is_none() && account_database.is_none() {
         return Err("ferroan-robust needs an asset or account database".to_string());
     }
-    let binary = live::build_binary("ferroan-robust")?;
+    let binary = if docker {
+        PathBuf::new()
+    } else {
+        live::build_binary("ferroan-robust")?
+    };
     let empty = ini_path
         .parent()
         .unwrap_or(Path::new("."))
@@ -434,14 +441,54 @@ pub(crate) fn start_grid_services(
     live::write_secret(ini_path, &ini)?;
     let ini_arg = ini_path.to_str().ok_or("service ini path is not utf-8")?;
     let empty_arg = empty.to_str().ok_or("service config path is not utf-8")?;
-    let mut server = spawn_owned(
-        &binary,
-        &["--inimaster", ini_arg, "--inidirectory", empty_arg],
-        &repo_root(),
-        log,
-        false,
-        true,
-    )?;
+    let mut server = if docker {
+        let workdir = ini_path.parent().ok_or("service ini path has no parent")?;
+        let args = vec![
+            "--inimaster".to_string(),
+            ini_arg.to_string(),
+            "--inidirectory".to_string(),
+            empty_arg.to_string(),
+        ];
+        let live_root = live::live_root();
+        let logdata = live_root
+            .join("docker-log")
+            .join(crate::docker::NAME_ASSETS);
+        let mounts = vec![
+            crate::docker::Mount {
+                host: live_root.clone(),
+                container: live_root,
+                read_only: false,
+            },
+            crate::docker::Mount {
+                host: logdata,
+                container: PathBuf::from("/app/logdata"),
+                read_only: false,
+            },
+        ];
+        let attached = crate::docker::launch(crate::docker::LaunchRequest {
+            name: crate::docker::NAME_ASSETS,
+            image: crate::docker::ROBUST_IMAGE,
+            entrypoint: None,
+            args: &args,
+            workdir,
+            log,
+            pipe_stdin: false,
+            detach: false,
+            mounts: &mounts,
+            track: true,
+            redact: &[],
+        })?;
+        owned_from_attached(attached)?
+    } else {
+        spawn_owned(
+            &binary,
+            &["--inimaster", ini_arg, "--inidirectory", empty_arg],
+            &repo_root(),
+            log,
+            false,
+            true,
+        )?
+    };
     if let Err(error) = wait_service(&mut server, "ferroan", port, log) {
         stop_owned(&mut server);
         return Err(error);
@@ -523,11 +570,33 @@ fn spawn_owned(
         )
     };
     let stdin = child.stdin.take();
+    let listen_pid = child.id();
     Ok(Owned {
         child,
         stdin,
         stop_on_drop: true,
         tracked,
+        container: None,
+        listen_pid,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn owned_from_attached(attached: crate::docker::Attached) -> Result<Owned, String> {
+    let crate::docker::Attached {
+        child,
+        stdin,
+        name,
+        listen_pid,
+        tracked,
+    } = attached;
+    Ok(Owned {
+        child,
+        stdin,
+        stop_on_drop: true,
+        tracked,
+        container: Some(name),
+        listen_pid,
     })
 }
 
@@ -550,6 +619,9 @@ fn spawn_proxy(
 #[cfg(target_os = "linux")]
 fn stop_owned(owned: &mut Owned) {
     owned.stop_on_drop = false;
+    if let Some(name) = owned.container.take() {
+        crate::docker::remove_container(&name);
+    }
     if matches!(owned.child.try_wait(), Ok(Some(_))) {
         if let Some(tracked) = owned.tracked.take() {
             let _ = tracked.forget();
