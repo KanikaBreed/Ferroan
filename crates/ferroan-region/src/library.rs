@@ -600,7 +600,7 @@ mod tests {
     /// skips this; the live harness compares the same file through the region.
     #[test]
     fn the_pinned_library_loads_when_the_checkout_is_present() {
-        const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
+        const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
         let Some(root) = reference_root() else {
             eprintln!("reference checkout not found; the shipped library was not loaded");
             return;

@@ -1,7 +1,7 @@
 # C# seed and event queue evidence
 
 These HTTP bodies came from the local C# grid running Tranquillity
-`40432e0f83d3802434f898a4e28687bd977d5cf5`. Regenerate with:
+`f67db54399c027fd74e5aefcb2193905b4dc1646`. Regenerate with:
 
 ```sh
 cargo xtask live build
@@ -75,9 +75,9 @@ test account, name and UUID is rejected as a fixture source.
 
 The source behavior is in these files at the revision above:
 
-- [`BunchOfCaps.SeedCapRequest`](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.ClientStack.LindenCaps/BunchOfCaps/BunchOfCaps.cs)
-- [`EventQueueGetModule`](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs)
-- [`EventQueueGetHandlers`](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetHandlers.cs)
+- [`BunchOfCaps.SeedCapRequest`](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.ClientStack.LindenCaps/BunchOfCaps/BunchOfCaps.cs)
+- [`EventQueueGetModule`](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetModule.cs)
+- [`EventQueueGetHandlers`](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/EventQueueGetHandlers.cs)
 - `Source/OpenSim.Framework.Servers.HttpServer/BaseHttpServer.cs`,
   `SimpleStreamHandler.cs` and `PollServiceHttpRequest.cs` (HTTP defaults,
   OPTIONS handling and held-poll responses).

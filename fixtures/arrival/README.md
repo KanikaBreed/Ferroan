@@ -1,7 +1,7 @@
 # C# login arrival evidence
 
 Captured from the local C# test grid at Tranquillity
-`40432e0f83d3802434f898a4e28687bd977d5cf5`, using the ordinary login scenario.
+`f67db54399c027fd74e5aefcb2193905b4dc1646`, using the ordinary login scenario.
 The capture patch records the socket bytes in the scratch build; the reference
 checkout is unchanged. Only the test account `Test User` is selected.
 
@@ -27,22 +27,22 @@ flags and appended ACKs remain unchanged. Raw captures stay under `.scratch/`.
 The captured arrival has sequence 2, flags `0x40`, no appended ACKs, position
 `(128,128,25.96)`, look-at `(0.99,0.042,0)`, and handle `1099511628032000`.
 Its channel/version is the UTF-8 string
-`OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)`
+`OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)`
 with a terminating NUL. The version is preserved as captured evidence, not
 used as the Rust process's version. The C# ground-height adjustment explains
 the captured Z; P2.0d2 uses the accepted login start position until P2.0e.
 
 Source derivation at the pinned revision:
 
-- [LLClientView.MoveAgentIntoRegion](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs)
+- [LLClientView.MoveAgentIntoRegion](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs)
   writes reliable, unencoded low-frequency packet 250: agent/session UUIDs,
   position (falling back to the circuit start position only for a zero vector),
   look-at, region handle, Unix seconds, and the cached channel/version bytes.
-- [ScenePresence.CompleteMovement and MakeRootAgent](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs)
+- [ScenePresence.CompleteMovement and MakeRootAgent](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs)
   normalize the horizontal camera look, fall back to velocity and then
   `(0.99,0.042,0)`, apply landing and ground adjustments, send the handshake,
   then call `MoveAgentIntoRegion`.
-- [Scene constructor and GetSimulatorVersion](https://github.com/KanikaBreed/OpenSim-Tranquillity/blob/40432e0f83d3802434f898a4e28687bd977d5cf5/Source/OpenSim.Region.Framework/Scenes/Scene.cs)
+- [Scene constructor and GetSimulatorVersion](https://github.com/OpenSim-NGC/OpenSim-Tranquillity/blob/f67db54399c027fd74e5aefcb2193905b4dc1646/Source/OpenSim.Region.Framework/Scenes/Scene.cs)
   append the runtime description to the server version. `LLClientView` caches
   `Util.StringToBytes1024(scene.GetSimulatorVersion())` for the packet.
 

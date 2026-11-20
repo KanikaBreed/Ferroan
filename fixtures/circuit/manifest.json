@@ -1,8 +1,8 @@
 {
-  "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "tranquillity": "f67db54399c027fd74e5aefcb2193905b4dc1646",
   "provenance": {
     "marker": "AgentMovementComplete.SimData.ChannelVersion",
-    "channel_version": "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)",
+    "channel_version": "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)",
     "region_handle": 1099511628032000,
     "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival"
   },
@@ -88,100 +88,100 @@
     },
     {
       "record": 25,
-      "message": "LayerData",
+      "message": "SimStats",
       "sequence": 11,
-      "flags": 64,
+      "flags": 0,
+      "appended_acks": []
+    },
+    {
+      "record": 26,
+      "message": "SimulatorViewerTimeMessage",
+      "sequence": 12,
+      "flags": 128,
       "appended_acks": []
     },
     {
       "record": 27,
-      "message": "LayerData",
-      "sequence": 12,
-      "flags": 64,
-      "appended_acks": []
-    },
-    {
-      "record": 29,
       "message": "LayerData",
       "sequence": 13,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 31,
+      "record": 29,
       "message": "LayerData",
       "sequence": 14,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 33,
+      "record": 31,
       "message": "LayerData",
       "sequence": 15,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 35,
+      "record": 33,
       "message": "LayerData",
       "sequence": 16,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 36,
-      "message": "ImprovedTerseObjectUpdate",
+      "record": 35,
+      "message": "LayerData",
       "sequence": 17,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 39,
+      "record": 37,
       "message": "LayerData",
       "sequence": 18,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 41,
-      "message": "LayerData",
+      "record": 38,
+      "message": "ImprovedTerseObjectUpdate",
       "sequence": 19,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 43,
+      "record": 41,
       "message": "LayerData",
       "sequence": 20,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 45,
+      "record": 43,
       "message": "LayerData",
       "sequence": 21,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 47,
+      "record": 45,
       "message": "LayerData",
       "sequence": 22,
       "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 49,
-      "message": "SimulatorViewerTimeMessage",
+      "record": 47,
+      "message": "LayerData",
       "sequence": 23,
-      "flags": 128,
+      "flags": 64,
       "appended_acks": []
     },
     {
-      "record": 50,
-      "message": "SimStats",
+      "record": 49,
+      "message": "LayerData",
       "sequence": 24,
-      "flags": 0,
+      "flags": 64,
       "appended_acks": []
     },
     {
@@ -320,13 +320,13 @@
     },
     {
       "record": 25,
-      "message": "LayerData",
+      "message": "SimStats",
       "direction": "out"
     },
     {
       "record": 26,
-      "message": "PacketAck",
-      "direction": "in"
+      "message": "SimulatorViewerTimeMessage",
+      "direction": "out"
     },
     {
       "record": 27,
@@ -375,23 +375,23 @@
     },
     {
       "record": 36,
+      "message": "PacketAck",
+      "direction": "in"
+    },
+    {
+      "record": 37,
+      "message": "LayerData",
+      "direction": "out"
+    },
+    {
+      "record": 38,
       "message": "ImprovedTerseObjectUpdate",
       "direction": "out"
     },
     {
-      "record": 37,
-      "message": "PacketAck",
-      "direction": "in"
-    },
-    {
-      "record": 38,
-      "message": "PacketAck",
-      "direction": "in"
-    },
-    {
       "record": 39,
-      "message": "LayerData",
-      "direction": "out"
+      "message": "PacketAck",
+      "direction": "in"
     },
     {
       "record": 40,
@@ -440,13 +440,13 @@
     },
     {
       "record": 49,
-      "message": "SimulatorViewerTimeMessage",
+      "message": "LayerData",
       "direction": "out"
     },
     {
       "record": 50,
-      "message": "SimStats",
-      "direction": "out"
+      "message": "PacketAck",
+      "direction": "in"
     },
     {
       "record": 51,
@@ -487,7 +487,7 @@
     "region_flags": 336625702,
     "water_height": 20.0,
     "billable_factor": 0.0,
-    "cache_id": "a99d0f3f-ee1a-464c-b6e6-c9585885a0e5",
+    "cache_id": "c44d3638-a934-459e-aa98-2a71df4ccd6b",
     "region_id": "6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01",
     "product_name": [],
     "cpu_class_id": 9,

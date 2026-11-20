@@ -7,7 +7,7 @@ Ferrobot standalone scenario. `LLClientView.SendInstantMessage` writes the
 It omits the `MetaData` count byte. This is a viewer template extension, not a
 C# bug.
 
-Pin3 (`40432e0f83d3802434f898a4e28687bd977d5cf5`) leaves the complete `SendInstantMessage` method unchanged. This historical fixture retains its original capture revision and bytes; `audited_reference_revision` records the source audit, not a new capture. The selector now accepts fresh traffic from Pin3, so the historical raw capture cannot be passed off as Pin3 evidence.
+Pin3 (`40432e0f83d3802434f898a4e28687bd977d5cf5`) leaves the complete `SendInstantMessage` method unchanged. Pin4 (`f67db54399c027fd74e5aefcb2193905b4dc1646`) changes `LLClientView.cs` only in `Kick` throttle category and `PartsInLinkOrder` iteration; `SendInstantMessage` is not in that diff. This historical fixture retains its original capture revision and bytes; `audited_reference_revision` records the source audit, not a new capture. The selector accepts fresh traffic that carries the current pin's channel, so the historical raw capture cannot be passed off as Pin4 evidence.
 
 Regenerate from the private raw UDP capture under `.scratch/`:
 

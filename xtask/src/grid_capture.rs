@@ -109,7 +109,7 @@ pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> 
 pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
     use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
     const CHANNEL: &[u8] =
-        b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
+        b"OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)\0";
     for record in records(&directory.join("capture-udp.cap"))? {
         if record.kind != Kind::UdpOut {
             continue;

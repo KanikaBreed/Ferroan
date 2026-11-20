@@ -1,7 +1,7 @@
 # Region login control-plane fixtures
 
 These are request/reply exchanges captured from the local C# test grid at
-Tranquillity revision `40432e0f83d3802434f898a4e28687bd977d5cf5`. They cover
+Tranquillity revision `f67db54399c027fd74e5aefcb2193905b4dc1646`. They cover
 GridService registration and deregistration, SimulationService QueryAccess and
 CreateAgent. `exchanges.json` also retains the method, path, status, content types
 and request and response compression headers. The individual files are used by the region

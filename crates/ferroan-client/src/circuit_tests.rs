@@ -31,7 +31,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         look_at: [0.99, 0.042, 0.0],
         region_handle: 1_099_511_628_032_000,
         channel_version:
-            "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)".into(),
+            "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)".into(),
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);
@@ -236,7 +236,7 @@ fn captured_config() -> HandshakeConfig {
         HandshakeConfig::for_region(Uuid::from_u128(0x6d1a7f4e0c3b4f539a1e5f0e3c2a9b01));
     config.sim_name = "Ferroan Test".to_string();
     config.estate_owner = Uuid::from_u128(0x4f0c8d2e7a514b8e9c3d2e6f1a0b7c55);
-    config.cache_id = Uuid::from_u128(0xa99d0f3fee1a464cb6e6c9585885a0e5);
+    config.cache_id = Uuid::from_u128(0xc44d3638a934459eaa982a71df4ccd6b);
     config
 }
 

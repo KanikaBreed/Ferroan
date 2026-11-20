@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Local test-grid probes of AgentHandlers, Scene.VerifyUserPresence and Robust's
-//! Presence/GridUser HTTP services at Tranquillity 40432e0f83d3802434f898a4e28687bd977d5cf5.
+//! Presence/GridUser HTTP services at Tranquillity f67db54399c027fd74e5aefcb2193905b4dc1646.
 //! Requests contain only committed fixture identities. Responses retain status,
 //! content type and parsed JSON; only the test region name/UUID are folded.
 
@@ -16,7 +16,7 @@ use std::{
 };
 
 const LIMIT: usize = 1024 * 1024;
-const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
+const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
 const CASES: &[&str] = &[

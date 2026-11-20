@@ -1,6 +1,6 @@
 {
   "source": "csharp",
-  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "revision": "f67db54399c027fd74e5aefcb2193905b4dc1646",
   "exchanges": {
     "unknown-session": {
       "method": "POST",
@@ -896,6 +896,12 @@
       }
     }
   },
+  "provenance": {
+    "marker": "AgentMovementComplete.SimData.ChannelVersion",
+    "channel_version": "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)",
+    "region_handle": 1099511628032000,
+    "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival"
+  },
   "services": {
     "presence-get": {
       "method": "POST",
@@ -916,7 +922,7 @@
       "request_content_type": "application/x-www-form-urlencoded",
       "request_content_encoding": "",
       "request_x_content_encoding": "",
-      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=loggedout&UserID=00000000-0000-4000-8000-000000000001&RegionID=00000000-0000-4000-8000-000000000002&Position=%3c128%2c+128%2c+26.034952%3e&LookAt=%3c0%2c+0%2c+0%3e",
+      "request": "VERSIONMIN=1&VERSIONMAX=1&METHOD=loggedout&UserID=00000000-0000-4000-8000-000000000001&RegionID=00000000-0000-4000-8000-000000000002&Position=%3c128%2c+128%2c+26.033272%3e&LookAt=%3c0%2c+0%2c+0%3e",
       "status": 200,
       "response_content_type": "application/xml",
       "response_content_encoding": "",

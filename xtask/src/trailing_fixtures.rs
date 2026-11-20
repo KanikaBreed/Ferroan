@@ -12,9 +12,9 @@ use ferroan_protocol::msgs::{AgentMovementComplete, ImprovedInstantMessage};
 use ferroan_protocol::{Msg, parse_packet};
 use serde_json::{Value, json};
 
-const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
+const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const CHANNEL: &[u8] =
-    b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
+    b"OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)\0";
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
 
 pub fn generate(path: &Path) -> Result<String, String> {

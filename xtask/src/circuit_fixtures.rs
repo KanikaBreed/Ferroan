@@ -17,7 +17,7 @@ use ferroan_protocol::{Msg, message_info, parse_packet};
 use serde_json::{Value, json};
 
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
-const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
+const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 
 pub fn generate(path: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();

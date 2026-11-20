@@ -1,7 +1,7 @@
 {
   "source": "csharp",
-  "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
-  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)",
+  "revision": "f67db54399c027fd74e5aefcb2193905b4dc1646",
+  "channel_version": "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)",
   "services": {
     "presence-report": {
       "method": "POST",
@@ -34,7 +34,7 @@
   },
   "online": {
     "source": "csharp",
-    "revision": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+    "revision": "f67db54399c027fd74e5aefcb2193905b4dc1646",
     "online": true,
     "presence_region": "00000000-0000-4000-8000-000000000002",
     "last_region": "00000000-0000-4000-8000-000000000002",
