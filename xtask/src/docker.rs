@@ -81,6 +81,9 @@ pub fn smoke() -> ExitCode {
     }
 }
 
+// Called from the Linux branches of `build` and `smoke`. Windows and macOS
+// take the other branch, so this stays out of those builds.
+#[cfg(target_os = "linux")]
 fn finish(result: Result<String, String>) -> ExitCode {
     match result {
         Ok(message) => {
