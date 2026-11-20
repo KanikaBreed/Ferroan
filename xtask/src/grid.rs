@@ -870,6 +870,14 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         docker,
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
+    if ferroan {
+        let extra = docker.then(|| {
+            live::live_root()
+                .join("docker-log")
+                .join(crate::docker::NAME_HOME)
+        });
+        ferroan_bot::set_log_redaction_check(true, extra);
+    }
     let report = if let Some(executable) = ferrobot_binary {
         let harness = live::harness(
             &format!("http://{ADVERTISED}:{public_proxy}/"),
@@ -974,21 +982,38 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(())
     };
     let scrape = scrape_running(ferroan, region_metrics, robust_metrics);
+    let smoke_logs = observe_smoke_logs(docker, ferroan, scenario);
+    let redaction = if ferroan {
+        ferroan_bot::scan_passwords(&[&estate, &chat], &home_log)
+    } else {
+        Ok(())
+    };
     let cleanup = grid.stop();
-    let report = match (report, relay_result, cleanup, scrape) {
-        (Ok(mut report), Ok(()), Ok(()), Ok(lines)) => {
+    let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction) {
+        (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(())) => {
             if !lines.is_empty() {
                 report.lines.push('\n');
                 report.lines.push_str(&lines);
             }
+            if !smoke.is_empty() {
+                report.lines.push('\n');
+                report.lines.push_str(&smoke);
+            }
             report
         }
-        (report, relay, cleanup, scrape) => {
-            return Err([report.err(), relay.err(), cleanup.err(), scrape.err()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join("\n"));
+        (report, relay, cleanup, scrape, smoke, redaction) => {
+            return Err([
+                report.err(),
+                relay.err(),
+                cleanup.err(),
+                scrape.err(),
+                smoke.err(),
+                redaction.err(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n"));
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
@@ -1153,6 +1178,35 @@ fn scrape_running(
         )?);
     }
     Ok(lines.join("\n"))
+}
+
+#[cfg(target_os = "linux")]
+fn observe_smoke_logs(docker: bool, ferroan: bool, scenario: &str) -> Result<String, String> {
+    if !docker || !ferroan || scenario != "login" || crate::docker::smoke_otlp().is_none() {
+        return Ok(String::new());
+    }
+    let logs = crate::docker::container_logs(crate::docker::NAME_HOME)?;
+    require_login_line(&logs, "docker logs")?;
+    let compose = crate::docker::compose_region_logs()?;
+    require_login_line(&compose, "docker compose logs")?;
+    let loki = crate::docker::wait_loki_login()?;
+    Ok(format!(
+        "smoke logs: docker logs, compose logs, and loki ({loki})"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn require_login_line(text: &str, source: &str) -> Result<(), String> {
+    let login = text.contains("login accepted");
+    let first = text.contains("first_name=Test");
+    let last = text.contains("last_name=User");
+    if login && first && last {
+        return Ok(());
+    }
+    Err(format!(
+        "{source} missing login evidence (login accepted={login}, first_name=Test={first}, last_name=User={last}, {} bytes)",
+        text.len()
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -1633,6 +1687,15 @@ fn start_region(
         ini.push_str(&format!(
             "\n[Monitoring]\n    Metrics = true\n    Listen = \"127.0.0.1:{port}\"\n"
         ));
+        // Smoke opts in. A normal live run does not export and stays plain text.
+        if docker
+            && spec.ferroan
+            && let Some(endpoint) = crate::docker::smoke_otlp()
+        {
+            ini.push_str(&format!(
+                "    LogFormat = json\n    OtlpEndpoint = \"{endpoint}\"\n"
+            ));
+        }
     }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(&region))

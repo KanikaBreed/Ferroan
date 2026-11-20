@@ -44,6 +44,7 @@ mod assets;
 mod caps_fixtures;
 mod circuit_fixtures;
 mod config_oracle;
+mod console_client;
 mod docker;
 mod ferrobot;
 mod ferrobot_build;
@@ -114,7 +115,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live assets [--db sqlite|mysql|pgsql]
        cargo xtask live accounts [--db sqlite|mysql|pgsql]
        cargo xtask docker build
-       cargo xtask docker smoke";
+       cargo xtask docker smoke
+       cargo xtask console-client";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -164,6 +166,7 @@ fn main() -> ExitCode {
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
+        ["console-client"] => console_client::run(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

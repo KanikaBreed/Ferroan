@@ -115,3 +115,20 @@ services:
         source: ../monitoring/grafana/provisioning
         target: /etc/grafana/provisioning
         read_only: true
+  loki:
+    image: grafana/loki:3.2.1
+    network_mode: host
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    network_mode: host
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - type: bind
+        source: ../monitoring/collector/loki.yaml
+        target: /etc/otelcol-contrib/config.yaml
+        read_only: true
+      - type: bind
+        source: ../monitoring/collector/stdout
+        target: /var/log/ferroan
+        read_only: true

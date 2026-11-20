@@ -13,7 +13,9 @@ ferroan-client = { path = "../ferroan-client" }
 ferroan-config = { path = "../ferroan-config" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
+ferroan-log = { path = "../ferroan-log" }
 ferroan-services = { path = "../ferroan-services" }
+tracing = "0.1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

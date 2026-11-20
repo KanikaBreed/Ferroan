@@ -330,6 +330,14 @@ impl SimulationState {
         if self.caps.register_agent(&path, fields.agent_id).is_err() {
             return Err("Could not create seed capability");
         }
+        // Register before the login line. The line itself names only the avatar.
+        ferroan_log::register_secret(&fields.session_id.to_string());
+        ferroan_log::register_secret(&fields.secure_session_id.to_string());
+        ferroan_log::register_circuit_code(fields.circuit_code);
+        ferroan_log::register_secret(&path);
+        let first_name = fields.first_name.clone();
+        let last_name = fields.last_name.clone();
+        let agent_id = fields.agent_id;
         let generation = Uuid::new_v4();
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
@@ -369,6 +377,16 @@ impl SimulationState {
         // A receiver dropped after reservation may drop this lease in send().
         // Release the admission lock first so that cleanup cannot deadlock.
         drop(active);
+        {
+            // The span ends before the circuit starts, so the login trace is
+            // the admission itself.
+            let span = tracing::info_span!("login", agent_id = %agent_id);
+            let _entered = span.enter();
+            tracing::info!(
+                agent_id = %agent_id,
+                "login accepted first_name={first_name} last_name={last_name}"
+            );
+        }
         permit.send(accepted);
         Ok(())
     }

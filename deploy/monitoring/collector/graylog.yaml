@@ -1,0 +1,25 @@
+# Graylog 5.2 and later accept OTLP on their OTLP/gRPC input.
+# The contrib collector does not ship a GELF exporter, so this file does not
+# invent a GELF payload. Point endpoint at that input.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  otlp/graylog:
+    endpoint: graylog:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/graylog]

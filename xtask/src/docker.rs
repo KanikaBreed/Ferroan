@@ -51,6 +51,50 @@ pub(crate) const NAME_ROBUST: &str = "ferroan-p011-robust";
 pub(crate) const NAME_ASSETS: &str = "ferroan-p011-assets";
 #[cfg(target_os = "linux")]
 const NAME_PERSIST: &str = "ferroan-p011-persist";
+#[cfg(target_os = "linux")]
+pub(crate) const NAME_LOKI: &str = "ferroan-p011-loki";
+#[cfg(target_os = "linux")]
+pub(crate) const NAME_OTELCOL: &str = "ferroan-p011-otelcol";
+#[cfg(target_os = "linux")]
+const LOKI_IMAGE: &str = "grafana/loki:3.2.1";
+#[cfg(target_os = "linux")]
+const OTELCOL_IMAGE: &str = "otel/opentelemetry-collector-contrib:0.128.0";
+
+#[cfg(target_os = "linux")]
+struct SmokeFlags {
+    otlp: Option<String>,
+    labels: bool,
+}
+
+#[cfg(target_os = "linux")]
+static SMOKE: std::sync::Mutex<SmokeFlags> = std::sync::Mutex::new(SmokeFlags {
+    otlp: None,
+    labels: false,
+});
+
+#[cfg(target_os = "linux")]
+pub(crate) fn set_smoke(otlp: Option<String>, labels: bool) {
+    let mut flags = SMOKE.lock().unwrap_or_else(|poison| poison.into_inner());
+    flags.otlp = otlp;
+    flags.labels = labels;
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn smoke_otlp() -> Option<String> {
+    SMOKE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .otlp
+        .clone()
+}
+
+#[cfg(target_os = "linux")]
+fn smoke_labels() -> bool {
+    SMOKE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .labels
+}
 
 #[cfg(target_os = "linux")]
 const MIN_FREE: u64 = 12 * 1024 * 1024 * 1024;
@@ -185,6 +229,8 @@ fn smoke_linux() -> Result<String, String> {
     let users = prove_non_root()?;
     let restart = prove_volume_restart()?;
     let env_note = write_example_env()?;
+    let collectors = start_collectors()?;
+    set_smoke(Some("http://127.0.0.1:4318".to_string()), true);
     let started = Instant::now();
     let login = crate::grid::run_docker(&crate::live_args::RunSpec {
         scenario: "login".to_string(),
@@ -204,7 +250,7 @@ fn smoke_linux() -> Result<String, String> {
     remove_built_images();
     let _ = Command::new(DOCKER).args(["image", "prune", "-f"]).status();
     Ok(format!(
-        "{built}\n{users}\n{restart}\n{env_note}\nlogin:\n{login}\nferrobot:\n{ferrobot}\ndocker smoke login+ferrobot: {elapsed}s"
+        "{built}\n{users}\n{restart}\n{env_note}\n{collectors}\nlogin:\n{login}\nferrobot:\n{ferrobot}\ndocker smoke login+ferrobot: {elapsed}s"
     ))
 }
 
@@ -214,6 +260,7 @@ struct ContainerGuard;
 #[cfg(target_os = "linux")]
 impl Drop for ContainerGuard {
     fn drop(&mut self) {
+        set_smoke(None, false);
         remove_known();
     }
 }
@@ -514,6 +561,31 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
         }
         args.push(spec);
     }
+    if smoke_labels() && request.name == NAME_HOME {
+        let compose_dir = crate::repo_root().join("deploy/compose");
+        let compose_file = compose_dir.join("compose.yaml");
+        // `docker compose logs` lists containers that have the project label
+        // and the config-hash label. The hash value is not compared.
+        let labels = [
+            ("com.docker.compose.project", "ferroan-grid".to_string()),
+            ("com.docker.compose.service", "ferroan-region".to_string()),
+            ("com.docker.compose.container-number", "1".to_string()),
+            ("com.docker.compose.oneoff", "False".to_string()),
+            ("com.docker.compose.config-hash", "smoke".to_string()),
+            (
+                "com.docker.compose.project.working_dir",
+                compose_dir.display().to_string(),
+            ),
+            (
+                "com.docker.compose.project.config_files",
+                compose_file.display().to_string(),
+            ),
+        ];
+        for (key, value) in labels {
+            args.push("--label".to_string());
+            args.push(format!("{key}={value}"));
+        }
+    }
     if let Some(entrypoint) = request.entrypoint {
         args.push("--entrypoint".to_string());
         args.push(entrypoint.to_string());
@@ -669,6 +741,8 @@ fn remove_known() {
         NAME_ROBUST,
         NAME_ASSETS,
         NAME_PERSIST,
+        NAME_LOKI,
+        NAME_OTELCOL,
     ] {
         remove_container(name);
     }
@@ -691,12 +765,220 @@ fn remove_built_images() {
 fn require_known_name(name: &str) -> Result<(), String> {
     if matches!(
         name,
-        NAME_HOME | NAME_NEIGHBOUR | NAME_ROBUST | NAME_ASSETS | NAME_PERSIST
+        NAME_HOME
+            | NAME_NEIGHBOUR
+            | NAME_ROBUST
+            | NAME_ASSETS
+            | NAME_PERSIST
+            | NAME_LOKI
+            | NAME_OTELCOL
     ) {
         Ok(())
     } else {
         Err(format!("refusing to touch unexpected container {name}"))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn start_collectors() -> Result<String, String> {
+    require_port_free(3100)?;
+    require_port_free(4317)?;
+    require_port_free(4318)?;
+    start_detached(NAME_LOKI, &[LOKI_IMAGE])?;
+    wait_http("http://127.0.0.1:3100/ready", "loki")?;
+    let config = crate::repo_root().join("deploy/monitoring/collector/loki.yaml");
+    let stdout_dir = crate::repo_root().join(".scratch/otel-stdout");
+    fs::create_dir_all(&stdout_dir)
+        .map_err(|error| format!("could not create {}: {error}", stdout_dir.display()))?;
+    let config_mount = format!("{}:/etc/otelcol-contrib/config.yaml:ro", config.display());
+    let stdout_mount = format!("{}:/var/log/ferroan:ro", stdout_dir.display());
+    start_detached(
+        NAME_OTELCOL,
+        &[
+            "-v",
+            &config_mount,
+            "-v",
+            &stdout_mount,
+            OTELCOL_IMAGE,
+            "--config=/etc/otelcol-contrib/config.yaml",
+        ],
+    )?;
+    let validated = validate_exporters()?;
+    Ok(format!("loki and otel-collector started; {validated}"))
+}
+
+#[cfg(target_os = "linux")]
+fn start_detached(name: &str, extra: &[&str]) -> Result<(), String> {
+    require_known_name(name)?;
+    remove_container(name);
+    let mut args = vec!["run", "-d", "--name", name, "--network", "host"];
+    args.extend(extra);
+    let output = Command::new(DOCKER)
+        .args(&args)
+        .output()
+        .map_err(|error| format!("could not start {name}: {error}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "could not start {name}: {}",
+            err.chars().take(400).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_exporters() -> Result<String, String> {
+    let root = crate::repo_root().join("deploy/monitoring/collector");
+    let mut checked = Vec::new();
+    for name in [
+        "opensearch.yaml",
+        "signoz.yaml",
+        "graylog.yaml",
+        "splunk.yaml",
+    ] {
+        let path = root.join(name);
+        let mount = format!("{}:/etc/otelcol-contrib/config.yaml:ro", path.display());
+        let output = Command::new(DOCKER)
+            .args([
+                "run",
+                "--rm",
+                "-v",
+                &mount,
+                OTELCOL_IMAGE,
+                "validate",
+                "--config=/etc/otelcol-contrib/config.yaml",
+            ])
+            .output()
+            .map_err(|error| format!("could not validate {name}: {error}"))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let out = String::from_utf8_lossy(&output.stdout);
+            return Err(format!(
+                "otelcol validate {name} failed: {}{}",
+                out.chars().take(400).collect::<String>(),
+                err.chars().take(400).collect::<String>()
+            ));
+        }
+        checked.push(name);
+    }
+    Ok(format!("otelcol validate {}", checked.join(", ")))
+}
+
+#[cfg(target_os = "linux")]
+fn require_port_free(port: u16) -> Result<(), String> {
+    match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(_) => Err(format!("127.0.0.1:{port} is already in use")),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_http(url: &str, name: &str) -> Result<(), String> {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(40) {
+        if http_text(url).is_ok() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!("{name} did not become ready"))
+}
+
+#[cfg(target_os = "linux")]
+fn http_text(url: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("only http URLs are read")?;
+    let (hostport, path) = rest.split_once('/').ok_or("the URL has no path")?;
+    let path = format!("/{path}");
+    let (host, port) = hostport.split_once(':').ok_or("the URL has no port")?;
+    let port: u16 = port.parse().map_err(|_| "the URL port is not a number")?;
+    let mut stream = TcpStream::connect((host, port)).map_err(|error| error.to_string())?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if !text.contains(" 200 ") && !text.contains(" 204 ") {
+        return Err(format!("{url} did not return success"));
+    }
+    Ok(text)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn container_logs(name: &str) -> Result<String, String> {
+    require_known_name(name)?;
+    let output = Command::new(DOCKER)
+        .args(["logs", name])
+        .output()
+        .map_err(|error| format!("could not read docker logs: {error}"))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() && text.is_empty() {
+        return Err(format!("docker logs {name} failed"));
+    }
+    Ok(text)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn compose_region_logs() -> Result<String, String> {
+    let file = crate::repo_root().join("deploy/compose/compose.yaml");
+    let output = Command::new(DOCKER)
+        .args(["compose", "-p", "ferroan-grid", "-f"])
+        .arg(&file)
+        .args(["logs", "--no-color", "ferroan-region"])
+        .output()
+        .map_err(|error| format!("could not run docker compose logs: {error}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "docker compose logs failed: {}",
+            err.chars().take(400).collect::<String>()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn wait_loki_login() -> Result<String, String> {
+    let query = "{service_name=\"ferroan-region\"}";
+    let encoded = query
+        .replace('{', "%7B")
+        .replace('}', "%7D")
+        .replace('"', "%22")
+        .replace('=', "%3D");
+    let url = format!("http://127.0.0.1:3100/loki/api/v1/query?query={encoded}&limit=50");
+    let started = Instant::now();
+    let mut last = String::from("no response");
+    let mut labels = String::new();
+    while started.elapsed() < Duration::from_secs(45) {
+        if let Ok(text) = http_text(&url) {
+            let login = text.contains("login accepted");
+            let trace = text.contains("trace span=login");
+            if login && trace {
+                return Ok("service_name=ferroan-region".to_string());
+            }
+            last = format!("login={login}, trace={trace}, {} bytes", text.len());
+        }
+        if let Ok(text) = http_text("http://127.0.0.1:3100/loki/api/v1/labels") {
+            labels = text.chars().filter(|c| c.is_ascii()).take(240).collect();
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    Err(format!(
+        "loki did not store the login log and trace ({last}; labels {labels})"
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -922,6 +1204,8 @@ mod tests {
             "ferroan-region:",
             "prometheus:",
             "grafana:",
+            "loki:",
+            "otel-collector:",
         ] {
             assert!(COMPOSE.contains(name), "{name}");
         }
@@ -930,7 +1214,29 @@ mod tests {
         assert!(COMPOSE.contains("tranquillity-region:p0.11"));
         assert!(COMPOSE.contains("ferroan-robust:p0.11"));
         assert!(COMPOSE.contains("ferroan-region:p0.11"));
+        assert!(COMPOSE.contains("grafana/loki:3.2.1"));
+        assert!(COMPOSE.contains("otel/opentelemetry-collector-contrib:0.128.0"));
+        assert!(COMPOSE.contains("collector/loki.yaml"));
         assert!(!COMPOSE.to_ascii_lowercase().contains("password"));
+        let loki = include_str!("../../deploy/monitoring/collector/loki.yaml");
+        assert!(loki.contains("127.0.0.1:4318"));
+        assert!(loki.contains("3100/otlp"));
+        assert!(loki.contains("/var/log/ferroan"));
+        assert!(
+            include_str!("../../deploy/monitoring/collector/opensearch.yaml")
+                .contains("opensearch")
+        );
+        assert!(
+            include_str!("../../deploy/monitoring/collector/signoz.yaml")
+                .contains("otlphttp/signoz")
+        );
+        assert!(
+            include_str!("../../deploy/monitoring/collector/graylog.yaml").contains("otlp/graylog")
+        );
+        let splunk = include_str!("../../deploy/monitoring/collector/splunk.yaml");
+        assert!(splunk.contains("splunk_hec"));
+        assert!(splunk.contains("local-validate-token"));
+        assert!(!splunk.to_ascii_lowercase().contains("password"));
         for line in ENV_EXAMPLE.lines() {
             if let Some((_, value)) = line.split_once("PASSWORD") {
                 assert!(value.trim_start_matches('=').trim().is_empty(), "{line}");

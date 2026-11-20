@@ -64,6 +64,8 @@ enum RunError {
     #[error(transparent)]
     Config(#[from] RegionConfigError),
     #[error(transparent)]
+    Log(#[from] ferroan_log::LogError),
+    #[error(transparent)]
     Grid(#[from] GridError),
     #[error(transparent)]
     Caps(#[from] ferroan_client::CapsError),
@@ -133,6 +135,7 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
 }
 
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
+    let log_guard = ferroan_log::install(&config.logs)?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -175,14 +178,15 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         &config.monitoring,
         meters.clone(),
     );
-    let app = with_request_counts(
-        simulation
-            .clone()
-            .router()
-            .merge(caps.router())
-            .merge(region_router(status)),
-        meters.clone(),
-    );
+    let mut app = simulation
+        .clone()
+        .router()
+        .merge(caps.router())
+        .merge(region_router(status));
+    if let Some(console) = log_guard.console_router() {
+        app = app.merge(console);
+    }
+    let app = with_request_counts(app, meters.clone());
     let (stop_http, stopped) = oneshot::channel();
     let mut http = tokio::spawn(async move {
         axum::serve(
@@ -223,10 +227,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         return Err(error.into());
     }
     meters.set_registered(true);
-    println!(
-        "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
-        config.name
-    );
+    let region_name = &config.name;
+    tracing::info!("INITIALIZATION COMPLETE FOR {region_name} - LOGINS ENABLED");
     let (stop_circuits, stopped_circuits) = oneshot::channel();
     let mut circuits = tokio::spawn(dispatch_circuits(
         circuit,
@@ -269,7 +271,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
             }
         };
         if let Some(error) = error {
-            eprintln!("ferroan-region: logout cleanup failed: {error}");
+            tracing::error!("ferroan-region: logout cleanup failed: {error}");
             outcome = Err(error);
         }
     }
@@ -299,19 +301,19 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         let _ = http.await;
     }
     deregistered?;
-    println!("ferroan-region: deregistered");
+    tracing::info!("ferroan-region: deregistered");
     outcome
 }
 
 async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     if let Err(error) = grid_user.logged_out_region(region).await {
-        eprintln!("ferroan-region: startup GridUser cleanup failed: {error}");
+        tracing::error!("ferroan-region: startup GridUser cleanup failed: {error}");
     }
 }
 
 async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     if let Err(error) = presence.logout_region(region).await {
-        eprintln!("ferroan-region: Presence logoutregion failed: {error}");
+        tracing::error!("ferroan-region: Presence logoutregion failed: {error}");
     }
 }
 
@@ -363,28 +365,28 @@ async fn dispatch_circuits(
                         if connected && let Some(tx) = close_tx.take() {
                             let _ = tx.send(CircuitStop::Shutdown);
                             match (&mut serving).await {
-                                Ok(()) => println!("ferroan-region: LogoutReply sent"),
+                                Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
                                 Err(error) => {
-                                    eprintln!("ferroan-region: circuit ended: {error}")
+                                    tracing::error!("ferroan-region: circuit ended: {error}")
                                 }
                             }
                         }
                         break;
                     }
                     _ = agent.replaced() => {
-                        println!("ferroan-region: circuit replaced by a new login");
+                        tracing::info!("ferroan-region: circuit replaced by a new login");
                         if let Some(tx) = close_tx.take() {
                             let _ = tx.send(CircuitStop::Disable);
                         }
                         match (&mut serving).await {
-                            Ok(()) => println!("ferroan-region: LogoutReply sent"),
-                            Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                            Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                            Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                         }
                         break;
                     }
                     _ = &mut opening, if !connected => { connected = true; }
                     _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
-                        eprintln!("ferroan-region: login viewer did not connect before its deadline");
+                        tracing::error!("ferroan-region: login viewer did not connect before its deadline");
                         break;
                     }
                     report = &mut report_ready, if !reported => {
@@ -414,8 +416,8 @@ async fn dispatch_circuits(
                             report.complete();
                             if let Some(result) = ended {
                                 match result {
-                                    Ok(()) => println!("ferroan-region: LogoutReply sent"),
-                                    Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                                    Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                                    Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                                 }
                                 break;
                             }
@@ -423,8 +425,8 @@ async fn dispatch_circuits(
                     }
                     result = &mut serving => {
                         match result {
-                            Ok(()) => println!("ferroan-region: LogoutReply sent"),
-                            Err(error) => eprintln!("ferroan-region: circuit ended: {error}"),
+                            Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                            Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                         }
                         break;
                     }
@@ -444,7 +446,7 @@ async fn dispatch_circuits(
         drop(agent);
         drop(guard);
         if let Err(error) = result {
-            eprintln!("ferroan-region: logout notification failed: {error}");
+            tracing::error!("ferroan-region: logout notification failed: {error}");
         }
     }
     Ok(())
@@ -465,7 +467,7 @@ async fn notify_failed_login(
         return Ok(());
     }
     if let Err(error) = presence.logout(agent.expect.session_id).await {
-        eprintln!("ferroan-region: failed-login Presence logout failed: {error}");
+        tracing::error!("ferroan-region: failed-login Presence logout failed: {error}");
     }
     if agent.is_current()
         && let Some(previous) = grid_user.location(agent.expect.agent_id).await?
@@ -496,7 +498,7 @@ async fn notify_root_arrival(
         .report_agent(agent.expect.session_id, config.id)
         .await
     {
-        eprintln!("ferroan-region: root Presence report failed: {error}");
+        tracing::error!("ferroan-region: root Presence report failed: {error}");
     }
     // ScenePresence.Lookat still has its initial zero camera axis; the nonzero
     // CompleteMovement fallback belongs only to the viewer arrival packet.
@@ -504,7 +506,7 @@ async fn notify_root_arrival(
         .set_last_position(agent.expect.agent_id, config.id, agent.start_pos, [0.0; 3])
         .await
     {
-        eprintln!("ferroan-region: root GridUser position report failed: {error}");
+        tracing::error!("ferroan-region: root GridUser position report failed: {error}");
     }
 }
 
