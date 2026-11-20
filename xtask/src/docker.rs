@@ -911,7 +911,8 @@ fn http_text(url: &str) -> Result<String, String> {
     let _ = stream.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf).into_owned();
     if !text.contains(" 200 ") && !text.contains(" 204 ") {
-        return Err(format!("{url} did not return success"));
+        let head: String = text.chars().filter(|c| c.is_ascii()).take(160).collect();
+        return Err(format!("not success: {head}"));
     }
     Ok(text)
 }
@@ -952,27 +953,39 @@ pub(crate) fn compose_region_logs() -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn wait_loki_login() -> Result<String, String> {
+    // Loki rejects a log selector on the instant `/query` endpoint. A range
+    // covers the smoke run.
     let query = "{service_name=\"ferroan-region\"}";
     let encoded = query
         .replace('{', "%7B")
         .replace('}', "%7D")
         .replace('"', "%22")
         .replace('=', "%3D");
-    let url = format!("http://127.0.0.1:3100/loki/api/v1/query?query={encoded}&limit=50");
+    let end_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let start_ns = end_ns.saturating_sub(5 * 60 * 1_000_000_000);
+    let url = format!(
+        "http://127.0.0.1:3100/loki/api/v1/query_range?query={encoded}&start={start_ns}&end={end_ns}&limit=50"
+    );
     let started = Instant::now();
     let mut last = String::from("no response");
     let mut labels = String::new();
     while started.elapsed() < Duration::from_secs(45) {
-        if let Ok(text) = http_text(&url) {
-            let login = text.contains("login accepted");
-            let trace = text.contains("trace span=login");
-            if login && trace {
-                return Ok("service_name=ferroan-region".to_string());
+        match http_text(&url) {
+            Ok(text) => {
+                let login = text.contains("login accepted");
+                let trace = text.contains("trace span=login");
+                if login && trace {
+                    return Ok("service_name=ferroan-region".to_string());
+                }
+                last = format!("login={login}, trace={trace}, {} bytes", text.len());
             }
-            last = format!("login={login}, trace={trace}, {} bytes", text.len());
+            Err(error) => last = error.chars().take(180).collect(),
         }
         if let Ok(text) = http_text("http://127.0.0.1:3100/loki/api/v1/labels") {
-            labels = text.chars().filter(|c| c.is_ascii()).take(240).collect();
+            labels = text.chars().filter(|c| c.is_ascii()).take(180).collect();
         }
         thread::sleep(Duration::from_secs(1));
     }
