@@ -4,8 +4,11 @@
 //! Scenarios for `cargo xtask live run`. Each check uses a reply from the
 //! region. The caller starts and stops the region and supplies the accounts.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
@@ -22,11 +25,20 @@ const STEP: Duration = Duration::from_millis(100);
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 
+/// Called with the account's principal before [`login::login`].
+///
+/// The harness installs this. A nil id is refused by the caller, and the hook
+/// itself must not log in.
+pub type LoginGate =
+    Arc<dyn Fn(Uuid) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
 /// One account the region already has. The password is not printed.
 pub struct Account {
     pub first_name: String,
     pub last_name: String,
     pub password: String,
+    /// GridUser and Presence key. Nil is refused before login.
+    pub principal_id: Uuid,
 }
 
 /// A region next to the one [`Harness::region_id`] names.
@@ -57,6 +69,11 @@ pub struct Harness {
     /// Set by grid mode. Standalone leaves this empty, and `all` then stays
     /// the seven names in [`NAMES`].
     pub neighbour: Option<Neighbour>,
+    /// Presence and GridUser listener. Robust in grid mode, the region in
+    /// standalone. The hook reads it; the login itself uses [`Harness::login_uri`].
+    pub service_probe: String,
+    /// Runs before every [`enter`]. The harness waits for the account to settle.
+    pub before_login: LoginGate,
 }
 
 /// Region handle from map tiles, as `Util.RegionGridLocToHandle` packs it.
@@ -952,6 +969,10 @@ async fn enter(
     harness: &Harness,
     account: &Account,
 ) -> Result<(Session, LoginResponse), String> {
+    if account.principal_id.is_nil() {
+        return Err("the account has no principal id".to_string());
+    }
+    (harness.before_login)(account.principal_id).await?;
     let response = login::login(
         http,
         &LoginRequest {

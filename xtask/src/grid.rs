@@ -884,6 +884,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let report = if let Some(executable) = ferrobot_binary {
         let harness = live::harness(
             &format!("http://{ADVERTISED}:{public_proxy}/"),
+            &format!("http://{ADVERTISED}:{private_proxy}"),
             &estate,
             &chat,
             &home_log,
@@ -1306,7 +1307,7 @@ fn run_bot(
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
-    let mut harness = live::harness(login_uri, estate, chat, region_log)?;
+    let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
     harness.neighbour = Some(ferroan_bot::scenario::Neighbour {
         region_id: neighbour_id,
@@ -2398,6 +2399,7 @@ mod tests {
         assert!(ini.contains("PublicPort = \"8002\""));
         assert!(ini.contains("PrivatePort = \"8003\""));
         assert!(ini.contains("CaptureFile = \"/tmp/ferroan-capture.cap\""));
+        assert!(!ini.contains("ServiceProbe"));
         assert!(ini.contains("DefaultEstateOwnerPassword = \"generated-password\""));
         assert!(!ini.contains("127.0.0.4"));
         let regions = regions_ini(&sample_region(None));

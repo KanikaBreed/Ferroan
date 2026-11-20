@@ -345,10 +345,10 @@ fn region_server_ini(
     Include-Architecture = "config-include/Standalone.ini"{asset_include}
 "#
     );
+    // Standalone logins probe this process. Grid inis leave the key unset.
+    ini.push_str("\n[ClientStack.LindenUDP]\n    ServiceProbe = true\n");
     if let Some(capture) = capture {
-        ini.push_str(&format!(
-            "\n[ClientStack.LindenUDP]\n    CaptureFile = \"{capture}\"\n"
-        ));
+        ini.push_str(&format!("    CaptureFile = \"{capture}\"\n"));
     }
     Ok(ini)
 }
@@ -756,8 +756,10 @@ fn run_ferrobot() -> Result<String, String> {
         // Region and Ferrobot share the claim taken before either child starts.
         let chat_password = generate_password()?;
         create_chat_user(&mut started, &chat_password)?;
+        let probe = format!("http://127.0.0.1:{}", started.public_port);
         let harness = harness(
             &format!("http://127.0.0.1:{}/", started.public_port),
+            &probe,
             &started.password,
             &chat_password,
             &started.log,
@@ -1070,6 +1072,7 @@ fn run_scenarios_with_accounts(
 ) -> Result<ScenarioOutcome, String> {
     let harness = harness(
         &format!("http://127.0.0.1:{public_port}/"),
+        &format!("http://127.0.0.1:{public_port}"),
         password,
         chat_password,
         log,
@@ -1089,6 +1092,7 @@ fn run_scenarios_with_accounts(
 #[cfg(target_os = "linux")]
 pub(crate) fn harness(
     login_uri: &str,
+    service_probe: &str,
     password: &str,
     chat_password: &str,
     log: &Path,
@@ -1098,6 +1102,11 @@ pub(crate) fn harness(
         .map_err(|_| "the region uuid is not a uuid".to_string())?;
     let library = uuid::Uuid::parse_str("2a4880b6-b7a3-690a-2049-bfbe38eafb9f")
         .map_err(|_| "the library texture uuid is not a uuid".to_string())?;
+    let owner_id = uuid::Uuid::parse_str(ESTATE_OWNER)
+        .map_err(|_| "the estate owner uuid is not a uuid".to_string())?;
+    let chat_id = uuid::Uuid::parse_str(CHAT_USER)
+        .map_err(|_| "the chat user uuid is not a uuid".to_string())?;
+    let probe = service_probe.to_owned();
     Ok(ferroan_bot::scenario::Harness {
         login_uri: login_uri.to_owned(),
         region_id,
@@ -1105,11 +1114,13 @@ pub(crate) fn harness(
             first_name: "Test".to_string(),
             last_name: "User".to_string(),
             password: password.to_owned(),
+            principal_id: owner_id,
         },
         chat: ferroan_bot::scenario::Account {
             first_name: "Chat".to_string(),
             last_name: "Bot".to_string(),
             password: chat_password.to_owned(),
+            principal_id: chat_id,
         },
         texture,
         library_texture: library,
@@ -1117,6 +1128,13 @@ pub(crate) fn harness(
         region_log: log.to_owned(),
         require_logout_reply: false,
         neighbour: None,
+        service_probe: probe.clone(),
+        before_login: std::sync::Arc::new(move |principal| {
+            let probe = probe.clone();
+            Box::pin(async move {
+                crate::grid::login_probe::await_settled(&probe, &principal.to_string()).await
+            })
+        }),
     })
 }
 
@@ -2185,6 +2203,7 @@ mod tests {
         .unwrap();
         assert!(ini.contains("BaseURL = http://${Const|BaseHostname}"));
         assert!(ini.contains("CaptureFile = \"/tmp/regions/capture-udp.cap\""));
+        assert!(ini.contains("ServiceProbe = true"));
         let quiet = region_server_ini(
             Path::new("/tmp/regions"),
             None,
@@ -2196,6 +2215,7 @@ mod tests {
         )
         .unwrap();
         assert!(!quiet.contains("CaptureFile"));
+        assert!(quiet.contains("ServiceProbe = true"));
         let pointed = region_server_ini(
             Path::new("/tmp/regions"),
             None,

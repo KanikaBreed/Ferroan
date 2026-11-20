@@ -62,7 +62,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | DONE (#106) |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | DONE (#108) |
 | Q10v | Pin5: move the Tranquillity pin to the maintainer's `dev-build` roll-up `c70fee2` (28 open upstream PRs, TB1 and TB10 to TB18 fixed) | DONE (#112) |
-| Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | READY after Q10v |
+| Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | IN PROGRESS (`feat/presence-handlers`) |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q10u, or after Q13a if Q10u is BLOCKED again |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |

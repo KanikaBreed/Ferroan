@@ -60,6 +60,7 @@ mod limits_probe;
 mod live;
 mod live_args;
 mod live_proxy;
+mod login_gate;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
@@ -182,7 +183,7 @@ fn main() -> ExitCode {
 
 fn check(docs_only: bool) -> ExitCode {
     let root = repo_root();
-    if !check_markdown(&root) || !limit_ids::check(&root) {
+    if !check_markdown(&root) || !limit_ids::check(&root) || !login_gate::check(&root) {
         return ExitCode::FAILURE;
     }
     if docs_only {

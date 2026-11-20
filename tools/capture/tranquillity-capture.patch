@@ -98,7 +98,7 @@ index 0000000000..428a250413
 +    }
 +}
 diff --git a/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs b/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
-index 003d191273..dbf435458b 100755
+index 6edab9ce22..2c22725e07 100755
 --- a/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
 +++ b/Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
 @@ -422,6 +422,7 @@ public class LLUDPServer : OpenSimUDPBase
@@ -110,7 +110,7 @@ index 003d191273..dbf435458b 100755
          else
          {
 diff --git a/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs b/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
-index c40a6c263b..d3ef45a9ff 100644
+index aff9357362..9069174aef 100644
 --- a/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
 +++ b/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSimUDPBase.cs
 @@ -66,6 +66,9 @@ public abstract class OpenSimUDPBase
@@ -123,14 +123,14 @@ index c40a6c263b..d3ef45a9ff 100644
      public static Object m_udpBuffersPoolLock = new();
      public static UDPPacketBuffer[] m_udpBuffersPool = new UDPPacketBuffer[1000];
      public static int m_udpBuffersPoolPtr = -1;
-@@ -268,9 +271,36 @@ public abstract class OpenSimUDPBase
+@@ -277,9 +280,36 @@ public abstract class OpenSimUDPBase
              InboundCancellationSource.Cancel();
              m_udpSocket.Close();
              m_udpSocket = null;
 +            CloseDatagramCapture();
-+        }
-+    }
-+
+         }
+     }
+ 
 +    /// <summary>
 +    /// Open a FERROCAP1 file for raw inbound and outbound datagrams.
 +    /// An empty path leaves capture off. A failure is logged by exception type and does not stop the server.
@@ -146,9 +146,9 @@ index c40a6c263b..d3ef45a9ff 100644
 +        catch (Exception e)
 +        {
 +            m_log.LogWarning("[UDPBASE]: datagram capture did not open: {Type}", e.GetType().Name);
-         }
-     }
- 
++        }
++    }
++
 +    /// <summary>Close the capture file. Safe to call more than once.</summary>
 +    public void CloseDatagramCapture()
 +    {
@@ -160,7 +160,7 @@ index c40a6c263b..d3ef45a9ff 100644
      public virtual void StopOutbound()
      {
          m_log.LogDebug("[UDPBASE]: Stopping outbound UDP loop");
-@@ -301,6 +331,7 @@ public abstract class OpenSimUDPBase
+@@ -310,6 +340,7 @@ public abstract class OpenSimUDPBase
                      buf.RemoteEndPoint = Util.GetEndPoint(workSktAddress);
                      buf.DataLength = nbytes;
                      UdpReceives++;
@@ -168,7 +168,7 @@ index c40a6c263b..d3ef45a9ff 100644
  
                      PacketReceived(buf);
  
-@@ -337,6 +368,7 @@ public abstract class OpenSimUDPBase
+@@ -346,6 +377,7 @@ public abstract class OpenSimUDPBase
              return; // already expired
          try
          {
@@ -176,3 +176,110 @@ index c40a6c263b..d3ef45a9ff 100644
              m_udpSocket.SendTo(
                  buf.Data,
                  0,
+diff --git a/Source/OpenSim.Region.CoreModules/PluginRegistration.cs b/Source/OpenSim.Region.CoreModules/PluginRegistration.cs
+index 5cbe2c41f5..1e4eca048c 100644
+--- a/Source/OpenSim.Region.CoreModules/PluginRegistration.cs
++++ b/Source/OpenSim.Region.CoreModules/PluginRegistration.cs
+@@ -94,6 +94,7 @@ public class PluginRegistration : IPluginRegistryProvider
+         RegisterByName(registry, "/OpenSim/RegionModules", "InventoryServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Inventory.InventoryServiceInConnectorModule", "InventoryServiceInConnectorModule");
+         RegisterByName(registry, "/OpenSim/RegionModules", "LandServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Land.LandServiceInConnectorModule", "LandServiceInConnectorModule");
+         RegisterByName(registry, "/OpenSim/RegionModules", "LLLoginServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Login.LLLoginServiceInConnectorModule", "LLLoginServiceInConnectorModule");
++        RegisterByName(registry, "/OpenSim/RegionModules", "ServiceProbeConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Presence.ServiceProbeConnectorModule", "ServiceProbeConnectorModule");
+         RegisterByName(registry, "/OpenSim/RegionModules", "MapImageServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.MapImage.MapImageServiceInConnectorModule", "MapImageServiceInConnectorModule");
+         RegisterByName(registry, "/OpenSim/RegionModules", "NeighbourServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Neighbour.NeighbourServiceInConnectorModule", "NeighbourServiceInConnectorModule");
+         RegisterByName(registry, "/OpenSim/RegionModules", "SimulationServiceInConnectorModule", "OpenSim.Region.CoreModules.ServiceConnectorsIn.Simulation.SimulationServiceInConnectorModule", "SimulationServiceInConnectorModule");
+diff --git a/Source/OpenSim.Region.CoreModules/Resources/OpenSim.Region.CoreModules.addin.xml b/Source/OpenSim.Region.CoreModules/Resources/OpenSim.Region.CoreModules.addin.xml
+index 961c694cbe..618b150f71 100644
+--- a/Source/OpenSim.Region.CoreModules/Resources/OpenSim.Region.CoreModules.addin.xml
++++ b/Source/OpenSim.Region.CoreModules/Resources/OpenSim.Region.CoreModules.addin.xml
+@@ -72,6 +72,7 @@
+         <RegionModule id="InventoryServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Inventory.InventoryServiceInConnectorModule" />
+         <RegionModule id="LandServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Land.LandServiceInConnectorModule" />
+         <RegionModule id="LLLoginServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Login.LLLoginServiceInConnectorModule" />
++        <RegionModule id="ServiceProbeConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Presence.ServiceProbeConnectorModule" />
+         <RegionModule id="MapImageServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.MapImage.MapImageServiceInConnectorModule" />
+         <RegionModule id="NeighbourServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Neighbour.NeighbourServiceInConnectorModule" />
+         <RegionModule id="SimulationServiceInConnectorModule" class="OpenSim.Region.CoreModules.ServiceConnectorsIn.Simulation.SimulationServiceInConnectorModule" />
+diff --git a/Source/OpenSim.Region.CoreModules/ServiceConnectorsIn/Presence/ServiceProbeConnectorModule.cs b/Source/OpenSim.Region.CoreModules/ServiceConnectorsIn/Presence/ServiceProbeConnectorModule.cs
+new file mode 100644
+index 0000000000..3b146006ea
+--- /dev/null
++++ b/Source/OpenSim.Region.CoreModules/ServiceConnectorsIn/Presence/ServiceProbeConnectorModule.cs
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (c) 2026 Ferroan contributors
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * New file added by tools/capture/tranquillity-capture.patch.
++ * Applied only to a local Tranquillity build. Not part of upstream.
++ *
++ * When [ClientStack.LindenUDP] ServiceProbe is true, host the existing
++ * Presence and GridUser POST handlers on the region HTTP server. A second
++ * service in this process shares the static caches LLLoginService checks.
++ * The setting is off by default, so an unpatched config does not register them.
++ */
++
++using System.Reflection;
++using Microsoft.Extensions.Logging;
++using Nini.Config;
++using OpenSim.Framework;
++using OpenSim.Framework.Servers;
++using OpenSim.Region.Framework.Interfaces;
++using OpenSim.Region.Framework.Scenes;
++using OpenSim.Server.Handlers.GridUser;
++using OpenSim.Server.Handlers.Presence;
++
++namespace OpenSim.Region.CoreModules.ServiceConnectorsIn.Presence;
++
++public class ServiceProbeConnectorModule : ISharedRegionModule
++{
++    private static readonly ILogger m_log = LoggerProvider.CreateLogger(MethodBase.GetCurrentMethod().DeclaringType);
++    private static bool m_Enabled;
++    private static bool m_Registered;
++
++    private IConfigSource m_Config;
++
++    public void Initialise(IConfigSource config)
++    {
++        m_Config = config;
++        IConfig udp = config.Configs["ClientStack.LindenUDP"];
++        m_Enabled = udp != null && udp.GetBoolean("ServiceProbe", false);
++    }
++
++    public void PostInitialise()
++    {
++    }
++
++    public void Close()
++    {
++    }
++
++    public Type ReplaceableInterface
++    {
++        get { return null; }
++    }
++
++    public string Name
++    {
++        get { return "ServiceProbeConnectorModule"; }
++    }
++
++    public void AddRegion(Scene scene)
++    {
++    }
++
++    public void RemoveRegion(Scene scene)
++    {
++    }
++
++    public void RegionLoaded(Scene scene)
++    {
++        if (!m_Enabled || m_Registered)
++            return;
++
++        m_Registered = true;
++        new PresenceServiceConnector(m_Config, MainServer.Instance.DefaultServer, "PresenceService");
++        new GridUserServiceConnector(m_Config, MainServer.Instance.DefaultServer, "GridUserService");
++        m_log.LogInformation("[SERVICE PROBE]: presence and griduser handlers registered");
++    }
++}

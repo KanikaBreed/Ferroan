@@ -183,29 +183,90 @@ pub async fn offline(private_uri: &str) -> Result<(), String> {
 }
 
 async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
+    await_settled(private_uri, user).await
+}
+
+/// Wait until GridUser is offline and Presence has no session, or fail with
+/// the last state. The login is the caller's; this function never logs in.
+pub async fn await_settled(private_uri: &str, user: &str) -> Result<(), String> {
+    require_principal(user)?;
     // ActivityDetector can finish after LogoutReply; observe bounded eventual
     // service state rather than accepting the viewer acknowledgement as proof.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut grid_offline = false;
+    let mut presence_empty = false;
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(settle_error(grid_offline, presence_empty));
+        }
         let mut grid = fields("getgriduserinfo");
         grid.insert("UserID".into(), Field::Str(user.into()));
-        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid).await?;
+        let grid = match post_before(deadline, &service_url(private_uri, "griduser"), &grid).await {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(format!(
+                    "{error}; {}",
+                    settle_error(grid_offline, presence_empty)
+                ));
+            }
+        };
         let mut presence = fields("getagents");
         presence.insert("uuids".into(), Field::List(vec![user.into()]));
-        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence).await?;
-        let grid_offline = matches!(grid.get("result"), Some(Field::Map(info)) if matches!(info.get("Online"), Some(Field::Str(value)) if value.eq_ignore_ascii_case("false")));
-        let presence_empty =
+        let presence =
+            match post_before(deadline, &service_url(private_uri, "presence"), &presence).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(format!(
+                        "{error}; {}",
+                        settle_error(grid_offline, presence_empty)
+                    ));
+                }
+            };
+        grid_offline = matches!(grid.get("result"), Some(Field::Map(info)) if matches!(info.get("Online"), Some(Field::Str(value)) if value.eq_ignore_ascii_case("false")));
+        presence_empty =
             matches!(presence.get("result"), Some(Field::Str(value)) if value == "null");
         if grid_offline && presence_empty {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "logout service state did not settle: GridUser offline={grid_offline}, Presence empty={presence_empty}"
-            ));
+            return Err(settle_error(grid_offline, presence_empty));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The one login every `xtask` caller uses. A refused or unfinished settle
+/// returns before `login_to_simulator` is posted.
+pub async fn login_when_settled(
+    probe: &str,
+    principal: &str,
+    http: &reqwest::Client,
+    request: &ferroan_bot::login::LoginRequest,
+) -> Result<ferroan_bot::login::LoginResponse, String> {
+    await_settled(probe, principal).await?;
+    ferroan_bot::login(http, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn require_principal(user: &str) -> Result<(), String> {
+    let id =
+        uuid::Uuid::parse_str(user).map_err(|_| "the login principal is not a uuid".to_string())?;
+    if id.is_nil() {
+        return Err("the login principal is nil".to_string());
+    }
+    Ok(())
+}
+
+fn settle_error(grid_offline: bool, presence_empty: bool) -> String {
+    format!(
+        "logout service state did not settle: GridUser offline={grid_offline}, Presence empty={presence_empty}"
+    )
+}
+
+fn service_url(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    format!("{base}/{path}")
 }
 
 async fn post_before(
@@ -270,7 +331,7 @@ pub async fn missing_presence(private_uri: &str) -> Result<(), String> {
     );
     let reply = post_before(
         tokio::time::Instant::now() + Duration::from_secs(10),
-        &format!("{private_uri}/presence"),
+        &service_url(private_uri, "presence"),
         &request,
     )
     .await?;
@@ -587,6 +648,182 @@ mod tests {
         service.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn nil_principal_does_not_log_in() {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let error = login_when_settled(
+            "http://127.0.0.1:9/",
+            "00000000-0000-0000-0000-000000000000",
+            &http,
+            &ferroan_bot::login::LoginRequest {
+                login_uri: "http://127.0.0.1:9/".into(),
+                username: "Test User".into(),
+                password: "unused".into(),
+                start: "last".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("nil"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn asset_login_waits_while_presence_is_held() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let owner = crate::live::ESTATE_OWNER;
+        let released = Arc::new(AtomicBool::new(false));
+        let logins = Arc::new(AtomicUsize::new(0));
+        let (waiting, held) = tokio::sync::oneshot::channel();
+        let release_flag = released.clone();
+        let login_count = logins.clone();
+        let service = tokio::spawn(async move {
+            let mut waiting = Some(waiting);
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_http(&mut socket).await;
+                if request.contains("login_to_simulator") {
+                    assert!(
+                        release_flag.load(Ordering::SeqCst),
+                        "login_to_simulator was posted while Presence was held"
+                    );
+                    login_count.fetch_add(1, Ordering::SeqCst);
+                    socket
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await
+                        .unwrap();
+                    break;
+                }
+                assert!(request.contains(owner), "probe omitted the asset account");
+                let grid = request.contains("METHOD=getgriduserinfo");
+                let held_presence = !release_flag.load(Ordering::SeqCst);
+                if !grid
+                    && held_presence
+                    && let Some(sender) = waiting.take()
+                {
+                    sender.send(()).unwrap();
+                }
+                let result = if grid {
+                    "<result type=\"List\"><Online>False</Online></result>"
+                } else if held_presence {
+                    "<result type=\"List\"><UserID>held</UserID></result>"
+                } else {
+                    "<result>null</result>"
+                };
+                let body = format!("<ServerResponse>{result}</ServerResponse>");
+                let bytes = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(bytes.as_bytes()).await.unwrap();
+            }
+        });
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let login_uri = format!("{uri}/");
+        let probe = uri.clone();
+        let runner = tokio::spawn(async move {
+            login_when_settled(
+                &probe,
+                owner,
+                &http,
+                &ferroan_bot::login::LoginRequest {
+                    login_uri,
+                    username: "Test User".into(),
+                    password: "unused".into(),
+                    start: "last".into(),
+                },
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), held)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(logins.load(Ordering::SeqCst), 0);
+        released.store(true, Ordering::SeqCst);
+        let result = tokio::time::timeout(Duration::from_secs(3), runner)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err(), "the fake login reply is not a session");
+        assert_eq!(logins.load(Ordering::SeqCst), 1);
+        service.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_is_not_attempted_when_the_presence_bound_runs_out() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let owner = crate::live::ESTATE_OWNER;
+        let logins = Arc::new(AtomicUsize::new(0));
+        let login_count = logins.clone();
+        let service = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let request = read_http(&mut socket).await;
+                if request.contains("login_to_simulator") {
+                    login_count.fetch_add(1, Ordering::SeqCst);
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                    continue;
+                }
+                assert!(request.contains(owner), "probe omitted the asset account");
+                let grid = request.contains("METHOD=getgriduserinfo");
+                let result = if grid {
+                    "<result type=\"List\"><Online>True</Online></result>"
+                } else {
+                    "<result type=\"List\"><UserID>held</UserID></result>"
+                };
+                let body = format!("<ServerResponse>{result}</ServerResponse>");
+                let bytes = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(bytes.as_bytes()).await;
+            }
+        });
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let error = login_when_settled(
+            &uri,
+            owner,
+            &http,
+            &ferroan_bot::login::LoginRequest {
+                login_uri: format!("{uri}/"),
+                username: "Test User".into(),
+                password: "unused".into(),
+                start: "last".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("GridUser offline=false"), "{error}");
+        assert!(error.contains("Presence empty=false"), "{error}");
+        assert_eq!(logins.load(Ordering::SeqCst), 0);
+        service.abort();
+    }
+
     #[test]
     fn online_probe_requires_current_identity_region_exact_position_and_live_state() {
         let fixture: Value =
@@ -700,5 +937,32 @@ mod tests {
             assert!(generate(&directory).is_err());
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    async fn read_http(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut request = Vec::new();
+        loop {
+            let mut bytes = [0; 4096];
+            let n = socket.read(&mut bytes).await.unwrap();
+            assert!(n > 0);
+            request.extend_from_slice(&bytes[..n]);
+            let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&request[..end]).unwrap();
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            if request.len() >= end + 4 + length {
+                break;
+            }
+        }
+        String::from_utf8(request).unwrap()
     }
 }
