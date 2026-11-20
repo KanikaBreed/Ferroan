@@ -39,6 +39,13 @@ const MAX_EXCHANGES: usize = 256;
 const MAX_INTERIM_RESPONSES: usize = 16;
 const MAX_FINISH_TIMEOUT: Duration = Duration::from_secs(320);
 
+/// `TCP_NODELAY`, as `HttpListener.cs` does after accept and
+/// `OutboundUrlFilter.cs` does before connect. The same call as
+/// `ferroan_http::set_tcp_nodelay`; this crate does not depend on that one.
+fn set_tcp_nodelay(stream: &TcpStream) -> io::Result<()> {
+    stream.set_nodelay(true)
+}
+
 /// Retained evidence for one proxy, even if its serving task has returned.
 /// Use a fresh status per server and call `finish` before dropping its runtime.
 #[derive(Clone, Default)]
@@ -213,6 +220,11 @@ async fn serve_inner(
             _ = status.0.stop.notified() => {}
             accepted = listener.accept(), if exchanges.len() < MAX_EXCHANGES => {
                 let (client, _) = accepted?;
+                // HttpListener.cs disposes the socket and keeps accepting when
+                // setting NoDelay throws. No exchange has started.
+                if set_tcp_nodelay(&client).is_err() {
+                    continue;
+                }
                 let capture = Arc::clone(&capture);
                 let status = status.clone();
                 exchanges.spawn(async move {
@@ -295,6 +307,9 @@ async fn forward(
     let mut server = timeout(IO_WAIT, TcpStream::connect(upstream))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"))??;
+    // The socket exists only after connect. C# sets NoDelay before ConnectAsync;
+    // the following writes see the same option.
+    set_tcp_nodelay(&server)?;
     write_message(&mut server, &forwarded).await?;
     let response = read_message(&mut server, false, reply_timeout).await?;
     capture.push(Kind::HttpResponse, &response)?;
@@ -1087,5 +1102,19 @@ mod tests {
         serving.abort();
         let _ = serving.await;
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn accepted_socket_reads_tcp_nodelay() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            set_tcp_nodelay(&stream).unwrap();
+            let _ = tx.send(stream.nodelay().unwrap());
+        });
+        let _client = TcpStream::connect(addr).await.unwrap();
+        assert!(rx.await.unwrap());
     }
 }

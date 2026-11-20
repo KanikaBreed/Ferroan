@@ -91,7 +91,7 @@ fn run() -> Result<(), String> {
 }
 
 async fn axum_serve(listener: TcpListener, router: axum::Router) -> Result<(), String> {
-    axum::serve(listener, router)
+    axum::serve(ferroan_http::accepted_nodelay(listener), router)
         .await
         .map_err(|error| error.to_string())
 }

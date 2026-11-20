@@ -51,6 +51,7 @@ mod inventory_probe;
 mod live;
 mod live_args;
 mod live_proxy;
+mod nodelay;
 mod oracle;
 mod oracle_reference;
 mod pin3_oracle;

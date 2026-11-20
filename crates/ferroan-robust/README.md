@@ -8,7 +8,7 @@ ferroan-robust [--inimaster FILE] [--inifile FILE] [--inidirectory DIR]
 
 `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working directory. Repeat `--inifile` for extra files. `--inidirectory` defaults to `config` and is skipped when that directory is absent. Loading follows `GridServerConfigSource` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`.
 
-The process listens on `[Network] bind_ip_address` and `[Network] port`; an empty bind address defaults to `0.0.0.0`. The live harness sets loopback explicitly. The asset section needs:
+The process listens on `[Network] bind_ip_address` and `[Network] port`; an empty bind address defaults to `0.0.0.0`. Every accepted socket has `TCP_NODELAY` set. The live harness sets loopback explicitly. The asset section needs:
 
 ```ini
 [AssetService]
