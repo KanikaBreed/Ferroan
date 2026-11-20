@@ -195,6 +195,12 @@ pub async fn listen(router: axum::Router) -> Result<ConsoleListen, LogError> {
 }
 
 pub fn install(settings: &Settings) -> Result<Guard, LogError> {
+    ferroan_diag::set_redactor(redact::redact);
+    ferroan_diag::set_context(
+        &settings.server,
+        settings.region_name.as_deref().unwrap_or(""),
+    );
+    ferroan_diag::install_panic_hook();
     let mut owned = settings.clone();
     if owned.log_dir.is_none()
         && let Some(dir) = std::env::var_os("LOGDIR").filter(|dir| !dir.is_empty())
@@ -308,6 +314,12 @@ impl Hub {
         span_id: Option<&str>,
     ) {
         let message = one_line(message);
+        if matches!(*event, tracing::Level::ERROR | tracing::Level::WARN)
+            && target != "ferroan::limit"
+            && target != "ferroan::error"
+        {
+            ferroan_diag::push_log(level::label(event), target, &redact::redact(&message));
+        }
         let now = timefmt::stamp(std::time::SystemTime::now());
         let plain = format!(
             "{stamp} {level:<5} {message}",

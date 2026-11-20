@@ -21,6 +21,7 @@
 //! warning text are Ferroan additions; the matching policy follows C#.
 
 use ferroan_config::Config;
+use ferroan_diag::{self, CONTROL_ADDRESSES, CONTROL_HOST_BYTES, CONTROL_HOSTS, Kind};
 use std::collections::HashSet;
 use std::future::Future;
 use std::io;
@@ -164,13 +165,27 @@ impl ControlPlaneAccess {
             match result {
                 Ok(addresses) if !addresses.is_empty() => {
                     if addresses.len() > MAX_ADDRESSES {
+                        ferroan_diag::refuse(
+                            CONTROL_ADDRESSES,
+                            Kind::Hard,
+                            MAX_ADDRESSES as u64,
+                            addresses.len() as u64,
+                            "control",
+                        );
                         return Err(ControlPlaneError::Limit);
                     }
                     let found: HashSet<_> = addresses.into_iter().map(normalize_address).collect();
                     by_name[index] = found.into_iter().collect();
-                    if self.0.addresses.len() + by_name.iter().map(Vec::len).sum::<usize>()
-                        > MAX_ADDRESSES
-                    {
+                    let total =
+                        self.0.addresses.len() + by_name.iter().map(Vec::len).sum::<usize>();
+                    if total > MAX_ADDRESSES {
+                        ferroan_diag::refuse(
+                            CONTROL_ADDRESSES,
+                            Kind::Hard,
+                            MAX_ADDRESSES as u64,
+                            total as u64,
+                            "control",
+                        );
                         return Err(ControlPlaneError::Limit);
                     }
                 }
@@ -198,6 +213,13 @@ impl Policy {
             return Ok(());
         }
         if entry.len() > MAX_HOST_BYTES {
+            ferroan_diag::refuse(
+                CONTROL_HOST_BYTES,
+                Kind::Hard,
+                MAX_HOST_BYTES as u64,
+                entry.len() as u64,
+                "control",
+            );
             return Err(ControlPlaneError::Limit);
         }
         let host = host_of(entry);
@@ -216,6 +238,13 @@ impl Policy {
             .any(|(name, _)| name.eq_ignore_ascii_case(&host))
         {
             if self.names.len() >= MAX_HOSTS {
+                ferroan_diag::refuse(
+                    CONTROL_HOSTS,
+                    Kind::Hard,
+                    MAX_HOSTS as u64,
+                    (self.names.len() + 1) as u64,
+                    "control",
+                );
                 return Err(ControlPlaneError::Limit);
             }
             self.names.push((host, index));

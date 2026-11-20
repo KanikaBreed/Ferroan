@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use ferroan_diag::{self, Kind, OTLP_QUEUE};
+
 use crate::LogError;
 use crate::timefmt::stamp;
 
@@ -93,13 +95,25 @@ impl Exporter {
 
     pub(crate) fn log(&self, record: LogRecord) {
         self.records.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.try_send(Message::Log(record));
+        self.submit(Message::Log(record));
     }
 
     pub(crate) fn span(&self, record: SpanRecord) {
-        match self.tx.try_send(Message::Span(record)) {
+        self.submit(Message::Span(record));
+    }
+
+    fn submit(&self, message: Message) {
+        match self.tx.try_send(message) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                ferroan_diag::drop_bound(
+                    OTLP_QUEUE,
+                    Kind::Soft,
+                    QUEUE as u64,
+                    QUEUE as u64,
+                    "otlp",
+                );
+            }
         }
     }
 }

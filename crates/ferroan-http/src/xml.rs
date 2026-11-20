@@ -38,6 +38,8 @@
 //! swallows the exception. A document past the character cap or the depth cap
 //! is an error. Tranquillity's cap is the character count; it has no depth cap.
 
+use ferroan_diag::{self, HTTP_XML_CHARS, HTTP_XML_DEPTH, Kind};
+
 use crate::error::HttpError;
 use crate::value::{Field, FieldMap};
 use crate::{MAX_XML_CHARS, MAX_XML_DEPTH};
@@ -64,6 +66,13 @@ pub fn parse_xml_response_limited(
 ) -> Result<FieldMap, HttpError> {
     let chars = data.chars().count();
     if chars > max_chars {
+        ferroan_diag::refuse(
+            HTTP_XML_CHARS,
+            Kind::Hard,
+            max_chars as u64,
+            chars as u64,
+            "xml",
+        );
         return Err(HttpError::Limit {
             what: "xml",
             limit: max_chars,
@@ -76,11 +85,20 @@ pub fn parse_xml_response_limited(
     match parse_document(data, max_depth) {
         Ok(map) => Ok(map),
         Err(Fail::Bad) => Ok(FieldMap::new()),
-        Err(Fail::Limit) => Err(HttpError::Limit {
-            what: "xml depth",
-            limit: max_depth,
-            got: max_depth + 1,
-        }),
+        Err(Fail::Limit) => {
+            ferroan_diag::refuse(
+                HTTP_XML_DEPTH,
+                Kind::Hard,
+                max_depth as u64,
+                (max_depth + 1) as u64,
+                "xml",
+            );
+            Err(HttpError::Limit {
+                what: "xml depth",
+                limit: max_depth,
+                got: max_depth + 1,
+            })
+        }
     }
 }
 
@@ -92,6 +110,13 @@ fn write_map_element(
     depth: usize,
 ) -> Result<(), HttpError> {
     if depth > MAX_XML_DEPTH {
+        ferroan_diag::refuse(
+            HTTP_XML_DEPTH,
+            Kind::Hard,
+            MAX_XML_DEPTH as u64,
+            depth as u64,
+            "xml",
+        );
         return Err(HttpError::Limit {
             what: "xml depth",
             limit: MAX_XML_DEPTH,

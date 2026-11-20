@@ -393,6 +393,7 @@ dependencies = [
  "axum",
  "ferroan-bot",
  "ferroan-capture",
+ "ferroan-diag",
  "ferroan-http",
  "ferroan-llsd",
  "ferroan-protocol",
@@ -410,8 +411,16 @@ version = "0.1.0"
 name = "ferroan-db"
 version = "0.1.0"
 dependencies = [
+ "ferroan-diag",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "ferroan-diag"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
@@ -419,6 +428,7 @@ name = "ferroan-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ferroan-diag",
  "ferroan-llsd",
  "indexmap",
  "reqwest",
@@ -433,6 +443,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "ferroan-diag",
  "indexmap",
  "serde_json",
  "thiserror",
@@ -445,6 +456,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "ferroan-config",
+ "ferroan-diag",
  "serde_json",
  "thiserror",
  "tokio",
@@ -457,6 +469,7 @@ dependencies = [
 name = "ferroan-protocol"
 version = "0.1.0"
 dependencies = [
+ "ferroan-diag",
  "glam",
  "serde_json",
  "thiserror",
@@ -470,6 +483,7 @@ dependencies = [
  "axum",
  "ferroan-client",
  "ferroan-config",
+ "ferroan-diag",
  "ferroan-http",
  "ferroan-llsd",
  "ferroan-log",
@@ -490,6 +504,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "ferroan-config",
+ "ferroan-diag",
  "ferroan-http",
  "ferroan-log",
  "ferroan-services",
@@ -504,6 +519,7 @@ dependencies = [
  "axum",
  "ferroan-config",
  "ferroan-db",
+ "ferroan-diag",
  "ferroan-http",
  "serde_json",
  "sqlx",
@@ -517,6 +533,7 @@ dependencies = [
 name = "ferroan-types"
 version = "0.1.0"
 dependencies = [
+ "ferroan-diag",
  "glam",
  "serde_json",
  "thiserror",

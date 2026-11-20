@@ -47,6 +47,7 @@ mod number;
 pub mod xml;
 mod xml_llsd;
 
+use ferroan_diag::{self, Kind, LLSD_PARSED_BYTES};
 use indexmap::IndexMap;
 use uuid::Uuid;
 
@@ -114,13 +115,37 @@ impl Budget {
     }
 
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), LlsdError> {
-        self.left = self.left.checked_sub(bytes).ok_or(LlsdError::TooLarge)?;
-        Ok(())
+        match self.left.checked_sub(bytes) {
+            Some(left) => {
+                self.left = left;
+                Ok(())
+            }
+            None => {
+                ferroan_diag::refuse(
+                    LLSD_PARSED_BYTES,
+                    Kind::Hard,
+                    MAX_PARSED_BYTES as u64,
+                    bytes as u64,
+                    "llsd",
+                );
+                Err(LlsdError::TooLarge)
+            }
+        }
     }
 
     /// `n` values reserved at once (an array's slots).
     pub(crate) fn charge_values(&mut self, n: usize) -> Result<(), LlsdError> {
-        self.charge(n.checked_mul(VALUE_COST).ok_or(LlsdError::TooLarge)?)
+        let Some(bytes) = n.checked_mul(VALUE_COST) else {
+            ferroan_diag::refuse(
+                LLSD_PARSED_BYTES,
+                Kind::Hard,
+                MAX_PARSED_BYTES as u64,
+                u64::MAX,
+                "llsd",
+            );
+            return Err(LlsdError::TooLarge);
+        };
+        self.charge(bytes)
     }
 }
 

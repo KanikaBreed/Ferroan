@@ -462,10 +462,11 @@ impl TextureEntry {
     /// `CreateFace` followed by the public setters, in [`TextureFaceSet`] order.
     pub fn apply_face(&mut self, index: usize, set: &TextureFaceSet) -> Result<(), WireError> {
         if index >= MAX_FACES {
-            return Err(WireError::Limit {
-                limit: MAX_FACES,
-                got: index,
-            });
+            return Err(crate::wire::refuse_limit(
+                ferroan_diag::TEXTURE_FACES,
+                MAX_FACES,
+                index,
+            ));
         }
         let parent = *self.default_face();
         self.faces[index]
@@ -516,10 +517,11 @@ impl TextureEntry {
     /// `new TextureEntry(data, 0, data.Length)`.
     pub fn from_bytes(data: &[u8]) -> Result<Self, WireError> {
         if data.len() > MAX_TEXTURE_BYTES {
-            return Err(WireError::Limit {
-                limit: MAX_TEXTURE_BYTES,
-                got: data.len(),
-            });
+            return Err(crate::wire::refuse_limit(
+                ferroan_diag::TEXTURE_BYTES,
+                MAX_TEXTURE_BYTES,
+                data.len(),
+            ));
         }
         if data.len() < 16 {
             return Ok(Self::blank());
@@ -1032,10 +1034,11 @@ impl<'a> Reader<'a> {
                 });
             }
             if groups >= 8 {
-                return Err(WireError::Limit {
-                    limit: 8,
-                    got: groups + 1,
-                });
+                return Err(crate::wire::refuse_limit(
+                    ferroan_diag::TEXTURE_BITFIELD,
+                    8,
+                    groups + 1,
+                ));
             }
             byte = self.data[self.pos];
             self.pos += 1;

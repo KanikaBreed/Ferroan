@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 axum = "0.8"
+ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-protocol = { path = "../ferroan-protocol" }

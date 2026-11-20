@@ -11,6 +11,7 @@ publish.workspace = true
 axum = "0.8"
 ferroan-client = { path = "../ferroan-client" }
 ferroan-config = { path = "../ferroan-config" }
+ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-log = { path = "../ferroan-log" }

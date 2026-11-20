@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use ferroan_diag::{self, Kind, LIBRARY_FILE_BYTES, LIBRARY_FILES, LIBRARY_TOTAL_BYTES};
 use uuid::Uuid;
 
 const OWNER_TEXT: &str = "11111111-1111-0000-0000-000100bba000";
@@ -369,13 +370,38 @@ fn read_sections(
     total: &mut u64,
 ) -> Result<Vec<HashMap<String, String>>, LibraryError> {
     if *files >= MAX_FILES {
+        ferroan_diag::refuse(
+            LIBRARY_FILES,
+            Kind::Hard,
+            MAX_FILES as u64,
+            (*files as u64).saturating_add(1),
+            "library",
+        );
         return Err(LibraryError::TooLarge);
     }
     let meta = fs::metadata(path).map_err(|_| LibraryError::Missing)?;
     if !meta.is_file() {
         return Err(LibraryError::Missing);
     }
-    if meta.len() > MAX_FILE_BYTES || total.saturating_add(meta.len()) > MAX_TOTAL_BYTES {
+    if meta.len() > MAX_FILE_BYTES {
+        ferroan_diag::refuse(
+            LIBRARY_FILE_BYTES,
+            Kind::Hard,
+            MAX_FILE_BYTES,
+            meta.len(),
+            "library",
+        );
+        return Err(LibraryError::TooLarge);
+    }
+    let next_total = total.saturating_add(meta.len());
+    if next_total > MAX_TOTAL_BYTES {
+        ferroan_diag::refuse(
+            LIBRARY_TOTAL_BYTES,
+            Kind::Hard,
+            MAX_TOTAL_BYTES,
+            next_total,
+            "library",
+        );
         return Err(LibraryError::TooLarge);
     }
     let bytes = fs::read(path).map_err(|_| LibraryError::Io)?;

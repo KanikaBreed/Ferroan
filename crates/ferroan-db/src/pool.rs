@@ -20,6 +20,8 @@ use crate::connect::{
 };
 use crate::error::DbError;
 use crate::expected::expected_version;
+use ferroan_diag::{self, DB_POOL};
+
 use crate::limits::{
     ACQUIRE_TIMEOUT, MAX_POOL_CONNECTIONS, MAX_STORES_PER_OPEN, MIGRATIONS_STORE,
     MIGRATIONS_VERSION,
@@ -54,6 +56,12 @@ impl Pool {
             Inner::Mysql(pool) => (pool.size(), pool.num_idle()),
             Inner::Postgres(pool) => (pool.size(), pool.num_idle()),
         };
+        ferroan_diag::observe(
+            DB_POOL,
+            u64::from(MAX_POOL_CONNECTIONS),
+            u64::from(open),
+            "db",
+        );
         (open, u32::try_from(idle).unwrap_or(u32::MAX))
     }
 

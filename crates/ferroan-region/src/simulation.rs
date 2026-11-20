@@ -91,6 +91,7 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{CapsRegistry, CircuitExpect};
+use ferroan_diag::{self, HTTP_POST_BODY, Kind};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -435,6 +436,13 @@ async fn handle(
     }
     let gzip = is_gzip(request.headers());
     let Ok(body) = to_bytes(request.into_body(), MAX_BODY).await else {
+        ferroan_diag::refuse(
+            HTTP_POST_BODY,
+            Kind::Hard,
+            MAX_BODY as u64,
+            (MAX_BODY as u64).saturating_add(1),
+            "/agent",
+        );
         return bare(StatusCode::PAYLOAD_TOO_LARGE);
     };
     let args = match decode_body(&body, gzip) {
@@ -583,6 +591,13 @@ fn is_gzip(headers: &HeaderMap) -> bool {
 
 fn decode_body(body: &[u8], gzip: bool) -> Result<Map<String, Value>, SimulationError> {
     if body.len() > MAX_BODY {
+        ferroan_diag::refuse(
+            HTTP_POST_BODY,
+            Kind::Hard,
+            MAX_BODY as u64,
+            body.len() as u64,
+            "/agent",
+        );
         return Err(SimulationError::BodyLimit);
     }
     let mut decoded = Vec::new();
@@ -592,15 +607,31 @@ fn decode_body(body: &[u8], gzip: bool) -> Result<Map<String, Value>, Simulation
             .read_to_end(&mut decoded)
             .map_err(|_| SimulationError::Compression)?;
         if decoded.len() > MAX_BODY {
+            ferroan_diag::refuse(
+                HTTP_POST_BODY,
+                Kind::Hard,
+                MAX_BODY as u64,
+                decoded.len() as u64,
+                "/agent",
+            );
             return Err(SimulationError::BodyLimit);
         }
         decoded.as_slice()
     } else {
         body
     };
-    match serde_json::from_slice(bytes).map_err(|_| SimulationError::Json)? {
-        Value::Object(map) => Ok(map),
-        _ => Err(SimulationError::Json),
+    match serde_json::from_slice(bytes) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => {
+            ferroan_diag::log_malformed("/agent", bytes);
+            ferroan_diag::log_boundary("/agent", "json value is not an object");
+            Err(SimulationError::Json)
+        }
+        Err(error) => {
+            ferroan_diag::log_malformed("/agent", bytes);
+            ferroan_diag::log_boundary("/agent", &error.to_string());
+            Err(SimulationError::Json)
+        }
     }
 }
 

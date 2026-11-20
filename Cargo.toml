@@ -3,6 +3,7 @@ members = [
     "crates/ferroan-types",
     "crates/ferroan-db",
     "crates/ferroan-config",
+    "crates/ferroan-diag",
     "crates/ferroan-log",
     "crates/ferroan-llsd",
     "crates/ferroan-http",

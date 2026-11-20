@@ -50,6 +50,7 @@ use std::time::Duration;
 use crate::control_plane::{ControlPlaneAccess, ControlPlaneError};
 use ferroan_client::{CapGrantSet, CircuitTiming, HandshakeConfig};
 use ferroan_config::{Config, RegionLoad};
+use ferroan_diag::{self, Kind, TIMER_MILLISECONDS, TIMER_SECONDS};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -517,6 +518,13 @@ fn circuit_timing(config: &Config) -> Result<CircuitTiming, RegionConfigError> {
     let rto = |key, fallback| -> Result<Duration, RegionConfigError> {
         let milliseconds = number(config, SECTION, key, "0")?;
         if milliseconds > i32::MAX as u32 {
+            ferroan_diag::refuse(
+                TIMER_MILLISECONDS,
+                Kind::Hard,
+                i32::MAX as u64,
+                u64::from(milliseconds),
+                key,
+            );
             return Err(value(
                 SECTION,
                 key,
@@ -535,6 +543,13 @@ fn circuit_timing(config: &Config) -> Result<CircuitTiming, RegionConfigError> {
         // C# multiplies GetInt by 1000. Refuse nonpositive/overflowing timers
         // rather than accepting a disabled or wrapped inactivity bound.
         if seconds == 0 || seconds > i32::MAX as u32 / 1000 {
+            ferroan_diag::refuse(
+                TIMER_SECONDS,
+                Kind::Hard,
+                (i32::MAX as u32 / 1000) as u64,
+                u64::from(seconds),
+                key,
+            );
             return Err(value(
                 SECTION,
                 key,

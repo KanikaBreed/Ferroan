@@ -55,6 +55,7 @@
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
 use crate::{ArrivalConfig, HandshakeConfig};
+use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser,
     LogoutReply, LogoutRequest, PacketAck, StartPingCheck, UseCircuitCode, logout_reply,
@@ -413,12 +414,22 @@ impl State {
         reliable: bool,
     ) -> Result<(), CircuitError> {
         if reliable && self.unacked.len() >= MAX_UNACKED {
+            let count = self.unacked.len() as u64;
+            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
+            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
             return Err(CircuitError::TooManyUnacked(self.unacked.len()));
         }
         let mut writer = Writer::new();
         M::ID.encode(&mut writer.buf);
         message.encode_body(&mut writer);
         if writer.buf.len() + packet::HEADER_SIZE > MAX_DATAGRAM {
+            ferroan_diag::refuse(
+                UDP_DATAGRAM,
+                Kind::Hard,
+                MAX_DATAGRAM as u64,
+                (writer.buf.len() + packet::HEADER_SIZE) as u64,
+                "udp",
+            );
             return Err(CircuitError::TooLarge);
         }
         let payload = Payload {
@@ -881,7 +892,9 @@ async fn serve_socket_reporting(
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
-    let mut buf = [0u8; MAX_DATAGRAM];
+    // One byte past the cap so Linux `recvfrom` can report an oversize datagram
+    // instead of silently truncating it to `MAX_DATAGRAM`.
+    let mut buf = [0u8; MAX_DATAGRAM + 1];
     loop {
         state.maintain(sock).await?;
         if let Some(kind) = take_stop(&mut extra.stop) {
@@ -949,6 +962,17 @@ async fn serve_socket_reporting(
             }
             Err(_) => continue,
         };
+        if len > MAX_DATAGRAM {
+            ferroan_diag::refuse(
+                UDP_DATAGRAM,
+                Kind::Hard,
+                MAX_DATAGRAM as u64,
+                len as u64,
+                "udp",
+            );
+            ferroan_diag::log_malformed("udp", &buf[..len]);
+            continue;
+        }
         let Ok(packet) = packet::parse_packet(&buf[..len]) else {
             continue;
         };

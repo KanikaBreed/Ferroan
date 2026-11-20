@@ -99,6 +99,12 @@ fn run() -> Result<(), String> {
         }
         router = router.merge(status::status_router(config));
         let meters = std::sync::Arc::new(status::RobustMeters::new(pools));
+        ferroan_diag::set_context("ferroan-robust", "");
+        ferroan_diag::set_configuration(&format!("server=ferroan-robust listen={listen}:{port}"));
+        ferroan_diag::set_snapshot({
+            let meters = std::sync::Arc::clone(&meters);
+            std::sync::Arc::new(move || meters.diag_lines())
+        });
         router = status::with_request_counts(router, meters.clone());
         let metrics = status::metrics_listen(config)?;
         let listener = TcpListener::bind((listen, port))

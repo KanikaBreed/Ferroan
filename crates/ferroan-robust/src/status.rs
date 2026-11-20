@@ -103,6 +103,33 @@ impl RobustMeters {
             pools,
         }
     }
+
+    /// Pool occupancy for a diagnostic dump. Passwords and connection strings stay out.
+    pub fn diag_lines(&self) -> String {
+        let mut text = String::new();
+        for (name, http) in [
+            (
+                "asset",
+                self.pools.asset.as_ref().map(AssetHttp::pool_occupancy),
+            ),
+            (
+                "account",
+                self.pools.account.as_ref().map(AccountHttp::pool_occupancy),
+            ),
+            (
+                "alias",
+                self.pools.alias.as_ref().map(AliasHttp::pool_occupancy),
+            ),
+        ] {
+            match http {
+                Some((open, idle)) => {
+                    text.push_str(&format!("{name}: open={open} idle={idle}\n"));
+                }
+                None => text.push_str(&format!("{name}: off\n")),
+            }
+        }
+        text
+    }
 }
 
 pub fn metrics_listen(config: &Config) -> Result<Option<SocketAddr>, String> {
@@ -259,9 +286,18 @@ pub fn status_router(config: &Config) -> Router {
 pub fn metrics_router(meters: Arc<RobustMeters>) -> Router {
     Router::new()
         .route("/metrics", get(metrics))
+        .route("/diag", get(diag))
         .route("/healthz", get(|| async { plain(StatusCode::OK, "ok\n") }))
         .route("/readyz", get(|| async { plain(StatusCode::OK, "ok\n") }))
         .with_state(meters)
+}
+
+async fn diag() -> Response {
+    typed(
+        StatusCode::OK,
+        "text/plain; charset=utf-8",
+        ferroan_diag::render(),
+    )
 }
 
 fn grid_info(config: &Config) -> Vec<(String, String)> {
@@ -438,6 +474,7 @@ fn prometheus(meters: &RobustMeters) -> String {
             ));
         }
     }
+    text.push_str(&ferroan_diag::metrics());
     text
 }
 

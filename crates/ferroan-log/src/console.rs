@@ -241,6 +241,10 @@ fn run_command(state: &ConsoleState, command: &str) {
         ["show", "version"] => {
             state.push_plain("Info", &format!("0:0:{}", state.version));
         }
+        ["diag", "dump"] => match ferroan_diag::write_dump() {
+            Ok(path) => state.push_plain("Info", &format!("0:0:diag dump {}", path.display())),
+            Err(error) => state.push_plain("Info", &format!("0:0:diag dump failed: {error}")),
+        },
         ["get", "log", "level"] => {
             let name = level::name(state.level.get());
             state.push_plain("Info", &format!("0:0:Console log level is {name}"));
@@ -265,7 +269,7 @@ fn run_command(state: &ConsoleState, command: &str) {
 }
 
 fn help_tree() -> &'static str {
-    "<Level Name=\"show\"><Level Name=\"version\"><Command><Module>General</Module><Shared>False</Shared><HelpText>show version</HelpText><LongHelp>Show server version</LongHelp><Description></Description></Command></Level></Level><Level Name=\"set\"><Level Name=\"log\"><Level Name=\"level\"><Command><Module>General</Module><Shared>False</Shared><HelpText>set log level</HelpText><LongHelp>Set the console logging level</LongHelp><Description></Description></Command></Level></Level></Level><Level Name=\"get\"><Level Name=\"log\"><Level Name=\"level\"><Command><Module>General</Module><Shared>False</Shared><HelpText>get log level</HelpText><LongHelp>Get the current console logging level</LongHelp><Description></Description></Command></Level></Level></Level>"
+    "<Level Name=\"show\"><Level Name=\"version\"><Command><Module>General</Module><Shared>False</Shared><HelpText>show version</HelpText><LongHelp>Show server version</LongHelp><Description></Description></Command></Level></Level><Level Name=\"diag\"><Level Name=\"dump\"><Command><Module>General</Module><Shared>False</Shared><HelpText>diag dump</HelpText><LongHelp>Write a diagnostic snapshot to LOGDIR or .scratch</LongHelp><Description></Description></Command></Level></Level><Level Name=\"set\"><Level Name=\"log\"><Level Name=\"level\"><Command><Module>General</Module><Shared>False</Shared><HelpText>set log level</HelpText><LongHelp>Set the console logging level</LongHelp><Description></Description></Command></Level></Level></Level><Level Name=\"get\"><Level Name=\"log\"><Level Name=\"level\"><Command><Module>General</Module><Shared>False</Shared><HelpText>get log level</HelpText><LongHelp>Get the current console logging level</LongHelp><Description></Description></Command></Level></Level></Level>"
 }
 
 fn form_pairs(body: &str) -> Vec<(String, String)> {

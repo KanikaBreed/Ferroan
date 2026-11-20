@@ -125,6 +125,20 @@ Leave the keys unset and a server writes plain lines to stdout and stderr. `INFO
 
 No log line, JSON field, console reply or OTLP record is supposed to carry a password, session id, secure session id, circuit code or capability URL. Those values are replaced with `[redacted]` or `[redacted-capability]` after they have been registered. The agent id may be logged. Do not put account passwords in `compose.yaml`. Keep them in the mounted INI files.
 
+### Trying a limit hit
+
+The ids and the C# comparison are in [LIMITS.md](LIMITS.md). Three of them can be tripped against a Ferroan region that was started with `[Monitoring] Metrics = true` and `Listen = "127.0.0.1:9109"`. The harness region trusts `127.0.0.1` and serves HTTP on `127.0.0.2`, so the POST must be bound to `127.0.0.1` or the control-plane check answers 403 before the body limit.
+
+1. POST `http://127.0.0.2:<http-port>/agent/00000000-0000-0000-0000-000000000001/` with `Content-Length` 1048577 (1 MiB + 1) from a socket bound to `127.0.0.1`. The status is 413.
+2. Send one UDP datagram of 4097 bytes to `127.0.0.1:<udp-port>`.
+3. After a login, POST `FetchInventoryDescendents2` with 65 folder maps. The status is 400.
+
+`cargo xtask live run limits grid --region ferroan` does all three and checks the readouts.
+
+The warning is on stderr and in the `LOGDIR` file. In plain mode the line contains `limit http.post-body`, `limit udp.datagram` or `limit inventory.fetch-folders`. JSON mode adds `"target":"ferroan::limit"`. The same minute's later hits are one line with `suppressed=`. The hex excerpt of a malformed packet is a debug line, so `set log level debug` is required before it is visible.
+
+`GET http://127.0.0.1:9109/metrics` includes `ferroan_limit_hits_total{limit="http.post-body",action="refuse"}`. Robust's listener is `127.0.0.1:9110` when its metrics switch is on. The snapshot is `diag dump` on the remote console (it prints `diag dump` and the file path), `GET /diag` on that metrics listener, and `cargo xtask live diag`. The file is `diag-<server>-<unix-millis>.txt` under `LOGDIR`, or under `.scratch/` when `LOGDIR` is unset. The live scenario writes `.scratch/live/diag/limits.txt`. A panic writes `panic-<server>-<unix-millis>.txt` beside it.
+
 For harness changes in P0.10g, run `cargo xtask live run all grid` three consecutive times locally and once in CI. Interrupt a separate grid run after both regions have started, verify another start refuses its surviving processes, then use `cargo xtask live down` and verify those processes exit. Unit tests cover reply holds beyond the former proxy and bot timeouts, stale return-hop evidence, destination changes after opening a circuit, process ownership mismatches, and passwords spanning a log-tail cut.
 
 ## Honest status

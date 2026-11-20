@@ -48,6 +48,17 @@
 use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
 use uuid::Uuid;
 
+pub(crate) fn refuse_limit(id: &'static str, limit: usize, got: usize) -> WireError {
+    ferroan_diag::refuse(
+        id,
+        ferroan_diag::Kind::Hard,
+        limit as u64,
+        got as u64,
+        "wire",
+    );
+    WireError::Limit { limit, got }
+}
+
 /// A read or write was shorter than the OpenMetaverse layout, or a Ferroan
 /// size cap was hit. OpenMetaverse does not cap TextureEntry or extra-parameter
 /// blobs; the cap is recorded in the crate README.

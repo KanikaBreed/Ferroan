@@ -291,10 +291,11 @@ impl ExtraParams {
     /// `Primitive.SetExtraParamsFromBytes`. Unknown types are skipped.
     pub fn from_bytes(data: &[u8]) -> Result<Self, WireError> {
         if data.len() > MAX_EXTRA_BYTES {
-            return Err(WireError::Limit {
-                limit: MAX_EXTRA_BYTES,
-                got: data.len(),
-            });
+            return Err(crate::wire::refuse_limit(
+                ferroan_diag::EXTRA_BYTES,
+                MAX_EXTRA_BYTES,
+                data.len(),
+            ));
         }
         if data.is_empty() {
             return Ok(Self::default());
@@ -311,9 +312,8 @@ impl ExtraParams {
             }
             let kind = u16::from_le_bytes(le_array(&data[pos..pos + 2]));
             let len_u32 = u32::from_le_bytes(le_array(&data[pos + 2..pos + 6]));
-            let len = usize::try_from(len_u32).map_err(|_| WireError::Limit {
-                limit: MAX_EXTRA_BYTES,
-                got: data.len(),
+            let len = usize::try_from(len_u32).map_err(|_| {
+                crate::wire::refuse_limit(ferroan_diag::EXTRA_BYTES, MAX_EXTRA_BYTES, data.len())
             })?;
             pos += 6;
             if len > data.len() - pos {

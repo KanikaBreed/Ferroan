@@ -36,6 +36,7 @@
 
 use std::time::Duration;
 
+use ferroan_diag::{self, INVENTORY_REPLY, Kind};
 use ferroan_http::{Field, FieldMap, build_query_string, parse_xml_response};
 use uuid::Uuid;
 
@@ -260,7 +261,15 @@ impl InventoryClient {
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, InventoryError> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| InventoryError::Reply)? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_REPLY {
+        let next = bytes.len().saturating_add(chunk.len());
+        if next > MAX_REPLY {
+            ferroan_diag::refuse(
+                INVENTORY_REPLY,
+                Kind::Hard,
+                MAX_REPLY as u64,
+                next as u64,
+                "inventory",
+            );
             return Err(InventoryError::Reply);
         }
         bytes.extend_from_slice(&chunk);

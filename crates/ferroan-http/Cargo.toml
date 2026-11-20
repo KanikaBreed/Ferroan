@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 axum = "0.8"
+ferroan-diag = { path = "../ferroan-diag" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 indexmap = "2.11.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
