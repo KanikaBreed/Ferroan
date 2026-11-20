@@ -57,6 +57,7 @@ mod oracle_reference;
 mod pin3_oracle;
 mod schema;
 mod trailing_fixtures;
+mod twice;
 
 use std::env;
 use std::ffi::OsString;
@@ -84,6 +85,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset verify [directory]
        cargo xtask pin3 generate|verify
        cargo xtask live build
+       cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
        cargo xtask live persistent-grid-check
