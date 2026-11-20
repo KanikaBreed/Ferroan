@@ -46,7 +46,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
-| Q11 | P0.11: container images and the example compose grid | READY after Q10s5 |
+| Q11 | P0.11: container images and the example compose grid | READY after Q10t |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | DONE (#90) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |
@@ -58,6 +58,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | DONE (#97) |
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | DONE (#98) |
 | Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |
+| Q10t | Pin4: move the Tranquillity pin back to `develop` `f67db54399` (every carried PR merged upstream) | READY after Q10s5 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
@@ -177,6 +178,8 @@ Q10s2 (19 November 2026, `feat/panic-lints`): workspace Clippy denies `unwrap_us
 Q10s3 (20 November 2026, `feat/tcp-nodelay`): region, robust and the harness proxy set `TCP_NODELAY` on accepted sockets, as `HttpListener.cs` lines 170–172 do at the pin. The proxy and the harness `post_form` clients also set it on outbound sockets, as `OutboundUrlFilter.cs` lines 480 and 513 do. reqwest is left at its default `tcp_nodelay(true)`. `accepted_socket_reads_tcp_nodelay` reads the option back. Each `live run` prints request latency before and after. Local `cargo xtask check` passed. PR #97.
 
 Q10s4 (20 November 2026, `feat/known-differences`): known-difference tests for TB1, TB10 and TB11. `fixtures/asset/unnamed-flags.json` records `XmlSerializer` rejecting flags 8 (`System.InvalidOperationException`) at pin `40432e0`. It is not a manifest case, and the manifest revision line is unchanged. `csharp_unnamed_asset_flags_still_reject` names `flags_text`. `csharp_make_post_request_still_accepts_grid_failure_status` requires grid register and deregister 302/500 `accepted: true`, and names `grid_form` and `FormStatusPolicy::Unchecked`. `csharp_pre_root_other_endpoint_still_drops_watcher_and_online` requires `pre_root_endpoint_reconnect.after` to drop the watcher, Presence session and online state, and names `circuit.rs` `handle`. Local `cargo xtask check` passed. `cargo xtask asset verify` passed. PR #98.
+
+Q10t / Pin4 (manager, 19 November 2026, at the maintainer's word): all eight PRs Pin3 carried (#418, #419, #422, #423, #425, #426, #428, #429) merged into OpenSim-NGC `develop` on 19 and 20 November, so under D21 the pin goes back to a `develop` commit: `f67db54399c027fd74e5aefcb2193905b4dc1646`. The manager moves `/home/cinder/Git/reference/OpenSim-Tranquillity` to it before the coder starts. TB11 is not fixed there: #428 merged without it, and the maintainer will send it as a new PR. It comes before Q11 because the SQLite region-store migration it brings matters to Q14 (terrain from the C# region store).
 
 ## Found while working
 
