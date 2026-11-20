@@ -81,6 +81,37 @@ fn content_types_match_slutil() {
     }
 }
 
+/// TB1. The committed oracle still records `XmlSerializer` rejecting flags 8.
+/// A pin move that accepts the value fails here and names the Rust encoder.
+#[test]
+fn csharp_unnamed_asset_flags_still_reject() {
+    let root = fixture_root();
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("unnamed-flags.json")).expect("unnamed-flags"),
+    )
+    .expect("unnamed-flags json");
+    assert_eq!(record["id"], "unnamed-flags");
+    assert_eq!(record["flags"], 8);
+    assert_eq!(record["tranquillity"], manifest["tranquillity"]);
+    assert!(
+        manifest["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .all(|case| case["id"] != "unnamed-flags"),
+        "unnamed-flags is a rejection record, not a manifest case"
+    );
+    let exception_type = record["exception_type"].as_str().unwrap_or("");
+    assert!(
+        record["threw"] == true && !exception_type.is_empty(),
+        "TB1: fixtures/asset/unnamed-flags.json no longer shows XmlSerializer rejecting flags 8. Change crates/ferroan-services/src/asset/xml.rs flags_text."
+    );
+}
+
 fn encode_scalar(id: &str) -> Vec<u8> {
     let texture = "00112233-4455-6677-8899-aabbccddeeff";
     let zero = "00000000-0000-0000-0000-000000000000";

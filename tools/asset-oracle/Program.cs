@@ -140,7 +140,48 @@ static class Program
             ["cases"] = cases
         };
         File.WriteAllText(Path.Combine(directory, "manifest.json"), manifest.ToJsonString(JsonOptions) + "\n");
+        // TB1: flags 8 is not a named AssetFlags bit. This file is not a manifest
+        // case. A pin move that makes XmlSerializer accept it changes threw.
+        WriteUnnamedFlags(directory, revision);
         return cases.Count;
+    }
+
+    static void WriteUnnamedFlags(string directory, string revision)
+    {
+        const int flags = 8;
+        AssetBase asset = new AssetBase(
+            new UUID("33333333-4444-5555-6666-777777777777"),
+            "unnamed-flags",
+            0,
+            "creator")
+        {
+            Flags = (AssetFlags)flags,
+            Data = Array.Empty<byte>()
+        };
+        bool threw = false;
+        string exceptionType = "";
+        try
+        {
+            Serialize(new XmlSerializer(typeof(AssetBase)), asset);
+        }
+        catch (Exception exception)
+        {
+            threw = true;
+            // FullName only. The message can name a generated assembly path.
+            exceptionType = exception.GetType().FullName ?? "";
+        }
+
+        JsonObject record = new()
+        {
+            ["id"] = "unnamed-flags",
+            ["tranquillity"] = revision,
+            ["flags"] = flags,
+            ["threw"] = threw,
+            ["exception_type"] = exceptionType
+        };
+        File.WriteAllText(
+            Path.Combine(directory, "unnamed-flags.json"),
+            record.ToJsonString(JsonOptions) + "\n");
     }
 
     static void CheckRoundTrip(AssetBase asset, byte[] assetXml, byte[] metaXml)

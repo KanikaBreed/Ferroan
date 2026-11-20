@@ -56,7 +56,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s1 | P0.10n1: pin `rust-toolchain.toml` to the exact stable CI's runners use | DONE (#95) |
 | Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | DONE (#96) |
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | DONE (#97) |
-| Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | READY after Q10s3 |
+| Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | DONE (#98) |
 | Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
@@ -175,6 +175,8 @@ Q10s1 (19 November 2026, `feat/toolchain-pin`): [run 44630811551](https://github
 Q10s2 (19 November 2026, `feat/panic-lints`): workspace Clippy denies `unwrap_used`, `expect_used` and `panic` outside tests. Local `cargo xtask check` passed on the pinned 1.100.0 compiler. PR #96.
 
 Q10s3 (20 November 2026, `feat/tcp-nodelay`): region, robust and the harness proxy set `TCP_NODELAY` on accepted sockets, as `HttpListener.cs` lines 170–172 do at the pin. The proxy and the harness `post_form` clients also set it on outbound sockets, as `OutboundUrlFilter.cs` lines 480 and 513 do. reqwest is left at its default `tcp_nodelay(true)`. `accepted_socket_reads_tcp_nodelay` reads the option back. Each `live run` prints request latency before and after. Local `cargo xtask check` passed. PR #97.
+
+Q10s4 (20 November 2026, `feat/known-differences`): known-difference tests for TB1, TB10 and TB11. `fixtures/asset/unnamed-flags.json` records `XmlSerializer` rejecting flags 8 (`System.InvalidOperationException`) at pin `40432e0`. It is not a manifest case, and the manifest revision line is unchanged. `csharp_unnamed_asset_flags_still_reject` names `flags_text`. `csharp_make_post_request_still_accepts_grid_failure_status` requires grid register and deregister 302/500 `accepted: true`, and names `grid_form` and `FormStatusPolicy::Unchecked`. `csharp_pre_root_other_endpoint_still_drops_watcher_and_online` requires `pre_root_endpoint_reconnect.after` to drop the watcher, Presence session and online state, and names `circuit.rs` `handle`. Local `cargo xtask check` passed. `cargo xtask asset verify` passed. PR #98.
 
 ## Found while working
 

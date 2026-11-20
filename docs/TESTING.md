@@ -44,6 +44,14 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 `cargo xtask asset generate` and `verify` build [tools/asset-oracle](../tools/asset-oracle/README.md) and serialize `AssetBase` with Tranquillity's `ServerUtils.SerializeResult`. The documents are committed under [fixtures/asset](../fixtures/asset/README.md). The Linux live workflow runs `asset verify`. `ferroan-services` tests encode to those bytes and serve them from a copy of the AssetStore SQLite fixture. The live workflow also runs `cargo xtask live compare assets`, comparing texture and inventory HTTP with the C# and Rust asset services, `cargo xtask live compare accounts`, comparing user-account HTTP the same way, `cargo xtask live run assets grid --rust assets`, and `cargo xtask live run login grid --rust accounts` together with `--rust assets,accounts`. The maintainer's Firestorm G0 check is recorded separately in [TASKS.md](../TASKS.md); no Aurora viewer check is claimed.
 
+## Known differences
+
+Three tests assert that the committed C# fixtures still show [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). A pin move that regenerates a fixture without the bug fails the test. The failure names the TB row, the fixture and the Rust code that still follows the old behavior.
+
+- TB1: [fixtures/asset/unnamed-flags.json](../fixtures/asset/unnamed-flags.json) records `XmlSerializer` rejecting flags 8. `csharp_unnamed_asset_flags_still_reject` names `crates/ferroan-services/src/asset/xml.rs` `flags_text`. The file is not a `manifest.json` case, and its addition does not change that manifest's revision line.
+- TB10: `fixtures/http-status/grid-register-302.json`, `grid-register-500.json`, `grid-deregister-302.json` and `grid-deregister-500.json` still have `outcome.accepted` true. `csharp_make_post_request_still_accepts_grid_failure_status` names `crates/ferroan-region/src/grid.rs` `grid_form` and `FormStatusPolicy::Unchecked`.
+- TB11: [fixtures/pin3/lifecycle.json](../fixtures/pin3/lifecycle.json) key `pre_root_endpoint_reconnect.after` still drops the watcher, Presence session and online state while the circuit and scene presence stay. `csharp_pre_root_other_endpoint_still_drops_watcher_and_online` names `crates/ferroan-client/src/circuit.rs` `handle`.
+
 ## Session captures
 
 `cargo xtask pin3 generate` and `verify` run the actual pinned C# login watcher, close callbacks, GridUser connector and trusted-host parser. [Pin3 fixtures](../fixtures/pin3/README.md) distinguish captured behavior from injected DNS answers, service responses and clocks. Rust tests compare lifecycle states, startup request bytes, host parsing and refresh decisions to those observations. Separate tests enforce bounded DNS work, cancellation throttling and concurrent snapshot access. This oracle builds its own scratch source copy; `FERROAN_REF` remains read-only. [The source review](PIN3_REVIEW.md) explains which changed C# paths remain outside the implemented Rust scope.
