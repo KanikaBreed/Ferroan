@@ -63,7 +63,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | DONE (#108) |
 | Q10v | Pin5: move the Tranquillity pin to the maintainer's `dev-build` roll-up `c70fee2` (28 open upstream PRs, TB1 and TB10 to TB18 fixed) | DONE (#112) |
 | Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | READY after Q10v |
-| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q10u, or after Q13a if Q10u is BLOCKED again |
+| Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | READY after Q10u |
+| Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | READY after Q10w |
+| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
@@ -199,6 +201,10 @@ Q10s5 rule revised (manager, 20 November 2026): the block is right, and the faul
 Q10s5 (20 November 2026, `feat/record-twice`): three local pairs at pin `f67db54399` passed in 17s, 15s and 17s after the region binary existed. `KillObject` is reported, not an exact count: one healthy pair had outbound counts 1 and 0. `RegionHandshakeReply` and `AgentMovementComplete` may swap. Arrival Z is wildcarded. The comparison is on the live job. PR #103. Windows and macOS checks on `0c5cfc5` failed because the comparator is only called on Linux; `twice.rs` allows that unused code off Linux, as `inventory_probe.rs` does, and its tests still run.
 
 Proposed fix: the maintainer names the messages whose order and count the report compares. The handshake through `AvatarAnimation`, plus `LogoutRequest` and `LogoutReply`, matched. Timer traffic (`StartPingCheck`, `CompletePingCheck`, `CoarseLocationUpdate`, `SimStats`, `SimulatorViewerTimeMessage`) and the bulk sends that race the client's `PacketAck` (`ParcelOverlay`, `LayerData`, `ImprovedTerseObjectUpdate`) did not keep a stable order. Until that set is named, do not put the comparison on the required live job.
+
+Q13c (manager, 20 November 2026, at the maintainer's request for a code review): a review of the code PRs merged today found that raw request bytes can carry session ids into the diagnostics ring, dumps and crash files, plus four unbounded or lossy pieces in logging and metrics. Each finding was checked against the code; the list is the P0.13c row. It comes straight after Q10w because the first one leaks secrets into files the maintainer will share when reporting problems.
+
+Q10w (manager, 20 November 2026): the Pin5 live failure is the record-twice rule, not C#: the bot resends `LogoutRequest` until it is answered, and the comparator counted each resent datagram as a message. P0.10n6 counts a resend once and reports resends. It is small and comes straight after Q10u, so the live job stops tripping on it.
 
 Q10v / Pin5 (manager, 20 November 2026, at the maintainer's request): the maintainer asked for every open upstream PR they have sent to be rolled into one build and used as the pin, because the reference needs the fixes. The manager merged `develop` and the 26 PRs into their fork's `dev-build`, then the manager's own fixes for TB17 (#465) and TB18 (#466), opened at the maintainer's request (no conflicts; pushed as a fast-forward, after a merge commit that brings the old Pin3 branch up to `develop`, whose content it already held), built it, ran the C# tests, and moved `/home/cinder/Git/reference/OpenSim-Tranquillity` to `c70fee2`. It goes first, before Q10u, because Q10u changes the capture patch and that patch must apply at the new pin. Q10h's block (the Grid connector's unchecked HTTP status) should be re-read after Pin5, because #438 fixes that in C#. When the carried PRs merge upstream, the pin goes back to `develop` as Pin4 did.
 
