@@ -10,7 +10,7 @@ The shared reference is KanikaBreed/OpenSim-Tranquillity `dev-build` at Pin5 `c7
 
 One patch is applied only to the Tranquillity scratch tree, at the revision in [docs/REFERENCES.md](../../docs/REFERENCES.md):
 
-- [../capture/tranquillity-capture.patch](../capture/tranquillity-capture.patch) records raw UDP when `[ClientStack.LindenUDP] CaptureFile` is set. `live build` applies it. `live run` sets `CaptureFile`, records the bot's HTTP beside it, then runs `check`, `redact` and `replay`. `live up` does not set `CaptureFile`.
+- [../capture/tranquillity-capture.patch](../capture/tranquillity-capture.patch) records raw UDP when `[ClientStack.LindenUDP] CaptureFile` is set. `live build` applies it. `live run` sets `CaptureFile`, records the bot's HTTP beside it, then runs `check`, `redact` and `replay`. `live up` does not set `CaptureFile`. The same patch adds `ServiceProbeConnectorModule`, off unless `[ClientStack.LindenUDP] ServiceProbe` is true. Standalone harness inis set that, including `live up`, so the region HTTP server hosts the in-process Presence and GridUser handlers the login probe reads. Grid inis leave it unset. The pin checkout is not modified.
 
 Ferrobot's HTTP is captured by proxies, including a standalone region proxy. C# records its UDP through the same patch; the Rust-region run uses a bounded loopback UDP relay. Both paths preserve the raw datagrams for `check`, then `redact` and `replay`. Ferrobot's process identity is saved for interrupted-run cleanup with `live down`.
 

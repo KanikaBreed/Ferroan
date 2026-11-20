@@ -168,6 +168,7 @@ fn run_linux() -> Result<String, String> {
         let password = read_text(&secret, 1024)?;
         let mut harness = crate::live::harness(
             &report.login_uri,
+            &report.private_uri,
             password.trim(),
             "",
             &crate::live::live_root().join("grid/home/region.log"),

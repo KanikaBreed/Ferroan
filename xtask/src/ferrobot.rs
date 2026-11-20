@@ -325,6 +325,8 @@ fn start(config: &Config, harness: &Harness, secret: &str) -> Result<Process, St
 }
 
 pub(crate) async fn run(harness: &Harness, config: &Config) -> Result<String, String> {
+    // Ferrobot logs in from its own process. Settle the owner before it starts.
+    (harness.before_login)(harness.owner.principal_id).await?;
     let secret = crate::live::generate_password()?;
     let mut process = start(config, harness, &secret)?;
     let result = checks(harness, config, &secret, &mut process).await;
@@ -703,7 +705,9 @@ async fn companion(
 ) -> Result<(), String> {
     let http =
         ferroan_bot::login::http_client().map_err(|_| "could not create companion HTTP client")?;
-    let login = ferroan_bot::login(
+    let login = crate::grid::login_probe::login_when_settled(
+        &harness.service_probe,
+        &harness.chat.principal_id.to_string(),
         &http,
         &LoginRequest {
             login_uri: harness.login_uri.clone(),
@@ -713,7 +717,7 @@ async fn companion(
         },
     )
     .await
-    .map_err(|_| "companion login failed")?;
+    .map_err(|error| format!("companion login failed: {error}"))?;
     let mut session = Session::connect(
         SocketAddr::from((login.sim_ip, login.sim_port)),
         Agent {

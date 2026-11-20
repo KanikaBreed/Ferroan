@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use ferroan_bot::login::{LoginRequest, http_client, login};
+use ferroan_bot::login::{LoginRequest, http_client};
 use ferroan_bot::session::{Agent, Session};
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use uuid::Uuid;
@@ -67,9 +67,21 @@ pub async fn compare(
     private_uri: &str,
     scratch: &Path,
 ) -> Result<String, String> {
-    let neighbour = visit(login_uri, password, "uri:Ferroan Neighbour&128&128&25").await?;
+    let neighbour = visit(
+        login_uri,
+        password,
+        private_uri,
+        "uri:Ferroan Neighbour&128&128&25",
+    )
+    .await?;
     crate::grid::login_probe::offline(private_uri).await?;
-    let home = visit(login_uri, password, "uri:Ferroan Test&128&128&25").await?;
+    let home = visit(
+        login_uri,
+        password,
+        private_uri,
+        "uri:Ferroan Test&128&128&25",
+    )
+    .await?;
     crate::grid::login_probe::offline(private_uri).await?;
     if neighbour.names != home.names {
         return Err(format!(
@@ -123,9 +135,16 @@ pub async fn compare(
     ))
 }
 
-async fn visit(login_uri: &str, password: &str, start: &str) -> Result<Evidence, String> {
+async fn visit(
+    login_uri: &str,
+    password: &str,
+    private_uri: &str,
+    start: &str,
+) -> Result<Evidence, String> {
     let http = http_client().map_err(|error| error.to_string())?;
-    let response = login(
+    let response = crate::grid::login_probe::login_when_settled(
+        private_uri,
+        crate::live::ESTATE_OWNER,
         &http,
         &LoginRequest {
             login_uri: login_uri.to_owned(),
@@ -134,8 +153,7 @@ async fn visit(login_uri: &str, password: &str, start: &str) -> Result<Evidence,
             start: start.to_owned(),
         },
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
     let mut session = Session::connect(
         SocketAddr::from((response.sim_ip, response.sim_port)),
         Agent {

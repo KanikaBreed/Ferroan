@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
-use ferroan_bot::login::{LoginRequest, http_client, login};
+use ferroan_bot::login::{LoginRequest, http_client};
 use ferroan_bot::session::{Agent, Session};
 use ferroan_llsd::{Llsd, to_xml};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -87,7 +87,9 @@ async fn send_datagram(port: u16) -> Result<usize, String> {
 
 async fn fetch_folders(login_uri: &str, password: &str, private_uri: &str) -> Result<u16, String> {
     let http = http_client().map_err(|error| error.to_string())?;
-    let response = login(
+    let response = crate::grid::login_probe::login_when_settled(
+        private_uri,
+        crate::live::ESTATE_OWNER,
         &http,
         &LoginRequest {
             login_uri: login_uri.to_owned(),
@@ -96,8 +98,7 @@ async fn fetch_folders(login_uri: &str, password: &str, private_uri: &str) -> Re
             start: "uri:Ferroan Test&128&128&25".to_owned(),
         },
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
     let mut session = Session::connect(
         SocketAddr::from((response.sim_ip, response.sim_port)),
         Agent {

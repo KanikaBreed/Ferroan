@@ -22,7 +22,7 @@ The recorder is [tools/capture/tranquillity-capture.patch](../tools/capture/tran
 
 The patch adds `DatagramCapture.cs` and records in `OpenSimUDPBase`. Inbound bytes are taken in `AsyncBeginReceive` after the length is known and before `PacketReceived`. Outbound bytes are taken in `SyncSend` immediately before `SendTo`. A packet that the pending queue injects by calling `PacketReceived` directly is not written a second time. A datagram of length 0 or longer than 4096 is skipped. Each record is flushed. `StopInbound` closes the file. A write error closes the file and logs the exception type. The path is not logged.
 
-`[ClientStack.LindenUDP] CaptureFile` is the path. An absent or empty value leaves the server unchanged.
+`[ClientStack.LindenUDP] CaptureFile` is the path. An absent or empty value leaves the server unchanged. The same patch also adds `ServiceProbeConnectorModule`, loaded only when `[ClientStack.LindenUDP] ServiceProbe` is true (the default is false). That module hosts the region's in-process Presence and GridUser handlers for the harness probe. It does not change datagram capture.
 
 Build and apply it in a scratch clone. Do not build inside the reference checkout.
 

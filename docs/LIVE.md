@@ -14,12 +14,17 @@ The fixed C# sends `LogoutReply` immediately. The strict login checks still requ
 
 `all` runs these, in order. Each line is the report the command prints when the check passes.
 
-In grid mode, each scenario's logout is followed by bounded service polling:
-GridUser must be offline and Presence empty before the next scenario logs in.
-Chat also waits for the second account's cleanup. This uses the existing
-ten-second service-state deadline; LogoutReply remains required wherever strict
-logout is enabled. At Pin3 the reply can arrive before asynchronous service
-cleanup, so it alone cannot authorize the next scenario's login.
+Every harness login waits, for at most ten seconds, until GridUser shows the
+account offline and Presence has no session for it. A missing griduser row
+(`Failure` from `getgriduserinfo`) counts as offline, so the first login is
+not held. That includes texture and
+then inventory on a standalone region, and the wait between grid scenarios.
+Chat also waits for the second account. The probe reads Robust in grid mode
+and, in standalone, the region's own Presence and GridUser handlers
+(`ServiceProbe` in the capture patch; see [tools/live/README.md](../tools/live/README.md)).
+When the bound runs out, the login is not attempted. LogoutReply remains
+required wherever strict logout is enabled. At Pin3 the reply can arrive before
+asynchronous service cleanup, so it alone cannot authorize the next login.
 
 | Name | Pass line |
 | --- | --- |
