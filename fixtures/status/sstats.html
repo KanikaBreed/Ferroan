@@ -1,0 +1,44 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="nl"><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" /><script type="text/javascript" src="prototype.js"></script>
+<script type="text/javascript" src="updater.js"></script>
+<script type="text/javascript">
+
+                // <![CDATA[
+                document.observe('dom:loaded', function() {
+                    /*
+                    first arg    : div to update
+                    second arg    : interval to poll in seconds
+                    third arg    : file to get data
+                    */
+new updater('activeconnections', 10, 'activeconnectionsajax.html');
+new updater('activesimstats', 20, 'simstatsajax.html');
+new updater('activelog', 5, 'activelogajax.html');
+
+                });
+                // ]]>
+                </script>
+<STYLE>
+body
+{
+    font-size:15px; font-family:Helvetica, Verdana; color:Black;
+}
+TABLE.defaultr { }
+TR.defaultr { padding: 5px; }
+TD.header { font-weight:bold; padding:5px; }
+TD.content {}
+TD.contentright { text-align: right; }
+TD.contentcenter { text-align: center; }
+TD.align_top { vertical-align: top; }
+</STYLE>
+</HEAD><BODY><A href="default.report">Home</A>&nbsp;&nbsp;|&nbsp;&nbsp;<A href="clients.report">Client</A>&nbsp;&nbsp;|&nbsp;&nbsp;<A href="sessions.report">Sessions</A>&nbsp;&nbsp;<table class="defaultr">
+	<tr class="defaultr">
+	<td class="header"># Users Total</td><td class="header"># Sessions Total</td><td class="header">Avg Client FPS</td><td class="header">Avg Client Mem Use</td><td class="header">Avg Sim FPS</td><td class="header">Avg Ping</td><td class="header">KB Out Total</td><td class="header">KB In Total</td></tr>
+<tr class="defaultr">
+	<td class="content">1</td><td class="content">1</td><td class="contentcenter">0</td><td class="contentcenter">0</td><td class="contentcenter">0</td><td class="contentcenter">0</td><td class="contentcenter">0</td><td class="contentcenter">0</td></tr>
+</table>
+<hr />
+<table>
+	<tr>
+	<td class="align_top"><DIV id="activeconnections">Active Connections loading...</DIV></td><td class="align_top"><DIV id="activesimstats">SimStats loading...</DIV><DIV id="activelog">ActiveLog loading...</DIV></td></tr>
+</table>
+</BODY></HTML>

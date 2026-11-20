@@ -33,6 +33,10 @@ pub struct AssetStore {
 }
 
 impl AssetStore {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.pool.occupancy()
+    }
+
     pub fn new(pool: Pool) -> Result<Self, StoreError> {
         if pool.sqlite().is_none() {
             return Err(StoreError::NotSqlite);

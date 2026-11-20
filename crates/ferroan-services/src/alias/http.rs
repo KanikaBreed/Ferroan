@@ -32,6 +32,10 @@ struct Inner {
 }
 
 impl AliasHttp {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.inner.service.pool_occupancy()
+    }
+
     pub fn new(service: AliasService, reject_shard_header: bool) -> Self {
         Self {
             inner: Arc::new(Inner {

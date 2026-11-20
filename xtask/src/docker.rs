@@ -920,6 +920,8 @@ mod tests {
             "neighbour:",
             "ferroan-robust:",
             "ferroan-region:",
+            "prometheus:",
+            "grafana:",
         ] {
             assert!(COMPOSE.contains(name), "{name}");
         }

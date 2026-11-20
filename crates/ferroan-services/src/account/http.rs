@@ -39,6 +39,10 @@ struct Inner {
 }
 
 impl AccountHttp {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.inner.service.pool_occupancy()
+    }
+
     pub fn new(
         service: AccountService,
         allow_create_user: bool,

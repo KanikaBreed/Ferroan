@@ -51,6 +51,10 @@ pub struct AliasStore {
 }
 
 impl AliasStore {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.pool.occupancy()
+    }
+
     pub async fn new(pool: Pool, realm: &str) -> Result<Self, StoreError> {
         if pool.sqlite().is_none() {
             return Err(StoreError::NotSqlite);

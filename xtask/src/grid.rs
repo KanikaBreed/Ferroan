@@ -620,7 +620,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         None
     };
-    let port_count = if rust_assets || rust_accounts { 7 } else { 6 };
+    let port_count = 6
+        + usize::from(rust_assets || rust_accounts)
+        + usize::from(ferroan)
+        + usize::from(rust_assets || rust_accounts);
     let mut ports = Vec::new();
     for _ in 0..32 {
         if ports.len() == port_count {
@@ -640,11 +643,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let private_proxy = ports[3];
     let home_port = ports[4];
     let neighbour_port = ports[5];
-    let rust_port = if rust_assets || rust_accounts {
-        Some(ports[6])
-    } else {
-        None
-    };
+    let rust_services = rust_assets || rust_accounts;
+    let rust_port = rust_services.then(|| ports[6]);
+    let region_metrics = ferroan.then(|| ports[6 + usize::from(rust_services)]);
+    let robust_metrics =
+        rust_services.then(|| ports[6 + usize::from(rust_services) + usize::from(ferroan)]);
     let root = grid_root();
     if root.exists() {
         fs::remove_dir_all(&root)
@@ -736,6 +739,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             asset_database.as_deref(),
             account_database.as_deref(),
             port,
+            robust_metrics,
             &root.join(log_name),
             &root.join(ini_name),
             docker,
@@ -833,6 +837,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture: Some(root.join("capture-udp.cap")),
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
+            metrics_port: region_metrics,
         },
         &grid.passwords,
         docker,
@@ -859,6 +864,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture: None,
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
+            metrics_port: None,
         },
         &grid.passwords,
         docker,
@@ -891,6 +897,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 http: Vec::new(),
             })
     } else {
+        let status = region_metrics.map(|port| {
+            (
+                format!("http://{HOME_BIND}:{home_port}"),
+                format!("http://127.0.0.1:{port}"),
+            )
+        });
         run_bot(
         scenario,
         &format!("http://{ROBUST_BIND}:{robust_public}/"),
@@ -899,6 +911,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         &home_log,
         ferroan,
         (&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan),
+        status.as_ref().map(|(region, metrics)| (region.as_str(), metrics.as_str())),
     ).and_then(|mut report| {
         if scenario == "login" {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
@@ -906,7 +919,16 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
             // run_bot has already awaited service cleanup after each logout.
             if ferroan {
-                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true))?;
+                if let Some((_, metrics)) = status.as_ref() {
+                    let (code, body) = http_get_url(metrics, "/metrics")?;
+                    if code != 200 || !body.contains("ferroan_region_root_agents 0\n") {
+                        return Err(format!(
+                            "metrics after logout: status {code}, root agents were not 0"
+                        ));
+                    }
+                    report.lines.push_str("\nmetrics: root agents 0 after logout");
+                }
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true), None)?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
             }
@@ -951,11 +973,18 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         Ok(())
     };
+    let scrape = scrape_running(ferroan, region_metrics, robust_metrics);
     let cleanup = grid.stop();
-    let report = match (report, relay_result, cleanup) {
-        (Ok(report), Ok(()), Ok(())) => report,
-        (report, relay, cleanup) => {
-            return Err([report.err(), relay.err(), cleanup.err()]
+    let report = match (report, relay_result, cleanup, scrape) {
+        (Ok(mut report), Ok(()), Ok(()), Ok(lines)) => {
+            if !lines.is_empty() {
+                report.lines.push('\n');
+                report.lines.push_str(&lines);
+            }
+            report
+        }
+        (report, relay, cleanup, scrape) => {
+            return Err([report.err(), relay.err(), cleanup.err(), scrape.err()]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
@@ -1031,6 +1060,113 @@ fn capture_missing_presence(upstream: SocketAddr, root: &Path) -> Result<(), Str
 }
 
 #[cfg(target_os = "linux")]
+fn http_get_url(base: &str, path: &str) -> Result<(u16, String), String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let host = base
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("status URL {base} is not http"))?
+        .trim_end_matches('/');
+    let address: SocketAddr = host
+        .parse()
+        .map_err(|_| format!("status URL {base} is not host:port"))?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .map_err(|error| format!("could not connect to {address}: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("could not time out {address}: {error}"))?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("could not write to {address}: {error}"))?;
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read from {address}: {error}"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(format!("response from {address} exceeds 1 MiB"));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let (head, rest) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("short response from {address}"))?;
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| format!("no status from {address}"))?;
+    let status = status
+        .parse::<u16>()
+        .map_err(|_| format!("bad status from {address}"))?;
+    let body = if let Some(length) = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    }) {
+        rest.get(..length)
+            .ok_or_else(|| format!("short body from {address}"))?
+            .to_owned()
+    } else {
+        rest.to_owned()
+    };
+    Ok((status, body))
+}
+
+#[cfg(target_os = "linux")]
+async fn status_while_online(region: &str, metrics: &str) -> Result<String, String> {
+    let (code, body) = http_get_url(region, "/simstatus")?;
+    if code != 200 || body != "OK" {
+        return Err(format!("simstatus during login: status {code}"));
+    }
+    let (code, body) = http_get_url(metrics, "/healthz")?;
+    if code != 200 || body != "ok\n" {
+        return Err(format!("healthz during login: status {code}"));
+    }
+    let (code, body) = http_get_url(metrics, "/metrics")?;
+    if code != 200 || !body.contains("ferroan_region_root_agents 1\n") {
+        return Err("metrics during login: root agents were not 1".to_owned());
+    }
+    Ok("status: /simstatus OK, /healthz ok, root agents 1".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn scrape_running(
+    ferroan: bool,
+    region: Option<u16>,
+    robust: Option<u16>,
+) -> Result<String, String> {
+    let mut lines = Vec::new();
+    if ferroan && let Some(port) = region {
+        lines.push(scrape_one(
+            "ferroan-region",
+            port,
+            "ferroan_region_registered",
+        )?);
+    }
+    if let Some(port) = robust {
+        lines.push(scrape_one(
+            "ferroan-robust",
+            port,
+            "ferroan_robust_db_pool_connections",
+        )?);
+    }
+    Ok(lines.join("\n"))
+}
+
+#[cfg(target_os = "linux")]
+fn scrape_one(name: &str, port: u16, marker: &str) -> Result<String, String> {
+    let (code, body) = http_get_url(&format!("http://127.0.0.1:{port}"), "/metrics")?;
+    if code != 200 || !body.contains(marker) {
+        return Err(format!("metrics scrape: {name} failed"));
+    }
+    println!("metrics scrape: {name} pass");
+    Ok(format!("metrics scrape: {name} pass"))
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
 fn run_bot(
     scenario: &str,
     login_uri: &str,
@@ -1039,6 +1175,7 @@ fn run_bot(
     region_log: &Path,
     strict_logout: bool,
     online: (&str, &Path, bool),
+    status: Option<(&str, &str)>,
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
@@ -1062,8 +1199,14 @@ fn run_bot(
         private_uri,
         |selected| async move {
             if scenario == "login" {
-                ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| {
-                    login_probe::online(private_uri, directory, ferroan, arrival)
+                ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| async move {
+                    let mut line =
+                        login_probe::online(private_uri, directory, ferroan, arrival).await?;
+                    if let Some((region, metrics)) = status {
+                        line.push('\n');
+                        line.push_str(&status_while_online(region, metrics).await?);
+                    }
+                    Ok(line)
                 })
                 .await
             } else {
@@ -1413,6 +1556,7 @@ struct RegionStart {
     capture: Option<PathBuf>,
     asset_uri: Option<String>,
     account_uri: Option<String>,
+    metrics_port: Option<u16>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1484,6 +1628,11 @@ fn start_region(
         // Scene.RegisterRegionWithGrid skips map generation in this supported
         // configuration. Q6 checks login, before Ferroan has terrain/maps.
         ini.push_str("\n[Map]\n    GenerateMaptiles = false\n    MaptileStaticUUID = 00000000-0000-0000-0000-000000000000\n");
+    }
+    if let Some(port) = spec.metrics_port {
+        ini.push_str(&format!(
+            "\n[Monitoring]\n    Metrics = true\n    Listen = \"127.0.0.1:{port}\"\n"
+        ));
     }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(&region))

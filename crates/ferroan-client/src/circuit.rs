@@ -69,7 +69,8 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
@@ -171,6 +172,43 @@ pub enum CircuitStop {
 
 type PendingUseCircuit = Mutex<Option<(SocketAddr, Vec<u8>)>>;
 
+/// UDP totals for the region metrics listener. Resends are also packets out.
+#[derive(Debug, Default)]
+pub struct UdpCounters {
+    pub packets_in: AtomicU64,
+    pub bytes_in: AtomicU64,
+    pub packets_out: AtomicU64,
+    pub bytes_out: AtomicU64,
+    pub resends: AtomicU64,
+    pub unacked: AtomicU64,
+}
+
+struct CountingSocket {
+    inner: UdpSocket,
+    udp: Option<Arc<UdpCounters>>,
+}
+
+impl CountingSocket {
+    async fn bind(address: SocketAddr) -> io::Result<Self> {
+        Ok(Self {
+            inner: UdpSocket::bind(address).await?,
+            udp: None,
+        })
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn set_counters(&mut self, udp: Arc<UdpCounters>) {
+        self.udp = Some(udp);
+    }
+
+    fn counters(&self) -> Option<Arc<UdpCounters>> {
+        self.udp.clone()
+    }
+}
+
 // This private boundary permits deterministic peer-error tests without
 // depending on OS-specific ICMP timing. It adds no alternative transport.
 trait DatagramIo: Sync {
@@ -187,6 +225,26 @@ impl DatagramIo for UdpSocket {
     }
     async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
         UdpSocket::send_to(self, buf, to).await
+    }
+}
+impl DatagramIo for CountingSocket {
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let result = self.inner.recv_from(buf).await;
+        if let (Ok((size, _)), Some(udp)) = (&result, &self.udp) {
+            udp.packets_in.fetch_add(1, Ordering::Relaxed);
+            udp.bytes_in
+                .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
+        result
+    }
+    async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        let result = self.inner.send_to(buf, to).await;
+        if let (Ok(size), Some(udp)) = (&result, &self.udp) {
+            udp.packets_out.fetch_add(1, Ordering::Relaxed);
+            udp.bytes_out
+                .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
+        result
     }
 }
 #[derive(Clone)]
@@ -220,6 +278,7 @@ struct State {
     /// window becomes empty, so a later ping still reports it.
     last_oldest: u32,
     paused: bool,
+    udp: Option<Arc<UdpCounters>>,
 }
 impl State {
     #[cfg(test)]
@@ -256,6 +315,7 @@ impl State {
             last_received: now,
             last_oldest: 0,
             paused: false,
+            udp: None,
         }
     }
     fn time_until_work(&self) -> Duration {
@@ -293,6 +353,7 @@ impl State {
                     self.last_oldest = self.unacked.oldest_or(self.last_oldest);
                 }
                 let batch = self.unacked.poll(now.into_std(), self.rto);
+                let resent = u64::try_from(batch.resend.len()).unwrap_or(u64::MAX);
                 for (seq, payload) in batch.resend {
                     let mut bytes = Vec::new();
                     packet::build_raw(
@@ -305,6 +366,11 @@ impl State {
                         &mut bytes,
                     );
                     let _ = sock.send_to(&bytes, peer).await;
+                }
+                if let Some(udp) = &self.udp {
+                    udp.resends.fetch_add(resent, Ordering::Relaxed);
+                    let waiting = u64::try_from(self.unacked.len()).unwrap_or(u64::MAX);
+                    udp.unacked.store(waiting, Ordering::Relaxed);
                 }
             }
         }
@@ -621,7 +687,7 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
 }
 /// One UDP listener with the region settings to announce.
 pub struct CircuitServer {
-    socket: UdpSocket,
+    socket: CountingSocket,
     handshake: HandshakeConfig,
     timing: CircuitTiming,
     /// Latest UseCircuitCode seen from an endpoint other than the one being
@@ -634,11 +700,15 @@ impl CircuitServer {
     }
     pub async fn bind_at(address: SocketAddr) -> Result<Self, CircuitError> {
         Ok(Self {
-            socket: UdpSocket::bind(address).await?,
+            socket: CountingSocket::bind(address).await?,
             handshake: HandshakeConfig::for_region(Uuid::nil()),
             timing: CircuitTiming::default(),
             pending_login: Mutex::new(None),
         })
+    }
+    pub fn with_udp_counters(mut self, udp: Arc<UdpCounters>) -> Self {
+        self.socket.set_counters(udp);
+        self
     }
     pub fn with_handshake(mut self, handshake: HandshakeConfig) -> Self {
         self.handshake = handshake;
@@ -738,6 +808,7 @@ impl CircuitServer {
             handshake,
             arrival,
             self.timing,
+            self.socket.counters(),
             ServeExtra {
                 root_arrival,
                 connected,
@@ -771,6 +842,7 @@ async fn serve_socket(
         handshake,
         arrival,
         timing,
+        None,
         ServeExtra {
             root_arrival: None,
             connected: None,
@@ -802,9 +874,11 @@ async fn serve_socket_reporting(
     handshake: HandshakeConfig,
     arrival: ArrivalConfig,
     timing: CircuitTiming,
+    udp: Option<Arc<UdpCounters>>,
     mut extra: ServeExtra<'_>,
 ) -> Result<(), CircuitError> {
     let mut state = State::with_timing(handshake, arrival, timing);
+    state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
     let mut buf = [0u8; MAX_DATAGRAM];

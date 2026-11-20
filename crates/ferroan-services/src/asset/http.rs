@@ -86,6 +86,10 @@ impl AssetHttp {
         }
     }
 
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.inner.store.pool_occupancy()
+    }
+
     pub fn into_router(self) -> Router {
         let limit = self.inner.body_limit;
         self.into_router_limited(limit)

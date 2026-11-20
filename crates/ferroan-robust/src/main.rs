@@ -23,6 +23,8 @@ use std::process::ExitCode;
 use axum::Router;
 use ferroan_config::GridLoad;
 use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, listen_address, network_port};
+
+mod status;
 use tokio::net::TcpListener;
 
 fn main() -> ExitCode {
@@ -62,10 +64,12 @@ fn run() -> Result<(), String> {
             );
         }
         let mut router = Router::new();
+        let mut pools = status::Pools::default();
         if assets {
             let http = AssetHttp::open(config)
                 .await
                 .map_err(|error| error.to_string())?;
+            pools = pools.asset(http.clone());
             router = router.merge(http.into_router());
             eprintln!("ferroan-robust: asset service on {listen}:{port}");
         }
@@ -73,6 +77,7 @@ fn run() -> Result<(), String> {
             let http = AccountHttp::open(config)
                 .await
                 .map_err(|error| error.to_string())?;
+            pools = pools.account(http.clone());
             router = router.merge(http.into_router());
             eprintln!("ferroan-robust: user account service on {listen}:{port}");
         }
@@ -80,13 +85,28 @@ fn run() -> Result<(), String> {
             let http = AliasHttp::open(config)
                 .await
                 .map_err(|error| error.to_string())?;
+            pools = pools.alias(http.clone());
             router = router.merge(http.into_router());
             eprintln!("ferroan-robust: user alias service on {listen}:{port}");
         }
+        router = router.merge(status::status_router(config));
+        let meters = std::sync::Arc::new(status::RobustMeters::new(pools));
+        router = status::with_request_counts(router, meters.clone());
+        let metrics = status::metrics_listen(config)?;
         let listener = TcpListener::bind((listen, port))
             .await
             .map_err(|error| error.to_string())?;
-        axum_serve(listener, router).await
+        if let Some(address) = metrics {
+            let metrics_listener = TcpListener::bind(address)
+                .await
+                .map_err(|error| error.to_string())?;
+            let metrics_router = status::metrics_router(meters);
+            let service = axum_serve(listener, router);
+            let scrape = axum_serve(metrics_listener, metrics_router);
+            tokio::try_join!(service, scrape).map(|_| ())
+        } else {
+            axum_serve(listener, router).await
+        }
     })
 }
 

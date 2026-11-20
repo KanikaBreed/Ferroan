@@ -16,6 +16,10 @@ pub struct AliasService {
 }
 
 impl AliasService {
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.store.pool_occupancy()
+    }
+
     pub fn new(store: AliasStore) -> Self {
         Self { store }
     }
