@@ -9,6 +9,10 @@
 //! the interleaving. Sequence numbers, appended acks, the resent flag, and
 //! the fields listed in [`WILDCARDS`] are not compared.
 
+// The live runner calls this on Linux. Windows and macOS still compile the
+// binary, and the unit tests cover the comparator there.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use ferroan_capture::{Kind, Record, read_capture};
