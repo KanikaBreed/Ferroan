@@ -1,0 +1,7 @@
+{
+  "id": "unnamed-flags",
+  "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+  "flags": 8,
+  "threw": true,
+  "exception_type": "System.InvalidOperationException"
+}

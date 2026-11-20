@@ -11,8 +11,10 @@ repeat from the same endpoint preserves the existing presence. A different
 endpoint restores the circuit and replaces the scene presence, but removes the
 login watcher and marks the services offline. This is recorded as TB11 in
 [the bug ledger](../../docs/TRANQUILLITY_BUGS.md), not asserted as desirable
-reconnect behavior. Rust retains its existing endpoint restriction pending the
-maintainer's disposition.
+reconnect behavior. Rust retains its existing endpoint restriction.
+`csharp_pre_root_other_endpoint_still_drops_watcher_and_online` fails if
+`pre_root_endpoint_reconnect.after` no longer shows that removal, and names
+`crates/ferroan-client/src/circuit.rs` `handle`.
 
 `trust.json` calls the actual `ControlPlaneAccess.HostOf` and trust evaluators. It supplies a deterministic DNS lookup and clock through the source's injectable constructor. The fixture covers host/address forms, both configuration sections and aliases, mapped and scoped IPv6, failed lookups, and lookup refresh timing. DNS observations describe the supplied test resolver, not public DNS availability. The Rust tests compare behavior with this trace.
 

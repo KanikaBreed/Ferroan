@@ -56,7 +56,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s1 | P0.10n1: pin `rust-toolchain.toml` to the exact stable CI's runners use | DONE (#95) |
 | Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | DONE (#96) |
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | DONE (#97) |
-| Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | READY after Q10s3 |
+| Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | IN PROGRESS (`feat/known-differences`) |
 | Q10s5 | P0.10n5: record a C# scenario twice and fail on order or count differences | READY after Q10s4 |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |

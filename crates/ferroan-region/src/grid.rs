@@ -869,6 +869,31 @@ mod tests {
         .await;
     }
 
+    /// TB10. Grid register and deregister fixtures still accept success XML on
+    /// HTTP 302 and 500. A pin move that rejects those statuses fails here.
+    #[test]
+    fn csharp_make_post_request_still_accepts_grid_failure_status() {
+        for caller in ["grid-register", "grid-deregister"] {
+            for status in [302u16, 500] {
+                let fixture = status_fixture(caller, status);
+                let path = format!("fixtures/http-status/{caller}-{status}.json");
+                let value_matches = if caller == "grid-register" {
+                    fixture["outcome"]["value"].as_str() == Some("")
+                } else {
+                    fixture["outcome"]["value"] == true
+                };
+                let shows_bug = fixture["outcome"]["accepted"] == true
+                    && value_matches
+                    && fixture["injected_response"]["status"] == status
+                    && fixture["injected_response"]["location"].is_null();
+                assert!(
+                    shows_bug,
+                    "TB10: {path} no longer shows MakePostRequest accepting non-2xx success XML. Change crates/ferroan-region/src/grid.rs grid_form and crates/ferroan-http FormStatusPolicy::Unchecked."
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn presence_getagent_matches_csharp_checked_status() {
         each_status("presence-getagent", async |caller, status, fixture| {
