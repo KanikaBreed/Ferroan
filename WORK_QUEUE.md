@@ -57,7 +57,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s2 | P0.10n2: deny `unwrap`, `expect` and `panic` outside tests; fix outside input, `// INFALLIBLE:` for the rest | DONE (#96) |
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | DONE (#97) |
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | DONE (#98) |
-| Q10s5 | P0.10n5: record a C# scenario twice and compare per message type (rule revised, see below) | IN PROGRESS |
+| Q10s5 | P0.10n5: record a C# scenario twice and compare per message type (rule revised, see below) | DONE (#103) |
 | Q10t | Pin4: move the Tranquillity pin back to `develop` `f67db54399` (every carried PR merged upstream) | DONE (#102) |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
@@ -183,7 +183,7 @@ Q10s5 BLOCKED (20 November 2026, `docs/record-twice-blocked`): two local recordi
 
 Q10s5 rule revised (manager, 20 November 2026): the block is right, and the fault was the row's rule, not C#. Comparing the whole interleaved packet order and every count fails on a healthy region. The new rule, recorded in the P0.10n5 row: compare each message type on its own, per direction; exact counts only for request-and-reply and content messages; timer-driven messages are reported and not failed; the order checked is the first appearance of the named handshake and logout messages, not the interleaving. Re-record at the Pin4 pin, so Q10s5 now follows Q10t, and Q11 follows Q10s5.
 
-Q10s5 (20 November 2026, `feat/record-twice`): three local pairs at pin `f67db54399` passed in 17s, 15s and 17s after the region binary existed. `KillObject` is reported, not an exact count: one healthy pair had outbound counts 1 and 0. `RegionHandshakeReply` and `AgentMovementComplete` may swap. Arrival Z is wildcarded. The comparison is on the live job.
+Q10s5 (20 November 2026, `feat/record-twice`): three local pairs at pin `f67db54399` passed in 17s, 15s and 17s after the region binary existed. `KillObject` is reported, not an exact count: one healthy pair had outbound counts 1 and 0. `RegionHandshakeReply` and `AgentMovementComplete` may swap. Arrival Z is wildcarded. The comparison is on the live job. PR #103. Windows and macOS checks on `0c5cfc5` failed because the comparator is only called on Linux; `twice.rs` allows that unused code off Linux, as `inventory_probe.rs` does, and its tests still run.
 
 Proposed fix: the maintainer names the messages whose order and count the report compares. The handshake through `AvatarAnimation`, plus `LogoutRequest` and `LogoutReply`, matched. Timer traffic (`StartPingCheck`, `CompletePingCheck`, `CoarseLocationUpdate`, `SimStats`, `SimulatorViewerTimeMessage`) and the bulk sends that race the client's `PacketAck` (`ParcelOverlay`, `LayerData`, `ImprovedTerseObjectUpdate`) did not keep a stable order. Until that set is named, do not put the comparison on the required live job.
 
