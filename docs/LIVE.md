@@ -2,7 +2,7 @@
 
 The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. It is Linux-only. Run state, the scratch Tranquillity tree and the generated password stay under `.scratch/live/`. The password is not printed. The reference checkout is only read. Set `FERROAN_REF` when that checkout is not `~/Git/reference`.
 
-Pin4 is OpenSim-NGC `develop` at `f67db54399c027fd74e5aefcb2193905b4dc1646` ([D21](DECISIONS.md)). Pin3 (`40432e0`, the maintainer's `dev-build`) merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56). The clean shared reference checkout is at Pin4. CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). Builds use separate writable scratch copies; `FERROAN_REF` selects clean alternate reference checkouts when needed.
+Pin5 is [KanikaBreed/OpenSim-Tranquillity](https://github.com/KanikaBreed/OpenSim-Tranquillity) `dev-build` at `c70fee205f64ee8672a8d607cef6a733931da951` ([D21](DECISIONS.md)). Pin4 was OpenSim-NGC `develop` `f67db54399`. Pin3 (`40432e0`, the maintainer's `dev-build`) merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56). The clean shared reference checkout is at Pin5. CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). Builds use separate writable scratch copies; `FERROAN_REF` selects clean alternate reference checkouts when needed.
 
 The fixed C# sends `LogoutReply` immediately. The strict login checks still require that packet and a fresh arrival on the current circuit. The Rust region also follows pending ViaLogin connections, clears stranded GridUser users at startup, and attempts independent close notifications. Controlled C# observations for those cases and trusted-host parsing are regenerated with `cargo xtask pin3 generate` and checked with `cargo xtask pin3 verify`; see [the fixture provenance](../fixtures/pin3/README.md).
 
@@ -152,7 +152,7 @@ The Ferrobot revision and role are recorded in [REFERENCES.md](REFERENCES.md) an
 
 ## Manual recipe (Linux)
 
-The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The commands below now select Pin4, OpenSim-NGC `develop` `f67db54399c027fd74e5aefcb2193905b4dc1646`. The historical viewer observations are not a claim of manual validation at this pin. The harness sets `bind_ip_address` and starts the region once.
+The commands above automate this recipe. It was run by hand on Linux on 17 November 2026 at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`: the region started without a console, created its estate owner, and accepted an XML-RPC login (`login: true`, seed capability on `127.0.0.1:9100`). The same recipe, built from Tranquillity PR #412 (on `develop` at `578db56`) with `bind_ip_address = "127.0.0.1"`, on databases a PR #411 build had created, was then used by the maintainer with Firestorm 7.2.3.80036: login, avatar, textures, building, upload, chat and movement all worked, with the C# asset service. That session is not the phase-gate check (G0). The commands below now select Pin5, KanikaBreed/OpenSim-Tranquillity `dev-build` `c70fee205f64ee8672a8d607cef6a733931da951`. The historical viewer observations are not a claim of manual validation at this pin. The harness sets `bind_ip_address` and starts the region once.
 
 Start from a Ferroan worktree root; the commands create a separate scratch clone. Never build in `~/Git/reference`.
 
@@ -160,8 +160,8 @@ Start from a Ferroan worktree root; the commands create a separate scratch clone
 
    ```sh
    W="$PWD/.scratch/tranquillity-live"
-   git clone --no-checkout https://github.com/OpenSim-NGC/OpenSim-Tranquillity.git "$W"
-   git -C "$W" checkout --detach f67db54399c027fd74e5aefcb2193905b4dc1646
+   git clone --no-checkout https://github.com/KanikaBreed/OpenSim-Tranquillity.git "$W"
+   git -C "$W" checkout --detach c70fee205f64ee8672a8d607cef6a733931da951
    cd "$W"
    dotnet publish Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj -c Release -r linux-x64
    P="$W/Source/OpenSim.Server.RegionServer/bin/Release/net10.0/linux-x64/publish"

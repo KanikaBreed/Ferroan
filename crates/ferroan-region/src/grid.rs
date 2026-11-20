@@ -304,25 +304,25 @@ impl GridClient {
     }
 
     pub async fn register(&self, config: &RegionConfig) -> Result<(), GridError> {
-        // GridServicesConnector.RegisterRegion calls
-        // SynchronousRestFormsRequester.MakePostRequest, which does not check
-        // the HTTP status (TB10).
+        // GridServicesConnector.RegisterRegion calls MakePostRequest. At Pin5
+        // that helper checks the HTTP status (TB10, #438) and the connector
+        // returns an error string when the call fails.
         check_result(&grid_form(&self.endpoint, &registration_fields(config)).await?)
     }
 
     pub async fn deregister(&self, region_id: Uuid) -> Result<(), GridError> {
-        // GridServicesConnector.DeregisterRegion calls
-        // SynchronousRestFormsRequester.MakePostRequest (TB10).
+        // GridServicesConnector.DeregisterRegion calls MakePostRequest (TB10).
+        // A failed status is false.
         check_result(&grid_form(&self.endpoint, &deregistration_fields(region_id)).await?)
     }
 }
 
-/// `MakePostRequest`: parse the XML reply even when the status is not 2xx.
+/// `MakePostRequest` at Pin5: a non-2xx status is an error.
 async fn grid_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, ferroan_http::HttpError> {
     ferroan_http::post_form_with(
         endpoint,
         fields,
-        ferroan_http::FormOptions::unchecked(
+        ferroan_http::FormOptions::checked(
             std::time::Duration::from_secs(30),
             ferroan_http::MAX_XML_CHARS,
         ),
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn grid_register_matches_csharp_unchecked_status() {
+    async fn grid_register_matches_csharp_checked_status() {
         each_status("grid-register", async |caller, status, fixture| {
             let (base, seen, serving) = serve_injected(fixture).await;
             let agent = "00000000-0000-4000-8000-000000000001";
@@ -824,19 +824,23 @@ mod tests {
             let recorded = seen.lock().unwrap().clone();
             assert!(recorded.starts_with("/grid "), "{recorded}");
             assert!(recorded.contains("METHOD=register"), "{recorded}");
-            assert_eq!(fixture["outcome"]["value"], "");
-            assert_status_result(
-                caller,
-                status,
-                fixture["outcome"]["accepted"].as_bool().unwrap(),
-                result,
-            );
+            let accepted = fixture["outcome"]["accepted"].as_bool().unwrap();
+            if accepted {
+                assert_eq!(fixture["outcome"]["value"], "");
+            } else {
+                let value = fixture["outcome"]["value"].as_str().unwrap();
+                assert!(
+                    value.starts_with("Error communicating with the grid service at "),
+                    "{value}"
+                );
+            }
+            assert_status_result(caller, status, accepted, result);
         })
         .await;
     }
 
     #[tokio::test]
-    async fn grid_deregister_matches_csharp_unchecked_status() {
+    async fn grid_deregister_matches_csharp_checked_status() {
         each_status("grid-deregister", async |caller, status, fixture| {
             let (base, seen, serving) = serve_injected(fixture).await;
             let region = "00000000-0000-4000-8000-000000000002".parse().unwrap();
@@ -863,33 +867,40 @@ mod tests {
                 seen.lock().unwrap().as_str(),
                 format!("/grid {}", fixture["request"]["body"].as_str().unwrap())
             );
-            assert_eq!(fixture["outcome"]["value"], true);
-            assert_status_result(caller, status, true, result);
+            let accepted = fixture["outcome"]["accepted"].as_bool().unwrap();
+            if accepted {
+                assert_eq!(fixture["outcome"]["value"], true);
+            } else {
+                assert_eq!(fixture["outcome"]["value"], false);
+            }
+            assert_status_result(caller, status, accepted, result);
         })
         .await;
     }
 
-    /// TB10. Grid register and deregister fixtures still accept success XML on
-    /// HTTP 302 and 500. A pin move that rejects those statuses fails here.
+    /// TB10. Grid register and deregister fixtures reject HTTP 302 and 500.
+    /// Register's value is the connector's error string. Deregister's is false.
     #[test]
-    fn csharp_make_post_request_still_accepts_grid_failure_status() {
+    fn csharp_make_post_request_rejects_grid_failure_status() {
         for caller in ["grid-register", "grid-deregister"] {
             for status in [302u16, 500] {
                 let fixture = status_fixture(caller, status);
                 let path = format!("fixtures/http-status/{caller}-{status}.json");
-                let value_matches = if caller == "grid-register" {
-                    fixture["outcome"]["value"].as_str() == Some("")
-                } else {
-                    fixture["outcome"]["value"] == true
-                };
-                let shows_bug = fixture["outcome"]["accepted"] == true
-                    && value_matches
-                    && fixture["injected_response"]["status"] == status
-                    && fixture["injected_response"]["location"].is_null();
-                assert!(
-                    shows_bug,
-                    "TB10: {path} no longer shows MakePostRequest accepting non-2xx success XML. Change crates/ferroan-region/src/grid.rs grid_form and crates/ferroan-http FormStatusPolicy::Unchecked."
+                assert_eq!(
+                    fixture["outcome"]["accepted"], false,
+                    "TB10: {path} still accepts a non-2xx status. Change crates/ferroan-region/src/grid.rs grid_form and FormStatusPolicy::Checked."
                 );
+                assert_eq!(fixture["injected_response"]["status"], status);
+                assert!(fixture["injected_response"]["location"].is_null());
+                if caller == "grid-register" {
+                    let value = fixture["outcome"]["value"].as_str().unwrap();
+                    assert!(
+                        value.starts_with("Error communicating with the grid service at "),
+                        "{path}: {value}"
+                    );
+                } else {
+                    assert_eq!(fixture["outcome"]["value"], false, "{path}");
+                }
             }
         }
     }

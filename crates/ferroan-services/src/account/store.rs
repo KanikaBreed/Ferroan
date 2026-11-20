@@ -8,10 +8,11 @@
 //! equivalent list, so a query cannot observe a half-built one.
 //!
 //! `REPLACE` omits `active`, which makes SQLite apply the default `TRUE`.
-//! `UserCountry` is not a column; a non-empty country fails the store, which
-//! is what a `REPLACE` that names that column does. `GetUsersWhere` returns
-//! null on SQLite, so a multi-id fetch is empty. The search `LIKE` is the
-//! SQLite ASCII case-insensitive operator. Equality stays case-sensitive.
+//! `UserCountry` is written on every store (Pin5, migration 5, TB13). An
+//! omitted country is the empty default. `GetUsersWhere` returns the matching
+//! rows (TB12): a non-zero scope is wrapped with the zero scope, and the id
+//! list is bound. The search `LIKE` is the SQLite ASCII case-insensitive
+//! operator. Equality stays case-sensitive.
 
 use ferroan_db::Pool;
 use sqlx::Row;
@@ -175,36 +176,64 @@ impl AccountStore {
         rows.iter().map(account_from_row).collect()
     }
 
-    /// SQLite `GetUsersWhere` returns null. Callers see an empty list.
+    /// SQLite `GetUsersWhere` for `PrincipalID in (...)`.
+    ///
+    /// A non-zero scope also matches the zero scope, as the store wraps the
+    /// condition. Identifiers are bound; they are not interpolated.
     pub async fn get_by_ids(
         &self,
-        _scope_id: Uuid,
-        _ids: &[Uuid],
+        scope_id: Uuid,
+        ids: &[Uuid],
     ) -> Result<Vec<Account>, StoreError> {
-        Ok(Vec::new())
+        let mut unique = Vec::new();
+        for id in ids {
+            if !unique.contains(id) {
+                unique.push(*id);
+            }
+        }
+        if unique.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = "?,".repeat(unique.len());
+        let marks = marks.trim_end_matches(',');
+        let sql = if scope_id.is_nil() {
+            format!(
+                "SELECT {COLUMNS} FROM \"{}\" WHERE PrincipalID IN ({marks})",
+                self.realm
+            )
+        } else {
+            format!(
+                "SELECT {COLUMNS} FROM \"{}\" WHERE (ScopeID = ? OR ScopeID = '{ZERO_ID}') \
+                 AND (PrincipalID IN ({marks}))",
+                self.realm
+            )
+        };
+        let mut query = sqlx::query(&sql);
+        if !scope_id.is_nil() {
+            query = query.bind(scope_id.to_string());
+        }
+        for id in &unique {
+            query = query.bind(id.to_string());
+        }
+        let rows = query.fetch_all(self.pool()).await?;
+        rows.iter().map(account_from_row).collect()
     }
 
-    /// `StoreUserAccount`. Returns false when `UserCountry` is non-empty,
-    /// because that column is not in the SQLite table.
+    /// `StoreUserAccount`. `UserCountry` is always named so `REPLACE` does not
+    /// reset it to the empty default.
     pub async fn store_account(&self, account: &Account) -> Result<bool, StoreError> {
-        if account
-            .user_country
-            .as_ref()
-            .is_some_and(|text| !text.is_empty())
-        {
-            return Ok(false);
-        }
         let title = account
             .user_title
             .as_ref()
             .filter(|text| !text.is_empty())
             .cloned();
+        let country = account.user_country.clone().unwrap_or_default();
         let urls = service_urls_db(&account.service_urls);
         let done = if let Some(title) = title {
             sqlx::query(&format!(
                 "REPLACE INTO \"{}\" (PrincipalID, ScopeID, FirstName, LastName, Email, ServiceURLs, \
-                 Created, UserLevel, UserFlags, DisplayName, NameChanged, UserTitle) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 Created, UserLevel, UserFlags, DisplayName, NameChanged, UserTitle, UserCountry) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 self.realm
             ))
             .bind(account.principal_id.to_string())
@@ -219,13 +248,14 @@ impl AccountStore {
             .bind(account.display_name.clone())
             .bind(i64::from(account.name_changed))
             .bind(title)
+            .bind(country)
             .execute(self.pool())
             .await?
         } else {
             sqlx::query(&format!(
                 "REPLACE INTO \"{}\" (PrincipalID, ScopeID, FirstName, LastName, Email, ServiceURLs, \
-                 Created, UserLevel, UserFlags, DisplayName, NameChanged) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 Created, UserLevel, UserFlags, DisplayName, NameChanged, UserCountry) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 self.realm
             ))
             .bind(account.principal_id.to_string())
@@ -239,6 +269,7 @@ impl AccountStore {
             .bind(i64::from(account.user_flags))
             .bind(account.display_name.clone())
             .bind(i64::from(account.name_changed))
+            .bind(country)
             .execute(self.pool())
             .await?
         };
@@ -247,7 +278,7 @@ impl AccountStore {
 }
 
 const COLUMNS: &str = "PrincipalID, ScopeID, FirstName, LastName, Email, ServiceURLs, Created, \
-     UserLevel, UserFlags, UserTitle, DisplayName, NameChanged";
+     UserLevel, UserFlags, UserTitle, UserCountry, DisplayName, NameChanged";
 
 fn is_known_column(name: &str) -> bool {
     matches!(
@@ -280,7 +311,7 @@ fn account_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Account, StoreError
         user_level: optional_i32(row, "UserLevel")?,
         user_flags: optional_i32(row, "UserFlags")?,
         user_title: Some(text(row, "UserTitle")?),
-        user_country: Some(String::new()),
+        user_country: Some(text(row, "UserCountry")?),
         local_to_grid: true,
         service_urls: service_urls_from_db(&text(row, "ServiceURLs")?),
         created,

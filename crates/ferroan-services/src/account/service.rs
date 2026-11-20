@@ -161,7 +161,7 @@ impl AccountService {
         self.store.search(scope_id, query).await
     }
 
-    /// SQLite returns no rows from `GetUsersWhere`.
+    /// SQLite `GetUsersWhere` for an id list (TB12).
     pub async fn get_many(&self, scope_id: Uuid, ids: &[Uuid]) -> Result<Vec<Account>, StoreError> {
         self.store.get_by_ids(scope_id, ids).await
     }

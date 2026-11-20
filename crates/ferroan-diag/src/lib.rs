@@ -27,7 +27,7 @@ pub const RING_CAP: usize = 1000;
 pub const RATE_INTERVAL: Duration = Duration::from_secs(60);
 pub const HIGH_WATER_PERCENT: u64 = 80;
 pub const EXCERPT_BYTES: usize = 256;
-pub const TRANQUILLITY_PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
+pub const TRANQUILLITY_PIN: &str = "c70fee205f64ee8672a8d607cef6a733931da951";
 
 const MESSAGE_CAP: usize = 4096;
 
@@ -777,7 +777,7 @@ mod tests {
         set_configuration("token=secret-value");
         hit(&sample(9));
         let text = render();
-        assert!(text.contains("pin: f67db54399c027fd74e5aefcb2193905b4dc1646"));
+        assert!(text.contains("pin: c70fee205f64ee8672a8d607cef6a733931da951"));
         assert!(text.contains("http.post-body"));
         assert!(text.contains("server: ferroan-region"));
         assert!(text.contains("[redacted]"));

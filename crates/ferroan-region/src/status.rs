@@ -1,17 +1,17 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Region status forms from Tranquillity f67db54399c027fd74e5aefcb2193905b4dc1646.
+//! Region status forms from Tranquillity Pin5 `c70fee205f64ee8672a8d607cef6a733931da951`.
 //!
 //! `/simstatus` follows `SimStatusHandler` in
 //! `Source/OpenSim.Server.RegionServer/OpenSimBase.cs`.
 //! `/monitorstats/<region id>` follows `MonitorModule.StatsPage`.
-//! Managed stats follow `StatsManager.HandleStatsRequest`, including the
-//! `cont` query reading `cat`. `/SStats` follows `WebStatsModule` when
-//! `[WebStats] enabled` is true. Prometheus `/metrics`, `/healthz` and
-//! `/readyz` are the `[Monitoring]` additions from D18 and stay off unless
-//! `Metrics` is set. JSON logs, `LOGDIR` rotation, OTLP and the remote
-//! console are P0.13.
+//! Managed stats follow `StatsManager.HandleStatsRequest`: `cat`, `cont` and
+//! `stat` each default to `all` (TB15, #456). `/SStats` follows
+//! `WebStatsModule` when `[WebStats] enabled` is true. Prometheus `/metrics`,
+//! `/healthz` and `/readyz` are the `[Monitoring]` additions from D18 and stay
+//! off unless `Metrics` is set. JSON logs, `LOGDIR` rotation, OTLP and the
+//! remote console are P0.13.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -384,23 +384,10 @@ async fn managed(State(state): State<StatusState>, OriginalUri(uri): OriginalUri
         );
         return response;
     }
-    let has_cont = query_first(uri.query(), "cont").is_some();
-    let cat = query_first(uri.query(), "cat");
-    // HandleStatsRequest indexes cat when cont is present. A missing cat throws
-    // and the server returns an empty 500.
-    if has_cont && cat.is_none() {
-        return raw(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Some(DEFAULT_HTML),
-            Vec::new(),
-        );
-    }
-    let category = cat.clone().unwrap_or_else(|| "all".to_owned());
-    let container = if has_cont {
-        cat.unwrap_or_default()
-    } else {
-        "all".to_owned()
-    };
+    // HandleStatsRequest reads cat, cont and stat independently. A missing
+    // name is AllSubCommand ("all"). cont is the container (TB15, #456).
+    let category = query_first(uri.query(), "cat").unwrap_or_else(|| "all".to_owned());
+    let container = query_first(uri.query(), "cont").unwrap_or_else(|| "all".to_owned());
     let stat = query_first(uri.query(), "stat").unwrap_or_else(|| "all".to_owned());
     let mut body = managed_json(&state, &category, &container, &stat);
     if let Some(callback) = query_first(uri.query(), "callback")
@@ -473,9 +460,9 @@ async fn sstats(State(_state): State<StatusState>, OriginalUri(uri): OriginalUri
     }
     let json = query_first(uri.query(), "json").is_some();
     if json {
-        // An empty C# stats table throws DBNull inside RenderJson and the
-        // server answers 500. Ferroan has no viewer-stats database, so the
-        // idle summary is the zero document RenderJson emits once a row exists.
+        // Pin5's query uses COALESCE, so an empty table succeeds (TB16, #456).
+        // Ferroan has no viewer-stats database, so the idle summary is that
+        // zero document. The n_in/n_out alias swap in the C# query is unchanged.
         return raw(StatusCode::OK, Some("text/json"), SSTATS_JSON);
     }
     raw(StatusCode::OK, Some("text/html"), default_report_html())
@@ -830,9 +817,12 @@ mod tests {
         let filtered = managed_json(&state(), "scene", "Ferroan Test", "RootAgents");
         assert!(filtered.contains("\"RootAgents\":{\"Value\":1.0}"));
         assert!(!filtered.contains("\"ChildAgents\""));
-        // cont is present, so C# reads cat ("scene") as the container name.
-        let wrong_container = managed_json(&state(), "scene", "scene", "RootAgents");
+        // A container that is not the region name stays empty. The captured
+        // body used cont=not-the-region.
+        let wrong_container = managed_json(&state(), "scene", "not-the-region", "RootAgents");
         assert_eq!(wrong_container, "{\"scene\":{}}");
+        let named = managed_json(&state(), "all", "Ferroan Test", "RootAgents");
+        assert!(named.contains("\"RootAgents\":{\"Value\":1.0}"));
         let absent = managed_json(&state(), "all", "all", "DoesNotExist");
         assert!(absent.contains("\"Ferroan Test\":{}"));
         let wrong_category = managed_json(&state(), "nope", "all", "all");
@@ -901,15 +891,24 @@ mod tests {
             .unwrap();
         assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(unknown.text().await.unwrap(), HTTP_404);
-        let broken = client
+        let missing_cat = client
             .get(format!(
                 "{base}/ManagedStats/fetch?pass=status-test&cont=scene"
             ))
             .send()
             .await
             .unwrap();
-        assert_eq!(broken.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(broken.text().await.unwrap(), "");
+        assert_eq!(missing_cat.status(), reqwest::StatusCode::OK);
+        assert_eq!(missing_cat.text().await.unwrap(), "{\"scene\":{}}");
+        let named = client
+            .get(format!(
+                "{base}/ManagedStats/fetch?pass=status-test&cont=Ferroan%20Test"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(named.status(), reqwest::StatusCode::OK);
+        assert!(named.text().await.unwrap().contains("RootAgents"));
     }
 
     #[test]
@@ -924,7 +923,7 @@ mod tests {
         );
         assert_eq!(
             include_str!("../../../fixtures/status/managed-cont.body"),
-            managed_json(&state(), "scene", "scene", "RootAgents")
+            managed_json(&state(), "scene", "not-the-region", "RootAgents")
         );
         assert_eq!(
             include_str!("../../../fixtures/status/http404.body"),

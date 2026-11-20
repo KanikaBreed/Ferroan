@@ -14,7 +14,7 @@
   },
   "outcome": {
     "kind": "bool",
-    "value": true,
-    "accepted": true
+    "value": false,
+    "accepted": false
   }
 }

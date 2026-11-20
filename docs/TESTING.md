@@ -46,11 +46,11 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## Known differences
 
-Three tests assert that the committed C# fixtures still show [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). A pin move that regenerates a fixture without the bug fails the test. The failure names the TB row, the fixture and the Rust code that still follows the old behavior.
+Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. The rows stay open upstream until those PRs merge into `develop`.
 
-- TB1: [fixtures/asset/unnamed-flags.json](../fixtures/asset/unnamed-flags.json) records `XmlSerializer` rejecting flags 8. `csharp_unnamed_asset_flags_still_reject` names `crates/ferroan-services/src/asset/xml.rs` `flags_text`. The file is not a `manifest.json` case, and its addition does not change that manifest's revision line.
-- TB10: `fixtures/http-status/grid-register-302.json`, `grid-register-500.json`, `grid-deregister-302.json` and `grid-deregister-500.json` still have `outcome.accepted` true. `csharp_make_post_request_still_accepts_grid_failure_status` names `crates/ferroan-region/src/grid.rs` `grid_form` and `FormStatusPolicy::Unchecked`.
-- TB11: [fixtures/pin3/lifecycle.json](../fixtures/pin3/lifecycle.json) key `pre_root_endpoint_reconnect.after` still drops the watcher, Presence session and online state while the circuit and scene presence stay. `csharp_pre_root_other_endpoint_still_drops_watcher_and_online` names `crates/ferroan-client/src/circuit.rs` `handle`.
+- TB1: [fixtures/asset/unnamed-flags.json](../fixtures/asset/unnamed-flags.json) records `StoredAssetFlags.FromStored` masking flags 8, `known_flags` 0 and `threw` false. `csharp_unnamed_asset_flags_are_masked` names `crates/ferroan-services/src/asset/xml.rs` `flags_text`. The file is not a `manifest.json` case.
+- TB10: `fixtures/http-status/grid-register-302.json`, `grid-register-500.json`, `grid-deregister-302.json` and `grid-deregister-500.json` have `outcome.accepted` false. `csharp_make_post_request_rejects_grid_failure_status` names `crates/ferroan-region/src/grid.rs` `grid_form` and `FormStatusPolicy::Checked`.
+- TB11: [fixtures/pin3/lifecycle.json](../fixtures/pin3/lifecycle.json) key `pre_root_endpoint_reconnect.after` keeps the watcher, Presence session and online state with the circuit and scene presence. `csharp_pre_root_other_endpoint_keeps_watcher_and_online` records that. Rust still refuses the other endpoint; the reconnect is not ported.
 
 ## Session captures
 

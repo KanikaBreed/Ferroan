@@ -1,6 +1,4 @@
 AgentPreferencesService	LocalServiceModule	OpenSim.Services.UserAccountService.dll:AgentPreferencesService
-AppearanceService	AssetService	OpenSim.Services.AssetService.dll:AssetService
-AppearanceService	AvatarService	OpenSim.Services.AvatarService.dll:AvatarService
 AppearanceService	LocalServiceModule	OpenSim.Services.AvatarService.dll:AppearanceService
 AssetService	AllowRemoteDelete	false
 AssetService	AllowRemoteDeleteAllTypes	false

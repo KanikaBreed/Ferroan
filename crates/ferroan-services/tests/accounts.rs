@@ -110,7 +110,9 @@ async fn flags_search_and_sqlite_multi_get() {
     let exact = call(&app, "METHOD=getaccount&FirstName=ada&LastName=Lovelace").await;
     assert!(exact.body.contains("<result>null</result>"));
     let multi = call(&app, &format!("METHOD=getmultiaccounts&IDS[]={PRINCIPAL}")).await;
-    assert!(multi.body.contains("<result>null</result>"));
+    assert!(multi.body.contains("account0"));
+    assert!(multi.body.contains("<FirstName>Ada</FirstName>"));
+    assert!(!multi.body.contains("<result>null</result>"));
     assert_eq!(
         call(&app, &format!("METHOD=getmultiaccounts&IDS={PRINCIPAL}"))
             .await
@@ -275,7 +277,7 @@ async fn commands_change_the_row_and_do_not_keep_a_password() {
 }
 
 #[tokio::test]
-async fn replace_resets_active_and_country_fails() {
+async fn replace_resets_active_and_stores_country() {
     let (service, path) = open_accounts().await;
     service
         .create_user(
@@ -311,8 +313,25 @@ async fn replace_resets_active_and_country_fails() {
         .await
         .unwrap();
     assert_eq!(active, 1);
+    sqlx::query("UPDATE UserAccounts SET active = 0 WHERE PrincipalID = ?")
+        .bind(PRINCIPAL)
+        .execute(sqlite)
+        .await
+        .unwrap();
     account.user_country = Some("XX".to_string());
-    assert!(!service.store_user(&account).await.unwrap());
+    assert!(service.store_user(&account).await.unwrap());
+    let active: i64 = sqlx::query_scalar("SELECT active FROM UserAccounts WHERE PrincipalID = ?")
+        .bind(PRINCIPAL)
+        .fetch_one(sqlite)
+        .await
+        .unwrap();
+    assert_eq!(active, 1);
+    let stored = service
+        .get_by_principal(Uuid::nil(), Uuid::parse_str(PRINCIPAL).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.user_country.as_deref(), Some("XX"));
 }
 
 #[tokio::test]
