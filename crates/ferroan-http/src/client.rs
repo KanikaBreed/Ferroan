@@ -4,9 +4,11 @@
 //! reqwest calls that post a Robust form or an LLSD XML body and read the reply.
 //!
 //! Form status follows `Source/OpenSim.Framework/WebUtil.cs`
-//! `SynchronousRestFormsRequester` at `858321883f5487a5d192d36ea9d7b90fa468310c`.
-//! `MakeRequest` calls `EnsureSuccessStatusCode`. `MakePostRequest` does not
-//! (TB10). The caller picks the helper. This file does not copy that C#.
+//! `SynchronousRestFormsRequester`. At Pin5 both `MakeRequest` and
+//! `MakePostRequest` call `EnsureSuccessStatusCode` (TB10, #438).
+//! [`FormStatusPolicy::Unchecked`] still parses any status for a caller that
+//! asks for it. [`post_form`] stays on that parser. This file does not copy
+//! that C#.
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use reqwest::header::CONTENT_TYPE;
@@ -35,7 +37,8 @@ pub enum FormStatusPolicy {
     /// `MakeRequest`: a final non-2xx status is [`HttpError::Status`] and the
     /// body is not read.
     Checked,
-    /// `MakePostRequest`: the body is parsed whatever the HTTP status is.
+    /// Parse the body whatever the HTTP status is. Pin5's `MakePostRequest`
+    /// no longer does this; a caller passes it explicitly.
     Unchecked,
 }
 
@@ -70,7 +73,7 @@ impl FormOptions {
         }
     }
 
-    /// Grid register and deregister: `MakePostRequest`.
+    /// Parse a non-2xx body. Grid register and deregister use [`Self::checked`].
     pub fn unchecked(timeout: Duration, max_response_bytes: usize) -> Self {
         Self {
             timeout,
@@ -82,8 +85,8 @@ impl FormOptions {
 
 /// POST `application/x-www-form-urlencoded` and parse the `text/xml` reply.
 ///
-/// This is `MakePostRequest`: a non-2xx status is still parsed. Callers that
-/// follow `MakeRequest` pass [`FormOptions::checked`].
+/// The default parser still accepts a non-2xx body. Callers that follow the
+/// pin's `MakeRequest` or `MakePostRequest` pass [`FormOptions::checked`].
 pub async fn post_form(url: &str, fields: &FieldMap) -> Result<FieldMap, HttpError> {
     post_form_with(url, fields, FormOptions::default()).await
 }

@@ -65,15 +65,15 @@ fn judge(output: &str) -> Result<String, String> {
     if output.contains("Ferroan 0.1.0") {
         return Ok("console-client: OpenSim.ConsoleClient printed Ferroan 0.1.0".to_string());
     }
-    // .NET includes the missing key: "The given key 'quit' was not present in the dictionary."
+    // Pin5 carries the TB17 fix (#465). The old key error is a failure.
     if output.contains("was not present in the dictionary") {
-        return Ok(
-            "console-client: the pin client stops in CommandConsole.FromXml before show version (TB17)"
+        return Err(
+            "console-client: OpenSim.ConsoleClient stopped in CommandConsole.FromXml before show version"
                 .to_string(),
         );
     }
     Err(format!(
-        "OpenSim.ConsoleClient did not print the version or the known FromXml error: {}",
+        "OpenSim.ConsoleClient did not print Ferroan 0.1.0: {}",
         scrub(output)
     ))
 }
@@ -98,7 +98,8 @@ fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
         .map_err(|error| format!("could not start OpenSim.ConsoleClient: {error}"))?;
     // Leave stdin open. Closing it makes Prompt() parse a null line and throw.
     // The login callback is asynchronous, so the command is sent only after a
-    // session prompt. FromXml at this pin throws before that prompt exists.
+    // session prompt. The old FromXml error still ends the wait, and judge
+    // then fails.
     let mut stdin = child.stdin.take();
     let collected = Arc::new(Mutex::new(String::new()));
     if let Some(pipe) = child.stdout.take() {

@@ -14,9 +14,9 @@
 //! `AssetService.GetMetadata` returns `asset.Metadata`, whose hash stays
 //! null. `CreationDate` stays `DateTime.MinValue` because the SQLite row has
 //! no creation column. Flag values are the `[Flags]` names (`Normal`,
-//! `Maptile Rewritable`). `XmlSerializer` throws when a bit outside that set
-//! is set; Ferroan writes the decimal number so the row can still be fetched.
-//! `ContentType` is derived from `Type`.
+//! `Maptile Rewritable`). `StoredAssetFlags.FromStored` keeps only
+//! `Maptile | Rewritable | Collectable` before that text is chosen, so a
+//! stored 8 is `Normal`. `ContentType` is derived from `Type`.
 
 use ferroan_diag::{
     self, ASSET_XML_DEPTH, ASSET_XML_ELEMENTS, ASSET_XML_NAME, HTTP_XML_CHARS, Kind,
@@ -288,7 +288,12 @@ fn bool_word(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+/// Named bits of `AssetFlags`. `StoredAssetFlags.Known` is the same mask.
+const KNOWN_ASSET_FLAGS: i32 = 1 | 2 | 4;
+
 fn flags_text(flags: i32) -> String {
+    // StoredAssetFlags.FromStored drops bits no version names.
+    let flags = flags & KNOWN_ASSET_FLAGS;
     if flags == 0 {
         return "Normal".to_string();
     }
@@ -727,4 +732,27 @@ fn decode_base64(text: &str) -> Result<Vec<u8>, ()> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_flags_encode_as_normal() {
+        let asset = Asset {
+            id: Uuid::parse_str("33333333-4444-5555-6666-777777777777").unwrap(),
+            name: "unnamed-flags".to_string(),
+            description: String::new(),
+            type_code: 0,
+            local: false,
+            temporary: false,
+            creator_id: "creator".to_string(),
+            flags: 8,
+            data: Vec::new(),
+            upload_attempts: 0,
+        };
+        let text = String::from_utf8(encode_asset(&asset)).unwrap();
+        assert!(text.contains("<Flags>Normal</Flags>"), "{text}");
+    }
 }

@@ -8,6 +8,7 @@ Appearance	PersistBakedTextures	false
 Appearance	ResendAppearanceUpdates	false
 Appearance	ReuseTextures	false
 Appearance	ServerSideBaking	false
+AppearanceService	LocalServiceModule	OpenSim.Services.AvatarService.dll:AppearanceService
 Architecture	Include-Architecture	config-include/Standalone.ini
 AssetService	AssetLoaderArgs	assets/AssetSets.xml
 AssetService	AssetLoaderEnabled	true
@@ -64,6 +65,7 @@ ClientStack.LindenCaps	Cap_GetMesh2	localhost
 ClientStack.LindenCaps	Cap_GetObjectCost	
 ClientStack.LindenCaps	Cap_GetObjectPhysicsData	
 ClientStack.LindenCaps	Cap_GetTexture	localhost
+ClientStack.LindenCaps	Cap_GroupAPIv1	localhost
 ClientStack.LindenCaps	Cap_GroupMemberData	localhost
 ClientStack.LindenCaps	Cap_GroupProposalBallot	
 ClientStack.LindenCaps	Cap_HomeLocation	localhost
@@ -276,6 +278,7 @@ LandManagement	ShowParcelBansLines	true
 LibraryService	DefaultLibrary	./inventory/Libraries.xml
 LibraryService	LibraryName	OpenSim Library
 LibraryService	LocalServiceModule	OpenSim.Services.InventoryService.dll:LibraryService
+LoginService	AgentAppearanceServiceURL	http://127.0.0.1:9000/
 LoginService	AuthenticationService	OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService
 LoginService	AvatarService	OpenSim.Services.AvatarService.dll:AvatarService
 LoginService	DSTZone	America/Los_Angeles;Pacific Standard Time
@@ -297,6 +300,7 @@ MediaOnAPrim	Enabled	true
 Mesh	AllowMeshUpload	true
 Messaging	InstantMessageModule	InstantMessageModule
 Modules	AgentPreferencesServices	LocalAgentPreferencesServicesConnector
+Modules	AppearanceServiceInConnector	true
 Modules	AssetServices	RegionAssetConnector
 Modules	AuthenticationServices	LocalAuthenticationServicesConnector
 Modules	AuthorizationServices	LocalAuthorizationServicesConnector

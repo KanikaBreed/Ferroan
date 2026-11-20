@@ -185,10 +185,10 @@
     },
     "after": {
       "circuit": true,
-      "watched": false,
-      "presence_session": false,
+      "watched": true,
+      "presence_session": true,
       "scene_presence": true,
-      "online": false,
+      "online": true,
       "last_region": "00000000-0000-4000-8000-000000000900",
       "last_position": [
         1,
@@ -224,5 +224,5 @@
     "second_endpoint": 1000,
     "same_circuit_restored": true
   },
-  "revision": "f67db54399c027fd74e5aefcb2193905b4dc1646"
+  "revision": "c70fee205f64ee8672a8d607cef6a733931da951"
 }

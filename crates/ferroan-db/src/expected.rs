@@ -45,7 +45,7 @@ pub fn expected_version(backend: Backend, store: &str) -> Result<i32, DbError> {
         })
 }
 
-/// `OpenSim.Data.SQLite/Resources` at `f67db54399c027fd74e5aefcb2193905b4dc1646`.
+/// `OpenSim.Data.SQLite/Resources` at `c70fee205f64ee8672a8d607cef6a733931da951`.
 const SQLITE: &[StoreVersion] = &[
     StoreVersion {
         name: "AgentPrefs",
@@ -93,7 +93,7 @@ const SQLITE: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "UserAccount",
-        version: 4,
+        version: 5,
     },
     StoreVersion {
         name: "UserProfiles",
@@ -102,6 +102,10 @@ const SQLITE: &[StoreVersion] = &[
     StoreVersion {
         name: "XInventoryStore",
         version: 3,
+    },
+    StoreVersion {
+        name: "os_groups_Store",
+        version: 2,
     },
 ];
 
@@ -181,7 +185,7 @@ const MYSQL: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "UserAccount",
-        version: 7,
+        version: 8,
     },
     StoreVersion {
         name: "UserAlias",
@@ -197,7 +201,7 @@ const MYSQL: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "os_groups_Store",
-        version: 3,
+        version: 5,
     },
 ];
 
@@ -269,7 +273,7 @@ const POSTGRES: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "UserAccount",
-        version: 6,
+        version: 7,
     },
     StoreVersion {
         name: "UserProfiles",
@@ -285,7 +289,7 @@ const POSTGRES: &[StoreVersion] = &[
     },
     StoreVersion {
         name: "os_groups_Store",
-        version: 4,
+        version: 6,
     },
 ];
 

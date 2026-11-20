@@ -4,7 +4,7 @@
 
 `cargo xtask live build` builds Tranquillity in `.scratch/live/`; `cargo xtask live up` or `cargo xtask live run <scenario>` starts it. The scratch tree is never a reference checkout.
 
-The shared reference is OpenSim-NGC `develop` at Pin4 `f67db54399`. It can supply the scratch build without `FERROAN_REF`; that variable selects an alternate clean reference root. The exact repository and pin remain in [docs/REFERENCES.md](../../docs/REFERENCES.md).
+The shared reference is KanikaBreed/OpenSim-Tranquillity `dev-build` at Pin5 `c70fee205f`. It can supply the scratch build without `FERROAN_REF`; that variable selects an alternate clean reference root. The exact repository and pin remain in [docs/REFERENCES.md](../../docs/REFERENCES.md).
 
 `live build` also builds pinned Ferrobot with `cargo build --locked` in `.scratch/`, using a clean matching `FERROAN_REF/Ferrobot` checkout as the source of a scratch clone when available, otherwise the public repository. `live run ferrobot`, `live run ferrobot grid` and `live run ferrobot grid --region ferroan` drive that separate client through its signed loopback HTTP API. Each checks fresh arrival, 120 seconds with captured ping replies and completed event polls, and matching captured `LogoutRequest`/`LogoutReply` after SIGTERM, with no server-log fallback. C# runs also check chat both ways and IM with `ferroan-bot`; Rust chat and IM remain pending. Generated account credentials and the API secret stay in private scratch files. See [the Ferrobot checks](../../docs/LIVE.md#ferrobot).
 

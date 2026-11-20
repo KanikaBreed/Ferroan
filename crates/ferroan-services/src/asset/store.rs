@@ -138,7 +138,8 @@ fn asset_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Asset, StoreError> {
     let type_code = i64_to_i8(row.try_get("Type")?)?;
     let local = i64_to_bool(row.try_get("Local")?)?;
     let temporary = i64_to_bool(row.try_get("Temporary")?)?;
-    let flags = i64_to_i32(row.try_get("asset_flags")?)?;
+    // StoredAssetFlags.FromStored keeps Maptile | Rewritable | Collectable.
+    let flags = i64_to_i32(row.try_get("asset_flags")?)? & (1 | 2 | 4);
     let creator_id: String = row.try_get("CreatorID")?;
     let data: Vec<u8> = row.try_get("Data")?;
     Ok(Asset {

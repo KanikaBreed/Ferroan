@@ -1354,21 +1354,21 @@ mod tests {
         harness.finish().await.unwrap();
     }
 
-    /// TB11. A different UDP endpoint still leaves the circuit and scene
-    /// presence up while the watcher, Presence session and online flag are
-    /// cleared. A pin move that keeps those fails here.
+    /// TB11. A different UDP endpoint keeps the circuit, scene presence,
+    /// watcher, Presence session and online flag (Pin5, #437). Rust still
+    /// refuses the other endpoint; this reconnect is not ported.
     #[test]
-    fn csharp_pre_root_other_endpoint_still_drops_watcher_and_online() {
+    fn csharp_pre_root_other_endpoint_keeps_watcher_and_online() {
         let captured = csharp_lifecycle()["pre_root_endpoint_reconnect"].clone();
         let after = &captured["after"];
-        let shows_bug = after["circuit"] == true
+        let shows_fix = after["circuit"] == true
             && after["scene_presence"] == true
-            && after["watched"] == false
-            && after["presence_session"] == false
-            && after["online"] == false;
+            && after["watched"] == true
+            && after["presence_session"] == true
+            && after["online"] == true;
         assert!(
-            shows_bug,
-            "TB11: fixtures/pin3/lifecycle.json pre_root_endpoint_reconnect.after no longer shows the circuit and scene presence surviving while the watcher, Presence session and GridUser online state are removed. Change crates/ferroan-client/src/circuit.rs handle once C# keeps that watcher."
+            shows_fix,
+            "TB11: fixtures/pin3/lifecycle.json pre_root_endpoint_reconnect.after does not keep the circuit, scene presence, watcher, Presence session and GridUser online state. The fixture is the evidence; do not claim the fix if C# still drops them. {after}"
         );
     }
 

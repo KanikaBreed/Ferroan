@@ -1,7 +1,8 @@
 # Region and Robust status fixtures
 
 Captured from the Tranquillity pin `f67db54399c027fd74e5aefcb2193905b4dc1646`
-on 20 November 2026. The region was a standalone `OpenSim.Server.RegionServer`
+on 20 November 2026 and kept at Pin5. These bodies were not recaptured.
+The region was a standalone `OpenSim.Server.RegionServer`
 with `[Startup] ManagedStatsRemoteFetchURI = ManagedStats` and
 `[WebStats] enabled = true`. Robust was `OpenSim.Server.GridServer` with
 `[GridInfoService]` and `[HeloService]`. No grid credentials are in these files.
@@ -14,23 +15,24 @@ and frame counters are live, so those numbers are not a byte oracle.
 `scene-stats.txt` is the `scene` container's name order from
 `StatsManager.HandleStatsRequest` (`SortedDictionary`), including `SlowFrames`.
 
-`/ManagedStats/` itself answers with `http404.body`. `BaseHttpServer.CleanSearchPath`
-trims a trailing slash, and the registrar stores `/ManagedStats/`, so the
-registered path does not match. The handler bytes were taken from
-`/ManagedStats/fetch`. `managed-cont.body` is `cat=scene&cont=not-the-region`:
-the handler reads `cat` again when `cont` is present, the container name does
-not match the region, and the category stays empty. A `cont` with no `cat`
-throws and the server returns an empty 500. Other captured categories
+`http404.body` is the knomes page for an unknown path. At Pin5 (#456) the
+registrar stores the managed-stats path without a trailing slash, so
+`/ManagedStats/` reaches the handler. Ferroan already served that path. The
+handler bytes were taken from `/ManagedStats/fetch`. `managed-cont.body` is
+`cat=scene&cont=not-the-region`: the container is not the region, so the
+category object stays empty. Those bytes are unchanged. At Pin5 a `cont` with
+no `cat` defaults the category to `all` and does not return 500 (TB15). Other captured categories
 (`clientstack`, `entitytransfer`, `httpserver`, `inventory`, `server`) are
 registered by the C# process. Ferroan does not register them, so they are
 omitted the way an unregistered category is omitted.
 
 `sstats.html` and `sstats-json.json` are the default report after one all-zero
-`stats_session_data` row. An empty table makes `AVG` return DBNull and the
-request fails with an empty 500. The seeded JSON has `totalUsers` and
-`totalSessions` of `"1"`. Ferroan has no viewer-stats database and serves the
-same keys with `"0"`. The HTML fixture is the marker source (the `defaultr`
-table and its column headers), not a byte copy of Ferroan's idle page.
+`stats_session_data` row. The seeded JSON has `totalUsers` and
+`totalSessions` of `"1"`. At Pin5 (#456) an empty table uses COALESCE and
+succeeds (TB16). Ferroan has no viewer-stats database and serves the same keys
+with `"0"`. The HTML fixture is the marker source (the `defaultr` table and
+its column headers), not a byte copy of Ferroan's idle page. The captured
+bytes were not regenerated.
 
 `grid-info.xml` is `application/xml` with no extra whitespace.
 `grid-json.json` is `OSDParser.SerializeJsonToBytes` (compact, defaults

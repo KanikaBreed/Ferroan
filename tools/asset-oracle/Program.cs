@@ -140,8 +140,8 @@ static class Program
             ["cases"] = cases
         };
         File.WriteAllText(Path.Combine(directory, "manifest.json"), manifest.ToJsonString(JsonOptions) + "\n");
-        // TB1: flags 8 is not a named AssetFlags bit. This file is not a manifest
-        // case. A pin move that makes XmlSerializer accept it changes threw.
+        // TB1: flags 8 is not a named AssetFlags bit. The record is FromStored
+        // then XmlSerializer, not a manifest case.
         WriteUnnamedFlags(directory, revision);
         return cases.Count;
     }
@@ -155,9 +155,10 @@ static class Program
             0,
             "creator")
         {
-            Flags = (AssetFlags)flags,
             Data = Array.Empty<byte>()
         };
+        // A store read masks to the named bits before the serializer runs.
+        asset.Flags = StoredAssetFlags.FromStored(flags, asset.ID.ToString());
         bool threw = false;
         string exceptionType = "";
         try
@@ -176,6 +177,7 @@ static class Program
             ["id"] = "unnamed-flags",
             ["tranquillity"] = revision,
             ["flags"] = flags,
+            ["known_flags"] = (int)asset.Flags,
             ["threw"] = threw,
             ["exception_type"] = exceptionType
         };

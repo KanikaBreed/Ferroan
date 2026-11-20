@@ -212,9 +212,15 @@ static class LifecycleCases
         JsonObject sameEndpoint = region.State();
         bool samePresence = ReferenceEquals(first, region.Scene.GetScenePresence(region.Agent));
         Open(1000);
-        // The old child's removal schedules LogOutLogin off the packet thread.
-        // Wait for the source path to settle before recording its outcome.
-        Await(() => !region.Grid.IsOnline);
+        // #437 takes the login watcher out before CloseAgent and puts it back,
+        // so a child reconnect does not schedule LogOutLogin. A root still
+        // logs out. Wait a short bound and stop early if the user goes offline.
+        Stopwatch settle = Stopwatch.StartNew();
+        while (settle.Elapsed < TimeSpan.FromSeconds(2))
+        {
+            if (!region.Grid.IsOnline) break;
+            Thread.Sleep(10);
+        }
         ScenePresence second = region.Scene.GetScenePresence(region.Agent);
         JsonObject after = region.State();
         return new JsonObject {

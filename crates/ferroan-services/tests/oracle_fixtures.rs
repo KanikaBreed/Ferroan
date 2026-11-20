@@ -25,7 +25,7 @@ fn asset_documents_match_the_csharp_serializer() {
     assert_eq!(manifest["format"], 1);
     assert_eq!(
         manifest["tranquillity"].as_str(),
-        Some("f67db54399c027fd74e5aefcb2193905b4dc1646")
+        Some("c70fee205f64ee8672a8d607cef6a733931da951")
     );
     let cases = manifest["cases"].as_array().expect("cases");
     assert!(!cases.is_empty());
@@ -81,10 +81,10 @@ fn content_types_match_slutil() {
     }
 }
 
-/// TB1. The committed oracle still records `XmlSerializer` rejecting flags 8.
-/// A pin move that accepts the value fails here and names the Rust encoder.
+/// TB1. `StoredAssetFlags.FromStored` masks flags 8 to the known bits, and
+/// `XmlSerializer` then accepts the asset. `flags_text` emits `Normal`.
 #[test]
-fn csharp_unnamed_asset_flags_still_reject() {
+fn csharp_unnamed_asset_flags_are_masked() {
     let root = fixture_root();
     let manifest: Value = serde_json::from_str(
         &std::fs::read_to_string(root.join("manifest.json")).expect("manifest"),
@@ -96,6 +96,9 @@ fn csharp_unnamed_asset_flags_still_reject() {
     .expect("unnamed-flags json");
     assert_eq!(record["id"], "unnamed-flags");
     assert_eq!(record["flags"], 8);
+    assert_eq!(record["known_flags"], 0);
+    assert_eq!(record["threw"], false);
+    assert_eq!(record["exception_type"], "");
     assert_eq!(record["tranquillity"], manifest["tranquillity"]);
     assert!(
         manifest["cases"]
@@ -103,12 +106,24 @@ fn csharp_unnamed_asset_flags_still_reject() {
             .expect("cases")
             .iter()
             .all(|case| case["id"] != "unnamed-flags"),
-        "unnamed-flags is a rejection record, not a manifest case"
+        "unnamed-flags is a mask record, not a manifest case"
     );
-    let exception_type = record["exception_type"].as_str().unwrap_or("");
+    let encoded = encode_asset(&Asset {
+        id: Uuid::parse_str("33333333-4444-5555-6666-777777777777").unwrap(),
+        name: "unnamed-flags".to_string(),
+        description: String::new(),
+        type_code: 0,
+        local: false,
+        temporary: false,
+        creator_id: "creator".to_string(),
+        flags: 8,
+        data: Vec::new(),
+        upload_attempts: 0,
+    });
+    let text = String::from_utf8(encoded).unwrap();
     assert!(
-        record["threw"] == true && !exception_type.is_empty(),
-        "TB1: fixtures/asset/unnamed-flags.json no longer shows XmlSerializer rejecting flags 8. Change crates/ferroan-services/src/asset/xml.rs flags_text."
+        text.contains("<Flags>Normal</Flags>"),
+        "TB1: flags_text still emits unnamed bits. Change crates/ferroan-services/src/asset/xml.rs flags_text. {text}"
     );
 }
 
