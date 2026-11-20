@@ -113,15 +113,42 @@ pub(crate) fn put_u16(dest: &mut [u8], value: u16) {
 }
 
 pub(crate) fn read_f32(src: &[u8]) -> f32 {
-    f32::from_le_bytes(src[..4].try_into().expect("four bytes"))
+    f32::from_le_bytes(le_array(src))
 }
 
 fn read_f64(src: &[u8]) -> f64 {
-    f64::from_le_bytes(src[..8].try_into().expect("eight bytes"))
+    f64::from_le_bytes(le_array(src))
 }
 
 pub(crate) fn read_u16(src: &[u8]) -> u16 {
-    u16::from_le_bytes(src[..2].try_into().expect("two bytes"))
+    u16::from_le_bytes(le_array(src))
+}
+
+/// Copy a fixed little-endian field. Callers reject a short slice first.
+pub(crate) fn le_array<const N: usize>(src: &[u8]) -> [u8; N] {
+    let mut out = [0u8; N];
+    match src.get(..N) {
+        Some(chunk) => out.copy_from_slice(chunk),
+        None => {
+            // INFALLIBLE: every caller rejects a short slice before reading.
+            #[allow(clippy::panic)]
+            {
+                panic!("wire slice shorter than {N}");
+            }
+        }
+    }
+    out
+}
+
+/// A write into a stack array of the field's wire size.
+pub(crate) fn layout_ok(result: Result<(), WireError>) {
+    if let Err(error) = result {
+        // INFALLIBLE: the destination is a stack array of the field's wire size.
+        #[allow(clippy::panic)]
+        {
+            panic!("fixed wire buffer was short: {error}");
+        }
+    }
 }
 
 /// `UUID.GetBytes`. Sixteen bytes, network order.
@@ -133,9 +160,7 @@ pub fn write_uuid(id: &Uuid, dest: &mut [u8]) -> Result<(), WireError> {
 
 pub fn read_uuid(src: &[u8]) -> Result<Uuid, WireError> {
     need(src, 16)?;
-    Ok(Uuid::from_bytes(
-        src[..16].try_into().expect("sixteen bytes"),
-    ))
+    Ok(Uuid::from_bytes(le_array(src)))
 }
 
 pub fn write_vec2(v: Vec2, dest: &mut [u8]) -> Result<(), WireError> {
@@ -435,7 +460,7 @@ pub fn write_u16(value: u16, dest: &mut [u8]) -> Result<(), WireError> {
 }
 
 pub(crate) fn read_i16(src: &[u8]) -> i16 {
-    i16::from_le_bytes(src[..2].try_into().expect("two bytes"))
+    i16::from_le_bytes(le_array(src))
 }
 
 pub fn read_u16_value(src: &[u8]) -> Result<u16, WireError> {

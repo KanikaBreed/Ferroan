@@ -8,6 +8,8 @@
 //! [`REFERENCE_TRANQUILLITY_REVISION`]. The comparisons are the files under
 //! `fixtures/http`, produced by `cargo xtask http`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod client;
 mod error;
 mod llsd_http;

@@ -16,6 +16,8 @@
 //! Framing and zero-coding follow Tranquillity's send path and OpenMetaverse's
 //! `Header` / `Helpers.ZeroDecode`. See `docs/PROTOCOL.md`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 use glam::{DVec3, Quat, Vec3, Vec4};
 use uuid::Uuid;
 

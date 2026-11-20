@@ -15,6 +15,11 @@
 
 //! Generates typed message structs and codecs from `message_template.msg`.
 
+// INFALLIBLE: this build script turns the in-repo message template into
+// generated code. A bad template, a missing file, or a missing OUT_DIR fails
+// the build. None of these are runtime input.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::fmt::Write as _;
 use std::path::PathBuf;
 

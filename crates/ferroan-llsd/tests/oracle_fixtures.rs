@@ -5,6 +5,9 @@
 //! `manifest.json`, and a round trip (or the known source value, when C# itself
 //! cannot read what it wrote) matches the file bytes.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::fs;
 use std::path::PathBuf;
 

@@ -143,7 +143,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         ),
     ] {
         create_account(
-            grid.robust.as_mut().expect("Robust started"),
+            require_started_mut(&mut grid.robust, "Robust")?,
             first,
             last,
             secret,
@@ -205,14 +205,9 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
             grid.neighbour = Some(process);
         }
     }
-    let robust_pid = grid.robust.as_ref().expect("Robust started").child.id();
-    let home_pid = grid.home.as_ref().expect("home started").child.id();
-    let neighbour_pid = grid
-        .neighbour
-        .as_ref()
-        .expect("neighbour started")
-        .child
-        .id();
+    let robust_pid = require_started(&grid.robust, "Robust")?.child.id();
+    let home_pid = require_started(&grid.home, "home region")?.child.id();
+    let neighbour_pid = require_started(&grid.neighbour, "neighbour")?.child.id();
     let report = format!(
         "mode: grid\nregion: ferroan\nlogin_uri: http://{bind}:{public_port}/\naccount: Test User\npassword_file: {}\nrobust_private_uri: http://{bind}:{private_port}/\nrobust_pid: {robust_pid}\nhome_pid: {home_pid}\nneighbour_pid: {neighbour_pid}\nrobust_public_http: {bind}:{public_port}\nrobust_private_http: {bind}:{private_port}\nhome_http: {bind}:{home_port}\nhome_udp: {bind}:{home_port}\nneighbour_http: {bind}:{neighbour_port}\nneighbour_udp: {bind}:{neighbour_port}\nferroan_commit: {commit_text}\nstop: cargo xtask live down",
         password_file.display()

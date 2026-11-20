@@ -5,6 +5,8 @@
 //!
 //! Throttles are still planned. Empty event polls wait for the C# hold deadline.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod arrival;
 mod caps;
 mod circuit;

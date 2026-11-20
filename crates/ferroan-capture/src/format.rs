@@ -87,6 +87,10 @@ pub fn write_capture(records: &[Record]) -> Result<Vec<u8>, FormatError> {
     Ok(out)
 }
 
+fn header_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], FormatError> {
+    bytes.try_into().map_err(|_| FormatError::Truncated)
+}
+
 pub fn read_capture(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
     if bytes.len() < MAGIC.len() {
         return Err(FormatError::Short);
@@ -105,8 +109,8 @@ pub fn read_capture(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
         }
         let kind_byte = bytes[i];
         let kind = Kind::from_u8(kind_byte).ok_or(FormatError::Kind(kind_byte))?;
-        let time_ms = u64::from_le_bytes(bytes[i + 1..i + 9].try_into().expect("8 bytes"));
-        let len = u32::from_le_bytes(bytes[i + 9..i + 13].try_into().expect("4 bytes")) as usize;
+        let time_ms = u64::from_le_bytes(header_array(&bytes[i + 1..i + 9])?);
+        let len = u32::from_le_bytes(header_array(&bytes[i + 9..i + 13])?) as usize;
         if len > kind.max_len() {
             return Err(FormatError::Length);
         }
@@ -149,8 +153,8 @@ pub fn read_complete_prefix(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
             Some(kind) => kind,
             None => return Err(FormatError::Kind(bytes[i])),
         };
-        let time_ms = u64::from_le_bytes(bytes[i + 1..i + 9].try_into().expect("8 bytes"));
-        let len = u32::from_le_bytes(bytes[i + 9..i + 13].try_into().expect("4 bytes")) as usize;
+        let time_ms = u64::from_le_bytes(header_array(&bytes[i + 1..i + 9])?);
+        let len = u32::from_le_bytes(header_array(&bytes[i + 9..i + 13])?) as usize;
         if len > kind.max_len() {
             return Err(FormatError::Length);
         }

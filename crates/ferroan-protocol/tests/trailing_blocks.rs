@@ -6,6 +6,9 @@
 //! These constructed suffixes test layout; the separate captured IM proves
 //! Tranquillity's sender shape.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ferroan_protocol::msgs::{
     AlertMessage, AvatarAppearance, ChildAgentUpdate, ImprovedInstantMessage, InviteGroupResponse,
     RegionHandshake, RegionInfo, SimStatus, TransferInventory, improved_instant_message,

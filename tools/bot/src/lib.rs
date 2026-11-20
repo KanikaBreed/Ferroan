@@ -7,6 +7,8 @@
 //! the seed capability, and the scenarios `cargo xtask live run` drives.
 //! Nothing here starts a region.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod body;
 pub mod caps;
 mod caps_probe;

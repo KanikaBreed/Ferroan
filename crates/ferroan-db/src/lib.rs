@@ -12,6 +12,8 @@
 //! ([`store_versions_in_dir`]). SQLite files created by that C# migration code
 //! live in `fixtures/db/sqlite/`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod backend;
 mod connect;
 mod error;

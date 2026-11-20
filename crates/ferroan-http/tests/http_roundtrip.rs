@@ -3,6 +3,9 @@
 
 //! axum and reqwest on localhost, plus the limits the fixtures do not hit.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::future::Future;
 
 use axum::Router;

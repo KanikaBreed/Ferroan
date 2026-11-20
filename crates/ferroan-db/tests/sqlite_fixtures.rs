@@ -3,6 +3,9 @@
 
 //! Open SQLite databases created by Tranquillity's `Migration.Update`.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;

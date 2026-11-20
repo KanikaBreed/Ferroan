@@ -126,11 +126,8 @@ fn url_decode(value: &str) -> String {
                     hex_value(chars[pos + 4]),
                     hex_value(chars[pos + 5]),
                 ];
-                if digits.iter().all(Option::is_some) {
-                    let unit = ((digits[0].unwrap() << 12)
-                        | (digits[1].unwrap() << 8)
-                        | (digits[2].unwrap() << 4)
-                        | digits[3].unwrap()) as u16;
+                if let [Some(a), Some(b), Some(c), Some(d)] = digits {
+                    let unit = ((a << 12) | (b << 8) | (c << 4) | d) as u16;
                     pos += 6;
                     push_unit(unit, &mut bytes, &mut out, &mut pending_high);
                     continue;

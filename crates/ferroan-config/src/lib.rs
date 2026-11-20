@@ -9,6 +9,8 @@
 //! Tranquillity revision. Fixtures from `tools/config-oracle` are the check:
 //! that program calls Nini and writes the resolved key/value set.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod error;
 mod expand;
 mod glob;

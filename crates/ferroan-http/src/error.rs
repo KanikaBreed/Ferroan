@@ -66,7 +66,9 @@ pub(crate) fn scrub(message: &str) -> String {
             };
             continue;
         }
-        let ch = message[index..].chars().next().unwrap();
+        let Some(ch) = message[index..].chars().next() else {
+            break;
+        };
         if !push_capped(&mut cleaned, &message[index..index + ch.len_utf8()]) {
             break;
         }

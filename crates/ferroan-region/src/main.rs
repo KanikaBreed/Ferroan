@@ -37,6 +37,8 @@
 
 //! Register a single region with C# Robust and accept its local login messages.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 use std::env;
 use std::net::SocketAddr;
 use std::process::ExitCode;

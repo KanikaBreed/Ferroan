@@ -48,8 +48,8 @@ use glam::Vec3;
 use uuid::Uuid;
 
 use crate::wire::{
-    self, Color4, WireError, read_color4, read_f32, read_uuid, read_vec3, write_color4, write_uuid,
-    write_vec3,
+    self, Color4, WireError, layout_ok, le_array, read_color4, read_f32, read_uuid, read_vec3,
+    write_color4, write_uuid, write_vec3,
 };
 
 /// OpenMetaverse reads past a short extra-parameter blob. Ferroan refuses a
@@ -126,7 +126,7 @@ impl SculptData {
 
     fn to_payload(self) -> [u8; 17] {
         let mut data = [0u8; 17];
-        write_uuid(&self.texture, &mut data[..16]).expect("sculpt texture is 16 bytes");
+        layout_ok(write_uuid(&self.texture, &mut data[..16]));
         data[16] = self.type_byte;
         data
     }
@@ -161,7 +161,7 @@ impl FlexibleData {
         data[1] |= byte_trunc(self.drag * 10.01) & 0x7f;
         data[2] = byte_trunc((self.gravity + 10.0) * 10.01);
         data[3] = byte_trunc(self.wind * 10.01);
-        write_vec3(self.force, &mut data[4..16]).expect("flexible force is 12 bytes");
+        layout_ok(write_vec3(self.force, &mut data[4..16]));
         data
     }
 
@@ -199,7 +199,7 @@ impl LightData {
         let mut data = [0u8; 16];
         let mut color = self.color;
         color.a = self.intensity;
-        write_color4(color, false, &mut data[..4]).expect("light color is 4 bytes");
+        layout_ok(write_color4(color, false, &mut data[..4]));
         wire::put_f32(&mut data[4..8], self.radius);
         wire::put_f32(&mut data[8..12], self.cutoff);
         wire::put_f32(&mut data[12..16], self.falloff);
@@ -232,8 +232,8 @@ impl LightData {
 impl LightImage {
     fn to_payload(self) -> [u8; 28] {
         let mut data = [0u8; 28];
-        write_uuid(&self.texture, &mut data[..16]).expect("light image texture is 16 bytes");
-        write_vec3(self.params, &mut data[16..28]).expect("light image params are 12 bytes");
+        layout_ok(write_uuid(&self.texture, &mut data[..16]));
+        layout_ok(write_vec3(self.params, &mut data[16..28]));
         data
     }
 
@@ -273,9 +273,14 @@ impl ExtraParams {
             parts.push((kind, sculpt.to_payload().to_vec()));
         }
         let mut out = Vec::with_capacity(1 + parts.iter().map(|(_, p)| 6 + p.len()).sum::<usize>());
-        out.push(u8::try_from(parts.len()).expect("at most four extra parameters"));
+        // INFALLIBLE: at most one of each of the four extra-parameter kinds is stored.
+        #[allow(clippy::expect_used)]
+        let count = u8::try_from(parts.len()).expect("at most four extra parameters");
+        out.push(count);
         for (kind, payload) in parts {
             out.extend_from_slice(&kind.to_le_bytes());
+            // INFALLIBLE: each payload is a fixed 16, 17 or 28 byte block.
+            #[allow(clippy::expect_used)]
             let len = u32::try_from(payload.len()).expect("payload fits in u32");
             out.extend_from_slice(&len.to_le_bytes());
             out.extend_from_slice(&payload);
@@ -304,11 +309,12 @@ impl ExtraParams {
                     got: data.len(),
                 });
             }
-            let kind = u16::from_le_bytes(data[pos..pos + 2].try_into().expect("two bytes"));
-            let len = usize::try_from(u32::from_le_bytes(
-                data[pos + 2..pos + 6].try_into().expect("four bytes"),
-            ))
-            .expect("usize holds u32");
+            let kind = u16::from_le_bytes(le_array(&data[pos..pos + 2]));
+            let len_u32 = u32::from_le_bytes(le_array(&data[pos + 2..pos + 6]));
+            let len = usize::try_from(len_u32).map_err(|_| WireError::Limit {
+                limit: MAX_EXTRA_BYTES,
+                got: data.len(),
+            })?;
             pos += 6;
             if len > data.len() - pos {
                 return Err(WireError::Short {

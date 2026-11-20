@@ -3,6 +3,9 @@
 
 //! C# SendInstantMessage capture, not a Rust-generated expected datagram.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ferroan_protocol::msgs::ImprovedInstantMessage;
 use ferroan_protocol::{parse_packet, reencode_datagram};
 

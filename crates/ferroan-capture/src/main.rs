@@ -3,6 +3,8 @@
 
 //! `ferroan-capture http-proxy`, `check`, `redact` and `replay`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -3,6 +3,8 @@
 
 //! A region registered with C# Robust; login remains a grid service.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod caps_policy;
 pub mod config;
 pub mod control_plane;

@@ -39,6 +39,8 @@
 //! Port of the semantics of `llcommon/llsd.cpp` and `llsdserialize*.cpp`
 //! from the Second Life viewer (originally LGPL 2.1).
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod binary;
 pub mod notation;
 mod number;

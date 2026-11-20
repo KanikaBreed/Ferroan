@@ -3,6 +3,9 @@
 
 //! Asset XML compared with `ServerUtils.SerializeResult` output.
 
+// Integration tests are a test crate; the production lints stay on the library.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
 use ferroan_services::{
