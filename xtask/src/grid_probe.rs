@@ -222,7 +222,7 @@ pub async fn await_settled(private_uri: &str, user: &str) -> Result<(), String> 
                     ));
                 }
             };
-        grid_offline = matches!(grid.get("result"), Some(Field::Map(info)) if matches!(info.get("Online"), Some(Field::Str(value)) if value.eq_ignore_ascii_case("false")));
+        grid_offline = grid_user_is_offline(&grid);
         presence_empty =
             matches!(presence.get("result"), Some(Field::Str(value)) if value == "null");
         if grid_offline && presence_empty {
@@ -256,6 +256,20 @@ fn require_principal(user: &str) -> Result<(), String> {
         return Err("the login principal is nil".to_string());
     }
     Ok(())
+}
+
+/// A present row is offline only when `Online` is false. No row is also
+/// offline: `GetGridUserInfo` answers `Failure` (`GridUserServerPostHandler`),
+/// and the first login has no griduser row until login creates one.
+fn grid_user_is_offline(grid: &FieldMap) -> bool {
+    match grid.get("result") {
+        Some(Field::Map(info)) => matches!(
+            info.get("Online"),
+            Some(Field::Str(value)) if value.eq_ignore_ascii_case("false")
+        ),
+        Some(Field::Str(value)) if value == "Failure" || value == "null" => true,
+        _ => false,
+    }
 }
 
 fn settle_error(grid_offline: bool, presence_empty: bool) -> String {
@@ -668,6 +682,66 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("nil"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_griduser_row_does_not_block_the_first_login() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let owner = crate::live::ESTATE_OWNER;
+        let logins = Arc::new(AtomicUsize::new(0));
+        let login_count = logins.clone();
+        let service = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_http(&mut socket).await;
+                if request.contains("login_to_simulator") {
+                    login_count.fetch_add(1, Ordering::SeqCst);
+                    socket
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await
+                        .unwrap();
+                    break;
+                }
+                assert!(request.contains(owner), "probe omitted the asset account");
+                let body = if request.contains("METHOD=getgriduserinfo") {
+                    "<ServerResponse><result>Failure</result></ServerResponse>"
+                } else {
+                    "<ServerResponse><result>null</result></ServerResponse>"
+                };
+                let bytes = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(bytes.as_bytes()).await.unwrap();
+            }
+        });
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let result = login_when_settled(
+            &uri,
+            owner,
+            &http,
+            &ferroan_bot::login::LoginRequest {
+                login_uri: format!("{uri}/"),
+                username: "Test User".into(),
+                password: "unused".into(),
+                start: "last".into(),
+            },
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(result.is_err(), "the fake login reply is not a session");
+        assert_eq!(logins.load(Ordering::SeqCst), 1);
+        service.await.unwrap();
     }
 
     #[tokio::test]

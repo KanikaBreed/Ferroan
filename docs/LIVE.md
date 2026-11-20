@@ -15,7 +15,9 @@ The fixed C# sends `LogoutReply` immediately. The strict login checks still requ
 `all` runs these, in order. Each line is the report the command prints when the check passes.
 
 Every harness login waits, for at most ten seconds, until GridUser shows the
-account offline and Presence has no session for it. That includes texture and
+account offline and Presence has no session for it. A missing griduser row
+(`Failure` from `getgriduserinfo`) counts as offline, so the first login is
+not held. That includes texture and
 then inventory on a standalone region, and the wait between grid scenarios.
 Chat also waits for the second account. The probe reads Robust in grid mode
 and, in standalone, the region's own Presence and GridUser handlers
