@@ -59,7 +59,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | DONE (#98) |
 | Q10s5 | P0.10n5: record a C# scenario twice and compare per message type (rule revised, see below) | DONE (#103) |
 | Q10t | Pin4: move the Tranquillity pin back to `develop` `f67db54399` (every carried PR merged upstream) | DONE (#102) |
-| Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | IN PROGRESS (feat/logging) |
+| Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | BLOCKED (#106) |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
@@ -150,6 +150,8 @@ Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranqui
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Each item's scope and acceptance is its row in TASKS.md. The rows were revised on 18 November 2026: the first Ferroan region logs in through C# Robust and is not a login server, and the harness gains a grid mode first. Work from the rows as they stand on `main`, not from the earlier split in #18.
+
+Q13 BLOCKED (20 November 2026, #106, `feat/logging`): the logging hooks are in this PR. Region and Robust log through `tracing` to stdout and stderr, to a UTC daily file when `LOGDIR` is set, and as one JSON object per line when `LogFormat = json`. `OtlpEndpoint` exports OTLP/HTTP JSON. `deploy/monitoring/collector/` has configs for Loki, OpenSearch, SigNoz, Graylog's OTLP input and Splunk HEC. `docker smoke` starts Loki and the contrib collector and looks for the login line. The remote console serves the pin's four forms and is off unless `ConsoleUser` is set. Local `cargo xtask check` passed. `otelcol-contrib:0.128.0 validate` passed for all five configs. `cargo xtask console-client` against pin `f67db54399` exits 0 on the `FromXml` error recorded as TB17. The acceptance sentence that `OpenSim.ConsoleClient` runs `show version` cannot pass at this pin: `CommandConsole.FromXml` line 578 indexes `tree["quit"]` before the help tree, and the client never registers `quit`. Ferroan does not change the protocol to dodge that. Proposed fix: the maintainer waives that one sentence, keeps the live step, and marks Q13 done so Q13a can start; or fixes `ConsoleClient` upstream and moves the pin. The coder has not chosen. Q13a stays waiting.
 
 Q13a (manager, 19 November 2026, at the maintainer's request): the maintainer wants proper readouts when errors happen or a soft or hard limit is hit, so problems can be diagnosed and fixed from the data. It builds on Q12's metrics and Q13's logging, and retrofits every limit already in the code (for example the 1 MiB POST body, the 64-folder and 256-item fetch caps, the D19 and D20 bounds, packet, LLSD, queue and retry bounds). From Q13a on, AGENTS.md §6 requires new limits to report the same way.
 
