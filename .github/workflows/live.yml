@@ -15,80 +15,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  live:
-    name: live (ubuntu-latest)
+  scope:
+    name: live scope
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Set up Rust
-        run: |
-          rustup show
-          rustc --version
-          cargo clippy --version
-      - name: Set up .NET SDK 10
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+          fetch-depth: 1
+      - name: Classify the pull request
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash tools/ci/classify_pr.sh
+
+  scenarios:
+    name: live scenarios
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          dotnet-version: 10.0.114
-      - name: Install sqlite3
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
-      - name: Check out the pinned references
-        run: |
-          set -euo pipefail
-          pin() {
-            awk -v name="$1" -F'|' '
-              index($0, "`" name "`") {
-                for (i = 1; i <= NF; i++) {
-                  if ($i ~ /[0-9a-f]{40}/) {
-                    gsub(/[^0-9a-f]/, "", $i)
-                    print $i
-                    exit
-                  }
-                }
-              }
-            ' docs/REFERENCES.md
-          }
-          clone_at() {
-            local url="$1" dest="$2" rev="$3"
-            rm -rf "$dest"
-            mkdir -p "$(dirname "$dest")"
-            # Full history. Nerdbank.GitVersioning, which libopenmetaverse
-            # uses, refuses a shallow clone when it computes version height.
-            git clone "$url" "$dest"
-            git -C "$dest" checkout --detach "$rev"
-          }
-          repository() {
-            awk -v name="$1" -F'|' '
-              index($0, "`" name "`") {
-                if (match($3, /https:\/\/github.com\/[^)]+/)) {
-                  print substr($3, RSTART, RLENGTH) ".git"
-                  exit
-                }
-              }
-            ' docs/REFERENCES.md
-          }
-          tranq="$(pin OpenSim-Tranquillity)"
-          meta="$(pin libopenmetaverse)"
-          ferrobot="$(pin Ferrobot)"
-          test -n "$tranq" && test -n "$meta" && test -n "$ferrobot"
-          root="${RUNNER_TEMP}/ferroan-ref"
-          clone_at "$(repository OpenSim-Tranquillity)" \
-            "$root/OpenSim-Tranquillity" "$tranq"
-          clone_at "$(repository libopenmetaverse)" \
-            "$root/libopenmetaverse" "$meta"
-          clone_at "$(repository Ferrobot)" \
-            "$root/Ferrobot" "$ferrobot"
-          echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
-      - name: Restore the Tranquillity build
-        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
         with:
-          path: |
-            .scratch/live/stamp
-            .scratch/live/src
-          key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          # The publish steps share xtask/src/live.rs with the scenario
+          # runners. Hashing that file keeps the warm publish tree; a narrower
+          # key would miss it. See docs/LIVE.md.
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-restore: rust-live-${{ runner.os }}-
       - name: Verify the oracles
         run: |
           set -euo pipefail
@@ -106,23 +71,79 @@ jobs:
           cargo xtask live record-twice
           cargo xtask live run all
           cargo xtask live run all grid
-      - name: Check login through Robust onto the Ferroan region
-        run: cargo xtask live run login grid --region ferroan
-      - name: Trip POST-body, datagram and fetch-folder limits
-        run: cargo xtask live run limits grid --region ferroan
       - name: Check seed and held event polls against C# and Ferroan
         run: |
           set -euo pipefail
           cargo xtask live run caps grid
           cargo xtask live run caps grid --region ferroan
-      - name: Compare inventory and texture caps on the Ferroan region
-        run: cargo xtask live run assets grid --region ferroan
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-scenarios
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  ferrobot:
+    name: live ferrobot
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-restore: rust-live-${{ runner.os }}-
       - name: Check Ferrobot in standalone and mixed grids
         run: |
           set -euo pipefail
           cargo xtask live run ferrobot
           cargo xtask live run ferrobot grid
           cargo xtask live run ferrobot grid --region ferroan
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-ferrobot
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  services:
+    name: live services
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-restore: rust-live-${{ runner.os }}-
+      - name: Check login through Robust onto the Ferroan region
+        run: cargo xtask live run login grid --region ferroan
+      - name: Trip POST-body, datagram and fetch-folder limits
+        run: cargo xtask live run limits grid --region ferroan
+      - name: Compare inventory and texture caps on the Ferroan region
+        run: cargo xtask live run assets grid --region ferroan
       - name: Run grid mode with the Rust asset service
         run: cargo xtask live run assets grid --rust assets --db sqlite
       - name: Check login with the Rust user account service
@@ -146,6 +167,36 @@ jobs:
       - name: Build OpenSim.ConsoleClient and read a Ferroan console
         if: success()
         run: cargo xtask console-client
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-services
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  # Images and docker smoke stay in this one job. A later change moves the
+  # whole job; it does not split the smoke step away from the image build.
+  images:
+    name: live images
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-restore: rust-live-${{ runner.os }}-
       - name: Build images and smoke the example grid
         if: success()
         run: cargo xtask docker smoke
@@ -153,9 +204,33 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: live-logs
+          name: live-logs-images
           path: |
             .scratch/live/**/*.log
             .scratch/live/diag/**
           if-no-files-found: ignore
           include-hidden-files: true
+
+  live:
+    name: live (ubuntu-latest)
+    needs: [scope, scenarios, ferrobot, services, images]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: tools/ci
+          sparse-checkout-cone-mode: false
+      - name: Fail unless every live job succeeded
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
+          SCENARIOS: ${{ needs.scenarios.result }}
+          FERROBOT: ${{ needs.ferrobot.result }}
+          SERVICES: ${{ needs.services.result }}
+          IMAGES: ${{ needs.images.result }}
+        run: bash tools/ci/live_gate.sh

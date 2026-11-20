@@ -1,0 +1,98 @@
+name: Set up a live runner
+description: >-
+  Toolchain, pinned references, and the Tranquillity and Rust build caches
+  for one parallel live job.
+
+inputs:
+  tranquillity-key:
+    description: Exact cache key for the Tranquillity publish tree
+    required: true
+  rust-key:
+    description: Exact cache key for the Rust build
+    required: true
+  rust-restore:
+    description: Prefix restore key for an older Rust build
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust
+      shell: bash
+      run: |
+        rustup show
+        rustc --version
+        cargo clippy --version
+    - name: Set up .NET SDK 10
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      with:
+        dotnet-version: 10.0.114
+    - name: Install sqlite3
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y sqlite3
+    - name: Check out the pinned references
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin() {
+          awk -v name="$1" -F'|' '
+            index($0, "`" name "`") {
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /[0-9a-f]{40}/) {
+                  gsub(/[^0-9a-f]/, "", $i)
+                  print $i
+                  exit
+                }
+              }
+            }
+          ' docs/REFERENCES.md
+        }
+        clone_at() {
+          local url="$1" dest="$2" rev="$3"
+          rm -rf "$dest"
+          mkdir -p "$(dirname "$dest")"
+          # Full history. Nerdbank.GitVersioning, which libopenmetaverse
+          # uses, refuses a shallow clone when it computes version height.
+          git clone "$url" "$dest"
+          git -C "$dest" checkout --detach "$rev"
+        }
+        repository() {
+          awk -v name="$1" -F'|' '
+            index($0, "`" name "`") {
+              if (match($3, /https:\/\/github.com\/[^)]+/)) {
+                print substr($3, RSTART, RLENGTH) ".git"
+                exit
+              }
+            }
+          ' docs/REFERENCES.md
+        }
+        tranq="$(pin OpenSim-Tranquillity)"
+        meta="$(pin libopenmetaverse)"
+        ferrobot="$(pin Ferrobot)"
+        test -n "$tranq" && test -n "$meta" && test -n "$ferrobot"
+        root="${RUNNER_TEMP}/ferroan-ref"
+        clone_at "$(repository OpenSim-Tranquillity)" \
+          "$root/OpenSim-Tranquillity" "$tranq"
+        clone_at "$(repository libopenmetaverse)" \
+          "$root/libopenmetaverse" "$meta"
+        clone_at "$(repository Ferrobot)" \
+          "$root/Ferrobot" "$ferrobot"
+        echo "FERROAN_REF=$root" >> "$GITHUB_ENV"
+    - name: Restore the Tranquillity build
+      uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+      with:
+        path: |
+          .scratch/live/stamp
+          .scratch/live/src
+        key: ${{ inputs.tranquillity-key }}
+    - name: Restore the Rust build
+      uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ inputs.rust-key }}
+        restore-keys: |
+          ${{ inputs.rust-restore }}

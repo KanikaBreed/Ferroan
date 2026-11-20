@@ -415,4 +415,115 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("no-such-file.md"));
     }
+
+    fn docs_only(paths: &str) -> bool {
+        let mut child = Command::new("bash")
+            .arg(repo_root().join("tools/ci/docs_only.sh"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut stdin = child.stdin.take().unwrap();
+            std::io::Write::write_all(&mut stdin, paths.as_bytes()).unwrap();
+        }
+        child.wait_with_output().unwrap().status.success()
+    }
+
+    #[test]
+    fn documentation_only_paths_skip_the_live_run() {
+        assert!(docs_only("docs/TESTING.md\ndocs/LIVE.md\n"));
+        assert!(docs_only("crates/ferroan-region/README.md\n"));
+        assert!(!docs_only(""));
+        assert!(!docs_only("README.md\n"));
+        assert!(!docs_only("docs/REFERENCES.md\n"));
+        assert!(!docs_only("docs/LIMITS.md\n"));
+        assert!(!docs_only("docs/TESTING.md\nxtask/src/main.rs\n"));
+        assert!(!docs_only("docs/TESTING.md\n.github/workflows/live.yml\n"));
+    }
+
+    #[test]
+    fn a_push_or_a_schedule_is_not_documentation_only() {
+        let root = repo_root();
+        let output = std::env::temp_dir().join(format!(
+            "ferroan-classify-{}-{}",
+            std::process::id(),
+            "schedule"
+        ));
+        let status = Command::new("bash")
+            .arg(root.join("tools/ci/classify_pr.sh"))
+            .env("EVENT_NAME", "schedule")
+            .env("GITHUB_OUTPUT", &output)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let text = fs::read_to_string(&output).unwrap();
+        let _ = fs::remove_file(&output);
+        assert_eq!(text.trim(), "docs_only=false");
+    }
+
+    fn live_gate(
+        scope: &str,
+        docs: &str,
+        scenarios: &str,
+        ferrobot: &str,
+        services: &str,
+        images: &str,
+    ) -> bool {
+        Command::new("bash")
+            .arg(repo_root().join("tools/ci/live_gate.sh"))
+            .env("SCOPE", scope)
+            .env("DOCS_ONLY", docs)
+            .env("SCENARIOS", scenarios)
+            .env("FERROBOT", ferrobot)
+            .env("SERVICES", services)
+            .env("IMAGES", images)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn the_live_gate_fails_when_any_parallel_job_fails() {
+        assert!(live_gate(
+            "success", "false", "success", "success", "success", "success"
+        ));
+        assert!(!live_gate(
+            "success", "false", "failure", "success", "success", "success"
+        ));
+        assert!(!live_gate(
+            "success",
+            "false",
+            "cancelled",
+            "success",
+            "success",
+            "success"
+        ));
+        assert!(!live_gate(
+            "failure", "false", "skipped", "skipped", "skipped", "skipped"
+        ));
+        assert!(live_gate(
+            "success", "true", "skipped", "skipped", "skipped", "skipped"
+        ));
+        assert!(!live_gate(
+            "success", "true", "success", "skipped", "skipped", "skipped"
+        ));
+    }
+
+    #[test]
+    fn required_check_names_stay_put() {
+        let root = repo_root();
+        let live = fs::read_to_string(root.join(".github/workflows/live.yml")).unwrap();
+        let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        assert_eq!(live.matches("name: live (ubuntu-latest)").count(), 1);
+        assert!(ci.contains("name: checks (${{ matrix.os }})"));
+        assert!(ci.contains("ubuntu-latest, windows-latest, macos-latest"));
+        assert_eq!(live.matches("cargo xtask docker smoke").count(), 1);
+        assert_eq!(
+            live.matches("name: Build images and smoke the example grid")
+                .count(),
+            1
+        );
+    }
 }

@@ -63,7 +63,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | DONE (#108) |
 | Q10v | Pin5: move the Tranquillity pin to the maintainer's `dev-build` roll-up `c70fee2` (28 open upstream PRs, TB1 and TB10 to TB18 fixed) | DONE (#112) |
 | Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | DONE (#114) |
-| Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | READY after Q10u |
+| Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | IN PROGRESS (feat/faster-ci) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | READY after Q10x |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | READY after Q10y |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | READY after Q10w |
