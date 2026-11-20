@@ -1,6 +1,6 @@
 # Pin3 C# behavior observations
 
-These fixtures execute Tranquillity `40432e0f83d3802434f898a4e28687bd977d5cf5`, the maintainer's `dev-build` tag `ferroan-pin3`, through [the Pin3 oracle](../../tools/pin3-oracle/Pin3Oracle.csproj). The source revision is recorded in each JSON file and the manifest. The files contain actual return values, observed state and callback traces from C#; no Rust implementation generates their expected behavior.
+These fixtures execute OpenSim-NGC `develop` `f67db54399c027fd74e5aefcb2193905b4dc1646` (Pin4) through [the Pin3 oracle](../../tools/pin3-oracle/Pin3Oracle.csproj). The directory name is the oracle that produced them. The source revision is recorded in each JSON file and the manifest. Pin4 regenerated them at that revision; the observations are unchanged from Pin3 (`40432e0`) apart from the revision field. The files contain actual return values, observed state and callback traces from C#; no Rust implementation generates their expected behavior.
 
 `lifecycle.json` uses the pinned test helpers to construct real `Scene`, Presence and client instances. It invokes the actual login-arrival watcher for absent viewers, connected children, removal before root, completed root arrival, a later Presence session and zero timeout. GridUser is a test backend that records calls and persisted-position snapshots, so these observations establish which state C# changes and preserves; they do not claim to be a production Robust database capture. Fixed test UUIDs identify the fixture agent, sessions and saved region.
 

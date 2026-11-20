@@ -1,7 +1,7 @@
 # Root-arrival service reporting
 
 These requests, replies and online observations were captured from Tranquillity
-`40432e0f83d3802434f898a4e28687bd977d5cf5` on the local test grid.
+`f67db54399c027fd74e5aefcb2193905b4dc1646` on the local test grid.
 
 ```sh
 cargo xtask live build

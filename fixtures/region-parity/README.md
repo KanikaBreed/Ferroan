@@ -1,7 +1,7 @@
 # Region admission and logout evidence
 
 `exchanges.json` contains six HTTP probes captured from the local C# region at
-Tranquillity `40432e0f83d3802434f898a4e28687bd977d5cf5`, plus four unambiguous
+Tranquillity `f67db54399c027fd74e5aefcb2193905b4dc1646`, plus four unambiguous
 Presence/GridUser service exchanges from that login, logout and probe run.
 
 ```sh
@@ -19,7 +19,10 @@ Each entry records the actual status, content type and parsed JSON response.
 JSON member whitespace/order is not compared; numeric precision is preserved.
 The 0.3 negotiation exposes the full widened single-precision value
 `0.30000001192092896`. A failed CreateAgent response omits `success`; it does not
-send `success:false` at this pin.
+send `success:false` at this pin. Pin4's probe bodies match Pin3. The logout
+`griduser-loggedout` position in this capture is `<128, 128, 26.033272>`; that
+Z is the avatar position at logout, and the root-arrival `setposition` stays
+`<128, 128, 25.960001>`.
 
 Probe inputs contain only committed test identities and fixed bot device hashes.
 Only the local test region name/UUID are substituted in the probe responses.

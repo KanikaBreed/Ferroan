@@ -16,12 +16,12 @@ use ferroan_protocol::{Msg, parse_packet};
 use serde_json::{Value, json};
 
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
-pub(crate) const PIN: &str = "40432e0f83d3802434f898a4e28687bd977d5cf5";
+pub(crate) const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const HOME_HANDLE: u64 = (256_000u64 << 32) | 256_000;
 // LLClientView.MoveAgentIntoRegion carries Scene.GetSimulatorVersion(), including
 // the pinned C# build version. The Rust harness uses the same region name/UUID.
 const CSHARP_CHANNEL: &[u8] =
-    b"OpenSim-NGC Tranquillity Release 1.2.154-alpha+40432e0f83 (X64/Unix/DotNet)\0";
+    b"OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)\0";
 
 pub(crate) struct LoginCircuit {
     pub value: Value,

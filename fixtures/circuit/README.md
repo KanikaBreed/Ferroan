@@ -1,7 +1,11 @@
 # C# circuit packet evidence
 
 These datagrams were captured from the local test region at Tranquillity
-`40432e0f83d3802434f898a4e28687bd977d5cf5`, using `cargo xtask live run login grid`.
+`f67db54399c027fd74e5aefcb2193905b4dc1646`, using `cargo xtask live run login grid`.
+The captured channel is `OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)`.
+`RegionHandshake` also carries that run's generated `CacheID`; the pin does not fix it.
+The login has one `ObjectUpdate` for the avatar, so linkset send order does not change this capture.
+`Scene.Close` is not in the Pin4 tree diff, and this normal login still has no `KickUser`.
 The capture patch only records datagrams at the C# socket boundary. The source
 checkout remains unchanged; the patch is applied to the harness's scratch copy.
 

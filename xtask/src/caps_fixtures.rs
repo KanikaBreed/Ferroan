@@ -292,7 +292,7 @@ fn extract(records: &[Record]) -> Result<Evidence, String> {
         }
     }
     let manifest = json!({
-        "tranquillity": "40432e0f83d3802434f898a4e28687bd977d5cf5",
+        "tranquillity": "f67db54399c027fd74e5aefcb2193905b4dc1646",
         "source": "cargo xtask live run caps grid",
         "redaction": "seed/event URLs and neighbour event agent/IP/port replaced; event IDs and all other body bytes preserved",
         "connection_bytes": CONNECTION_BYTES,
@@ -324,9 +324,11 @@ pub(crate) fn login_caps_path(
             continue;
         }
         let reply = adjacent_response(records, index)?;
-        let body: Value = serde_json::from_slice(&request.body)
+        // CreateAgent is gzip on the wire (X-Content-Encoding). The seed and
+        // event bodies extracted below stay verbatim and still reject compression.
+        let body: Value = serde_json::from_slice(&decoded_body(&request)?)
             .map_err(|error| format!("invalid create-agent JSON: {error}"))?;
-        let response: Value = serde_json::from_slice(&reply.body)
+        let response: Value = serde_json::from_slice(&decoded_body(&reply)?)
             .map_err(|error| format!("invalid create-agent response JSON: {error}"))?;
         if body.get("agent_id").and_then(Value::as_str) != Some(crate::live::ESTATE_OWNER) {
             continue;
@@ -379,6 +381,27 @@ pub(crate) fn json_circuit(value: Option<&Value>) -> Result<u32, String> {
 
 fn is_probe(message: &Http) -> bool {
     !message.header("x-ferroan-probe").is_empty()
+}
+
+fn decoded_body(message: &Http) -> Result<Vec<u8>, String> {
+    const LIMIT: u64 = 1024 * 1024;
+    let encoding = message.header("content-encoding");
+    let extra = message.header("x-content-encoding");
+    if encoding == "gzip" || extra == "gzip" {
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(message.body.as_slice())
+            .take(LIMIT + 1)
+            .read_to_end(&mut out)
+            .map_err(|_| "captured gzip body is invalid".to_string())?;
+        if out.len() as u64 > LIMIT {
+            return Err("decoded create-agent body exceeds size limit".into());
+        }
+        Ok(out)
+    } else if encoding.is_empty() && extra.is_empty() {
+        Ok(message.body.clone())
+    } else {
+        Err("unsupported captured content encoding".into())
+    }
 }
 
 fn adjacent_response(records: &[Record], index: usize) -> Result<Http, String> {

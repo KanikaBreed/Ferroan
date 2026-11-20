@@ -513,7 +513,7 @@ mod tests {
         let presence = PresenceClient::new(&base);
         assert!(presence.verify(agent, session).await.unwrap());
         GridUserClient::new(&base)
-            .logged_out(agent, region, [128., 128., 26.034952], [0.; 3])
+            .logged_out(agent, region, [128., 128., 26.033272], [0.; 3])
             .await
             .unwrap();
         presence.logout(session).await.unwrap();

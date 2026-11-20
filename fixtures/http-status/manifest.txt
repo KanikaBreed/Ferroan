@@ -1,5 +1,5 @@
 format 1
-revision 40432e0f83d3802434f898a4e28687bd977d5cf5
+revision f67db54399c027fd74e5aefcb2193905b4dc1646
 source real Tranquillity connectors; controlled loopback HTTP status injection
 
 grid-register-200
