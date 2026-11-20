@@ -31,6 +31,9 @@
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
 //! The live CI job runs standalone and grid mode.
+//!
+//! `docker build` builds the Ferroan and pinned Tranquillity images without
+//! pushing them. `docker smoke` logs in through that grid. Both run on Linux.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -41,6 +44,7 @@ mod assets;
 mod caps_fixtures;
 mod circuit_fixtures;
 mod config_oracle;
+mod docker;
 mod ferrobot;
 mod ferrobot_build;
 mod grid;
@@ -108,7 +112,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run assets --running
        cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
        cargo xtask live assets [--db sqlite|mysql|pgsql]
-       cargo xtask live accounts [--db sqlite|mysql|pgsql]";
+       cargo xtask live accounts [--db sqlite|mysql|pgsql]
+       cargo xtask docker build
+       cargo xtask docker smoke";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -156,6 +162,8 @@ fn main() -> ExitCode {
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
+        ["docker", "build"] => docker::build(),
+        ["docker", "smoke"] => docker::smoke(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

@@ -46,7 +46,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10d | P0.10k: harness and test-evidence fixes from the review of #25 to #37 | DONE (#44) |
 | Q10e | P2.0a3: circuit timing as C# does it (resends, inactivity, re-login) | DONE (#45) |
 | Q10f | P2.0d3: region login: presence, trust and C# parity | DONE (#46) |
-| Q11 | P0.11: container images and the example compose grid | READY after Q10s5 |
+| Q11 | P0.11: container images and the example compose grid | IN PROGRESS (feat/containers) |
 | Q10g | P2.0d4: root-arrival Presence and GridUser reporting | DONE (#48) |
 | Q10h | P2.0d5: the shared HTTP form client follows each C# helper's status policy | DONE (#90) |
 | Q12 | P0.12: monitoring: Tranquillity's status endpoints, plus metrics and health checks | READY after Q11 |

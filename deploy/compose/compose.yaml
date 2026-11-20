@@ -1,0 +1,91 @@
+# Example grid on the host network. The harness INI files bind 127.0.0.1 and
+# the neighbouring loopback addresses, which a bridge network cannot serve.
+# Account secrets stay in the mounted INI files. deploy/compose/.env is generated
+# and gitignored. This file is not a registry publish.
+name: ferroan-grid
+services:
+  robust:
+    image: tranquillity-grid:p0.11
+    network_mode: host
+    user: "${RUN_UID}:${RUN_GID}"
+    environment:
+      CONSOLE: basic
+      CONFIGFILE: /app/config/GridServer.robust.ini
+      LOGDIR: /app/logdata
+    volumes:
+      - type: bind
+        source: ${CONFIG_DIR}/robust
+        target: /app/config
+        read_only: true
+      - type: bind
+        source: ${DATA_DIR}/robust
+        target: /app/data
+      - type: bind
+        source: ${LOG_DIR}/robust
+        target: /app/logdata
+    command: ["robust"]
+  neighbour:
+    image: tranquillity-region:p0.11
+    network_mode: host
+    user: "${RUN_UID}:${RUN_GID}"
+    environment:
+      CONSOLE: local
+      CONFIGDIR: /app/config
+      CONFIGFILE: /app/config/RegionServer.ini
+      REGIONDIR: /app/config/regions/neighbour
+      LOGDIR: /app/logdata
+    volumes:
+      - type: bind
+        source: ${CONFIG_DIR}/neighbour
+        target: /app/config
+        read_only: true
+      - type: bind
+        source: ${DATA_DIR}/neighbour
+        target: /app/data
+      - type: bind
+        source: ${LOG_DIR}/neighbour
+        target: /app/logdata
+    command: ["Ferroan Neighbour"]
+  ferroan-robust:
+    image: ferroan-robust:p0.11
+    network_mode: host
+    user: "${RUN_UID}:${RUN_GID}"
+    environment:
+      LOGDIR: /app/logdata
+    volumes:
+      - type: bind
+        source: ${CONFIG_DIR}/assets
+        target: /app/config
+        read_only: true
+      - type: bind
+        source: ${DATA_DIR}/assets
+        target: /app/data
+      - type: bind
+        source: ${LOG_DIR}/assets
+        target: /app/logdata
+    command:
+      - --inimaster
+      - /app/config/assets.ini
+      - --inidirectory
+      - /app/config/empty
+  ferroan-region:
+    image: ferroan-region:p0.11
+    network_mode: host
+    user: "${RUN_UID}:${RUN_GID}"
+    working_dir: /app/config
+    environment:
+      LOGDIR: /app/logdata
+    volumes:
+      - type: bind
+        source: ${CONFIG_DIR}/home
+        target: /app/config
+      - type: bind
+        source: ${DATA_DIR}/home
+        target: /app/data
+      - type: bind
+        source: ${LOG_DIR}/home
+        target: /app/logdata
+    command:
+      - --inidirectory
+      - /app/config/config
+      - --background
