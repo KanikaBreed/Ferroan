@@ -560,6 +560,11 @@ fn post_form(port: u16, path: &str, body: &str) -> Result<Reply, String> {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(10))
         .map_err(|error| format!("could not connect to 127.0.0.1:{port}: {error}"))?;
+    // OutboundUrlFilter sets NoDelay before connect. This socket exists only
+    // after connect; the request write below sees the option.
+    stream
+        .set_nodelay(true)
+        .map_err(|error| format!("could not set TCP_NODELAY: {error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .map_err(|error| format!("could not set the read timeout: {error}"))?;

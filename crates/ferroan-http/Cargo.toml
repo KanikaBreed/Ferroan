@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 
 [lints]
 workspace = true

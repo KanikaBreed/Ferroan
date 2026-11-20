@@ -164,7 +164,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let (stop_http, stopped) = oneshot::channel();
     let mut http = tokio::spawn(async move {
         axum::serve(
-            listener,
+            ferroan_http::accepted_nodelay(listener),
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async {

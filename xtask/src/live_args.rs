@@ -149,6 +149,9 @@ fn run_spec(spec: RunSpec) -> ExitCode {
     if let Err(error) = spec.db.require_ready() {
         return live::finish(Err(error));
     }
+    if let Err(error) = crate::nodelay::record() {
+        return live::finish(Err(error));
+    }
     if !spec.grid {
         if spec.ferroan_region {
             return live::finish(Err("--region ferroan is used with grid mode".to_string()));

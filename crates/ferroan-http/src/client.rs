@@ -19,6 +19,8 @@ use crate::value::FieldMap;
 use crate::xml::parse_xml_response;
 
 fn client() -> Result<reqwest::Client, HttpError> {
+    // Leave `tcp_nodelay` at reqwest's default `true`. That matches
+    // `OutboundUrlFilter` setting `NoDelay = true` before connect.
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
