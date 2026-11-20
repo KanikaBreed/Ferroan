@@ -58,7 +58,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10s3 | P0.10n3: `TCP_NODELAY` on accepted and outbound sockets as C# sets it | DONE (#97) |
 | Q10s4 | P0.10n4: known-difference tests for TB1, TB10 and TB11 | DONE (#98) |
 | Q10s5 | P0.10n5: record a C# scenario twice and compare per message type (rule revised, see below) | READY after Q10t |
-| Q10t | Pin4: move the Tranquillity pin back to `develop` `f67db54399` (every carried PR merged upstream) | IN PROGRESS (`feat/pin4`) |
+| Q10t | Pin4: move the Tranquillity pin back to `develop` `f67db54399` (every carried PR merged upstream) | DONE (#102) |
 | Q13 | P0.13: logging hooks: stdout, `LOGDIR` files, JSON, OpenTelemetry export with a collector adapter, and Tranquillity's remote console | READY after Q12 |
 | Q13a | P0.13a: diagnostics: a readout for every limit hit and error, a recent-events buffer, `diag dump`, and crash reports | READY after Q13 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
