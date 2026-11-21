@@ -66,8 +66,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
-| Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | BLOCKED |
-| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c |
+| Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
+| Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | READY after Q10w |
+| Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | READY after Q13c1 |
+| Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | READY after Q13c2 |
+| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
@@ -208,6 +211,8 @@ Q10x (manager, 20 November 2026, at the maintainer's request): CI is the slowest
 
 Q13c (manager, 20 November 2026, at the maintainer's request for a code review): a review of the code PRs merged today found that raw request bytes can carry session ids into the diagnostics ring, dumps and crash files, plus four unbounded or lossy pieces in logging and metrics. Each finding was checked against the code; the list is the P0.13c row. It comes straight after Q10w because the first one leaks secrets into files the maintainer will share when reporting problems.
 
+
+Q13c split (manager, 21 November 2026): the block in #119 is right. Q13c is split into three items, in Grok's order: Q13c1 is part (1) alone, the secrets fix; Q13c2 is parts (2) and (4), the two unbounded pieces; Q13c3 is parts (3), (5) and (6). P0.13c stays TODO until all three are DONE. Q13b follows Q13c3.
 
 Q13c BLOCKED (21 November 2026, `docs/diag-review-blocked`): the row is six independent fixes, and together they are more than about a day. No code was changed and no scope was chosen. Part (1) stays first, as the manager asked, rather than growing this item.
 
