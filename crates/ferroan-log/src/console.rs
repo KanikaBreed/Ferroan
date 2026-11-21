@@ -33,12 +33,16 @@ const SCROLL_LIMIT: usize = 1000;
 /// `Environment.TickCount - last > 500000` in `DoExpire`.
 const IDLE_LIMIT_MS: u64 = 500_000;
 const MAX_SESSIONS: usize = 32;
+/// `OpenSim.cs` `GetString("ConsolePrompt", ...)` at the pin (`c70fee205f`, line 131).
+pub(crate) const DEFAULT_CONSOLE_PROMPT: &str = "Region (\\R) ";
 
 pub(crate) struct ConsoleState {
     user: String,
     pass: String,
     origin: Option<HeaderValue>,
     version: String,
+    /// `DefaultPrompt + "# "` after `RefreshPrompt`.
+    prompt: String,
     level: RuntimeLevel,
     sessions: Mutex<HashMap<Uuid, ConsoleSession>>,
     scroll: Mutex<Scroll>,
@@ -47,6 +51,9 @@ pub(crate) struct ConsoleState {
     manual: AtomicBool,
     manual_ms: std::sync::atomic::AtomicU64,
     sweeper: AtomicBool,
+    /// One extra `field:field:text` line after `show version`, for
+    /// `OpenSim.ConsoleClient` (TB32). The region console leaves this off.
+    legacy_client_line: bool,
 }
 
 struct ConsoleSession {
@@ -62,7 +69,49 @@ struct Line {
     number: u64,
     level: String,
     prompt: bool,
+    command: bool,
+    input: bool,
     text: String,
+}
+
+/// `OpenSim.cs` `RefreshPrompt` at the pin (lines 826–845) plus the command
+/// loop's `DefaultPrompt + "# "` (`CommandConsole.cs` line 763).
+///
+/// The pattern is `([^\\])\\(\w)`. A match whose word character is `R` becomes
+/// the preceding character plus `region_name`. Any other word character is
+/// left unchanged. A leading backslash has no preceding character, so it is
+/// not replaced, and `\\` is not folded to `\`. `region_name` is `root` when
+/// the selected scene is absent.
+pub(crate) fn expand_console_prompt(template: &str, region_name: &str) -> String {
+    let chars: Vec<char> = template.chars().collect();
+    let mut expanded = String::with_capacity(template.len() + region_name.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if index + 2 < chars.len()
+            && chars[index] != '\\'
+            && chars[index + 1] == '\\'
+            && is_prompt_word(chars[index + 2])
+        {
+            if chars[index + 2] == 'R' {
+                expanded.push(chars[index]);
+                expanded.push_str(region_name);
+            } else {
+                expanded.push(chars[index]);
+                expanded.push('\\');
+                expanded.push(chars[index + 2]);
+            }
+            index += 3;
+        } else {
+            expanded.push(chars[index]);
+            index += 1;
+        }
+    }
+    expanded.push_str("# ");
+    expanded
+}
+
+fn is_prompt_word(ch: char) -> bool {
+    ch == '_' || ch.is_alphanumeric()
 }
 
 pub(crate) fn state(
@@ -71,6 +120,8 @@ pub(crate) fn state(
     origin: Option<String>,
     version: String,
     level: RuntimeLevel,
+    prompt: String,
+    legacy_client_line: bool,
 ) -> Result<Arc<ConsoleState>, crate::LogError> {
     let origin = match origin {
         Some(value) => Some(HeaderValue::from_str(&value).map_err(|_| crate::LogError::Origin)?),
@@ -81,6 +132,7 @@ pub(crate) fn state(
         pass,
         origin,
         version,
+        prompt,
         level,
         sessions: Mutex::new(HashMap::new()),
         scroll: Mutex::new(Scroll {
@@ -90,6 +142,7 @@ pub(crate) fn state(
         manual: AtomicBool::new(false),
         manual_ms: std::sync::atomic::AtomicU64::new(0),
         sweeper: AtomicBool::new(false),
+        legacy_client_line,
     }))
 }
 
@@ -108,6 +161,10 @@ pub(crate) fn router(state: Arc<ConsoleState>) -> Router {
 
 impl ConsoleState {
     pub(crate) fn push_plain(&self, level_name: &str, text: &str) {
+        self.push_line(level_name, text, false, false, false);
+    }
+
+    fn push_line(&self, level_name: &str, text: &str, prompt: bool, command: bool, input: bool) {
         let mut scroll = self
             .scroll
             .lock()
@@ -116,7 +173,9 @@ impl ConsoleState {
         scroll.lines.push_back(Line {
             number,
             level: level_name.to_owned(),
-            prompt: false,
+            prompt,
+            command,
+            input,
             text: text.to_owned(),
         });
         while scroll.lines.len() > SCROLL_LIMIT {
@@ -139,7 +198,8 @@ async fn start_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
     ensure_sweeper(&state);
     state.push_prompt();
     let xml = format!(
-        "<?xml version=\"1.0\"?><ConsoleSession><SessionID>{id}</SessionID><Prompt>Ferroan# </Prompt><HelpTree>{help}</HelpTree></ConsoleSession>",
+        "<?xml version=\"1.0\"?><ConsoleSession><SessionID>{id}</SessionID><Prompt>{prompt}</Prompt><HelpTree>{help}</HelpTree></ConsoleSession>",
+        prompt = xml_escape(&state.prompt),
         help = help_tree(),
     );
     xml_response(StatusCode::OK, "text/xml", xml, false, &state)
@@ -176,8 +236,12 @@ async fn read_responses(
     State(state): State<Arc<ConsoleState>>,
     Path(id): Path<String>,
 ) -> Response {
+    // A poll URL is registered only for a live session. Any other id misses
+    // that map. `BaseHttpServer.HandleRequest` then leaves the default
+    // 200 `text/html` empty body (TB31). An id that does not parse takes
+    // the same fall-through: no poll handler was registered for it.
     let Some(id) = Uuid::parse_str(&id).ok() else {
-        return empty(StatusCode::NOT_FOUND, "text/plain", &state);
+        return empty(StatusCode::OK, "text/html", &state);
     };
     state.expire_idle();
     let now = state.now_ms();
@@ -186,7 +250,7 @@ async fn read_responses(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let Some(session) = sessions.get_mut(&id) else {
-        return empty(StatusCode::NOT_FOUND, "text/plain", &state);
+        return empty(StatusCode::OK, "text/html", &state);
     };
     session.last_ms = now;
     let seen = &mut session.seen;
@@ -211,8 +275,10 @@ async fn read_responses(
     let mut body = String::from("<?xml version=\"1.0\"?><ConsoleSession>");
     for line in &pending {
         let prompt = if line.prompt { "true" } else { "false" };
+        let command = if line.command { "true" } else { "false" };
+        let input = if line.input { "true" } else { "false" };
         body.push_str(&format!(
-            "<Line Number=\"{number}\" Level=\"{level}\" Prompt=\"{prompt}\" Command=\"false\" Input=\"false\">{text}</Line>",
+            "<Line Number=\"{number}\" Level=\"{level}\" Prompt=\"{prompt}\" Command=\"{command}\" Input=\"{input}\">{text}</Line>",
             number = line.number,
             level = xml_escape(&line.level),
             text = xml_escape(&line.text),
@@ -229,15 +295,13 @@ async fn close_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
     let Some(id) = form_get(&form, "ID").and_then(|text| Uuid::parse_str(text).ok()) else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
-    let removed = state
+    // `HandleHttpCloseSession` removes the row when it is present, then
+    // returns the OK document for every id that parsed (TB31).
+    state
         .sessions
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .remove(&id)
-        .is_some();
-    if !removed {
-        return empty(StatusCode::NOT_FOUND, "text/plain", &state);
-    }
+        .remove(&id);
     xml_response(
         StatusCode::OK,
         "text/xml",
@@ -303,17 +367,8 @@ impl ConsoleState {
     }
 
     fn push_prompt(&self) {
-        let mut scroll = self
-            .scroll
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let number = scroll.lines.back().map(|line| line.number + 1).unwrap_or(1);
-        scroll.lines.push_back(Line {
-            number,
-            level: String::new(),
-            prompt: true,
-            text: "0:0:+++Ferroan# ".to_owned(),
-        });
+        let prompt = self.prompt.clone();
+        self.push_line("", &prompt, true, true, false);
     }
 }
 
@@ -346,7 +401,21 @@ fn run_command(state: &ConsoleState, command: &str) {
     let words: Vec<&str> = parts.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["show", "version"] => {
-            state.push_plain("Info", &format!("0:0:{}", state.version));
+            // `ReadLine` echoes the raw command with Input set, `Notice`
+            // writes the version with an empty level, then the next prompt
+            // is Prompt and Command.
+            state.push_line("", command, false, false, true);
+            state.push_line("", &state.version, false, false, false);
+            let prompt = state.prompt.clone();
+            state.push_line("", &prompt, true, true, false);
+            // `OpenSim.ConsoleClient.ReadResponses` (lines 283–293) splits a
+            // line on `:` into three fields and prints the third. The notice
+            // above has no colon, so that client drops it (TB32). The
+            // in-process console adds one old-shaped line after the three C#
+            // lines. The region console does not.
+            if state.legacy_client_line {
+                state.push_plain("", &format!("0:0:{}", state.version));
+            }
         }
         ["diag", "dump"] => match ferroan_diag::write_dump() {
             Ok(path) => state.push_plain("Info", &format!("0:0:diag dump {}", path.display())),
@@ -499,12 +568,18 @@ mod tests {
     use axum::http::StatusCode as HttpStatus;
 
     fn console() -> Arc<ConsoleState> {
+        opened("console-test", "console-test-pass")
+    }
+
+    fn opened(user: &str, pass: &str) -> Arc<ConsoleState> {
         state(
-            "console-test".to_owned(),
-            "console-test-pass".to_owned(),
+            user.to_owned(),
+            pass.to_owned(),
             None,
             "Ferroan 0.1.0 (ferroan-region)".to_owned(),
             RuntimeLevel::new(level::INFO),
+            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "Ferroan Test"),
+            false,
         )
         .expect("console")
     }
@@ -543,6 +618,8 @@ mod tests {
         assert_eq!(kind.as_deref(), Some("text/xml"));
         assert_eq!(body.matches("<ConsoleSession>").count(), 1);
         assert_eq!(body.matches("<HelpTree>").count(), 1);
+        assert!(body.contains("<Prompt>Region (Ferroan Test) # </Prompt>"));
+        assert!(!body.contains("console-test-pass"));
         assert!(body.contains("<Shared>False</Shared>"));
         assert!(body.contains("Name=\"show\""));
         assert!(body.contains("Name=\"version\""));
@@ -553,6 +630,8 @@ mod tests {
             .expect("session");
         Uuid::parse_str(id).expect("uuid");
 
+        let _drained =
+            text(read_responses(State(Arc::clone(&state)), Path(id.to_owned())).await).await;
         let (status, body, _) = text(
             session_command(
                 State(Arc::clone(&state)),
@@ -568,8 +647,18 @@ mod tests {
             text(read_responses(State(Arc::clone(&state)), Path(id.to_owned())).await).await;
         assert_eq!(status, HttpStatus::OK);
         assert_eq!(kind.as_deref(), Some("application/xml"));
-        assert!(body.contains("Ferroan 0.1.0 (ferroan-region)"));
-        assert!(body.contains("+++Ferroan#"));
+        assert!(body.contains("Input=\"true\">show &quot;version&quot;</Line>"));
+        assert!(body.contains(
+            "Level=\"\" Prompt=\"false\" Command=\"false\" Input=\"false\">Ferroan 0.1.0 (ferroan-region)</Line>"
+        ));
+        assert!(body.contains(
+            "Prompt=\"true\" Command=\"true\" Input=\"false\">Region (Ferroan Test) # </Line>"
+        ));
+        assert!(
+            !body.contains("0:0:"),
+            "the region console does not add the ConsoleClient line"
+        );
+        assert!(!body.contains("console-test-pass"));
 
         let (status, body, _) = text(
             session_command(
@@ -585,6 +674,32 @@ mod tests {
 
         let (status, _, _) = text(close_session(State(state), format!("ID={id}")).await).await;
         assert_eq!(status, HttpStatus::OK);
+    }
+
+    #[tokio::test]
+    async fn the_in_process_console_adds_a_line_consoleclient_can_print() {
+        let state = state(
+            "console-test".to_owned(),
+            "console-test-pass".to_owned(),
+            None,
+            "Ferroan 0.1.0 (ferroan-region)".to_owned(),
+            RuntimeLevel::new(level::INFO),
+            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "root"),
+            true,
+        )
+        .expect("console");
+        let id = session_id(&state).await;
+        let _drained =
+            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
+        let _ = command(&state, &id).await;
+        let (_, body, _) = text(read_responses(State(Arc::clone(&state)), Path(id)).await).await;
+        let notice = body
+            .find("Input=\"false\">Ferroan 0.1.0 (ferroan-region)</Line>")
+            .expect("notice");
+        let legacy = body
+            .find(">0:0:Ferroan 0.1.0 (ferroan-region)</Line>")
+            .expect("legacy line");
+        assert!(notice < legacy, "the 0:0: line follows the C# notice");
     }
 
     #[tokio::test]
@@ -632,12 +747,11 @@ mod tests {
         );
         state.set_now_ms(IDLE_LIMIT_MS + 1);
         assert_eq!(command(&state, &id).await, HttpStatus::NOT_FOUND);
-        assert_eq!(
-            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await)
-                .await
-                .0,
-            HttpStatus::NOT_FOUND
-        );
+        let (read_status, read_body, read_kind) =
+            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
+        assert_eq!(read_status, HttpStatus::OK);
+        assert_eq!(read_kind.as_deref(), Some("text/html"));
+        assert!(read_body.is_empty());
 
         state.set_now_ms(0);
         let polled = session_id(&state).await;
@@ -677,14 +791,7 @@ mod tests {
     }
 
     fn console_with(user: &str, pass: &str) -> Arc<ConsoleState> {
-        state(
-            user.to_owned(),
-            pass.to_owned(),
-            None,
-            "Ferroan 0.1.0 (ferroan-region)".to_owned(),
-            RuntimeLevel::new(level::INFO),
-        )
-        .expect("console")
+        opened(user, pass)
     }
 
     async fn session_id(state: &Arc<ConsoleState>) -> String {
@@ -714,6 +821,55 @@ mod tests {
         )
         .await;
         status
+    }
+
+    #[tokio::test]
+    async fn an_unknown_parsed_session_matches_the_csharp_fall_through() {
+        let state = console();
+        let unknown = "00000000-0000-0000-0000-000000000001";
+        let (status, body, kind) =
+            text(close_session(State(Arc::clone(&state)), format!("ID={unknown}")).await).await;
+        assert_eq!(status, HttpStatus::OK);
+        assert_eq!(kind.as_deref(), Some("text/xml"));
+        assert_eq!(
+            body,
+            "<?xml version=\"1.0\"?><ConsoleSession><Result>OK</Result></ConsoleSession>"
+        );
+        let (status, body, kind) =
+            text(read_responses(State(Arc::clone(&state)), Path(unknown.to_owned())).await).await;
+        assert_eq!(status, HttpStatus::OK);
+        assert_eq!(kind.as_deref(), Some("text/html"));
+        assert!(body.is_empty());
+        let (status, body, kind) =
+            text(read_responses(State(Arc::clone(&state)), Path("not-a-session".to_owned())).await)
+                .await;
+        assert_eq!(status, HttpStatus::OK);
+        assert_eq!(kind.as_deref(), Some("text/html"));
+        assert!(body.is_empty());
+        let (status, body, _) = text(
+            session_command(State(state), format!("ID={unknown}&COMMAND=show%20version")).await,
+        )
+        .await;
+        assert_eq!(status, HttpStatus::NOT_FOUND);
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn the_default_prompt_expands_the_region_name() {
+        assert_eq!(
+            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "Ferroan Test"),
+            "Region (Ferroan Test) # "
+        );
+        assert_eq!(
+            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "root"),
+            "Region (root) # "
+        );
+        assert_eq!(
+            expand_console_prompt(r"pre\\R post", "Name"),
+            r"pre\\R post# "
+        );
+        assert_eq!(expand_console_prompt(r"\R", "Name"), r"\R# ");
+        assert_eq!(expand_console_prompt(r"x\Q", "Name"), r"x\Q# ");
     }
 
     fn refuse_hits() -> u64 {
