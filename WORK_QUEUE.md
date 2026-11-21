@@ -66,7 +66,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
-| Q10y | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | READY after Q10w |
+| Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | READY after Q10w |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -319,7 +319,7 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 
 Q23a (21 November 2026, `feat/fsassets-plugins`): [PR #145](https://github.com/KanikaBreed/Ferroan/pull/145). `FsAssetStore` ports `MySQLFSAssetData` and `PGSQLFSAssetData` at `c70fee205f`. Rows only: Get, Store, the table query `AssetsExist` uses, Count, Delete, the access-time update, and Import's SQL reader. `Realm` defaults to `fsassets`. PostgreSQL ignores `Realm`. A failed MySQL insert is an error, and code points above U+FFFF are dropped from the name and description (TB22, D30). An existing MySQL id answers success and does not rewrite the hash. A second store of an existing PostgreSQL id answers that id and updates `access_time` only (TB35). PostgreSQL delete of a non-uuid deletes nothing and returns false (TB39). PostgreSQL Import keeps the pin's `LIMIT start OFFSET count`. `cargo xtask asset fsassets-cross` passed locally: MySQL printed `known differences: TB22`; PostgreSQL printed `known differences: TB35, TB39`. C# and Rust read each other's rows. No filesystem, no HTTP, no live run, no console. TB19 and TB20 on `AssetService` are unchanged. P1.A3 stays TODO.
 
-Pin6 and Q10y added (manager, 21 November 2026). The maintainer's 15 upstream PRs (#473 to #487) are open and merged into `dev-build`, so Pin6 brings them and the fixes `develop` took from the Pin5 roll-up into Ferroan. It goes on the services track after Q23b, because most of what changes is assets and the PostgreSQL schema, and Q23c onward then compare at the new pin. The region track keeps going; when Pin6 merges, merge `origin/main` as usual. Before the Pin6 turn the manager moves `~/Git/reference/OpenSim-Tranquillity` to the new SHA. Q10y is the CI fix for the torn `GITHUB_ENV`; it is small and can be taken by the region coder between items.
+Pin6 and Q10z added (manager, 21 November 2026). The maintainer's 15 upstream PRs (#473 to #487) are open and merged into `dev-build`, so Pin6 brings them and the fixes `develop` took from the Pin5 roll-up into Ferroan. It goes on the services track after Q23b, because most of what changes is assets and the PostgreSQL schema, and Q23c onward then compare at the new pin. The region track keeps going; when Pin6 merges, merge `origin/main` as usual. Before the Pin6 turn the manager moves `~/Git/reference/OpenSim-Tranquillity` to the new SHA. Q10z is the CI fix for the torn `GITHUB_ENV`; it is small and can be taken by the region coder between items.
 
 ## Found while working
 
