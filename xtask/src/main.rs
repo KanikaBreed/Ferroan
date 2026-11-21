@@ -30,7 +30,8 @@
 //! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
 //! against the local schema-server containers. `asset fsassets-cross` runs the
 //! FSAssets plugins the same way. `asset fsassets-files` compares FSAssets
-//! paths and decompressed bytes. Neither starts a server or the live harness.
+//! paths and decompressed bytes. `griduser cross` runs the GridUser plugins
+//! the same way. None of these starts a server or the live harness.
 //!
 //! `access` builds the C# full-region oracle and generates or verifies
 //! `fixtures/access`. It calls `Scene.CheckLandPositionAccess` with
@@ -116,6 +117,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset xasset-cross
        cargo xtask asset fsassets-cross
        cargo xtask asset fsassets-files
+       cargo xtask griduser cross
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask live build
@@ -208,6 +210,7 @@ fn main() -> ExitCode {
         ["asset", "xasset-cross"] => asset_oracle::xasset_cross(),
         ["asset", "fsassets-cross"] => asset_oracle::fsassets_cross(),
         ["asset", "fsassets-files"] => asset_oracle::fsassets_files(),
+        ["griduser", "cross"] => asset_oracle::griduser_cross(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),

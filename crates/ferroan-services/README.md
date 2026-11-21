@@ -63,7 +63,7 @@ Ordinary CI compares the committed asset XML and SQLite fixtures in Rust tests. 
 P1.2 through P1.12 follow the user-account layout.
 
 1. One module directory under `crates/ferroan-services/src/<service>/`: `mod.rs`, `model.rs`, `store.rs`, `service.rs`, `http.rs`, `open.rs`, and `commands.rs` when the C# service registers console commands.
-2. The store speaks SQLite through `ferroan_db::Pool` and parameterised sqlx queries. It does not run migrations and it does not keep a shared column-name cache. The asset store also speaks MySQL and PostgreSQL. A later service still starts on SQLite.
+2. The store speaks SQLite through `ferroan_db::Pool` and parameterised sqlx queries. It does not run migrations and it does not keep a shared column-name cache. The asset store also speaks MySQL and PostgreSQL. The grid-user store speaks SQLite, MySQL and PostgreSQL and has no HTTP handler. `cargo xtask griduser cross` compares its rows with the pinned plugins. A later service still starts on SQLite.
 3. HTTP is a POST of a ServerUtils form. Parse it with `ferroan_http::parse_query_string`. Reply with `ferroan_http::build_xml_response` and content type `application/xml`, except the fixed Failure bytes the handler uses.
 4. `ferroan-robust` mounts that router only when the ini section is present. An asset-only ini still starts.
 5. `cargo xtask live compare <service>` starts the C# connector and `ferroan-robust` against copies of the same SQLite fixture, sends the same forms, and compares the HTTP after folding fields that are the current time.
