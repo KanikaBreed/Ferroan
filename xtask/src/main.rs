@@ -29,7 +29,8 @@
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
 //! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
 //! against the local schema-server containers. `asset fsassets-cross` runs the
-//! FSAssets plugins the same way. It does not start a server or the live harness.
+//! FSAssets plugins the same way. `asset fsassets-files` compares FSAssets
+//! paths and decompressed bytes. Neither starts a server or the live harness.
 //!
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
@@ -108,6 +109,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset cross
        cargo xtask asset xasset-cross
        cargo xtask asset fsassets-cross
+       cargo xtask asset fsassets-files
        cargo xtask pin3 generate|verify
        cargo xtask live build
        cargo xtask live record-twice
@@ -196,6 +198,7 @@ fn main() -> ExitCode {
         ["asset", "cross"] => asset_oracle::cross(),
         ["asset", "xasset-cross"] => asset_oracle::xasset_cross(),
         ["asset", "fsassets-cross"] => asset_oracle::fsassets_cross(),
+        ["asset", "fsassets-files"] => asset_oracle::fsassets_files(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
