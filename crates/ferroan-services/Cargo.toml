@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-services"
-description = "Grid services. This crate holds the asset and user-account services."
+description = "Grid services. This crate holds the asset service, the user-account service (including user aliases), and the grid-user stores."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
