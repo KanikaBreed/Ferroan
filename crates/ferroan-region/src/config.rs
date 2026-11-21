@@ -116,6 +116,8 @@ pub struct RegionConfig {
     /// `[DatabaseService] ConnectionString` when it is present and not empty.
     /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
     pub terrain_store: Option<String>,
+    /// `[ClientStack.LindenUDP] CaptureFile`. Empty leaves datagram capture off.
+    pub udp_capture: Option<PathBuf>,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -348,6 +350,11 @@ impl RegionConfig {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
+            udp_capture: server
+                .get("ClientStack.LindenUDP", "CaptureFile")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
         })
     }
 

@@ -272,6 +272,7 @@ async fn held_reporting_keeps_transport_running_and_allows_completion_logout_or_
                     connected: None,
                     pending: None,
                     stop: None,
+                    chat: None,
                 },
             )
             .await
