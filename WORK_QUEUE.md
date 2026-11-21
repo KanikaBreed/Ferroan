@@ -98,7 +98,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
 | Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
-| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
+| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
@@ -365,6 +365,12 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-part split is taken as Q26a to Q26f, in that order. For Q26a: `GetAll` matches the user id as a literal prefix. Bind it as a parameter and escape `%`, `_` and the escape character with an explicit `ESCAPE`, on all three stores, as Ferroan does for any text from outside; a `%` or `_` in the id matches only itself. Add a test with a quote, a `%` and a `_` in the id. The maintainer chose (21 November 2026): until Ferroan's login (Q36) exists, login stays in C#. The C# login service writes the presence row to the shared MySQL or PostgreSQL table, and Ferroan's presence serves report, logout and the reads from that same table. Nothing changes on the wire. On SQLite grids presence stays in C# until Q36. Q26f compares on that basis.
 
 ## Found while working
+
+- 2026-11-21, Q26a: `live images` on `6d052a1` failed in `cargo xtask docker smoke` ([run 44958467849](https://github.com/KanikaBreed/Ferroan/actions/runs/44958467849), job `live images`, 22:49:29Z–22:55:12Z). The images built, both metrics scrapes passed, and Ferrobot answered `SimName` through the 120-second hold. The step then failed with `docker: invalid captured UDP packet` while reading the capture. `live ferrobot` and `live scenarios` passed on the same SHA, and so did the Ubuntu, Windows and macOS checks. Recorded before the retry. Not a product change.
+
+- 2026-11-21, Q26a: `live services` on `6d052a1` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44958467849](https://github.com/KanikaBreed/Ferroan/actions/runs/44958467849), job `live services`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The same job's `login grid --region ferroan`, assets run and `login grid --rust accounts` passed, including GridUser offline after logout. The same deadline is already recorded under Q10x and Q22b. Recorded before the retry. Not a product change. The `live (ubuntu-latest)` job then failed because images and services had failed.
+
+- 2026-11-21, Q26a: `GetAll` at `1d7abb8337` interpolates the user id into `LIKE` on MySQL (`MySQLGridUserData.cs` line 64) and PostgreSQL (`PGSQLGridUserData.cs` line 68). A quote in the id fails the statement. SQLite binds `userID + "%"` (`SQLiteGridUserData.cs` lines 65–73) and does not escape `%` or `_`, and neither do the other two. Nobody depends on the extra matches or on the failure. Ferroan binds an escaped prefix with `ESCAPE '!'` on all three (TB43, D35). `cargo xtask griduser cross` lists TB43.
 
 - 2026-11-21, Q23c: `live images` on `216d07d` failed in the example-grid smoke ([run 44958093654](https://github.com/KanikaBreed/Ferroan/actions/runs/44958093654), job `live images` `137010854797`, 22:44:53Z–22:49:28Z). The line was `docker: capture check failed: record 162 (udp in) does not re-encode: the encoded bytes differ`. The same smoke passed on `9553c6f` ([run 44955947512](https://github.com/KanikaBreed/Ferroan/actions/runs/44955947512), job `137004715676`, 5m38s). The commits after that SHA are queue docs. Recorded before the retry. Not a product change.
 
