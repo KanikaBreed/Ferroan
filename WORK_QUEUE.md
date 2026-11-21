@@ -66,7 +66,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
-| Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | READY after Q10w |
+| Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | IN PROGRESS (feat/github-env) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -329,6 +329,10 @@ Pin6 and Q10z added (manager, 21 November 2026). The maintainer's 15 upstream PR
 ## Found while working
 
 - 2026-11-21, Q16a: `live images` on `00c477a` failed after a passing smoke ([run 44933380682](https://github.com/KanikaBreed/Ferroan/actions/runs/44933380682), job `live images`, runner Home1, labels `self-hosted`/`linux`/`x64`/`ferroan`, 18:03:57Z–18:09:53Z). The smoke line was `docker smoke login+ferrobot: 142s`. The step then failed with `Unable to process file command 'env' successfully` / `Invalid format '25'`. The next step's environment contained `GitAssemblyInformationalVersion`, `GitBuildVersion` and `GitBuildVersionSimple` (`1.2.225…`), which Nerdbank.GitVersioning appends to `GITHUB_ENV` during the host `dotnet` build. A torn `25` matches that tool's concurrent append ([dotnet/Nerdbank.GitVersioning#683](https://github.com/dotnet/Nerdbank.GitVersioning/issues/683)). Ubuntu, Windows and macOS `checks`, `live scenarios`, `live ferrobot` and `live services` passed on the same SHA, including `roots: pass`. Recorded before the retry. Not a product change.
+
+- 2026-11-21, Q10z: on that same images log the pin image `dotnet publish` steps were cache hits. `live: building Tranquillity` (the host publish) ran, then the step failed on the torn file. This item removes `GITHUB_ENV` from that command. The oracle, schema and console-client `dotnet` commands still inherit it. They are not this images build.
+
+- 2026-11-21, Q10z: `~/Git/reference/OpenSim-Tranquillity` is at `1d7abb8` for Pin6, while this branch's pin is still `c70fee205f`. `resolved_sets_match_the_nini_oracle` reads that tree for `region-ref` cases and does not check the revision, so `cargo xtask check` fails until `FERROAN_REF` points at `c70fee205f`. The library test skips a mismatched checkout. Not changed here.
 
 - 2026-11-21, Q23b: `PGSQLFSAssetData.Import` at `c70fee205f` lines 256–259 formats `limit {start} offset {count}` when `count` is not -1, so the page arguments are swapped (TB40). MySQL uses `LIMIT start, count` and is not this bug. Nobody can depend on an import that reads the wrong page. Ferroan records it now. Q23d uses `LIMIT count OFFSET start` (D32). The plugin SQL from Q23a still matches the pin. The maintainer is adding the C# fix to the upstream batch. This is not TB19.
 
