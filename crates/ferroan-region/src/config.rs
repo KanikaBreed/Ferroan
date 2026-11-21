@@ -101,6 +101,9 @@ pub struct RegionConfig {
     pub inventory_server_uri: String,
     /// Robust asset service base. Empty when this region has no asset service.
     pub asset_server_uri: String,
+    /// `[AvatarService] AvatarServerURI`. Empty skips `getavatar` and uses the
+    /// constructor appearance. The region does not serve the avatar service.
+    pub avatar_server_uri: String,
     /// True when `[LibraryService]` is present. The tree is loaded in-process.
     pub library_enabled: bool,
     pub library_name: String,
@@ -286,6 +289,7 @@ impl RegionConfig {
         reject_unsupported_auth(server)?;
         let inventory_server_uri = optional_uri(server, "InventoryService", "InventoryServerURI")?;
         let asset_server_uri = optional_uri(server, "AssetService", "AssetServerURI")?;
+        let avatar_server_uri = optional_uri(server, "AvatarService", "AvatarServerURI")?;
         let (library_enabled, library_name) = library_settings(server)?;
         let estate_owner = uuid(
             server,
@@ -326,6 +330,7 @@ impl RegionConfig {
             region_secret: Uuid::new_v4(),
             inventory_server_uri,
             asset_server_uri,
+            avatar_server_uri,
             library_enabled,
             library_name,
             library_file: None,
@@ -360,6 +365,7 @@ impl RegionConfig {
             region_handle: self.handle(),
             channel_version: self.channel_version.clone(),
             land: Vec::new(),
+            avatar: None,
         }
     }
 }

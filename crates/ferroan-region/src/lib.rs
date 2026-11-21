@@ -5,6 +5,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod avatar;
 pub mod caps_policy;
 pub mod config;
 pub mod control_plane;
