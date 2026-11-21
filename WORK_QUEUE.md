@@ -86,7 +86,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | DONE (#136) |
 | Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | DONE (#139) |
 | Q23 | P1.A3: FSAssets | SPLIT into Q23a to Q23e (#142) |
-| Q23a | P1.A3a: MySQL and PostgreSQL `fsassets` plugins and fixtures (TB22, TB35 fixed) | READY after Q22c |
+| Q23a | P1.A3a: MySQL and PostgreSQL `fsassets` plugins and fixtures (TB22, TB35 fixed) | DONE (#145) |
 | Q23b | P1.A3b: FSAssets file layout and the spool writer (TB23, TB24, TB36 fixed) | READY after Q23a |
 | Q23c | P1.A3c: `FSAssetService` on the asset HTTP routes: fallback, access-time interval, secondary instance, default loader (TB25 fixed) | READY after Q23b |
 | Q23d | P1.A3d: FSAssets console commands: `show assets`, `show digest`, `delete asset`, `import`, `force import` | READY after Q23c |
@@ -313,9 +313,13 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 
 (5) `cargo xtask live assets --backend fsassets --db mysql|pgsql` prints `assets: match`, in the live job, after the earlier pieces. Where the capture shows TB22, TB23, TB24, TB25, TB35 or TB36, list that id, as Q22c listed its ids. The C# service serves files and rows the Rust service wrote, and the reverse, on the same database and directory. A read of 10,000 assets is timed and recorded beside the C# figure. This replaces the harness refusal of `--backend fsassets`.
 
+Q23a (21 November 2026, `feat/fsassets-plugins`): [PR #145](https://github.com/KanikaBreed/Ferroan/pull/145). `FsAssetStore` ports `MySQLFSAssetData` and `PGSQLFSAssetData` at `c70fee205f`. Rows only: Get, Store, the table query `AssetsExist` uses, Count, Delete, the access-time update, and Import's SQL reader. `Realm` defaults to `fsassets`. PostgreSQL ignores `Realm`. A failed MySQL insert is an error, and code points above U+FFFF are dropped from the name and description (TB22, D30). An existing MySQL id answers success and does not rewrite the hash. A second store of an existing PostgreSQL id answers that id and updates `access_time` only (TB35). PostgreSQL delete of a non-uuid deletes nothing and returns false (TB39). PostgreSQL Import keeps the pin's `LIMIT start OFFSET count`. `cargo xtask asset fsassets-cross` passed locally: MySQL printed `known differences: TB22`; PostgreSQL printed `known differences: TB35, TB39`. C# and Rust read each other's rows. No filesystem, no HTTP, no live run, no console. TB19 and TB20 on `AssetService` are unchanged. P1.A3 stays TODO.
+
 ## Found while working
 
 - 2026-11-21, Q16a: `live images` on `00c477a` failed after a passing smoke ([run 44933380682](https://github.com/KanikaBreed/Ferroan/actions/runs/44933380682), job `live images`, runner Home1, labels `self-hosted`/`linux`/`x64`/`ferroan`, 18:03:57Z–18:09:53Z). The smoke line was `docker smoke login+ferrobot: 142s`. The step then failed with `Unable to process file command 'env' successfully` / `Invalid format '25'`. The next step's environment contained `GitAssemblyInformationalVersion`, `GitBuildVersion` and `GitBuildVersionSimple` (`1.2.225…`), which Nerdbank.GitVersioning appends to `GITHUB_ENV` during the host `dotnet` build. A torn `25` matches that tool's concurrent append ([dotnet/Nerdbank.GitVersioning#683](https://github.com/dotnet/Nerdbank.GitVersioning/issues/683)). Ubuntu, Windows and macOS `checks`, `live scenarios`, `live ferrobot` and `live services` passed on the same SHA, including `roots: pass`. Recorded before the retry. Not a product change.
+
+- 2026-11-21, Q23a: `PGSQLFSAssetData.Delete` at `c70fee205f` does `new UUID(id)` before the query, so a non-uuid throws and the row stays (TB39). MySQL `Delete` runs for any string and returns true. Nobody depends on the throw. Ferroan parses the id, returns false and deletes nothing when it is not a uuid, and returns true when the statement runs. Not filed upstream. The PostgreSQL cross-read lists it. TB19 and TB20 on `AssetService` are unchanged.
 
 - 2026-11-21, Q23: `FSAssetService.Writer` at `c70fee205f` (the loop commented "The cure for chicken bones!") deletes a file that occupies a directory component of the destination path, for old SRAS trees. Not copied. Not given a TB number: it belongs in the proposed writer piece, and it is not clear that a viewer or another server depends on that delete. The writer piece should ask before deleting an existing file.
 

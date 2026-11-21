@@ -35,6 +35,12 @@ pub fn xasset_cross() -> ExitCode {
     run_plugin_cross("xasset_plugins_cross_read", "FERROAN_XASSET_CROSS")
 }
 
+/// Rust writes `fsassets` rows and the pinned FSAssets plugins read them, then
+/// the reverse, on MySQL and PostgreSQL. No filesystem and no live harness.
+pub fn fsassets_cross() -> ExitCode {
+    run_plugin_cross("fsassets_plugins_cross_read", "FERROAN_FSASSET_CROSS")
+}
+
 fn run_plugin_cross(test_name: &str, gate: &str) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
