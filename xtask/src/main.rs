@@ -38,7 +38,8 @@
 //!
 //! `ci scope` classifies a pull request as documentation-only. `ci gate` is
 //! the required live check: every parallel live job succeeded, or, on a
-//! documentation-only pull request, every one was skipped.
+//! documentation-only pull request, every one was skipped. `ci ensure-sqlite`
+//! installs the `sqlite3` command with `apt-get` only when it is missing.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -130,7 +131,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask docker smoke
        cargo xtask console-client
        cargo xtask ci scope
-       cargo xtask ci gate";
+       cargo xtask ci gate
+       cargo xtask ci ensure-sqlite";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -183,6 +185,7 @@ fn main() -> ExitCode {
         ["console-client"] => console_client::run(),
         ["ci", "scope"] => ci::scope(),
         ["ci", "gate"] => ci::gate(),
+        ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -453,5 +456,29 @@ mod tests {
             .next()
             .unwrap();
         assert!(ferrobot.contains("cargo xtask live build"));
+        let images = live
+            .split("name: live images")
+            .nth(1)
+            .unwrap()
+            .split("name: live (ubuntu-latest)")
+            .next()
+            .unwrap();
+        assert!(images.contains("vars.FERROAN_SELF_HOSTED == 'true'"));
+        assert!(images.contains("github.event_name != 'pull_request'"));
+        assert!(
+            images.contains("github.event.pull_request.head.repo.full_name == github.repository")
+        );
+        assert!(images.contains("fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"ferroan\"]')"));
+        assert!(images.contains("|| 'ubuntu-latest'"));
+        assert!(images.contains("ferroan-live-images"));
+        assert!(images.contains("cancel-in-progress: false"));
+        let gate = live.split("name: live (ubuntu-latest)").nth(1).unwrap();
+        assert!(gate.contains("runs-on: ubuntu-latest"));
+        assert!(!gate.contains("self-hosted"));
+        assert!(!gate.contains("FERROAN_SELF_HOSTED"));
+        let setup = fs::read_to_string(root.join(".github/actions/live-setup/action.yml")).unwrap();
+        assert!(setup.contains("cargo xtask ci ensure-sqlite"));
+        assert!(!setup.contains("apt-get"));
+        assert!(!live.contains("apt-get"));
     }
 }

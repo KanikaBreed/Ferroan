@@ -64,7 +64,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10v | Pin5: move the Tranquillity pin to the maintainer's `dev-build` roll-up `c70fee2` (28 open upstream PRs, TB1 and TB10 to TB18 fixed) | DONE (#112) |
 | Q10u | P0.10o: one presence wait before every harness login (the "already logged in" flake, third time on #107) | DONE (#114) |
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
-| Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | READY after Q10x |
+| Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | READY after Q10y |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | READY after Q10w |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c |

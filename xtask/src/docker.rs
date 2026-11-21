@@ -8,6 +8,8 @@
 //! `cargo xtask docker smoke` checks the default user, restarts the asset
 //! service against a mounted database, then logs in with `ferroan-bot` and
 //! Ferrobot. The grid uses host networking so the harness loopback binds work.
+//! Smoke creates no Docker network and no named volume. Cleanup removes the
+//! known containers and prunes build cache older than seven days.
 //! Processes run as the invoking user, which is not root on the CI runner or
 //! a normal workstation, so mode-0600 configuration stays private. The image
 //! default user is checked separately and is also not root.
@@ -262,7 +264,26 @@ impl Drop for ContainerGuard {
     fn drop(&mut self) {
         set_smoke(None, false);
         remove_known();
+        // Ignore a missing builder. A successful smoke must still finish.
+        let _ = Command::new(DOCKER)
+            .args(builder_cache_prune_args())
+            .status();
     }
+}
+
+/// Unused BuildKit cache older than seven days. Recent cache stays, which is
+/// the warm build on the self-hosted runner. Smoke does not create a Docker
+/// network or a named volume, so this does not prune those.
+#[cfg(any(target_os = "linux", test))]
+fn builder_cache_prune_args() -> &'static [&'static str] {
+    &[
+        "builder",
+        "prune",
+        "--all",
+        "--force",
+        "--filter",
+        "until=168h",
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -1183,6 +1204,14 @@ mod tests {
     const ENV_EXAMPLE: &str = include_str!("../../deploy/compose/.env.example");
     const REGION_RUNTIME: &str =
         include_str!("../../deploy/docker/tranquillity-region.runtime.Dockerfile");
+
+    #[test]
+    fn smoke_prunes_build_cache_older_than_seven_days() {
+        let args = builder_cache_prune_args().join(" ");
+        assert_eq!(args, "builder prune --all --force --filter until=168h");
+        assert!(!args.contains("network"));
+        assert!(!args.contains("volume"));
+    }
 
     #[test]
     fn images_share_one_release_build() {

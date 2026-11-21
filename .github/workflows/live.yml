@@ -195,13 +195,21 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-  # Images and docker smoke stay in this one job. A later change moves the
-  # whole job; it does not split the smoke step away from the image build.
+  # Images and docker smoke stay in this one job. Do not split them.
+  # The runner is chosen before any step. It is the maintainer's machine
+  # only when FERROAN_SELF_HOSTED is true and this run is not a pull request
+  # from a fork. A fork, and any run with the variable unset, stays on
+  # ubuntu-latest. Smoke binds host ports, so that machine runs one images
+  # job at a time and a later one waits. GitHub-hosted runs do not share
+  # that slot.
   images:
     name: live images
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FERROAN_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","ferroan"]') || 'ubuntu-latest' }}
+    concurrency:
+      group: ${{ (vars.FERROAN_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'ferroan-live-images' || format('ferroan-live-images-{0}', github.run_id) }}
+      cancel-in-progress: false
     timeout-minutes: 45
     steps:
       - name: Check out source
