@@ -35,6 +35,10 @@
 //!
 //! `docker build` builds the Ferroan and pinned Tranquillity images without
 //! pushing them. `docker smoke` logs in through that grid. Both run on Linux.
+//!
+//! `ci scope` classifies a pull request as documentation-only. `ci gate` is
+//! the required live check: every parallel live job succeeded, or, on a
+//! documentation-only pull request, every one was skipped.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -43,6 +47,7 @@ mod arrival_fixtures;
 mod asset_oracle;
 mod assets;
 mod caps_fixtures;
+mod ci;
 mod circuit_fixtures;
 mod config_oracle;
 mod console_client;
@@ -123,7 +128,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live accounts [--db sqlite|mysql|pgsql]
        cargo xtask docker build
        cargo xtask docker smoke
-       cargo xtask console-client";
+       cargo xtask console-client
+       cargo xtask ci scope
+       cargo xtask ci gate";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -174,6 +181,8 @@ fn main() -> ExitCode {
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
+        ["ci", "scope"] => ci::scope(),
+        ["ci", "gate"] => ci::gate(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -414,5 +423,35 @@ mod tests {
         let problems = broken_links(&root, &file, text);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("no-such-file.md"));
+    }
+
+    #[test]
+    fn required_check_names_stay_put() {
+        let root = repo_root();
+        let live = fs::read_to_string(root.join(".github/workflows/live.yml")).unwrap();
+        let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        assert_eq!(live.matches("name: live (ubuntu-latest)").count(), 1);
+        assert!(ci.contains("name: checks (${{ matrix.os }})"));
+        assert!(ci.contains("ubuntu-latest, windows-latest, macos-latest"));
+        assert_eq!(live.matches("cargo xtask docker smoke").count(), 1);
+        assert_eq!(
+            live.matches("name: Build images and smoke the example grid")
+                .count(),
+            1
+        );
+        assert!(live.contains("cargo xtask ci scope"));
+        assert!(live.contains("cargo xtask ci gate"));
+        assert!(ci.contains("cargo xtask ci scope"));
+        assert!(!live.contains("tools/ci"));
+        assert!(!ci.contains("tools/ci"));
+        // Standalone Ferrobot does not publish the region. The job builds it.
+        let ferrobot = live
+            .split("name: live ferrobot")
+            .nth(1)
+            .unwrap()
+            .split("name: live services")
+            .next()
+            .unwrap();
+        assert!(ferrobot.contains("cargo xtask live build"));
     }
 }
