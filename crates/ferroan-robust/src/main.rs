@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The grid-services process. This build listens for the asset, user-account
-//! and user-alias routes whose ini sections are present.
+//! The grid-services process. This build listens for the asset, user-account,
+//! user-alias, authentication and authorization routes whose ini sections are
+//! present.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
@@ -11,10 +12,12 @@
 //!
 //! An asset database must already be a Tranquillity AssetStore: SQLite version
 //! 6, MySQL version 10, or PostgreSQL version 9. A user-account database must
-//! already be at UserAccount version 4. This program does not create or
-//! migrate either file. User aliases need
-//! a table the pin does not ship for SQLite; the process refuses to start
-//! that section until the table exists.
+//! already be at UserAccount version 4. An authentication database must
+//! already be an AuthStore: SQLite version 2, MySQL version 4, or PostgreSQL
+//! version 3. This program does not create or migrate those files. User
+//! aliases need a table the pin does not ship for SQLite; the process refuses
+//! to start that section until the table exists. Authorization does not open
+//! a database.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -23,7 +26,10 @@ use std::process::ExitCode;
 
 use axum::Router;
 use ferroan_config::GridLoad;
-use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, listen_address, network_port};
+use ferroan_services::{
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, authorization_router, listen_address,
+    network_port, open_authorization,
+};
 
 mod status;
 use tokio::net::TcpListener;
@@ -64,9 +70,16 @@ fn run() -> Result<(), String> {
         let aliases = config
             .section_names()
             .any(|name| name == "UserAliasService");
-        if !assets && !accounts && !aliases {
+        let auth = config
+            .section_names()
+            .any(|name| name == "AuthenticationService");
+        let authorization = config
+            .section_names()
+            .any(|name| name == "AuthorizationService");
+        if !assets && !accounts && !aliases && !auth && !authorization {
             return Err(
-                "no AssetService, UserAccountService or UserAliasService section".to_string(),
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService or AuthorizationService section"
+                    .to_string(),
             );
         }
         let mut router = Router::new();
@@ -94,6 +107,19 @@ fn run() -> Result<(), String> {
             pools = pools.alias(http.clone());
             router = router.merge(http.into_router());
             tracing::info!("ferroan-robust: user alias service on {listen}:{port}");
+        }
+        if auth {
+            let http = AuthHttp::open(config)
+                .await
+                .map_err(|error| error.to_string())?;
+            pools = pools.auth(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: authentication service on {listen}:{port}");
+        }
+        if authorization {
+            open_authorization(config).map_err(|error| error.to_string())?;
+            router = router.merge(authorization_router());
+            tracing::info!("ferroan-robust: authorization service on {listen}:{port}");
         }
         if let Some(console) = log_guard.console_router() {
             router = router.merge(console);

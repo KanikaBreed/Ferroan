@@ -51,6 +51,7 @@ mod accounts;
 mod arrival_fixtures;
 mod asset_oracle;
 mod assets;
+mod auth;
 mod caps_fixtures;
 mod ci;
 mod circuit_fixtures;
@@ -126,6 +127,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run assets grid --region ferroan
        cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]
        cargo xtask live run login grid --rust accounts
+       cargo xtask live run login grid --rust auth
        cargo xtask live run login grid --rust assets,accounts
        cargo xtask live caps-fixtures <capture-dir>
        cargo xtask live login-fixtures <capture-dir>
@@ -139,6 +141,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live assets [--db sqlite|mysql|pgsql]
        cargo xtask live assets --backend xasset --db mysql|pgsql
        cargo xtask live accounts [--db sqlite|mysql|pgsql]
+       cargo xtask live auth [--db sqlite|mysql|pgsql]
        cargo xtask docker build
        cargo xtask docker smoke
        cargo xtask console-client
