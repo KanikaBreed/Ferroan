@@ -1,31 +1,51 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! SQLite `assets` rows, matching `SQLiteAssetData` at Tranquillity
-//! `713857f10b8e91a639a967d4354a4682b080793c`.
+//! Asset rows on SQLite, MySQL and PostgreSQL.
 //!
-//! Existence checks are parameterised. The C# method concatenates UUID text
-//! into the statement after `UUID.Parse` has accepted it. The rows returned
-//! are the same.
+//! `AssetService.Store` checks existence and skips the plugin when the id is
+//! already present. [`AssetStore::store_new`] is that path, which is what the
+//! HTTP POST handler calls. [`AssetStore::store_data`] is each plugin's
+//! `StoreAsset` when the statement succeeds: SQLite updates, MySQL replaces
+//! the row, and PostgreSQL updates the mutable columns.
 //!
-//! `AssetService.Store` does not call the database when the id is already
-//! present, so an existing row is left unchanged. `UpdateContent` in that
-//! service returns false and is not implemented here.
+//! Existence checks are parameterised. The C# methods concatenate UUID text
+//! after `UUID.Parse` has accepted it. The rows returned are the same.
+//!
+//! `FetchAssetMetadataSet` is not capped in C#. A start past one million, or a
+//! count outside 0..=10_000, is refused here.
 
-use ferroan_db::Pool;
-use sqlx::Row;
+use ferroan_db::{Backend, Pool};
+use ferroan_diag::{self, ASSET_METADATA_ROWS, Kind};
 use uuid::Uuid;
 
-use super::model::Asset;
+use super::model::{Asset, AssetMetadata};
+
+/// Largest `count` accepted by [`AssetStore::metadata_set`].
+pub const METADATA_ROW_CAP: i32 = 10_000;
+/// Largest `start` accepted by [`AssetStore::metadata_set`].
+pub const METADATA_START_CAP: i32 = 1_000_000;
+
+/// `create_time`, `access_time` and the flags column before the known-bit mask.
+///
+/// SQLite has no time columns, so both times are `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssetClock {
+    pub create_time: Option<i32>,
+    pub access_time: Option<i32>,
+    pub raw_flags: i32,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("this asset service only opens a SQLite store")]
-    NotSqlite,
+    #[error("asset store backend {0} has no pool")]
+    Backend(&'static str),
     #[error("asset database: {0}")]
     Db(#[from] sqlx::Error),
     #[error("asset row {0} is not readable")]
     Row(String),
+    #[error("asset metadata window is outside the bound")]
+    Bound,
 }
 
 pub struct AssetStore {
@@ -37,80 +57,64 @@ impl AssetStore {
         self.pool.occupancy()
     }
 
-    pub fn new(pool: Pool) -> Result<Self, StoreError> {
-        if pool.sqlite().is_none() {
-            return Err(StoreError::NotSqlite);
-        }
-        Ok(Self { pool })
+    pub const fn backend(&self) -> Backend {
+        self.pool.backend()
     }
 
-    fn pool(&self) -> &sqlx::sqlite::SqlitePool {
-        // INFALLIBLE: new() returns StoreError::NotSqlite when sqlite() is None.
-        #[allow(clippy::expect_used)]
-        self.pool.sqlite().expect("checked in new")
+    /// Accept a pool whose backend is SQLite, MySQL or PostgreSQL.
+    pub fn new(pool: Pool) -> Result<Self, StoreError> {
+        match pool.backend() {
+            Backend::Sqlite | Backend::Mysql | Backend::Postgres => Ok(Self { pool }),
+        }
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, StoreError> {
-        let row = sqlx::query(
-            "SELECT UUID, Name, Description, Type, Local, Temporary, asset_flags, CreatorID, Data \
-             FROM assets WHERE UUID = ?",
-        )
-        .bind(id.to_string())
-        .fetch_optional(self.pool())
-        .await?;
-        row.map(asset_from_row).transpose()
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::get(self.sqlite()?, id).await,
+            Backend::Mysql => super::mysql::get(self.mysql()?, id).await,
+            Backend::Postgres => super::postgres::get(self.postgres()?, id).await,
+        }
     }
 
     /// Insert when the id is absent. An existing id is not rewritten.
     ///
-    /// `AssetService.Store` checks existence and skips `StoreAsset`. The
-    /// SQLite plugin would update a row that is already there; this method
-    /// follows the service, so a second store leaves the row unchanged.
-    /// The check and the insert share one transaction.
+    /// This follows `AssetService.Store`. The plugin methods are
+    /// [`Self::store_data`].
     pub async fn store_new(&self, asset: &Asset) -> Result<(), StoreError> {
-        let mut tx = self.pool().begin().await?;
-        let exists = sqlx::query("SELECT 1 FROM assets WHERE UUID = ?")
-            .bind(asset.id.to_string())
-            .fetch_optional(&mut *tx)
-            .await?;
-        if exists.is_some() {
-            tx.rollback().await?;
+        if self.exists_one(asset.id).await? {
             return Ok(());
         }
-        let inserted = sqlx::query(
-            "INSERT INTO assets(UUID, Name, Description, Type, Local, Temporary, asset_flags, CreatorID, Data) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(asset.id.to_string())
-        .bind(asset.stored_name())
-        .bind(asset.stored_description())
-        .bind(i32::from(asset.type_code))
-        .bind(i32::from(asset.local))
-        .bind(i32::from(asset.temporary))
-        .bind(asset.flags)
-        .bind(&asset.creator_id)
-        .bind(&asset.data)
-        .execute(&mut *tx)
-        .await;
-        match inserted {
-            Ok(_) => {
-                tx.commit().await?;
-                Ok(())
-            }
-            Err(error) if is_unique(&error) => {
-                let _ = tx.rollback().await;
-                Ok(())
-            }
-            Err(error) => Err(error.into()),
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::insert_new(self.sqlite()?, asset).await,
+            Backend::Mysql => super::mysql::store_data(self.mysql()?, asset).await,
+            Backend::Postgres => super::postgres::store_data(self.postgres()?, asset).await,
+        }
+    }
+
+    /// Plugin `StoreAsset` for a statement that succeeds.
+    pub async fn store_data(&self, asset: &Asset) -> Result<(), StoreError> {
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::store_data(self.sqlite()?, asset).await,
+            Backend::Mysql => super::mysql::store_data(self.mysql()?, asset).await,
+            Backend::Postgres => super::postgres::store_data(self.postgres()?, asset).await,
         }
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<(), StoreError> {
-        sqlx::query("DELETE FROM assets WHERE UUID = ?")
-            .bind(id.to_string())
-            .execute(self.pool())
-            .await?;
-        Ok(())
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::delete(self.sqlite()?, id).await,
+            Backend::Mysql => super::mysql::delete(self.mysql()?, id).await,
+            Backend::Postgres => super::postgres::delete(self.postgres()?, id).await,
+        }
+    }
+
+    /// Plugin `Delete(string)`. The bool is that method's return value.
+    pub async fn delete_data(&self, id: &str) -> Result<bool, StoreError> {
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::delete_data(self.sqlite()?, id).await,
+            Backend::Mysql => super::mysql::delete_data(self.mysql()?, id).await,
+            Backend::Postgres => super::postgres::delete_data(self.postgres()?, id).await,
+        }
     }
 
     pub async fn exists(&self, ids: &[Uuid]) -> Result<Vec<bool>, StoreError> {
@@ -121,55 +125,75 @@ impl AssetStore {
         Ok(out)
     }
 
+    /// `FetchAssetMetadataSet`. PostgreSQL uses `LIMIT start + count - 1`.
+    pub async fn metadata_set(
+        &self,
+        start: i32,
+        count: i32,
+    ) -> Result<Vec<AssetMetadata>, StoreError> {
+        metadata_window(start, count)?;
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::metadata_set(self.sqlite()?, start, count).await,
+            Backend::Mysql => super::mysql::metadata_set(self.mysql()?, start, count).await,
+            Backend::Postgres => {
+                super::postgres::metadata_set(self.postgres()?, start, count).await
+            }
+        }
+    }
+
+    pub async fn clock(&self, id: Uuid) -> Result<Option<AssetClock>, StoreError> {
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::clock(self.sqlite()?, id).await,
+            Backend::Mysql => super::mysql::clock(self.mysql()?, id).await,
+            Backend::Postgres => super::postgres::clock(self.postgres()?, id).await,
+        }
+    }
+
     async fn exists_one(&self, id: Uuid) -> Result<bool, StoreError> {
-        let row = sqlx::query("SELECT 1 FROM assets WHERE UUID = ?")
-            .bind(id.to_string())
-            .fetch_optional(self.pool())
-            .await?;
-        Ok(row.is_some())
+        match self.backend() {
+            Backend::Sqlite => super::sqlite::exists_one(self.sqlite()?, id).await,
+            Backend::Mysql => super::mysql::exists_one(self.mysql()?, id).await,
+            Backend::Postgres => super::postgres::exists_one(self.postgres()?, id).await,
+        }
+    }
+
+    fn sqlite(&self) -> Result<&sqlx::SqlitePool, StoreError> {
+        self.pool.sqlite().ok_or(StoreError::Backend("sqlite"))
+    }
+
+    fn mysql(&self) -> Result<&sqlx::MySqlPool, StoreError> {
+        self.pool.mysql().ok_or(StoreError::Backend("mysql"))
+    }
+
+    fn postgres(&self) -> Result<&sqlx::PgPool, StoreError> {
+        self.pool.postgres().ok_or(StoreError::Backend("postgres"))
+    }
+
+    /// Close the pool. Tests do this before a C# process opens the same SQLite file.
+    pub async fn close(self) {
+        self.pool.close().await;
     }
 }
 
-fn asset_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Asset, StoreError> {
-    let id_text: String = row.try_get("UUID")?;
-    let id = Uuid::parse_str(&id_text).map_err(|_| StoreError::Row(id_text))?;
-    let name: String = row.try_get("Name")?;
-    let description: String = row.try_get("Description")?;
-    let type_code = i64_to_i8(row.try_get("Type")?)?;
-    let local = i64_to_bool(row.try_get("Local")?)?;
-    let temporary = i64_to_bool(row.try_get("Temporary")?)?;
-    // StoredAssetFlags.FromStored keeps Maptile | Rewritable | Collectable.
-    let flags = i64_to_i32(row.try_get("asset_flags")?)? & (1 | 2 | 4);
-    let creator_id: String = row.try_get("CreatorID")?;
-    let data: Vec<u8> = row.try_get("Data")?;
-    Ok(Asset {
-        id,
-        name,
-        description,
-        type_code,
-        local,
-        temporary,
-        creator_id,
-        flags,
-        data,
-        upload_attempts: 0,
-    })
-}
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;
 
-fn i64_to_i8(value: i64) -> Result<i8, StoreError> {
-    i8::try_from(value).map_err(|_| StoreError::Row(format!("type {value}")))
-}
-
-fn i64_to_i32(value: i64) -> Result<i32, StoreError> {
-    i32::try_from(value).map_err(|_| StoreError::Row(format!("flags {value}")))
-}
-
-fn i64_to_bool(value: i64) -> Result<bool, StoreError> {
-    Ok(value != 0)
-}
-
-fn is_unique(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .is_some_and(|db| db.is_unique_violation())
+fn metadata_window(start: i32, count: i32) -> Result<(), StoreError> {
+    if (0..=METADATA_START_CAP).contains(&start) && (0..=METADATA_ROW_CAP).contains(&count) {
+        return Ok(());
+    }
+    let observed = if !(0..=METADATA_ROW_CAP).contains(&count) {
+        count
+    } else {
+        start
+    };
+    ferroan_diag::refuse(
+        ASSET_METADATA_ROWS,
+        Kind::Hard,
+        u64::from(METADATA_ROW_CAP.cast_unsigned()),
+        u64::from(observed.cast_unsigned()),
+        "asset",
+    );
+    Err(StoreError::Bound)
 }

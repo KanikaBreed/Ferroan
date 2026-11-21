@@ -341,7 +341,10 @@ async fn open_reads_the_asset_section_and_rejects_other_backends() {
     let Err(error) = AssetHttp::open(&config).await else {
         panic!("MySQL was accepted");
     };
-    assert!(error.to_string().contains("SQLite"), "{error}");
+    assert!(
+        error.to_string().contains("version"),
+        "a MySQL provider must fail on the SQLite connection string, not open it: {error}"
+    );
     config.set("AssetService", "AuthType", "BasicHttpAuthentication");
     config.set("AssetService", "StorageProvider", "OpenSim.Data.SQLite.dll");
     let Err(error) = AssetHttp::open(&config).await else {

@@ -73,6 +73,22 @@ impl Pool {
         }
     }
 
+    /// The MySQL pool, when this connection is MySQL.
+    pub fn mysql(&self) -> Option<&sqlx::mysql::MySqlPool> {
+        match &self.inner {
+            Inner::Mysql(pool) => Some(pool),
+            _ => None,
+        }
+    }
+
+    /// The PostgreSQL pool, when this connection is PostgreSQL.
+    pub fn postgres(&self) -> Option<&sqlx::postgres::PgPool> {
+        match &self.inner {
+            Inner::Postgres(pool) => Some(pool),
+            _ => None,
+        }
+    }
+
     /// Open `connection_string` and require every named store, plus the
     /// `migrations` meta row, to be at the version this build expects.
     ///
@@ -189,6 +205,15 @@ impl Pool {
     /// Backend this pool was opened with.
     pub const fn backend(&self) -> Backend {
         self.backend
+    }
+
+    /// Close every connection. SQLite tests do this before another process opens the file.
+    pub async fn close(self) {
+        match self.inner {
+            Inner::Sqlite(pool) => pool.close().await,
+            Inner::Mysql(pool) => pool.close().await,
+            Inner::Postgres(pool) => pool.close().await,
+        }
     }
 
     /// Require `stores` and the `migrations` meta row.

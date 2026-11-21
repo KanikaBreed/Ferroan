@@ -17,6 +17,85 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
     run(false, fixture_dir)
 }
 
+/// Rust writes rows and the pinned C# plugins read them, then the reverse,
+/// on SQLite, MySQL and PostgreSQL.
+///
+/// The local containers are the ones `cargo xtask schema servers` uses.
+/// Connection strings stay in the child environment and are not printed.
+pub fn cross() -> ExitCode {
+    let root = crate::repo_root();
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("asset: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = pinned_and_checked(&root, &reference) {
+        eprintln!("asset: {error}");
+        return ExitCode::FAILURE;
+    }
+    let artifacts = root.join(".scratch/asset-oracle/artifacts");
+    if let Err(error) = fs::create_dir_all(&artifacts) {
+        eprintln!("asset: could not create {}: {error}", artifacts.display());
+        return ExitCode::FAILURE;
+    }
+    let project = root.join("tools/asset-oracle/AssetOracle.csproj");
+    if !dotnet(&root, &reference, &artifacts, &project, "build", false, &[]) {
+        return fail_if_dirty(&reference);
+    }
+    if !checkout_is_clean(&reference) {
+        return ExitCode::FAILURE;
+    }
+    let dll = artifacts.join("bin/AssetOracle/release/AssetOracle.dll");
+    if !dll.is_file() {
+        eprintln!("asset: missing {}", dll.display());
+        return ExitCode::FAILURE;
+    }
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(&root)
+        .env("FERROAN_ASSET_CROSS", "1")
+        .env("FERROAN_ASSET_ORACLE", &dll)
+        .env(
+            "FERROAN_MYSQL_URL",
+            "mysql://ferroan:ferroan@127.0.0.1:13306/ferroan?ssl-mode=disabled",
+        )
+        .env(
+            "FERROAN_POSTGRES_URL",
+            "postgres://ferroan:ferroan@127.0.0.1:15432/ferroan?sslmode=disable",
+        )
+        .env(
+            "FERROAN_ASSET_ADO_MYSQL",
+            "Server=127.0.0.1;Port=13306;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false",
+        )
+        .env(
+            "FERROAN_ASSET_ADO_POSTGRES",
+            "Server=127.0.0.1;Port=15432;Database=ferroan;User Id=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false",
+        )
+        .args([
+            "test",
+            "-p",
+            "ferroan-services",
+            "--lib",
+            "csharp_and_rust_read_each_others_rows",
+            "--",
+            "--nocapture",
+        ]);
+    println!("$ cargo test -p ferroan-services --lib csharp_and_rust_read_each_others_rows");
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("asset: cross-read exited with {status}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("asset: could not run cargo: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {

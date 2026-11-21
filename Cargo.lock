@@ -531,6 +531,7 @@ name = "ferroan-services"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "ferroan-config",
  "ferroan-db",
  "ferroan-diag",
@@ -1853,6 +1854,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
  "webpki-roots 0.26.11",
 ]
 
@@ -1933,6 +1935,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -1970,6 +1973,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -1995,6 +1999,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

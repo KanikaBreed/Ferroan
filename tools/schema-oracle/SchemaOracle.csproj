@@ -22,5 +22,18 @@
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.SQLite/OpenSim.Data.SQLite.csproj">
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The PGSQL project file does not embed this resource. ferroan-db still expects it. -->
+    <EmbeddedResource Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/Resources/MuteListStore.migrations">
+      <LogicalName>Ferroan.SchemaOracle.MuteListStore.migrations</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 </Project>

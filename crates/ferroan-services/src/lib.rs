@@ -19,7 +19,8 @@ pub use account::AccountHttp;
 pub use alias::AliasHttp;
 
 pub use asset::{
-    Asset, AssetError, AssetHttp, AssetOptions, AssetStore, DeleteMode, content_type, decode_asset,
-    decode_metadata_type, decode_strings, encode_asset, encode_bool, encode_bools, encode_metadata,
-    encode_string, encode_strings, listen_address, network_port,
+    Asset, AssetClock, AssetError, AssetHttp, AssetMetadata, AssetOptions, AssetStore, DeleteMode,
+    StoreError, content_type, decode_asset, decode_metadata_type, decode_strings, encode_asset,
+    encode_bool, encode_bools, encode_metadata, encode_string, encode_strings, listen_address,
+    network_port,
 };

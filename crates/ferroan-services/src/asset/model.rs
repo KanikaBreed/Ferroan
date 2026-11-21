@@ -12,6 +12,22 @@ pub const MAX_ASSET_NAME: usize = 64;
 pub const MAX_ASSET_DESC: usize = 64;
 pub const MAPTILE: i32 = 1;
 
+/// `StoredAssetFlags.Known`: Maptile, Rewritable and Collectable.
+/// `FromStored` drops every other bit on read.
+pub const KNOWN_FLAGS: i32 = 1 | 2 | 4;
+
+/// One row from `FetchAssetMetadataSet`. SHA1 is not stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetMetadata {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub type_code: i8,
+    pub temporary: bool,
+    pub creator_id: String,
+    pub flags: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
     pub id: Uuid,
