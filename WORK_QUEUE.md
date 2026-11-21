@@ -366,6 +366,8 @@ Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-p
 
 ## Found while working
 
+- 2026-11-21, Q16c: `live images` on `b6248cf` was cancelled while queued ([run 44961412547](https://github.com/KanikaBreed/Ferroan/actions/runs/44961412547), job `137021062636`). The annotation was `Canceling since a higher priority waiting request for ferroan-live-images exists`. The job had no runner. `cancel-in-progress` is false; a newer waiter in that group replaced this pending one. Recorded before the retry. Not a product change.
+
 - 2026-11-21, Q23c: `live images` on `216d07d` failed in the example-grid smoke ([run 44958093654](https://github.com/KanikaBreed/Ferroan/actions/runs/44958093654), job `live images` `137010854797`, 22:44:53Z–22:49:28Z). The line was `docker: capture check failed: record 162 (udp in) does not re-encode: the encoded bytes differ`. The same smoke passed on `9553c6f` ([run 44955947512](https://github.com/KanikaBreed/Ferroan/actions/runs/44955947512), job `137004715676`, 5m38s). The commits after that SHA are queue docs. Recorded before the retry. Not a product change.
 
 - 2026-11-21, Q23c: `checks (ubuntu-latest)` on `eb012d6` failed in `fsasset_service_serves_the_asset_routes_when_a_database_is_configured` ([run 44954756469](https://github.com/KanikaBreed/Ferroan/actions/runs/44954756469), job `137000277675`). After a fallback GET that had already returned the asset, `stock.get` was empty. `store_tests` runs `DELETE FROM assets` on the shared database under a private mutex, and this test held only `FSASSET_*`. The service does not delete the fallback row. The assets-table mutex now lives on `AssetStore`. This test and `xasset_service_matches_the_pin` take it. Not a product change.
