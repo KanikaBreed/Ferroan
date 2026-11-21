@@ -405,9 +405,17 @@ async fn dispatch_circuits(
             terrain_login(terrain.as_deref(), agent.start_pos)
         };
         if !stopping {
+            let avatar = ferroan_region::avatar::load(
+                &config.avatar_server_uri,
+                agent.expect.agent_id,
+                &agent.first_name,
+                &agent.last_name,
+            )
+            .await;
             let expect = agent.expect;
             let mut arrival = config.arrival(position);
             arrival.land = land;
+            arrival.avatar = Some(avatar);
             let (report, mut report_ready) = oneshot::channel();
             let (opened, mut opening) = oneshot::channel();
             let (close_tx, close_rx) = oneshot::channel();

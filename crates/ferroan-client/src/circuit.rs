@@ -721,7 +721,20 @@ impl State {
             .unwrap_or_default()
             .as_secs() as u32;
         let reply = self.arrival.build(expect, timestamp);
-        self.send_message(sock, to, &reply, true).await
+        let avatar = self.arrival.avatar.clone();
+        let region_handle = self.arrival.region_handle;
+        let position = self.arrival.position;
+        let look_at = self.arrival.look_at;
+        self.send_message(sock, to, &reply, true).await?;
+        // CompleteMovement sends the avatar full update, then appearance.
+        // Land stays queued until the reliable window has room.
+        if let Some(avatar) = avatar {
+            let update = avatar.object_update(region_handle, position, look_at);
+            self.send_message(sock, to, &update, true).await?;
+            let appearance = avatar.appearance();
+            self.send_message(sock, to, &appearance, true).await?;
+        }
+        Ok(())
     }
 }
 fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool {

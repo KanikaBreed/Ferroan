@@ -65,7 +65,8 @@
 //! heightmap is loaded. ScenePresence's initial camera and velocity are zero,
 //! so a fresh root login without an AgentUpdate uses its exact (not unit
 //! length) fallback look vector. Land packets follow `AgentMovementComplete`.
-//! Crossing, avatar updates, parcel and appearance messages are later work.
+//! Crossing, parcel and animation messages are later work. The avatar
+//! `ObjectUpdate` and `AvatarAppearance` ride on `avatar` when the region has one.
 
 use ferroan_protocol::msgs::AgentMovementComplete;
 
@@ -82,6 +83,8 @@ pub struct ArrivalConfig {
     pub channel_version: String,
     /// Land `LayerData` bodies, one patch per packet, sent after arrival.
     pub land: Vec<LandLayer>,
+    /// Avatar full update and appearance. Absent on tests that only check arrival.
+    pub avatar: Option<crate::AvatarWire>,
 }
 
 /// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
@@ -103,6 +106,7 @@ impl Default for ArrivalConfig {
             region_handle: 0,
             channel_version: "Ferroan Server".into(),
             land: Vec::new(),
+            avatar: None,
         }
     }
 }

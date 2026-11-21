@@ -71,6 +71,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         channel_version:
             "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)".into(),
         land: Vec::new(),
+        avatar: None,
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);
@@ -116,6 +117,58 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
     // run's Unix timestamp changes here; preserve every other wire byte.
     arrival[74..78].fill(0);
     assert_eq!(arrival, ARRIVAL);
+}
+
+#[tokio::test]
+async fn arrival_sends_the_avatar_update_and_unbaked_appearance() {
+    let expect = identity(Uuid::from_u128(7));
+    let config = ArrivalConfig {
+        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let request = movement(expect, 1, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
+    let sent = io.sent.lock().unwrap();
+    let mut saw_object = false;
+    let mut saw_appearance = false;
+    for bytes in sent.iter() {
+        let packet = parse_packet(bytes).unwrap();
+        if packet.id == ferroan_protocol::msgs::ObjectUpdate::ID {
+            let message = packet
+                .decode::<ferroan_protocol::msgs::ObjectUpdate>()
+                .unwrap();
+            saw_object = message.object_data.iter().any(|object| {
+                object.p_code == 47
+                    && object.full_id == expect.agent_id
+                    && object.object_data.len() == 76
+            });
+        }
+        if packet.id == ferroan_protocol::msgs::AvatarAppearance::ID {
+            let message = packet
+                .decode::<ferroan_protocol::msgs::AvatarAppearance>()
+                .unwrap();
+            saw_appearance = message.appearance_data.is_empty()
+                && message.appearance_hover.len() == 1
+                && message.sender.id == expect.agent_id
+                && !message.visual_param.is_empty();
+        }
+    }
+    assert!(
+        saw_object && saw_appearance,
+        "object {saw_object} appearance {saw_appearance}"
+    );
 }
 
 #[tokio::test]

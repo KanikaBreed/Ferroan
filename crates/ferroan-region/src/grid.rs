@@ -221,7 +221,7 @@ fn parse_vector(text: &str) -> Option<[f32; 3]> {
 /// `SynchronousRestFormsRequester.MakeRequest`, which calls
 /// `EnsureSuccessStatusCode`. A non-2xx body must not admit an agent or
 /// confirm a logout. Grid register and deregister do not use this function.
-async fn service_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, GridError> {
+pub(crate) async fn service_form(endpoint: &str, fields: &FieldMap) -> Result<FieldMap, GridError> {
     service_form_within(endpoint, fields, std::time::Duration::from_secs(30)).await
 }
 
@@ -238,7 +238,7 @@ async fn service_form_within(
     .await?)
 }
 
-fn service_fields(method: &str) -> FieldMap {
+pub(crate) fn service_fields(method: &str) -> FieldMap {
     FieldMap::from_iter([
         ("VERSIONMIN".into(), Field::Str("1".into())),
         ("VERSIONMAX".into(), Field::Str("1".into())),
