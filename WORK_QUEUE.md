@@ -66,7 +66,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
-| Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | IN PROGRESS (feat/github-env) |
+| Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | DONE (#152) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -335,7 +335,7 @@ Q23p (21 November 2026, `feat/pin6`): [PR #150](https://github.com/KanikaBreed/F
 
 - 2026-11-21, Q10z: on that same images log the pin image `dotnet publish` steps were cache hits. `live: building Tranquillity` (the host publish) ran, then the step failed on the torn file. This item removes `GITHUB_ENV` from that command and passes `-p:NBGV_SetCloudBuildVersionVars=false`. Nerdbank.GitVersioning 3.10.94 throws `MSB4018` if the variable is missing while `GITHUB_ACTIONS` is true, so the target has to be off as well. The oracle, schema and console-client `dotnet` commands still inherit `GITHUB_ENV`. They are not this images build.
 
-- 2026-11-21, Q10z: `~/Git/reference/OpenSim-Tranquillity` is at `1d7abb8` for Pin6, while this branch's pin is still `c70fee205f`. `resolved_sets_match_the_nini_oracle` reads that tree for `region-ref` cases and does not check the revision, so `cargo xtask check` fails until `FERROAN_REF` points at `c70fee205f`. The library test skips a mismatched checkout. Not changed here.
+- 2026-11-21, Q10z: until #150, `~/Git/reference/OpenSim-Tranquillity` was at `1d7abb8` while this branch's pin was still `c70fee205f`. `resolved_sets_match_the_nini_oracle` reads that tree for `region-ref` cases and does not check the revision, so `cargo xtask check` failed until `FERROAN_REF` pointed at `c70fee205f`. The library test skips a mismatched checkout. #150 moved the pin to `1d7abb8`. The oracle was not changed.
 
 - 2026-11-21, Q23b: `PGSQLFSAssetData.Import` at `c70fee205f` lines 256–259 formats `limit {start} offset {count}` when `count` is not -1, so the page arguments are swapped (TB40). MySQL uses `LIMIT start, count` and is not this bug. Nobody can depend on an import that reads the wrong page. Ferroan records it now. Q23d uses `LIMIT count OFFSET start` (D32). The plugin SQL from Q23a still matches the pin. The maintainer is adding the C# fix to the upstream batch. This is not TB19.
 
