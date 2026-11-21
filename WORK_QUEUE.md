@@ -74,7 +74,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q14 | P2.0e: terrain from the C# region store | DONE (#126) |
 | Q15 | P2.0f: appearance from the C# avatar service | DONE (#138) |
 | Q16 | P2.0g: local chat | SPLIT into Q16a and Q16b (#140) |
-| Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | READY after Q15 |
+| Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | IN PROGRESS (`feat/two-roots`) |
 | Q16b | P2.0g2: local chat on channel 0 as `ChatModule` does, and `cargo xtask live run chat grid --region ferroan` prints `chat: pass` | READY after Q16a |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16b |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |

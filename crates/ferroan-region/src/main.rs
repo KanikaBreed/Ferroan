@@ -39,10 +39,15 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+use std::collections::HashMap;
 use std::env;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ferroan_client::{CapsRegistry, CircuitServer, CircuitStop, LandLayer};
@@ -50,13 +55,15 @@ use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
-use ferroan_region::simulation::{AcceptedAgent, SimulationState};
+use ferroan_region::simulation::{AcceptedAgent, ROOT_AGENT_LIMIT, SimulationState};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
 };
 use ferroan_scene::TerrainFrame;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 enum RunError {
@@ -183,7 +190,9 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         config.cap_grants.clone(),
         Some(fetch.service()),
     )?;
-    let (accepted, agents) = mpsc::channel(1);
+    // One queued accept per admitted root. The dispatcher spawns the circuit,
+    // so a same-agent replacement still fits while the old task is running.
+    let (accepted, agents) = mpsc::channel(ROOT_AGENT_LIMIT);
     let simulation = SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     let status = StatusState::new(
         config.id,
@@ -242,13 +251,14 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     meters.set_registered(true);
     let region_name = &config.name;
     tracing::info!("INITIALIZATION COMPLETE FOR {region_name} - LOGINS ENABLED");
-    let (stop_circuits, stopped_circuits) = oneshot::channel();
+    let (stop_circuits, stopped_circuits) = watch::channel(false);
     let mut circuits = tokio::spawn(dispatch_circuits(
         circuit,
         config.clone(),
         terrain,
         agents,
         stopped_circuits,
+        Arc::new(AtomicUsize::new(0)),
     ));
     let mut circuits_consumed = false;
     let mut outcome: Result<(), RunError> = tokio::select! {
@@ -268,11 +278,13 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     };
     shutdown.abort();
     simulation.stop_accepting();
-    let _ = stop_circuits.send(());
+    let _ = stop_circuits.send(true);
     if !circuits_consumed {
-        // One active + one queued generation; two arrival writes, up to six
-        // failed-login cleanup requests and one admission, each bounded at30s.
-        // Shutdown never cancels a write ahead of its cleanup.
+        // One active generation and one queued replacement: two arrival writes,
+        // up to six failed-login cleanup requests and one admission, each
+        // bounded at 30s. Concurrent roots take the same budget. HTTP cleanup
+        // holds one lifecycle lock, so a region at ROOT_AGENT_LIMIT can still
+        // outrun it. Shutdown never cancels a write ahead of its cleanup.
         let drained = tokio::time::timeout(Duration::from_secs(275), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
@@ -373,64 +385,191 @@ async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     }
 }
 
+/// Aborts the circuit task when the dispatcher future is dropped. `JoinHandle`
+/// on drop detaches, and the region tests abort the dispatcher.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl AbortOnDrop {
+    fn join(mut self) -> impl Future<Output = ()> + Send {
+        std::future::poll_fn(
+            move |cx: &mut Context<'_>| match Pin::new(&mut self.0).poll(cx) {
+                Poll::Ready(_) => Poll::Ready(()),
+                Poll::Pending => Poll::Pending,
+            },
+        )
+    }
+}
+
+#[derive(Clone)]
+struct LifecycleClients {
+    grid_user: GridUserClient,
+    presence: PresenceClient,
+}
+
+struct DispatchCtx {
+    circuit: CircuitServer,
+    config: RegionConfig,
+    terrain: Option<Arc<TerrainFrame>>,
+    clients: LifecycleClients,
+    stop: watch::Receiver<bool>,
+    /// Tests wait until a dequeued agent has passed same-agent cleanup.
+    started: Arc<AtomicUsize>,
+    running: HashMap<Uuid, AbortOnDrop>,
+}
+
+impl DispatchCtx {
+    /// Join a same-agent predecessor before its replacement circuit starts.
+    async fn launch(&mut self, agent: AcceptedAgent) {
+        let agent_id = agent.expect.agent_id;
+        if let Some(previous) = self.running.remove(&agent_id) {
+            previous.join().await;
+        }
+        if *self.stop.borrow() {
+            self.note_started();
+            let position = agent.start_pos;
+            settle(
+                &self.clients.grid_user,
+                &self.clients.presence,
+                &self.config,
+                agent,
+                false,
+                position,
+            )
+            .await;
+            return;
+        }
+        let started = Arc::clone(&self.started);
+        let circuit = self.circuit.clone();
+        let config = self.config.clone();
+        let terrain = self.terrain.clone();
+        let clients = self.clients.clone();
+        let stop = self.stop.clone();
+        let handle = tokio::spawn(async move {
+            started.fetch_add(1, Ordering::Release);
+            serve_agent(circuit, config, terrain, agent, stop, clients).await;
+        });
+        self.running.insert(agent_id, AbortOnDrop(handle));
+    }
+
+    fn note_started(&self) {
+        self.started.fetch_add(1, Ordering::Release);
+    }
+
+    async fn join_running(&mut self) {
+        let pending: Vec<AbortOnDrop> = self.running.drain().map(|(_, task)| task).collect();
+        for task in pending {
+            task.join().await;
+        }
+    }
+}
+
 async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
     terrain: Option<Arc<TerrainFrame>>,
     mut agents: mpsc::Receiver<AcceptedAgent>,
-    mut stop: oneshot::Receiver<()>,
+    stop: watch::Receiver<bool>,
+    started: Arc<AtomicUsize>,
 ) -> Result<(), GridError> {
-    let grid_user = GridUserClient::new(&config.grid_user_server_uri);
-    let presence = PresenceClient::new(&config.presence_server_uri);
-    let mut stopping = false;
+    let mut ctx = DispatchCtx {
+        circuit,
+        clients: LifecycleClients {
+            grid_user: GridUserClient::new(&config.grid_user_server_uri),
+            presence: PresenceClient::new(&config.presence_server_uri),
+        },
+        config,
+        terrain,
+        stop,
+        started,
+        running: HashMap::new(),
+    };
     loop {
-        let next = if stopping {
-            agents.recv().await
-        } else {
+        let next = tokio::select! {
+            biased;
+            result = ctx.stop.changed() => {
+                if result.is_err() || *ctx.stop.borrow() {
+                    agents.close();
+                    break;
+                }
+                continue;
+            }
+            next = agents.recv() => next,
+        };
+        let Some(agent) = next else { break };
+        ctx.launch(agent).await;
+    }
+    while let Some(agent) = agents.recv().await {
+        let agent_id = agent.expect.agent_id;
+        if let Some(previous) = ctx.running.remove(&agent_id) {
+            previous.join().await;
+        }
+        ctx.note_started();
+        let position = agent.start_pos;
+        settle(
+            &ctx.clients.grid_user,
+            &ctx.clients.presence,
+            &ctx.config,
+            agent,
+            false,
+            position,
+        )
+        .await;
+    }
+    ctx.join_running().await;
+    Ok(())
+}
+
+async fn serve_agent(
+    circuit: CircuitServer,
+    config: RegionConfig,
+    terrain: Option<Arc<TerrainFrame>>,
+    mut agent: AcceptedAgent,
+    mut stop: watch::Receiver<bool>,
+    clients: LifecycleClients,
+) {
+    let LifecycleClients {
+        grid_user,
+        presence,
+    } = clients;
+    let mut root_arrived = false;
+    let already_stopped = *stop.borrow_and_update();
+    let (position, land) = if already_stopped {
+        (agent.start_pos, Vec::new())
+    } else {
+        terrain_login(terrain.as_deref(), agent.start_pos)
+    };
+    if !already_stopped {
+        let avatar = ferroan_region::avatar::load(
+            &config.avatar_server_uri,
+            agent.expect.agent_id,
+            &agent.first_name,
+            &agent.last_name,
+        )
+        .await;
+        let expect = agent.expect;
+        let mut arrival = config.arrival(position);
+        arrival.land = land;
+        arrival.avatar = Some(avatar);
+        let (report, mut report_ready) = oneshot::channel();
+        let (opened, mut opening) = oneshot::channel();
+        let (close_tx, close_rx) = oneshot::channel();
+        let serving = circuit.serve_login(expect, arrival, report, opened, close_rx);
+        tokio::pin!(serving);
+        let mut close_tx = Some(close_tx);
+        let mut reported = false;
+        let mut connected = false;
+        let deadline = agent.accepted_at + config.login_connect_wait;
+        loop {
             tokio::select! {
                 biased;
-                _ = &mut stop => {
-                    stopping = true;
-                    agents.close();
-                    agents.recv().await
-                }
-                next = agents.recv() => next,
-            }
-        };
-        let Some(mut agent) = next else { break };
-        let mut root_arrived = false;
-        let (position, land) = if stopping {
-            (agent.start_pos, Vec::new())
-        } else {
-            terrain_login(terrain.as_deref(), agent.start_pos)
-        };
-        if !stopping {
-            let avatar = ferroan_region::avatar::load(
-                &config.avatar_server_uri,
-                agent.expect.agent_id,
-                &agent.first_name,
-                &agent.last_name,
-            )
-            .await;
-            let expect = agent.expect;
-            let mut arrival = config.arrival(position);
-            arrival.land = land;
-            arrival.avatar = Some(avatar);
-            let (report, mut report_ready) = oneshot::channel();
-            let (opened, mut opening) = oneshot::channel();
-            let (close_tx, close_rx) = oneshot::channel();
-            let serving = circuit.serve_login(expect, arrival, report, opened, close_rx);
-            tokio::pin!(serving);
-            let mut close_tx = Some(close_tx);
-            let mut reported = false;
-            let mut connected = false;
-            let deadline = agent.accepted_at + config.login_connect_wait;
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut stop => {
-                        stopping = true;
-                        agents.close();
+                result = stop.changed() => {
+                    if result.is_err() || *stop.borrow() {
                         // Scene.Close kicks a connected viewer. An unopened
                         // login is dropped with no DisableSimulator.
                         if connected && let Some(tx) = close_tx.take() {
@@ -444,83 +583,101 @@ async fn dispatch_circuits(
                         }
                         break;
                     }
-                    _ = agent.replaced() => {
-                        tracing::info!("ferroan-region: circuit replaced by a new login");
-                        if let Some(tx) = close_tx.take() {
-                            let _ = tx.send(CircuitStop::Disable);
-                        }
-                        match (&mut serving).await {
-                            Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
-                            Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
-                        }
-                        break;
+                }
+                _ = agent.replaced() => {
+                    tracing::info!("ferroan-region: circuit replaced by a new login");
+                    if let Some(tx) = close_tx.take() {
+                        let _ = tx.send(CircuitStop::Disable);
                     }
-                    _ = &mut opening, if !connected => { connected = true; }
-                    _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
-                        tracing::error!("ferroan-region: login viewer did not connect before its deadline");
-                        break;
+                    match (&mut serving).await {
+                        Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                        Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                     }
-                    report = &mut report_ready, if !reported => {
-                        reported = true;
-                        if let Ok(report) = report {
-                            root_arrived = true;
-                            // C# runs movement callbacks separately from ping,
-                            // ACK and resend handling. Keep polling UDP during
-                            // HTTP, but defer cancellation until writes finish.
-                            let reporting = async {
-                                let _guard = agent.lock_lifecycle().await;
-                                if agent.is_current() {
-                                    agent.mark_root();
-                                    notify_root_arrival(&grid_user, &presence, &config, &agent, position).await;
-                                }
-                            };
-                            tokio::pin!(reporting);
-                            let ended = tokio::select! {
-                                _ = &mut reporting => None,
-                                result = &mut serving => {
-                                    // A logout or timeout cannot cancel a write
-                                    // which could otherwise race its cleanup.
-                                    reporting.await;
-                                    Some(result)
-                                }
-                            };
-                            report.complete();
-                            if let Some(result) = ended {
-                                match result {
-                                    Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
-                                    Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
-                                }
-                                break;
+                    break;
+                }
+                _ = &mut opening, if !connected => { connected = true; }
+                _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
+                    tracing::error!("ferroan-region: login viewer did not connect before its deadline");
+                    break;
+                }
+                report = &mut report_ready, if !reported => {
+                    reported = true;
+                    if let Ok(report) = report {
+                        root_arrived = true;
+                        // C# runs movement callbacks separately from ping,
+                        // ACK and resend handling. Keep polling UDP during
+                        // HTTP, but defer cancellation until writes finish.
+                        let reporting = async {
+                            let _guard = agent.lock_lifecycle().await;
+                            if agent.is_current() {
+                                agent.mark_root();
+                                notify_root_arrival(&grid_user, &presence, &config, &agent, position).await;
                             }
+                        };
+                        tokio::pin!(reporting);
+                        let ended = tokio::select! {
+                            _ = &mut reporting => None,
+                            result = &mut serving => {
+                                // A logout or timeout cannot cancel a write
+                                // which could otherwise race its cleanup.
+                                reporting.await;
+                                Some(result)
+                            }
+                        };
+                        report.complete();
+                        if let Some(result) = ended {
+                            match result {
+                                Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                                Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
+                            }
+                            break;
                         }
                     }
-                    result = &mut serving => {
-                        match result {
-                            Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
-                            Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
-                        }
-                        break;
+                }
+                result = &mut serving => {
+                    match result {
+                        Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                        Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                     }
+                    break;
                 }
             }
         }
-        // Keep the generation lease and admission gate throughout both HTTP
-        // calls. A stale generation must never mark its replacement offline.
-        let guard = agent.lock_lifecycle().await;
-        let result = if root_arrived {
-            notify_logout(&grid_user, &presence, &config, &agent, position).await
-        } else if !config.login_connect_wait.is_zero() {
-            notify_failed_login(&grid_user, &presence, &agent).await
-        } else {
-            Ok(())
-        };
-        drop(agent);
-        drop(guard);
-        if let Err(error) = result {
-            tracing::error!("ferroan-region: logout notification failed: {error}");
-        }
     }
-    Ok(())
+    settle(
+        &grid_user,
+        &presence,
+        &config,
+        agent,
+        root_arrived,
+        position,
+    )
+    .await;
+}
+
+async fn settle(
+    grid_user: &GridUserClient,
+    presence: &PresenceClient,
+    config: &RegionConfig,
+    agent: AcceptedAgent,
+    root_arrived: bool,
+    position: [f32; 3],
+) {
+    // Keep the generation lease and admission gate throughout both HTTP
+    // calls. A stale generation must never mark its replacement offline.
+    let guard = agent.lock_lifecycle().await;
+    let result = if root_arrived {
+        notify_logout(grid_user, presence, config, &agent, position).await
+    } else if !config.login_connect_wait.is_zero() {
+        notify_failed_login(grid_user, presence, &agent).await
+    } else {
+        Ok(())
+    };
+    drop(agent);
+    drop(guard);
+    if let Err(error) = result {
+        tracing::error!("ferroan-region: logout notification failed: {error}");
+    }
 }
 
 async fn notify_failed_login(
@@ -638,7 +795,7 @@ mod tests {
         AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, DisableSimulator,
         KickUser, LogoutReply, LogoutRequest, RegionHandshake, StartPingCheck, UseCircuitCode,
     };
-    use ferroan_protocol::{Msg, build_packet, parse_packet};
+    use ferroan_protocol::{Msg, MsgId, build_packet, parse_packet};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -655,7 +812,6 @@ mod tests {
 
     struct Harness {
         state: SimulationState,
-        sender: mpsc::Sender<AcceptedAgent>,
         base: String,
         udp: SocketAddr,
         requests: Arc<Mutex<Vec<FieldMap>>>,
@@ -663,9 +819,11 @@ mod tests {
         fail_presence_logout: Arc<std::sync::atomic::AtomicBool>,
         sessions: Arc<Mutex<std::collections::HashSet<String>>>,
         online: Arc<std::sync::atomic::AtomicBool>,
-        stop: Option<oneshot::Sender<()>>,
+        stop: Option<watch::Sender<bool>>,
         running: Option<tokio::task::JoinHandle<Result<(), GridError>>>,
         tasks: Vec<tokio::task::AbortHandle>,
+        started: Arc<AtomicUsize>,
+        users: Arc<Mutex<std::collections::HashMap<String, String>>>,
     }
     impl Drop for Harness {
         fn drop(&mut self) {
@@ -712,6 +870,8 @@ mod tests {
             let service_online = online.clone();
             let fail_presence_logout = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let fail_logout = fail_presence_logout.clone();
+            let users = Arc::new(Mutex::new(std::collections::HashMap::new()));
+            let service_users = users.clone();
             let app = axum::Router::new().fallback(move |body: String| {
                 let fields = ferroan_http::parse_query_string(&body).unwrap();
                 let method = match &fields["METHOD"] { Field::Str(s) => s.clone(), _ => panic!() };
@@ -722,6 +882,7 @@ mod tests {
                 let sessions = service_sessions.clone();
                 let online = service_online.clone();
                 let fail_logout = fail_logout.clone();
+                let users = service_users.clone();
                 async move {
                     if method == "report" && let Some(gate) = report_gate {
                         gate.acquire_owned().await.unwrap().forget();
@@ -729,18 +890,21 @@ mod tests {
                     if method == "logout" { sessions.lock().unwrap().remove(&session); }
                     if method == "loggedout" && !fail_grid_user { online.store(false, std::sync::atomic::Ordering::Relaxed); }
                     if method == "getagent" && (missing.load(std::sync::atomic::Ordering::Relaxed) || !sessions.lock().unwrap().contains(&session)) {
-                        "<ServerResponse><result>null</result></ServerResponse>"
+                        "<ServerResponse><result>null</result></ServerResponse>".to_string()
                     } else if method == "getagent" {
-                        "<ServerResponse><result type=\"List\"><UserID>00000000-0000-4000-8000-000000000001</UserID><RegionID>00000000-0000-0000-0000-000000000000</RegionID></result></ServerResponse>"
+                        let user = users.lock().unwrap().get(&session).cloned().unwrap_or_else(|| {
+                            "00000000-0000-4000-8000-000000000001".to_string()
+                        });
+                        format!("<ServerResponse><result type=\"List\"><UserID>{user}</UserID><RegionID>00000000-0000-0000-0000-000000000000</RegionID></result></ServerResponse>")
                     } else if method == "getgriduserinfo" {
-                        "<ServerResponse><result type=\"List\"><Online>True</Online><LastRegionID>00000000-0000-4000-8000-000000000900</LastRegionID><LastPosition>&lt;1, 2, 3&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt></result></ServerResponse>"
+                        "<ServerResponse><result type=\"List\"><Online>True</Online><LastRegionID>00000000-0000-4000-8000-000000000900</LastRegionID><LastPosition>&lt;1, 2, 3&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt></result></ServerResponse>".to_string()
                     } else if (method == "logout" && fail_logout.load(std::sync::atomic::Ordering::Relaxed))
                         || (fail_grid_user && method == "loggedout")
                         || (fail_arrival && matches!(method.as_str(), "report" | "setposition"))
                     {
-                        "<ServerResponse><result>Failure</result></ServerResponse>"
+                        "<ServerResponse><result>Failure</result></ServerResponse>".to_string()
                     } else {
-                        "<ServerResponse><result>Success</result></ServerResponse>"
+                        "<ServerResponse><result>Success</result></ServerResponse>".to_string()
                     }
                 }
             });
@@ -761,6 +925,7 @@ mod tests {
             let base = format!("http://{}", listener.local_addr().unwrap());
             let caps = CapsRegistry::new(&base).unwrap();
             let (sender, agents) = mpsc::channel(1);
+            let started = Arc::new(AtomicUsize::new(0));
             let state = SimulationState::new(&config, caps.clone(), sender.clone());
             let app = state.clone().router().merge(caps.router());
             let http = tokio::spawn(async move {
@@ -776,9 +941,16 @@ mod tests {
                 .unwrap()
                 .with_timing(config.circuit_timing)
                 .unwrap();
-            let (stop, stopped) = oneshot::channel();
+            let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
-            let running = tokio::spawn(dispatch_circuits(circuit, config, None, agents, stopped));
+            let running = tokio::spawn(dispatch_circuits(
+                circuit,
+                config,
+                None,
+                agents,
+                stopped,
+                Arc::clone(&started),
+            ));
             let tasks = vec![
                 mock.abort_handle(),
                 http.abort_handle(),
@@ -786,7 +958,6 @@ mod tests {
             ];
             Self {
                 state,
-                sender,
                 base,
                 udp,
                 requests,
@@ -797,6 +968,8 @@ mod tests {
                 stop: Some(stop),
                 running: Some(running),
                 tasks,
+                started,
+                users,
             }
         }
 
@@ -812,12 +985,13 @@ mod tests {
                     body["session_id"] = json!(Uuid::from_u128(11).to_string());
                 }
             }
-            self.sessions
-                .lock()
-                .unwrap()
-                .insert(body["session_id"].as_str().unwrap().to_owned());
+            let session_id = body["session_id"].as_str().unwrap().to_owned();
+            let agent_id = body["agent_id"].as_str().unwrap().to_owned();
+            self.sessions.lock().unwrap().insert(session_id.clone());
+            self.users.lock().unwrap().insert(session_id, agent_id);
             self.online
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            let started = self.started.load(Ordering::Acquire);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -836,7 +1010,58 @@ mod tests {
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true);
             tokio::time::timeout(Duration::from_secs(2), async {
-                while self.sender.capacity() == 0 {
+                while self.started.load(Ordering::Acquire) == started {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            CircuitExpect {
+                agent_id: body["agent_id"].as_str().unwrap().parse().unwrap(),
+                session_id: body["session_id"].as_str().unwrap().parse().unwrap(),
+                circuit_code: body["circuit_code"].as_str().unwrap().parse().unwrap(),
+                region_id: "00000000-0000-4000-8000-000000000002".parse().unwrap(),
+            }
+        }
+
+        async fn admit_other(&self) -> CircuitExpect {
+            let mut body: Value = serde_json::from_str(include_str!(
+                "../../../fixtures/region-login/create-agent.request.json"
+            ))
+            .unwrap();
+            body["agent_id"] = json!(Uuid::from_u128(20).to_string());
+            body["session_id"] = json!(Uuid::from_u128(21).to_string());
+            body["secure_session_id"] = json!(Uuid::from_u128(22).to_string());
+            body["circuit_code"] = json!("7");
+            body["caps_path"] = json!(Uuid::from_u128(23).to_string());
+            body["first_name"] = json!("Other");
+            body["last_name"] = json!("Resident");
+            let session_id = body["session_id"].as_str().unwrap().to_owned();
+            let agent_id = body["agent_id"].as_str().unwrap().to_owned();
+            self.sessions.lock().unwrap().insert(session_id.clone());
+            self.users.lock().unwrap().insert(session_id, agent_id);
+            self.online
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let started = self.started.load(Ordering::Acquire);
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap()
+                .post(format!(
+                    "{}/agent/{}/",
+                    self.base,
+                    body["agent_id"].as_str().unwrap()
+                ))
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            assert_eq!(value["success"], true, "{value}");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.started.load(Ordering::Acquire) == started {
                     tokio::task::yield_now().await;
                 }
             })
@@ -909,7 +1134,7 @@ mod tests {
         async fn finish(&mut self) -> Result<(), GridError> {
             self.state.stop_accepting();
             if let Some(stop) = self.stop.take() {
-                let _ = stop.send(());
+                let _ = stop.send(true);
             }
             tokio::time::timeout(Duration::from_secs(3), self.running.take().unwrap())
                 .await
@@ -944,11 +1169,15 @@ mod tests {
     }
 
     async fn wait_arrival(socket: &tokio::net::UdpSocket) {
+        wait_packet(socket, AgentMovementComplete::ID).await;
+    }
+
+    async fn wait_packet(socket: &tokio::net::UdpSocket, id: MsgId) {
         tokio::time::timeout(Duration::from_secs(3), async {
             let mut bytes = [0; 4096];
             loop {
                 let len = socket.recv(&mut bytes).await.unwrap();
-                if parse_packet(&bytes[..len]).unwrap().id == AgentMovementComplete::ID {
+                if parse_packet(&bytes[..len]).unwrap().id == id {
                     break;
                 }
             }
@@ -993,6 +1222,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_roots_keep_their_circuits_when_one_logs_out() {
+        let mut harness = Harness::new(false, false).await;
+        let first = harness.admit(false, false).await;
+        let second = harness.admit_other().await;
+        let left = open(&harness, first).await;
+        let right = open(&harness, second).await;
+        wait_packet(&left, RegionHandshake::ID).await;
+        wait_packet(&right, RegionHandshake::ID).await;
+        let mut ping = StartPingCheck::default();
+        ping.ping_id.ping_id = 11;
+        send(&left, &ping, 2).await;
+        ping.ping_id.ping_id = 12;
+        send(&right, &ping, 2).await;
+        wait_packet(&left, CompletePingCheck::ID).await;
+        wait_packet(&right, CompletePingCheck::ID).await;
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = first.agent_id;
+        logout.agent_data.session_id = first.session_id;
+        send(&left, &logout, 3).await;
+        wait_packet(&left, LogoutReply::ID).await;
+        ping.ping_id.ping_id = 13;
+        send(&right, &ping, 3).await;
+        wait_packet(&right, CompletePingCheck::ID).await;
+        logout.agent_data.agent_id = second.agent_id;
+        logout.agent_data.session_id = second.session_id;
+        send(&right, &logout, 4).await;
+        wait_packet(&right, LogoutReply::ID).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn shutdown_finishes_arrival_writes_before_logout() {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let mut harness =
@@ -1008,7 +1268,7 @@ mod tests {
         .await
         .unwrap();
         harness.state.stop_accepting();
-        harness.stop.take().unwrap().send(()).unwrap();
+        harness.stop.take().unwrap().send(true).unwrap();
         assert_eq!(harness.count("loggedout"), 0);
         gate.add_permits(1);
         harness.finish().await.unwrap();

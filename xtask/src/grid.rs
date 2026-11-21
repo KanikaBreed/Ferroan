@@ -587,19 +587,21 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if ferroan
         && !matches!(
             scenario,
-            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets" | "limits"
+            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets" | "limits" | "roots"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets and limits scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits and roots scenarios"
                 .to_string(),
         );
     }
     if scenario == "limits" && !ferroan {
         return Err("the limits scenario runs on the Ferroan region".to_string());
     }
-    if !matches!(scenario, "neighbour" | "caps" | "ferrobot" | "limits")
-        && ferroan_bot::scenario::selection(scenario).is_none()
+    if !matches!(
+        scenario,
+        "neighbour" | "caps" | "ferrobot" | "limits" | "roots"
+    ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
             "unknown scenario {scenario}; expected all, neighbour or {}",
@@ -1068,6 +1070,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
     } else if ferroan && scenario == "limits" {
         Ok(format!("{}\n{proxy_report}", report.lines))
+    } else if ferroan && scenario == "roots" {
+        let comparison = login_capture::compare_two_roots(&root)?;
+        Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
         let arrival = if scenario == "login" {
@@ -1309,6 +1314,9 @@ fn run_bot(
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
     let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
+    if scenario == "roots" {
+        harness.metrics = status.map(|(_, metrics)| metrics.to_string());
+    }
     harness.neighbour = Some(ferroan_bot::scenario::Neighbour {
         region_id: neighbour_id,
         x: NEIGHBOUR_X,

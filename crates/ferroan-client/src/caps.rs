@@ -184,7 +184,7 @@ struct RegisteredCaps {
 #[derive(Clone)]
 pub struct CapsRegistry {
     base_url: String,
-    active: Arc<Mutex<Option<RegisteredCaps>>>,
+    active: Arc<Mutex<Vec<RegisteredCaps>>>,
     grants: CapGrantSet,
     service: Option<CapService>,
 }
@@ -202,7 +202,7 @@ impl CapsRegistry {
         }
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
-            active: Arc::new(Mutex::new(None)),
+            active: Arc::new(Mutex::new(Vec::new())),
             grants: CapGrantSet::default(),
             service: None,
         })
@@ -238,7 +238,10 @@ impl CapsRegistry {
             .active
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if active.is_some() {
+        if active
+            .iter()
+            .any(|registered| registered.seed_path == seed_path)
+        {
             return Err(CapsError::Occupied);
         }
         let events_path = format!("/CE/{}", Uuid::new_v4());
@@ -268,7 +271,7 @@ impl CapsRegistry {
                 }
             }
         }
-        *active = Some(RegisteredCaps {
+        active.push(RegisteredCaps {
             seed_path: seed_path.to_owned(),
             state: CapsState {
                 event_queue_url: format!("{}{events_path}", self.base_url),
@@ -282,28 +285,44 @@ impl CapsRegistry {
     }
 
     pub fn clear(&self) {
-        if let Some(active) = self
+        let mut active = self
             .active
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .take()
-        {
-            active.state.queue.close();
+            .unwrap_or_else(|poison| poison.into_inner());
+        for registered in active.drain(..) {
+            registered.state.queue.close();
         }
     }
 
-    /// Queue an event for the active agent, subject to event and queue bounds.
+    /// Close one agent's seed, event queue and granted paths.
+    pub fn clear_agent(&self, agent_id: Uuid) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        active.retain(|registered| {
+            if registered.state.agent_id == agent_id {
+                registered.state.queue.close();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Queue an event when exactly one agent is registered.
+    ///
+    /// Zero agents, or more than one, is [`EventQueueError::Closed`]: the
+    /// caller would otherwise have to guess which queue to use.
     pub fn enqueue_event(&self, event: Llsd) -> Result<(), EventQueueError> {
         let active = self
             .active
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        active
-            .as_ref()
-            .ok_or(EventQueueError::Closed)?
-            .state
-            .queue
-            .enqueue(event)
+        if active.len() != 1 {
+            return Err(EventQueueError::Closed);
+        }
+        active[0].state.queue.enqueue(event)
     }
 
     /// Merge this fallback with the region's more specific simulation routes.
@@ -315,30 +334,45 @@ impl CapsRegistry {
 }
 
 async fn registered_caps(State(registry): State<CapsRegistry>, request: Request) -> Response {
-    let (active, service) = {
-        let active = registry
+    let path = request.uri().path().to_owned();
+    let (active, service, alone) = {
+        let registrations = registry
             .active
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone();
-        (active, registry.service.clone())
+            .unwrap_or_else(|poison| poison.into_inner());
+        let alone = registrations.len() == 1;
+        let matched = registrations.iter().find(|registered| {
+            registered.events_path == path
+                || registered.seed_path == path
+                || registered
+                    .state
+                    .granted
+                    .iter()
+                    .any(|cap| cap.path.as_deref() == Some(path.as_str()))
+        });
+        // An upload completes on a UUID path that is not in the seed grant
+        // list. With one agent that path is still theirs. With two, guessing
+        // would hand one agent's upload to the other.
+        let matched = matched
+            .cloned()
+            .or_else(|| (alone && is_uuid_path(&path)).then(|| registrations[0].clone()));
+        (matched, registry.service.clone(), alone)
     };
     // C# checks poll routes before the global OPTIONS handler.
     if let Some(active) = active {
-        if request.uri().path() == active.events_path {
+        if path == active.events_path {
             return poll(State(active.state), request).await;
         }
-        if request.uri().path() == active.seed_path {
+        if path == active.seed_path {
             return seed(State(active.state.clone()), request).await;
         }
-        let path = request.uri().path().to_owned();
         let named = active
             .state
             .granted
             .iter()
             .find(|cap| cap.path.as_deref() == Some(path.as_str()))
             .map(|cap| cap.name.clone());
-        if (named.is_some() || is_uuid_path(&path))
+        if (named.is_some() || (alone && is_uuid_path(&path)))
             && let Some(service) = service
         {
             return call_cap(
@@ -756,6 +790,96 @@ mod tests {
             .0,
             200
         );
+        serving.abort();
+    }
+
+    #[tokio::test]
+    async fn two_agents_keep_separate_seeds_and_an_unmatched_uuid_is_not_guessed() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let service: CapService = Arc::new(move |exchange| {
+            let record = Arc::clone(&record);
+            Box::pin(async move {
+                record
+                    .lock()
+                    .unwrap()
+                    .push((exchange.agent_id, exchange.name, exchange.path));
+                CapAnswer {
+                    handled: true,
+                    status: StatusCode::OK,
+                    content_type: SEED_MIME.to_owned(),
+                    body: Vec::new(),
+                    content_range: None,
+                }
+            })
+        });
+        let registry =
+            CapsRegistry::with_grants(&base, CapGrantSet::default(), Some(service)).unwrap();
+        let app = registry.router();
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let first_agent = Uuid::from_u128(1);
+        let second_agent = Uuid::from_u128(2);
+        let first = format!("/CAPS/{}0000/", Uuid::from_u128(10));
+        let second = format!("/CAPS/{}0000/", Uuid::from_u128(11));
+        registry.register_agent(&first, first_agent).unwrap();
+        registry.register_agent(&second, second_agent).unwrap();
+        assert!(matches!(
+            registry.register_agent(&first, first_agent),
+            Err(CapsError::Occupied)
+        ));
+        assert!(matches!(
+            registry.enqueue_event(Llsd::new_map()),
+            Err(EventQueueError::Closed)
+        ));
+        let upload = format!("/{}", Uuid::new_v4());
+        assert_eq!(
+            post(
+                &format!("{}{}", base.trim_end_matches('/'), upload),
+                "application/octet-stream",
+                Vec::new()
+            )
+            .await
+            .0,
+            404
+        );
+        registry.clear_agent(first_agent);
+        assert_eq!(
+            post(
+                &format!("{}{}", base.trim_end_matches('/'), first),
+                "application/llsd+xml",
+                name_list(["EventQueueGet"])
+            )
+            .await
+            .0,
+            404
+        );
+        assert_eq!(
+            post(
+                &format!("{}{}", base.trim_end_matches('/'), second),
+                "application/llsd+xml",
+                name_list(["EventQueueGet"])
+            )
+            .await
+            .0,
+            200
+        );
+        registry.enqueue_event(Llsd::new_map()).unwrap();
+        assert_eq!(
+            post(
+                &format!("{}{}", base.trim_end_matches('/'), upload),
+                "application/octet-stream",
+                Vec::new()
+            )
+            .await
+            .0,
+            200
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![(second_agent, String::new(), upload)]);
         serving.abort();
     }
 
