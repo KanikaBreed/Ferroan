@@ -416,6 +416,9 @@ mod tests {
         assert!(problems[0].contains("no-such-file.md"));
     }
 
+    // Windows CI has no WSL distribution. `bash` there is the WSL stub, while
+    // the workflow step uses Git bash. These scripts are covered on Linux.
+    #[cfg(unix)]
     fn docs_only(paths: &str) -> bool {
         let mut child = Command::new("bash")
             .arg(repo_root().join("tools/ci/docs_only.sh"))
@@ -431,6 +434,7 @@ mod tests {
         child.wait_with_output().unwrap().status.success()
     }
 
+    #[cfg(unix)]
     #[test]
     fn documentation_only_paths_skip_the_live_run() {
         assert!(docs_only("docs/TESTING.md\ndocs/LIVE.md\n"));
@@ -443,6 +447,7 @@ mod tests {
         assert!(!docs_only("docs/TESTING.md\n.github/workflows/live.yml\n"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_push_or_a_schedule_is_not_documentation_only() {
         let root = repo_root();
@@ -463,6 +468,7 @@ mod tests {
         assert_eq!(text.trim(), "docs_only=false");
     }
 
+    #[cfg(unix)]
     fn live_gate(
         scope: &str,
         docs: &str,
@@ -484,6 +490,7 @@ mod tests {
             .success()
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_live_gate_fails_when_any_parallel_job_fails() {
         assert!(live_gate(
