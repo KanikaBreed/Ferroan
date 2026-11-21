@@ -39,13 +39,20 @@ pub async fn read_terrain(
 }
 
 /// Open the region store, require `RegionStore` at the pinned migration, and
-/// read its terrain. `None` means the table has no row for this region.
+/// read its terrain. `None` means the file is absent or the table has no row
+/// for this region. `Standalone.ini` names `URI=file:OpenSim.db`, which C#
+/// creates; this row does not, so a missing file is no saved heightmap.
 pub async fn open_terrain(
     connection: &str,
     region: Uuid,
     width: i32,
     height: i32,
 ) -> Result<Option<Heightmap>, TerrainError> {
+    let path = ferroan_db::sqlite_filename(connection)
+        .map_err(|error| TerrainError::Store(error.to_string()))?;
+    if !path.exists() {
+        return Ok(None);
+    }
     let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"])
         .await
         .map_err(|error| TerrainError::Store(error.to_string()))?;
@@ -75,6 +82,23 @@ mod tests {
         enc.write_all(&plain).unwrap();
         enc.finish().unwrap();
         gzip
+    }
+
+    #[tokio::test]
+    async fn a_missing_region_file_has_no_terrain() {
+        let path = std::env::temp_dir().join(format!(
+            "ferroan-terrain-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let connection = format!("URI=file:{};UseUTF16Encoding=True", path.display());
+        let map = open_terrain(&connection, Uuid::nil(), 256, 256)
+            .await
+            .unwrap();
+        assert!(map.is_none());
     }
 
     #[tokio::test]

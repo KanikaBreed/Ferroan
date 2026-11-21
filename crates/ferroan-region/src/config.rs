@@ -111,7 +111,7 @@ pub struct RegionConfig {
     /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
     pub logs: ferroan_log::Settings,
     /// `[DatabaseService] ConnectionString` when it is present and not empty.
-    /// Absent means this region has no terrain store.
+    /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
     pub terrain_store: Option<String>,
 }
 
