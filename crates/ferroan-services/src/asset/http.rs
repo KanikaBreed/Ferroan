@@ -17,7 +17,9 @@
 //!
 //! `UpdateContent` returns false. Delete runs only for the configured type
 //! set, and a parsed id still answers true when the row was already gone,
-//! which is what `SQLiteAssetData.Delete` returns.
+//! which is what `SQLiteAssetData.Delete` returns. `XAssetService` uses the
+//! same routes. Its PostgreSQL `Delete` throws (TB30), and that response is
+//! 500 with an empty body. The stock store still answers 200 and a bool.
 //!
 //! Requests that carry `X-SecondLife-Shard` are 403 on get, post and delete.
 //! That is `DisallowLlHttpRequest`, installed unless `AllowllHTTPRequestIn`
@@ -38,6 +40,7 @@ use ferroan_http::MAX_XML_CHARS;
 use super::model::{MAPTILE, parse_id};
 use super::store::AssetStore;
 use super::xml;
+use super::xservice::XAssetService;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeleteMode {
@@ -68,8 +71,13 @@ pub struct AssetHttp {
     inner: Arc<Inner>,
 }
 
+enum AssetBackend {
+    Stock(AssetStore),
+    XAsset(XAssetService),
+}
+
 struct Inner {
-    store: AssetStore,
+    backend: AssetBackend,
     options: AssetOptions,
     /// Passed to `axum::body::to_bytes`. `DefaultBodyLimit` only applies to
     /// the `Bytes` and `String` extractors, and these handlers take `Body`.
@@ -78,9 +86,17 @@ struct Inner {
 
 impl AssetHttp {
     pub fn new(store: AssetStore, options: AssetOptions) -> Self {
+        Self::from_backend(AssetBackend::Stock(store), options)
+    }
+
+    pub(crate) fn from_xasset(service: XAssetService, options: AssetOptions) -> Self {
+        Self::from_backend(AssetBackend::XAsset(service), options)
+    }
+
+    fn from_backend(backend: AssetBackend, options: AssetOptions) -> Self {
         Self {
             inner: Arc::new(Inner {
-                store,
+                backend,
                 options,
                 body_limit: MAX_XML_CHARS,
             }),
@@ -88,7 +104,7 @@ impl AssetHttp {
     }
 
     pub fn pool_occupancy(&self) -> (u32, u32) {
-        self.inner.store.pool_occupancy()
+        self.inner.backend.pool_occupancy()
     }
 
     pub fn into_router(self) -> Router {
@@ -132,7 +148,7 @@ async fn get_asset(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.store.get_parsed(&id).await {
+    match app.inner.backend.get_parsed(&id).await {
         Some(asset) => xml_bytes(StatusCode::OK, "text/xml", xml::encode_asset(&asset)),
         None => app.missing(uri.path(), true),
     }
@@ -147,7 +163,7 @@ async fn get_data(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.store.get_parsed(&id).await {
+    match app.inner.backend.get_parsed(&id).await {
         Some(asset) => xml_bytes(StatusCode::OK, "application/octet-stream", asset.data),
         None => app.missing(uri.path(), true),
     }
@@ -162,7 +178,7 @@ async fn get_metadata(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.store.get_parsed(&id).await {
+    match app.inner.backend.get_parsed(&id).await {
         Some(asset) => {
             let content = super::content_type::content_type(asset.type_code);
             xml_bytes(StatusCode::OK, content, xml::encode_metadata(&asset))
@@ -193,12 +209,14 @@ async fn post_store(State(app): State<AssetHttp>, headers: HeaderMap, body: Body
         return bad_xml();
     }
     let id_text = decoded.id_text.clone();
-    if app.inner.store.store_new(&decoded.asset).await.is_err() {
-        return xml_bytes(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "application/xml",
-            Vec::new(),
-        );
+    if app
+        .inner
+        .backend
+        .store_posted(&decoded.asset)
+        .await
+        .is_err()
+    {
+        return failed();
     }
     xml_bytes(
         StatusCode::OK,
@@ -236,8 +254,13 @@ async fn delete_asset(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    let deleted = app.delete_one(&id).await;
-    xml_bytes(StatusCode::OK, "application/xml", xml::encode_bool(deleted))
+    match app.delete_one(&id).await {
+        Ok(deleted) => xml_bytes(StatusCode::OK, "application/xml", xml::encode_bool(deleted)),
+        // XAssetService.Delete does not catch the plugin. PostgreSQL throws
+        // and the meta row stays (TB30). The stock store maps its error to
+        // the bool above.
+        Err(()) => failed(),
+    }
 }
 
 async fn post_exists(State(app): State<AssetHttp>, body: Body) -> Response {
@@ -271,18 +294,18 @@ impl AssetHttp {
         xml_bytes(StatusCode::NOT_FOUND, "text/plain", Vec::new())
     }
 
-    async fn delete_one(&self, id: &str) -> bool {
+    async fn delete_one(&self, id: &str) -> Result<bool, ()> {
         if self.inner.options.delete == DeleteMode::None {
-            return false;
+            return Ok(false);
         }
-        let Some(asset) = self.inner.store.get_parsed(id).await else {
-            return false;
+        let Some(asset) = self.inner.backend.get_parsed(id).await else {
+            return Ok(false);
         };
         let allowed = self.inner.options.delete == DeleteMode::All || asset.flags & MAPTILE != 0;
         if !allowed {
-            return false;
+            return Ok(false);
         }
-        self.inner.store.delete(asset.id).await.is_ok()
+        self.inner.backend.delete_gated(id, asset.id).await
     }
 }
 
@@ -294,7 +317,7 @@ async fn exists_flags(app: &AssetHttp, ids: &[String]) -> Result<Vec<bool>, ()> 
         };
         parsed.push(uuid);
     }
-    app.inner.store.exists(&parsed).await.map_err(|_| ())
+    app.inner.backend.exists(&parsed).await.map_err(|_| ())
 }
 
 fn redirect(url: &str, path: &str) -> Response {
@@ -312,6 +335,56 @@ fn redirect(url: &str, path: &str) -> Response {
 
 fn bad_xml() -> Response {
     xml_bytes(StatusCode::BAD_REQUEST, "application/xml", Vec::new())
+}
+
+fn failed() -> Response {
+    xml_bytes(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "application/xml",
+        Vec::new(),
+    )
+}
+
+impl AssetBackend {
+    fn pool_occupancy(&self) -> (u32, u32) {
+        match self {
+            Self::Stock(store) => store.pool_occupancy(),
+            Self::XAsset(service) => service.pool_occupancy(),
+        }
+    }
+
+    async fn get_parsed(&self, id: &str) -> Option<super::model::Asset> {
+        match self {
+            Self::Stock(store) => store.get_parsed(id).await,
+            Self::XAsset(service) => service.get(id).await,
+        }
+    }
+
+    async fn store_posted(
+        &self,
+        asset: &super::model::Asset,
+    ) -> Result<(), super::store::StoreError> {
+        match self {
+            Self::Stock(store) => store.store_new(asset).await,
+            Self::XAsset(service) => service.store(asset).await.map(|_| ()),
+        }
+    }
+
+    async fn exists(&self, ids: &[uuid::Uuid]) -> Result<Vec<bool>, super::store::StoreError> {
+        match self {
+            Self::Stock(store) => store.exists(ids).await,
+            Self::XAsset(service) => service.exists(ids).await,
+        }
+    }
+
+    /// `Ok` is the bool body. `Err` is a plugin exception the handler does
+    /// not catch, which only the XAsset plugin raises.
+    async fn delete_gated(&self, id: &str, uuid: uuid::Uuid) -> Result<bool, ()> {
+        match self {
+            Self::Stock(store) => Ok(store.delete(uuid).await.is_ok()),
+            Self::XAsset(service) => service.delete(id).await.map_err(|_| ()),
+        }
+    }
 }
 
 fn xml_bytes(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response {

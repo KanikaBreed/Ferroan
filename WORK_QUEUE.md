@@ -81,7 +81,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
 | Q22a | P1.A2a: MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins, with fixtures | DONE (#135) |
-| Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | READY after Q22a |
+| Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | DONE (#136) |
 | Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | READY after Q22b |
 | Q23 | P1.A3: FSAssets | READY after Q22c |
 | Q24 | P1.1: user accounts | DONE (#83) |
@@ -273,8 +273,12 @@ Proposed split, in this order. Each piece is its own item. This note does not ad
 
 Q22a (21 November 2026, `feat/xasset-plugins`): [PR #135](https://github.com/KanikaBreed/Ferroan/pull/135). `XAssetStore` ports `MySQLXAssetData` and `PGSQLXAssetData` at `c70fee205f`. Two ids with the same bytes are one `XAssetsData` row. `cargo xtask asset xasset-cross` passed locally: C# reads the Rust rows on both databases, and Rust reads the PostgreSQL row C# stored. MySQL C# `StoreAsset` does not commit (TB27). TB28, TB29 and TB30 are matched. No HTTP, no chain, no live run. P1.A2 stays TODO.
 
+Q22b (21 November 2026, `feat/xasset-service`): [PR #136](https://github.com/KanikaBreed/Ferroan/pull/136). `LocalServiceModule` selects `XAssetService` on the asset routes `ferroan-robust` already serves. Store skips when `AssetsExist` is true. On MySQL that reads `assets` (TB28), so a chained migrate deletes the only copy and the `Get` still returns the asset (TB33). PostgreSQL writes the XAsset row first. `UpdateContent` stays false. Delete calls the chain first. PostgreSQL delete is HTTP 500 and the row stays (TB30). `ForEachDefaultXmlAsset` is not called. No live `--backend xasset` run. P1.A2 stays TODO until Q22c.
+
 ## Found while working
 
+- 2026-11-21, Q22b: `live services` on `7b690e0` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44907356377](https://github.com/KanikaBreed/Ferroan/actions/runs/44907356377), job `live services`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The accounts-only login step in the same job passed, with a root-arrival line. This failure has no GridUser or Presence settle state. The same deadline is already recorded under Q10x. Recorded before the retry. Not a product change.
+- 2026-11-21, Q22b: MySQL `XAssetService.MigrateFromChainedService` calls `Store`, which skips because `AssetsExist` reads `assets` (TB28), and then deletes the chain row. The only copy is gone. The `Get` that migrated still returns the asset (TB33). PostgreSQL writes the XAsset row first. Not filed upstream. Ferroan matches it. `ForEachDefaultXmlAsset` stays uncalled. TB19 and TB20 on `AssetService` are unchanged.
 - 2026-11-21, Q22a: at `c70fee205f`, MySQL `MySQLXAssetData.StoreAsset` begins a transaction and never assigns `cmd.Transaction`, so MySqlConnector rejects the command, the method logs and returns, and the row is not written (TB27). MySQL `AssetsExist` selects `assets`, not `XAssetsMeta` (TB28). PostgreSQL `FetchAssetMetadataSet` sends `LIMIT start, count`, which PostgreSQL rejects, and the method returns an empty list (TB29). PostgreSQL `Delete` binds the id as varchar against a uuid column and the row stays (TB30). Not filed upstream. Ferroan runs the MySQL store on its transaction so hash dedupe can be seen. It matches the other three. TB19 and TB20 on `AssetService` are unchanged.
 
 - 2026-11-21, Q22: `XAssetService` at `c70fee205f` never runs `ForEachDefaultXmlAsset`. `XAssetServiceBase` assigns `m_AssetLoader` only when `ChainedServiceModule` loads, and the constructor calls the loader only when that field is set and no chain is set. Not filed upstream. The block note above is the record. No product change.

@@ -44,9 +44,15 @@ The caps are `asset.loader-files` (10,000), `asset.loader-file-bytes` (2 MiB) an
 
 `show_asset`, `dump_asset` and `delete_asset` return the connector's text, including the flag line, the five hex rows and the two spaces in the dump-already-exists message. Wiring them to the remote console is still pending.
 
+## XAssetService
+
+`LocalServiceModule` containing `XAssetService` selects `XAssetStore` on MySQL or PostgreSQL and serves the routes above. SQLite has no XAsset plugin. `Store` skips `StoreAsset` when `AssetsExist` is true and still returns the id. On MySQL that check reads `assets` (TB28), so an id that is only in `XAssetsMeta` is stored again, and a chained migrate of an ordinary row skips the write and then deletes the only copy (TB33). PostgreSQL reads `xassetsmeta`, so the migrate writes the XAsset row and then deletes the chain row. `ChainedServiceModule` names `AssetService` on the same connection string. Any other designator refuses to start. `Delete` calls the chain first. PostgreSQL's plugin `Delete` fails and the meta row stays (TB30); that HTTP response is 500 with an empty body. The stock asset service still answers 200 and a bool.
+
+`DefaultAssetLoader` is consulted only when a chain is set. `ForEachDefaultXmlAsset` runs only when the loader is set and no chain is set, so this service does not seed the library and does not read `AssetLoaderArgs`. An unknown loader name fails only when a chain is set. `cargo xtask live assets --backend xasset` is later work.
+
 ## Not in this pilot
 
-`XAssetService`, its chained fallback and `Migration.Update`. The MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins are `XAssetStore`; they do not serve these routes. HTTP `POST /assets/{id}` still returns false and does not write. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
+`Migration.Update` is not run. HTTP `POST /assets/{id}` still returns false and does not write. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
 
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 
