@@ -587,11 +587,19 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if ferroan
         && !matches!(
             scenario,
-            "login" | "caps" | "ferrobot" | "texture" | "inventory" | "assets" | "limits" | "roots"
+            "login"
+                | "caps"
+                | "ferrobot"
+                | "texture"
+                | "inventory"
+                | "assets"
+                | "limits"
+                | "roots"
+                | "chat"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits and roots scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots and chat scenarios"
                 .to_string(),
         );
     }
@@ -1073,6 +1081,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else if ferroan && scenario == "roots" {
         let comparison = login_capture::compare_two_roots(&root)?;
         Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
+    } else if ferroan && scenario == "chat" {
+        let comparison = login_capture::compare_local_chat(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{comparison}\n{capture}\n{proxy_report}",
+            report.lines
+        ))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
         let arrival = if scenario == "login" {

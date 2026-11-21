@@ -33,7 +33,8 @@
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (SendLogoutPacket, Close, CloseWithoutChecks, Kick,
 //      SendShutdownConnectionNotice, HandleCompleteAgentMovement,
-//      HandleAgentPause, HandleAgentResume)
+//      HandleAgentPause, HandleAgentResume, SendChatMessage,
+//      SendAgentAlertMessage)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/UnackedPacketCollection.cs
 //     (Oldest, GetExpiredPackets)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs
@@ -54,12 +55,14 @@
 //! Established ACKs are queued. Reliable packets remain until acknowledgment or
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
+use crate::chat::{ChatSeat, RegionChat, ViewerBound};
+use crate::datagram_log::DatagramLog;
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser,
-    LayerData, LogoutReply, LogoutRequest, PacketAck, StartPingCheck, UseCircuitCode, logout_reply,
-    packet_ack, start_ping_check,
+    AgentPause, AgentResume, ChatFromViewer, CompleteAgentMovement, CompletePingCheck,
+    DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest, PacketAck, StartPingCheck,
+    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -187,6 +190,7 @@ pub struct UdpCounters {
 struct CountingSocket {
     inner: UdpSocket,
     udp: Mutex<Option<Arc<UdpCounters>>>,
+    log: Mutex<Option<Arc<DatagramLog>>>,
 }
 
 impl CountingSocket {
@@ -194,6 +198,7 @@ impl CountingSocket {
         Ok(Self {
             inner: UdpSocket::bind(address).await?,
             udp: Mutex::new(None),
+            log: Mutex::new(None),
         })
     }
 
@@ -207,6 +212,17 @@ impl CountingSocket {
 
     fn counters(&self) -> Option<Arc<UdpCounters>> {
         self.udp
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    fn set_log(&self, log: Arc<DatagramLog>) {
+        *self.log.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(log);
+    }
+
+    fn capture(&self) -> Option<Arc<DatagramLog>> {
+        self.log
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
@@ -234,21 +250,33 @@ impl DatagramIo for UdpSocket {
 impl DatagramIo for CountingSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let counters = self.counters();
+        let log = self.capture();
         let result = self.inner.recv_from(buf).await;
-        if let (Ok((size, _)), Some(udp)) = (&result, &counters) {
-            udp.packets_in.fetch_add(1, Ordering::Relaxed);
-            udp.bytes_in
-                .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+        if let Ok((size, _)) = &result {
+            if let Some(udp) = &counters {
+                udp.packets_in.fetch_add(1, Ordering::Relaxed);
+                udp.bytes_in
+                    .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+            }
+            if let Some(log) = &log {
+                log.write(1, &buf[..*size]);
+            }
         }
         result
     }
     async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
         let counters = self.counters();
+        let log = self.capture();
         let result = self.inner.send_to(buf, to).await;
-        if let (Ok(size), Some(udp)) = (&result, &counters) {
-            udp.packets_out.fetch_add(1, Ordering::Relaxed);
-            udp.bytes_out
-                .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+        if let Ok(size) = &result {
+            if let Some(udp) = &counters {
+                udp.packets_out.fetch_add(1, Ordering::Relaxed);
+                udp.bytes_out
+                    .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
+            }
+            if let Some(log) = &log {
+                log.write(2, &buf[..*size]);
+            }
         }
         result
     }
@@ -291,6 +319,8 @@ struct State {
     /// packets, and `AgentMovementComplete` already occupies one, so the burst
     /// does not fit in `udp.unacked`.
     pending_land: VecDeque<LandLayer>,
+    /// Channel 0 chat for this region. Absent when the serve was not seated.
+    chat: Option<RegionChat>,
 }
 impl State {
     #[cfg(test)]
@@ -331,6 +361,7 @@ impl State {
             udp: None,
             published_unacked: 0,
             pending_land,
+            chat: None,
         }
     }
 
@@ -701,6 +732,18 @@ impl State {
                 reply.ping_id.ping_id = ping.ping_id.ping_id;
                 self.send_message(sock, from, &reply, false).await?;
             }
+        } else if packet.id == ChatFromViewer::ID {
+            if let Some(chat) = &self.chat
+                && let Ok(incoming) = packet.decode::<ChatFromViewer>()
+            {
+                let text = ferroan_protocol::field_str(&incoming.chat_data.message);
+                chat.publish(
+                    expect.agent_id,
+                    incoming.chat_data.type_,
+                    incoming.chat_data.channel,
+                    &text,
+                );
+            }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
@@ -833,6 +876,10 @@ struct CircuitInner {
     timing: Mutex<CircuitTiming>,
     reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
     next_id: AtomicU64,
+    /// Shared by every serve on this socket. Empty until [`CircuitServer::enable_chat`].
+    chat: Mutex<Option<RegionChat>>,
+    /// Seats waiting for the serve that owns that agent.
+    waiting_seats: Mutex<HashMap<Uuid, ChatSeat>>,
 }
 
 impl Drop for CircuitInner {
@@ -1006,8 +1053,56 @@ impl CircuitServer {
                 timing: Mutex::new(CircuitTiming::default()),
                 reader: Mutex::new(None),
                 next_id: AtomicU64::new(1),
+                chat: Mutex::new(None),
+                waiting_seats: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// Record inbound and outbound datagrams. The region keeps running when this fails.
+    pub fn open_datagram_log(&self, path: &std::path::Path) -> io::Result<()> {
+        let log = DatagramLog::create(path)?;
+        self.inner.shared.socket.set_log(Arc::new(log));
+        Ok(())
+    }
+
+    /// Turn on channel 0 chat for every serve that later calls [`Self::attach_chat`].
+    pub fn enable_chat(&self) {
+        let mut chat = self
+            .inner
+            .chat
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if chat.is_none() {
+            *chat = Some(RegionChat::new());
+        }
+    }
+
+    /// Seat one accepted avatar. The matching serve takes the seat when it starts.
+    pub fn attach_chat(&self, agent: Uuid, name: String, position: [f32; 3]) {
+        let chat = self
+            .inner
+            .chat
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        let Some(chat) = chat else {
+            return;
+        };
+        let seat = chat.seat(agent, name, position);
+        self.inner
+            .waiting_seats
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(agent, seat);
+    }
+
+    fn take_waiting_seat(&self, agent: Uuid) -> Option<ChatSeat> {
+        self.inner
+            .waiting_seats
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
     }
     pub fn with_udp_counters(self, udp: Arc<UdpCounters>) -> Self {
         self.inner.shared.socket.set_counters(udp);
@@ -1153,6 +1248,7 @@ impl CircuitServer {
         connected: Option<oneshot::Sender<()>>,
         stop: Option<oneshot::Receiver<CircuitStop>>,
     ) -> Result<(), CircuitError> {
+        let chat = self.take_waiting_seat(expect.agent_id);
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
         }
@@ -1184,6 +1280,7 @@ impl CircuitServer {
                 // A login that arrived early is already queued on `session`.
                 pending: None,
                 stop,
+                chat,
             },
         )
         .await
@@ -1196,6 +1293,7 @@ struct ServeExtra<'a> {
     connected: Option<oneshot::Sender<()>>,
     pending: Option<&'a PendingUseCircuit>,
     stop: Option<oneshot::Receiver<CircuitStop>>,
+    chat: Option<ChatSeat>,
 }
 
 #[cfg(test)]
@@ -1218,6 +1316,7 @@ async fn serve_socket(
             connected: None,
             pending: None,
             stop: None,
+            chat: None,
         },
     )
     .await
@@ -1251,6 +1350,8 @@ async fn serve_socket_reporting(
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
+    let mut seated = extra.chat;
+    state.chat = seated.as_ref().map(|seat| seat.hub.clone());
     // One byte past the cap so Linux `recvfrom` can report an oversize datagram
     // instead of silently truncating it to `MAX_DATAGRAM`.
     let mut buf = [0u8; MAX_DATAGRAM + 1];
@@ -1294,6 +1395,26 @@ async fn serve_socket_reporting(
                 extra.stop = None;
                 if let Ok(kind) = stopped {
                     return state.finish_close(sock, &expect, kind).await;
+                }
+                continue;
+            }
+            bound = async {
+                match seated.as_mut() {
+                    Some(seat) => seat.rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if seated.is_some() && state.peer.is_some() => {
+                if let Some(bound) = bound
+                    && let Some(peer) = state.peer
+                {
+                    match bound {
+                        ViewerBound::Chat(message) => {
+                            state.send_message(sock, peer, &message, true).await?;
+                        }
+                        ViewerBound::Alert(message) => {
+                            state.send_message(sock, peer, &message, true).await?;
+                        }
+                    }
                 }
                 continue;
             }
@@ -1378,10 +1499,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use ferroan_protocol::msgs::{
-        CompletePingCheck, LogoutReply, LogoutRequest, PacketAck, RegionHandshake, StartPingCheck,
-        UseCircuitCode,
+        ChatFromSimulator, ChatFromViewer, CompletePingCheck, LogoutReply, LogoutRequest,
+        PacketAck, RegionHandshake, StartPingCheck, UseCircuitCode,
     };
-    use ferroan_protocol::{Msg, build_packet, parse_packet};
+    use ferroan_protocol::{Msg, PacketFlags, build_packet, field_str, parse_packet, str_field};
     use tokio::net::UdpSocket;
     use uuid::Uuid;
 
@@ -1590,6 +1711,105 @@ mod tests {
         assert_eq!(reply.inventory_data.len(), 1);
         assert_eq!(reply.inventory_data[0].item_id, Uuid::nil());
         running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_channel_zero_say_is_reliable_and_heard_by_both_viewers() {
+        let server = CircuitServer::bind().await.unwrap();
+        server.enable_chat();
+        let addr = server.local_addr().unwrap();
+        let speaker = expect_agent();
+        let listener = CircuitExpect {
+            agent_id: Uuid::from_u128(3),
+            session_id: Uuid::from_u128(4),
+            circuit_code: 43,
+            region_id: speaker.region_id,
+        };
+        server.attach_chat(
+            speaker.agent_id,
+            "Test User".to_string(),
+            [128.0, 128.0, 23.0],
+        );
+        server.attach_chat(
+            listener.agent_id,
+            "Chat Bot".to_string(),
+            [130.0, 128.0, 23.0],
+        );
+        let speaker_server = server.clone();
+        let listener_server = server.clone();
+        let speaker_task = tokio::spawn(async move {
+            speaker_server
+                .serve_one(speaker, Duration::from_secs(20))
+                .await
+        });
+        let listener_task = tokio::spawn(async move {
+            listener_server
+                .serve_one(listener, Duration::from_secs(20))
+                .await
+        });
+        let left = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let right = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        send(&left, addr, 1, &use_circuit(1, 2, 42), true).await;
+        send(&right, addr, 1, &use_circuit(3, 4, 43), true).await;
+        let mut buf = [0u8; 4096];
+        assert!(wait_for(&left, &mut buf, RegionHandshake::ID).await);
+        assert!(wait_for(&right, &mut buf, RegionHandshake::ID).await);
+        let mut said = ChatFromViewer::default();
+        said.agent_data.agent_id = speaker.agent_id;
+        said.agent_data.session_id = speaker.session_id;
+        said.chat_data.message = str_field("ferroan harness chat");
+        said.chat_data.type_ = 1;
+        said.chat_data.channel = 0;
+        send(&left, addr, 2, &said, true).await;
+        let heard_left = wait_for_chat(&left, &mut buf).await;
+        let heard_right = wait_for_chat(&right, &mut buf).await;
+        for packet in [&heard_left, &heard_right] {
+            assert!(packet.reliable());
+            assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+            let decoded = packet.decode::<ChatFromSimulator>().unwrap();
+            assert_eq!(field_str(&decoded.chat_data.from_name), "Test User");
+            assert_eq!(decoded.chat_data.source_id, speaker.agent_id);
+            assert_eq!(decoded.chat_data.owner_id, speaker.agent_id);
+            assert_eq!(decoded.chat_data.source_type, 1);
+            assert_eq!(decoded.chat_data.chat_type, 1);
+            assert_eq!(decoded.chat_data.audible, 1);
+            assert_eq!(decoded.chat_data.message, b"ferroan harness chat\0");
+        }
+        let mut request = LogoutRequest::default();
+        request.agent_data.agent_id = speaker.agent_id;
+        request.agent_data.session_id = speaker.session_id;
+        send(&left, addr, 3, &request, true).await;
+        request.agent_data.agent_id = listener.agent_id;
+        request.agent_data.session_id = listener.session_id;
+        send(&right, addr, 2, &request, true).await;
+        assert!(wait_for(&left, &mut buf, LogoutReply::ID).await);
+        assert!(wait_for(&right, &mut buf, LogoutReply::ID).await);
+        speaker_task.await.unwrap().unwrap();
+        listener_task.await.unwrap().unwrap();
+    }
+
+    async fn wait_for(sock: &UdpSocket, buf: &mut [u8], id: ferroan_protocol::MsgId) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(sock, buf, Duration::from_millis(200)).await
+                && packet.id == id
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn wait_for_chat(sock: &UdpSocket, buf: &mut [u8]) -> ferroan_protocol::IncomingPacket {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Some(packet) = recv(sock, buf, Duration::from_millis(200)).await
+                && packet.id == ChatFromSimulator::ID
+            {
+                return packet;
+            }
+        }
+        panic!("ChatFromSimulator did not arrive");
     }
 
     #[tokio::test]

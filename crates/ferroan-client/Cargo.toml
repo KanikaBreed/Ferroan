@@ -13,6 +13,7 @@ ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-protocol = { path = "../ferroan-protocol" }
+glam = "0.34.1"
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["net", "time", "sync"] }
 uuid = { version = "1.27.0", features = ["v4"] }
