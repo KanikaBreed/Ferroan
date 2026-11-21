@@ -27,9 +27,23 @@ static class Program
 
     static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "db")
+        {
+            try
+            {
+                return DbMode.Run(args);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(DbMode.Scrub(exception.ToString()));
+                return 1;
+            }
+        }
+
         if (args.Length != 4 || (args[0] != "generate" && args[0] != "verify") || args[2] != "--revision")
         {
             Console.Error.WriteLine("usage: AssetOracle generate|verify <directory> --revision <40 hex>");
+            Console.Error.WriteLine("       AssetOracle db put|get|exists|delete|metadata");
             return 2;
         }
 

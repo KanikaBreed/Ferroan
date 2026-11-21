@@ -18,6 +18,6 @@ The parser accepts the forms in Tranquillity's shipped INI examples.
 
 ## What is not checked here
 
-MySQL and PostgreSQL tests run only when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set to a sqlx URL for a database Tranquillity has migrated. No such server was available for the first version of this crate. A Linux CI job with service containers is still to be added.
+MySQL and PostgreSQL tests run when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set to a sqlx URL for a database Tranquillity has migrated. The committed dumps are [fixtures/db/mysql](../../fixtures/db/mysql/README.md) and [fixtures/db/postgres](../../fixtures/db/postgres/README.md). The Linux `checks (ubuntu-latest)` job loads them into throwaway MySQL 8.4 and PostgreSQL 16 service containers and sets those variables. Windows and macOS leave the variables unset, and the tests skip with a printed reason.
 
 SQLite is linked as bundled `libsqlite3-sys` ([D14](../../docs/DECISIONS.md)). Building this crate needs a C compiler.

@@ -27,5 +27,17 @@
       <Private>true</Private>
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.SQLite/OpenSim.Data.SQLite.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
   </ItemGroup>
 </Project>

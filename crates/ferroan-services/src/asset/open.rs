@@ -5,12 +5,13 @@
 //!
 //! Storage provider and connection string follow `AssetServiceBase`: the
 //! asset section wins, and an empty value falls through to
-//! `[DatabaseService]`. Only a SQLite provider is opened. The filesystem
-//! asset loader is not run. `AuthType = BasicHttpAuthentication` and
-//! `https_main = true` refuse to start, because this process would otherwise
-//! serve the assets without the protection the file asked for.
-//! `TrustedGridAuthentication` does not reject callers when no trust context
-//! is set, which is this process, so it is accepted and does not add a check.
+//! `[DatabaseService]`. SQLite, MySQL and PostgreSQL providers are opened.
+//! FSAssets and XAssets are not. The filesystem asset loader is not run.
+//! `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to
+//! start, because this process would otherwise serve the assets without the
+//! protection the file asked for. `TrustedGridAuthentication` does not reject
+//! callers when no trust context is set, which is this process, so it is
+//! accepted and does not add a check.
 
 use ferroan_config::Config;
 use ferroan_db::{Backend, Pool};
@@ -55,15 +56,11 @@ impl AssetHttp {
         let provider = nonempty(config, SECTION, "StorageProvider")
             .or_else(|| nonempty(config, "DatabaseService", "StorageProvider"))
             .ok_or(AssetError::Config("No StorageProvider configured"))?;
-        if !provider.contains("SQLite") {
-            return Err(AssetError::Config(
-                "this asset service only opens a SQLite store",
-            ));
-        }
+        let backend = asset_backend(provider)?;
         let connection = nonempty(config, SECTION, "ConnectionString")
             .or_else(|| nonempty(config, "DatabaseService", "ConnectionString"))
             .ok_or(AssetError::Config("No ConnectionString configured"))?;
-        let pool = Pool::open(Backend::Sqlite, connection, &["AssetStore"]).await?;
+        let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
         let store = AssetStore::new(pool)?;
         let delete = delete_mode(config)?;
         let redirect_url = nonempty(config, SECTION, "RedirectURL").map(str::to_string);
@@ -112,6 +109,20 @@ pub fn listen_address(config: &Config) -> Result<std::net::IpAddr, AssetError> {
     }
     text.parse()
         .map_err(|_| AssetError::Config("[Network] bind_ip_address is not an IP address"))
+}
+
+fn asset_backend(provider: &str) -> Result<Backend, AssetError> {
+    if provider.contains("SQLite") {
+        Ok(Backend::Sqlite)
+    } else if provider.contains("MySQL") {
+        Ok(Backend::Mysql)
+    } else if provider.contains("PGSQL") || provider.contains("Postgres") {
+        Ok(Backend::Postgres)
+    } else {
+        Err(AssetError::Config(
+            "this asset service opens SQLite, MySQL and PostgreSQL stores",
+        ))
+    }
 }
 
 fn is_stock_asset_service(module: &str) -> bool {

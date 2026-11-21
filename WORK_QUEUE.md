@@ -77,7 +77,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
-| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | READY after Q19 (issues #59, #60, #61) |
+| Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | IN PROGRESS (#59; #60 and #61 not started) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | READY after Q21 |
 | Q23 | P1.A3: FSAssets | READY after Q22 |
@@ -250,6 +250,7 @@ Q10t / Pin4 (manager, 19 November 2026, at the maintainer's word): all eight PRs
 
 ## Found while working
 
+- 2026-11-21, Q20 (#59): PostgreSQL `FetchAssetMetadataSet` uses `LIMIT start+count-1` (TB19). `PGSQLAssetData.StoreAsset` swallows a failed write and returns true; MySQL returns false only from the catch (TB20). Ferroan returns the error. `MuteListStore.migrations` is on disk and in the catalog, but the PGSQL project does not embed it, so a C# server never creates that row (TB21). The schema oracle applies that one file when the row is missing. `cargo xtask live assets --db mysql` and `--db pgsql` still stop and say they need P1.A1; #59 does not wire them.
 - 2026-11-21, Q10x: `live services` on `eaab94e` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44841073013](https://github.com/KanikaBreed/Ferroan/actions/runs/44841073013), job `live services`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The same step passed on the cold run [44839097988](https://github.com/KanikaBreed/Ferroan/actions/runs/44839097988). The root-arrival probe's ten-second HTTP deadline fired, and the error has no GridUser or Presence settle state, so the POST itself did not return. The same deadline showed up once in a local Pin4 recapture, and the next run passed. Recorded before the retry. Not a product change.
 - 2026-11-20, Pin5: the live job on `48bd7c9` failed in `cargo xtask live record-twice` ([run 44783444133](https://github.com/KanikaBreed/Ferroan/actions/runs/44783444133), 6m9s). Both `login` passes printed `login: pass`. The only comparator error was `count in LogoutRequest: 1 and 3`. Ubuntu, Windows and macOS `checks` on that SHA passed. `HandleLogout` is unchanged from `f67db54399` to `c70fee205f`. `LogoutRequest` is reliable: the bot resends it until `LogoutReply` or the two-second wait, and `leave` already records that the reply often loses the task-throttle race. One login was answered and the other resent. Recorded before the retry. Not a product change.
 - 2026-11-20, Pin5: re-read Q10h. #438 makes `MakePostRequest` check the HTTP status. Ferroan's grid register and deregister now use the checked client. The http-form-status worktree was not changed. Q10h stays DONE (#90); its historical block text is unchanged.
