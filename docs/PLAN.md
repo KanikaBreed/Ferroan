@@ -30,7 +30,7 @@ P0.9 followed the asset HTTP routes, the service get/store/delete/exists behavio
 | `Source/OpenSim.Services.AssetService/AssetServiceBase.cs` | 99 |
 | `Source/OpenSim.Data.SQLite/SQLiteAssetData.cs` | 399 |
 
-`FetchAssetMetadataSet` and the MySQL and PostgreSQL stores landed in #59. The filesystem loader and the `show asset`, `dump asset` and `delete asset` functions landed in #60. The loader callback calls plugin `StoreAsset` when the id is new or the SHA1 of the bytes differs; HTTP `POST /assets/{id}` still returns false. `Migration.Update` is still unimplemented. The remote console is not wired to those three functions. TB1 (`flags_text` for bits outside 1, 2 and 4) is #61.
+`FetchAssetMetadataSet` and the MySQL and PostgreSQL stores landed in #59. The filesystem loader and the `show asset`, `dump asset` and `delete asset` functions landed in #60. The loader callback calls plugin `StoreAsset` when the id is new or the SHA1 of the bytes differs; HTTP `POST /assets/{id}` still returns false. `Migration.Update` is still unimplemented. The remote console is not wired to those three functions. TB1 (#61) matches the pin: a stored 8 is `Normal` and a stored 9 (Maptile mixed with bit 8) is `Maptile`, and `GET /assets/{id}` returns the C# documents.
 
 Left out of the pilot: `MySQLAssetData.cs` (359 lines), `XAssetService.cs` (232) and `XAssetServiceBase.cs` (117). `AssetBase.cs` (380) is the type `XmlSerializer` writes. The Rust encoder matches those bytes.
 

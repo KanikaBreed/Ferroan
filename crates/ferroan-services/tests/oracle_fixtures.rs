@@ -81,8 +81,9 @@ fn content_types_match_slutil() {
     }
 }
 
-/// TB1. `StoredAssetFlags.FromStored` masks flags 8 to the known bits, and
-/// `XmlSerializer` then accepts the asset. `flags_text` emits `Normal`.
+/// TB1. `StoredAssetFlags.FromStored` masks flags 8, and flags 9 (Maptile
+/// mixed with that unnamed bit). `XmlSerializer` then accepts both.
+/// `flags_text` emits `Normal` and `Maptile`.
 #[test]
 fn csharp_unnamed_asset_flags_are_masked() {
     let root = fixture_root();
@@ -124,6 +125,61 @@ fn csharp_unnamed_asset_flags_are_masked() {
     assert!(
         text.contains("<Flags>Normal</Flags>"),
         "TB1: flags_text still emits unnamed bits. Change crates/ferroan-services/src/asset/xml.rs flags_text. {text}"
+    );
+
+    let mixed: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("mixed-flags.json")).expect("mixed-flags"),
+    )
+    .expect("mixed-flags json");
+    assert_eq!(mixed["id"], "mixed-flags");
+    assert_eq!(mixed["flags"], 9);
+    assert_eq!(mixed["known_flags"], 1);
+    assert_eq!(mixed["threw"], false);
+    assert_eq!(mixed["exception_type"], "");
+    assert_eq!(mixed["tranquillity"], manifest["tranquillity"]);
+    assert!(
+        manifest["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .all(|case| case["id"] != "mixed-flags" && case["id"] != "unnamed-flags"),
+        "flag probes are mask records, not manifest cases"
+    );
+    let mixed_text = String::from_utf8(encode_asset(&Asset {
+        id: Uuid::parse_str("33333333-4444-5555-6666-777777777778").unwrap(),
+        name: "mixed-flags".to_string(),
+        description: String::new(),
+        type_code: 0,
+        local: false,
+        temporary: false,
+        creator_id: "creator".to_string(),
+        flags: 9,
+        data: Vec::new(),
+        upload_attempts: 0,
+    }))
+    .unwrap();
+    assert!(
+        mixed_text.contains("<Flags>Maptile</Flags>"),
+        "TB1: flags_text still emits unnamed bits mixed with named ones. Change crates/ferroan-services/src/asset/xml.rs flags_text. {mixed_text}"
+    );
+    assert_eq!(
+        std::fs::read(root.join("asset/unnamed-flags.xml")).expect("unnamed xml"),
+        encode_asset(&Asset {
+            id: Uuid::parse_str("33333333-4444-5555-6666-777777777777").unwrap(),
+            name: "unnamed-flags".to_string(),
+            description: String::new(),
+            type_code: 0,
+            local: false,
+            temporary: false,
+            creator_id: "creator".to_string(),
+            flags: 8,
+            data: Vec::new(),
+            upload_attempts: 0,
+        })
+    );
+    assert_eq!(
+        std::fs::read(root.join("asset/mixed-flags.xml")).expect("mixed xml"),
+        mixed_text.into_bytes()
     );
 }
 
