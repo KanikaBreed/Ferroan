@@ -98,12 +98,16 @@ pub(crate) const MAP_ENTRY_COST: usize = 2 * (size_of::<String>() + size_of::<Ll
 /// the viewer's own files).
 pub(crate) struct Budget {
     pub(crate) left: usize,
+    allowance: usize,
 }
 
 impl Budget {
     pub(crate) fn for_input(len: usize) -> Self {
         let left = Self::for_local_input(len).left.min(MAX_PARSED_BYTES);
-        Budget { left }
+        Budget {
+            left,
+            allowance: left,
+        }
     }
 
     /// The per-byte rule alone, for files the viewer wrote itself.
@@ -111,7 +115,10 @@ impl Budget {
         let left = len
             .saturating_mul(PARSED_BYTES_PER_INPUT_BYTE)
             .saturating_add(PARSED_BYTES_FLOOR);
-        Budget { left }
+        Budget {
+            left,
+            allowance: left,
+        }
     }
 
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), LlsdError> {
@@ -121,13 +128,8 @@ impl Budget {
                 Ok(())
             }
             None => {
-                ferroan_diag::refuse(
-                    LLSD_PARSED_BYTES,
-                    Kind::Hard,
-                    MAX_PARSED_BYTES as u64,
-                    bytes as u64,
-                    "llsd",
-                );
+                let used = self.allowance.saturating_sub(self.left);
+                self.refuse_parsed(saturating_u64(used, bytes));
                 Err(LlsdError::TooLarge)
             }
         }
@@ -136,17 +138,39 @@ impl Budget {
     /// `n` values reserved at once (an array's slots).
     pub(crate) fn charge_values(&mut self, n: usize) -> Result<(), LlsdError> {
         let Some(bytes) = n.checked_mul(VALUE_COST) else {
-            ferroan_diag::refuse(
-                LLSD_PARSED_BYTES,
-                Kind::Hard,
-                MAX_PARSED_BYTES as u64,
-                u64::MAX,
-                "llsd",
-            );
+            let product = (n as u128).saturating_mul(VALUE_COST as u128);
+            let used = self.allowance.saturating_sub(self.left) as u128;
+            let observed = used.saturating_add(product).min(u128::from(u64::MAX)) as u64;
+            self.refuse_parsed(observed);
             return Err(LlsdError::TooLarge);
         };
         self.charge(bytes)
     }
+
+    fn refuse_parsed(&self, observed: u64) {
+        #[cfg(test)]
+        parsed_observed().store(observed, std::sync::atomic::Ordering::Relaxed);
+        ferroan_diag::refuse(
+            LLSD_PARSED_BYTES,
+            Kind::Hard,
+            MAX_PARSED_BYTES as u64,
+            observed,
+            "llsd",
+        );
+    }
+}
+
+fn saturating_u64(used: usize, extra: usize) -> u64 {
+    (used as u128)
+        .saturating_add(extra as u128)
+        .min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+fn parsed_observed() -> &'static std::sync::atomic::AtomicU64 {
+    use std::sync::atomic::AtomicU64;
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    &LAST
 }
 
 #[cfg(test)]
@@ -181,6 +205,7 @@ mod budget_tests {
 
     #[test]
     fn budget_grows_with_the_input_up_to_the_cap() {
+        let _lock = budget_observe_lock();
         assert_eq!(Budget::for_input(0).left, PARSED_BYTES_FLOOR);
         assert_eq!(Budget::for_input(1000).left, 16_000 + PARSED_BYTES_FLOOR);
         // a whole decompressed mesh section (32 MB) gets the cap, not 512 MB
@@ -203,6 +228,36 @@ mod budget_tests {
             Budget::for_input(0).charge_values(usize::MAX),
             Err(LlsdError::TooLarge)
         ));
+    }
+
+    #[test]
+    fn a_failed_charge_reports_the_total_that_did_not_fit() {
+        use std::sync::atomic::Ordering;
+        let _lock = budget_observe_lock();
+        let mut budget = Budget::for_input(0);
+        let allowance = budget.allowance;
+        assert!(budget.charge(1_000).is_ok());
+        assert!(matches!(budget.charge(allowance), Err(LlsdError::TooLarge)));
+        assert_eq!(
+            parsed_observed().load(Ordering::Relaxed),
+            saturating_u64(1_000, allowance)
+        );
+        assert_ne!(parsed_observed().load(Ordering::Relaxed), allowance as u64);
+
+        let mut overflow = Budget::for_input(0);
+        assert!(overflow.charge(100).is_ok());
+        assert!(matches!(
+            overflow.charge_values(usize::MAX),
+            Err(LlsdError::TooLarge)
+        ));
+        let product = (usize::MAX as u128).saturating_mul(VALUE_COST as u128);
+        let expected = (100_u128).saturating_add(product).min(u128::from(u64::MAX)) as u64;
+        assert_eq!(parsed_observed().load(Ordering::Relaxed), expected);
+    }
+
+    fn budget_observe_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 }
 

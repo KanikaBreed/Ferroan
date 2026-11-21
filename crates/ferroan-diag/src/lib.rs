@@ -177,7 +177,7 @@ pub fn hit(hit: &Hit<'_>) {
         // A shared minute slot would hide the next refuse on the same id.
         record_open(hit.id, &message);
     } else {
-        record(hit.id, hit.action.label(), &message, true);
+        record(hit.id, hit.action.label(), &message, Some(hit.id));
     }
 }
 
@@ -259,7 +259,7 @@ pub fn log_error(route: &str, error: &dyn std::error::Error) {
 
 pub fn log_boundary(route: &str, message: &str) {
     let text = format!("error route={} {}", field(route), message);
-    record(&format!("error:{route}"), "error", &text, false);
+    record(&format!("error:{route}"), "error", &text, None);
 }
 
 /// Record a malformed body.
@@ -387,17 +387,17 @@ fn action_label(action: &str) -> &'static str {
     }
 }
 
-fn record(key: &str, action: &str, message: &str, count: bool) {
+fn record(key: &str, action: &str, message: &str, count_id: Option<&'static str>) {
     let emit = {
         let mut guard = lock();
         let redacted = (guard.redactor)(message);
-        if count {
-            count_hit(&mut guard, key, action);
+        if let Some(id) = count_id {
+            count_hit(&mut guard, id, action);
         }
         take_log(&mut guard, key, &redacted)
     };
     if let Some(message) = emit {
-        if count {
+        if count_id.is_some() {
             tracing::warn!(target: "ferroan::limit", "{message}");
         } else {
             tracing::error!(target: "ferroan::error", "{message}");
@@ -405,7 +405,7 @@ fn record(key: &str, action: &str, message: &str, count: bool) {
     }
 }
 
-fn record_open(catalog_id: &str, message: &str) {
+fn record_open(catalog_id: &'static str, message: &str) {
     let emit = {
         let mut guard = lock();
         let redacted = (guard.redactor)(message);
@@ -417,63 +417,9 @@ fn record_open(catalog_id: &str, message: &str) {
     tracing::warn!(target: "ferroan::limit", "{emit}");
 }
 
-fn count_hit(guard: &mut State, key: &str, action: &str) {
+fn count_hit(guard: &mut State, key: &'static str, action: &str) {
     let action = action_label(action);
-    if let Some(limit) = static_limit(key) {
-        *guard.counters.entry((limit, action)).or_insert(0) += 1;
-    }
-}
-
-fn catalog_ids() -> &'static [&'static str] {
-    &[
-        HTTP_POST_BODY,
-        HTTP_ASSET_BODY,
-        HTTP_XML_CHARS,
-        HTTP_XML_DEPTH,
-        HTTP_QUERY_BYTES,
-        HTTP_FIELDS,
-        HTTP_LIST_ITEMS,
-        HTTP_RESPONSE_BODY,
-        INVENTORY_FETCH_FOLDERS,
-        INVENTORY_FETCH_ITEMS,
-        INVENTORY_FETCH_LLSD,
-        INVENTORY_REPLY,
-        UDP_DATAGRAM,
-        UDP_ZERO_EXPANSION,
-        UDP_UNACKED,
-        UDP_RETRIES,
-        EVENT_BYTES,
-        EVENT_QUEUE,
-        EVENT_QUEUE_BYTES,
-        CONTROL_HOSTS,
-        CONTROL_HOST_BYTES,
-        CONTROL_ADDRESSES,
-        TIMER_MILLISECONDS,
-        TIMER_SECONDS,
-        LIBRARY_FILES,
-        LIBRARY_FILE_BYTES,
-        LIBRARY_TOTAL_BYTES,
-        ASSET_REMOTE_BODY,
-        ASSET_XML_DEPTH,
-        ASSET_XML_ELEMENTS,
-        ASSET_XML_NAME,
-        OTLP_QUEUE,
-        LLSD_PARSED_BYTES,
-        LLSD_BINARY_DEPTH,
-        LLSD_XML_DEPTH,
-        LLSD_NOTATION_DEPTH,
-        DB_POOL,
-        TEXTURE_BYTES,
-        TEXTURE_FACES,
-        TEXTURE_BITFIELD,
-        EXTRA_BYTES,
-        REDACT_SECRETS,
-        CONSOLE_SESSIONS,
-    ]
-}
-
-fn static_limit(key: &str) -> Option<&'static str> {
-    catalog_ids().iter().copied().find(|id| *id == key)
+    *guard.counters.entry((key, action)).or_insert(0) += 1;
 }
 
 fn take_log(guard: &mut State, key: &str, message: &str) -> Option<String> {
@@ -990,8 +936,51 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/LIMITS.md");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        for id in catalog_ids() {
+        for id in catalog_const_ids() {
             assert!(text.contains(&format!("`{id}`")), "missing {id}");
         }
+    }
+
+    #[test]
+    fn a_hit_is_counted_from_its_id() {
+        let _hold = hold();
+        reset();
+        refuse("not-a-catalog-id", Kind::Hard, 3, 4, "test");
+        let metrics = metrics();
+        assert!(
+            metrics.contains(
+                "ferroan_limit_hits_total{limit=\"not-a-catalog-id\",action=\"refuse\"} 1"
+            )
+        );
+        assert_eq!(
+            lock()
+                .counters
+                .get(&("not-a-catalog-id", "refuse"))
+                .copied(),
+            Some(1)
+        );
+    }
+
+    fn catalog_const_ids() -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/catalog.rs");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let mut ids = Vec::new();
+        for line in text.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((_, rest)) = rest.split_once(':') else {
+                continue;
+            };
+            let Some(id) = rest.split('"').nth(1) else {
+                continue;
+            };
+            if !id.is_empty() {
+                ids.push(id.to_owned());
+            }
+        }
+        assert!(!ids.is_empty());
+        ids
     }
 }

@@ -69,7 +69,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
-| Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | READY after Q13c2 |
+| Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | IN PROGRESS (feat/route-fields) |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
