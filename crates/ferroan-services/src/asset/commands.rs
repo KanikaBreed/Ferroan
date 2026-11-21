@@ -25,7 +25,7 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Server.Handlers/Asset/AssetServerConnector.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // The remote console is not wired. Each command is the function the handler
 // calls, and the lines match that handler's output.
 

@@ -8,12 +8,10 @@
 //! table, then runs texture and inventory against C# and Ferroan on that
 //! database. Neither service calls `ForEachDefaultXmlAsset`.
 //!
-//! The success line names TB27, TB28, TB29, TB30 and TB33. Ferroan does the
-//! fixed behaviour. TB30 deletes only the meta row and leaves the data row;
-//! the pin throws and the meta row stays. The C# process is still the pin,
-//! so those differences stay visible until the pin moves. A capture that
-//! does not hit one of them still lists it. Any other HTTP difference fails
-//! the command.
+//! The success line is `assets: match`. Pin6 carries the C# fixes for TB27,
+//! TB28, TB29, TB30 and TB33, so that compare no longer names them. TB30
+//! deletes only the meta row and leaves the data row, on both sides. Any
+//! other HTTP difference fails the command.
 
 use std::process::ExitCode;
 
@@ -33,11 +31,6 @@ use std::process::{Command, Stdio};
 use crate::live;
 #[cfg(target_os = "linux")]
 use crate::repo_root;
-
-/// Printed before `assets: match`. Removed at the pin move that brings in
-/// the C# fixes for these ids.
-#[cfg(any(target_os = "linux", test))]
-pub(crate) const KNOWN_DIFFERENCES: &str = "known differences: TB27, TB28, TB29, TB30, TB33";
 
 #[cfg(target_os = "linux")]
 const SEED_QUERY: &str = "SELECT json_object(\
@@ -148,7 +141,7 @@ fn compare_linux(db: XassetDb) -> Result<String, String> {
 
 #[cfg(any(target_os = "linux", test))]
 fn success_report(csharp: &str, ferroan: &str, records: usize) -> String {
-    format!("{csharp}\n{ferroan}\n{KNOWN_DIFFERENCES}\nassets: match ({records} http records)")
+    format!("{csharp}\n{ferroan}\nassets: match ({records} http records)")
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -781,11 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn the_success_line_names_the_open_differences_and_a_match() {
+    fn the_success_line_is_a_match_without_a_known_difference_list() {
         let text = success_report("csharp", "ferroan", 3);
         assert!(text.contains("assets: match (3 http records)"));
+        assert!(!text.contains("known differences"));
         for id in ["TB27", "TB28", "TB29", "TB30", "TB33"] {
-            assert!(text.contains(id), "{id}");
+            assert!(!text.contains(id), "{id}");
         }
     }
 

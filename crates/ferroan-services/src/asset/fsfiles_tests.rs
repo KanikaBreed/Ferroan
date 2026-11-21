@@ -363,16 +363,15 @@ fn fsassets_files_cross_read() {
     let damaged = rust_files.gzip_path(&hash);
     let full = fs::read(&damaged).unwrap();
     fs::write(&damaged, &full[..full.len().min(12)]).unwrap();
-    let pin = csharp(&oracle, "read", &[&base, &spool, "0", &hash]);
-    assert_ne!(bytes_of(&pin["data"]), data);
+    let pin = csharp(&oracle, "checked", &[&base, &spool, "0", &hash, "1"]);
+    assert!(pin["data"].is_null(), "{pin}");
     assert!(rust_files.read_checked(&hash, 1).unwrap().is_none());
 
     let missing = sha256_hex(b"no-file-for-this-hash");
-    let absent = csharp(&oracle, "read", &[&base, &spool, "0", &missing]);
-    assert!(bytes_of(&absent["data"]).is_empty());
+    let absent = csharp(&oracle, "checked", &[&base, &spool, "0", &missing, "1"]);
+    assert!(absent["data"].is_null(), "{absent}");
     assert!(rust_files.read_checked(&missing, 1).unwrap().is_none());
     println!("fsassets files: paths and decompressed bytes match");
-    println!("known differences: TB23");
 }
 
 fn csharp(oracle: &str, op: &str, args: &[&str]) -> serde_json::Value {

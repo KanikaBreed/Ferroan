@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.MySQL/MySQLXAssetData.cs
 //   Source/OpenSim.Data.PGSQL/PGSQLXAssetData.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -42,18 +42,18 @@
 //! logged, the transaction is rolled back, and the method returns. That is
 //! not the ordinary asset store's TB20 choice. Both `Delete` methods remove
 //! the meta row and leave the data row. PostgreSQL binds the id as `uuid`
-//! (TB30). Rows are shared by hash and there is no reference count, so an
-//! unused data row is not deleted. MySQL `AssetsExist` reads `XAssetsMeta`
-//! (TB28). PostgreSQL `FetchAssetMetadataSet` uses `LIMIT count OFFSET start`
-//! and returns the page (TB29).
+//! (TB30, #480). Rows are shared by hash and there is no reference count, so
+//! an unused data row is not deleted. MySQL `AssetsExist` reads `XAssetsMeta`
+//! (TB28, #476). PostgreSQL `FetchAssetMetadataSet` uses `ORDER BY id LIMIT
+//! count OFFSET start` and returns the page (TB29, #479).
 //!
 //! Clocks are `Utils.DateTimeToUnixTime(DateTime.UtcNow)` on both plugins.
 //! That is UTC unix seconds, not the ordinary PostgreSQL asset store's local
 //! clock. `GetAsset` and `FetchAssetMetadataSet` call `UpdateAccessTime`,
 //! which writes only when the stored access time is at least 30 days old.
 //! MySQL `GetAsset` skips that call when the stored access time is 0.
-//! PostgreSQL metadata uses `LIMIT count OFFSET start`, not TB19's short
-//! limit and not the pin's `LIMIT start, count`.
+//! PostgreSQL metadata uses `ORDER BY id LIMIT count OFFSET start`. The
+//! ordinary asset store uses the same limit shape (TB19, #477).
 
 use ferroan_db::{Backend, Pool};
 use sha2::{Digest, Sha256};

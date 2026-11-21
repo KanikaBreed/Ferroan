@@ -36,4 +36,4 @@ pub fn sqlite_filename(connection_string: &str) -> Result<std::path::PathBuf, Db
 
 /// Tranquillity `develop` revision whose migration resources this crate expects.
 /// The pin is the `OpenSim-Tranquillity` row in `docs/REFERENCES.md`.
-pub const TRANQUILLITY_REVISION: &str = "c70fee205f64ee8672a8d607cef6a733931da951";
+pub const TRANQUILLITY_REVISION: &str = "1d7abb8337a477842fe1d7dd84beffe389ee52ac";

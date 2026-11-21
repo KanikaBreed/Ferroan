@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.PGSQL/PGSQLAssetData.cs
 //   Source/OpenSim.Data.PGSQL/Resources/AssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -35,10 +35,11 @@
 //! `StoreAsset` updates the mutable columns of an existing id and does not
 //! touch `asset_flags`, `create_time` or `access_time`. A missing id is
 //! inserted with both times set from the local clock. Get does not update
-//! `access_time`. `FetchAssetMetadataSet` binds `LIMIT start + count - 1`
-//! (TB19) and does not read flags. `Delete` is false when the id does not
-//! parse or when no row was removed. A failed statement here is an error.
-//! The C# method logs that failure and still returns true (TB20).
+//! `access_time`. `FetchAssetMetadataSet` binds `LIMIT count OFFSET start`
+//! (TB19, #477) and does not read flags. `count` 0 is an empty page. `Delete`
+//! is false when the id does not parse or when no row was removed. A failed
+//! statement here is an error. The C# method logs that failure and returns
+//! false (TB20, #478). The success-path SQL is unchanged.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -48,7 +49,7 @@ use super::decode::{
 };
 use super::model::{Asset, AssetMetadata};
 use super::store::{AssetClock, StoreError};
-use super::time::{postgres_metadata_limit, postgres_unix_now};
+use super::time::postgres_unix_now;
 
 pub(super) async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Asset>, StoreError> {
     let row = sqlx::query(
@@ -147,13 +148,12 @@ pub(super) async fn metadata_set(
     start: i32,
     count: i32,
 ) -> Result<Vec<AssetMetadata>, StoreError> {
-    let limit = postgres_metadata_limit(start, count);
     let rows = sqlx::query(
         "SELECT id, name, description, \"assetType\", temporary, creatorid \
          FROM assets ORDER BY id LIMIT $2 OFFSET $1",
     )
     .bind(start)
-    .bind(limit)
+    .bind(count)
     .fetch_all(pool)
     .await?;
     let mut out = Vec::with_capacity(rows.len());

@@ -559,7 +559,7 @@ CREATE TABLE public.migrations (
 
 CREATE TABLE public.mutelist (
     "AgentID" character varying(36) NOT NULL,
-    "MuteId" character varying(36) DEFAULT '00000000-0000-0000-0000-000000000000'::character varying NOT NULL,
+    "MuteID" character varying(36) DEFAULT '00000000-0000-0000-0000-000000000000'::character varying NOT NULL,
     "MuteName" character varying(64) DEFAULT ''::character varying NOT NULL,
     "MuteType" integer DEFAULT 1 NOT NULL,
     "MuteFlags" integer DEFAULT 0 NOT NULL,
@@ -1484,6 +1484,7 @@ INSERT INTO public.migrations VALUES ('HGTravelStore', 1);
 INSERT INTO public.migrations VALUES ('IM_Store', 3);
 INSERT INTO public.migrations VALUES ('InventoryStore', 11);
 INSERT INTO public.migrations VALUES ('LogStore', 1);
+INSERT INTO public.migrations VALUES ('MuteListStore', 2);
 INSERT INTO public.migrations VALUES ('Presence', 4);
 INSERT INTO public.migrations VALUES ('RegionStore', 61);
 INSERT INTO public.migrations VALUES ('UserAccount', 7);
@@ -1491,7 +1492,6 @@ INSERT INTO public.migrations VALUES ('UserProfiles', 6);
 INSERT INTO public.migrations VALUES ('UserStore', 11);
 INSERT INTO public.migrations VALUES ('XAssetStore', 5);
 INSERT INTO public.migrations VALUES ('os_groups_Store', 6);
-INSERT INTO public.migrations VALUES ('MuteListStore', 1);
 
 
 --
@@ -1948,14 +1948,6 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: mutelist pk_agent_id; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.mutelist
-    ADD CONSTRAINT pk_agent_id PRIMARY KEY ("AgentID");
-
-
---
 -- Name: regionenvironment regionenvironment_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2000,7 +1992,7 @@ ALTER TABLE ONLY public.avatars
 --
 
 ALTER TABLE ONLY public.mutelist
-    ADD CONSTRAINT unique_agent_2 UNIQUE ("AgentID", "MuteId", "MuteName");
+    ADD CONSTRAINT unique_agent_2 UNIQUE ("AgentID", "MuteID", "MuteName");
 
 
 --
@@ -2185,6 +2177,13 @@ CREATE INDEX ix_estate_users ON public.estate_users USING btree ("EstateID");
 --
 
 CREATE INDEX ix_estateban ON public.estateban USING btree ("EstateID");
+
+
+--
+-- Name: ix_mutelist_agentid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_mutelist_agentid ON public.mutelist USING btree ("AgentID");
 
 
 --
