@@ -19,7 +19,7 @@ The process listens on `[Network] bind_ip_address` and `[Network] port`; an empt
 
 `StorageProvider` and `ConnectionString` fall through to `[DatabaseService]` when the service section leaves them empty. An asset file must already be a Tranquillity SQLite database at AssetStore version 6. A user-account file must already be at UserAccount version 4. This program does not create either file and does not migrate it.
 
-`LocalServiceModule = OpenSim.Services.AssetService.dll:XAssetService` selects the XAsset plugins on MySQL or PostgreSQL. SQLite is refused. `ChainedServiceModule = OpenSim.Services.AssetService.dll:AssetService` reads the ordinary asset tables on that same connection string. This module does not seed `DefaultAssetLoader`. `live assets --backend xasset` is later work.
+`LocalServiceModule = OpenSim.Services.AssetService.dll:XAssetService` selects the XAsset plugins on MySQL or PostgreSQL. SQLite is refused. `ChainedServiceModule = OpenSim.Services.AssetService.dll:AssetService` reads the ordinary asset tables on that same connection string. This module does not seed `DefaultAssetLoader`. `cargo xtask live assets --backend xasset --db mysql` and `--db pgsql` compare that service with C# and list TB27, TB28, TB29, TB30 and TB33 until the pin moves.
 
 User accounts use the same shape:
 

@@ -30,7 +30,7 @@ use crate::live;
 use crate::repo_root;
 
 #[cfg(target_os = "linux")]
-const KELP: &str = "2a4880b6-b7a3-690a-2049-bfbe38eafb9f";
+pub(crate) const KELP: &str = "2a4880b6-b7a3-690a-2049-bfbe38eafb9f";
 
 pub fn compare() -> ExitCode {
     match compare_inner() {
@@ -188,7 +188,12 @@ pub(crate) fn start_persistent() -> Result<(Owned, u16), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn wait_service(server: &mut Owned, name: &str, port: u16, log: &Path) -> Result<(), String> {
+pub(crate) fn wait_service(
+    server: &mut Owned,
+    name: &str,
+    port: u16,
+    log: &Path,
+) -> Result<(), String> {
     let started = Instant::now();
     loop {
         if server
@@ -557,7 +562,7 @@ fn start_robust(database: &Path, port: u16, log: &Path, load: bool) -> Result<Ow
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_owned(
+pub(crate) fn spawn_owned(
     binary: &Path,
     args: &[&str],
     cwd: &Path,
@@ -630,7 +635,7 @@ fn owned_from_attached(attached: crate::docker::Attached) -> Result<Owned, Strin
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_proxy(
+pub(crate) fn spawn_proxy(
     upstream: SocketAddr,
     out: &Path,
 ) -> Result<(u16, crate::live_proxy::Proxies), String> {
@@ -686,7 +691,7 @@ fn pid_exists(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn tail(path: &Path) -> String {
+pub(crate) fn tail(path: &Path) -> String {
     let Ok(bytes) = fs::read(path) else {
         return format!("missing {}", path.display());
     };
@@ -832,7 +837,7 @@ fn digest(bytes: &[u8]) -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn first_difference(left: &str, right: &str) -> String {
+pub(crate) fn first_difference(left: &str, right: &str) -> String {
     for (index, (one, other)) in left.lines().zip(right.lines()).enumerate() {
         if one != other {
             return format!("first difference at line {index}\ncsharp: {one}\nferroan: {other}");

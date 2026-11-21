@@ -40,17 +40,20 @@
 //! Both plugins hash the stored bytes with SHA-256 and keep one `XAssetsData`
 //! row per hash. `StoreAsset` is void: a failed metadata or data write is
 //! logged, the transaction is rolled back, and the method returns. That is
-//! not the ordinary asset store's TB20 choice. `Delete` removes the meta row
-//! only. MySQL's statement does that. PostgreSQL binds the id as text against
-//! a `uuid` column, so the statement fails and the meta row stays.
+//! not the ordinary asset store's TB20 choice. MySQL `Delete` removes the
+//! meta row and leaves the data row. PostgreSQL `Delete` binds the id as
+//! `uuid` and deletes the data row when no meta row still has that hash
+//! (TB30). MySQL `AssetsExist` reads `XAssetsMeta` (TB28). PostgreSQL
+//! `FetchAssetMetadataSet` uses `LIMIT count OFFSET start` and returns the
+//! page (TB29).
 //!
 //! Clocks are `Utils.DateTimeToUnixTime(DateTime.UtcNow)` on both plugins.
 //! That is UTC unix seconds, not the ordinary PostgreSQL asset store's local
 //! clock. `GetAsset` and `FetchAssetMetadataSet` call `UpdateAccessTime`,
 //! which writes only when the stored access time is at least 30 days old.
 //! MySQL `GetAsset` skips that call when the stored access time is 0.
-//! PostgreSQL `FetchAssetMetadataSet` sends `LIMIT :start, :count`. That is
-//! MySQL's form. The call's result is whatever that statement returns.
+//! PostgreSQL metadata uses `LIMIT count OFFSET start`, not TB19's short
+//! limit and not the pin's `LIMIT start, count`.
 
 use ferroan_db::{Backend, Pool};
 use sha2::{Digest, Sha256};

@@ -20,6 +20,12 @@ pub(crate) enum Database {
     Pgsql,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetBackend {
+    Stock,
+    Xasset,
+}
+
 impl Database {
     pub(crate) fn require_ready(self) -> Result<(), String> {
         match self {
@@ -77,16 +83,31 @@ pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
     Build,
-    Up { ferroan_assets: bool },
-    UpGrid { bind: Option<String> },
+    Up {
+        ferroan_assets: bool,
+    },
+    UpGrid {
+        bind: Option<String>,
+    },
     PersistentGridCheck,
     Down,
     Run(RunSpec),
     RecordTwice,
-    RunningAssets { db: Database },
-    Compare { service: String, db: Database },
-    Fixture { kind: Fixture, path: String },
-    Diag { urls: Vec<String> },
+    RunningAssets {
+        db: Database,
+    },
+    Compare {
+        service: String,
+        db: Database,
+        backend: AssetBackend,
+    },
+    Fixture {
+        kind: Fixture,
+        path: String,
+    },
+    Diag {
+        urls: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,7 +164,11 @@ fn execute(command: Command) -> ExitCode {
             Ok(()) => live::run_running_assets(),
             Err(error) => live::finish(Err(error)),
         },
-        Command::Compare { service, db } => compare_service(&service, db),
+        Command::Compare {
+            service,
+            db,
+            backend,
+        } => compare_service(&service, db, backend),
         Command::Fixture { kind, path } => fixture(kind, &path),
         Command::Diag { urls } => crate::diag_fetch::run(&urls),
     }
@@ -171,7 +196,17 @@ fn run_spec(spec: RunSpec) -> ExitCode {
     grid::run_with(&spec)
 }
 
-fn compare_service(service: &str, db: Database) -> ExitCode {
+fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCode {
+    if backend == AssetBackend::Xasset {
+        if service != "assets" {
+            return live::finish(Err("--backend xasset is used with live assets".to_string()));
+        }
+        return match db {
+            Database::Sqlite => live::finish(Err("XAssetService has no SQLite plugin".to_string())),
+            Database::Mysql => crate::xasset_live::compare(crate::xasset_live::XassetDb::Mysql),
+            Database::Pgsql => crate::xasset_live::compare(crate::xasset_live::XassetDb::Pgsql),
+        };
+    }
     if let Err(error) = db.require_ready() {
         return live::finish(Err(error));
     }
@@ -208,7 +243,11 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
         }),
         ["up", "grid", rest @ ..] => {
             let flags = flags(rest)?;
-            if flags.running || flags.rust_services.is_some() || flags.db_set {
+            if flags.running
+                || flags.rust_services.is_some()
+                || flags.db_set
+                || flags.backend.is_some()
+            {
                 return Err(ParseFail::Usage);
             }
             if !flags.region_ferroan {
@@ -235,9 +274,15 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
             {
                 return Err(ParseFail::Usage);
             }
+            if flags.backend.is_some() && *service != "assets" {
+                return Err(ParseFail::Message(
+                    "--backend is used with live assets".to_string(),
+                ));
+            }
             Ok(Command::Compare {
                 service: (*service).to_string(),
                 db: flags.db,
+                backend: flags.backend.unwrap_or(AssetBackend::Stock),
             })
         }
         ["assets", rest @ ..] => {
@@ -252,6 +297,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
             Ok(Command::Compare {
                 service: "assets".to_string(),
                 db: flags.db,
+                backend: flags.backend.unwrap_or(AssetBackend::Stock),
             })
         }
         ["accounts", rest @ ..] => {
@@ -260,12 +306,18 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.region_ferroan
                 || flags.bind.is_some()
                 || flags.rust_services.is_some()
+                || flags.backend.is_some()
             {
-                return Err(ParseFail::Usage);
+                return Err(if flags.backend.is_some() {
+                    ParseFail::Message("--backend is used with live assets".to_string())
+                } else {
+                    ParseFail::Usage
+                });
             }
             Ok(Command::Compare {
                 service: "accounts".to_string(),
                 db: flags.db,
+                backend: AssetBackend::Stock,
             })
         }
         [name, path] if !name.starts_with('-') && !path.starts_with('-') => {
@@ -292,8 +344,12 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         (false, rest)
     };
     let flags = flags(rest)?;
-    if flags.bind.is_some() {
-        return Err(ParseFail::Usage);
+    if flags.bind.is_some() || flags.backend.is_some() {
+        return Err(if flags.backend.is_some() {
+            ParseFail::Message("--backend is used with live assets".to_string())
+        } else {
+            ParseFail::Usage
+        });
     }
     if flags.running {
         if *scenario != "assets" || grid || flags.region_ferroan || flags.rust_services.is_some() {
@@ -317,6 +373,7 @@ struct Flags {
     db: Database,
     db_set: bool,
     running: bool,
+    backend: Option<AssetBackend>,
 }
 
 fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
@@ -327,6 +384,7 @@ fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
         db: Database::Sqlite,
         db_set: false,
         running: false,
+        backend: None,
     };
     let mut index = 0;
     while index < args.len() {
@@ -360,6 +418,11 @@ fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
                 parsed.db_set = true;
                 index += 1;
             }
+            "--backend" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                parsed.backend = Some(asset_backend(value)?);
+                index += 1;
+            }
             _ => return Err(ParseFail::Usage),
         }
         index += 1;
@@ -385,6 +448,15 @@ fn services(value: &str) -> Result<Vec<String>, ParseFail> {
         return Err(ParseFail::Usage);
     }
     Ok(names)
+}
+
+fn asset_backend(value: &str) -> Result<AssetBackend, ParseFail> {
+    match value {
+        "xasset" => Ok(AssetBackend::Xasset),
+        _ => Err(ParseFail::Message(format!(
+            "--backend expects xasset; {value} is not served by this harness yet"
+        ))),
+    }
 }
 
 fn database(value: &str) -> Result<Database, ParseFail> {
@@ -458,23 +530,38 @@ mod tests {
     #[test]
     fn compare_assets_defaults_to_sqlite() {
         match parse(&["compare", "assets"]).unwrap() {
-            Command::Compare { service, db } => {
+            Command::Compare {
+                service,
+                db,
+                backend,
+            } => {
                 assert_eq!(service, "assets");
                 assert_eq!(db, Database::Sqlite);
+                assert_eq!(backend, AssetBackend::Stock);
             }
             other => panic!("expected compare, got {other:?}"),
         }
         match parse(&["assets", "--db", "pgsql"]).unwrap() {
-            Command::Compare { service, db } => {
+            Command::Compare {
+                service,
+                db,
+                backend,
+            } => {
                 assert_eq!(service, "assets");
                 assert_eq!(db, Database::Pgsql);
+                assert_eq!(backend, AssetBackend::Stock);
             }
             other => panic!("expected compare, got {other:?}"),
         }
         match parse(&["accounts"]).unwrap() {
-            Command::Compare { service, db } => {
+            Command::Compare {
+                service,
+                db,
+                backend,
+            } => {
                 assert_eq!(service, "accounts");
                 assert_eq!(db, Database::Sqlite);
+                assert_eq!(backend, AssetBackend::Stock);
             }
             other => panic!("expected compare, got {other:?}"),
         }
@@ -563,6 +650,45 @@ mod tests {
             "pgsql needs P1.A1 (#59) before the harness can use it"
         );
         assert!(Database::Sqlite.require_ready().is_ok());
+        match parse(&["assets", "--backend", "xasset", "--db", "mysql"]).unwrap() {
+            Command::Compare {
+                service,
+                db,
+                backend,
+            } => {
+                assert_eq!(service, "assets");
+                assert_eq!(db, Database::Mysql);
+                assert_eq!(backend, AssetBackend::Xasset);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        match parse(&["compare", "assets", "--db", "pgsql", "--backend", "xasset"]).unwrap() {
+            Command::Compare { db, backend, .. } => {
+                assert_eq!(db, Database::Pgsql);
+                assert_eq!(backend, AssetBackend::Xasset);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        match parse(&["assets", "--db", "mysql"]).unwrap() {
+            Command::Compare { db, backend, .. } => {
+                assert_eq!(backend, AssetBackend::Stock);
+                assert_eq!(
+                    db.require_ready().unwrap_err(),
+                    "mysql needs P1.A1 (#59) before the harness can use it"
+                );
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        let refused = parse(&["assets", "--backend", "fsassets"]).unwrap_err();
+        assert!(matches!(refused, ParseFail::Message(text) if text.contains("fsassets")));
+        assert!(matches!(
+            parse(&["accounts", "--backend", "xasset"]),
+            Err(ParseFail::Message(text)) if text.contains("live assets")
+        ));
+        assert!(matches!(
+            parse(&["run", "assets", "grid", "--backend", "xasset", "--db", "mysql"]),
+            Err(ParseFail::Message(text)) if text.contains("live assets")
+        ));
         let error = require_known_services(&["assets".into(), "inventory".into()]).unwrap_err();
         assert!(error.contains("inventory"));
         assert!(error.contains("assets"));
