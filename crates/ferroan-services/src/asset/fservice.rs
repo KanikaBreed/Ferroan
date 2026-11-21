@@ -534,7 +534,8 @@ mod tests {
     #[tokio::test]
     async fn fsasset_service_serves_the_asset_routes_when_a_database_is_configured() {
         if let Some(url) = db_url("FERROAN_MYSQL_URL", "MySQL") {
-            let _guard = super::super::fsasset::FSASSET_MYSQL.lock().await;
+            let _fs = super::super::fsasset::FSASSET_MYSQL.lock().await;
+            let _assets = super::super::store::ASSET_MYSQL.lock().await;
             check_service(
                 &url,
                 "MySQL",
@@ -544,7 +545,8 @@ mod tests {
             .await;
         }
         if let Some(url) = db_url("FERROAN_POSTGRES_URL", "PostgreSQL") {
-            let _guard = super::super::fsasset::FSASSET_POSTGRES.lock().await;
+            let _fs = super::super::fsasset::FSASSET_POSTGRES.lock().await;
+            let _assets = super::super::store::ASSET_POSTGRES.lock().await;
             check_service(
                 &url,
                 "PostgreSQL",

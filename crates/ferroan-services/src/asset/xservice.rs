@@ -152,11 +152,13 @@ mod tests {
     #[tokio::test]
     async fn xasset_service_matches_the_pin() {
         if let Some(pair) = connect_both("FERROAN_MYSQL_URL", "MySQL").await {
-            let _guard = XASSET_MYSQL.lock().await;
+            let _x = XASSET_MYSQL.lock().await;
+            let _assets = super::super::store::ASSET_MYSQL.lock().await;
             check_service(pair, "FERROAN_MYSQL_URL", "MySQL", Backend::Mysql).await;
         }
         if let Some(pair) = connect_both("FERROAN_POSTGRES_URL", "PostgreSQL").await {
-            let _guard = XASSET_POSTGRES.lock().await;
+            let _x = XASSET_POSTGRES.lock().await;
+            let _assets = super::super::store::ASSET_POSTGRES.lock().await;
             check_service(
                 pair,
                 "FERROAN_POSTGRES_URL",
