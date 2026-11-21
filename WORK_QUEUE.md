@@ -74,7 +74,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q14 | P2.0e: terrain from the C# region store | DONE (#126) |
 | Q15 | P2.0f: appearance from the C# avatar service | DONE (#138) |
 | Q16 | P2.0g: local chat | SPLIT into Q16a and Q16b (#140) |
-| Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | READY after Q15 |
+| Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | DONE (#144) |
 | Q16b | P2.0g2: local chat on channel 0 as `ChatModule` does, and `cargo xtask live run chat grid --region ferroan` prints `chat: pass` | READY after Q16a |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16b |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
@@ -288,6 +288,8 @@ Q16 BLOCKED (21 November 2026, `docs/local-chat-blocked`): local chat needs two 
 
 Q16 split (manager, 21 November 2026): the block in #140 is right, and its split is taken as proposed. Q16a is part (1): two roots at once. `QueryAccess` and `CreateAgent` admit a second agent, caps and event queues are per agent, and the circuit dispatcher serves both. Same-agent replacement, logout and `ferroan_region_root_agents` stay correct, with a two-account live scenario as the evidence and a bound on root agents with a limit id. No `ChatFromSimulator`. Q16b is part (2): channel 0 local chat as `ChatModule` does at the pin (whisper 10 m, say 20 m, shout 100 m), with `cargo xtask live run chat grid --region ferroan` printing `chat: pass`. P2.0g stays TODO until both are DONE. Q17 follows Q16b. The `ChatModule` freeze check found in #140 is TB37; Ferroan does the fixed behaviour (a frozen sender is told only for real chat, not typing) when Q16b ports it.
 
+Q16a (21 November 2026, `feat/two-roots`): [PR #144](https://github.com/KanikaBreed/Ferroan/pull/144). Two roots. `QueryAccess` and `CreateAgent` admit a second harness account. Caps and event queues are per agent. One circuit reader serves both. Same-agent replacement does not take a second place. Logout of one root leaves the other. The bound is 40 (`region.root-agents`); the refusal is `The region is full`. `cargo xtask live run roots grid --region ferroan` on `11f0bed` printed `roots: pass` ([live run 44935952590](https://github.com/KanikaBreed/Ferroan/actions/runs/44935952590), services job). Both accounts' QueryAccess and CreateAgent responses match the C# login fixtures. `ferroan_region_root_agents` was 2, then 1, then 0. No `ChatFromSimulator`. Checks on that SHA: [CI 44935952631](https://github.com/KanikaBreed/Ferroan/actions/runs/44935952631) (ubuntu-latest, windows-latest, macos-latest). Images job `136942675355` on Home1 (`self-hosted`, `linux`, `x64`, `ferroan`), 2026-11-21T18:31:45Z–2026-11-21T18:37:30Z (5m45s), success. P2.0g stays TODO until Q16b. The earlier images failure on `00c477a` is under Found while working.
+
 Proposed split for the manager:
 
 1. Two concurrent roots. Replace the single session, the single caps registration and the one-at-a-time dispatcher so two different harness accounts can be root together. Same-agent replacement still closes only that agent. Logout, Presence and GridUser stay per agent. `ferroan_region_root_agents` is 2 while both are in, 1 after one leaves, and 0 after both leave. Both complete login and `AgentMovementComplete`. No `ChatFromSimulator` yet. The existing `login grid --region ferroan` check still passes.
@@ -319,7 +321,10 @@ Q23a (21 November 2026, `feat/fsassets-plugins`): [PR #145](https://github.com/K
 
 ## Found while working
 
+- 2026-11-21, Q16a: `live images` on `00c477a` failed after a passing smoke ([run 44933380682](https://github.com/KanikaBreed/Ferroan/actions/runs/44933380682), job `live images`, runner Home1, labels `self-hosted`/`linux`/`x64`/`ferroan`, 18:03:57Z–18:09:53Z). The smoke line was `docker smoke login+ferrobot: 142s`. The step then failed with `Unable to process file command 'env' successfully` / `Invalid format '25'`. The next step's environment contained `GitAssemblyInformationalVersion`, `GitBuildVersion` and `GitBuildVersionSimple` (`1.2.225…`), which Nerdbank.GitVersioning appends to `GITHUB_ENV` during the host `dotnet` build. A torn `25` matches that tool's concurrent append ([dotnet/Nerdbank.GitVersioning#683](https://github.com/dotnet/Nerdbank.GitVersioning/issues/683)). Ubuntu, Windows and macOS `checks`, `live scenarios`, `live ferrobot` and `live services` passed on the same SHA, including `roots: pass`. Recorded before the retry. Not a product change.
+
 - 2026-11-21, Q23b: `PGSQLFSAssetData.Import` at `c70fee205f` lines 256–259 formats `limit {start} offset {count}` when `count` is not -1, so the page arguments are swapped (TB40). MySQL uses `LIMIT start, count` and is not this bug. Nobody can depend on an import that reads the wrong page. Ferroan records it now. Q23d uses `LIMIT count OFFSET start` (D32). The plugin SQL from Q23a still matches the pin. The maintainer is adding the C# fix to the upstream batch. This is not TB19.
+
 
 - 2026-11-21, Q23a: `PGSQLFSAssetData.Delete` at `c70fee205f` does `new UUID(id)` before the query, so a non-uuid throws and the row stays (TB39). MySQL `Delete` runs for any string and returns true. Nobody depends on the throw. Ferroan parses the id, returns false and deletes nothing when it is not a uuid, and returns true when the statement runs. Not filed upstream. The PostgreSQL cross-read lists it. TB19 and TB20 on `AssetService` are unchanged.
 

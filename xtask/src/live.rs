@@ -1129,6 +1129,7 @@ pub(crate) fn harness(
         require_logout_reply: false,
         neighbour: None,
         service_probe: probe.clone(),
+        metrics: None,
         before_login: std::sync::Arc::new(move |principal| {
             let probe = probe.clone();
             Box::pin(async move {

@@ -66,7 +66,7 @@ use ferroan_protocol::reliability::{
     MAX_UNACKED, RecentSequences, ReliableWindow, SequenceCounter,
 };
 use ferroan_protocol::{IncomingPacket, Msg, Writer};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -74,7 +74,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -186,14 +186,14 @@ pub struct UdpCounters {
 
 struct CountingSocket {
     inner: UdpSocket,
-    udp: Option<Arc<UdpCounters>>,
+    udp: Mutex<Option<Arc<UdpCounters>>>,
 }
 
 impl CountingSocket {
     async fn bind(address: SocketAddr) -> io::Result<Self> {
         Ok(Self {
             inner: UdpSocket::bind(address).await?,
-            udp: None,
+            udp: Mutex::new(None),
         })
     }
 
@@ -201,12 +201,15 @@ impl CountingSocket {
         self.inner.local_addr()
     }
 
-    fn set_counters(&mut self, udp: Arc<UdpCounters>) {
-        self.udp = Some(udp);
+    fn set_counters(&self, udp: Arc<UdpCounters>) {
+        *self.udp.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(udp);
     }
 
     fn counters(&self) -> Option<Arc<UdpCounters>> {
-        self.udp.clone()
+        self.udp
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
     }
 }
 
@@ -230,8 +233,9 @@ impl DatagramIo for UdpSocket {
 }
 impl DatagramIo for CountingSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let counters = self.counters();
         let result = self.inner.recv_from(buf).await;
-        if let (Ok((size, _)), Some(udp)) = (&result, &self.udp) {
+        if let (Ok((size, _)), Some(udp)) = (&result, &counters) {
             udp.packets_in.fetch_add(1, Ordering::Relaxed);
             udp.bytes_in
                 .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
@@ -239,8 +243,9 @@ impl DatagramIo for CountingSocket {
         result
     }
     async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        let counters = self.counters();
         let result = self.inner.send_to(buf, to).await;
-        if let (Ok(size), Some(udp)) = (&result, &self.udp) {
+        if let (Ok(size), Some(udp)) = (&result, &counters) {
             udp.packets_out.fetch_add(1, Ordering::Relaxed);
             udp.bytes_out
                 .fetch_add(u64::try_from(*size).unwrap_or(u64::MAX), Ordering::Relaxed);
@@ -761,44 +766,321 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
     raw.copy_from_slice(bytes);
     Some(Uuid::from_bytes(raw))
 }
-/// One UDP listener with the region settings to announce.
-pub struct CircuitServer {
-    socket: CountingSocket,
-    handshake: HandshakeConfig,
-    timing: CircuitTiming,
-    /// Latest UseCircuitCode seen from an endpoint other than the one being
-    /// served. The next serve, whose peer is still unset, consumes it once.
-    pending_login: PendingUseCircuit,
+/// Remembered UseCircuitCode datagrams for logins that have not started serving.
+/// One slot per source address, capped at the region root-agent limit.
+const PENDING_LOGINS: usize = 40;
+const INBOX_CAP: usize = 128;
+
+struct Datagram {
+    from: SocketAddr,
+    bytes: Vec<u8>,
 }
+
+struct Inbox {
+    queue: Mutex<VecDeque<Datagram>>,
+    notify: Notify,
+}
+
+impl Inbox {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+        }
+    }
+
+    fn push(&self, datagram: Datagram) {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if queue.len() >= INBOX_CAP {
+            return;
+        }
+        queue.push_back(datagram);
+        self.notify.notify_one();
+    }
+
+    fn pop(&self) -> Option<Datagram> {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .pop_front()
+    }
+}
+
+struct UnboundServe {
+    id: u64,
+    expect: CircuitExpect,
+    inbox: Arc<Inbox>,
+}
+
+struct Fan {
+    bound: HashMap<SocketAddr, u64>,
+    senders: HashMap<u64, Arc<Inbox>>,
+    unbound: VecDeque<UnboundServe>,
+    pending: VecDeque<Datagram>,
+}
+
+struct SharedUdp {
+    socket: CountingSocket,
+    fan: Mutex<Fan>,
+}
+
+struct CircuitInner {
+    shared: Arc<SharedUdp>,
+    handshake: Mutex<HandshakeConfig>,
+    timing: Mutex<CircuitTiming>,
+    reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    next_id: AtomicU64,
+}
+
+impl Drop for CircuitInner {
+    fn drop(&mut self) {
+        if let Some(reader) = self
+            .reader
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            reader.abort();
+        }
+    }
+}
+
+/// One viewer's packets, taken from the shared UDP socket.
+struct SessionSock {
+    shared: Arc<SharedUdp>,
+    id: u64,
+    inbox: Arc<Inbox>,
+}
+
+impl Drop for SessionSock {
+    fn drop(&mut self) {
+        let mut fan = self
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.bound.retain(|_, id| *id != self.id);
+        fan.senders.remove(&self.id);
+        fan.unbound.retain(|waiter| waiter.id != self.id);
+    }
+}
+
+impl DatagramIo for SessionSock {
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        loop {
+            if let Some(datagram) = self.inbox.pop() {
+                if datagram.bytes.len() > buf.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "datagram exceeds the receive buffer",
+                    ));
+                }
+                buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
+                return Ok((datagram.bytes.len(), datagram.from));
+            }
+            self.inbox.notify.notified().await;
+        }
+    }
+
+    async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        self.shared.socket.send_to(buf, to).await
+    }
+}
+
+fn use_circuit(bytes: &[u8]) -> Option<IncomingPacket> {
+    let packet = packet::parse_packet(bytes).ok()?;
+    (packet.id == UseCircuitCode::ID).then_some(packet)
+}
+
+fn expect_matches(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
+    let Ok(code) = packet.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    code.circuit_code.code == expect.circuit_code
+        && same_agent(code.circuit_code.id, code.circuit_code.session_id, expect)
+}
+
+fn datagram_matches(bytes: &[u8], expect: &CircuitExpect) -> bool {
+    use_circuit(bytes).is_some_and(|packet| expect_matches(&packet, expect))
+}
+
+/// Route one datagram. Returns a source and sequence to ACK when the datagram
+/// is kept for a serve that has not started. A matching waiter ACKs it itself.
+fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(SocketAddr, u32)> {
+    let mut fan = shared
+        .fan
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(id) = fan.bound.get(&from).copied() {
+        if let Some(inbox) = fan.senders.get(&id) {
+            inbox.push(Datagram { from, bytes });
+        }
+        return None;
+    }
+    if bytes.len() > MAX_DATAGRAM {
+        ferroan_diag::refuse(
+            UDP_DATAGRAM,
+            Kind::Hard,
+            MAX_DATAGRAM as u64,
+            bytes.len() as u64,
+            "udp",
+        );
+        ferroan_diag::log_malformed("udp", &bytes, "datagram exceeds udp.datagram");
+        return None;
+    }
+    let packet = use_circuit(&bytes)?;
+    if let Some(pos) = fan
+        .unbound
+        .iter()
+        .position(|waiter| expect_matches(&packet, &waiter.expect))
+        && pos < fan.unbound.len()
+        && let Some(waiter) = fan.unbound.remove(pos)
+    {
+        fan.bound.insert(from, waiter.id);
+        waiter.inbox.push(Datagram { from, bytes });
+        return None;
+    }
+    fan.pending.retain(|queued| queued.from != from);
+    if fan.pending.len() >= PENDING_LOGINS {
+        fan.pending.pop_front();
+    }
+    fan.pending.push_back(Datagram { from, bytes });
+    Some((from, packet.sequence))
+}
+
+async fn read_loop(shared: Arc<SharedUdp>) {
+    let mut buf = [0u8; MAX_DATAGRAM + 1];
+    loop {
+        let received = shared.socket.recv_from(&mut buf).await;
+        let (len, from) = match received {
+            Ok(pair) => pair,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                continue;
+            }
+        };
+        let bytes = buf[..len].to_vec();
+        if let Some((to, sequence)) = route(&shared, from, bytes) {
+            State::immediate_ack(&shared.socket, to, sequence).await;
+        }
+    }
+}
+
+/// One UDP listener with the region settings to announce.
+///
+/// Several logins share the socket. Each serve receives only its own peer,
+/// plus the UseCircuitCode that opened it. A login packet that arrives before
+/// its serve is acknowledged and kept for that serve.
+pub struct CircuitServer {
+    inner: Arc<CircuitInner>,
+}
+
+impl Clone for CircuitServer {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl CircuitServer {
     pub async fn bind() -> Result<Self, CircuitError> {
         Self::bind_at(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
     }
     pub async fn bind_at(address: SocketAddr) -> Result<Self, CircuitError> {
         Ok(Self {
-            socket: CountingSocket::bind(address).await?,
-            handshake: HandshakeConfig::for_region(Uuid::nil()),
-            timing: CircuitTiming::default(),
-            pending_login: Mutex::new(None),
+            inner: Arc::new(CircuitInner {
+                shared: Arc::new(SharedUdp {
+                    socket: CountingSocket::bind(address).await?,
+                    fan: Mutex::new(Fan {
+                        bound: HashMap::new(),
+                        senders: HashMap::new(),
+                        unbound: VecDeque::new(),
+                        pending: VecDeque::new(),
+                    }),
+                }),
+                handshake: Mutex::new(HandshakeConfig::for_region(Uuid::nil())),
+                timing: Mutex::new(CircuitTiming::default()),
+                reader: Mutex::new(None),
+                next_id: AtomicU64::new(1),
+            }),
         })
     }
-    pub fn with_udp_counters(mut self, udp: Arc<UdpCounters>) -> Self {
-        self.socket.set_counters(udp);
+    pub fn with_udp_counters(self, udp: Arc<UdpCounters>) -> Self {
+        self.inner.shared.socket.set_counters(udp);
         self
     }
-    pub fn with_handshake(mut self, handshake: HandshakeConfig) -> Self {
-        self.handshake = handshake;
+    pub fn with_handshake(self, handshake: HandshakeConfig) -> Self {
+        *self
+            .inner
+            .handshake
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = handshake;
         self
     }
-    pub fn with_timing(mut self, timing: CircuitTiming) -> Result<Self, CircuitError> {
+    pub fn with_timing(self, timing: CircuitTiming) -> Result<Self, CircuitError> {
         if !timing.valid() {
             return Err(CircuitError::InvalidTiming);
         }
-        self.timing = timing;
+        *self
+            .inner
+            .timing
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = timing;
         Ok(self)
     }
     pub fn local_addr(&self) -> Result<SocketAddr, CircuitError> {
-        Ok(self.socket.local_addr()?)
+        Ok(self.inner.shared.socket.local_addr()?)
+    }
+
+    fn ensure_reader(&self) {
+        let mut reader = self
+            .inner
+            .reader
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if reader.is_some() {
+            return;
+        }
+        let shared = Arc::clone(&self.inner.shared);
+        *reader = Some(tokio::spawn(async move { read_loop(shared).await }));
+    }
+
+    fn open_session(&self, expect: CircuitExpect) -> SessionSock {
+        self.ensure_reader();
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let inbox = Arc::new(Inbox::new());
+        let mut fan = self
+            .inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.senders.insert(id, Arc::clone(&inbox));
+        if let Some(pos) = fan
+            .pending
+            .iter()
+            .position(|queued| datagram_matches(&queued.bytes, &expect))
+            && pos < fan.pending.len()
+            && let Some(datagram) = fan.pending.remove(pos)
+        {
+            fan.bound.insert(datagram.from, id);
+            inbox.push(datagram);
+        } else {
+            fan.unbound.push_back(UnboundServe {
+                id,
+                expect,
+                inbox: Arc::clone(&inbox),
+            });
+        }
+        SessionSock {
+            shared: Arc::clone(&self.inner.shared),
+            id,
+            inbox,
+        }
     }
     /// Serve one authorized viewer until LogoutReply. Datagram errors are
     /// tolerated until inactivity. The outer deadline is only a test guard.
@@ -874,21 +1156,33 @@ impl CircuitServer {
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
         }
-        let mut handshake = self.handshake.clone();
+        let session = self.open_session(expect);
+        let mut handshake = self
+            .inner
+            .handshake
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
         if handshake.region_id.is_nil() {
             handshake.region_id = expect.region_id;
         }
+        let timing = *self
+            .inner
+            .timing
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         serve_socket_reporting(
-            &self.socket,
+            &session,
             expect,
             handshake,
             arrival,
-            self.timing,
-            self.socket.counters(),
+            timing,
+            self.inner.shared.socket.counters(),
             ServeExtra {
                 root_arrival,
                 connected,
-                pending: Some(&self.pending_login),
+                // A login that arrived early is already queued on `session`.
+                pending: None,
                 stop,
             },
         )
@@ -1152,6 +1446,67 @@ mod tests {
         assert_eq!(session.region_id(), Some(expect.region_id));
         session.logout(Duration::from_secs(8)).await.unwrap();
         running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_viewers_complete_the_handshake_together() {
+        let server = CircuitServer::bind().await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let first = expect_agent();
+        let second = CircuitExpect {
+            agent_id: Uuid::from_u128(3),
+            session_id: Uuid::from_u128(4),
+            circuit_code: 43,
+            region_id: first.region_id,
+        };
+        let left_server = server.clone();
+        let right_server = server.clone();
+        let left_task =
+            tokio::spawn(
+                async move { left_server.serve_one(first, Duration::from_secs(20)).await },
+            );
+        let right_task = tokio::spawn(async move {
+            right_server
+                .serve_one(second, Duration::from_secs(20))
+                .await
+        });
+        let http = ferroan_bot::login::http_client().unwrap();
+        let mut left = ferroan_bot::Session::connect(
+            addr,
+            ferroan_bot::Agent {
+                agent_id: first.agent_id,
+                session_id: first.session_id,
+                circuit_code: first.circuit_code,
+            },
+        )
+        .await
+        .unwrap();
+        let mut right = ferroan_bot::Session::connect(
+            addr,
+            ferroan_bot::Agent {
+                agent_id: second.agent_id,
+                session_id: second.session_id,
+                circuit_code: second.circuit_code,
+            },
+        )
+        .await
+        .unwrap();
+        let (left_ready, right_ready) = tokio::join!(
+            left.run_until_ready(&http, "", Duration::from_secs(8)),
+            right.run_until_ready(&http, "", Duration::from_secs(8)),
+        );
+        left_ready.unwrap();
+        right_ready.unwrap();
+        assert_eq!(left.region_id(), Some(first.region_id));
+        assert_eq!(right.region_id(), Some(second.region_id));
+        let (left_out, right_out) = tokio::join!(
+            left.logout(Duration::from_secs(8)),
+            right.logout(Duration::from_secs(8)),
+        );
+        left_out.unwrap();
+        right_out.unwrap();
+        left_task.await.unwrap().unwrap();
+        right_task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
