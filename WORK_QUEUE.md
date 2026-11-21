@@ -70,7 +70,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | DONE (#123) |
-| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 (retargeted after #124) |
+| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | IN PROGRESS (feat/console-forms) |
 | Q14 | P2.0e: terrain from the C# region store | DONE (#126) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
@@ -252,6 +252,7 @@ Q14 (21 November 2026, `feat/terrain`): [PR #126](https://github.com/KanikaBreed
 
 ## Found while working
 
+- 2026-11-21, Q13b: an unknown parsed session id is answered by C# (`c70fee205f`) with `CloseSession` OK and `ReadResponses` 200 `text/html` empty. Recorded as TB27. Ferroan matches both. Reproduced on purpose.
 - 2026-11-21, Q14: macOS `checks` on `4a89a2f` failed in `bot_login_survives_one_second_of_viewer_ack_loss` ([run 44889904109](https://github.com/KanikaBreed/Ferroan/actions/runs/44889904109), job `checks (macos-latest)`). The relay's connected UDP `recv` returned `Connection refused` (os error 61) at `crates/ferroan-client/tests/login_loss.rs` line 261, and the relay task then dropped before `stop.send`. The same test passed on Windows in that run. This test's land queue is empty, so the new terrain send path does not run. Recorded before the retry. Not a product change.
 - 2026-11-21, Q20 (#59): PostgreSQL `FetchAssetMetadataSet` uses `LIMIT start+count-1` (TB19). `PGSQLAssetData.StoreAsset` swallows a failed write and returns true; MySQL returns false only from the catch (TB20). Ferroan returns the error. `MuteListStore.migrations` is on disk and in the catalog, but the PGSQL project does not embed it, so a C# server never creates that row (TB21). The schema oracle applies that one file when the row is missing. `cargo xtask live assets --db mysql` and `--db pgsql` still stop and say they need P1.A1; #59 does not wire them.
 - 2026-11-21, Q10x: `live services` on `eaab94e` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44841073013](https://github.com/KanikaBreed/Ferroan/actions/runs/44841073013), job `live services`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The same step passed on the cold run [44839097988](https://github.com/KanikaBreed/Ferroan/actions/runs/44839097988). The root-arrival probe's ten-second HTTP deadline fired, and the error has no GridUser or Presence settle state, so the POST itself did not return. The same deadline showed up once in a local Pin4 recapture, and the next run passed. Recorded before the retry. Not a product change.

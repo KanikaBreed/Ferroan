@@ -117,7 +117,8 @@ fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        if !sent && (text.contains("+++") || text.contains("Ferroan#")) {
+        if !sent && (text.contains("+++") || text.contains("Ferroan#") || text.contains("Region ("))
+        {
             if let Some(stdin) = stdin.as_mut() {
                 let _ = stdin.write_all(b"show version\n");
                 let _ = stdin.flush();

@@ -184,6 +184,9 @@ jobs:
       - name: Build OpenSim.ConsoleClient and read a Ferroan console
         if: success()
         run: cargo xtask console-client
+      - name: Compare the remote console's four forms with the C# region
+        if: success()
+        run: cargo xtask console-forms
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

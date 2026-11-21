@@ -52,6 +52,7 @@ mod ci;
 mod circuit_fixtures;
 mod config_oracle;
 mod console_client;
+mod console_forms;
 mod diag_fetch;
 mod docker;
 mod ferrobot;
@@ -132,6 +133,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask docker build
        cargo xtask docker smoke
        cargo xtask console-client
+       cargo xtask console-forms
        cargo xtask ci scope
        cargo xtask ci gate
        cargo xtask ci ensure-sqlite";
@@ -187,6 +189,7 @@ fn main() -> ExitCode {
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
+        ["console-forms"] => console_forms::run(),
         ["ci", "scope"] => ci::scope(),
         ["ci", "gate"] => ci::gate(),
         ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),

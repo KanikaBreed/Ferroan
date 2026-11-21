@@ -64,6 +64,7 @@ pub struct Settings {
     console_user: Option<String>,
     console_pass: String,
     console_origin: Option<String>,
+    console_prompt: String,
     log_dir: Option<PathBuf>,
 }
 
@@ -110,6 +111,10 @@ impl Settings {
                 .to_owned(),
             console_origin,
             console_user,
+            console_prompt: config
+                .get("Startup", "ConsolePrompt")
+                .map(str::to_owned)
+                .unwrap_or_else(|| console::DEFAULT_CONSOLE_PROMPT.to_owned()),
             log_dir: None,
         })
     }
@@ -127,6 +132,7 @@ impl Settings {
             console_user: Some(user.to_owned()),
             console_pass: pass.to_owned(),
             console_origin: None,
+            console_prompt: console::DEFAULT_CONSOLE_PROMPT.to_owned(),
             log_dir: None,
         }
     }
@@ -261,6 +267,10 @@ impl Hub {
                     settings.server
                 ),
                 level.clone(),
+                console::expand_console_prompt(
+                    &settings.console_prompt,
+                    settings.region_name.as_deref().unwrap_or("root"),
+                ),
             )?),
             None => None,
         };
@@ -658,6 +668,22 @@ mod tests {
             Settings::from_config("ferroan-robust", &config, None, None),
             Err(LogError::Endpoint)
         ));
+    }
+
+    #[test]
+    fn console_prompt_uses_the_startup_default_unless_set() {
+        let config = Config::default();
+        let settings = Settings::from_config("ferroan-region", &config, Some("Ferroan Test"), None)
+            .expect("settings");
+        assert_eq!(settings.console_prompt, console::DEFAULT_CONSOLE_PROMPT);
+        let mut config = Config::default();
+        config.set("Startup", "ConsolePrompt", r"Sim [\R]");
+        let settings = Settings::from_config("ferroan-region", &config, Some("Ferroan Test"), None)
+            .expect("settings");
+        assert_eq!(settings.console_prompt, r"Sim [\R]");
+        config.set("Startup", "ConsolePrompt", "");
+        let settings = Settings::from_config("ferroan-region", &config, None, None).expect("empty");
+        assert_eq!(settings.console_prompt, "");
     }
 
     #[test]
