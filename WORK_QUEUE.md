@@ -82,7 +82,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
 | Q22a | P1.A2a: MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins, with fixtures | DONE (#135) |
 | Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | DONE (#136) |
-| Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | IN PROGRESS |
+| Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | DONE (#139) |
 | Q23 | P1.A3: FSAssets | READY after Q22c |
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
@@ -275,7 +275,7 @@ Q22a (21 November 2026, `feat/xasset-plugins`): [PR #135](https://github.com/Kan
 
 Q22b (21 November 2026, `feat/xasset-service`): [PR #136](https://github.com/KanikaBreed/Ferroan/pull/136). `LocalServiceModule` selects `XAssetService` on the asset routes `ferroan-robust` already serves. Store skips when `AssetsExist` is true. On MySQL that reads `assets` (TB28), so a chained migrate deletes the only copy and the `Get` still returns the asset (TB33). PostgreSQL writes the XAsset row first. `UpdateContent` stays false. Delete calls the chain first. PostgreSQL delete is HTTP 500 and the row stays (TB30). `ForEachDefaultXmlAsset` is not called. No live `--backend xasset` run. P1.A2 stays TODO until Q22c.
 
-Q22c (21 November 2026, `feat/xasset-live`): nothing depends on TB27, TB28, TB29, TB30 or TB33, so Ferroan does the fixed behaviour (D29). MySQL `AssetsExist` reads `XAssetsMeta`, and a chained migrate keeps the asset. PostgreSQL metadata uses `LIMIT` count `OFFSET` start and returns the page. PostgreSQL `Delete` binds `uuid` and deletes the data row when no meta row still has that hash; both C# `Delete` methods remove only the meta row and leave a reference-count comment, and that is the rule chosen here. MySQL delete still leaves the data row. TB27 already stores. `cargo xtask live assets --backend xasset --db mysql` and `--db pgsql` list TB27, TB28, TB29, TB30 and TB33, then print `assets: match`. The C# fixes are pending upstream. TB19 and TB20 on `AssetService` are unchanged. P1.A2 stays TODO until this item is DONE.
+Q22c (21 November 2026, `feat/xasset-live`): [PR #139](https://github.com/KanikaBreed/Ferroan/pull/139). Nothing depends on TB27, TB28, TB29, TB30 or TB33, so Ferroan does the fixed behaviour (D29). MySQL `AssetsExist` reads `XAssetsMeta`, and a chained migrate keeps the asset. PostgreSQL metadata uses `LIMIT` count `OFFSET` start and returns the page. PostgreSQL `Delete` binds `uuid` and deletes the data row when no meta row still has that hash; both C# `Delete` methods remove only the meta row and leave a reference-count comment, and that is the rule chosen here. MySQL delete still leaves the data row. TB27 already stores. Locally both commands printed `known differences: TB27, TB28, TB29, TB30, TB33` and `assets: match (12 http records)`. The C# fixes are pending upstream. TB19 and TB20 on `AssetService` are unchanged. P1.A2 is DONE with #135, #136 and #139.
 
 ## Found while working
 
