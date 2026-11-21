@@ -97,7 +97,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
-| Q26 | SPLIT into Q26a to Q26f (#154) |
+| Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
