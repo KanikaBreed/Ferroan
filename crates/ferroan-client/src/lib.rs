@@ -10,7 +10,9 @@
 mod appearance;
 mod arrival;
 mod caps;
+mod chat;
 mod circuit;
+mod datagram_log;
 mod event_queue;
 mod handshake;
 

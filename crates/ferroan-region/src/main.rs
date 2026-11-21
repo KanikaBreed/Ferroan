@@ -169,6 +169,11 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         .with_handshake(config.handshake.clone())
         .with_timing(config.circuit_timing)?
         .with_udp_counters(meters.udp());
+    if let Some(path) = &config.udp_capture
+        && let Err(error) = circuit.open_datagram_log(path)
+    {
+        tracing::warn!("ferroan-region: datagram capture did not open: {error}");
+    }
     let listener = TcpListener::bind(config.http_bind).await?;
     let metrics_listener = match config.monitoring.metrics_listen {
         Some(listen) => Some(TcpListener::bind(listen).await?),
@@ -477,6 +482,7 @@ async fn dispatch_circuits(
     stop: watch::Receiver<bool>,
     started: Arc<AtomicUsize>,
 ) -> Result<(), GridError> {
+    circuit.enable_chat();
     let mut ctx = DispatchCtx {
         circuit,
         clients: LifecycleClients {
@@ -559,6 +565,11 @@ async fn serve_agent(
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
+        circuit.attach_chat(
+            expect.agent_id,
+            format!("{} {}", agent.first_name, agent.last_name),
+            position,
+        );
         let serving = circuit.serve_login(expect, arrival, report, opened, close_rx);
         tokio::pin!(serving);
         let mut close_tx = Some(close_tx);
