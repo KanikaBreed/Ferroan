@@ -97,7 +97,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
-| Q26 | P1.3: grid user, presence and agent preferences | BLOCKED (issue #66) |
+| Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
+| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
+| Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
+| Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
+| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
+| Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
+| Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e; waits for the maintainer's presence-login decision |
 | Q27 | P1.4: avatars and baked textures | READY after Q26 (issue #67) |
 | Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |
 | Q29 | P1.6: grid service | READY after Q28 (issue #69) |
@@ -355,6 +361,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (5) Agent preferences, stores and HTTP together. The plugins are small. All three databases, cross-read, and oracle fixtures for `getagentprefs`, `setagentprefs` and `getagentlang`. No live run.
 
 (6) Live, after the maintainer's presence-login choice above. `cargo xtask live compare griduser`, `compare presence` and `compare agentprefs`, following `live compare accounts`: same forms, fold the current time. `--rust griduser` points `[LoginService] GridUserService` at `OpenSim.Services.Connectors.dll:GridUserServicesConnector` and `GridUserServerURI`, and drops the in-process ServiceList connector, on its own SQLite file. `--rust agentprefs` does the same with `AgentPreferencesServicesConnector` and `AgentPreferencesServerURI`. `--rust presence` points report, logout, logoutregion and the reads at `PresenceServicesConnector` and `PresenceServerURI`. It does not point login at that connector unless the maintainer has said to. A bot login, a region change and a logout leave the same GridUser rows under C# and Rust. Presence rows match on MySQL and PostgreSQL, where the table is shared. On SQLite, Presence is Null inside the process that owns it. The pattern section in `crates/ferroan-services/README.md` gains the three connector rows.
+
+Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-part split is taken as Q26a to Q26f, in that order. For Q26a: `GetAll` matches the user id as a literal prefix. Bind it as a parameter and escape `%`, `_` and the escape character with an explicit `ESCAPE`, on all three stores, as Ferroan does for any text from outside; a `%` or `_` in the id matches only itself. Add a test with a quote, a `%` and a `_` in the id. The presence-login choice is asked of the maintainer now; only Q26f waits for it.
 
 ## Found while working
 
