@@ -50,6 +50,7 @@ Limit hits and handled errors go through one helper in `ferroan-diag`. Each repo
 | Crate | Purpose | Phase |
 | --- | --- | --- |
 | `ferroan-services` | Inventory, presence, grid, login, hypergrid, money server. Assets and user accounts are implemented | 1 |
+| `ferroan-assets` | The new asset backend: catalog, storage plugins (SeaweedFS, S3, local files), checks, integrity, import and sync ([ASSET_SYSTEM.md](docs/ASSET_SYSTEM.md)) | 1 |
 | `ferroan-scene` | Read-only terrain and the frame thread. Objects, prims and avatars are still later phase 2 work | 2 |
 | `ferroan-modules` | Land, estates, groups, inventory transfer, map, dynamic textures | 5 |
 | `ferroan-physics` | The only crate that calls Jolt (native C++) | 3 |
