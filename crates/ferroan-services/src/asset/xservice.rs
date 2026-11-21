@@ -48,7 +48,7 @@
 //! MySQL `AssetsExist` reads `XAssetsMeta` (TB28), so a chained migrate
 //! stores the asset and then deletes the chain row (TB33). PostgreSQL
 //! metadata returns the page (TB29). PostgreSQL `Delete` binds `uuid` and
-//! deletes the data row when its hash is unused (TB30). This is not TB19
+//! removes only the meta row (TB30). The data row stays. This is not TB19
 //! or TB20.
 
 use uuid::Uuid;

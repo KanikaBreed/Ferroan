@@ -41,11 +41,11 @@
 //! `FetchAssetMetadataSet` at the pin sends `LIMIT :start, :count` (TB29).
 //! This store sends `LIMIT count OFFSET start` and returns that page. This
 //! is not the ordinary asset store's TB19 limit. `Delete` at the pin binds
-//! the id as varchar (TB30). This store binds `uuid`, deletes the meta row,
-//! and deletes the data row when no meta row still has that hash.
+//! the id as varchar (TB30). This store binds `uuid` and deletes only the
+//! meta row. The data row stays: rows are shared by hash and there is no
+//! reference count.
 
 use sqlx::PgPool;
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::decode::{
@@ -184,48 +184,22 @@ pub(super) async fn store(pool: &PgPool, asset: &Asset) -> Result<(), StoreError
     Ok(())
 }
 
-/// The pin binds `id` as varchar against `uuid` (TB30) and leaves the data
-/// row, with a comment that reaping it needs a reference count. MySQL's
-/// `Delete` has the same comment and the same meta-only statement. This
-/// store binds `uuid`. After the meta row is gone, the data row is deleted
-/// when no meta row still has that hash. An id that does not parse deletes
-/// nothing and returns false. A missing id returns true, as the C# method
-/// returns true after `ExecuteNonQuery`.
+/// The pin binds `id` as varchar against `uuid` (TB30) and leaves both rows.
+/// The prepared C# fix binds `uuid` and deletes only the meta row, which is
+/// what MySQL's `Delete` already does. This store does the same. The data
+/// row stays: rows are shared by hash and there is no reference count, so
+/// deleting an unused data row races a concurrent store that found the hash
+/// and skipped its insert. An id that does not parse deletes nothing and
+/// returns false. A missing id returns true, as the C# method returns true
+/// after `ExecuteNonQuery`.
 pub(super) async fn delete(pool: &PgPool, id: &str) -> Result<bool, StoreError> {
     let Ok(uuid) = Uuid::parse_str(id.trim()) else {
         return Ok(false);
     };
-    let found = sqlx::query("SELECT hash FROM xassetsmeta WHERE id = $1::uuid")
-        .bind(uuid.to_string())
-        .fetch_optional(pool)
-        .await?;
-    let hash: Option<Vec<u8>> =
-        match found {
-            Some(row) => Some(row.try_get("hash").map_err(|error| {
-                StoreError::Row(format!("xasset postgres delete hash: {error}"))
-            })?),
-            None => None,
-        };
     sqlx::query("DELETE FROM xassetsmeta WHERE id = $1::uuid")
         .bind(uuid.to_string())
         .execute(pool)
         .await?;
-    if let Some(hash) = hash {
-        let left =
-            sqlx::query("SELECT COUNT(*)::bigint AS remaining FROM xassetsmeta WHERE hash = $1")
-                .bind(hash.as_slice())
-                .fetch_one(pool)
-                .await?;
-        let remaining: i64 = left
-            .try_get("remaining")
-            .map_err(|error| StoreError::Row(format!("xasset postgres delete count: {error}")))?;
-        if remaining == 0 {
-            sqlx::query("DELETE FROM xassetsdata WHERE hash = $1")
-                .bind(hash.as_slice())
-                .execute(pool)
-                .await?;
-        }
-    }
     Ok(true)
 }
 

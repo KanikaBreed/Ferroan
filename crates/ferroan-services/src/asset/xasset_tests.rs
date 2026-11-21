@@ -192,22 +192,33 @@ async fn check_plugin(store: &XAssetStore) {
         Backend::Postgres => {
             assert!(store.delete(&id.to_string()).await.expect("delete"));
             assert!(!store.delete("nope").await.expect("bad id"));
-            assert!(store.get(id).await.expect("get").is_none());
+            assert!(
+                store.get(id).await.expect("get").is_none(),
+                "the meta row goes"
+            );
             assert!(store.get(other).await.expect("get").is_some());
             assert_eq!(
                 store.data_rows().await.expect("data"),
-                before - 1,
-                "the unused hash is reaped"
+                before,
+                "the data row stays"
             );
             assert!(store.delete(&other.to_string()).await.expect("other"));
+            assert!(
+                store.get(other).await.expect("get").is_none(),
+                "the twin meta row goes"
+            );
             assert_eq!(
                 store.data_rows().await.expect("data"),
-                before - 2,
-                "the twin hash is reaped and the truncated row remains"
+                before,
+                "a shared hash stays after its last meta row goes"
             );
             assert!(store.get(xid(3)).await.expect("truncated").is_some());
             assert!(store.delete(&xid(3).to_string()).await.expect("truncated"));
-            assert_eq!(store.data_rows().await.expect("data"), 0);
+            assert!(
+                store.get(xid(3)).await.expect("get").is_none(),
+                "the meta row goes"
+            );
+            assert_eq!(store.data_rows().await.expect("data"), before);
         }
         Backend::Sqlite => panic!("sqlite"),
     }

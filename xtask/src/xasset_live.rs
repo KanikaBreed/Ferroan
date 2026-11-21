@@ -9,9 +9,11 @@
 //! database. Neither service calls `ForEachDefaultXmlAsset`.
 //!
 //! The success line names TB27, TB28, TB29, TB30 and TB33. Ferroan does the
-//! fixed behaviour. The C# process is still the pin, so those differences
-//! stay visible until the pin moves. A capture that does not hit one of them
-//! still lists it. Any other HTTP difference fails the command.
+//! fixed behaviour. TB30 deletes only the meta row and leaves the data row;
+//! the pin throws and the meta row stays. The C# process is still the pin,
+//! so those differences stay visible until the pin moves. A capture that
+//! does not hit one of them still lists it. Any other HTTP difference fails
+//! the command.
 
 use std::process::ExitCode;
 
