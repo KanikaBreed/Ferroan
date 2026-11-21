@@ -6,10 +6,12 @@
 //! Storage provider and connection string follow `AssetServiceBase`: the
 //! asset section wins, and an empty value falls through to
 //! `[DatabaseService]`. SQLite, MySQL and PostgreSQL providers are opened for
-//! `AssetService`. `XAssetService` opens MySQL and PostgreSQL only. FSAssets
-//! is not served. `DefaultAssetLoader` names the filesystem loader, and
-//! `AssetLoaderArgs` is the asset-set control file. An empty loader name
-//! loads nothing. `AssetLoaderEnabled = false` skips the load. `XAssetService`
+//! `AssetService`. `XAssetService` opens MySQL and PostgreSQL only.
+//! `FSAssetService` opens MySQL and PostgreSQL only. `DefaultAssetLoader`
+//! names the filesystem loader, and `AssetLoaderArgs` is the asset-set
+//! control file. An empty loader name loads nothing.
+//! `AssetLoaderEnabled = false` skips the load on `AssetService`.
+//! `FSAssetService` does not read that key. `XAssetService`
 //! loads a loader name only when `ChainedServiceModule` is set, and it does
 //! not read the library file: `ForEachDefaultXmlAsset` is unreachable at the
 //! pin. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to
@@ -18,14 +20,24 @@
 //! callers when no trust context is set, which is this process, so it is
 //! accepted and does not add a check.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ferroan_config::Config;
 use ferroan_db::{Backend, Pool};
 
+use super::fsasset::FsAssetStore;
+use super::fservice::FsAssetService;
+use super::fsfiles::{FsFiles, log_fsassets};
 use super::http::{AssetHttp, AssetOptions, DeleteMode};
 use super::loader::{filesystem_loader, load_asset_sets, seed_assets};
 use super::store::AssetStore;
 use super::xasset::XAssetStore;
 use super::xservice::XAssetService;
+
+/// The first FSAsset connector in the process is the main instance unless
+/// `SecondaryInstance` is set. Later connectors are not.
+static FS_MAIN_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssetError {
@@ -45,9 +57,10 @@ impl AssetHttp {
     pub async fn open(config: &Config) -> Result<Self, AssetError> {
         let module = nonempty(config, SECTION, "LocalServiceModule")
             .ok_or(AssetError::Config("No LocalServiceModule in config file"))?;
-        if !is_xasset_service(module) && !is_stock_asset_service(module) {
+        let fsasset = is_fsasset_service(module);
+        if !fsasset && !is_xasset_service(module) && !is_stock_asset_service(module) {
             return Err(AssetError::Config(
-                "only OpenSim.Services.AssetService.dll:AssetService is served; FSAssets is not ported",
+                "only OpenSim.Services.AssetService.dll:AssetService is served",
             ));
         }
         if https_main(config)? {
@@ -84,6 +97,9 @@ impl AssetHttp {
         };
         if is_xasset_service(module) {
             return open_xasset(config, backend, connection, options).await;
+        }
+        if fsasset {
+            return open_fsasset(config, backend, provider, connection, options).await;
         }
         let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
         let store = AssetStore::new(pool)?;
@@ -196,6 +212,102 @@ fn asset_backend(provider: &str) -> Result<Backend, AssetError> {
             "this asset service opens SQLite, MySQL and PostgreSQL stores",
         ))
     }
+}
+
+async fn open_fsasset(
+    config: &Config,
+    backend: Backend,
+    provider: &str,
+    connection: &str,
+    options: AssetOptions,
+) -> Result<AssetHttp, AssetError> {
+    if backend == Backend::Sqlite {
+        return Err(AssetError::Message(format!(
+            "Could not find a storage interface in the module {provider}"
+        )));
+    }
+    let days = config_i32(config, SECTION, "DaysBetweenAccessTimeUpdates", 0)?;
+    let secondary = config_bool_in(config, SECTION, "SecondaryInstance", false)?;
+    let osgrid = config_bool_in(config, SECTION, "UseOsgridFormat", false)?;
+    let realm = nonempty(config, SECTION, "Realm").unwrap_or("fsassets");
+    let pool = Pool::open(backend, connection, &["FSAssetStore"]).await?;
+    let store = FsAssetStore::with_settings(pool, realm, days)?;
+    let fallback = open_fallback(config, backend, connection).await?;
+    let base = nonempty(config, SECTION, "BaseDirectory")
+        .ok_or(AssetError::Config("Configuration error"))?;
+    let spool = nonempty(config, SECTION, "SpoolDirectory").unwrap_or("/tmp");
+    let spool_dir = Path::new(spool);
+    std::fs::create_dir_all(spool_dir.join("spool")).map_err(|error| {
+        AssetError::Message(format!("could not create the spool directory: {error}"))
+    })?;
+    let files = FsFiles::new(base, spool, osgrid);
+    let main = claim_fs_main(secondary);
+    let mut service = FsAssetService::new(store, files, fallback, main);
+    if main && let Some(loader) = nonempty(config, SECTION, "DefaultAssetLoader") {
+        if !filesystem_loader(loader) {
+            return Err(AssetError::Message(format!(
+                "Asset loader could not be loaded from {loader}"
+            )));
+        }
+        let args = config.get(SECTION, "AssetLoaderArgs").unwrap_or("");
+        log_fsassets("INFO", &format!("Loading default asset set from {args}"));
+        let loaded = load_asset_sets(Path::new(args))
+            .map_err(|error| AssetError::Message(error.to_string()))?;
+        service
+            .load_defaults(&loaded)
+            .await
+            .map_err(|error| AssetError::Message(error.to_string()))?;
+    }
+    if main {
+        service.start_writer();
+    }
+    log_fsassets("INFO", "FS asset service enabled");
+    Ok(AssetHttp::from_fsasset(service, options))
+}
+
+async fn open_fallback(
+    config: &Config,
+    backend: Backend,
+    connection: &str,
+) -> Result<Option<AssetStore>, AssetError> {
+    let Some(name) = nonempty(config, SECTION, "FallbackService") else {
+        return Ok(None);
+    };
+    if !is_stock_asset_service(name) {
+        log_fsassets("ERROR", &format!("Failed to load fallback service {name}"));
+        return Ok(None);
+    }
+    let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
+    log_fsassets("INFO", "Fallback service loaded");
+    Ok(Some(AssetStore::new(pool)?))
+}
+
+fn claim_fs_main(configured_secondary: bool) -> bool {
+    if FS_MAIN_CLAIMED.swap(true, Ordering::SeqCst) {
+        false
+    } else {
+        !configured_secondary
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_fsasset_main_for_test() {
+    FS_MAIN_CLAIMED.store(false, Ordering::SeqCst);
+}
+
+fn config_i32(config: &Config, section: &str, key: &str, default: i32) -> Result<i32, AssetError> {
+    let Some(text) = config.get(section, key) else {
+        return Ok(default);
+    };
+    if text.is_empty() {
+        return Ok(default);
+    }
+    text.parse::<i32>()
+        .map_err(|_| AssetError::Message(format!("{section} {key} is not an integer")))
+}
+
+fn is_fsasset_service(module: &str) -> bool {
+    module.trim().contains("FSAsset")
 }
 
 fn is_stock_asset_service(module: &str) -> bool {
@@ -351,5 +463,32 @@ mod tests {
                 .contains("Asset loader could not be loaded"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn fsasset_rejects_sqlite_and_a_bad_interval_before_connecting() {
+        let sqlite = parsed(
+            "[AssetService]\n\
+             LocalServiceModule = OpenSim.Services.FSAssetService.dll:FSAssetConnector\n\
+             StorageProvider = OpenSim.Data.SQLite.dll\n\
+             ConnectionString = Data Source=/tmp/ferroan-q23c-unused.db;Version=3\n",
+        );
+        let Err(error) = AssetHttp::open(&sqlite).await else {
+            panic!("sqlite fsasset was accepted");
+        };
+        assert!(error.to_string().contains("storage interface"), "{error}");
+
+        let days = parsed(
+            "[AssetService]\n\
+             LocalServiceModule = OpenSim.Services.FSAssetService.dll:FSAssetConnector\n\
+             StorageProvider = OpenSim.Data.MySQL.dll\n\
+             ConnectionString = Server=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None\n\
+             DaysBetweenAccessTimeUpdates = never\n\
+             BaseDirectory = /tmp/ferroan-q23c-unused-base\n",
+        );
+        let Err(error) = AssetHttp::open(&days).await else {
+            panic!("a bad access interval was accepted");
+        };
+        assert!(error.to_string().contains("not an integer"), "{error}");
     }
 }

@@ -73,7 +73,7 @@ use uuid::Uuid;
 use super::store::StoreError;
 
 /// `AssetType.Object`. Store may write an object with a trailing NUL.
-const OBJECT_TYPE: i8 = 6;
+pub(super) const OBJECT_TYPE: i8 = 6;
 
 /// How many directory obstacles one write will move aside.
 const BLOCK_RENAMES: u32 = 16;
@@ -579,6 +579,10 @@ fn prefixed(path: &Path) -> io::Result<PathBuf> {
 
 fn warn_fsassets(message: &str) {
     report_fsassets("WARN", message);
+}
+
+pub(super) fn log_fsassets(level: &str, message: &str) {
+    report_fsassets(level, message);
 }
 
 fn report_fsassets(level: &str, message: &str) {
