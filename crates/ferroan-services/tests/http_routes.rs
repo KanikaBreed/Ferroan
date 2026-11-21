@@ -373,7 +373,7 @@ async fn open_reads_the_asset_section_and_rejects_other_backends() {
     let Err(error) = AssetHttp::open(&config).await else {
         panic!("FSAssets was accepted");
     };
-    assert!(error.to_string().contains("FSAssets"), "{error}");
+    assert!(error.to_string().contains("storage interface"), "{error}");
     config.set(
         "AssetService",
         "LocalServiceModule",
