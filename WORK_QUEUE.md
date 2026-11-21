@@ -70,7 +70,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | DONE (#123) |
-| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | BLOCKED |
+| Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | BLOCKED (#124) |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
@@ -216,7 +216,7 @@ Q13c split (manager, 21 November 2026): the block in #119 is right. Q13c is spli
 
 Q13c BLOCKED (21 November 2026, `docs/diag-review-blocked`): the row is six independent fixes, and together they are more than about a day. No code was changed and no scope was chosen. Part (1) stays first, as the manager asked, rather than growing this item.
 
-Q13b BLOCKED (21 November 2026, `docs/console-forms-blocked`): the four forms were spoken locally at pin `c70fee205f`, once to the C# region (`--console rest`, not `--background`) and once to `ferroan-region` with the same `ConsoleUser` and `ConsolePass`. The strict compare (elements, attributes and order; session id, line number, clock and version text folded) does not pass. The extra differences are the help catalogue, the prompt text and the version-line shape, which this row does not wildcard. No code was committed. A live-job step that failed the strict compare would fail CI. The row's acceptance is unchanged.
+Q13b BLOCKED (21 November 2026, #124, `docs/console-forms-blocked`): the four forms were spoken locally at pin `c70fee205f`, once to the C# region (`--console rest`, not `--background`) and once to `ferroan-region` with the same `ConsoleUser` and `ConsolePass`. The strict compare (elements, attributes and order; session id, line number, clock and version text folded) does not pass. The extra differences are the help catalogue, the prompt text and the version-line shape, which this row does not wildcard. No code was committed. A live-job step that failed the strict compare would fail CI. The row's acceptance is unchanged.
 
 What matched. Wrong password: both 401 `text/plain`, empty body. `SessionCommand` `show version` on the live session: both 200 `text/xml`, `ConsoleSession` / `Result` `OK`. `CloseSession` of that session: the same document. `SessionCommand` of `00000000-0000-0000-0000-000000000001`: both 404 `text/plain`, empty body. Ferroan's version line contains `Ferroan 0.1.0`. C#'s contains `Version:`. No reply body contained the console password, the rejected password or the generated estate password. The first `ReadResponses` after `StartSession` was drained and not compared: it is scrollback from `lastLineSeen == 0` (C# 212 lines, 33672 bytes; Ferroan 2 lines, 316 bytes). The compared version reply is the next poll.
 
