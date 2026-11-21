@@ -11,6 +11,7 @@ members = [
     "crates/ferroan-services",
     "crates/ferroan-robust",
     "crates/ferroan-region",
+    "crates/ferroan-scene",
     "crates/ferroan-capture",
     "crates/ferroan-client",
     "tools/bot",

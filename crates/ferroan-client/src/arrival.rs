@@ -60,11 +60,12 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The arrival notification for a root login. The region supplies the accepted
-//! login position until terrain/landing adjustment is implemented in P2.0e.
-//! ScenePresence's initial camera and velocity are zero, so a fresh root login
-//! without an AgentUpdate uses its exact (not unit length) fallback look vector.
-//! Crossing, avatar updates, terrain, parcel and appearance messages are later work.
+//! The arrival notification for a root login. The region supplies the position
+//! `MakeRootAgent` would use: the login start, lifted to terrain height when a
+//! heightmap is loaded. ScenePresence's initial camera and velocity are zero,
+//! so a fresh root login without an AgentUpdate uses its exact (not unit
+//! length) fallback look vector. Land packets follow `AgentMovementComplete`.
+//! Crossing, avatar updates, parcel and appearance messages are later work.
 
 use ferroan_protocol::msgs::AgentMovementComplete;
 
@@ -79,6 +80,16 @@ pub struct ArrivalConfig {
     pub region_handle: u64,
     /// Scene.GetSimulatorVersion, encoded as a bounded NUL-terminated string.
     pub channel_version: String,
+    /// Land `LayerData` bodies, one patch per packet, sent after arrival.
+    pub land: Vec<LandLayer>,
+}
+
+/// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
+/// `data` is the bitpack, without the UDP header or the variable-length prefix.
+#[derive(Clone, Debug)]
+pub struct LandLayer {
+    pub kind: u8,
+    pub data: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -91,6 +102,7 @@ impl Default for ArrivalConfig {
             look_at: [0.99, 0.042, 0.0],
             region_handle: 0,
             channel_version: "Ferroan Server".into(),
+            land: Vec::new(),
         }
     }
 }

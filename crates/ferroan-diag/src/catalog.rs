@@ -51,3 +51,5 @@ pub const TEXTURE_BITFIELD: &str = "texture.bitfield";
 pub const EXTRA_BYTES: &str = "extra.bytes";
 pub const REDACT_SECRETS: &str = "log.redact-secrets";
 pub const CONSOLE_SESSIONS: &str = "console.sessions";
+pub const TERRAIN_EDGE: &str = "terrain.edge";
+pub const TERRAIN_BLOB: &str = "terrain.blob";

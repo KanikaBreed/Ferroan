@@ -29,6 +29,11 @@ pub use limits::{MAX_POOL_CONNECTIONS, MIGRATIONS_STORE, MIGRATIONS_VERSION};
 pub use migrations::store_versions_in_dir;
 pub use pool::{Pool, open_sqlite_file};
 
+/// The SQLite file a Tranquillity connection string names. Does not open it.
+pub fn sqlite_filename(connection_string: &str) -> Result<std::path::PathBuf, DbError> {
+    Ok(connect::sqlite_target(connection_string)?.filename)
+}
+
 /// Tranquillity `develop` revision whose migration resources this crate expects.
 /// The pin is the `OpenSim-Tranquillity` row in `docs/REFERENCES.md`.
 pub const TRANQUILLITY_REVISION: &str = "c70fee205f64ee8672a8d607cef6a733931da951";

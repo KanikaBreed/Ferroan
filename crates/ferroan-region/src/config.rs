@@ -110,6 +110,9 @@ pub struct RegionConfig {
     pub monitoring: MonitoringSettings,
     /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
     pub logs: ferroan_log::Settings,
+    /// `[DatabaseService] ConnectionString` when it is present and not empty.
+    /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
+    pub terrain_store: Option<String>,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -335,6 +338,11 @@ impl RegionConfig {
                 Some(id),
             )
             .map_err(log_config_error)?,
+            terrain_store: server
+                .get("DatabaseService", "ConnectionString")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
         })
     }
 
@@ -342,14 +350,16 @@ impl RegionConfig {
         (u64::from(self.location[0]) * 256) << 32 | (u64::from(self.location[1]) * 256)
     }
 
-    /// Until AgentUpdate and terrain are implemented, use the accepted login
-    /// position and CompleteMovement's initial zero-camera/zero-velocity fallback.
+    /// CompleteMovement's initial zero-camera/zero-velocity fallback.
+    /// `position` is the login start, or the terrain-lifted start when the
+    /// caller has a heightmap. Land packets are attached by the dispatcher.
     pub fn arrival(&self, position: [f32; 3]) -> ferroan_client::ArrivalConfig {
         ferroan_client::ArrivalConfig {
             position,
             look_at: [0.99, 0.042, 0.0],
             region_handle: self.handle(),
             channel_version: self.channel_version.clone(),
+            land: Vec::new(),
         }
     }
 }

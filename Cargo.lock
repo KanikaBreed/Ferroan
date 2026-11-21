@@ -488,6 +488,7 @@ dependencies = [
  "ferroan-llsd",
  "ferroan-log",
  "ferroan-protocol",
+ "ferroan-scene",
  "ferroan-services",
  "flate2",
  "reqwest",
@@ -510,6 +511,19 @@ dependencies = [
  "ferroan-services",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ferroan-scene"
+version = "0.1.0"
+dependencies = [
+ "ferroan-db",
+ "ferroan-diag",
+ "flate2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
