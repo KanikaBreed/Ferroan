@@ -71,7 +71,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | DONE (#123) |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 (retargeted after #124) |
-| Q14 | P2.0e: terrain from the C# region store | IN PROGRESS (feat/terrain) |
+| Q14 | P2.0e: terrain from the C# region store | DONE (#126) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
@@ -247,6 +247,8 @@ Q10w (manager, 20 November 2026): the Pin5 live failure is the record-twice rule
 Q10v / Pin5 (manager, 20 November 2026, at the maintainer's request): the maintainer asked for every open upstream PR they have sent to be rolled into one build and used as the pin, because the reference needs the fixes. The manager merged `develop` and the 26 PRs into their fork's `dev-build`, then the manager's own fixes for TB17 (#465) and TB18 (#466), opened at the maintainer's request (no conflicts; pushed as a fast-forward, after a merge commit that brings the old Pin3 branch up to `develop`, whose content it already held), built it, ran the C# tests, and moved `/home/cinder/Git/reference/OpenSim-Tranquillity` to `c70fee2`. It goes first, before Q10u, because Q10u changes the capture patch and that patch must apply at the new pin. Q10h's block (the Grid connector's unchecked HTTP status) should be re-read after Pin5, because #438 fixes that in C#. When the carried PRs merge upstream, the pin goes back to `develop` as Pin4 did.
 
 Q10t / Pin4 (manager, 19 November 2026, at the maintainer's word): all eight PRs Pin3 carried (#418, #419, #422, #423, #425, #426, #428, #429) merged into OpenSim-NGC `develop` on 19 and 20 November, so under D21 the pin goes back to a `develop` commit: `f67db54399c027fd74e5aefcb2193905b4dc1646`. The manager moves `/home/cinder/Git/reference/OpenSim-Tranquillity` to it before the coder starts. TB11 is not fixed there: #428 merged without it, and the maintainer will send it as a new PR. It comes before Q11 because the SQLite region-store migration it brings matters to Q14 (terrain from the C# region store).
+
+Q14 (21 November 2026, `feat/terrain`): [PR #126](https://github.com/KanikaBreed/Ferroan/pull/126). The newest `terrain` row is read after `ferroan-db` checks RegionStore migration 47. At pin `c70fee205f`, a 256² map cleared to 21 with cells `[0,15]` and `[128,128]` at 40 produces revision 23 and 256 land `LayerData` bodies; `captured_csharp_region_layers_match` matches every body. Login Z uses `movement_z` (bits `1109605744` for start 25 and ground 40). `Standalone.ini` names `URI=file:OpenSim.db`, which C# creates and this row does not, so a missing file is no saved heightmap and the live grid still starts. Estate edits, physics, wind and `ModifyLand` stay out of this row. Firestorm is pending. CI on `c6052ac`: [checks](https://github.com/KanikaBreed/Ferroan/actions/runs/44890379206) and [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44890379220). Images ran on Home1 for 4m31s.
 
 ## Found while working
 
