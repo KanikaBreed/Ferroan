@@ -50,7 +50,9 @@
 //! already has a row updates `access_time` only and answers success (TB35).
 //! PostgreSQL `Delete` of a non-uuid deletes nothing and returns false (TB39).
 //! `AssetsExist` reads the table only. Import is the SQL reader: MySQL uses
-//! `LIMIT start, count`, and PostgreSQL uses the pin's `LIMIT start OFFSET count`.
+//! `LIMIT start, count`, and PostgreSQL uses the pin's `LIMIT start OFFSET count`
+//! (TB40). Q23d changes that page to `LIMIT count OFFSET start`. The SQL here
+//! stays the pin's until that command lands. Files are `FsFiles`, not this store.
 //!
 //! This does not change TB19 or TB20 on `AssetService`.
 

@@ -26,22 +26,29 @@ pub fn cross() -> ExitCode {
     run_plugin_cross(
         "csharp_and_rust_read_each_others_rows",
         "FERROAN_ASSET_CROSS",
+        true,
     )
 }
 
 /// Rust writes `XAssetsMeta` / `XAssetsData` rows and the pinned XAsset plugins
 /// read them, then the reverse, on MySQL and PostgreSQL.
 pub fn xasset_cross() -> ExitCode {
-    run_plugin_cross("xasset_plugins_cross_read", "FERROAN_XASSET_CROSS")
+    run_plugin_cross("xasset_plugins_cross_read", "FERROAN_XASSET_CROSS", true)
 }
 
 /// Rust writes `fsassets` rows and the pinned FSAssets plugins read them, then
 /// the reverse, on MySQL and PostgreSQL. No filesystem and no live harness.
 pub fn fsassets_cross() -> ExitCode {
-    run_plugin_cross("fsassets_plugins_cross_read", "FERROAN_FSASSET_CROSS")
+    run_plugin_cross("fsassets_plugins_cross_read", "FERROAN_FSASSET_CROSS", true)
 }
 
-fn run_plugin_cross(test_name: &str, gate: &str) -> ExitCode {
+/// Rust and the pinned `GetFsData` read each other's FSAssets files.
+/// No database and no live harness.
+pub fn fsassets_files() -> ExitCode {
+    run_plugin_cross("fsassets_files_cross_read", "FERROAN_FSASSET_FILES", false)
+}
+
+fn run_plugin_cross(test_name: &str, gate: &str, databases: bool) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
@@ -75,32 +82,35 @@ fn run_plugin_cross(test_name: &str, gate: &str) -> ExitCode {
     command
         .current_dir(&root)
         .env(gate, "1")
-        .env("FERROAN_ASSET_ORACLE", &dll)
-        .env(
-            "FERROAN_MYSQL_URL",
-            "mysql://ferroan:ferroan@127.0.0.1:13306/ferroan?ssl-mode=disabled",
-        )
-        .env(
-            "FERROAN_POSTGRES_URL",
-            "postgres://ferroan:ferroan@127.0.0.1:15432/ferroan?sslmode=disable",
-        )
-        .env(
-            "FERROAN_ASSET_ADO_MYSQL",
-            "Server=127.0.0.1;Port=13306;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false",
-        )
-        .env(
-            "FERROAN_ASSET_ADO_POSTGRES",
-            "Server=127.0.0.1;Port=15432;Database=ferroan;User Id=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false",
-        )
-        .args([
-            "test",
-            "-p",
-            "ferroan-services",
-            "--lib",
-            test_name,
-            "--",
-            "--nocapture",
-        ]);
+        .env("FERROAN_ASSET_ORACLE", &dll);
+    if databases {
+        command
+            .env(
+                "FERROAN_MYSQL_URL",
+                "mysql://ferroan:ferroan@127.0.0.1:13306/ferroan?ssl-mode=disabled",
+            )
+            .env(
+                "FERROAN_POSTGRES_URL",
+                "postgres://ferroan:ferroan@127.0.0.1:15432/ferroan?sslmode=disable",
+            )
+            .env(
+                "FERROAN_ASSET_ADO_MYSQL",
+                "Server=127.0.0.1;Port=13306;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false",
+            )
+            .env(
+                "FERROAN_ASSET_ADO_POSTGRES",
+                "Server=127.0.0.1;Port=15432;Database=ferroan;User Id=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false",
+            );
+    }
+    command.args([
+        "test",
+        "-p",
+        "ferroan-services",
+        "--lib",
+        test_name,
+        "--",
+        "--nocapture",
+    ]);
     println!("$ cargo test -p ferroan-services --lib {test_name}");
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
