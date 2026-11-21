@@ -156,7 +156,7 @@ where
         let result = async {
             let line = run(name).await?;
             offline(private_uri).await?;
-            if name == "chat" {
+            if name == "chat" || name == "roots" {
                 offline_user(private_uri, crate::live::CHAT_USER).await?;
             }
             Ok::<_, String>(line)

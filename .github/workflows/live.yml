@@ -188,6 +188,8 @@ jobs:
           rust-restore: rust-live-${{ runner.os }}-
       - name: Check login through Robust onto the Ferroan region
         run: cargo xtask live run login grid --region ferroan
+      - name: Admit two root agents on the Ferroan region
+        run: cargo xtask live run roots grid --region ferroan
       - name: Trip POST-body, datagram and fetch-folder limits
         run: cargo xtask live run limits grid --region ferroan
       - name: Compare inventory and texture caps on the Ferroan region

@@ -5,7 +5,7 @@
 //! Only generated identities and test endpoint addresses are substituted. The
 //! compared form/JSON fields, methods, statuses and content types remain.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -95,6 +95,90 @@ pub fn compare(directory: &Path) -> Result<String, String> {
         }
     }
     Ok("grid login http: register, QueryAccess, CreateAgent, deregister match C#".to_string())
+}
+
+/// Both harness accounts admitted. Responses match the committed C# fixtures.
+/// Request bodies are not compared: the second account is not the fixture user.
+pub fn compare_two_roots(directory: &Path) -> Result<String, String> {
+    let home = records(&directory.join("proxy-home.cap"))?;
+    let query_path = crate::repo_root().join("fixtures/region-login/query-access.response.json");
+    let create_path = crate::repo_root().join("fixtures/region-login/create-agent.response.json");
+    let query_fixture: Value = serde_json::from_slice(&bounded(&query_path, MAX_BODY)?)
+        .map_err(|error| format!("invalid query-access fixture: {error}"))?;
+    let create_fixture: Value = serde_json::from_slice(&bounded(&create_path, MAX_BODY)?)
+        .map_err(|error| format!("invalid create-agent fixture: {error}"))?;
+    let mut normalizer = Normalizer {
+        home_port: String::new(),
+        item_ids: BTreeMap::new(),
+    };
+    let mut queries = BTreeSet::new();
+    let mut creates = BTreeSet::new();
+    for (index, record) in home.iter().enumerate() {
+        if record.kind != Kind::HttpRequest {
+            continue;
+        }
+        let request = Message::parse(&record.bytes)?;
+        if request.probe {
+            continue;
+        }
+        let kind = match request.method.as_str() {
+            "QUERYACCESS" if request.path.starts_with("/agent/") => "query-access",
+            "POST" if request.path.starts_with("/agent/") => "create-agent",
+            _ => continue,
+        };
+        let agent = agent_on_path(&request.path)?;
+        let reply = paired(&home, index)?;
+        let mut response: Value = serde_json::from_str(&reply.text()?)
+            .map_err(|_| format!("{kind} response is not JSON"))?;
+        if response.get("success") != Some(&Value::Bool(true)) {
+            continue;
+        }
+        normalizer
+            .json(&mut response, "")
+            .map_err(|_| format!("{kind} response could not be normalized"))?;
+        let fixture = if kind == "query-access" {
+            &query_fixture
+        } else {
+            &create_fixture
+        };
+        if &response != fixture {
+            return Err(format!("{kind} response differs from the C# fixture"));
+        }
+        if kind == "query-access" {
+            queries.insert(agent);
+        } else {
+            creates.insert(agent);
+        }
+    }
+    expect_both_accounts(&queries, "QueryAccess")?;
+    expect_both_accounts(&creates, "CreateAgent")?;
+    Ok(
+        "two roots: QueryAccess and CreateAgent for both harness accounts match the C# fixtures"
+            .to_string(),
+    )
+}
+
+fn agent_on_path(path: &str) -> Result<String, String> {
+    let mut parts = path.trim_matches('/').split('/');
+    if parts.next() != Some("agent") {
+        return Err("agent path is missing".to_string());
+    }
+    let text = parts.next().unwrap_or("");
+    let id = uuid::Uuid::parse_str(text).map_err(|_| "agent path is not a uuid".to_string())?;
+    Ok(id.to_string())
+}
+
+fn expect_both_accounts(ids: &BTreeSet<String>, exchange: &str) -> Result<(), String> {
+    let mut expected = BTreeSet::new();
+    expected.insert(crate::live::ESTATE_OWNER.to_string());
+    expected.insert(crate::live::CHAT_USER.to_string());
+    if ids == &expected {
+        return Ok(());
+    }
+    Err(format!(
+        "{exchange} admitted {} account(s); both harness accounts are required",
+        ids.len()
+    ))
 }
 
 /// Q10f service exchanges selected from the real C# login/logout and probes.

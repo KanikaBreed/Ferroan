@@ -17,7 +17,8 @@ use ferroan_diag::{Kind, REDACT_SECRETS};
 
 const REPLACEMENT: &str = "[redacted]";
 const CAPABILITY: &str = "[redacted-capability]";
-pub(crate) const MAX_SECRETS: usize = 64;
+/// 40 admitted roots, each overlapping one replacement, times the four login secrets.
+pub(crate) const MAX_SECRETS: usize = 320;
 
 struct Entry {
     text: String,

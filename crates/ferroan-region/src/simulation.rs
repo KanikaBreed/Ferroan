@@ -59,7 +59,7 @@
 //   OpenMetaverse.StructuredData/StructuredData.cs (OSD boolean/real conversions)
 //   and OpenMetaverse.StructuredData/JSON/JsonWriter.cs (real-number formatting)
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
-// Ferroan changes: bounded local login admission, one active circuit, gzip limits,
+// Ferroan changes: bounded local login admission, concurrent root circuits, gzip limits,
 // a single CreateAgent budget under Robust's 30 s connector timeout, and an
 // empty JSON 403 for a refused control-plane POST.
 // Copyright (c) 2026 Ferroan contributors
@@ -69,6 +69,7 @@
 //! Later transfer operations (PUT/DELETE) are deliberately not implemented here.
 
 use std::{
+    collections::HashMap,
     io::Read,
     net::SocketAddr,
     sync::{
@@ -91,7 +92,7 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{CapsRegistry, CircuitExpect};
-use ferroan_diag::{self, HTTP_POST_BODY, Kind};
+use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -102,6 +103,8 @@ const MAX_FEATURES: usize = 256;
 const MIN_VERSION: f32 = 0.3;
 const MAX_VERSION: f32 = 0.8;
 const VIA_LOGIN: u32 = 1 << 7;
+/// `RegionSettings.AgentLimit` at the pin. Not a configuration key.
+pub const ROOT_AGENT_LIMIT: usize = 40;
 
 #[derive(Debug, thiserror::Error)]
 enum SimulationError {
@@ -122,7 +125,7 @@ pub struct SimulationState {
     region_id: Uuid,
     caps: CapsRegistry,
     sender: mpsc::Sender<AcceptedAgent>,
-    active: Arc<Mutex<Option<ActiveSession>>>,
+    sessions: Arc<Mutex<HashMap<Uuid, ActiveSession>>>,
     region_name: String,
     region_size: [u32; 2],
     presence: PresenceClient,
@@ -133,11 +136,13 @@ pub struct SimulationState {
     /// Robust's CreateAgent connector gives up at 30 s; this stays under it.
     /// Tests shorten it. It is not a configuration key.
     create_agent_budget: Duration,
+    /// Admitted root sessions. A same-agent replacement does not take another
+    /// place. Tests lower it. It is not a configuration key.
+    root_limit: usize,
     meters: Arc<RegionMeters>,
 }
 
 struct ActiveSession {
-    agent_id: Uuid,
     session_id: Uuid,
     generation: Uuid,
     /// Set when this circuit's root arrival is accepted, before the root reports.
@@ -173,20 +178,20 @@ impl AcceptedAgent {
 
     pub fn is_current(&self) -> bool {
         self._lease
-            .active
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .as_ref()
+            .get(&self._lease.agent_id)
             .is_some_and(|session| session.generation == self._lease.generation)
     }
 
     /// A replay may replace a circuit while retaining its Presence session.
     pub fn may_logout_presence(&self) -> bool {
         self._lease
-            .active
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .as_ref()
+            .get(&self._lease.agent_id)
             .is_none_or(|session| {
                 session.generation == self._lease.generation
                     || session.session_id != self.expect.session_id
@@ -200,25 +205,31 @@ impl AcceptedAgent {
 
     /// The circuit report is in hand and this generation is still the active one.
     pub fn mark_root(&self) {
-        let mut active = self
+        let mut sessions = self
             ._lease
-            .active
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(session) = active.as_mut()
+        if let Some(session) = sessions.get_mut(&self._lease.agent_id)
             && session.generation == self._lease.generation
         {
             session.root = true;
-            self._lease.meters.set_agents(1, 0, 1);
+            publish_agents(&sessions, &self._lease.meters);
         }
     }
+}
+
+fn publish_agents(sessions: &HashMap<Uuid, ActiveSession>, meters: &RegionMeters) {
+    let roots = sessions.values().filter(|session| session.root).count() as u64;
+    meters.set_agents(roots, 0, sessions.len() as u64);
 }
 
 struct SessionLease {
     /// Released when this generation is dropped, including a replacement that
     /// outlived the old circuit. A secret still held by another generation stays.
     secrets: ferroan_log::SessionSecrets,
-    active: Arc<Mutex<Option<ActiveSession>>>,
+    sessions: Arc<Mutex<HashMap<Uuid, ActiveSession>>>,
+    agent_id: Uuid,
     generation: Uuid,
     caps: CapsRegistry,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -227,20 +238,20 @@ struct SessionLease {
 
 impl Drop for SessionLease {
     fn drop(&mut self) {
-        // Release redaction holds before `active`. `accept` takes `active`
+        // Release redaction holds before `sessions`. `accept` takes `sessions`
         // and then registers secrets, so the opposite order can deadlock.
         drop(std::mem::take(&mut self.secrets));
-        let mut active = self
-            .active
+        let mut sessions = self
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if active
-            .as_ref()
+        if sessions
+            .get(&self.agent_id)
             .is_some_and(|session| session.generation == self.generation)
         {
-            self.caps.clear();
-            *active = None;
-            self.meters.set_agents(0, 0, 0);
+            self.caps.clear_agent(self.agent_id);
+            sessions.remove(&self.agent_id);
+            publish_agents(&sessions, &self.meters);
         }
     }
 }
@@ -264,7 +275,7 @@ impl SimulationState {
             region_id: config.id,
             caps,
             sender,
-            active: Arc::new(Mutex::new(None)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             region_name: config.name.clone(),
             region_size: config.size,
             presence: PresenceClient::new(&config.presence_server_uri),
@@ -272,6 +283,7 @@ impl SimulationState {
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             admission_open: Arc::new(AtomicBool::new(true)),
             create_agent_budget: Duration::from_secs(25),
+            root_limit: ROOT_AGENT_LIMIT,
             meters,
         }
     }
@@ -288,16 +300,25 @@ impl SimulationState {
         if !self.admission_open.load(Ordering::Acquire) {
             return Some("Logins to this region are disabled");
         }
-        if self
-            .active
+        let sessions = self
+            .sessions
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .as_ref()
-            .is_some_and(|session| session.agent_id != agent)
-        {
-            return Some("Region already has an active login");
+            .unwrap_or_else(|poison| poison.into_inner());
+        if sessions.contains_key(&agent) || sessions.len() < self.root_limit {
+            return None;
         }
-        None
+        self.note_root_limit(sessions.len());
+        Some("The region is full")
+    }
+
+    fn note_root_limit(&self, admitted: usize) {
+        ferroan_diag::refuse(
+            ROOT_AGENTS,
+            Kind::Hard,
+            self.root_limit as u64,
+            admitted.saturating_add(1) as u64,
+            "/agent",
+        );
     }
 
     /// Serve using `into_make_service_with_connect_info::<SocketAddr>()`.
@@ -311,30 +332,30 @@ impl SimulationState {
         if !self.admission_open.load(Ordering::Acquire) {
             return Err("Logins to this region are disabled");
         }
-        let mut active = self
-            .active
+        let mut sessions = self
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if active
-            .as_ref()
-            .is_some_and(|session| session.agent_id != fields.agent_id)
-        {
-            return Err("Region already has an active login");
+        let replacing = sessions.contains_key(&fields.agent_id);
+        if !replacing && sessions.len() >= self.root_limit {
+            self.note_root_limit(sessions.len());
+            return Err("The region is full");
         }
         // Reserve before replacing anything: backpressure or a stopped
-        // dispatcher must leave the current session and capabilities intact.
+        // dispatcher must leave the current sessions and capabilities intact.
         let permit = self
             .sender
             .try_reserve()
             .map_err(|_| "Region is not accepting logins")?;
-        if let Some(mut previous) = active.take() {
+        if let Some(mut previous) = sessions.remove(&fields.agent_id) {
             if let Some(cancel) = previous.cancel.take() {
                 let _ = cancel.send(());
             }
-            self.caps.clear();
+            self.caps.clear_agent(fields.agent_id);
         }
         let path = format!("/CAPS/{}0000/", fields.caps_path);
         if self.caps.register_agent(&path, fields.agent_id).is_err() {
+            publish_agents(&sessions, &self.meters);
             return Err("Could not create seed capability");
         }
         // Register before the login line. The line itself names only the avatar.
@@ -351,23 +372,26 @@ impl SimulationState {
         let generation = Uuid::new_v4();
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
-        *active = Some(ActiveSession {
-            agent_id: fields.agent_id,
-            session_id: fields.session_id,
-            generation,
-            root: false,
-            cancel: Some(cancel),
-            logout_done: Some(logout_wait),
-        });
+        sessions.insert(
+            fields.agent_id,
+            ActiveSession {
+                session_id: fields.session_id,
+                generation,
+                root: false,
+                cancel: Some(cancel),
+                logout_done: Some(logout_wait),
+            },
+        );
+        publish_agents(&sessions, &self.meters);
         let lease = SessionLease {
             secrets,
-            active: self.active.clone(),
+            sessions: self.sessions.clone(),
+            agent_id: fields.agent_id,
             generation,
             caps: self.caps.clone(),
             lifecycle: self.lifecycle.clone(),
             meters: self.meters.clone(),
         };
-        self.meters.set_agents(0, 0, 1);
         let accepted = AcceptedAgent {
             logout_done: Some(logout_done),
             accepted_at: tokio::time::Instant::now(),
@@ -387,7 +411,7 @@ impl SimulationState {
         };
         // A receiver dropped after reservation may drop this lease in send().
         // Release the admission lock first so that cleanup cannot deadlock.
-        drop(active);
+        drop(sessions);
         {
             // The span ends before the circuit starts, so the login trace is
             // the admission itself.
@@ -405,12 +429,12 @@ impl SimulationState {
     /// A failed verify of an existing root closes that root. The session stays
     /// until the dispatcher drops the generation lease after `notify_logout`.
     fn begin_root_close(&self, agent: Uuid) -> Option<oneshot::Receiver<()>> {
-        let mut active = self
-            .active
+        let mut sessions = self
+            .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let session = active.as_mut()?;
-        if session.agent_id != agent || !session.root {
+        let session = sessions.get_mut(&agent)?;
+        if !session.root {
             return None;
         }
         if let Some(cancel) = session.cancel.take() {
@@ -481,7 +505,7 @@ async fn handle(
     };
     fields.clamp_position(state.region_size);
     // Scene.NewUserConnection checks LoginsEnabled before VerifyUserPresence.
-    // The single-agent limit is a Ferroan refusal and uses the same early point.
+    // The root-agent bound uses that same early point.
     if let Some(reason) = state.admission_refusal(agent) {
         return create_refused(reason, peer);
     }
@@ -1049,7 +1073,7 @@ mod tests {
         let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
         let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
-        let state =
+        let mut state =
             SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
         let peer = "127.0.0.1:1234".parse().unwrap();
         for (key, value, reason) in [
@@ -1088,6 +1112,7 @@ mod tests {
             assert_eq!(answer["success"], false);
             assert_eq!(answer["reason"], "Region crossings are not implemented");
         }
+        state.root_limit = 1;
         state
             .accept(AgentFields::parse(&args, agent, region).unwrap())
             .unwrap();
@@ -1104,7 +1129,8 @@ mod tests {
         let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
         let answer: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(answer["success"], false);
-        assert_eq!(answer["reason"], "Region already has an active login");
+        assert_eq!(answer["reason"], "The region is full");
+        assert!(ferroan_diag::render().contains("region.root-agents"));
         drop(current);
     }
 
@@ -1241,7 +1267,7 @@ mod tests {
         assert!(current.is_current());
         drop(current);
         drop(guard);
-        assert!(state.active.lock().unwrap().is_none());
+        assert!(state.sessions.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1408,18 +1434,20 @@ mod tests {
     async fn admission_lease_replaces_same_agent_and_cleans_closed_queue() {
         let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
-        let state = SimulationState::new(
+        let mut state = SimulationState::new(
             &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
             caps.clone(),
             sender,
         );
+        state.root_limit = 1;
         state.accept(synthetic_agent()).unwrap();
         let mut accepted = receiver.recv().await.unwrap();
         assert_eq!(accepted.expect.circuit_code, 42);
+        let held = format!("/CAPS/{}0000/", synthetic_agent().caps_path);
         let mut other = synthetic_agent();
         other.agent_id = Uuid::from_u128(6);
-        assert!(state.accept(other).is_err());
-        assert!(caps.register("/CAPS/occupied0000/").is_err());
+        assert_eq!(state.accept(other), Err("The region is full"));
+        assert!(caps.register(&held).is_err());
         let mut next = synthetic_agent();
         next.session_id = Uuid::from_u128(7);
         next.circuit_code = 43;
@@ -1433,16 +1461,90 @@ mod tests {
         assert_eq!(replacement.expect.circuit_code, 43);
         drop(accepted);
         // An old generation's cleanup must not release the new reservation.
-        assert!(caps.register("/CAPS/still-occupied0000/").is_err());
-        assert!(state.active.lock().unwrap().is_some());
+        let replacement_path = format!("/CAPS/{}0000/", Uuid::from_u128(8));
+        assert!(caps.register(&replacement_path).is_err());
+        assert!(
+            state
+                .sessions
+                .lock()
+                .unwrap()
+                .contains_key(&synthetic_agent().agent_id)
+        );
         drop(replacement);
-        assert!(state.active.lock().unwrap().is_none());
+        assert!(state.sessions.lock().unwrap().is_empty());
         state.accept(synthetic_agent()).unwrap();
         drop(receiver.recv().await.unwrap());
         drop(receiver);
         assert!(state.accept(synthetic_agent()).is_err());
-        assert!(state.active.lock().unwrap().is_none());
+        assert!(state.sessions.lock().unwrap().is_empty());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_roots_keep_separate_caps_and_replacement_stays_inside_the_bound() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps.clone(),
+            sender,
+        );
+        state.root_limit = 2;
+        state.accept(synthetic_agent()).unwrap();
+        let mut second = synthetic_agent();
+        second.agent_id = Uuid::from_u128(6);
+        second.session_id = Uuid::from_u128(7);
+        second.secure_session_id = Uuid::from_u128(8);
+        second.circuit_code = 43;
+        second.caps_path = Uuid::from_u128(9).to_string();
+        state.accept(second).unwrap();
+        let mut first = receiver.recv().await.unwrap();
+        let other = receiver.recv().await.unwrap();
+        assert!(first.is_current());
+        assert!(other.is_current());
+        let lines = state.meters().diag_lines();
+        assert!(lines.contains("circuits: 2\n"));
+        assert!(lines.contains("root_agents: 0\n"));
+        first.mark_root();
+        other.mark_root();
+        assert!(state.meters().diag_lines().contains("root_agents: 2\n"));
+        let mut extra = synthetic_agent();
+        extra.agent_id = Uuid::from_u128(11);
+        extra.session_id = Uuid::from_u128(12);
+        extra.circuit_code = 44;
+        extra.caps_path = Uuid::from_u128(13).to_string();
+        assert_eq!(state.accept(extra), Err("The region is full"));
+        assert!(first.is_current());
+        assert!(other.is_current());
+        let mut again = synthetic_agent();
+        again.session_id = Uuid::from_u128(14);
+        again.circuit_code = 45;
+        again.caps_path = Uuid::from_u128(15).to_string();
+        state.accept(again).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), first.replaced())
+            .await
+            .unwrap();
+        let replacement = receiver.recv().await.unwrap();
+        assert!(!first.is_current());
+        assert!(other.is_current());
+        assert!(replacement.is_current());
+        let lines = state.meters().diag_lines();
+        assert!(lines.contains("circuits: 2\n"));
+        assert!(lines.contains("root_agents: 1\n"));
+        let first_path = format!("/CAPS/{}0000/", synthetic_agent().caps_path);
+        let second_path = format!("/CAPS/{}0000/", Uuid::from_u128(9));
+        assert!(caps.register(&first_path).is_ok());
+        assert!(caps.register(&second_path).is_err());
+        drop(first);
+        assert!(other.is_current());
+        assert!(state.meters().diag_lines().contains("circuits: 2\n"));
+        drop(other);
+        let lines = state.meters().diag_lines();
+        assert!(lines.contains("root_agents: 0\n"));
+        assert!(lines.contains("circuits: 1\n"));
+        assert!(replacement.is_current());
+        drop(replacement);
+        assert!(state.meters().diag_lines().contains("circuits: 0\n"));
     }
 
     #[tokio::test]
@@ -1513,6 +1615,7 @@ mod tests {
             sender,
         );
         state.accept(synthetic_agent()).unwrap();
+        let held = format!("/CAPS/{}0000/", synthetic_agent().caps_path);
         // First login is still queued; reserving a replacement must fail
         // without changing its capabilities or sending a cancellation.
         assert_eq!(
@@ -1524,7 +1627,7 @@ mod tests {
             accepted.cancelled.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
-        assert!(caps.register("/CAPS/still-active0000/").is_err());
+        assert!(caps.register(&held).is_err());
         receiver.close();
         assert_eq!(
             state.accept(synthetic_agent()),
@@ -1534,7 +1637,7 @@ mod tests {
             accepted.cancelled.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
-        assert!(caps.register("/CAPS/still-active0000/").is_err());
+        assert!(caps.register(&held).is_err());
         drop(accepted);
         caps.register("/CAPS/after-drop0000/").unwrap();
     }
@@ -1824,11 +1927,12 @@ mod tests {
         assert_eq!(hits.load(Ordering::Relaxed), 0);
 
         let (sender, mut occupied) = mpsc::channel(1);
-        let open = SimulationState::new(
+        let mut open = SimulationState::new(
             &test_config(&base, region),
             CapsRegistry::new("http://127.0.0.1:8002").unwrap(),
             sender,
         );
+        open.root_limit = 1;
         let mut other = synthetic_agent();
         other.agent_id = Uuid::from_u128(9);
         open.accept(other).unwrap();
@@ -1841,7 +1945,7 @@ mod tests {
         let response = handle(State(open), ConnectInfo(peer), request).await;
         let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["reason"], "Region already has an active login");
+        assert_eq!(value["reason"], "The region is full");
         assert_eq!(hits.load(Ordering::Relaxed), 0);
         task.abort();
     }

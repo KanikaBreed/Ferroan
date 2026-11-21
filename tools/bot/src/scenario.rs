@@ -75,6 +75,9 @@ pub struct Harness {
     pub service_probe: String,
     /// Runs before every [`enter`]. The harness waits for the account to settle.
     pub before_login: LoginGate,
+    /// Region metrics listener. Set for the Ferroan `roots` scenario.
+    /// The C# region leaves this empty.
+    pub metrics: Option<String>,
 }
 
 /// Region handle from map tiles, as `Util.RegionGridLocToHandle` packs it.
@@ -133,6 +136,10 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     if name == "neighbour" {
         let line = teleport_neighbour(&http, harness).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
+    if name == "roots" {
+        let line = roots_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
     let Some(names) = selection(name) else {
@@ -428,6 +435,126 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
     speaker_out?;
     listener_out?;
     Ok("chat: pass".to_string())
+}
+
+/// Both harness accounts in the region at once. No chat is sent or required.
+async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let (mut chat, _) = enter(http, harness, &harness.chat).await?;
+    refuse_chat(&mut chat)?;
+    let owner_login = enter(http, harness, &harness.owner);
+    tokio::pin!(owner_login);
+    let owner_result = loop {
+        tokio::select! {
+            result = &mut owner_login => break result,
+            step = chat.drive(STEP) => {
+                step.map_err(|error| error.to_string())?;
+                refuse_chat(&mut chat)?;
+            }
+        }
+    };
+    let (mut owner, _) = match owner_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let _ = leave(harness, &mut chat, &harness.chat).await;
+            return Err(error);
+        }
+    };
+    refuse_chat(&mut owner)?;
+    refuse_chat(&mut chat)?;
+    if let Some(metrics) = &harness.metrics {
+        let mut sessions: [&mut Session; 2] = [&mut chat, &mut owner];
+        if let Err(error) = await_root_agents(http, metrics, 2, &mut sessions).await {
+            let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(error);
+        }
+    }
+    leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await?;
+    if let Some(metrics) = &harness.metrics {
+        let mut sessions: [&mut Session; 1] = [&mut owner];
+        await_root_agents(http, metrics, 1, &mut sessions).await?;
+    }
+    leave(harness, &mut owner, &harness.owner).await?;
+    if let Some(metrics) = &harness.metrics {
+        await_root_agents(http, metrics, 0, &mut []).await?;
+    }
+    Ok("roots: pass".to_string())
+}
+
+fn refuse_chat(session: &mut Session) -> Result<(), String> {
+    while let Some(packet) = session.poll_inbox() {
+        if world::chat_heard(&packet).is_some() {
+            return Err("the region sent ChatFromSimulator".to_string());
+        }
+    }
+    Ok(())
+}
+
+async fn await_root_agents(
+    http: &reqwest::Client,
+    metrics: &str,
+    want: u64,
+    sessions: &mut [&mut Session],
+) -> Result<(), String> {
+    let root = format!("ferroan_region_root_agents {want}\n");
+    let circuits = format!("ferroan_region_circuits {want}\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let url = format!("{}/metrics", metrics.trim_end_matches('/'));
+    loop {
+        let response = http
+            .get(&url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .map_err(|error| format!("metrics: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!("metrics status {}", response.status()));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("metrics: {error}"))?;
+        if body.contains(&root)
+            && body.contains(&circuits)
+            && body.contains("ferroan_region_child_agents 0\n")
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "ferroan_region_root_agents was not {want} with child agents 0"
+            ));
+        }
+        if sessions.is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        for session in sessions.iter_mut() {
+            session
+                .drive(STEP)
+                .await
+                .map_err(|error| error.to_string())?;
+            refuse_chat(session)?;
+        }
+    }
+}
+
+async fn leave_while_driving(
+    harness: &Harness,
+    leaving: &mut Session,
+    account: &Account,
+    staying: &mut Session,
+) -> Result<(), String> {
+    let logout = leave(harness, leaving, account);
+    tokio::pin!(logout);
+    loop {
+        tokio::select! {
+            result = &mut logout => return result,
+            step = staying.drive(STEP) => {
+                step.map_err(|error| error.to_string())?;
+                refuse_chat(staying)?;
+            }
+        }
+    }
 }
 
 async fn build_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
