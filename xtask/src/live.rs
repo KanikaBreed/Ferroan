@@ -1581,13 +1581,27 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
     }
 }
 
+/// MSBuild properties for the host Tranquillity publish.
+///
+/// `NBGV_SetCloudBuildVersionVars=false` skips the target that appends to
+/// `GITHUB_ENV`. Nerdbank.GitVersioning 3.10.94 still runs that target when
+/// `GITHUB_ACTIONS` is true, and `File.AppendAllLines` throws if the path is
+/// empty, so removing the variable is not enough on its own.
+#[cfg(any(target_os = "linux", test))]
+fn tranquillity_publish_properties() -> &'static [&'static str] {
+    &[
+        "-p:AllowMissingPrunePackageData=true",
+        "-p:NBGV_SetCloudBuildVersionVars=false",
+    ]
+}
+
 /// Environment of the host Tranquillity `dotnet publish`.
 ///
 /// Nerdbank.GitVersioning appends version variables to `GITHUB_ENV` from
 /// several MSBuild nodes at once. A torn line fails the Actions step after
 /// the publish has already succeeded (dotnet/Nerdbank.GitVersioning#683).
-/// Removing the variable leaves the runner's file untouched. The other
-/// variables stay, including `GITHUB_ACTIONS`.
+/// Removing the variable leaves the runner's file untouched. The cloud-build
+/// version target is also off, so the publish does not require the file.
 #[cfg(any(target_os = "linux", test))]
 fn configure_dotnet_publish(command: &mut Command) {
     command
@@ -1610,8 +1624,8 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
         "-r",
         "linux-x64",
         "--nologo",
-        "-p:AllowMissingPrunePackageData=true",
     ];
+    args.extend(tranquillity_publish_properties().iter().copied());
     if self_contained {
         args.push("--self-contained");
         args.push("true");
@@ -2194,6 +2208,9 @@ mod tests {
         assert!(saw_github_env);
         assert!(saw_telemetry);
         assert!(saw_nologo);
+        assert!(
+            tranquillity_publish_properties().contains(&"-p:NBGV_SetCloudBuildVersionVars=false")
+        );
     }
 
     #[test]
