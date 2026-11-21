@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -174,10 +174,18 @@ pub fn with_request_counts(router: Router, meters: Arc<RobustMeters>) -> Router 
         async move {
             let started = Instant::now();
             let path = request.uri().path().to_owned();
+            // Axum sets this before the per-route layer runs. A fallback has none,
+            // and every unmatched path shares one row.
+            let matched = request
+                .extensions()
+                .get::<MatchedPath>()
+                .map(|matched| matched.as_str().to_owned());
+            let (service, route) = match matched {
+                Some(route) => (service_label(&path), route),
+                None => ("other", "other".to_owned()),
+            };
             let response = next.run(request).await;
             let status = response.status().as_u16();
-            let service = service_label(&path);
-            let route = fold_route(&path);
             record(&meters, service, route, status);
             meters.histogram.observe(started.elapsed().as_secs_f64());
             response
@@ -221,31 +229,6 @@ fn service_label(path: &str) -> &'static str {
     } else {
         "other"
     }
-}
-
-fn fold_route(path: &str) -> String {
-    let mut parts = Vec::new();
-    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
-        if is_uuid(segment) || segment.len() > 64 {
-            parts.push("{id}");
-        } else {
-            parts.push(segment);
-        }
-    }
-    format!("/{}", parts.join("/"))
-}
-
-fn is_uuid(text: &str) -> bool {
-    let mut parts = text.split('-');
-    let widths = [8, 4, 4, 4, 12];
-    for width in widths {
-        match parts.next() {
-            Some(part)
-                if part.len() == width && part.bytes().all(|byte| byte.is_ascii_hexdigit()) => {}
-            _ => return false,
-        }
-    }
-    parts.next().is_none()
 }
 
 #[derive(Clone)]
@@ -548,11 +531,59 @@ mod tests {
         );
     }
 
-    #[test]
-    fn route_folds_uuids() {
-        assert_eq!(
-            fold_route("/assets/6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01/data"),
-            "/assets/{id}/data"
+    #[tokio::test]
+    async fn junk_paths_share_one_row_and_a_known_route_is_still_counted() {
+        let config =
+            Config::parse("[GridInfoService]\nlogin = http://127.0.0.1:8002/\n").expect("ini");
+        let router = status_router(&config).route("/assets/{id}/data", get(|| async { "ok" }));
+        let meters = Arc::new(RobustMeters::new(Pools::default()));
+        let app = with_request_counts(router, Arc::clone(&meters));
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        for index in 0..160 {
+            http_get(address, &format!("/junk-{index}")).await;
+        }
+        http_get(
+            address,
+            "/assets/6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01/missing",
+        )
+        .await;
+        http_get(address, "/assets/6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01/data").await;
+        http_get(address, "/get_grid_info").await;
+        server.abort();
+
+        let rows = meters.http.lock().expect("rows");
+        let count = |route: &str| -> u64 {
+            rows.iter()
+                .filter(|row| row.route == route)
+                .map(|row| row.count)
+                .sum()
+        };
+        assert_eq!(count("other"), 161);
+        assert_eq!(count("/assets/{id}/data"), 1);
+        assert_eq!(count("/get_grid_info"), 1);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.len() < 128);
+    }
+
+    async fn http_get(address: std::net::SocketAddr, path: &str) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut body = Vec::new();
+        stream.read_to_end(&mut body).await.expect("read");
+        assert!(
+            body.windows(5).any(|window| window == b"HTTP/"),
+            "{path} got no status line"
         );
     }
 }

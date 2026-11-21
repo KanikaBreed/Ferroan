@@ -280,6 +280,8 @@ struct State {
     last_oldest: u32,
     paused: bool,
     udp: Option<Arc<UdpCounters>>,
+    /// This circuit's last addition to the shared unacked gauge.
+    published_unacked: u64,
 }
 impl State {
     #[cfg(test)]
@@ -317,7 +319,26 @@ impl State {
             last_oldest: 0,
             paused: false,
             udp: None,
+            published_unacked: 0,
         }
+    }
+
+    /// Publish this circuit's window length onto the shared gauge.
+    /// The gauge is the sum of these contributions. Drop clears this one.
+    fn publish_unacked(&mut self) {
+        self.set_unacked_gauge(u64::try_from(self.unacked.len()).unwrap_or(u64::MAX));
+    }
+
+    fn set_unacked_gauge(&mut self, waiting: u64) {
+        let previous = self.published_unacked;
+        if let Some(udp) = &self.udp {
+            if waiting > previous {
+                udp.unacked.fetch_add(waiting - previous, Ordering::Relaxed);
+            } else if waiting < previous {
+                udp.unacked.fetch_sub(previous - waiting, Ordering::Relaxed);
+            }
+        }
+        self.published_unacked = waiting;
     }
     fn time_until_work(&self) -> Duration {
         let now = Instant::now();
@@ -370,9 +391,8 @@ impl State {
                 }
                 if let Some(udp) = &self.udp {
                     udp.resends.fetch_add(resent, Ordering::Relaxed);
-                    let waiting = u64::try_from(self.unacked.len()).unwrap_or(u64::MAX);
-                    udp.unacked.store(waiting, Ordering::Relaxed);
                 }
+                self.publish_unacked();
             }
         }
         let Some(peer) = self.peer else {
@@ -454,6 +474,7 @@ impl State {
             self.unacked
                 .insert_until_ack(seq, payload, Instant::now().into_std())
                 .map_err(|error| CircuitError::TooManyUnacked(error.count))?;
+            self.publish_unacked();
         }
         Ok(())
     }
@@ -577,11 +598,14 @@ impl State {
             return Ok(false);
         }
         self.unacked.acknowledge(packet.acks.iter().copied());
+        if packet.id == PacketAck::ID
+            && let Ok(ack) = packet.decode::<PacketAck>()
+        {
+            self.unacked
+                .acknowledge(ack.packets.iter().map(|block| block.id));
+        }
+        self.publish_unacked();
         if packet.id == PacketAck::ID {
-            if let Ok(ack) = packet.decode::<PacketAck>() {
-                self.unacked
-                    .acknowledge(ack.packets.iter().map(|block| block.id));
-            }
             return Ok(false);
         }
         if packet.reliable() {
@@ -995,6 +1019,12 @@ async fn serve_socket_reporting(
     }
 }
 
+impl Drop for State {
+    fn drop(&mut self) {
+        self.set_unacked_gauge(0);
+    }
+}
+
 #[cfg(test)]
 #[path = "circuit_root_tests.rs"]
 mod root_tests;
@@ -1299,5 +1329,55 @@ mod tests {
         request.agent_data.session_id = expect.session_id;
         send(&other, addr, 5, &request, true).await;
         second.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn the_unacked_gauge_is_the_sum_of_open_circuits_and_clears_on_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        use ferroan_protocol::reliability::Resend;
+
+        use super::{Payload, State, UdpCounters};
+        use crate::{ArrivalConfig, HandshakeConfig};
+
+        let udp = Arc::new(UdpCounters::default());
+        let mut first = State::new(
+            HandshakeConfig::for_region(Uuid::nil()),
+            ArrivalConfig::default(),
+        );
+        let mut second = State::new(
+            HandshakeConfig::for_region(Uuid::nil()),
+            ArrivalConfig::default(),
+        );
+        first.udp = Some(Arc::clone(&udp));
+        second.udp = Some(Arc::clone(&udp));
+        let now = std::time::Instant::now();
+        let payload = Payload {
+            bytes: vec![1],
+            zerocoded: false,
+        };
+        first
+            .unacked
+            .insert(1, payload.clone(), now, Resend::DEFAULT)
+            .unwrap();
+        first
+            .unacked
+            .insert(2, payload.clone(), now, Resend::DEFAULT)
+            .unwrap();
+        second
+            .unacked
+            .insert(3, payload, now, Resend::DEFAULT)
+            .unwrap();
+        first.publish_unacked();
+        second.publish_unacked();
+        assert_eq!(udp.unacked.load(Ordering::Relaxed), 3);
+        first.unacked.acknowledge([1]);
+        first.publish_unacked();
+        assert_eq!(udp.unacked.load(Ordering::Relaxed), 2);
+        drop(first);
+        assert_eq!(udp.unacked.load(Ordering::Relaxed), 1);
+        drop(second);
+        assert_eq!(udp.unacked.load(Ordering::Relaxed), 0);
     }
 }

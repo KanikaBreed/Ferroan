@@ -84,10 +84,13 @@ where
         self.hub.emit(
             event.metadata().level(),
             event.metadata().target(),
-            &fields.message,
-            fields.agent_id.as_deref(),
-            trace_id.as_deref(),
-            span_id.as_deref(),
+            crate::Emitted {
+                message: &fields.message,
+                fields: &fields.fields,
+                agent_id: fields.agent_id.as_deref(),
+                trace_id: trace_id.as_deref(),
+                span_id: span_id.as_deref(),
+            },
         );
     }
 
@@ -125,6 +128,7 @@ where
 struct EventFields {
     message: String,
     agent_id: Option<String>,
+    fields: Vec<(String, String)>,
 }
 
 impl Visit for EventFields {
@@ -146,6 +150,8 @@ impl EventFields {
             self.message = value.to_owned();
         } else if name == "agent_id" {
             self.agent_id = Some(value.to_owned());
+        } else {
+            self.fields.push((name.to_owned(), value.to_owned()));
         }
     }
 }

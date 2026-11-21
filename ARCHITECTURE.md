@@ -33,7 +33,7 @@ same process identity records for `live down` and interrupted-launch recovery.
 The CI smoke check starts this command, uses its printed login URL for two
 strict bot sessions, and verifies process and listener cleanup after shutdown.
 
-Limit hits and handled errors go through one helper in `ferroan-diag`. Each report names a stable id, whether the bound is soft or hard, the configured and observed values, and the action taken. Soft queues warn once at 80 percent. The first hit in a minute is logged on `ferroan::limit`; later hits in that minute are counted and then summarised. `ferroan_limit_hits_total` is appended to the region and Robust metrics pages. A 1000-line ring, `diag dump`, `GET /diag` and `cargo xtask live diag` show the recent warnings, and a panic hook writes that snapshot before exit. The ids and the pin comparison are in [docs/LIMITS.md](docs/LIMITS.md).
+Limit hits and handled errors go through one helper in `ferroan-diag`. Each report names a stable id, whether the bound is soft or hard, the configured and observed values, and the action taken. The counter uses that id directly. Soft queues warn once at 80 percent. The first hit in a minute is logged on `ferroan::limit`; later hits in that minute are counted and then summarised. `ferroan_limit_hits_total` is appended to the region and Robust metrics pages. A 1000-line ring, `diag dump`, `GET /diag` and `cargo xtask live diag` show the recent warnings, and a panic hook writes that snapshot before exit. The ids and the pin comparison are in [docs/LIMITS.md](docs/LIMITS.md).
 
 ## Planned
 

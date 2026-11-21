@@ -237,7 +237,7 @@ impl<T: Clone> ReliableWindow<T> {
             resend: Vec::new(),
             dropped: Vec::new(),
         };
-        let mut drop_limit = Resend::DEFAULT.max_retries;
+        let mut crossed: Option<(u8, u8)> = None;
         for (&sequence, packet) in &mut self.packets {
             if now.saturating_duration_since(packet.sent)
                 < packet.policy.timeout.unwrap_or(fallback)
@@ -248,7 +248,9 @@ impl<T: Clone> ReliableWindow<T> {
                 && packet.retries >= limit
             {
                 batch.dropped.push(sequence);
-                drop_limit = limit;
+                if crossed.is_none_or(|(retries, _)| packet.retries >= retries) {
+                    crossed = Some((packet.retries, limit));
+                }
             } else {
                 packet.retries = packet.retries.saturating_add(1);
                 packet.sent = now;
@@ -256,17 +258,21 @@ impl<T: Clone> ReliableWindow<T> {
             }
         }
         self.acknowledge(batch.dropped.iter().copied());
-        if !batch.dropped.is_empty() {
-            ferroan_diag::drop_bound(
-                UDP_RETRIES,
-                Kind::Soft,
-                u64::from(drop_limit),
-                batch.dropped.len() as u64,
-                "udp",
-            );
+        if let Some((retries, limit)) = crossed {
+            let observed = u64::from(retries);
+            #[cfg(test)]
+            reported_retry_observed().store(observed, std::sync::atomic::Ordering::Relaxed);
+            ferroan_diag::drop_bound(UDP_RETRIES, Kind::Soft, u64::from(limit), observed, "udp");
         }
         batch
     }
+}
+
+#[cfg(test)]
+fn reported_retry_observed() -> &'static std::sync::atomic::AtomicU64 {
+    use std::sync::atomic::AtomicU64;
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    &LAST
 }
 
 #[cfg(test)]
@@ -299,6 +305,7 @@ mod tests {
 
     #[test]
     fn exhausted_retries_free_a_full_window_and_acknowledged_packets_do_not_resend() {
+        let _lock = retry_observe_lock();
         let now = Instant::now();
         let step = Duration::from_millis(200);
         let policy = Resend {
@@ -324,6 +331,14 @@ mod tests {
         let batch = window.poll(now + step * 5, step);
         assert!(batch.resend.is_empty());
         assert_eq!(batch.dropped.len(), MAX_UNACKED - 1);
+        assert_eq!(
+            reported_retry_observed().load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+        assert_ne!(
+            reported_retry_observed().load(std::sync::atomic::Ordering::Relaxed),
+            batch.dropped.len() as u64
+        );
         assert!(window.is_empty());
         window.insert(999, vec![], now, policy).unwrap();
         assert_eq!(window.oldest_or(1000), 999);
@@ -378,5 +393,36 @@ mod tests {
         assert_eq!(window.len(), 1);
         window.acknowledge([1]);
         assert!(window.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_packet_reports_the_retry_count_that_crossed() {
+        use std::sync::atomic::Ordering;
+        let _lock = retry_observe_lock();
+        let now = Instant::now();
+        let step = Duration::from_millis(50);
+        let policy = Resend {
+            timeout: Some(step),
+            max_retries: 2,
+        };
+        let mut window = ReliableWindow::default();
+        window.insert(7, (), now, policy).unwrap();
+        for retry in 1..=2 {
+            let batch = window.poll(now + step * retry, step);
+            assert!(batch.dropped.is_empty());
+            assert_eq!(window.retry_count(7), Some(retry as u8));
+        }
+        let batch = window.poll(now + step * 3, step);
+        assert_eq!(batch.dropped.len(), 1);
+        assert_eq!(reported_retry_observed().load(Ordering::Relaxed), 2);
+        assert_ne!(
+            reported_retry_observed().load(Ordering::Relaxed),
+            batch.dropped.len() as u64
+        );
+    }
+
+    fn retry_observe_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 }

@@ -1,6 +1,6 @@
 # Limits
 
-Every bound that refuses, truncates, drops or delays outside input reports through `ferroan_diag`. The event is a warning on target `ferroan::limit`. The plain log line carries the limit id, because that sink does not print the target. The counter is `ferroan_limit_hits_total{limit,action}`. Soft limits also warn once at 80 percent, and again only after they fall below that line. The first report for an id is logged in full. Later reports in the same 60 seconds increment the counter and are summarised as `suppressed=N`. A high-water warning does not consume that minute, so a refusal just after it is still logged.
+Every bound that refuses, truncates, drops or delays outside input reports through `ferroan_diag`. The event is a warning on target `ferroan::limit`. The plain log line carries the limit id, because that sink does not print the target. The counter is `ferroan_limit_hits_total{limit,action}`. It counts the id on the hit, so a new limit does not need a second hand-written list. Soft limits also warn once at 80 percent, and again only after they fall below that line. The first report for an id is logged in full. Later reports in the same 60 seconds increment the counter and are summarised as `suppressed=N`. A high-water warning does not consume that minute, so a refusal just after it is still logged.
 
 `cargo xtask check` fails when a limit id in `crates/ferroan-diag/src/catalog.rs` is missing from this file, or when that const is not named from another crate. How to trip three of them on one machine is [Trying a limit hit](TESTING.md).
 
@@ -23,7 +23,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `udp.datagram` | 4096 bytes | `crates/ferroan-protocol/src/packet.rs`, `crates/ferroan-client/src/circuit.rs` | hard | no | `UDPPacketBuffer.BUFFER_SIZE` in libopenmetaverse `OpenMetaverse/ObjectPool.cs` is 4096. A larger datagram is truncated by that buffer. Ferroan refuses it. The receive buffer is 4097 bytes so the extra byte is visible. |
 | `udp.zero-expansion` | 256 KiB | `crates/ferroan-protocol/src/packet.rs` | hard | no | OpenMetaverse does not cap zero-expansion. See [PROTOCOL.md](PROTOCOL.md). |
 | `udp.unacked` | 256 packets | `crates/ferroan-protocol/src/reliability.rs` | soft | no | C# keeps unacked packets until the client times out. Ferroan refuses a new reliable send at 256. High-water is 205 packets. |
-| `udp.retries` | 4 by default | `crates/ferroan-protocol/src/reliability.rs` | soft | no | C# retries until inactivity, with no count. This drop is the bot policy. The server keeps `retry_limit` unset. |
+| `udp.retries` | 4 by default | `crates/ferroan-protocol/src/reliability.rs` | soft | no | C# retries until inactivity, with no count. This drop is the bot policy. The server keeps `retry_limit` unset. The observed value is that packet's retry count, the total that crossed the limit. |
 | `event.bytes` | 64 KiB | `crates/ferroan-client/src/event_queue.rs` | hard | no | One event has no matching cap. |
 | `event.queue` | 256 events | `crates/ferroan-client/src/event_queue.rs` | soft | no | The queue is not capped. |
 | `event.queue-bytes` | 1 MiB | `crates/ferroan-client/src/event_queue.rs` | soft | no | The queue is not capped. |

@@ -304,31 +304,24 @@ impl Hub {
             .map(|(_, rank)| *rank)
     }
 
-    fn emit(
-        &self,
-        event: &tracing::Level,
-        target: &str,
-        message: &str,
-        agent_id: Option<&str>,
-        trace_id: Option<&str>,
-        span_id: Option<&str>,
-    ) {
-        let message = one_line(message);
+    fn emit(&self, event: &tracing::Level, target: &str, parts: Emitted<'_>) {
+        let message = one_line(parts.message);
+        let text = append_fields(&message, parts.fields);
         if matches!(*event, tracing::Level::ERROR | tracing::Level::WARN)
             && target != "ferroan::limit"
             && target != "ferroan::error"
         {
-            ferroan_diag::push_log(level::label(event), target, &redact::redact(&message));
+            ferroan_diag::push_log(level::label(event), target, &redact::redact(&text));
         }
         let now = timefmt::stamp(std::time::SystemTime::now());
         let plain = format!(
-            "{stamp} {level:<5} {message}",
+            "{stamp} {level:<5} {text}",
             stamp = timefmt::stamp_str(&now.plain),
             level = level::label(event),
         );
         let plain = redact::redact(&plain);
         let sink = if self.json {
-            redact::redact(&json_line(self, &now, event, target, &message, agent_id))
+            redact::redact(&json_line(self, &now, event, target, &message, &parts))
         } else {
             plain.clone()
         };
@@ -341,11 +334,11 @@ impl Hub {
             unix_nano: now.unix_nano,
             severity_number: level::severity(event),
             severity_text: level::label(event).to_owned(),
-            body: redact::redact(&message),
+            body: redact::redact(&text),
             target: target.to_owned(),
-            agent_id: agent_id.map(redact::redact),
-            trace_id: trace_id.map(str::to_owned),
-            span_id: span_id.map(str::to_owned),
+            agent_id: parts.agent_id.map(redact::redact),
+            trace_id: parts.trace_id.map(str::to_owned),
+            span_id: parts.span_id.map(str::to_owned),
         });
     }
 
@@ -430,13 +423,21 @@ impl DailyFile {
     }
 }
 
+struct Emitted<'a> {
+    message: &'a str,
+    fields: &'a [(String, String)],
+    agent_id: Option<&'a str>,
+    trace_id: Option<&'a str>,
+    span_id: Option<&'a str>,
+}
+
 fn json_line(
     hub: &Hub,
     now: &timefmt::Stamp,
     event: &tracing::Level,
     target: &str,
     message: &str,
-    agent_id: Option<&str>,
+    parts: &Emitted<'_>,
 ) -> String {
     let mut map = serde_json::Map::new();
     map.insert("time".to_owned(), json!(timefmt::stamp_str(&now.rfc3339)));
@@ -450,10 +451,26 @@ fn json_line(
         map.insert("region_id".to_owned(), json!(id));
     }
     map.insert("message".to_owned(), json!(message));
-    if let Some(agent) = agent_id {
+    if let Some(agent) = parts.agent_id {
         map.insert("agent_id".to_owned(), json!(agent));
     }
+    for (key, value) in parts.fields {
+        if !map.contains_key(key) {
+            map.insert(key.clone(), json!(one_line(value)));
+        }
+    }
     serde_json::Value::Object(map).to_string()
+}
+
+fn append_fields(message: &str, fields: &[(String, String)]) -> String {
+    let mut text = message.to_owned();
+    for (key, value) in fields {
+        text.push(' ');
+        text.push_str(key);
+        text.push('=');
+        text.push_str(&one_line(value));
+    }
+    text
 }
 
 fn one_line(message: &str) -> String {
@@ -556,6 +573,37 @@ mod tests {
         assert!(message.contains("first_name=Test"));
         assert!(message.contains("last_name=User"));
         assert!(!message.contains('\n'));
+    }
+
+    #[test]
+    fn structured_fields_are_kept_in_text_and_json_and_redacted() {
+        let _hold = redact::test_secret_lock();
+        register_secret("field-secret-value");
+        let json_lines = capture(&sample(true), || {
+            tracing::error!(error = "boom", user = "field-secret-value", "failed");
+        });
+        assert_eq!(json_lines.len(), 1);
+        assert!(!json_lines[0].contains("field-secret-value"));
+        assert!(json_lines[0].contains("[redacted]"));
+        let value: serde_json::Value = serde_json::from_str(&json_lines[0]).expect("json");
+        assert_eq!(value["message"], "failed");
+        assert_eq!(value["error"], "boom");
+        assert_eq!(value["user"], "[redacted]");
+        let plain_lines = capture(&sample(false), || {
+            tracing::error!(error = "boom", user = "field-secret-value", "failed");
+        });
+        assert!(plain_lines.iter().any(|line| line.contains("ERROR failed")));
+        assert!(plain_lines.iter().any(|line| line.contains("error=boom")));
+        assert!(
+            plain_lines
+                .iter()
+                .any(|line| line.contains("user=[redacted]"))
+        );
+        assert!(
+            plain_lines
+                .iter()
+                .all(|line| !line.contains("field-secret-value"))
+        );
     }
 
     #[test]
