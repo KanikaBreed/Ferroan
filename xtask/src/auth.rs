@@ -32,16 +32,16 @@ use crate::live;
 #[cfg(target_os = "linux")]
 use crate::repo_root;
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const PRINCIPAL: &str = "11111111-1111-4111-8111-111111111111";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const OTHER: &str = "22222222-2222-4222-8222-222222222222";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const WEB_KEY: &str = "33333333-3333-4333-8333-333333333333";
 /// `MD5("harness-secret")`, the value login posts after stripping `$1$`.
 #[cfg(any(target_os = "linux", test))]
 const PRESENTED: &str = "d0f269068995fbfb1fd0c82e1e7d4afa";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const SALT: &str = "0123456789abcdef0123456789abcdef";
 /// `MD5(PRESENTED + ":" + SALT)`.
 #[cfg(any(target_os = "linux", test))]
@@ -756,7 +756,7 @@ fn tail(path: &Path) -> String {
     redact(&text[start..])
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct Reply {
     status: u16,
@@ -764,7 +764,7 @@ struct Reply {
     body: String,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn parse_response(bytes: &[u8]) -> Result<Reply, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "auth response is not utf-8".to_string())?;
     let Some((head, body)) = text.split_once("\r\n\r\n") else {
@@ -820,7 +820,7 @@ fn parse_response(bytes: &[u8]) -> Result<Reply, String> {
     })
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn canonical(reply: &Reply) -> String {
     format!("{}\n{}\n{}", reply.status, reply.content_type, reply.body)
 }
