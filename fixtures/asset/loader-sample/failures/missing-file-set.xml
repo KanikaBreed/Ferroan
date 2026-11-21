@@ -1,0 +1,8 @@
+<Nini>
+  <Section Name="Gone">
+    <Key Name="assetID" Value="cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="gone"/>
+    <Key Name="assetType" Value="7"/>
+    <Key Name="fileName" Value="missing.dat"/>
+  </Section>
+</Nini>

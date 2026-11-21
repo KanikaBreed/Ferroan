@@ -1,0 +1,19 @@
+<Nini>
+  <Section Name="Hello">
+    <Key Name="assetID" Value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="a &amp; b"/>
+    <Key Name="assetType" Value=" 20 "/>
+    <Key Name="fileName" Value="hello.dat"/>
+  </Section>
+  <Section Name="EmptyFile">
+    <Key Name="assetID" Value="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="empty"/>
+    <Key Name="fileName" Value=""/>
+  </Section>
+  <Section Name="Wrap">
+    <Key Name="assetID" Value="dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="wrap"/>
+    <Key Name="assetType" Value="128"/>
+    <Key Name="fileName" Value="hello.dat"/>
+  </Section>
+</Nini>

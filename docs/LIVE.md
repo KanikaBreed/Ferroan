@@ -101,7 +101,7 @@ cargo xtask live run assets --running
 cargo xtask live down
 ```
 
-After the build, `live up --assets ferroan` prepares library assets with Tranquillity's filesystem loader, copies the seeded SQLite store for `ferroan-robust`, and starts the asset service and region on loopback. The region's `Include-Asset` override selects the Rust service after `Standalone.ini` is loaded. The command prints the login URL and both service ports and leaves the processes running. The account is `Test User`; its generated password stays in `.scratch/live/run/password`.
+After the build, `live up --assets ferroan` seeds the library by starting `ferroan-robust` with `DefaultAssetLoader` pointed at the pin's `AssetSets.xml`, then copies that SQLite store for the serving `ferroan-robust` (loader off) and starts the asset service and region on loopback. The region's `Include-Asset` override selects the Rust service after `Standalone.ini` is loaded. The command prints the login URL and both service ports and leaves the processes running. The account is `Test User`; its generated password stays in `.scratch/live/run/password`.
 
 `live run assets --running` uses that existing region and the saved credentials to check a texture upload, a library texture fetch, and inventory through `ferroan-bot`. It leaves both services running. Use this before the [Firestorm G0 checks](MANUAL_CHECKS.md); run `live down` after the viewer logs out. The normal `live run` commands start their own regions and require the persistent setup to be stopped first.
 

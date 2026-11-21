@@ -1,0 +1,6 @@
+<Nini>
+  <Section Name="NoId">
+    <Key Name="name" Value="no-id"/>
+    <Key Name="assetType" Value="0"/>
+  </Section>
+</Nini>

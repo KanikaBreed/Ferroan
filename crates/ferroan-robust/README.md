@@ -32,6 +32,6 @@ User accounts use the same shape:
 
 `AllowCreateUser` and `AllowSetAccount` default to false. `POST /accounts` is the user-account handler. `POST /useralias` is served when `[UserAliasService]` is present and the alias table already exists. The pin ships that table for MySQL only, so a SQLite alias section refuses to start until the table is created. MySQL and PostgreSQL account stores wait for P1.A1.
 
-`DefaultAssetLoader` is ignored, so a fresh database does not gain the library asset set. Point a region's `[AssetService] AssetServerURI` at `http://127.0.0.1:<port>`. HTTPS and `AuthType = BasicHttpAuthentication` refuse to start.
+`DefaultAssetLoader = OpenSim.Framework.AssetLoader.Filesystem.dll` with `AssetLoaderArgs` set to an `AssetSets.xml` path seeds that library before the listener opens. Matching SHA1 bytes are left in place. An empty `DefaultAssetLoader` loads nothing, and `AssetLoaderEnabled = false` skips the load. The harness serve copy leaves the loader off after the seed. Point a region's `[AssetService] AssetServerURI` at `http://127.0.0.1:<port>`. HTTPS and `AuthType = BasicHttpAuthentication` refuse to start.
 
 The [Linux live workflow](../../.github/workflows/live.yml) points a C# region at this program during the asset comparison and persistent asset checks. The maintainer's Firestorm G0 evidence is recorded in [TASKS.md](../../TASKS.md). An Aurora viewer check is still pending.

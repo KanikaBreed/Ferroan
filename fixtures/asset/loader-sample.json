@@ -1,0 +1,161 @@
+{
+  "tranquillity": "c70fee205f64ee8672a8d607cef6a733931da951",
+  "sample": "loader-sample/ok/AssetSets.xml",
+  "assets": [
+    {
+      "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "a & b",
+      "type": 20,
+      "creator": "11111111-1111-0000-0000-000100bba000",
+      "description": "",
+      "local": false,
+      "temporary": false,
+      "flags": 0,
+      "data_null": false,
+      "length": 5,
+      "sha1": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+    },
+    {
+      "id": "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "empty",
+      "type": 0,
+      "creator": "11111111-1111-0000-0000-000100bba000",
+      "description": "",
+      "local": false,
+      "temporary": false,
+      "flags": 0,
+      "data_null": false,
+      "length": 0,
+      "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+    },
+    {
+      "id": "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "wrap",
+      "type": -128,
+      "creator": "11111111-1111-0000-0000-000100bba000",
+      "description": "",
+      "local": false,
+      "temporary": false,
+      "flags": 0,
+      "data_null": false,
+      "length": 5,
+      "sha1": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+    },
+    {
+      "id": "eeeeeeee-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "name": "second",
+      "type": 1,
+      "creator": "11111111-1111-0000-0000-000100bba000",
+      "description": "",
+      "local": false,
+      "temporary": false,
+      "flags": 0,
+      "data_null": false,
+      "length": 3,
+      "sha1": "7037807198c22a7d2b0807371d763779a84fdfcf"
+    }
+  ],
+  "missing_asset_id_is_random": true,
+  "failures": [
+    {
+      "name": "duplicate-section",
+      "file": "loader-sample/failures/duplicate-section.xml",
+      "threw": false,
+      "exception_type": "",
+      "callback_count": 1,
+      "assets": [
+        {
+          "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "name": "kept",
+          "type": 0,
+          "creator": "11111111-1111-0000-0000-000100bba000",
+          "description": "",
+          "local": false,
+          "temporary": false,
+          "flags": 0,
+          "data_null": false,
+          "length": 0,
+          "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        }
+      ]
+    },
+    {
+      "name": "missing-file",
+      "file": "loader-sample/failures/missing-file.xml",
+      "threw": true,
+      "exception_type": "System.IO.FileNotFoundException",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "duplicate-key",
+      "file": "loader-sample/failures/duplicate-key.xml",
+      "threw": true,
+      "exception_type": "System.ArgumentException",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "bad-type",
+      "file": "loader-sample/failures/bad-type.xml",
+      "threw": true,
+      "exception_type": "System.FormatException",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "bad-id",
+      "file": "loader-sample/failures/bad-id.xml",
+      "threw": true,
+      "exception_type": "System.FormatException",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "duplicate-set",
+      "file": "loader-sample/failures/duplicate-set.xml",
+      "threw": false,
+      "exception_type": "",
+      "callback_count": 1,
+      "assets": [
+        {
+          "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "name": "",
+          "type": 0,
+          "creator": "11111111-1111-0000-0000-000100bba000",
+          "description": "",
+          "local": false,
+          "temporary": false,
+          "flags": 0,
+          "data_null": false,
+          "length": 0,
+          "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        }
+      ]
+    },
+    {
+      "name": "bad-control",
+      "file": "loader-sample/failures/bad-control.xml",
+      "threw": false,
+      "exception_type": "",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "empty-type",
+      "file": "loader-sample/failures/empty-type.xml",
+      "threw": true,
+      "exception_type": "System.FormatException",
+      "callback_count": 0,
+      "assets": []
+    },
+    {
+      "name": "overflow-type",
+      "file": "loader-sample/failures/overflow-type.xml",
+      "threw": true,
+      "exception_type": "System.OverflowException",
+      "callback_count": 0,
+      "assets": []
+    }
+  ]
+}

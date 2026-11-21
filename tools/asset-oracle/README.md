@@ -11,4 +11,6 @@ cargo xtask asset verify
 
 `FERROAN_REF` is the reference checkouts root. It defaults to `~/Git/reference`. The checkout's OpenSim-Tranquillity revision must match `docs/REFERENCES.md`, and the checkout must be clean before and after the build. The [Linux live workflow](../../.github/workflows/live.yml) runs `cargo xtask asset verify`; ordinary CI runs Rust tests against the committed fixtures. `unnamed-flags.json` records `StoredAssetFlags.FromStored` masking flags 8. It is not one of the serialized documents.
 
+`generate` and `verify` also call `AssetLoaderFileSystem.ForEachDefaultXmlAsset` and the loader's `StoreAsset` callback, and they record `show asset`, `dump asset` and `delete asset`. After the C# program writes `loader-sample.json`, `seed.json`, `commands.json` and `library-manifest.json`, both commands run `cargo test -p ferroan-services --lib pilot_`. The library manifest is metadata. The asset bytes stay in the reference checkout.
+
 `cargo xtask asset cross` builds the same program and calls `SQLiteAssetData`, `MySQLAssetData` and `PGSQLAssetData` (`AssetOracle db`). It needs the .NET SDK, the pin checkout, and the local MySQL and PostgreSQL containers from `cargo xtask schema servers`. The Rust test skips with a printed reason unless that command sets `FERROAN_ASSET_CROSS`.

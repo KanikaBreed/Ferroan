@@ -1,0 +1,7 @@
+<Nini>
+  <Section Name="Dropped">
+    <Key Name="assetID" Value="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="dropped"/>
+    <Key Name="assetType" Value="1"/>
+  </Section>
+</Nini>

@@ -157,6 +157,7 @@ static class Program
         // TB1: flags 8 is not a named AssetFlags bit. The record is FromStored
         // then XmlSerializer, not a manifest case.
         WriteUnnamedFlags(directory, revision);
+        PilotMode.Write(directory, revision);
         return cases.Count;
     }
 
