@@ -8,14 +8,19 @@
 //! `AssetService` plus `SQLiteAssetData`, `MySQLAssetData` and
 //! `PGSQLAssetData`. `XAssetStore` is the MySQL and PostgreSQL XAsset plugins.
 //! `XAssetService` serves these HTTP routes on that store, including a chained
-//! `AssetService`. The filesystem loader runs when `DefaultAssetLoader` names
-//! it on `AssetService`. `XAssetService` does not seed the library.
+//! `AssetService`. `FsAssetStore` is the MySQL and PostgreSQL FSAssets plugins:
+//! table rows only, no files and no HTTP. The filesystem loader runs when
+//! `DefaultAssetLoader` names it on `AssetService`. `XAssetService` does not
+//! seed the library.
 //! `show asset`, `dump asset` and `delete asset` are functions here; the
 //! remote console does not call them yet.
 
 mod commands;
 mod content_type;
 mod decode;
+mod fmysql;
+mod fpostgres;
+mod fsasset;
 mod http;
 mod loader;
 mod model;
@@ -33,6 +38,7 @@ mod xservice;
 
 pub use commands::{delete_asset, dump_asset, show_asset};
 pub use content_type::content_type;
+pub use fsasset::FsAssetStore;
 pub use http::{AssetHttp, AssetOptions, DeleteMode};
 pub use model::{Asset, AssetMetadata};
 pub use open::{AssetError, listen_address, network_port};
