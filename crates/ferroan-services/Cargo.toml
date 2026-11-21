@@ -14,9 +14,11 @@ ferroan-config = { path = "../ferroan-config" }
 ferroan-diag = { path = "../ferroan-diag" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-http = { path = "../ferroan-http" }
+sha1 = "0.10.6"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "mysql", "postgres", "uuid"] }
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
 uuid = { version = "1.27.0", features = ["v4"] }
 
 [dev-dependencies]

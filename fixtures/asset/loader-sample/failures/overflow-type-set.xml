@@ -1,0 +1,6 @@
+<Nini>
+  <Section Name="Overflow">
+    <Key Name="assetID" Value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="assetType" Value="2147483648"/>
+  </Section>
+</Nini>

@@ -1,0 +1,6 @@
+<Nini>
+  <Section Name="Bad">
+    <Key Name="assetID" Value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="assetType" Value="nope"/>
+  </Section>
+</Nini>

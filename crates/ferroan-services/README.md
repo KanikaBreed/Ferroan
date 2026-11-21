@@ -32,9 +32,21 @@ SQLite, MySQL and PostgreSQL, on a database Tranquillity already migrated: Asset
 
 A store document with no `Data` element is 400. C# would insert NULL, and the later get would throw. Region connectors send the bytes.
 
+## Library loader
+
+`DefaultAssetLoader = OpenSim.Framework.AssetLoader.Filesystem.dll` reads `AssetLoaderArgs`, an `AssetSets.xml` path, when the process opens the asset service. An empty name loads nothing. Any other plugin name refuses to start. `AssetLoaderEnabled = false` on the asset section skips the load. Each library asset is stored when its id is new or the SHA1 of its bytes differs. Matching bytes are left in place, including when the name in the set file differs. The library owner is `11111111-1111-0000-0000-000100bba000`, the description is empty, and local, temporary and flags are false, false and 0.
+
+A repeated section name keeps the first section. Nini calls `Configs.Add` before it loads that section's keys, and `Add` leaves the existing `IConfig` in place, so the later section is dropped. `TexturesAssetSet.xml` repeats `Cypress 1` with the same id; one row is stored. A duplicate key is `ArgumentException` and fails the load before any row is written. A missing named file fails the same way: `FileInfo.Length` throws `FileNotFoundException` before the exists check, so the C# log line for a missing file does not run. An empty `fileName` stores empty bytes. A set file that is not XML is skipped. A control file that is missing or not XML loads nothing. A bad `assetID` or `assetType` fails the load before any row is written. `assetType` is the C# `(sbyte)` cast, so `128` is `-128` and surrounding whitespace and a leading `+` are accepted.
+
+C# loads the sets once per process, on `m_RootInstance`. This process loads them on every open. A second open leaves rows whose SHA1 still matches.
+
+The caps are `asset.loader-files` (10,000), `asset.loader-file-bytes` (2 MiB) and `asset.loader-total-bytes` (32 MiB). The library set at the pin is 455 files and about 13 MiB. The region library caps are a different loader.
+
+`show_asset`, `dump_asset` and `delete_asset` return the connector's text, including the flag line, the five hex rows and the two spaces in the dump-already-exists message. Wiring them to the remote console is still pending.
+
 ## Not in this pilot
 
-The filesystem default-asset loader, FSAssets (`XAssetService`), and the `show asset` / `delete asset` / `dump asset` console commands (issue #60). `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
+FSAssets (`XAssetService`) and `Migration.Update`. HTTP `POST /assets/{id}` still returns false and does not write. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
 
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 

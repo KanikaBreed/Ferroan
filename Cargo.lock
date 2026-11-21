@@ -523,10 +523,12 @@ dependencies = [
  "ferroan-diag",
  "ferroan-http",
  "serde_json",
+ "sha1",
  "sqlx",
  "thiserror",
  "tokio",
  "tower",
+ "tracing",
  "uuid",
 ]
 

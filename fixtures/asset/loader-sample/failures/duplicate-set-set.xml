@@ -1,0 +1,10 @@
+<Nini>
+  <Section Name="Same">
+    <Key Name="assetID" Value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="assetType" Value="0"/>
+  </Section>
+  <Section Name="Same">
+    <Key Name="assetID" Value="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="assetType" Value="0"/>
+  </Section>
+</Nini>

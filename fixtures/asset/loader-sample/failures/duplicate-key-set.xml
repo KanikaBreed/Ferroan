@@ -1,0 +1,8 @@
+<Nini>
+  <Section Name="Twice">
+    <Key Name="assetID" Value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="one"/>
+    <Key Name="name" Value="two"/>
+    <Key Name="assetType" Value="0"/>
+  </Section>
+</Nini>

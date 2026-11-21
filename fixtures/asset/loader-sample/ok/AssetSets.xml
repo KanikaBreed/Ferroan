@@ -1,0 +1,6 @@
+<Nini>
+  <Section Name="One"><Key Name="file" Value="One/one.xml"/></Section>
+  <Section Name="Broken"><Key Name="file" Value="broken.xml"/></Section>
+  <Section Name="Missing"><Key Name="file" Value="no-such.xml"/></Section>
+  <Section Name="Two"><Key Name="file" Value="Two/two.xml"/></Section>
+</Nini>

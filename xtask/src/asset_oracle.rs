@@ -149,8 +149,41 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     if !checkout_is_clean(&reference) {
         return ExitCode::FAILURE;
     }
+    if !pilot_tests(&root, &reference) {
+        return fail_if_dirty(&reference);
+    }
     println!("asset: {action} passed against {revision}");
     ExitCode::SUCCESS
+}
+
+fn pilot_tests(root: &Path, reference: &Path) -> bool {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(root)
+        .env("FERROAN_ASSET_LIBRARY", "1")
+        .env("FERROAN_REF", reference)
+        .args([
+            "test",
+            "-p",
+            "ferroan-services",
+            "--lib",
+            "pilot_",
+            "--locked",
+            "--",
+            "--test-threads=8",
+        ]);
+    println!("$ cargo test -p ferroan-services --lib pilot_");
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("asset: pilot tests exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("asset: could not run cargo: {error}");
+            false
+        }
+    }
 }
 
 fn reference_root() -> Result<PathBuf, String> {
