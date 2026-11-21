@@ -48,7 +48,7 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## Grid user stores
 
-`cargo xtask griduser cross` builds [tools/griduser-oracle](../tools/griduser-oracle/README.md) and calls the pinned `SQLiteGridUserData`, `MySQLGridUserData` and `PGSQLGridUserData`. Rust and C# read each other's rows on SQLite, MySQL and PostgreSQL. SQLite uses a copy of `fixtures/db/sqlite/GridUserStore.db`. MySQL and PostgreSQL use the schema-server containers. The Rust plugin tests run in ordinary CI when `FERROAN_MYSQL_URL` and `FERROAN_POSTGRES_URL` are set, and skip with a printed reason otherwise. The cross-read does not run in CI and does not start a server or the live harness. It prints `known differences: TB41`. PostgreSQL `character(n)` values are padded to the column width, matching Npgsql. MySQL reads drop trailing spaces, matching MySqlConnector. SQLite does not pad.
+`cargo xtask griduser cross` builds [tools/griduser-oracle](../tools/griduser-oracle/README.md) and calls the pinned `SQLiteGridUserData`, `MySQLGridUserData` and `PGSQLGridUserData`. Rust and C# read each other's rows on SQLite, MySQL and PostgreSQL. SQLite uses a copy of `fixtures/db/sqlite/GridUserStore.db`. MySQL and PostgreSQL use the schema-server containers. The Rust plugin tests run in ordinary CI when `FERROAN_MYSQL_URL` and `FERROAN_POSTGRES_URL` are set, and skip with a printed reason otherwise. The cross-read does not run in CI and does not start a server or the live harness. It prints `known differences: TB43`. PostgreSQL `character(n)` values are padded to the column width, matching Npgsql. MySQL reads drop trailing spaces, matching MySqlConnector. SQLite does not pad.
 
 ## Known differences
 

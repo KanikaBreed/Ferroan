@@ -37,7 +37,7 @@
 //! `Get`, `GetAll`, `GetMany`, `GetOnlineInRegion` and `Store` follow the
 //! three `*GridUserData` plugins and the generic table handlers they call.
 //! This module does not serve HTTP, keep a cache, or run migrations.
-//! `GetAll` binds a literal prefix (TB41, D33). The column list is a constant
+//! `GetAll` binds a literal prefix (TB43, D35). The column list is a constant
 //! in this crate, so a query cannot observe a half-built name list (TB8).
 
 mod model;

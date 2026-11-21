@@ -40,7 +40,7 @@
 //! `Store` are `REPLACE`. PostgreSQL `Store` updates the named columns and
 //! inserts when that update matches nothing. `GetAll` matches `UserID` as a
 //! literal prefix: the pattern is a parameter, `%`, `_` and `!` are escaped,
-//! and the statement has `ESCAPE '!'` (TB41). `GetMany` asks once per 500
+//! and the statement has `ESCAPE '!'` (TB43). `GetMany` asks once per 500
 //! distinct ids and leaves out a user with no row. `GetOnlineInRegion`
 //! requires both `LastRegionID` and `Online`, and `Online` is `True`.
 //! PostgreSQL `character(n)` reads are padded to the column width, matching

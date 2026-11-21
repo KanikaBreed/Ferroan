@@ -370,12 +370,12 @@ fn expect_special(oracle: &str, backend: &str, ado: &str) {
         "mysql" | "postgres" => {
             assert!(
                 !status.status.success(),
-                "TB41: interpolated GetAll should fail on a quote"
+                "TB43: interpolated GetAll should fail on a quote"
             );
         }
         _ => panic!("backend {backend}"),
     }
-    println!("known differences: TB41");
+    println!("known differences: TB43");
 }
 
 async fn store_user(store: &GridUserStore, user: &GridUser) {

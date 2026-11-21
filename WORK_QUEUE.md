@@ -98,7 +98,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | READY after Q20 (issue #65) |
 | Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
-| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | IN PROGRESS (`feat/griduser-stores`) |
+| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
@@ -364,7 +364,7 @@ Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-p
 
 ## Found while working
 
-- 2026-11-21, Q26a: `GetAll` at `1d7abb8337` interpolates the user id into `LIKE` on MySQL (`MySQLGridUserData.cs` line 64) and PostgreSQL (`PGSQLGridUserData.cs` line 68). A quote in the id fails the statement. SQLite binds `userID + "%"` (`SQLiteGridUserData.cs` lines 65–73) and does not escape `%` or `_`, and neither do the other two. Nobody depends on the extra matches or on the failure. Ferroan binds an escaped prefix with `ESCAPE '!'` on all three (TB41, D33). `cargo xtask griduser cross` lists TB41.
+- 2026-11-21, Q26a: `GetAll` at `1d7abb8337` interpolates the user id into `LIKE` on MySQL (`MySQLGridUserData.cs` line 64) and PostgreSQL (`PGSQLGridUserData.cs` line 68). A quote in the id fails the statement. SQLite binds `userID + "%"` (`SQLiteGridUserData.cs` lines 65–73) and does not escape `%` or `_`, and neither do the other two. Nobody depends on the extra matches or on the failure. Ferroan binds an escaped prefix with `ESCAPE '!'` on all three (TB43, D35). `cargo xtask griduser cross` lists TB43.
 
 - 2026-11-21, Q16a: `live images` on `00c477a` failed after a passing smoke ([run 44933380682](https://github.com/KanikaBreed/Ferroan/actions/runs/44933380682), job `live images`, runner Home1, labels `self-hosted`/`linux`/`x64`/`ferroan`, 18:03:57Z–18:09:53Z). The smoke line was `docker smoke login+ferrobot: 142s`. The step then failed with `Unable to process file command 'env' successfully` / `Invalid format '25'`. The next step's environment contained `GitAssemblyInformationalVersion`, `GitBuildVersion` and `GitBuildVersionSimple` (`1.2.225…`), which Nerdbank.GitVersioning appends to `GITHUB_ENV` during the host `dotnet` build. A torn `25` matches that tool's concurrent append ([dotnet/Nerdbank.GitVersioning#683](https://github.com/dotnet/Nerdbank.GitVersioning/issues/683)). Ubuntu, Windows and macOS `checks`, `live scenarios`, `live ferrobot` and `live services` passed on the same SHA, including `roots: pass`. Recorded before the retry. Not a product change.
 
