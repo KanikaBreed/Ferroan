@@ -13,7 +13,7 @@ Status values: `TODO`, `IN PROGRESS`, `AWAITING VALIDATION`, `DONE`, `BLOCKED`. 
 
 ## Prerequisite in Tranquillity (C#)
 
-Tracked in the Tranquillity fork; packages are in [SLUA_TRANQUILLITY.md](docs/SLUA_TRANQUILLITY.md).
+Tracked in the Tranquillity fork. The S and M packages are in [SLUA_TRANQUILLITY.md](docs/SLUA_TRANQUILLITY.md); the T.A rows come from [ASSET_SYSTEM.md](docs/ASSET_SYSTEM.md) and go to OpenSim-NGC as pull requests.
 
 | ID | Status | Task and acceptance |
 | --- | --- | --- |
@@ -28,6 +28,9 @@ Tracked in the Tranquillity fork; packages are in [SLUA_TRANQUILLITY.md](docs/SL
 | M3 | TODO | SLua engine imports and exports portable state (after S2). |
 | M4 | TODO | Migrator: three engines, `FallbackScriptEngines`, one owner per script, compile and risk checks, round trip, quiet-point switch, rollback window. |
 | M5 | TODO | Hypergrid: `<Variables>`-form state for LSL on SLua, travel copy for SLua scripts, arrivals with YEngine or XEngine state; checked on the live harness against core OpenSim. |
+| T.A1 | TODO | FSAssets fixes as OpenSim-NGC PRs, one per row: TB22 (a failed row insert answers as failed; names and descriptions keep only what a `utf8` table holds), TB23 (a missing, empty, unreadable or mismatching file is answered as missing; storing matching content rewrites a damaged file), TB24 (the writer writes a temporary file, forces it to disk and renames it, and retries instead of ending the process; a warning when `SpoolDirectory` is under `/tmp`) and TB25 (`AssetsExist` checks the file). Each with a test that fails on `develop`. The fault probe from the 21 November 2026 study is the acceptance check on MariaDB and PostgreSQL. |
+| T.A2 | TODO | Hypergrid content as OpenSim-NGC PRs (TB26, Hypergrid V2 §14.3): the example files state the real `OutboundPermission` default, and a visitor is told when content they take, upload or edit will not be sent home. Ferrobot's `hg-content` scenario passes with both settings and shows the message. |
+| T.A3 | TODO | The read-only FSAssets audit (counts by class, type and month; no ids unless asked) under Tranquillity `tools/`, so operators can measure their store before any clean-up or move. |
 
 ## Phase 0: Foundations
 
@@ -144,6 +147,27 @@ Every Phase 1 row, besides its own acceptance:
 | P1.15 | TODO | P1.13 | Money server: `Source/OpenSim.Server.MoneyServer` and `Source/OpenSim.Data.MySQL.MoneyData`. The region money module's balance, payment and transaction calls get the same replies and rows. A Ferrobot payment between two bots moves the same balances under C# and Rust. |
 | P1.16 | TODO | P1.1 to P1.15 | All-Rust Robust in the harness: grid mode with every service served by `ferroan-robust` and no C# Robust process. Every scenario passes, standalone and grid, with C# regions and with the Ferroan region. This is the automated half of the Phase 1 gate. |
 | G1 | TODO | P1.16 | Maintainer Phase 1 gate with Firestorm on the all-Rust grid services: log in; inventory and the library; upload; friends, IM and offline IM; a group with a notice; a profile and a pick; a teleport to a second grid and back; a payment. Record the Firestorm version and each result here. |
+
+## Asset system
+
+The new asset backend ([ASSET_SYSTEM.md](docs/ASSET_SYSTEM.md), D23 to D28). It is served by `ferroan-robust` behind the asset routes of P1.A1 to P1.A3, so the Phase 1 rules above apply to it too, except that its storage is its own: switching back is by sync and export (D27). Planned against Tranquillity with every open OpenSim-NGC PR merged (D21). Size each row from the design before starting; a row over two weeks is set to `BLOCKED` with a proposed split.
+
+| ID | Status | Depends on | Task and acceptance |
+| --- | --- | --- | --- |
+| AS0 | TODO | P1.0 | Fault probes in the live harness. Port the FSAssets fault probe to `cargo xtask live` (cut-short, empty and removed files, a name with a four-byte character, the database paused during a store, a full disk on a small tmpfs) and run Ferrobot's `hg-content` scenario on a second grid. Against the C# backends each case records the TB22 to TB26 behaviour as a known-difference test (P0.10n4); against the new backend each must pass. |
+| AS1 | TODO | P1.A1, AS0 | `ferroan-assets` core: the catalog on SQLite and MySQL/MariaDB with the startup check (D23), the storage-plugin interface, the local-files plugin, the store and read paths of ASSET_SYSTEM.md §5 (durable before answering, hash checked on every read, existence only for healthy assets), the outbox, the local read cache, and the asset routes with C#'s forms. Acceptance: every AS0 case passes; `cargo xtask live compare assets --backend ferroan` matches C# on the routes; a loop that kills the process during stores leaves no row without its bytes. |
+| AS2 | TODO | AS1 | SeaweedFS plugin through the native volume API; the catalog records file ids; the blob table can be rebuilt by scanning volumes. CI runs SeaweedFS in a container as it runs MySQL. Acceptance: AS1's checks on SeaweedFS; a volume server stopped mid-store gives a failure or an outbox entry, never a lost asset. |
+| AS3 | TODO | AS1 | S3 plugin, with small assets packed into larger objects. A pure-Rust client (D8). Acceptance: AS1's checks against SeaweedFS's S3 gateway and Garage in CI. |
+| AS4 | TODO | AS1, P1.A2, P1.A3 | Import from every source of ASSET_SYSTEM.md §10, with `--dry-run` printing the audit report, checkpoints and resume, and orphan adoption from region cache files. Acceptance: on a generated store with planted damage, the report counts each class exactly; a second run changes nothing; an orphan whose bytes are in a cache file comes back under its id. |
+| AS5 | TODO | AS1 | Integrity: the scrubber, the repair queue and its sources, the history table, the Prometheus readouts and the `assets show`, `audit` and `repair` console commands. Acceptance: a damaged blob is found by the scrubber, repaired from a matching copy, and its history shows each step. |
+| AS6 | TODO | AS1 | Checks on the way in and the lossless repairs of ASSET_SYSTEM.md §6; the placeholder texture in the library; replacement by the creator or a grid administrator (D24). Acceptance: one refused and one repaired fixture per type; a replacement by anyone else is refused. |
+| AS7 | TODO | AS5 | Classes, tombstones and restore, expiry for bakes and map tiles, and the policy engine with its floors (D26). Originals are report-only until AS11. Acceptance: a policy that would break a floor is refused; a new policy reports before it acts; a purged asset reads as purged with its date. |
+| AS8 | TODO | AS4 | Two-way sync with each Tranquillity backend: shadow, cut-over, write-through, and `assets export` (D27). Acceptance: on the live harness a grid moves to the new backend and back, with C# Robust serving everything stored meanwhile. |
+| AS9 | TODO | AS2 | The Docker Compose bundle (`ferroan-robust`, SeaweedFS, SQLite) and the operator guide: one box, growing to more SeaweedFS servers, moving the catalog to MySQL (`assets catalog copy`). Acceptance: the bundle starts with one command, and the harness's texture and inventory scenarios pass against it. |
+| AS10 | TODO | AS1, P2.0d7 | The delivery edge with the `open`, `session` and `region` modes (D25), and the Ferroan region sending the placeholder's id for a broken texture. `scene` mode waits for Ferroan's own regions to issue grants. Acceptance: a bot fetches through each mode, and a session token from another session is refused. |
+| AS11 | TODO | P1.5, AS7 | The reference index: inventory, avatars, groups, profiles and the region stores report which assets they use, and the collector may then act on originals within D26's floors. Expect this to need a split. |
+| AS12 | TODO | P1.14, AS1 | Hypergrid content over any version (D28, Hypergrid V2 §14.3): foreign copies with their origin and pins, the outbox for content going home, the export choice (creator's permission and grid policy), and the visitor told when content stays. Acceptance: `hg-content` passes with export allowed and refused, and the refused case shows the message. |
+| AS13 | BLOCKED | AS12 | V2 content (Hypergrid V2 §14.4). Blocked until Hypergrid V2's security layer is designed for Ferroan; next action: settle the V2 proposal with the maintainers. |
 
 Phases 2 to 7 get the rest of their rows when they near their start. Their scope is in the [plan](docs/PLAN.md).
 
