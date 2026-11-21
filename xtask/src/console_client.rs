@@ -97,9 +97,11 @@ fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
         .spawn()
         .map_err(|error| format!("could not start OpenSim.ConsoleClient: {error}"))?;
     // Leave stdin open. Closing it makes Prompt() parse a null line and throw.
-    // The login callback is asynchronous, so the command is sent only after a
-    // session prompt. The old FromXml error still ends the wait, and judge
-    // then fails.
+    // Login is asynchronous. `ReadResponses` (ConsoleClient.cs lines 283–293)
+    // drops a line that is not three colon-separated fields, so the server
+    // prompt `Region (root) # ` never reaches stdout. The client prints its
+    // own `Client> ` prompt (line 134). `remote console ready` is a scroll
+    // line from after `FromXml`, so the help tree is loaded before the send.
     let mut stdin = child.stdin.take();
     let collected = Arc::new(Mutex::new(String::new()));
     if let Some(pipe) = child.stdout.take() {
@@ -117,8 +119,10 @@ fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        if !sent && (text.contains("+++") || text.contains("Ferroan#") || text.contains("Region ("))
-        {
+        let logged_in = text.contains("remote console ready")
+            || text.contains("+++")
+            || text.contains("Ferroan#");
+        if !sent && logged_in && text.contains("Client>") {
             if let Some(stdin) = stdin.as_mut() {
                 let _ = stdin.write_all(b"show version\n");
                 let _ = stdin.flush();

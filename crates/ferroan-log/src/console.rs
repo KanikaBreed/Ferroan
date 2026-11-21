@@ -51,6 +51,9 @@ pub(crate) struct ConsoleState {
     manual: AtomicBool,
     manual_ms: std::sync::atomic::AtomicU64,
     sweeper: AtomicBool,
+    /// One extra `field:field:text` line after `show version`, for
+    /// `OpenSim.ConsoleClient` (TB28). The region console leaves this off.
+    legacy_client_line: bool,
 }
 
 struct ConsoleSession {
@@ -118,6 +121,7 @@ pub(crate) fn state(
     version: String,
     level: RuntimeLevel,
     prompt: String,
+    legacy_client_line: bool,
 ) -> Result<Arc<ConsoleState>, crate::LogError> {
     let origin = match origin {
         Some(value) => Some(HeaderValue::from_str(&value).map_err(|_| crate::LogError::Origin)?),
@@ -138,6 +142,7 @@ pub(crate) fn state(
         manual: AtomicBool::new(false),
         manual_ms: std::sync::atomic::AtomicU64::new(0),
         sweeper: AtomicBool::new(false),
+        legacy_client_line,
     }))
 }
 
@@ -403,6 +408,14 @@ fn run_command(state: &ConsoleState, command: &str) {
             state.push_line("", &state.version, false, false, false);
             let prompt = state.prompt.clone();
             state.push_line("", &prompt, true, true, false);
+            // `OpenSim.ConsoleClient.ReadResponses` (lines 283–293) splits a
+            // line on `:` into three fields and prints the third. The notice
+            // above has no colon, so that client drops it (TB28). The
+            // in-process console adds one old-shaped line after the three C#
+            // lines. The region console does not.
+            if state.legacy_client_line {
+                state.push_plain("", &format!("0:0:{}", state.version));
+            }
         }
         ["diag", "dump"] => match ferroan_diag::write_dump() {
             Ok(path) => state.push_plain("Info", &format!("0:0:diag dump {}", path.display())),
@@ -566,6 +579,7 @@ mod tests {
             "Ferroan 0.1.0 (ferroan-region)".to_owned(),
             RuntimeLevel::new(level::INFO),
             expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "Ferroan Test"),
+            false,
         )
         .expect("console")
     }
@@ -640,6 +654,10 @@ mod tests {
         assert!(body.contains(
             "Prompt=\"true\" Command=\"true\" Input=\"false\">Region (Ferroan Test) # </Line>"
         ));
+        assert!(
+            !body.contains("0:0:"),
+            "the region console does not add the ConsoleClient line"
+        );
         assert!(!body.contains("console-test-pass"));
 
         let (status, body, _) = text(
@@ -656,6 +674,32 @@ mod tests {
 
         let (status, _, _) = text(close_session(State(state), format!("ID={id}")).await).await;
         assert_eq!(status, HttpStatus::OK);
+    }
+
+    #[tokio::test]
+    async fn the_in_process_console_adds_a_line_consoleclient_can_print() {
+        let state = state(
+            "console-test".to_owned(),
+            "console-test-pass".to_owned(),
+            None,
+            "Ferroan 0.1.0 (ferroan-region)".to_owned(),
+            RuntimeLevel::new(level::INFO),
+            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "root"),
+            true,
+        )
+        .expect("console");
+        let id = session_id(&state).await;
+        let _drained =
+            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
+        let _ = command(&state, &id).await;
+        let (_, body, _) = text(read_responses(State(Arc::clone(&state)), Path(id)).await).await;
+        let notice = body
+            .find("Input=\"false\">Ferroan 0.1.0 (ferroan-region)</Line>")
+            .expect("notice");
+        let legacy = body
+            .find(">0:0:Ferroan 0.1.0 (ferroan-region)</Line>")
+            .expect("legacy line");
+        assert!(notice < legacy, "the 0:0: line follows the C# notice");
     }
 
     #[tokio::test]
