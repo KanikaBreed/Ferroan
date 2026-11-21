@@ -77,7 +77,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q16 | P2.0g: local chat | SPLIT into Q16a and Q16b (#140) |
 | Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | DONE (#144) |
 | Q16b | P2.0g2: local chat on channel 0 as `ChatModule` does, and `cargo xtask live run chat grid --region ferroan` prints `chat: pass` | DONE (#149) |
-| Q16c | P2.0g3: a god or an estate manager enters a full Ferroan region, as `Scene.CheckLandPositionAccess` lets them | READY after Q16b |
+| Q16c | P2.0g3: a god or an estate manager enters a full Ferroan region, as `Scene.CheckLandPositionAccess` lets them | IN PROGRESS |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16b |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
@@ -363,6 +363,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-part split is taken as Q26a to Q26f, in that order. For Q26a: `GetAll` matches the user id as a literal prefix. Bind it as a parameter and escape `%`, `_` and the escape character with an explicit `ESCAPE`, on all three stores, as Ferroan does for any text from outside; a `%` or `_` in the id matches only itself. Add a test with a quote, a `%` and a `_` in the id. The presence-login choice is asked of the maintainer now; only Q26f waits for it.
 
 ## Found while working
+
+- 2026-11-21, Q16c: `SQLiteEstateData.LoadUUIDList` loads every `estate_managers` row. `AddEstateManager` stops at `Constants.MaxEstateManagers` (20). Ferroan loads 20, ordered by uuid, so a raw row past that is an ordinary account. Not a TB: the estate editor does not add the 21st manager, and a viewer does not depend on that row. The admission pool is 21 (`region.root-bypass`: one owner plus 20 managers; grid gods share it). A missing file, a non-SQLite string, or an `EstateStore` that is not version 13 does not stop region startup. Managers stay empty and the INI owner is the only estate bypass. The handshake owner stays the INI value. The harness region has no estate SQLite of its own. A grid god needs `allow_grid_gods` and `getaccount` `UserLevel` of at least 200. `implicit_gods` does not affect this check.
 
 - 2026-11-21, Q16a: `live images` on `00c477a` failed after a passing smoke ([run 44933380682](https://github.com/KanikaBreed/Ferroan/actions/runs/44933380682), job `live images`, runner Home1, labels `self-hosted`/`linux`/`x64`/`ferroan`, 18:03:57Z–18:09:53Z). The smoke line was `docker smoke login+ferrobot: 142s`. The step then failed with `Unable to process file command 'env' successfully` / `Invalid format '25'`. The next step's environment contained `GitAssemblyInformationalVersion`, `GitBuildVersion` and `GitBuildVersionSimple` (`1.2.225…`), which Nerdbank.GitVersioning appends to `GITHUB_ENV` during the host `dotnet` build. A torn `25` matches that tool's concurrent append ([dotnet/Nerdbank.GitVersioning#683](https://github.com/dotnet/Nerdbank.GitVersioning/issues/683)). Ubuntu, Windows and macOS `checks`, `live scenarios`, `live ferrobot` and `live services` passed on the same SHA, including `roots: pass`. Recorded before the retry. Not a product change.
 

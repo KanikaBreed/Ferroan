@@ -1,0 +1,143 @@
+{
+  "pin": "1d7abb8337a477842fe1d7dd84beffe389ee52ac",
+  "method": "Scene.CheckLandPositionAccess",
+  "module": "DefaultPermissionsModule",
+  "agent_limit": 0,
+  "not_crossing": false,
+  "owner": "00000000-0000-4000-8000-000000000001",
+  "manager": "00000000-0000-4000-8000-000000000002",
+  "cases": [
+    {
+      "name": "ordinary",
+      "agent": "00000000-0000-4000-8000-000000000003",
+      "user_level": 0,
+      "allow_grid_gods": true,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    },
+    {
+      "name": "estate-owner",
+      "agent": "00000000-0000-4000-8000-000000000001",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "estate-manager",
+      "agent": "00000000-0000-4000-8000-000000000002",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "grid-god",
+      "agent": "00000000-0000-4000-8000-000000000004",
+      "user_level": 200,
+      "allow_grid_gods": true,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "level-199",
+      "agent": "00000000-0000-4000-8000-000000000004",
+      "user_level": 199,
+      "allow_grid_gods": true,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    },
+    {
+      "name": "gods-disabled",
+      "agent": "00000000-0000-4000-8000-000000000004",
+      "user_level": 240,
+      "allow_grid_gods": false,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    },
+    {
+      "name": "nil-user",
+      "agent": "00000000-0000-0000-0000-000000000000",
+      "user_level": 200,
+      "allow_grid_gods": true,
+      "region_owner_is_god": false,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    },
+    {
+      "name": "force-grid-gods-only",
+      "agent": "00000000-0000-4000-8000-000000000004",
+      "user_level": 200,
+      "allow_grid_gods": false,
+      "region_owner_is_god": true,
+      "region_manager_is_god": true,
+      "force_grid_gods_only": true,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "force-keeps-estate-owner",
+      "agent": "00000000-0000-4000-8000-000000000001",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": true,
+      "region_manager_is_god": true,
+      "force_grid_gods_only": true,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "region-owner-is-god-is-not-enough",
+      "agent": "00000000-0000-4000-8000-000000000003",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": true,
+      "region_manager_is_god": false,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    },
+    {
+      "name": "region-manager-is-god-keeps-the-manager",
+      "agent": "00000000-0000-4000-8000-000000000002",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": false,
+      "region_manager_is_god": true,
+      "force_grid_gods_only": false,
+      "success": true,
+      "reason": ""
+    },
+    {
+      "name": "region-manager-is-god-is-not-enough",
+      "agent": "00000000-0000-4000-8000-000000000003",
+      "user_level": 0,
+      "allow_grid_gods": false,
+      "region_owner_is_god": false,
+      "region_manager_is_god": true,
+      "force_grid_gods_only": false,
+      "success": false,
+      "reason": "The region is full"
+    }
+  ]
+}

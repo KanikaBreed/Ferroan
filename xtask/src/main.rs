@@ -32,6 +32,11 @@
 //! FSAssets plugins the same way. `asset fsassets-files` compares FSAssets
 //! paths and decompressed bytes. Neither starts a server or the live harness.
 //!
+//! `access` builds the C# full-region oracle and generates or verifies
+//! `fixtures/access`. It calls `Scene.CheckLandPositionAccess` with
+//! `DefaultPermissionsModule`. The Linux live workflow runs `verify`. It does
+//! not start a region.
+//!
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
 //! The live CI job runs standalone and grid mode.
@@ -47,6 +52,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod access_oracle;
 mod accounts;
 mod arrival_fixtures;
 mod asset_oracle;
@@ -111,6 +117,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset fsassets-cross
        cargo xtask asset fsassets-files
        cargo xtask pin3 generate|verify
+       cargo xtask access generate|verify
        cargo xtask live build
        cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
@@ -164,6 +171,8 @@ fn main() -> ExitCode {
         ["check"] => check(false),
         ["pin3", "generate"] => pin3_oracle::run(true),
         ["pin3", "verify"] => pin3_oracle::run(false),
+        ["access", "generate"] => access_oracle::run(true),
+        ["access", "verify"] => access_oracle::run(false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),

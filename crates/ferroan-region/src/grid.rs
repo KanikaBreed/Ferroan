@@ -38,6 +38,7 @@
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (VerifyUserPresence)
 //   Source/OpenSim.Services.Interfaces/IGridUserService.cs (GridUserInfo)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
+//   Source/OpenSim.Services.Connectors/UserAccounts/UserAccountServicesConnector.cs (GetUserAccount)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -52,6 +53,8 @@ use uuid::Uuid;
 use crate::config::RegionConfig;
 
 const MAX_SERVICE_REPLY: usize = 1024 * 1024;
+/// Account level lookup during admission. A miss or a timeout is not a god.
+const ACCOUNT_LEVEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GridError {
@@ -236,6 +239,30 @@ async fn service_form_within(
         ferroan_http::FormOptions::checked(timeout, MAX_SERVICE_REPLY),
     )
     .await?)
+}
+
+/// `UserAccountServicesConnector.GetUserAccount` posts `METHOD=getaccount` to
+/// `{UserAccountServerURI}/accounts`. A missing service, a bad reply, or no
+/// `UserLevel` is `None` (not a grid god). The reply body is not logged.
+pub(crate) async fn account_user_level(uri: &str, scope: Uuid, agent: Uuid) -> Option<i32> {
+    if uri.is_empty() || agent.is_nil() {
+        return None;
+    }
+    let endpoint = format!("{}/accounts", uri.trim_end_matches('/'));
+    let mut fields = service_fields("getaccount");
+    fields.insert("ScopeID".into(), Field::Str(scope.to_string()));
+    fields.insert("UserID".into(), Field::Str(agent.to_string()));
+    let reply = service_form_within(&endpoint, &fields, ACCOUNT_LEVEL_TIMEOUT)
+        .await
+        .ok()?;
+    let Field::Map(result) = reply.get("result")? else {
+        return None;
+    };
+    match result.get("UserLevel") {
+        Some(Field::Str(text)) => text.trim().parse().ok(),
+        Some(Field::Int(value)) => Some(*value),
+        _ => None,
+    }
 }
 
 pub(crate) fn service_fields(method: &str) -> FieldMap {
