@@ -16,7 +16,8 @@
 //! no creation column. Flag values are the `[Flags]` names (`Normal`,
 //! `Maptile Rewritable`). `StoredAssetFlags.FromStored` keeps only
 //! `Maptile | Rewritable | Collectable` before that text is chosen, so a
-//! stored 8 is `Normal`. `ContentType` is derived from `Type`.
+//! stored 8 is `Normal` and a stored 9 is `Maptile`. `ContentType` is derived
+//! from `Type`.
 
 use ferroan_diag::{
     self, ASSET_XML_DEPTH, ASSET_XML_ELEMENTS, ASSET_XML_NAME, HTTP_XML_CHARS, Kind,

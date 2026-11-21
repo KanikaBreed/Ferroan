@@ -16,10 +16,11 @@ use axum::http::{Request, StatusCode, header};
 use ferroan_config::Config;
 use ferroan_db::open_sqlite_file;
 use ferroan_services::{
-    AssetHttp, AssetOptions, AssetStore, DeleteMode, decode_asset, encode_bool, encode_bools,
-    encode_strings,
+    Asset, AssetHttp, AssetOptions, AssetStore, DeleteMode, decode_asset, encode_bool,
+    encode_bools, encode_strings,
 };
 use tower::ServiceExt;
+use uuid::Uuid;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -131,6 +132,47 @@ async fn store_get_exists_and_refuses_to_overwrite() {
     )
     .await;
     assert_eq!(kept.status, StatusCode::OK);
+}
+
+/// TB1. A stored row whose flags are 8, or 9 (Maptile mixed with that unnamed
+/// bit), is what `AssetServerGetHandler` serializes after
+/// `StoredAssetFlags.FromStored`. The bodies are the oracle documents.
+#[tokio::test]
+async fn stored_unnamed_and_mixed_flags_match_the_csharp_get() {
+    let path = scratch_db();
+    let pool = open_sqlite_file(&path, &["AssetStore"])
+        .await
+        .expect("open asset store");
+    let store = AssetStore::new(pool).expect("sqlite");
+    let cases = [
+        ("unnamed-flags", "33333333-4444-5555-6666-777777777777", 8),
+        ("mixed-flags", "33333333-4444-5555-6666-777777777778", 9),
+    ];
+    for (name, id, flags) in cases {
+        store
+            .store_data(&Asset {
+                id: Uuid::parse_str(id).expect("id"),
+                name: name.to_string(),
+                description: String::new(),
+                type_code: 0,
+                local: false,
+                temporary: false,
+                creator_id: "creator".to_string(),
+                flags,
+                data: Vec::new(),
+                upload_attempts: 0,
+            })
+            .await
+            .expect("store raw flags");
+    }
+    let app = AssetHttp::new(store, AssetOptions::default()).into_router();
+    for (name, id, _) in cases {
+        let got = call(&app, "GET", &format!("/assets/{id}"), &[], None).await;
+        assert_eq!(got.status, StatusCode::OK, "{name}");
+        assert_eq!(got.content_type, "text/xml", "{name}");
+        assert_eq!(got.body, fixture(&format!("asset/{name}.xml")), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
 }
 
 #[tokio::test]
