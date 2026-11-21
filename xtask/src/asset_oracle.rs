@@ -23,6 +23,19 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
 /// The local containers are the ones `cargo xtask schema servers` uses.
 /// Connection strings stay in the child environment and are not printed.
 pub fn cross() -> ExitCode {
+    run_plugin_cross(
+        "csharp_and_rust_read_each_others_rows",
+        "FERROAN_ASSET_CROSS",
+    )
+}
+
+/// Rust writes `XAssetsMeta` / `XAssetsData` rows and the pinned XAsset plugins
+/// read them, then the reverse, on MySQL and PostgreSQL.
+pub fn xasset_cross() -> ExitCode {
+    run_plugin_cross("xasset_plugins_cross_read", "FERROAN_XASSET_CROSS")
+}
+
+fn run_plugin_cross(test_name: &str, gate: &str) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
@@ -55,7 +68,7 @@ pub fn cross() -> ExitCode {
     let mut command = Command::new("cargo");
     command
         .current_dir(&root)
-        .env("FERROAN_ASSET_CROSS", "1")
+        .env(gate, "1")
         .env("FERROAN_ASSET_ORACLE", &dll)
         .env(
             "FERROAN_MYSQL_URL",
@@ -78,11 +91,11 @@ pub fn cross() -> ExitCode {
             "-p",
             "ferroan-services",
             "--lib",
-            "csharp_and_rust_read_each_others_rows",
+            test_name,
             "--",
             "--nocapture",
         ]);
-    println!("$ cargo test -p ferroan-services --lib csharp_and_rust_read_each_others_rows");
+    println!("$ cargo test -p ferroan-services --lib {test_name}");
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => {

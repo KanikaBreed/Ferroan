@@ -14,3 +14,5 @@ cargo xtask asset verify
 `generate` and `verify` also call `AssetLoaderFileSystem.ForEachDefaultXmlAsset` and the loader's `StoreAsset` callback, and they record `show asset`, `dump asset` and `delete asset`. After the C# program writes `loader-sample.json`, `seed.json`, `commands.json` and `library-manifest.json`, both commands run `cargo test -p ferroan-services --lib pilot_`. The library manifest is metadata. The asset bytes stay in the reference checkout.
 
 `cargo xtask asset cross` builds the same program and calls `SQLiteAssetData`, `MySQLAssetData` and `PGSQLAssetData` (`AssetOracle db`). It needs the .NET SDK, the pin checkout, and the local MySQL and PostgreSQL containers from `cargo xtask schema servers`. The Rust test skips with a printed reason unless that command sets `FERROAN_ASSET_CROSS`.
+
+`cargo xtask asset xasset-cross` calls `MySQLXAssetData` and `PGSQLXAssetData` (`AssetOracle xdb`) the same way. The Rust test skips unless that command sets `FERROAN_XASSET_CROSS`. It does not start an HTTP server or the live harness.

@@ -80,7 +80,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
-| Q22a | P1.A2a: MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins, with fixtures | READY after Q20 |
+| Q22a | P1.A2a: MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins, with fixtures | DONE (#135) |
 | Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | READY after Q22a |
 | Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | READY after Q22b |
 | Q23 | P1.A3: FSAssets | READY after Q22c |
@@ -269,7 +269,11 @@ Proposed split, in this order. Each piece is its own item. This note does not ad
 
 (3) `cargo xtask live assets --backend xasset --db mysql|pgsql` prints `assets: match`, in the live job, after (1) and (2). This is the piece that starts C# Robust and `ferroan-robust` on one database and replaces the harness refusal of `--db mysql|pgsql` for this backend.
 
+Q22a (21 November 2026, `feat/xasset-plugins`): [PR #135](https://github.com/KanikaBreed/Ferroan/pull/135). `XAssetStore` ports `MySQLXAssetData` and `PGSQLXAssetData` at `c70fee205f`. Two ids with the same bytes are one `XAssetsData` row. `cargo xtask asset xasset-cross` passed locally: C# reads the Rust rows on both databases, and Rust reads the PostgreSQL row C# stored. MySQL C# `StoreAsset` does not commit (TB27). TB28, TB29 and TB30 are matched. No HTTP, no chain, no live run. P1.A2 stays TODO.
+
 ## Found while working
+
+- 2026-11-21, Q22a: at `c70fee205f`, MySQL `MySQLXAssetData.StoreAsset` begins a transaction and never assigns `cmd.Transaction`, so MySqlConnector rejects the command, the method logs and returns, and the row is not written (TB27). MySQL `AssetsExist` selects `assets`, not `XAssetsMeta` (TB28). PostgreSQL `FetchAssetMetadataSet` sends `LIMIT start, count`, which PostgreSQL rejects, and the method returns an empty list (TB29). PostgreSQL `Delete` binds the id as varchar against a uuid column and the row stays (TB30). Not filed upstream. Ferroan runs the MySQL store on its transaction so hash dedupe can be seen. It matches the other three. TB19 and TB20 on `AssetService` are unchanged.
 
 - 2026-11-21, Q22: `XAssetService` at `c70fee205f` never runs `ForEachDefaultXmlAsset`. `XAssetServiceBase` assigns `m_AssetLoader` only when `ChainedServiceModule` loads, and the constructor calls the loader only when that field is set and no chain is set. Not filed upstream. The block note above is the record. No product change.
 

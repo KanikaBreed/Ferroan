@@ -538,6 +538,7 @@ dependencies = [
  "ferroan-http",
  "serde_json",
  "sha1",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",
