@@ -215,6 +215,9 @@ impl AcceptedAgent {
 }
 
 struct SessionLease {
+    /// Released when this generation is dropped, including a replacement that
+    /// outlived the old circuit. A secret still held by another generation stays.
+    secrets: ferroan_log::SessionSecrets,
     active: Arc<Mutex<Option<ActiveSession>>>,
     generation: Uuid,
     caps: CapsRegistry,
@@ -224,6 +227,9 @@ struct SessionLease {
 
 impl Drop for SessionLease {
     fn drop(&mut self) {
+        // Release redaction holds before `active`. `accept` takes `active`
+        // and then registers secrets, so the opposite order can deadlock.
+        drop(std::mem::take(&mut self.secrets));
         let mut active = self
             .active
             .lock()
@@ -332,10 +338,13 @@ impl SimulationState {
             return Err("Could not create seed capability");
         }
         // Register before the login line. The line itself names only the avatar.
-        ferroan_log::register_secret(&fields.session_id.to_string());
-        ferroan_log::register_secret(&fields.secure_session_id.to_string());
-        ferroan_log::register_circuit_code(fields.circuit_code);
-        ferroan_log::register_secret(&path);
+        // The lease drops these when the session closes.
+        let secrets = ferroan_log::SessionSecrets::login(
+            &fields.session_id.to_string(),
+            &fields.secure_session_id.to_string(),
+            fields.circuit_code,
+            &path,
+        );
         let first_name = fields.first_name.clone();
         let last_name = fields.last_name.clone();
         let agent_id = fields.agent_id;
@@ -351,6 +360,7 @@ impl SimulationState {
             logout_done: Some(logout_wait),
         });
         let lease = SessionLease {
+            secrets,
             active: self.active.clone(),
             generation,
             caps: self.caps.clone(),
@@ -1433,6 +1443,64 @@ mod tests {
         assert!(state.accept(synthetic_agent()).is_err());
         assert!(state.active.lock().unwrap().is_none());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_closed_session_forgets_its_redaction_secrets() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        let mut fields = synthetic_agent();
+        fields.agent_id = Uuid::from_u128(0x13c2_0100);
+        fields.session_id = Uuid::from_u128(0x13c2_0101);
+        fields.secure_session_id = Uuid::from_u128(0x13c2_0102);
+        fields.circuit_code = 424242;
+        fields.caps_path = Uuid::from_u128(0x13c2_0103).to_string();
+        let session = fields.session_id.to_string();
+        let secure = fields.secure_session_id.to_string();
+        let path = format!("/CAPS/{}0000/", fields.caps_path);
+        state.accept(fields).unwrap();
+        let mut first = receiver.recv().await.unwrap();
+        let hidden = ferroan_log::redact(&format!("{session} {secure} 424242 {path}"));
+        assert!(!hidden.contains(&session));
+        assert!(!hidden.contains(&secure));
+        assert!(!hidden.contains("424242"));
+        assert!(!hidden.contains(&path));
+
+        let mut next = synthetic_agent();
+        next.agent_id = Uuid::from_u128(0x13c2_0100);
+        next.session_id = Uuid::parse_str(&session).unwrap();
+        next.secure_session_id = Uuid::from_u128(0x13c2_0104);
+        next.circuit_code = 424243;
+        next.caps_path = Uuid::from_u128(0x13c2_0105).to_string();
+        let next_secure = next.secure_session_id.to_string();
+        let next_path = format!("/CAPS/{}0000/", next.caps_path);
+        state.accept(next).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), first.replaced())
+            .await
+            .unwrap();
+        let replacement = receiver.recv().await.unwrap();
+        drop(first);
+        let after_old = ferroan_log::redact(&format!(
+            "{session} {secure} 424242 {path} {next_secure} 424243 {next_path}"
+        ));
+        assert!(!after_old.contains(&session));
+        assert!(after_old.contains(&secure));
+        assert!(after_old.contains("424242"));
+        assert!(after_old.contains(&path));
+        assert!(!after_old.contains(&next_secure));
+        assert!(!after_old.contains("424243"));
+        assert!(!after_old.contains(&next_path));
+        drop(replacement);
+        let gone = ferroan_log::redact(&format!("{session} {next_secure} 424243 {next_path}"));
+        assert!(gone.contains(&session));
+        assert!(gone.contains(&next_secure));
+        assert!(gone.contains("424243"));
+        assert!(gone.contains(&next_path));
     }
 
     #[tokio::test]

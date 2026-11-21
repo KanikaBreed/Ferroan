@@ -7,9 +7,18 @@
 //! `POST /SessionCommand/` with `ID` and `COMMAND`, `POST /ReadResponses/{id}/`,
 //! and `POST /CloseSession/` with `ID`. The console is not registered unless
 //! `[Network] ConsoleUser` is set.
+//!
+//! `RemoteConsole.cs` `DoExpire` drops a connection idle for more than 500
+//! seconds. `last` moves when the session starts and when a poll checks or
+//! reads responses, not when a command arrives. The C# timer fires every 5
+//! seconds. A session past `console.sessions` is refused.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use ferroan_diag::{CONSOLE_SESSIONS, Kind};
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -21,6 +30,9 @@ use uuid::Uuid;
 use crate::level::{self, RuntimeLevel};
 
 const SCROLL_LIMIT: usize = 1000;
+/// `Environment.TickCount - last > 500000` in `DoExpire`.
+const IDLE_LIMIT_MS: u64 = 500_000;
+const MAX_SESSIONS: usize = 32;
 
 pub(crate) struct ConsoleState {
     user: String,
@@ -28,8 +40,18 @@ pub(crate) struct ConsoleState {
     origin: Option<HeaderValue>,
     version: String,
     level: RuntimeLevel,
-    sessions: Mutex<HashMap<Uuid, u64>>,
+    sessions: Mutex<HashMap<Uuid, ConsoleSession>>,
     scroll: Mutex<Scroll>,
+    started: Instant,
+    /// When set, [`ConsoleState::now_ms`] ignores the monotonic clock.
+    manual: AtomicBool,
+    manual_ms: std::sync::atomic::AtomicU64,
+    sweeper: AtomicBool,
+}
+
+struct ConsoleSession {
+    seen: u64,
+    last_ms: u64,
 }
 
 struct Scroll {
@@ -64,6 +86,10 @@ pub(crate) fn state(
         scroll: Mutex::new(Scroll {
             lines: VecDeque::new(),
         }),
+        started: Instant::now(),
+        manual: AtomicBool::new(false),
+        manual_ms: std::sync::atomic::AtomicU64::new(0),
+        sweeper: AtomicBool::new(false),
     }))
 }
 
@@ -107,13 +133,10 @@ async fn start_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
         return empty(StatusCode::UNAUTHORIZED, "text/plain", &state);
     }
     let id = Uuid::new_v4();
-    {
-        let mut sessions = state
-            .sessions
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        sessions.insert(id, 0);
+    if !state.try_open(id) {
+        return empty(StatusCode::SERVICE_UNAVAILABLE, "text/plain", &state);
     }
+    ensure_sweeper(&state);
     state.push_prompt();
     let xml = format!(
         "<?xml version=\"1.0\"?><ConsoleSession><SessionID>{id}</SessionID><Prompt>Ferroan# </Prompt><HelpTree>{help}</HelpTree></ConsoleSession>",
@@ -127,6 +150,7 @@ async fn session_command(State(state): State<Arc<ConsoleState>>, body: String) -
     let Some(id) = form_get(&form, "ID").and_then(|text| Uuid::parse_str(text).ok()) else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
+    state.expire_idle();
     let known = state
         .sessions
         .lock()
@@ -155,13 +179,17 @@ async fn read_responses(
     let Some(id) = Uuid::parse_str(&id).ok() else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
+    state.expire_idle();
+    let now = state.now_ms();
     let mut sessions = state
         .sessions
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    let Some(seen) = sessions.get_mut(&id) else {
+    let Some(session) = sessions.get_mut(&id) else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
+    session.last_ms = now;
+    let seen = &mut session.seen;
     let scroll = state
         .scroll
         .lock()
@@ -196,6 +224,7 @@ async fn read_responses(
 }
 
 async fn close_session(State(state): State<Arc<ConsoleState>>, body: String) -> Response {
+    state.expire_idle();
     let form = form_pairs(&body);
     let Some(id) = form_get(&form, "ID").and_then(|text| Uuid::parse_str(text).ok()) else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
@@ -219,6 +248,60 @@ async fn close_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
 }
 
 impl ConsoleState {
+    fn now_ms(&self) -> u64 {
+        if self.manual.load(Ordering::Relaxed) {
+            return self.manual_ms.load(Ordering::Relaxed);
+        }
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(test)]
+    fn set_now_ms(&self, ms: u64) {
+        self.manual_ms.store(ms, Ordering::Relaxed);
+        self.manual.store(true, Ordering::Relaxed);
+    }
+
+    fn expire_idle(&self) {
+        let now = self.now_ms();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        sessions.retain(|_, session| now.saturating_sub(session.last_ms) <= IDLE_LIMIT_MS);
+    }
+
+    /// Opens `id` unless the live set is already at [`MAX_SESSIONS`].
+    /// Expired sessions are dropped first, matching a `DoExpire` sweep before
+    /// `HandleHttpStartSession` adds a row.
+    fn try_open(&self, id: Uuid) -> bool {
+        let now = self.now_ms();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        sessions.retain(|_, session| now.saturating_sub(session.last_ms) <= IDLE_LIMIT_MS);
+        if sessions.len() >= MAX_SESSIONS {
+            let observed = (sessions.len() as u64).saturating_add(1);
+            drop(sessions);
+            ferroan_diag::refuse(
+                CONSOLE_SESSIONS,
+                Kind::Hard,
+                MAX_SESSIONS as u64,
+                observed,
+                "console",
+            );
+            return false;
+        }
+        sessions.insert(
+            id,
+            ConsoleSession {
+                seen: 0,
+                last_ms: now,
+            },
+        );
+        true
+    }
+
     fn push_prompt(&self) {
         let mut scroll = self
             .scroll
@@ -231,6 +314,30 @@ impl ConsoleState {
             prompt: true,
             text: "0:0:+++Ferroan# ".to_owned(),
         });
+    }
+}
+
+fn ensure_sweeper(state: &Arc<ConsoleState>) {
+    if state
+        .sweeper
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        // Tests move the clock themselves and call the handlers, which sweep.
+        // Spawning here would race those tests, and `router` is built before a
+        // runtime exists for `cargo xtask console-client`.
+        #[cfg(not(test))]
+        {
+            let state = Arc::clone(state);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    state.expire_idle();
+                }
+            });
+        }
     }
 }
 
@@ -493,5 +600,128 @@ mod tests {
         .await;
         assert_eq!(status, HttpStatus::NOT_FOUND);
         assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn idle_sessions_expire_after_500_seconds_and_the_count_is_bounded() {
+        let open = console_with("operator", "");
+        let (status, _, _) =
+            text(start_session(State(Arc::clone(&open)), "USER=operator&PASS=".to_owned()).await)
+                .await;
+        assert_eq!(status, HttpStatus::OK);
+        let (status, _, _) = text(
+            start_session(
+                State(open),
+                "USER=operator&PASS=not-the-password".to_owned(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, HttpStatus::UNAUTHORIZED);
+
+        let state = console();
+        state.set_now_ms(0);
+        let id = session_id(&state).await;
+        state.set_now_ms(100_000);
+        assert_eq!(command(&state, &id).await, HttpStatus::OK);
+        state.set_now_ms(IDLE_LIMIT_MS);
+        assert_eq!(
+            command(&state, &id).await,
+            HttpStatus::OK,
+            "500000 ms is not yet over the DoExpire threshold"
+        );
+        state.set_now_ms(IDLE_LIMIT_MS + 1);
+        assert_eq!(command(&state, &id).await, HttpStatus::NOT_FOUND);
+        assert_eq!(
+            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await)
+                .await
+                .0,
+            HttpStatus::NOT_FOUND
+        );
+
+        state.set_now_ms(0);
+        let polled = session_id(&state).await;
+        state.set_now_ms(400_000);
+        assert_eq!(
+            text(read_responses(State(Arc::clone(&state)), Path(polled.clone())).await)
+                .await
+                .0,
+            HttpStatus::OK
+        );
+        state.set_now_ms(400_000 + IDLE_LIMIT_MS);
+        assert_eq!(command(&state, &polled).await, HttpStatus::OK);
+        state.set_now_ms(400_000 + IDLE_LIMIT_MS + 1);
+        assert_eq!(command(&state, &polled).await, HttpStatus::NOT_FOUND);
+
+        state.set_now_ms(0);
+        let mut opened = Vec::new();
+        for _ in 0..MAX_SESSIONS {
+            opened.push(session_id(&state).await);
+        }
+        let hits_before = refuse_hits();
+        let (status, body, _) = text(
+            start_session(
+                State(Arc::clone(&state)),
+                "USER=console-test&PASS=console-test-pass".to_owned(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, HttpStatus::SERVICE_UNAVAILABLE);
+        assert!(body.is_empty());
+        assert!(refuse_hits() > hits_before);
+        assert!(ferroan_diag::metrics().contains("console.sessions"));
+        state.set_now_ms(IDLE_LIMIT_MS + 1);
+        let _again = session_id(&state).await;
+        assert_eq!(opened.len(), MAX_SESSIONS);
+    }
+
+    fn console_with(user: &str, pass: &str) -> Arc<ConsoleState> {
+        state(
+            user.to_owned(),
+            pass.to_owned(),
+            None,
+            "Ferroan 0.1.0 (ferroan-region)".to_owned(),
+            RuntimeLevel::new(level::INFO),
+        )
+        .expect("console")
+    }
+
+    async fn session_id(state: &Arc<ConsoleState>) -> String {
+        let (status, body, _) = text(
+            start_session(
+                State(Arc::clone(state)),
+                "USER=console-test&PASS=console-test-pass".to_owned(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, HttpStatus::OK);
+        body.split("<SessionID>")
+            .nth(1)
+            .and_then(|rest| rest.split("</SessionID>").next())
+            .expect("session")
+            .to_owned()
+    }
+
+    async fn command(state: &Arc<ConsoleState>, id: &str) -> HttpStatus {
+        let (status, _, _) = text(
+            session_command(
+                State(Arc::clone(state)),
+                format!("ID={id}&COMMAND=show \"version\""),
+            )
+            .await,
+        )
+        .await;
+        status
+    }
+
+    fn refuse_hits() -> u64 {
+        let needle = "ferroan_limit_hits_total{limit=\"console.sessions\",action=\"refuse\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(needle))
+            .and_then(|rest| rest.trim().parse().ok())
+            .unwrap_or(0)
     }
 }

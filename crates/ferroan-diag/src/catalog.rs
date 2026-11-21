@@ -45,3 +45,5 @@ pub const TEXTURE_BYTES: &str = "texture.bytes";
 pub const TEXTURE_FACES: &str = "texture.faces";
 pub const TEXTURE_BITFIELD: &str = "texture.bitfield";
 pub const EXTRA_BYTES: &str = "extra.bytes";
+pub const REDACT_SECRETS: &str = "log.redact-secrets";
+pub const CONSOLE_SESSIONS: &str = "console.sessions";

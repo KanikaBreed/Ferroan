@@ -4,41 +4,127 @@
 //! Replace secrets before any line is written. Short values are ignored so a
 //! circuit code cannot wipe a timestamp, and a general secret must be at least
 //! 8 characters.
+//!
+//! A login holds its session id, secure session id, circuit code and seed path
+//! in [`SessionSecrets`]. Dropping that value forgets them. The same text
+//! shared by two live sessions stays until the last one drops. The list stops
+//! at [`MAX_SECRETS`]; a distinct secret past that is not stored and the miss
+//! is `log.redact-secrets`.
 
 use std::sync::Mutex;
 
+use ferroan_diag::{Kind, REDACT_SECRETS};
+
 const REPLACEMENT: &str = "[redacted]";
 const CAPABILITY: &str = "[redacted-capability]";
+pub(crate) const MAX_SECRETS: usize = 64;
 
-static SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+struct Entry {
+    text: String,
+    holders: u32,
+}
+
+static SECRETS: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 pub fn register_secret(secret: &str) {
-    remember(secret, 8);
+    let _stored = remember(secret, 8);
 }
 
 pub fn register_circuit_code(code: u32) {
-    remember(&code.to_string(), 6);
+    let text = code.to_string();
+    let _stored = remember(&text, 6);
 }
 
-fn remember(secret: &str, min: usize) {
+/// Secrets remembered for one region session. Dropping it releases that
+/// session's hold. Do not log this value.
+#[derive(Default)]
+pub struct SessionSecrets {
+    held: Vec<String>,
+}
+
+impl SessionSecrets {
+    /// `seed_path` is the seed capability path registered for this login,
+    /// including the `/CAPS/` prefix.
+    pub fn login(
+        session_id: &str,
+        secure_session_id: &str,
+        circuit_code: u32,
+        seed_path: &str,
+    ) -> Self {
+        let mut secrets = Self { held: Vec::new() };
+        secrets.hold(session_id, 8);
+        secrets.hold(secure_session_id, 8);
+        secrets.hold(&circuit_code.to_string(), 6);
+        secrets.hold(seed_path, 8);
+        secrets
+    }
+
+    fn hold(&mut self, secret: &str, min: usize) {
+        let secret = secret.trim();
+        if remember(secret, min) {
+            self.held.push(secret.to_owned());
+        }
+    }
+}
+
+impl Drop for SessionSecrets {
+    fn drop(&mut self) {
+        for secret in self.held.drain(..) {
+            release(&secret);
+        }
+    }
+}
+
+/// Returns whether `secret` is now held. A value already in the list gains
+/// another holder and does not take a new slot.
+fn remember(secret: &str, min: usize) -> bool {
     let secret = secret.trim();
     if secret.len() < min || secret.len() > 2048 {
-        return;
+        return false;
     }
     let mut guard = SECRETS.lock().unwrap_or_else(|poison| poison.into_inner());
-    if guard.iter().any(|item| item == secret) {
-        return;
+    if let Some(entry) = guard.iter_mut().find(|entry| entry.text == secret) {
+        entry.holders = entry.holders.saturating_add(1);
+        return true;
     }
-    guard.push(secret.to_owned());
-    guard.sort_by_key(|item| std::cmp::Reverse(item.len()));
+    if guard.len() >= MAX_SECRETS {
+        let observed = (guard.len() as u64).saturating_add(1);
+        drop(guard);
+        ferroan_diag::refuse(
+            REDACT_SECRETS,
+            Kind::Hard,
+            MAX_SECRETS as u64,
+            observed,
+            "log",
+        );
+        return false;
+    }
+    guard.push(Entry {
+        text: secret.to_owned(),
+        holders: 1,
+    });
+    guard.sort_by_key(|entry| std::cmp::Reverse(entry.text.len()));
+    true
+}
+
+fn release(secret: &str) {
+    let mut guard = SECRETS.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(pos) = guard.iter().position(|entry| entry.text == secret) else {
+        return;
+    };
+    if guard[pos].holders <= 1 {
+        guard.remove(pos);
+    } else {
+        guard[pos].holders -= 1;
+    }
 }
 
 pub fn redact(text: &str) -> String {
     let guard = SECRETS.lock().unwrap_or_else(|poison| poison.into_inner());
     let mut out = text.to_owned();
     for secret in guard.iter() {
-        if out.contains(secret) {
-            out = out.replace(secret, REPLACEMENT);
+        if out.contains(&secret.text) {
+            out = out.replace(&secret.text, REPLACEMENT);
         }
     }
     drop(guard);
@@ -126,11 +212,26 @@ fn capability_at(bytes: &[u8], index: usize) -> Option<usize> {
 }
 
 #[cfg(test)]
+fn secret_count() -> usize {
+    SECRETS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len()
+}
+
+#[cfg(test)]
+pub(crate) fn test_secret_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn secrets_queries_and_capability_urls_are_removed() {
+        let _hold = test_secret_lock();
         register_secret("session-secret-value");
         register_secret("short");
         register_circuit_code(12);
@@ -147,5 +248,68 @@ mod tests {
         assert!(!line.contains("also-hidden"));
         assert!(line.contains("[redacted-capability]"));
         assert!(!line.contains("/CAPS/"));
+    }
+
+    #[test]
+    fn a_closed_session_forgets_its_secrets_and_the_list_is_bounded() {
+        let _hold = test_secret_lock();
+        let shared = "shared-session-eeeeffff";
+        let secure = "secure-close-ccccdddd";
+        let path = "/CAPS/close-path-eeee/";
+        let first = SessionSecrets::login(shared, secure, 424242, path);
+        let second = SessionSecrets::login(shared, "other-secure-gggghhhh", 100000, path);
+        assert!(!redact(shared).contains(shared));
+        assert!(!redact(secure).contains(secure));
+        assert!(!redact("424242").contains("424242"));
+        assert!(!redact("100000").contains("100000"));
+        assert!(redact("sees 99999 intact").contains("99999"));
+        drop(first);
+        assert!(
+            !redact(shared).contains(shared),
+            "the other session still holds it"
+        );
+        assert!(redact(secure).contains(secure));
+        assert!(redact("code 424242").contains("424242"));
+        assert!(!redact("100000").contains("100000"));
+        drop(second);
+        assert!(redact(shared).contains(shared));
+        assert!(redact("100000").contains("100000"));
+
+        let start = secret_count();
+        let hits_before = refuse_hits(REDACT_SECRETS);
+        let mut held = Vec::new();
+        let mut refused = None;
+        for n in 0..(MAX_SECRETS + 8) {
+            let secret = format!("redact-bound-{n:04}-xxxxxxxx");
+            let one = hold_one(&secret);
+            if redact(&secret).contains(&secret) {
+                refused = Some(secret);
+                drop(one);
+                break;
+            }
+            held.push(one);
+        }
+        let secret = refused.expect("a secret past the bound");
+        assert_eq!(secret_count(), MAX_SECRETS);
+        assert!(refuse_hits(REDACT_SECRETS) > hits_before);
+        assert!(ferroan_diag::render().contains("log.redact-secrets"));
+        drop(held);
+        assert_eq!(secret_count(), start);
+        assert!(redact(&secret).contains(&secret));
+    }
+
+    fn hold_one(secret: &str) -> SessionSecrets {
+        let mut secrets = SessionSecrets { held: Vec::new() };
+        secrets.hold(secret, 8);
+        secrets
+    }
+
+    fn refuse_hits(id: &str) -> u64 {
+        let needle = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"refuse\"}} ");
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(&needle))
+            .and_then(|rest| rest.trim().parse().ok())
+            .unwrap_or(0)
     }
 }

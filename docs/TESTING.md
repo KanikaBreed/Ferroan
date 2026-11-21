@@ -134,7 +134,7 @@ Leave the keys unset and a server writes plain lines to stdout and stderr. `INFO
 
 `deploy/compose/compose.yaml` includes `loki` and `otel-collector` next to the grid. Grafana's provisioning adds a Loki datasource at `http://127.0.0.1:3100` and leaves Prometheus as the default. To point the collector at another system, change its config file as [the collector README](../deploy/monitoring/collector/README.md) describes. The contrib collector has no GELF exporter. The Graylog file uses Graylog's OTLP/gRPC input.
 
-No log line, JSON field, console reply or OTLP record is supposed to carry a password, session id, secure session id, circuit code or capability URL. Those values are replaced with `[redacted]` or `[redacted-capability]` after they have been registered. The agent id may be logged. Do not put account passwords in `compose.yaml`. Keep them in the mounted INI files.
+No log line, JSON field, console reply or OTLP record is supposed to carry a password, session id, secure session id, circuit code or capability URL. Those values are replaced with `[redacted]` or `[redacted-capability]` after they have been registered. The agent id may be logged. A session's four values leave the redaction list when its lease drops. The list stops at 64 (`log.redact-secrets`). A remote console session idle for more than 500 seconds is removed, and the server keeps at most 32 (`console.sessions`). An empty `ConsolePass` still accepts an empty `PASS`. Do not put account passwords in `compose.yaml`. Keep them in the mounted INI files.
 
 ### Trying a limit hit
 
