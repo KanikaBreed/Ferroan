@@ -13,9 +13,9 @@
 //! stay visible until the pin moves. A capture that does not hit one of them
 //! still lists it. Any other HTTP difference fails the command.
 
-use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "linux")]
@@ -23,7 +23,7 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
@@ -34,8 +34,10 @@ use crate::repo_root;
 
 /// Printed before `assets: match`. Removed at the pin move that brings in
 /// the C# fixes for these ids.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const KNOWN_DIFFERENCES: &str = "known differences: TB27, TB28, TB29, TB30, TB33";
 
+#[cfg(target_os = "linux")]
 const SEED_QUERY: &str = "SELECT json_object(\
     'id', UUID, \
     'name', hex(Name), \
@@ -54,6 +56,7 @@ pub(crate) enum XassetDb {
 }
 
 impl XassetDb {
+    #[cfg(target_os = "linux")]
     fn label(self) -> &'static str {
         match self {
             Self::Mysql => "mysql",
@@ -61,6 +64,7 @@ impl XassetDb {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn env_name(self) -> &'static str {
         match self {
             Self::Mysql => "FERROAN_MYSQL_URL",
@@ -68,6 +72,7 @@ impl XassetDb {
         }
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn provider(self) -> &'static str {
         match self {
             Self::Mysql => "OpenSim.Data.MySQL.dll",
@@ -139,10 +144,12 @@ fn compare_linux(db: XassetDb) -> Result<String, String> {
     ))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn success_report(csharp: &str, ferroan: &str, records: usize) -> String {
     format!("{csharp}\n{ferroan}\n{KNOWN_DIFFERENCES}\nassets: match ({records} http records)")
 }
 
+#[cfg(any(target_os = "linux", test))]
 struct DbTarget {
     user: String,
     password: String,
@@ -151,6 +158,7 @@ struct DbTarget {
     database: String,
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_database_url(raw: &str) -> Result<DbTarget, String> {
     let rest = raw
         .strip_prefix("mysql://")
@@ -202,6 +210,7 @@ fn database_target(db: XassetDb) -> Result<DbTarget, String> {
 }
 
 /// C# keeps `Pooling=false`. Ferroan rejects that key and uses its own pool.
+#[cfg(any(target_os = "linux", test))]
 fn ado(db: XassetDb, target: &DbTarget, pooling_false: bool) -> String {
     let mut text = match db {
         XassetDb::Mysql => format!(
@@ -219,6 +228,7 @@ fn ado(db: XassetDb, target: &DbTarget, pooling_false: bool) -> String {
     text
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn service_ini(port: u16, provider: &str, ado: &str, grid: bool) -> String {
     let asset = format!(
         "[AssetService]\n    \
@@ -243,6 +253,7 @@ fn service_ini(port: u16, provider: &str, ado: &str, grid: bool) -> String {
     )
 }
 
+#[cfg(any(target_os = "linux", test))]
 struct SeedAsset {
     id: String,
     name_hex: String,
@@ -256,6 +267,7 @@ struct SeedAsset {
     hash_hex: String,
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn seed_sql(db: XassetDb, rows: &[SeedAsset], now: i64) -> Result<String, String> {
     if i32::try_from(now).is_err() {
         return Err("the clock does not fit the asset time column".to_string());
@@ -285,6 +297,7 @@ fn seed_sql(db: XassetDb, rows: &[SeedAsset], now: i64) -> Result<String, String
     Ok(sql)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn validate_row(row: &SeedAsset) -> Result<(), String> {
     if !is_uuid(&row.id) {
         return Err("a library row has an id that is not a uuid".to_string());
@@ -309,6 +322,7 @@ fn validate_row(row: &SeedAsset) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn push_mysql_row(sql: &mut String, row: &SeedAsset, now: i64) {
     let local = i32::from(row.local);
     let temporary = i32::from(row.temporary);
@@ -336,6 +350,7 @@ fn push_mysql_row(sql: &mut String, row: &SeedAsset, now: i64) {
     ));
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn push_postgres_row(sql: &mut String, row: &SeedAsset, now: i64) {
     let local = if row.local { "true" } else { "false" };
     let temporary = if row.temporary { "true" } else { "false" };
@@ -364,6 +379,7 @@ fn push_postgres_row(sql: &mut String, row: &SeedAsset, now: i64) {
     ));
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn mysql_text(hex: &str) -> String {
     if hex.is_empty() {
         "''".to_string()
@@ -372,6 +388,7 @@ fn mysql_text(hex: &str) -> String {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn mysql_blob(hex: &str) -> String {
     if hex.is_empty() {
         "''".to_string()
@@ -380,6 +397,7 @@ fn mysql_blob(hex: &str) -> String {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn postgres_text(hex: &str) -> String {
     if hex.is_empty() {
         "''".to_string()
@@ -388,6 +406,7 @@ fn postgres_text(hex: &str) -> String {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn postgres_blob(hex: &str) -> String {
     if hex.is_empty() {
         "''::bytea".to_string()
@@ -427,6 +446,7 @@ fn read_seed_rows(database: &Path) -> Result<Vec<SeedAsset>, String> {
     Ok(rows)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn seed_asset(line: &str) -> Result<SeedAsset, String> {
     let value: serde_json::Value =
         serde_json::from_str(line).map_err(|_| "a library row is not json".to_string())?;
@@ -453,6 +473,7 @@ fn seed_asset(line: &str) -> Result<SeedAsset, String> {
     Ok(row)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn hex_field(value: &serde_json::Value, key: &str) -> Result<String, String> {
     match value.get(key) {
         Some(serde_json::Value::Null) | None => Ok(String::new()),
@@ -465,6 +486,7 @@ fn hex_field(value: &serde_json::Value, key: &str) -> Result<String, String> {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn int_field(value: &serde_json::Value, key: &str) -> Result<i64, String> {
     value
         .get(key)
@@ -472,11 +494,13 @@ fn int_field(value: &serde_json::Value, key: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("a library row has no {key}"))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn sha256_hex(data_hex: &str) -> Result<String, String> {
     let bytes = hex_decode(data_hex)?;
     Ok(hex_encode(&Sha256::digest(&bytes)))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("a library value is not hex".to_string());
@@ -493,6 +517,7 @@ fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn hex_nibble(byte: u8) -> Result<u8, String> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -502,6 +527,7 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -512,6 +538,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn is_uuid(text: &str) -> bool {
     let groups = [8usize, 4, 4, 4, 12];
     let mut parts = text.split('-');
@@ -704,6 +731,7 @@ fn tail_text(bytes: &[u8]) -> String {
     text[start..].trim().to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn redact(text: &str, secret: &str) -> String {
     if secret.is_empty() {
         text.to_string()
