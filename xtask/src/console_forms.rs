@@ -6,6 +6,12 @@
 //! The step is not part of `cargo xtask check`. Credentials are generated for
 //! the run and are not printed. The startup `ReadResponses` drain is not
 //! compared: it is scrollback from `lastLineSeen == 0`.
+//!
+//! Off Linux the server path is not compiled. The compare helpers stay so
+//! the unit tests run, and `dead_code` is allowed because nothing calls them
+//! from the binary.
+
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::process::ExitCode;
 
