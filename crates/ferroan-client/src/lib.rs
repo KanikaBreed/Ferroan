@@ -13,7 +13,7 @@ mod circuit;
 mod event_queue;
 mod handshake;
 
-pub use arrival::ArrivalConfig;
+pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry, CapsServer,
 };

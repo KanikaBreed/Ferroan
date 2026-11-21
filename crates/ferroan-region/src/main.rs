@@ -45,7 +45,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferroan_client::{CapsRegistry, CircuitServer, CircuitStop};
+use ferroan_client::{CapsRegistry, CircuitServer, CircuitStop, LandLayer};
 use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
@@ -54,6 +54,7 @@ use ferroan_region::simulation::{AcceptedAgent, SimulationState};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
 };
+use ferroan_scene::TerrainFrame;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
@@ -79,6 +80,8 @@ enum RunError {
     DispatcherStopped,
     #[error("timed out draining region logout notifications")]
     LogoutDrainTimeout,
+    #[error("terrain: {0}")]
+    Terrain(String),
 }
 
 fn main() -> ExitCode {
@@ -136,6 +139,7 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
 
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
+    let terrain = load_terrain(&config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -242,6 +246,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut circuits = tokio::spawn(dispatch_circuits(
         circuit,
         config.clone(),
+        terrain,
         agents,
         stopped_circuits,
     ));
@@ -320,6 +325,48 @@ async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     }
 }
 
+async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
+    let Some(connection) = config.terrain_store.as_deref() else {
+        return Ok(None);
+    };
+    let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
+    let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
+    let Some(map) = ferroan_scene::open_terrain(connection, config.id, width, height)
+        .await
+        .map_err(|error| RunError::Terrain(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let frame = TerrainFrame::start(map).map_err(|error| RunError::Terrain(error.to_string()))?;
+    Ok(Some(Arc::new(frame)))
+}
+
+/// `MakeRootAgent` without physics: lift Z, and take the precomputed land packets.
+fn terrain_login(frame: Option<&TerrainFrame>, start: [f32; 3]) -> ([f32; 3], Vec<LandLayer>) {
+    let Some(frame) = frame else {
+        return (start, Vec::new());
+    };
+    let mut position = start;
+    match frame.ground(position[0], position[1]) {
+        Ok(height) => position[2] = ferroan_scene::movement_z(position[2], height),
+        Err(error) => tracing::error!("ferroan-region: terrain height: {error}"),
+    }
+    let land = match frame.layers() {
+        Ok(layers) => layers
+            .into_iter()
+            .map(|layer| LandLayer {
+                kind: layer.kind,
+                data: layer.data,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::error!("ferroan-region: terrain layers: {error}");
+            Vec::new()
+        }
+    };
+    (position, land)
+}
+
 async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     if let Err(error) = presence.logout_region(region).await {
         tracing::error!("ferroan-region: Presence logoutregion failed: {error}");
@@ -329,6 +376,7 @@ async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
 async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
+    terrain: Option<Arc<TerrainFrame>>,
     mut agents: mpsc::Receiver<AcceptedAgent>,
     mut stop: oneshot::Receiver<()>,
 ) -> Result<(), GridError> {
@@ -351,9 +399,15 @@ async fn dispatch_circuits(
         };
         let Some(mut agent) = next else { break };
         let mut root_arrived = false;
+        let (position, land) = if stopping {
+            (agent.start_pos, Vec::new())
+        } else {
+            terrain_login(terrain.as_deref(), agent.start_pos)
+        };
         if !stopping {
             let expect = agent.expect;
-            let arrival = config.arrival(agent.start_pos);
+            let mut arrival = config.arrival(position);
+            arrival.land = land;
             let (report, mut report_ready) = oneshot::channel();
             let (opened, mut opening) = oneshot::channel();
             let (close_tx, close_rx) = oneshot::channel();
@@ -409,7 +463,7 @@ async fn dispatch_circuits(
                                 let _guard = agent.lock_lifecycle().await;
                                 if agent.is_current() {
                                     agent.mark_root();
-                                    notify_root_arrival(&grid_user, &presence, &config, &agent).await;
+                                    notify_root_arrival(&grid_user, &presence, &config, &agent, position).await;
                                 }
                             };
                             tokio::pin!(reporting);
@@ -446,7 +500,7 @@ async fn dispatch_circuits(
         // calls. A stale generation must never mark its replacement offline.
         let guard = agent.lock_lifecycle().await;
         let result = if root_arrived {
-            notify_logout(&grid_user, &presence, &config, &agent).await
+            notify_logout(&grid_user, &presence, &config, &agent, position).await
         } else if !config.login_connect_wait.is_zero() {
             notify_failed_login(&grid_user, &presence, &agent).await
         } else {
@@ -499,6 +553,7 @@ async fn notify_root_arrival(
     presence: &PresenceClient,
     config: &RegionConfig,
     agent: &AcceptedAgent,
+    position: [f32; 3],
 ) {
     // The two OnMakeRootAgent detectors ignore their connector's bool result.
     // Failure is observable in diagnostics, but does not deny viewer arrival
@@ -512,7 +567,7 @@ async fn notify_root_arrival(
     // ScenePresence.Lookat still has its initial zero camera axis; the nonzero
     // CompleteMovement fallback belongs only to the viewer arrival packet.
     if let Err(error) = grid_user
-        .set_last_position(agent.expect.agent_id, config.id, agent.start_pos, [0.0; 3])
+        .set_last_position(agent.expect.agent_id, config.id, position, [0.0; 3])
         .await
     {
         tracing::error!("ferroan-region: root GridUser position report failed: {error}");
@@ -524,13 +579,14 @@ async fn notify_logout(
     presence: &PresenceClient,
     config: &RegionConfig,
     agent: &AcceptedAgent,
+    position: [f32; 3],
 ) -> Result<(), GridError> {
     let grid_result = if agent.is_current() {
         // ActivityDetector reads ScenePresence.Lookat (zero before camera
         // updates), not CompleteMovement's nonzero arrival-packet fallback.
-        // Position remains the accepted start until the scene/terrain tasks.
+        // `position` is the terrain-lifted arrival when a heightmap was loaded.
         grid_user
-            .logged_out(agent.expect.agent_id, config.id, agent.start_pos, [0.0; 3])
+            .logged_out(agent.expect.agent_id, config.id, position, [0.0; 3])
             .await
     } else {
         Ok(())
@@ -714,7 +770,7 @@ mod tests {
                 .unwrap();
             let (stop, stopped) = oneshot::channel();
             let udp = circuit.local_addr().unwrap();
-            let running = tokio::spawn(dispatch_circuits(circuit, config, agents, stopped));
+            let running = tokio::spawn(dispatch_circuits(circuit, config, None, agents, stopped));
             let tasks = vec![
                 mock.abort_handle(),
                 http.abort_handle(),

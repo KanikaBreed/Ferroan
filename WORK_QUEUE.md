@@ -71,7 +71,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | DONE (#123) |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 (retargeted after #124) |
-| Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
+| Q14 | P2.0e: terrain from the C# region store | IN PROGRESS (feat/terrain) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
 | Q16 | P2.0g: local chat | READY after Q15 |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
