@@ -35,11 +35,10 @@ jobs:
           cargo clippy --version
       - name: Classify the pull request
         id: scope
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash tools/ci/classify_pr.sh
+        run: cargo xtask ci scope
       - name: Check documentation and Rust workspace
         if: steps.scope.outputs.docs_only != 'true'
         run: cargo xtask check

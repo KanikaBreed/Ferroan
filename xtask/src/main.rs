@@ -35,6 +35,10 @@
 //!
 //! `docker build` builds the Ferroan and pinned Tranquillity images without
 //! pushing them. `docker smoke` logs in through that grid. Both run on Linux.
+//!
+//! `ci scope` classifies a pull request as documentation-only. `ci gate` is
+//! the required live check: every parallel live job succeeded, or, on a
+//! documentation-only pull request, every one was skipped.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -43,6 +47,7 @@ mod arrival_fixtures;
 mod asset_oracle;
 mod assets;
 mod caps_fixtures;
+mod ci;
 mod circuit_fixtures;
 mod config_oracle;
 mod console_client;
@@ -123,7 +128,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live accounts [--db sqlite|mysql|pgsql]
        cargo xtask docker build
        cargo xtask docker smoke
-       cargo xtask console-client";
+       cargo xtask console-client
+       cargo xtask ci scope
+       cargo xtask ci gate";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -174,6 +181,8 @@ fn main() -> ExitCode {
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
+        ["ci", "scope"] => ci::scope(),
+        ["ci", "gate"] => ci::gate(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -416,108 +425,6 @@ mod tests {
         assert!(problems[0].contains("no-such-file.md"));
     }
 
-    // Windows CI has no WSL distribution. `bash` there is the WSL stub, while
-    // the workflow step uses Git bash. These scripts are covered on Linux.
-    #[cfg(unix)]
-    fn docs_only(paths: &str) -> bool {
-        let mut child = Command::new("bash")
-            .arg(repo_root().join("tools/ci/docs_only.sh"))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        {
-            let mut stdin = child.stdin.take().unwrap();
-            std::io::Write::write_all(&mut stdin, paths.as_bytes()).unwrap();
-        }
-        child.wait_with_output().unwrap().status.success()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn documentation_only_paths_skip_the_live_run() {
-        assert!(docs_only("docs/TESTING.md\ndocs/LIVE.md\n"));
-        assert!(docs_only("crates/ferroan-region/README.md\n"));
-        assert!(!docs_only(""));
-        assert!(!docs_only("README.md\n"));
-        assert!(!docs_only("docs/REFERENCES.md\n"));
-        assert!(!docs_only("docs/LIMITS.md\n"));
-        assert!(!docs_only("docs/TESTING.md\nxtask/src/main.rs\n"));
-        assert!(!docs_only("docs/TESTING.md\n.github/workflows/live.yml\n"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_push_or_a_schedule_is_not_documentation_only() {
-        let root = repo_root();
-        let output = std::env::temp_dir().join(format!(
-            "ferroan-classify-{}-{}",
-            std::process::id(),
-            "schedule"
-        ));
-        let status = Command::new("bash")
-            .arg(root.join("tools/ci/classify_pr.sh"))
-            .env("EVENT_NAME", "schedule")
-            .env("GITHUB_OUTPUT", &output)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let text = fs::read_to_string(&output).unwrap();
-        let _ = fs::remove_file(&output);
-        assert_eq!(text.trim(), "docs_only=false");
-    }
-
-    #[cfg(unix)]
-    fn live_gate(
-        scope: &str,
-        docs: &str,
-        scenarios: &str,
-        ferrobot: &str,
-        services: &str,
-        images: &str,
-    ) -> bool {
-        Command::new("bash")
-            .arg(repo_root().join("tools/ci/live_gate.sh"))
-            .env("SCOPE", scope)
-            .env("DOCS_ONLY", docs)
-            .env("SCENARIOS", scenarios)
-            .env("FERROBOT", ferrobot)
-            .env("SERVICES", services)
-            .env("IMAGES", images)
-            .status()
-            .unwrap()
-            .success()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_live_gate_fails_when_any_parallel_job_fails() {
-        assert!(live_gate(
-            "success", "false", "success", "success", "success", "success"
-        ));
-        assert!(!live_gate(
-            "success", "false", "failure", "success", "success", "success"
-        ));
-        assert!(!live_gate(
-            "success",
-            "false",
-            "cancelled",
-            "success",
-            "success",
-            "success"
-        ));
-        assert!(!live_gate(
-            "failure", "false", "skipped", "skipped", "skipped", "skipped"
-        ));
-        assert!(live_gate(
-            "success", "true", "skipped", "skipped", "skipped", "skipped"
-        ));
-        assert!(!live_gate(
-            "success", "true", "success", "skipped", "skipped", "skipped"
-        ));
-    }
-
     #[test]
     fn required_check_names_stay_put() {
         let root = repo_root();
@@ -532,5 +439,19 @@ mod tests {
                 .count(),
             1
         );
+        assert!(live.contains("cargo xtask ci scope"));
+        assert!(live.contains("cargo xtask ci gate"));
+        assert!(ci.contains("cargo xtask ci scope"));
+        assert!(!live.contains("tools/ci"));
+        assert!(!ci.contains("tools/ci"));
+        // Standalone Ferrobot does not publish the region. The job builds it.
+        let ferrobot = live
+            .split("name: live ferrobot")
+            .nth(1)
+            .unwrap()
+            .split("name: live services")
+            .next()
+            .unwrap();
+        assert!(ferrobot.contains("cargo xtask live build"));
     }
 }

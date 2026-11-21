@@ -18,7 +18,8 @@ jobs:
   scope:
     name: live scope
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # A cache miss compiles xtask before the work jobs start.
+    timeout-minutes: 15
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
@@ -27,12 +28,25 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+      - name: Set up Rust
+        run: rustup show
+      - name: Restore the Rust build
+        uses: actions/cache/restore@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
+          restore-keys: |
+            rust-live-${{ runner.os }}-
       - name: Classify the pull request
         id: scope
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash tools/ci/classify_pr.sh
+        run: cargo xtask ci scope
 
   scenarios:
     name: live scenarios
@@ -52,7 +66,7 @@ jobs:
           # runners. Hashing that file keeps the warm publish tree; a narrower
           # key would miss it. See docs/LIVE.md.
           tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
-          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
           rust-restore: rust-live-${{ runner.os }}-
       - name: Verify the oracles
         run: |
@@ -102,7 +116,7 @@ jobs:
         uses: ./.github/actions/live-setup
         with:
           tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
-          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
           rust-restore: rust-live-${{ runner.os }}-
       - name: Check Ferrobot in standalone and mixed grids
         run: |
@@ -139,7 +153,7 @@ jobs:
         uses: ./.github/actions/live-setup
         with:
           tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
-          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
           rust-restore: rust-live-${{ runner.os }}-
       - name: Check login through Robust onto the Ferroan region
         run: cargo xtask live run login grid --region ferroan
@@ -198,7 +212,7 @@ jobs:
         uses: ./.github/actions/live-setup
         with:
           tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
-          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
           rust-restore: rust-live-${{ runner.os }}-
       - name: Build images and smoke the example grid
         if: success()
@@ -219,15 +233,26 @@ jobs:
     needs: [scope, scenarios, ferrobot, services, images]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           fetch-depth: 1
-          sparse-checkout: tools/ci
-          sparse-checkout-cone-mode: false
+      - name: Set up Rust
+        run: rustup show
+      - name: Restore the Rust build
+        uses: actions/cache/restore@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
+          restore-keys: |
+            rust-live-${{ runner.os }}-
       - name: Fail unless every live job succeeded
         env:
           SCOPE: ${{ needs.scope.result }}
@@ -236,4 +261,4 @@ jobs:
           FERROBOT: ${{ needs.ferrobot.result }}
           SERVICES: ${{ needs.services.result }}
           IMAGES: ${{ needs.images.result }}
-        run: bash tools/ci/live_gate.sh
+        run: cargo xtask ci gate
