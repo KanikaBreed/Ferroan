@@ -151,13 +151,9 @@ async fn check_plugin(store: &XAssetStore) {
     let page = store.metadata_set(0, 10).await.expect("metadata");
     let other_clock = store.clock(other).await.expect("clock").expect("twin");
     match backend {
-        Backend::Mysql => {
+        Backend::Mysql | Backend::Postgres => {
             assert!(page.iter().any(|row| row.id == other && row.flags == 1));
             near(other_clock.access_time.expect("access"), mysql_unix_now());
-        }
-        Backend::Postgres => {
-            assert!(page.is_empty(), "LIMIT start, count returns nothing");
-            assert_eq!(other_clock.access_time, Some(stale));
         }
         Backend::Sqlite => panic!("sqlite"),
     }
@@ -180,8 +176,7 @@ async fn check_plugin(store: &XAssetStore) {
 
     let exists = store.exists(&[id, xid(9)]).await.expect("exists");
     match backend {
-        Backend::Mysql => assert_eq!(exists, vec![false, false], "exists reads assets"),
-        Backend::Postgres => assert_eq!(exists, vec![true, false]),
+        Backend::Mysql | Backend::Postgres => assert_eq!(exists, vec![true, false]),
         Backend::Sqlite => panic!("sqlite"),
     }
     assert!(store.exists(&[]).await.expect("empty").is_empty());
@@ -195,10 +190,24 @@ async fn check_plugin(store: &XAssetStore) {
             assert_eq!(store.data_rows().await.expect("data"), before);
         }
         Backend::Postgres => {
-            assert!(store.delete(&id.to_string()).await.is_err());
-            assert!(store.delete("nope").await.is_err());
-            assert!(store.get(id).await.expect("get").is_some());
-            assert_eq!(store.data_rows().await.expect("data"), before);
+            assert!(store.delete(&id.to_string()).await.expect("delete"));
+            assert!(!store.delete("nope").await.expect("bad id"));
+            assert!(store.get(id).await.expect("get").is_none());
+            assert!(store.get(other).await.expect("get").is_some());
+            assert_eq!(
+                store.data_rows().await.expect("data"),
+                before - 1,
+                "the unused hash is reaped"
+            );
+            assert!(store.delete(&other.to_string()).await.expect("other"));
+            assert_eq!(
+                store.data_rows().await.expect("data"),
+                before - 2,
+                "the twin hash is reaped and the truncated row remains"
+            );
+            assert!(store.get(xid(3)).await.expect("truncated").is_some());
+            assert!(store.delete(&xid(3).to_string()).await.expect("truncated"));
+            assert_eq!(store.data_rows().await.expect("data"), 0);
         }
         Backend::Sqlite => panic!("sqlite"),
     }

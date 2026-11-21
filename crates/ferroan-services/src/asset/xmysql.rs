@@ -40,10 +40,9 @@
 //! logs, and no row is written. This store runs those statements on the
 //! transaction so the hash dedupe above can be observed. `GetAsset` joins
 //! the tables and masks flags. It calls `UpdateAccessTime` only when the
-//! stored access time is greater than 0. `AssetsExist` selects the ordinary
-//! `assets` table, not `XAssetsMeta`.
-//! `Delete` removes the meta row, leaves the data row, and returns true
-//! whenever the statement runs.
+//! stored access time is greater than 0. `AssetsExist` at the pin selects
+//! `assets` (TB28). This store selects `XAssetsMeta`. `Delete` removes the
+//! meta row, leaves the data row, and returns true whenever the statement runs.
 
 use sqlx::MySqlPool;
 use uuid::Uuid;
@@ -167,12 +166,12 @@ pub(super) async fn delete(pool: &MySqlPool, id: &str) -> Result<bool, StoreErro
     Ok(true)
 }
 
-/// The pin selects `assets`, not `XAssetsMeta`. An id that exists only in
-/// `XAssetsMeta` is reported absent.
+/// The pin selects `assets` (TB28). Nothing depends on that miss, so this
+/// store selects `XAssetsMeta`. An empty input returns an empty list.
 pub(super) async fn exists(pool: &MySqlPool, ids: &[Uuid]) -> Result<Vec<bool>, StoreError> {
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let row = sqlx::query("SELECT 1 FROM assets WHERE id = ?")
+        let row = sqlx::query("SELECT 1 FROM XAssetsMeta WHERE ID = ?")
             .bind(id.to_string())
             .fetch_optional(pool)
             .await?;

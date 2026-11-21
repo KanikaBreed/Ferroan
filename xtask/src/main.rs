@@ -41,6 +41,7 @@
 //! the required live check: every parallel live job succeeded, or, on a
 //! documentation-only pull request, every one was skipped. `ci ensure-sqlite`
 //! installs the `sqlite3` command with `apt-get` only when it is missing.
+//! `ci ensure-db-clients` does the same for the `mysql` and `psql` commands.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -76,6 +77,7 @@ mod pin3_oracle;
 mod schema;
 mod trailing_fixtures;
 mod twice;
+mod xasset_live;
 
 use std::env;
 use std::ffi::OsString;
@@ -131,6 +133,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run assets --running
        cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
        cargo xtask live assets [--db sqlite|mysql|pgsql]
+       cargo xtask live assets --backend xasset --db mysql|pgsql
        cargo xtask live accounts [--db sqlite|mysql|pgsql]
        cargo xtask docker build
        cargo xtask docker smoke
@@ -138,7 +141,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask console-forms
        cargo xtask ci scope
        cargo xtask ci gate
-       cargo xtask ci ensure-sqlite";
+       cargo xtask ci ensure-sqlite
+       cargo xtask ci ensure-db-clients";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -196,6 +200,7 @@ fn main() -> ExitCode {
         ["ci", "scope"] => ci::scope(),
         ["ci", "gate"] => ci::gate(),
         ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),
+        ["ci", "ensure-db-clients"] => ci::ensure_db_clients(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

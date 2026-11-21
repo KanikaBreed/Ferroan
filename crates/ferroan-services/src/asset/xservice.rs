@@ -45,11 +45,11 @@
 //! does not read `AssetLoaderArgs`. An unknown loader name fails only when a
 //! chain is set.
 //!
-//! MySQL `AssetsExist` reads `assets` (TB28). A chained migrate therefore
-//! skips the XAsset write and then deletes the only copy (TB33). PostgreSQL
-//! reads `xassetsmeta`, writes the XAsset row, and then deletes the chain
-//! row. PostgreSQL `Delete` raises and the meta row stays (TB30). The HTTP
-//! handler answers 500 for that error. This is not TB19 or TB20.
+//! MySQL `AssetsExist` reads `XAssetsMeta` (TB28), so a chained migrate
+//! stores the asset and then deletes the chain row (TB33). PostgreSQL
+//! metadata returns the page (TB29). PostgreSQL `Delete` binds `uuid` and
+//! deletes the data row when its hash is unused (TB30). This is not TB19
+//! or TB20.
 
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ impl XAssetService {
         }
     }
 
-    /// Plugin `AssetsExist`. MySQL reads the ordinary `assets` table.
+    /// Plugin `AssetsExist`. Both backends read the XAsset metadata table.
     pub async fn exists(&self, ids: &[Uuid]) -> Result<Vec<bool>, StoreError> {
         self.store.exists(ids).await
     }
@@ -119,8 +119,8 @@ impl XAssetService {
             Err(_) => return None,
         };
         // Store then chain.Delete. A store error is the outer Get catch:
-        // the chain row stays. MySQL AssetsExist sees this row and skips
-        // the write (TB33). PostgreSQL does not, so the write lands.
+        // the chain row stays. Exists reads XAssetsMeta (TB28), so the write
+        // lands and the chain row is then removed.
         if self.store(&asset).await.is_err() {
             return None;
         }
@@ -220,14 +220,7 @@ mod tests {
         assert_eq!(again.0, StatusCode::OK);
         let after =
             xml::decode_asset(&call(&app, "GET", &asset_path(id), &[], None).await.1).expect("row");
-        if backend == Backend::Postgres {
-            assert_eq!(after.asset.name, "first", "exists skips the second store");
-        } else {
-            assert_eq!(
-                after.asset.name, "rewritten",
-                "MySQL exists does not see XAssets"
-            );
-        }
+        assert_eq!(after.asset.name, "first", "exists skips the second store");
 
         let update = call(
             &app,
@@ -252,11 +245,7 @@ mod tests {
         )
         .await;
         assert_eq!(exists.0, StatusCode::OK);
-        if backend == Backend::Postgres {
-            assert_eq!(exists.1, xml::encode_bools(&[true]));
-        } else {
-            assert_eq!(exists.1, xml::encode_bools(&[false]));
-        }
+        assert_eq!(exists.1, xml::encode_bools(&[true]));
 
         let shard = call(&app, "GET", &asset_path(id), &[], Some("region")).await;
         assert_eq!(shard.0, StatusCode::FORBIDDEN);
@@ -266,31 +255,41 @@ mod tests {
             .store_data(&sample(skip_id, "ordinary", 0))
             .await
             .expect("chain");
-        let skipped = call(
+        let absent = call(
             &app,
             "POST",
-            "/assets/",
-            &xml::encode_asset(&sample(skip_id, "should-skip", 0)),
+            "/get_assets_exist",
+            &xml::encode_strings(&[&skip_id.to_string()]),
             None,
         )
         .await;
-        assert_eq!(skipped.0, StatusCode::OK);
-        assert_eq!(skipped.1, xml::encode_string(&skip_id.to_string()));
-        if backend == Backend::Mysql {
-            assert!(look_x.get(skip_id).await.expect("get").is_none());
-            let seen = call(
-                &app,
-                "POST",
-                "/get_assets_exist",
-                &xml::encode_strings(&[&skip_id.to_string()]),
-                None,
-            )
-            .await;
-            assert_eq!(seen.1, xml::encode_bools(&[true]));
-        } else {
-            let row = look_x.get(skip_id).await.expect("get").expect("stored");
-            assert_eq!(row.name, "should-skip");
-        }
+        assert_eq!(absent.0, StatusCode::OK);
+        assert_eq!(
+            absent.1,
+            xml::encode_bools(&[false]),
+            "an id only in assets is absent from XAssetsMeta"
+        );
+        let written = call(
+            &app,
+            "POST",
+            "/assets/",
+            &xml::encode_asset(&sample(skip_id, "written", 0)),
+            None,
+        )
+        .await;
+        assert_eq!(written.0, StatusCode::OK);
+        assert_eq!(written.1, xml::encode_string(&skip_id.to_string()));
+        let row = look_x.get(skip_id).await.expect("get").expect("stored");
+        assert_eq!(row.name, "written");
+        let seen = call(
+            &app,
+            "POST",
+            "/get_assets_exist",
+            &xml::encode_strings(&[&skip_id.to_string()]),
+            None,
+        )
+        .await;
+        assert_eq!(seen.1, xml::encode_bools(&[true]));
         look_a.delete(skip_id).await.expect("clear");
         let _ = look_x.delete(&skip_id.to_string()).await;
 
@@ -306,13 +305,8 @@ mod tests {
         assert_eq!(migrated_asset.asset.data, b"q22b");
         assert!(look_a.get(migrate_id).await.expect("chain").is_none());
         let second = call(&app, "GET", &asset_path(migrate_id), &[], None).await;
-        if backend == Backend::Mysql {
-            assert!(look_x.get(migrate_id).await.expect("x").is_none());
-            assert_eq!(second.0, StatusCode::NOT_FOUND);
-        } else {
-            assert!(look_x.get(migrate_id).await.expect("x").is_some());
-            assert_eq!(second.0, StatusCode::OK);
-        }
+        assert!(look_x.get(migrate_id).await.expect("x").is_some());
+        assert_eq!(second.0, StatusCode::OK);
 
         let both = xid(4);
         look_a
@@ -329,15 +323,9 @@ mod tests {
         assert!(look_a.get(both).await.expect("chain").is_some());
         let removed = call(&app, "DELETE", &asset_path(both), &[], None).await;
         assert!(look_a.get(both).await.expect("chain").is_none());
-        if backend == Backend::Mysql {
-            assert_eq!(removed.0, StatusCode::OK);
-            assert_eq!(removed.1, xml::encode_bool(true));
-            assert!(look_x.get(both).await.expect("x").is_none());
-        } else {
-            assert_eq!(removed.0, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(removed.1.is_empty());
-            assert!(look_x.get(both).await.expect("x").is_some());
-        }
+        assert_eq!(removed.0, StatusCode::OK);
+        assert_eq!(removed.1, xml::encode_bool(true));
+        assert!(look_x.get(both).await.expect("x").is_none());
 
         let missing = call(&app, "DELETE", &asset_path(xid(5)), &[], None).await;
         assert_eq!(missing.0, StatusCode::OK);
@@ -349,14 +337,9 @@ mod tests {
             .await
             .expect("local");
         let deleted = call(&app, "DELETE", &asset_path(local_only), &[], None).await;
-        if backend == Backend::Mysql {
-            assert_eq!(deleted.0, StatusCode::OK);
-            assert_eq!(deleted.1, xml::encode_bool(true));
-            assert!(look_x.get(local_only).await.expect("x").is_none());
-        } else {
-            assert_eq!(deleted.0, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(look_x.get(local_only).await.expect("x").is_some());
-        }
+        assert_eq!(deleted.0, StatusCode::OK);
+        assert_eq!(deleted.1, xml::encode_bool(true));
+        assert!(look_x.get(local_only).await.expect("x").is_none());
 
         drop(app);
         look_x.wipe().await.expect("wipe");
@@ -380,11 +363,11 @@ mod tests {
             chain.close().await;
         }
 
-        check_maptile(var, label, backend).await;
+        check_maptile(var, label).await;
         check_open(var, label, backend).await;
     }
 
-    async fn check_maptile(var: &str, label: &str, backend: Backend) {
+    async fn check_maptile(var: &str, label: &str) {
         let (store, chain) = connect_both(var, label).await.expect(label);
         store.wipe().await.expect("wipe");
         let normal = xid(8);
@@ -411,14 +394,9 @@ mod tests {
         assert_eq!(refused.1, xml::encode_bool(false));
         assert!(look_x.get(normal).await.expect("kept").is_some());
         let allowed = call(&app, "DELETE", &asset_path(tile), &[], None).await;
-        if backend == Backend::Mysql {
-            assert_eq!(allowed.0, StatusCode::OK);
-            assert_eq!(allowed.1, xml::encode_bool(true));
-            assert!(look_x.get(tile).await.expect("gone").is_none());
-        } else {
-            assert_eq!(allowed.0, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(look_x.get(tile).await.expect("stays").is_some());
-        }
+        assert_eq!(allowed.0, StatusCode::OK);
+        assert_eq!(allowed.1, xml::encode_bool(true));
+        assert!(look_x.get(tile).await.expect("gone").is_none());
         drop(app);
         look_x.wipe().await.expect("wipe");
         look_x.close().await;

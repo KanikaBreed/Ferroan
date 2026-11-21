@@ -221,11 +221,62 @@ fn command_on_path(name: &str) -> bool {
 }
 
 fn apt_install_sqlite() -> Result<(), String> {
-    run_apt(&["update"])?;
-    run_apt(&["install", "-y", "sqlite3"])
+    run_apt(&["update"], "apt-get failed to install sqlite3")?;
+    run_apt(
+        &["install", "-y", "sqlite3"],
+        "apt-get failed to install sqlite3",
+    )
 }
 
-fn run_apt(args: &[&str]) -> Result<(), String> {
+/// `Present` when `mysql` and `psql` are both on `PATH`. `Apt` when either is
+/// missing and `apt-get` exists.
+pub(crate) fn db_client_install(
+    has_mysql: bool,
+    has_psql: bool,
+    has_apt: bool,
+) -> Result<SqliteInstall, &'static str> {
+    if has_mysql && has_psql {
+        Ok(SqliteInstall::Present)
+    } else if has_apt {
+        Ok(SqliteInstall::Apt)
+    } else {
+        Err("mysql and psql are not both installed and apt-get is not available")
+    }
+}
+
+pub(crate) fn ensure_db_clients() -> ExitCode {
+    let choice = match db_client_install(
+        command_on_path("mysql"),
+        command_on_path("psql"),
+        command_on_path("apt-get"),
+    ) {
+        Ok(choice) => choice,
+        Err(error) => {
+            eprintln!("ci ensure-db-clients: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match choice {
+        SqliteInstall::Present => ExitCode::SUCCESS,
+        SqliteInstall::Apt => match apt_install_db_clients() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("ci ensure-db-clients: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+fn apt_install_db_clients() -> Result<(), String> {
+    run_apt(&["update"], "apt-get failed to install mysql and psql")?;
+    run_apt(
+        &["install", "-y", "mysql-client", "postgresql-client"],
+        "apt-get failed to install mysql and psql",
+    )
+}
+
+fn run_apt(args: &[&str], failure: &str) -> Result<(), String> {
     let status = Command::new("sudo")
         .args(["-n", "apt-get"])
         .args(args)
@@ -235,13 +286,16 @@ fn run_apt(args: &[&str]) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err("apt-get failed to install sqlite3".to_string())
+        Err(failure.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SqliteInstall, documentation_only, evaluate, paths_are_docs_only, sqlite_install};
+    use super::{
+        SqliteInstall, db_client_install, documentation_only, evaluate, paths_are_docs_only,
+        sqlite_install,
+    };
 
     #[test]
     fn documentation_only_paths_skip_the_live_run() {
@@ -324,6 +378,24 @@ mod tests {
         assert_eq!(
             sqlite_install(false, false),
             Err("sqlite3 is not installed and apt-get is not available")
+        );
+    }
+
+    #[test]
+    fn db_clients_are_installed_only_when_one_is_missing() {
+        assert_eq!(
+            db_client_install(true, true, true),
+            Ok(SqliteInstall::Present)
+        );
+        assert_eq!(
+            db_client_install(true, true, false),
+            Ok(SqliteInstall::Present)
+        );
+        assert_eq!(db_client_install(false, true, true), Ok(SqliteInstall::Apt));
+        assert_eq!(db_client_install(true, false, true), Ok(SqliteInstall::Apt));
+        assert_eq!(
+            db_client_install(false, false, false),
+            Err("mysql and psql are not both installed and apt-get is not available")
         );
     }
 }

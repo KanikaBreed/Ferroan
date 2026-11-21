@@ -144,6 +144,37 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      FERROAN_MYSQL_URL: mysql://ferroan:ferroan@127.0.0.1:3306/ferroan?ssl-mode=disabled
+      FERROAN_POSTGRES_URL: postgres://ferroan:ferroan@127.0.0.1:5432/ferroan?sslmode=disable
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ferroan
+          MYSQL_USER: ferroan
+          MYSQL_PASSWORD: ferroan
+          MYSQL_DATABASE: ferroan
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uferroan -pferroan"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ferroan
+          POSTGRES_PASSWORD: ferroan
+          POSTGRES_DB: ferroan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ferroan -d ferroan"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -187,6 +218,19 @@ jobs:
       - name: Compare the remote console's four forms with the C# region
         if: success()
         run: cargo xtask console-forms
+      - name: Load schemas for the XAsset compare
+        if: success()
+        run: |
+          set -euo pipefail
+          cargo xtask ci ensure-db-clients
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uferroan -pferroan --ssl-mode=DISABLED ferroan < fixtures/db/mysql/schema.sql
+          PGPASSWORD=ferroan psql -h 127.0.0.1 -p 5432 -U ferroan -d ferroan -v ON_ERROR_STOP=1 -f fixtures/db/postgres/schema.sql
+      - name: Compare XAsset on MySQL
+        if: success()
+        run: cargo xtask live assets --backend xasset --db mysql
+      - name: Compare XAsset on PostgreSQL
+        if: success()
+        run: cargo xtask live assets --backend xasset --db pgsql
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -18,8 +18,9 @@
 //! `UpdateContent` returns false. Delete runs only for the configured type
 //! set, and a parsed id still answers true when the row was already gone,
 //! which is what `SQLiteAssetData.Delete` returns. `XAssetService` uses the
-//! same routes. Its PostgreSQL `Delete` throws (TB30), and that response is
-//! 500 with an empty body. The stock store still answers 200 and a bool.
+//! same routes. A plugin error is 500 with an empty body. PostgreSQL
+//! `Delete` binds `uuid` and answers 200 (TB30). The stock store still
+//! answers 200 and a bool.
 //!
 //! Requests that carry `X-SecondLife-Shard` are 403 on get, post and delete.
 //! That is `DisallowLlHttpRequest`, installed unless `AllowllHTTPRequestIn`

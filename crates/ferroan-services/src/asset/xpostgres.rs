@@ -38,13 +38,14 @@
 //! back and returns. The clock is UTC unix time, the same helper MySQL uses,
 //! not the ordinary PostgreSQL asset store's local clock.
 //!
-//! `FetchAssetMetadataSet` sends `LIMIT :start, :count`. A database error
-//! from that statement is logged and the method returns the empty list it
-//! had built. This is not the ordinary asset store's TB19 limit. `Delete`
-//! binds the id as varchar. The column is `uuid`, so the comparison fails
-//! and the meta row stays. The method does not catch that error.
+//! `FetchAssetMetadataSet` at the pin sends `LIMIT :start, :count` (TB29).
+//! This store sends `LIMIT count OFFSET start` and returns that page. This
+//! is not the ordinary asset store's TB19 limit. `Delete` at the pin binds
+//! the id as varchar (TB30). This store binds `uuid`, deletes the meta row,
+//! and deletes the data row when no meta row still has that hash.
 
 use sqlx::PgPool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use super::decode::{
@@ -183,13 +184,48 @@ pub(super) async fn store(pool: &PgPool, asset: &Asset) -> Result<(), StoreError
     Ok(())
 }
 
-/// The pin binds `id` as varchar. The column is `uuid`, so this statement
-/// fails and the row stays.
+/// The pin binds `id` as varchar against `uuid` (TB30) and leaves the data
+/// row, with a comment that reaping it needs a reference count. MySQL's
+/// `Delete` has the same comment and the same meta-only statement. This
+/// store binds `uuid`. After the meta row is gone, the data row is deleted
+/// when no meta row still has that hash. An id that does not parse deletes
+/// nothing and returns false. A missing id returns true, as the C# method
+/// returns true after `ExecuteNonQuery`.
 pub(super) async fn delete(pool: &PgPool, id: &str) -> Result<bool, StoreError> {
-    sqlx::query("DELETE FROM xassetsmeta WHERE id = $1")
-        .bind(id)
+    let Ok(uuid) = Uuid::parse_str(id.trim()) else {
+        return Ok(false);
+    };
+    let found = sqlx::query("SELECT hash FROM xassetsmeta WHERE id = $1::uuid")
+        .bind(uuid.to_string())
+        .fetch_optional(pool)
+        .await?;
+    let hash: Option<Vec<u8>> =
+        match found {
+            Some(row) => Some(row.try_get("hash").map_err(|error| {
+                StoreError::Row(format!("xasset postgres delete hash: {error}"))
+            })?),
+            None => None,
+        };
+    sqlx::query("DELETE FROM xassetsmeta WHERE id = $1::uuid")
+        .bind(uuid.to_string())
         .execute(pool)
         .await?;
+    if let Some(hash) = hash {
+        let left =
+            sqlx::query("SELECT COUNT(*)::bigint AS remaining FROM xassetsmeta WHERE hash = $1")
+                .bind(hash.as_slice())
+                .fetch_one(pool)
+                .await?;
+        let remaining: i64 = left
+            .try_get("remaining")
+            .map_err(|error| StoreError::Row(format!("xasset postgres delete count: {error}")))?;
+        if remaining == 0 {
+            sqlx::query("DELETE FROM xassetsdata WHERE hash = $1")
+                .bind(hash.as_slice())
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(true)
 }
 
@@ -210,22 +246,14 @@ pub(super) async fn metadata_set(
     start: i32,
     count: i32,
 ) -> Result<Vec<AssetMetadata>, StoreError> {
-    let fetched = sqlx::query(
+    let rows = sqlx::query(
         "SELECT name, description, access_time, \"AssetType\", temporary, id, asset_flags, \
-         creatorid FROM xassetsmeta LIMIT $1, $2",
+         creatorid FROM xassetsmeta LIMIT $1 OFFSET $2",
     )
-    .bind(start)
     .bind(count)
+    .bind(start)
     .fetch_all(pool)
-    .await;
-    let rows = match fetched {
-        Ok(rows) => rows,
-        Err(error) if error.as_database_error().is_some() => {
-            tracing::error!(error = %error, "xasset postgres metadata set failed");
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(error.into()),
-    };
+    .await?;
     let mut pending = Vec::with_capacity(rows.len());
     for row in &rows {
         pending.push((
