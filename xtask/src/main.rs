@@ -27,7 +27,8 @@
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
-//! live workflow runs `verify`.
+//! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
+//! against the local schema-server containers.
 //!
 //! `live` builds the pinned Tranquillity region into `.scratch/live/`,
 //! starts or stops it, and runs bot scenarios against it. It runs on Linux.
@@ -102,6 +103,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
+       cargo xtask asset xasset-cross
        cargo xtask pin3 generate|verify
        cargo xtask live build
        cargo xtask live record-twice
@@ -186,6 +188,7 @@ fn main() -> ExitCode {
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
         ["asset", "cross"] => asset_oracle::cross(),
+        ["asset", "xasset-cross"] => asset_oracle::xasset_cross(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),

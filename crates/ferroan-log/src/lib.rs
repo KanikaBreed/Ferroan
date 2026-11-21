@@ -65,7 +65,7 @@ pub struct Settings {
     console_pass: String,
     console_origin: Option<String>,
     console_prompt: String,
-    /// Extra `show version` line for `OpenSim.ConsoleClient` (TB28).
+    /// Extra `show version` line for `OpenSim.ConsoleClient` (TB32).
     /// `remote_console` sets it. A region does not.
     legacy_console_client: bool,
     log_dir: Option<PathBuf>,

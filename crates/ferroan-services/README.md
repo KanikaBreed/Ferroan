@@ -46,7 +46,7 @@ The caps are `asset.loader-files` (10,000), `asset.loader-file-bytes` (2 MiB) an
 
 ## Not in this pilot
 
-FSAssets (`XAssetService`) and `Migration.Update`. HTTP `POST /assets/{id}` still returns false and does not write. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
+`XAssetService`, its chained fallback and `Migration.Update`. The MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins are `XAssetStore`; they do not serve these routes. HTTP `POST /assets/{id}` still returns false and does not write. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
 
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 

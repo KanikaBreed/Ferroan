@@ -52,7 +52,7 @@ pub(crate) struct ConsoleState {
     manual_ms: std::sync::atomic::AtomicU64,
     sweeper: AtomicBool,
     /// One extra `field:field:text` line after `show version`, for
-    /// `OpenSim.ConsoleClient` (TB28). The region console leaves this off.
+    /// `OpenSim.ConsoleClient` (TB32). The region console leaves this off.
     legacy_client_line: bool,
 }
 
@@ -238,7 +238,7 @@ async fn read_responses(
 ) -> Response {
     // A poll URL is registered only for a live session. Any other id misses
     // that map. `BaseHttpServer.HandleRequest` then leaves the default
-    // 200 `text/html` empty body (TB27). An id that does not parse takes
+    // 200 `text/html` empty body (TB31). An id that does not parse takes
     // the same fall-through: no poll handler was registered for it.
     let Some(id) = Uuid::parse_str(&id).ok() else {
         return empty(StatusCode::OK, "text/html", &state);
@@ -296,7 +296,7 @@ async fn close_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
     // `HandleHttpCloseSession` removes the row when it is present, then
-    // returns the OK document for every id that parsed (TB27).
+    // returns the OK document for every id that parsed (TB31).
     state
         .sessions
         .lock()
@@ -410,7 +410,7 @@ fn run_command(state: &ConsoleState, command: &str) {
             state.push_line("", &prompt, true, true, false);
             // `OpenSim.ConsoleClient.ReadResponses` (lines 283–293) splits a
             // line on `:` into three fields and prints the third. The notice
-            // above has no colon, so that client drops it (TB28). The
+            // above has no colon, so that client drops it (TB32). The
             // in-process console adds one old-shaped line after the three C#
             // lines. The region console does not.
             if state.legacy_client_line {
