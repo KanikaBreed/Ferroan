@@ -17,6 +17,33 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
     run(false, fixture_dir)
 }
 
+struct PluginCross {
+    label: &'static str,
+    artifacts: &'static str,
+    project: &'static str,
+    dll: &'static str,
+    oracle_env: &'static str,
+    ado_prefix: &'static str,
+}
+
+const ASSET_CROSS: PluginCross = PluginCross {
+    label: "asset",
+    artifacts: ".scratch/asset-oracle/artifacts",
+    project: "tools/asset-oracle/AssetOracle.csproj",
+    dll: "bin/AssetOracle/release/AssetOracle.dll",
+    oracle_env: "FERROAN_ASSET_ORACLE",
+    ado_prefix: "FERROAN_ASSET_ADO",
+};
+
+const GRIDUSER_CROSS: PluginCross = PluginCross {
+    label: "griduser",
+    artifacts: ".scratch/griduser-oracle/artifacts",
+    project: "tools/griduser-oracle/GridUserOracle.csproj",
+    dll: "bin/GridUserOracle/release/GridUserOracle.dll",
+    oracle_env: "FERROAN_GRIDUSER_ORACLE",
+    ado_prefix: "FERROAN_GRIDUSER_ADO",
+};
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///
@@ -24,6 +51,7 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
 /// Connection strings stay in the child environment and are not printed.
 pub fn cross() -> ExitCode {
     run_plugin_cross(
+        &ASSET_CROSS,
         "csharp_and_rust_read_each_others_rows",
         "FERROAN_ASSET_CROSS",
         true,
@@ -33,57 +61,103 @@ pub fn cross() -> ExitCode {
 /// Rust writes `XAssetsMeta` / `XAssetsData` rows and the pinned XAsset plugins
 /// read them, then the reverse, on MySQL and PostgreSQL.
 pub fn xasset_cross() -> ExitCode {
-    run_plugin_cross("xasset_plugins_cross_read", "FERROAN_XASSET_CROSS", true)
+    run_plugin_cross(
+        &ASSET_CROSS,
+        "xasset_plugins_cross_read",
+        "FERROAN_XASSET_CROSS",
+        true,
+    )
 }
 
 /// Rust writes `fsassets` rows and the pinned FSAssets plugins read them, then
 /// the reverse, on MySQL and PostgreSQL. No filesystem and no live harness.
 pub fn fsassets_cross() -> ExitCode {
-    run_plugin_cross("fsassets_plugins_cross_read", "FERROAN_FSASSET_CROSS", true)
+    run_plugin_cross(
+        &ASSET_CROSS,
+        "fsassets_plugins_cross_read",
+        "FERROAN_FSASSET_CROSS",
+        true,
+    )
 }
 
 /// Rust and the pinned `GetFsData` read each other's FSAssets files.
 /// No database and no live harness.
 pub fn fsassets_files() -> ExitCode {
-    run_plugin_cross("fsassets_files_cross_read", "FERROAN_FSASSET_FILES", false)
+    run_plugin_cross(
+        &ASSET_CROSS,
+        "fsassets_files_cross_read",
+        "FERROAN_FSASSET_FILES",
+        false,
+    )
 }
 
-fn run_plugin_cross(test_name: &str, gate: &str, databases: bool) -> ExitCode {
+/// Rust writes `GridUser` rows and the pinned grid-user plugins read them,
+/// then the reverse, on SQLite, MySQL and PostgreSQL. No HTTP and no live harness.
+pub fn griduser_cross() -> ExitCode {
+    run_plugin_cross(
+        &GRIDUSER_CROSS,
+        "griduser_plugins_cross_read",
+        "FERROAN_GRIDUSER_CROSS",
+        true,
+    )
+}
+
+fn run_plugin_cross(
+    target: &PluginCross,
+    test_name: &str,
+    gate: &str,
+    databases: bool,
+) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("asset: {error}");
+            eprintln!("{}: {error}", target.label);
             return ExitCode::FAILURE;
         }
     };
     if let Err(error) = pinned_and_checked(&root, &reference) {
-        eprintln!("asset: {error}");
+        eprintln!("{}: {error}", target.label);
         return ExitCode::FAILURE;
     }
-    let artifacts = root.join(".scratch/asset-oracle/artifacts");
+    let artifacts = root.join(target.artifacts);
     if let Err(error) = fs::create_dir_all(&artifacts) {
-        eprintln!("asset: could not create {}: {error}", artifacts.display());
+        eprintln!(
+            "{}: could not create {}: {error}",
+            target.label,
+            artifacts.display()
+        );
         return ExitCode::FAILURE;
     }
-    let project = root.join("tools/asset-oracle/AssetOracle.csproj");
-    if !dotnet(&root, &reference, &artifacts, &project, "build", false, &[]) {
-        return fail_if_dirty(&reference);
+    let project = root.join(target.project);
+    if !dotnet(
+        target.label,
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        "build",
+        false,
+        &[],
+    ) {
+        return fail_if_dirty(target.label, &reference);
     }
-    if !checkout_is_clean(&reference) {
+    if !checkout_is_clean(target.label, &reference) {
         return ExitCode::FAILURE;
     }
-    let dll = artifacts.join("bin/AssetOracle/release/AssetOracle.dll");
+    let dll = artifacts.join(target.dll);
     if !dll.is_file() {
-        eprintln!("asset: missing {}", dll.display());
+        eprintln!("{}: missing {}", target.label, dll.display());
         return ExitCode::FAILURE;
     }
     let mut command = Command::new("cargo");
     command
         .current_dir(&root)
         .env(gate, "1")
-        .env("FERROAN_ASSET_ORACLE", &dll);
+        .env(target.oracle_env, &dll);
     if databases {
+        let mysql_ado = format!("{}_MYSQL", target.ado_prefix);
+        let postgres_ado = format!("{}_POSTGRES", target.ado_prefix);
         command
             .env(
                 "FERROAN_MYSQL_URL",
@@ -94,11 +168,11 @@ fn run_plugin_cross(test_name: &str, gate: &str, databases: bool) -> ExitCode {
                 "postgres://ferroan:ferroan@127.0.0.1:15432/ferroan?sslmode=disable",
             )
             .env(
-                "FERROAN_ASSET_ADO_MYSQL",
+                mysql_ado,
                 "Server=127.0.0.1;Port=13306;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false",
             )
             .env(
-                "FERROAN_ASSET_ADO_POSTGRES",
+                postgres_ado,
                 "Server=127.0.0.1;Port=15432;Database=ferroan;User Id=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false",
             );
     }
@@ -115,11 +189,11 @@ fn run_plugin_cross(test_name: &str, gate: &str, databases: bool) -> ExitCode {
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => {
-            eprintln!("asset: cross-read exited with {status}");
+            eprintln!("{}: cross-read exited with {status}", target.label);
             ExitCode::FAILURE
         }
         Err(error) => {
-            eprintln!("asset: could not run cargo: {error}");
+            eprintln!("{}: could not run cargo: {error}", target.label);
             ExitCode::FAILURE
         }
     }
@@ -157,10 +231,19 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
             }
         },
     );
-    if !dotnet(&root, &reference, &artifacts, &project, "build", false, &[]) {
-        return fail_if_dirty(&reference);
+    if !dotnet(
+        "asset",
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        "build",
+        false,
+        &[],
+    ) {
+        return fail_if_dirty("asset", &reference);
     }
-    if !checkout_is_clean(&reference) {
+    if !checkout_is_clean("asset", &reference) {
         return ExitCode::FAILURE;
     }
     let action = if writing { "generate" } else { "verify" };
@@ -171,15 +254,15 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
         revision.clone(),
     ];
     if !dotnet(
-        &root, &reference, &artifacts, &project, "run", true, &program,
+        "asset", &root, &reference, &artifacts, &project, "run", true, &program,
     ) {
-        return fail_if_dirty(&reference);
+        return fail_if_dirty("asset", &reference);
     }
-    if !checkout_is_clean(&reference) {
+    if !checkout_is_clean("asset", &reference) {
         return ExitCode::FAILURE;
     }
     if !pilot_tests(&root, &reference) {
-        return fail_if_dirty(&reference);
+        return fail_if_dirty("asset", &reference);
     }
     println!("asset: {action} passed against {revision}");
     ExitCode::SUCCESS
@@ -291,7 +374,7 @@ fn pinned_revision(markdown: &str) -> Result<String, String> {
     Err("docs/REFERENCES.md has no OpenSim-Tranquillity row".to_string())
 }
 
-fn checkout_is_clean(reference: &Path) -> bool {
+fn checkout_is_clean(label: &str, reference: &Path) -> bool {
     match git(
         &reference.join("OpenSim-Tranquillity"),
         &["status", "--porcelain"],
@@ -299,19 +382,19 @@ fn checkout_is_clean(reference: &Path) -> bool {
         Ok(status) if status.is_empty() => true,
         Ok(status) => {
             eprintln!(
-                "asset: the build wrote into the OpenSim-Tranquillity checkout. That checkout is read-only:\n{status}"
+                "{label}: the build wrote into the OpenSim-Tranquillity checkout. That checkout is read-only:\n{status}"
             );
             false
         }
         Err(error) => {
-            eprintln!("asset: {error}");
+            eprintln!("{label}: {error}");
             false
         }
     }
 }
 
-fn fail_if_dirty(reference: &Path) -> ExitCode {
-    let _ = checkout_is_clean(reference);
+fn fail_if_dirty(label: &str, reference: &Path) -> ExitCode {
+    let _ = checkout_is_clean(label, reference);
     ExitCode::FAILURE
 }
 
@@ -332,7 +415,9 @@ fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dotnet(
+    label: &str,
     root: &Path,
     reference: &Path,
     artifacts: &Path,
@@ -382,12 +467,12 @@ fn dotnet(
     match command.status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            eprintln!("asset: dotnet exited with {status}");
+            eprintln!("{label}: dotnet exited with {status}");
             false
         }
         Err(error) => {
             eprintln!(
-                "asset: could not run dotnet (the .NET SDK is required for asset fixtures): {error}"
+                "{label}: could not run dotnet (the .NET SDK is required for this oracle): {error}"
             );
             false
         }

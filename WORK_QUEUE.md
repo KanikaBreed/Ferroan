@@ -98,7 +98,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | IN PROGRESS (feat/p1-2-auth) |
 | Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
-| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
+| Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
@@ -367,6 +367,12 @@ Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-p
 ## Found while working
 
 - 2026-11-21, Q25: `checks (windows-latest)` on `22cd83c` failed `a_rust_auth_uri_omits_the_local_handler_and_shares_the_auth_file` ([run 44961633655](https://github.com/KanikaBreed/Ferroan/actions/runs/44961633655), job `137021490885`). `Path::with_file_name` rewrote `/tmp/ferroan-robust.db` with a backslash, so the ini did not contain `Data Source=/tmp/auth.db`. The sibling path now keeps the separator in the string. Ubuntu checks and the live gate on that SHA passed, including `login: pass` and `auth: match (16 http records); cross-read ok` ([live](https://github.com/KanikaBreed/Ferroan/actions/runs/44961633698)). Recorded before the retry.
+
+- 2026-11-21, Q26a: `live images` on `6d052a1` failed in `cargo xtask docker smoke` ([run 44958467849](https://github.com/KanikaBreed/Ferroan/actions/runs/44958467849), job `live images`, 22:49:29Z–22:55:12Z). The images built, both metrics scrapes passed, and Ferrobot answered `SimName` through the 120-second hold. The step then failed with `docker: invalid captured UDP packet` while reading the capture. `live ferrobot` and `live scenarios` passed on the same SHA, and so did the Ubuntu, Windows and macOS checks. Recorded before the retry. Not a product change.
+
+- 2026-11-21, Q26a: `live services` on `6d052a1` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44958467849](https://github.com/KanikaBreed/Ferroan/actions/runs/44958467849), job `live services`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The same job's `login grid --region ferroan`, assets run and `login grid --rust accounts` passed, including GridUser offline after logout. The same deadline is already recorded under Q10x and Q22b. Recorded before the retry. Not a product change. The `live (ubuntu-latest)` job then failed because images and services had failed.
+
+- 2026-11-21, Q26a: `GetAll` at `1d7abb8337` interpolates the user id into `LIKE` on MySQL (`MySQLGridUserData.cs` line 64) and PostgreSQL (`PGSQLGridUserData.cs` line 68). A quote in the id fails the statement. SQLite binds `userID + "%"` (`SQLiteGridUserData.cs` lines 65–73) and does not escape `%` or `_`, and neither do the other two. Nobody depends on the extra matches or on the failure. Ferroan binds an escaped prefix with `ESCAPE '!'` on all three (TB43, D35). `cargo xtask griduser cross` lists TB43.
 
 - 2026-11-21, Q25: `live images` on `0d1701a` was cancelled after 29s with no steps ([run 44959219208](https://github.com/KanikaBreed/Ferroan/actions/runs/44959219208), job `live images`). The annotation was `Canceling since a higher priority waiting request for ferroan-live-images exists`. The job had not started. Not a product failure. Recorded before any retry.
 
