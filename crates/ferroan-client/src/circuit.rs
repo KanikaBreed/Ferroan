@@ -54,11 +54,11 @@
 //! Established ACKs are queued. Reliable packets remain until acknowledgment or
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
-use crate::{ArrivalConfig, HandshakeConfig};
+use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser,
-    LogoutReply, LogoutRequest, PacketAck, StartPingCheck, UseCircuitCode, logout_reply,
+    LayerData, LogoutReply, LogoutRequest, PacketAck, StartPingCheck, UseCircuitCode, logout_reply,
     packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
@@ -282,6 +282,10 @@ struct State {
     udp: Option<Arc<UdpCounters>>,
     /// This circuit's last addition to the shared unacked gauge.
     published_unacked: u64,
+    /// Land packets waiting for a free reliable slot. A 256 metre map is 256
+    /// packets, and `AgentMovementComplete` already occupies one, so the burst
+    /// does not fit in `udp.unacked`.
+    pending_land: VecDeque<LandLayer>,
 }
 impl State {
     #[cfg(test)]
@@ -290,10 +294,11 @@ impl State {
     }
     fn with_timing(
         handshake: HandshakeConfig,
-        arrival: ArrivalConfig,
+        mut arrival: ArrivalConfig,
         timing: CircuitTiming,
     ) -> Self {
         let now = Instant::now();
+        let pending_land = VecDeque::from(std::mem::take(&mut arrival.land));
         Self {
             sequence: SequenceCounter::default(),
             peer: None,
@@ -320,6 +325,7 @@ impl State {
             paused: false,
             udp: None,
             published_unacked: 0,
+            pending_land,
         }
     }
 
@@ -341,6 +347,10 @@ impl State {
         self.published_unacked = waiting;
     }
     fn time_until_work(&self) -> Duration {
+        if self.peer.is_some() && !self.pending_land.is_empty() && self.unacked.len() < MAX_UNACKED
+        {
+            return Duration::ZERO;
+        }
         let now = Instant::now();
         let mut wait = self.resend_at.saturating_duration_since(now);
         if self.peer.is_some() {
@@ -404,6 +414,24 @@ impl State {
         if now >= self.ping_at {
             self.ping_at = now + PING_INTERVAL;
             self.send_ping(sock, peer).await?;
+        }
+        self.drain_land(sock, peer).await?;
+        Ok(())
+    }
+
+    async fn drain_land(
+        &mut self,
+        sock: &impl DatagramIo,
+        peer: SocketAddr,
+    ) -> Result<(), CircuitError> {
+        while !self.pending_land.is_empty() && self.unacked.len() < MAX_UNACKED {
+            let Some(layer) = self.pending_land.pop_front() else {
+                break;
+            };
+            let mut message = LayerData::default();
+            message.layer_id.type_ = layer.kind;
+            message.layer_data.data = layer.data;
+            self.send_message(sock, peer, &message, true).await?;
         }
         Ok(())
     }

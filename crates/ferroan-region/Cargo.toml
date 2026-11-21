@@ -15,6 +15,7 @@ ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-log = { path = "../ferroan-log" }
+ferroan-scene = { path = "../ferroan-scene" }
 ferroan-services = { path = "../ferroan-services" }
 tracing = "0.1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

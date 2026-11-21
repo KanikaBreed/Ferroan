@@ -24,6 +24,44 @@ fn movement(expect: CircuitExpect, sequence: u32, acks: &[u32]) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn land_packets_drain_while_the_reliable_window_has_room() {
+    let config = ArrivalConfig {
+        land: vec![
+            crate::LandLayer {
+                kind: 0x4c,
+                data: b"patch-a".to_vec(),
+            },
+            crate::LandLayer {
+                kind: 0x4c,
+                data: b"patch-b".to_vec(),
+            },
+        ],
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    let sent = io.sent.lock().unwrap();
+    let bodies: Vec<(u8, Vec<u8>)> = sent
+        .iter()
+        .filter_map(|bytes| {
+            let packet = parse_packet(bytes).ok()?;
+            if packet.id != ferroan_protocol::msgs::LayerData::ID {
+                return None;
+            }
+            let message = packet.decode::<ferroan_protocol::msgs::LayerData>().ok()?;
+            Some((message.layer_id.type_, message.layer_data.data))
+        })
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![(0x4c, b"patch-a".to_vec()), (0x4c, b"patch-b".to_vec()),]
+    );
+    assert!(state.pending_land.is_empty());
+}
+
+#[tokio::test]
 async fn complete_movement_send_path_matches_captured_csharp_arrival() {
     let config = ArrivalConfig {
         // Preserve C#'s exact terrain-adjusted Z (one ULP above literal25.96).
@@ -32,6 +70,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         region_handle: 1_099_511_628_032_000,
         channel_version:
             "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)".into(),
+        land: Vec::new(),
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);
