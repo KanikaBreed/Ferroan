@@ -4,10 +4,14 @@
 //! Compare two standalone `login` recordings at the current pin.
 //!
 //! Counts are exact per message type and direction, except the timer and
-//! acknowledgement types named in P0.10n5, which are reported. The check on
-//! order is the first appearance of the handshake and logout messages, not
-//! the interleaving. Sequence numbers, appended acks, the resent flag, and
-//! the fields listed in [`WILDCARDS`] are not compared.
+//! acknowledgement types named in P0.10n5, which are reported. A reliable
+//! message counts once per direction and sequence number (P0.10n6): a
+//! datagram with the resent flag is another copy of that message, so it does
+//! not add to the count. The report gives the number of resends and does not
+//! fail on it. The check on order is the first appearance of the handshake
+//! and logout messages, not the interleaving. Sequence numbers, appended
+//! acks, the resent flag, and the fields listed in [`WILDCARDS`] are not
+//! compared.
 
 // The live runner calls this on Linux. Windows and macOS still compile the
 // binary, and the unit tests cover the comparator there.
@@ -141,13 +145,6 @@ fn compare_sessions(left: &[Record], right: &[Record]) -> Result<String, String>
             ));
             continue;
         }
-        if left_count != right_count {
-            errors.push(format!(
-                "count {direction} {name}: {left_count} and {right_count}"
-            ));
-            continue;
-        }
-        lines.push(format!("exact {direction} {name}: {left_count}"));
         let left_packets = left
             .get(&(direction, name))
             .map(Vec::as_slice)
@@ -156,8 +153,19 @@ fn compare_sessions(left: &[Record], right: &[Record]) -> Result<String, String>
             .get(&(direction, name))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let (left_count, left_resends, left_kept) = exact_messages(left_packets);
+        let (right_count, right_resends, right_kept) = exact_messages(right_packets);
+        if left_count != right_count {
+            errors.push(format!(
+                "count {direction} {name}: {left_count} and {right_count} (resends {left_resends} and {right_resends})"
+            ));
+            continue;
+        }
+        lines.push(format!(
+            "exact {direction} {name}: {left_count} (resends {left_resends} and {right_resends})"
+        ));
         for (index, (left_packet, right_packet)) in
-            left_packets.iter().zip(right_packets.iter()).enumerate()
+            left_kept.iter().zip(right_kept.iter()).enumerate()
         {
             let shown = index + 1;
             if left_packet.reliable != right_packet.reliable {
@@ -215,7 +223,31 @@ fn reported_reason(name: &str) -> &'static str {
 #[derive(Clone, PartialEq, Eq)]
 struct Seen {
     reliable: bool,
+    resent: bool,
+    sequence: u32,
     body: Vec<u8>,
+}
+
+/// One reliable message per sequence number. A resent datagram of a sequence
+/// already seen does not add. An unreliable datagram counts unless it is
+/// itself marked resent. `resends` is the number of resent datagrams.
+fn exact_messages(packets: &[Seen]) -> (usize, usize, Vec<&Seen>) {
+    let mut kept = Vec::new();
+    let mut sequences = BTreeSet::new();
+    let mut resends = 0usize;
+    for packet in packets {
+        if packet.resent {
+            resends += 1;
+        }
+        if packet.reliable {
+            if sequences.insert(packet.sequence) {
+                kept.push(packet);
+            }
+        } else if !packet.resent {
+            kept.push(packet);
+        }
+    }
+    (kept.len(), resends, kept)
 }
 
 fn view(records: &[Record]) -> Result<SeenMap, String> {
@@ -239,6 +271,8 @@ fn view(records: &[Record]) -> Result<SeenMap, String> {
         };
         out.entry((direction, info.name)).or_default().push(Seen {
             reliable: packet.reliable(),
+            resent: packet.resent(),
+            sequence: packet.sequence,
             body,
         });
     }
@@ -606,16 +640,51 @@ mod tests {
     fn a_resent_use_circuit_code_does_not_open_a_third_login() {
         let mut left = session(1);
         let mut resent = left[0].clone();
-        resent.bytes[0] |= 0x20;
+        resent.bytes[0] |= ferroan_protocol::PacketFlags::RESENT;
         left.insert(1, resent);
         let mut records = left;
         records.extend(session(2));
-        let error = compare_capture(&capture(&records)).unwrap_err();
-        assert!(!error.contains("found 3"), "{error}");
+        let report = compare_capture(&capture(&records)).unwrap();
+        assert!(report.contains("values: matched"), "{report}");
         assert!(
-            error.contains("count in UseCircuitCode: 2 and 1"),
-            "{error}"
+            report.contains("exact in UseCircuitCode: 1 (resends 1 and 0)"),
+            "{report}"
         );
+    }
+
+    #[test]
+    fn a_resent_logout_request_counts_once() {
+        let mut records = healthy_pair();
+        let second = message_positions(&records, LogoutRequest::ID)[1];
+        let mut resent = records[second].clone();
+        resent.bytes[0] |= ferroan_protocol::PacketFlags::RESENT;
+        records.insert(second + 1, resent.clone());
+        records.insert(second + 2, resent);
+        let report = compare_capture(&capture(&records)).unwrap();
+        assert!(report.contains("values: matched"), "{report}");
+        assert!(
+            report.contains("exact in LogoutRequest: 1 (resends 0 and 2)"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn two_logout_request_sequences_still_fail_the_count() {
+        let mut records = healthy_pair();
+        let second = message_positions(&records, LogoutRequest::ID)[1];
+        records.insert(
+            second + 1,
+            packet(
+                Kind::UdpIn,
+                400,
+                true,
+                false,
+                &[],
+                &LogoutRequest::default(),
+            ),
+        );
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(error.contains("count in LogoutRequest: 1 and 2"), "{error}");
     }
 
     #[test]
