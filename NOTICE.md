@@ -74,6 +74,8 @@ Q10b's LLSD XML binary decoder follows `OpenMetaverse.StructuredData/LLSD/XmlLLS
 
 Q10a's `crates/ferroan-client/src/arrival.rs` follows Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`, `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs`, `Scene.cs`, and `Source/OpenSim.Framework/Util.cs` at `858321883f5487a5d192d36ea9d7b90fa468310c`, plus libopenmetaverse `OpenMetaverse.Types/UtilsConversions.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. Both BSD notices are retained. The region configuration uses `ScenePresence.CompleteMovement`'s initial look fallback. Arrival capture extraction is original Ferroan code; fixtures come from the pinned C# server.
 
+Q15's `crates/ferroan-client/src/appearance.rs` follows `LLClientView.SendAppearance` and `CreateAvatarUpdateBlock`, `ScenePresence.RotateToLookAt` and `SendAppearanceToAgentNF`, and `AvatarAppearance` defaults at Tranquillity `c70fee205f64ee8672a8d607cef6a733931da951`, plus libopenmetaverse `TextureEntry.GetBakesBytes`, `AppearanceManager.DEFAULT_AVATAR_TEXTURE` and `Quaternion.ToBytes` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. `crates/ferroan-region/src/avatar.rs` follows `AvatarServicesConnector.GetAvatar` and `AvatarData.ToAvatarAppearance` at the same Tranquillity pin. Both BSD notices are retained. The C# sources are not copied. Baking, attachments and animations are not in this port.
+
 ## Names
 
 OpenSimulator, Tranquillity, Aurora Viewer, Second Life, SLua and Linden Lab names identify sources and compatibility targets. Ferroan is independent and does not claim their endorsement. Second Life is a trademark of Linden Research, Inc.

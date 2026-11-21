@@ -100,6 +100,7 @@ async fn login_through_loss(target: MsgId) {
         region_handle: (256_000_u64 << 32) | 256_000,
         channel_version: "Ferroan loss-test region".into(),
         land: Vec::new(),
+        avatar: None,
     };
     let server = CircuitServer::bind().await.unwrap();
     let server_address = server.local_addr().unwrap();
@@ -296,6 +297,7 @@ async fn login_through_burst(mode: Burst, budget: Duration) -> Vec<Observed> {
         region_handle: (256_000_u64 << 32) | 256_000,
         channel_version: "Ferroan loss-test region".into(),
         land: Vec::new(),
+        avatar: None,
     };
     let server = CircuitServer::bind().await.unwrap();
     let server_address = server.local_addr().unwrap();

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_protocol::Msg;
+use ferroan_protocol::msgs::{AvatarAppearance, ObjectUpdate};
 use glam::Vec3;
 use uuid::Uuid;
 
@@ -178,8 +179,67 @@ async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
         let _ = leave(harness, &mut session, &harness.owner).await;
         return Err(format!("region {region}"));
     }
+    if let Err(error) = require_avatar(&mut session, &harness.owner).await {
+        let _ = leave(harness, &mut session, &harness.owner).await;
+        return Err(error);
+    }
     leave(harness, &mut session, &harness.owner).await?;
     Ok("login: pass".to_string())
+}
+
+/// The avatar is not a cloud: one avatar `ObjectUpdate` and one unbaked
+/// `AvatarAppearance` for this agent. Visual-param bytes come from the avatar
+/// service, so this check does not require the constructor defaults.
+async fn require_avatar(session: &mut Session, account: &Account) -> Result<(), String> {
+    let agent = session.agent().agent_id;
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut saw_object = false;
+    let mut saw_appearance = false;
+    while std::time::Instant::now() < deadline && !(saw_object && saw_appearance) {
+        session
+            .drive(Duration::from_millis(200))
+            .await
+            .map_err(|error| error.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id == ObjectUpdate::ID
+                && let Ok(message) = packet.decode::<ObjectUpdate>()
+            {
+                saw_object |= message.object_data.iter().any(|object| {
+                    object.p_code == 47
+                        && object.material == 4
+                        && object.full_id == agent
+                        && object.object_data.len() == 76
+                        && name_has(&object.name_value, &account.first_name)
+                        && name_has(&object.name_value, &account.last_name)
+                });
+            }
+            if packet.id == AvatarAppearance::ID
+                && let Ok(message) = packet.decode::<AvatarAppearance>()
+            {
+                saw_appearance |= message.sender.id == agent
+                    && !message.visual_param.is_empty()
+                    && !message.object_data.texture_entry.is_empty()
+                    && message.appearance_data.is_empty()
+                    && message.appearance_hover.len() == 1;
+            }
+        }
+    }
+    if !saw_object || !saw_appearance {
+        return Err(format!(
+            "avatar appearance missing (object {saw_object}, appearance {saw_appearance})"
+        ));
+    }
+    Ok(())
+}
+
+fn name_has(bytes: &[u8], name: &str) -> bool {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    std::str::from_utf8(&bytes[..end])
+        .map(|text| text.contains(name))
+        .unwrap_or(false)
 }
 
 /// The current circuit's root-arrival data. Session identity stays private to

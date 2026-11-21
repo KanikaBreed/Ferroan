@@ -7,12 +7,14 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod appearance;
 mod arrival;
 mod caps;
 mod circuit;
 mod event_queue;
 mod handshake;
 
+pub use appearance::{AvatarWire, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry, CapsServer,

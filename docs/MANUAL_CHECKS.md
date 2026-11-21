@@ -61,12 +61,12 @@ bind to loopback by default, so run Firestorm on the same machine.
 | Log out | The viewer completes logout |
 | Log in again with the same account, then log out | A fresh session arrives and completes logout |
 
-Inventory and texture fetch are implemented. The Firestorm inventory window
-and texture loading remain pending maintainer checks. Terrain (P2.0e), avatar
-appearance (P2.0f), local chat (P2.0g), teleports inside the region and to its
+Inventory and texture fetch, terrain, and the no-bake avatar appearance
+packets are implemented. The Firestorm inventory window, texture loading, and
+whether the avatar renders as a body rather than a cloud remain pending
+maintainer checks. Local chat (P2.0g), teleports inside the region and to its
 neighbour (P2.0h/P2.0i), objects, physics and scripts are not implemented yet.
-A blank scene or missing avatar appearance is not evidence those later items
-have passed.
+A blank scene is not evidence those later items have passed.
 
 Record informal notes with the date, Firestorm version/build, printed Ferroan
 commit, Tranquillity pin and result for each step. The maintainer supplies

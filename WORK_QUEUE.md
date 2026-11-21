@@ -72,7 +72,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | DONE (#123) |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | DONE (#131) |
 | Q14 | P2.0e: terrain from the C# region store | DONE (#126) |
-| Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
+| Q15 | P2.0f: appearance from the C# avatar service | IN PROGRESS — `feat/avatar-appearance` |
 | Q16 | P2.0g: local chat | READY after Q15 |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16 |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
