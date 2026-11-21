@@ -177,6 +177,8 @@ fn build(dotnet: &Path, pin: &Path) -> Result<PathBuf, String> {
     if !project.is_file() {
         return Err("OpenSim.ConsoleClient.csproj is not in the pin".to_string());
     }
+    // Keep the reference tree clean. One intermediate directory is enough:
+    // per-project paths make ResolveProjectReferences circular.
     let intermediate = format!("IntermediateOutputPath={}/", obj.display());
     let output = Command::new(dotnet)
         .arg("build")
@@ -194,12 +196,127 @@ fn build(dotnet: &Path, pin: &Path) -> Result<PathBuf, String> {
         text.push_str(&String::from_utf8_lossy(&output.stderr));
         return Err(format!("dotnet build failed: {}", scrub(&text)));
     }
+    // The client's deps.json does not list Microsoft.Extensions.Logging.
+    // WebUtil's type initializer needs it. A runtime that has no ASP.NET
+    // shared framework (this machine) then fails before login. The framework
+    // library's own deps.json has the closure; fold it in and probe the
+    // NuGet cache. CI's shared framework already has the assembly, and the
+    // same closure still resolves there.
+    fold_logging_closure(&bin)?;
     let dll = bin.join("OpenSim.ConsoleClient.dll");
     if dll.is_file() {
         Ok(dll)
     } else {
         Err("dotnet build did not write OpenSim.ConsoleClient.dll".to_string())
     }
+}
+
+/// Packages `WebUtil`'s logger needs, as named in `OpenSim.Framework.deps.json`.
+fn logging_package(name: &str) -> bool {
+    name.starts_with("Microsoft.Extensions.Logging")
+        || name.starts_with("Microsoft.Extensions.Options/")
+        || name.starts_with("Microsoft.Extensions.DependencyInjection")
+        || name.starts_with("Microsoft.Extensions.Primitives/")
+}
+
+fn fold_logging_closure(bin: &Path) -> Result<(), String> {
+    let client_path = bin.join("OpenSim.ConsoleClient.deps.json");
+    let framework_path = bin.join("OpenSim.Framework.deps.json");
+    let mut client: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&client_path)
+            .map_err(|error| format!("could not read ConsoleClient deps.json: {error}"))?,
+    )
+    .map_err(|error| format!("could not parse ConsoleClient deps.json: {error}"))?;
+    let framework: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&framework_path)
+            .map_err(|error| format!("could not read Framework deps.json: {error}"))?,
+    )
+    .map_err(|error| format!("could not parse Framework deps.json: {error}"))?;
+    let framework_targets = framework
+        .get("targets")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Framework deps.json has no targets".to_string())?;
+    let client_targets = client
+        .get_mut("targets")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "ConsoleClient deps.json has no targets".to_string())?;
+    for (tfm, entries) in client_targets {
+        let Some(client_entries) = entries.as_object_mut() else {
+            continue;
+        };
+        let Some(framework_entries) = framework_targets
+            .get(tfm)
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (name, info) in framework_entries {
+            if logging_package(name) && !client_entries.contains_key(name) {
+                client_entries.insert(name.clone(), info.clone());
+            }
+        }
+    }
+    let framework_libraries = framework
+        .get("libraries")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Framework deps.json has no libraries".to_string())?;
+    let client_libraries = client
+        .get_mut("libraries")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "ConsoleClient deps.json has no libraries".to_string())?;
+    for (name, info) in framework_libraries {
+        if logging_package(name) && !client_libraries.contains_key(name) {
+            client_libraries.insert(name.clone(), info.clone());
+        }
+    }
+    fs::write(
+        &client_path,
+        serde_json::to_vec_pretty(&client)
+            .map_err(|error| format!("could not encode ConsoleClient deps.json: {error}"))?,
+    )
+    .map_err(|error| format!("could not write ConsoleClient deps.json: {error}"))?;
+
+    let nuget = nuget_packages_dir()?;
+    let runtime_path = bin.join("OpenSim.ConsoleClient.runtimeconfig.json");
+    let mut runtime: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&runtime_path)
+            .map_err(|error| format!("could not read ConsoleClient runtimeconfig: {error}"))?,
+    )
+    .map_err(|error| format!("could not parse ConsoleClient runtimeconfig: {error}"))?;
+    let options = runtime
+        .get_mut("runtimeOptions")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "ConsoleClient runtimeconfig has no runtimeOptions".to_string())?;
+    let paths = options
+        .entry("additionalProbingPaths")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let paths = paths
+        .as_array_mut()
+        .ok_or_else(|| "additionalProbingPaths is not an array".to_string())?;
+    let nuget_text = nuget.to_string_lossy().into_owned();
+    if !paths
+        .iter()
+        .any(|path| path.as_str() == Some(nuget_text.as_str()))
+    {
+        paths.push(serde_json::Value::String(nuget_text));
+    }
+    fs::write(
+        &runtime_path,
+        serde_json::to_vec_pretty(&runtime)
+            .map_err(|error| format!("could not encode ConsoleClient runtimeconfig: {error}"))?,
+    )
+    .map_err(|error| format!("could not write ConsoleClient runtimeconfig: {error}"))?;
+    Ok(())
+}
+
+fn nuget_packages_dir() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("NUGET_PACKAGES") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        "NUGET_PACKAGES and HOME are unset, so the logging assemblies cannot be probed".to_string()
+    })?;
+    Ok(PathBuf::from(home).join(".nuget/packages"))
 }
 
 fn locate_pin() -> Option<PathBuf> {
