@@ -329,14 +329,13 @@ fn robust_ini(
         )
     };
     let auth_section = if let Some(uri) = remote_auth_uri {
-        // start_grid copies the fixture to auth.db beside robust.db. BusyTimeout
-        // only: Journal Mode=Wal would try to change the mode while Ferroan
-        // already holds the file.
-        let auth_file = Path::new(database).with_file_name("auth.db");
-        let auth_path = auth_file
-            .to_str()
-            .ok_or("auth database path is not utf-8")?;
-        plain(auth_path, "auth database path")?;
+        // start_grid copies the fixture to auth.db beside robust.db. Keep the
+        // separator in the string: Path::with_file_name rewrites `/tmp/...` on
+        // Windows, and this ini is built in tests there. BusyTimeout only.
+        // Journal Mode=Wal would try to change the mode while Ferroan already
+        // holds the file.
+        let auth_path = shared_auth_path(database);
+        plain(&auth_path, "auth database path")?;
         let shared = format!("Data Source={auth_path};Version=3;BusyTimeout=15000;");
         format!(
             "[AuthenticationService]\n    \
@@ -489,6 +488,17 @@ fn assignment_name(trimmed: &str) -> Option<&str> {
     let (name, _) = trimmed.split_once('=')?;
     let name = name.trim();
     if name.is_empty() { None } else { Some(name) }
+}
+
+/// `auth.db` in the same directory as Robust's database path.
+///
+/// The separator stays as written. Live runs are Linux. The unit test passes
+/// a `/tmp/...` string on Windows, where `Path` would emit a backslash.
+fn shared_auth_path(database: &str) -> String {
+    match database.rfind(['/', '\\']) {
+        Some(index) => format!("{}auth.db", &database[..=index]),
+        None => "auth.db".to_string(),
+    }
 }
 
 fn plain(value: &str, label: &str) -> Result<(), String> {
