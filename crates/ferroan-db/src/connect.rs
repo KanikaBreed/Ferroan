@@ -131,10 +131,13 @@ pub(crate) fn sqlite_target(connection_string: &str) -> Result<SqliteTarget, DbE
 }
 
 pub(crate) fn sqlite_options(target: &SqliteTarget) -> Result<SqliteConnectOptions, DbError> {
+    // `--rust auth` keeps C# login's connection on this file. Wait for that
+    // lock instead of failing the query. This does not change journal mode.
     let options = SqliteConnectOptions::new()
         .filename(&target.filename)
         .create_if_missing(false)
-        .read_only(target.read_only);
+        .read_only(target.read_only)
+        .busy_timeout(std::time::Duration::from_secs(15));
     Ok(options)
 }
 

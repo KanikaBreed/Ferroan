@@ -270,10 +270,12 @@ fn robust_ini(
             ),
         )
     };
-    // AuthenticationServiceConnector requires LocalServiceModule. With a Rust
-    // auth service the ServiceList line is omitted and login posts to
-    // AuthenticationServerURI. AuthenticationServicesConnector.SetPassword is
-    // a no-op, so an in-process create user does not write the C# auth file.
+    // LLLoginService loads IAuthenticationService with (config, userAccountService).
+    // AuthenticationServicesConnector has no such constructor, so login stays on
+    // PasswordAuthenticationService and opens the same auth.db ferroan-robust
+    // serves. The in-process account service loads the one-argument connector.
+    // Its SetPassword is a no-op; the harness posts setpassword. The HTTP
+    // handler stays omitted so C# does not also listen on /auth.
     let password_module =
         "OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService";
     let remote_auth = "OpenSim.Services.Connectors.dll:AuthenticationServicesConnector";
@@ -281,7 +283,7 @@ fn robust_ini(
         services.auth
     {
         service_uri(uri)?;
-        (String::new(), remote_auth, remote_auth, Some(uri))
+        (String::new(), password_module, remote_auth, Some(uri))
     } else {
         (
             format!(
@@ -327,7 +329,21 @@ fn robust_ini(
         )
     };
     let auth_section = if let Some(uri) = remote_auth_uri {
-        format!("[AuthenticationService]\n    AuthenticationServerURI = \"{uri}\"\n\n")
+        // start_grid copies the fixture to auth.db beside robust.db. BusyTimeout
+        // only: Journal Mode=Wal would try to change the mode while Ferroan
+        // already holds the file.
+        let auth_file = Path::new(database).with_file_name("auth.db");
+        let auth_path = auth_file
+            .to_str()
+            .ok_or("auth database path is not utf-8")?;
+        plain(auth_path, "auth database path")?;
+        let shared = format!("Data Source={auth_path};Version=3;BusyTimeout=15000;");
+        format!(
+            "[AuthenticationService]\n    \
+             AuthenticationServerURI = \"{uri}\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"{shared}\"\n\n"
+        )
     } else {
         format!(
             "[AuthenticationService]\n    \
@@ -2683,7 +2699,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rust_auth_uri_omits_the_local_handler_and_points_login_at_the_connector() {
+    fn a_rust_auth_uri_omits_the_local_handler_and_shares_the_auth_file() {
         let ini = robust_ini(
             ROBUST_BIND,
             8002,
@@ -2700,10 +2716,14 @@ mod tests {
         .unwrap();
         assert!(ini.contains("AuthenticationServerURI = \"http://127.0.0.1:9\""));
         assert!(ini.contains(
+            "AuthenticationService = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""
+        ));
+        assert!(ini.contains(
             "AuthenticationService = \"OpenSim.Services.Connectors.dll:AuthenticationServicesConnector\""
         ));
+        assert!(ini.contains("Data Source=/tmp/auth.db;Version=3;BusyTimeout=15000;"));
         assert!(!ini.contains("AuthenticationServiceConnector"));
-        assert!(!ini.contains("PasswordAuthenticationService"));
+        assert!(!ini.contains("LocalServiceModule = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""));
         assert!(!ini.contains("AllowSetPassword"));
         assert!(!ini.contains("ferroan-robust.db.auth"));
         assert!(ini.contains("UserAccountServiceConnector"));
@@ -2730,8 +2750,12 @@ mod tests {
         .unwrap();
         assert!(both.contains("UserAccountServerURI = \"http://127.0.0.1:9\""));
         assert!(both.contains("AuthenticationServerURI = \"http://127.0.0.1:9\""));
+        assert!(both.contains(
+            "AuthenticationService = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""
+        ));
+        assert!(both.contains("Data Source=/tmp/auth.db;Version=3;BusyTimeout=15000;"));
         assert!(!both.contains("AllowSetPassword"));
-        assert!(!both.contains("PasswordAuthenticationService"));
+        assert!(!both.contains("AuthenticationServicesConnector"));
     }
 
     #[test]
