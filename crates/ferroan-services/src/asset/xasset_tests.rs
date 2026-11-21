@@ -14,18 +14,17 @@ use super::super::model::{Asset, KNOWN_FLAGS};
 use super::super::time::mysql_unix_now;
 use super::XAssetStore;
 
-static MYSQL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static POSTGRES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use super::{XASSET_MYSQL, XASSET_POSTGRES};
 
 #[tokio::test]
 async fn xasset_plugins_match_the_pin() {
     if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
-        let _guard = MYSQL.lock().await;
+        let _guard = XASSET_MYSQL.lock().await;
         check_plugin(&store).await;
         store.close().await;
     }
     if let Some(store) = open_url("FERROAN_POSTGRES_URL", "PostgreSQL").await {
-        let _guard = POSTGRES.lock().await;
+        let _guard = XASSET_POSTGRES.lock().await;
         check_plugin(&store).await;
         store.close().await;
     }
@@ -43,7 +42,7 @@ async fn xasset_plugins_cross_read() {
     }
     if let Ok(ado) = std::env::var("FERROAN_ASSET_ADO_MYSQL") {
         if !ado.is_empty() {
-            let _guard = MYSQL.lock().await;
+            let _guard = XASSET_MYSQL.lock().await;
             if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
                 cross_one(&store, &oracle, "mysql", &ado).await;
                 store.close().await;
@@ -54,7 +53,7 @@ async fn xasset_plugins_cross_read() {
     }
     if let Ok(ado) = std::env::var("FERROAN_ASSET_ADO_POSTGRES") {
         if !ado.is_empty() {
-            let _guard = POSTGRES.lock().await;
+            let _guard = XASSET_POSTGRES.lock().await;
             if let Some(store) = open_url("FERROAN_POSTGRES_URL", "PostgreSQL").await {
                 cross_one(&store, &oracle, "postgres", &ado).await;
                 store.close().await;

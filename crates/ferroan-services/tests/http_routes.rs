@@ -377,6 +377,16 @@ async fn open_reads_the_asset_section_and_rejects_other_backends() {
     config.set(
         "AssetService",
         "LocalServiceModule",
+        "OpenSim.Services.AssetService.dll:XAssetService",
+    );
+    config.set("AssetService", "StorageProvider", "OpenSim.Data.SQLite.dll");
+    let Err(error) = AssetHttp::open(&config).await else {
+        panic!("SQLite XAsset was accepted");
+    };
+    assert!(error.to_string().contains("SQLite"), "{error}");
+    config.set(
+        "AssetService",
+        "LocalServiceModule",
         "OpenSim.Services.AssetService.dll:AssetService",
     );
     config.set("AssetService", "StorageProvider", "OpenSim.Data.MySQL.dll");

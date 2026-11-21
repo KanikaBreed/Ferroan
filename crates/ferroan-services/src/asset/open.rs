@@ -5,11 +5,14 @@
 //!
 //! Storage provider and connection string follow `AssetServiceBase`: the
 //! asset section wins, and an empty value falls through to
-//! `[DatabaseService]`. SQLite, MySQL and PostgreSQL providers are opened.
-//! FSAssets and XAssets are not. `DefaultAssetLoader` names the filesystem
-//! loader, and `AssetLoaderArgs` is the asset-set control file. An empty
-//! loader name loads nothing. `AssetLoaderEnabled = false` skips the load.
-//! `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to
+//! `[DatabaseService]`. SQLite, MySQL and PostgreSQL providers are opened for
+//! `AssetService`. `XAssetService` opens MySQL and PostgreSQL only. FSAssets
+//! is not served. `DefaultAssetLoader` names the filesystem loader, and
+//! `AssetLoaderArgs` is the asset-set control file. An empty loader name
+//! loads nothing. `AssetLoaderEnabled = false` skips the load. `XAssetService`
+//! loads a loader name only when `ChainedServiceModule` is set, and it does
+//! not read the library file: `ForEachDefaultXmlAsset` is unreachable at the
+//! pin. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to
 //! start, because this process would otherwise serve the assets without the
 //! protection the file asked for. `TrustedGridAuthentication` does not reject
 //! callers when no trust context is set, which is this process, so it is
@@ -21,6 +24,8 @@ use ferroan_db::{Backend, Pool};
 use super::http::{AssetHttp, AssetOptions, DeleteMode};
 use super::loader::{filesystem_loader, load_asset_sets, seed_assets};
 use super::store::AssetStore;
+use super::xasset::XAssetStore;
+use super::xservice::XAssetService;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssetError {
@@ -40,7 +45,7 @@ impl AssetHttp {
     pub async fn open(config: &Config) -> Result<Self, AssetError> {
         let module = nonempty(config, SECTION, "LocalServiceModule")
             .ok_or(AssetError::Config("No LocalServiceModule in config file"))?;
-        if !is_stock_asset_service(module) {
+        if !is_xasset_service(module) && !is_stock_asset_service(module) {
             return Err(AssetError::Config(
                 "only OpenSim.Services.AssetService.dll:AssetService is served; FSAssets is not ported",
             ));
@@ -63,9 +68,6 @@ impl AssetHttp {
         let connection = nonempty(config, SECTION, "ConnectionString")
             .or_else(|| nonempty(config, "DatabaseService", "ConnectionString"))
             .ok_or(AssetError::Config("No ConnectionString configured"))?;
-        let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
-        let store = AssetStore::new(pool)?;
-        load_configured_assets(&store, config).await?;
         let delete = delete_mode(config)?;
         let redirect_url = nonempty(config, SECTION, "RedirectURL").map(str::to_string);
         if redirect_url
@@ -75,15 +77,61 @@ impl AssetHttp {
             return Err(AssetError::Config("RedirectURL contains a line break"));
         }
         let reject_shard_header = !config_bool(config, "AllowllHTTPRequestIn", false)?;
-        Ok(Self::new(
-            store,
-            AssetOptions {
-                delete,
-                redirect_url,
-                reject_shard_header,
-            },
-        ))
+        let options = AssetOptions {
+            delete,
+            redirect_url,
+            reject_shard_header,
+        };
+        if is_xasset_service(module) {
+            return open_xasset(config, backend, connection, options).await;
+        }
+        let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
+        let store = AssetStore::new(pool)?;
+        load_configured_assets(&store, config).await?;
+        Ok(Self::new(store, options))
     }
+}
+
+async fn open_xasset(
+    config: &Config,
+    backend: Backend,
+    connection: &str,
+    options: AssetOptions,
+) -> Result<AssetHttp, AssetError> {
+    if backend == Backend::Sqlite {
+        return Err(AssetError::Config("XAssetService has no SQLite plugin"));
+    }
+    let chained = match nonempty(config, SECTION, "ChainedServiceModule") {
+        Some(name) if is_stock_asset_service(name) => true,
+        Some(name) => {
+            return Err(AssetError::Message(format!(
+                "Failed to load ChainedAssetService from {name}"
+            )));
+        }
+        None => false,
+    };
+    if chained && let Some(loader) = nonempty(config, SECTION, "DefaultAssetLoader") {
+        // The loader object is created only when a chain is set. The
+        // constructor then calls ForEachDefaultXmlAsset only when no chain
+        // is set, so the library file is never read.
+        if !filesystem_loader(loader) {
+            return Err(AssetError::Message(format!(
+                "Asset loader could not be loaded from {loader}"
+            )));
+        }
+    }
+    let pool = Pool::open(backend, connection, &["XAssetStore"]).await?;
+    let store = XAssetStore::new(pool)?;
+    let chain = if chained {
+        let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
+        Some(AssetStore::new(pool)?)
+    } else {
+        None
+    };
+    Ok(AssetHttp::from_xasset(
+        XAssetService::new(store, chain),
+        options,
+    ))
 }
 
 pub fn network_port(config: &Config) -> Result<u16, AssetError> {
@@ -156,6 +204,11 @@ fn is_stock_asset_service(module: &str) -> bool {
         return false;
     }
     module == "AssetService" || module.ends_with(":AssetService")
+}
+
+fn is_xasset_service(module: &str) -> bool {
+    let module = module.trim();
+    !module.contains("FSAsset") && module.contains("XAsset")
 }
 
 fn delete_mode(config: &Config) -> Result<DeleteMode, AssetError> {
@@ -249,5 +302,54 @@ mod tests {
             listen_address(&parsed("[Network]\nbind_ip_address = 0.0.0.0\n")).expect("any");
         assert_eq!(explicit, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert!(listen_address(&parsed("[Network]\nbind_ip_address = localhost\n")).is_err());
+    }
+
+    #[tokio::test]
+    async fn xasset_refuses_sqlite_a_bad_chain_and_an_unknown_loader() {
+        let sqlite = parsed(
+            "[AssetService]\n\
+             LocalServiceModule = OpenSim.Services.AssetService.dll:XAssetService\n\
+             StorageProvider = OpenSim.Data.SQLite.dll\n\
+             ConnectionString = Data Source=/tmp/ferroan-q22b-unused.db;Version=3\n",
+        );
+        let Err(error) = AssetHttp::open(&sqlite).await else {
+            panic!("sqlite xasset was accepted");
+        };
+        assert!(error.to_string().contains("SQLite"), "{error}");
+
+        let chained = parsed(
+            "[AssetService]\n\
+             LocalServiceModule = OpenSim.Services.AssetService.dll:XAssetService\n\
+             StorageProvider = OpenSim.Data.MySQL.dll\n\
+             ConnectionString = Server=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None\n\
+             ChainedServiceModule = OpenSim.Services.AssetService.dll:XAssetService\n",
+        );
+        let Err(error) = AssetHttp::open(&chained).await else {
+            panic!("bad chain was accepted");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to load ChainedAssetService"),
+            "{error}"
+        );
+
+        let loader = parsed(
+            "[AssetService]\n\
+             LocalServiceModule = OpenSim.Services.AssetService.dll:XAssetService\n\
+             StorageProvider = OpenSim.Data.MySQL.dll\n\
+             ConnectionString = Server=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None\n\
+             ChainedServiceModule = OpenSim.Services.AssetService.dll:AssetService\n\
+             DefaultAssetLoader = Nope.dll\n",
+        );
+        let Err(error) = AssetHttp::open(&loader).await else {
+            panic!("unknown loader was accepted");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("Asset loader could not be loaded"),
+            "{error}"
+        );
     }
 }

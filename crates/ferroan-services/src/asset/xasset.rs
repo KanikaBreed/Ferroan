@@ -35,7 +35,7 @@
 //! There is no SQLite plugin at the pin. Compression stays off:
 //! `m_enableCompression` defaults to false, and the gzip branch is not the
 //! path a default server runs. This store does not chain to another asset
-//! service and it does not serve HTTP.
+//! service and it does not serve HTTP. `XAssetService` does both.
 //!
 //! Both plugins hash the stored bytes with SHA-256 and keep one `XAssetsData`
 //! row per hash. `StoreAsset` is void: a failed metadata or data write is
@@ -66,6 +66,11 @@ pub struct XAssetStore {
     pool: Pool,
 }
 
+#[cfg(test)]
+pub(crate) static XASSET_MYSQL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(test)]
+pub(crate) static XASSET_POSTGRES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 impl XAssetStore {
     /// Accept a MySQL or PostgreSQL pool. SQLite has no XAsset plugin.
     pub fn new(pool: Pool) -> Result<Self, StoreError> {
@@ -77,6 +82,10 @@ impl XAssetStore {
 
     pub const fn backend(&self) -> Backend {
         self.pool.backend()
+    }
+
+    pub fn pool_occupancy(&self) -> (u32, u32) {
+        self.pool.occupancy()
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Option<Asset>, StoreError> {
@@ -165,7 +174,7 @@ impl XAssetStore {
     }
 
     #[cfg(test)]
-    pub(super) async fn wipe(&self) -> Result<(), StoreError> {
+    pub(crate) async fn wipe(&self) -> Result<(), StoreError> {
         match self.backend() {
             Backend::Mysql => {
                 sqlx::query("DELETE FROM XAssetsMeta")

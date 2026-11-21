@@ -15,4 +15,4 @@ cargo xtask asset verify
 
 `cargo xtask asset cross` builds the same program and calls `SQLiteAssetData`, `MySQLAssetData` and `PGSQLAssetData` (`AssetOracle db`). It needs the .NET SDK, the pin checkout, and the local MySQL and PostgreSQL containers from `cargo xtask schema servers`. The Rust test skips with a printed reason unless that command sets `FERROAN_ASSET_CROSS`.
 
-`cargo xtask asset xasset-cross` calls `MySQLXAssetData` and `PGSQLXAssetData` (`AssetOracle xdb`) the same way. The Rust test skips unless that command sets `FERROAN_XASSET_CROSS`. It does not start an HTTP server or the live harness.
+`cargo xtask asset xasset-cross` calls `MySQLXAssetData` and `PGSQLXAssetData` (`AssetOracle xdb`) the same way. The Rust test skips unless that command sets `FERROAN_XASSET_CROSS`. It does not start an HTTP server or the live harness. `XAssetService` is exercised by the Rust HTTP tests, not by this program.

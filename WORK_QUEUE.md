@@ -81,7 +81,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
 | Q22a | P1.A2a: MySQL and PostgreSQL `XAssetsMeta` / `XAssetsData` plugins, with fixtures | DONE (#135) |
-| Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | READY after Q22a |
+| Q22b | P1.A2b: `XAssetService` on the asset HTTP routes `ferroan-robust` already serves | IN PROGRESS |
 | Q22c | P1.A2c: `cargo xtask live assets --backend xasset --db mysql\|pgsql` prints `assets: match` | READY after Q22b |
 | Q23 | P1.A3: FSAssets | READY after Q22c |
 | Q24 | P1.1: user accounts | DONE (#83) |
@@ -273,6 +273,7 @@ Q22a (21 November 2026, `feat/xasset-plugins`): [PR #135](https://github.com/Kan
 
 ## Found while working
 
+- 2026-11-21, Q22b: MySQL `XAssetService.MigrateFromChainedService` calls `Store`, which skips because `AssetsExist` reads `assets` (TB28), and then deletes the chain row. The only copy is gone. The `Get` that migrated still returns the asset (TB33). PostgreSQL writes the XAsset row first. Not filed upstream. Ferroan matches it. `ForEachDefaultXmlAsset` stays uncalled. TB19 and TB20 on `AssetService` are unchanged.
 - 2026-11-21, Q22a: at `c70fee205f`, MySQL `MySQLXAssetData.StoreAsset` begins a transaction and never assigns `cmd.Transaction`, so MySqlConnector rejects the command, the method logs and returns, and the row is not written (TB27). MySQL `AssetsExist` selects `assets`, not `XAssetsMeta` (TB28). PostgreSQL `FetchAssetMetadataSet` sends `LIMIT start, count`, which PostgreSQL rejects, and the method returns an empty list (TB29). PostgreSQL `Delete` binds the id as varchar against a uuid column and the row stays (TB30). Not filed upstream. Ferroan runs the MySQL store on its transaction so hash dedupe can be seen. It matches the other three. TB19 and TB20 on `AssetService` are unchanged.
 
 - 2026-11-21, Q22: `XAssetService` at `c70fee205f` never runs `ForEachDefaultXmlAsset`. `XAssetServiceBase` assigns `m_AssetLoader` only when `ChainedServiceModule` loads, and the constructor calls the loader only when that field is set and no chain is set. Not filed upstream. The block note above is the record. No product change.
