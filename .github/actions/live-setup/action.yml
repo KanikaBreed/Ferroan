@@ -27,9 +27,6 @@ runs:
       uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
       with:
         dotnet-version: 10.0.114
-    - name: Install sqlite3
-      shell: bash
-      run: sudo apt-get update && sudo apt-get install -y sqlite3
     - name: Check out the pinned references
       shell: bash
       run: |
@@ -96,3 +93,6 @@ runs:
         key: ${{ inputs.rust-key }}
         restore-keys: |
           ${{ inputs.rust-restore }}
+    - name: Install sqlite3
+      shell: bash
+      run: cargo xtask ci ensure-sqlite

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Pull-request scope and the live-job gate.
+//! Pull-request scope, the live-job gate, and the sqlite3 install step.
 //!
 //! `cargo xtask ci scope` writes `docs_only=true` or `docs_only=false` to
 //! `GITHUB_OUTPUT` (or stdout when that variable is unset). A push, a
@@ -11,6 +11,10 @@
 //! `cargo xtask ci gate` is the required check `live (ubuntu-latest)`. It
 //! fails unless every parallel live job succeeded. A documentation-only run
 //! succeeds only when those jobs were skipped.
+//!
+//! `cargo xtask ci ensure-sqlite` installs the `sqlite3` command when it is
+//! missing and `apt-get` is on `PATH`. When `sqlite3` is already present it
+//! does nothing, which is the Arch runner (no `apt-get`).
 
 use std::env;
 use std::fs::OpenOptions;
@@ -164,9 +168,80 @@ pub(crate) fn gate() -> ExitCode {
     }
 }
 
+/// What `ensure-sqlite` does. Tests call this; they do not run `apt-get`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SqliteInstall {
+    /// `sqlite3` is already on `PATH`.
+    Present,
+    /// Install it with `apt-get`.
+    Apt,
+}
+
+/// `Present` when `sqlite3` is on `PATH`. `Apt` when it is missing and
+/// `apt-get` exists. An error when neither exists, which is an Arch machine
+/// that has not installed the `sqlite3` command.
+pub(crate) fn sqlite_install(
+    has_sqlite: bool,
+    has_apt: bool,
+) -> Result<SqliteInstall, &'static str> {
+    if has_sqlite {
+        Ok(SqliteInstall::Present)
+    } else if has_apt {
+        Ok(SqliteInstall::Apt)
+    } else {
+        Err("sqlite3 is not installed and apt-get is not available")
+    }
+}
+
+pub(crate) fn ensure_sqlite() -> ExitCode {
+    let choice = match sqlite_install(command_on_path("sqlite3"), command_on_path("apt-get")) {
+        Ok(choice) => choice,
+        Err(error) => {
+            eprintln!("ci ensure-sqlite: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match choice {
+        SqliteInstall::Present => ExitCode::SUCCESS,
+        SqliteInstall::Apt => match apt_install_sqlite() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("ci ensure-sqlite: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+fn command_on_path(name: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path).any(|dir| dir.join(name).is_file())
+}
+
+fn apt_install_sqlite() -> Result<(), String> {
+    run_apt(&["update"])?;
+    run_apt(&["install", "-y", "sqlite3"])
+}
+
+fn run_apt(args: &[&str]) -> Result<(), String> {
+    let status = Command::new("sudo")
+        .args(["-n", "apt-get"])
+        .args(args)
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .status()
+        .map_err(|error| format!("could not run apt-get: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("apt-get failed to install sqlite3".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{documentation_only, evaluate, paths_are_docs_only};
+    use super::{SqliteInstall, documentation_only, evaluate, paths_are_docs_only, sqlite_install};
 
     #[test]
     fn documentation_only_paths_skip_the_live_run() {
@@ -238,6 +313,17 @@ mod tests {
                 "success", "true", "success", "skipped", "skipped", "skipped"
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn sqlite_is_installed_only_when_it_is_missing() {
+        assert_eq!(sqlite_install(true, true), Ok(SqliteInstall::Present));
+        assert_eq!(sqlite_install(true, false), Ok(SqliteInstall::Present));
+        assert_eq!(sqlite_install(false, true), Ok(SqliteInstall::Apt));
+        assert_eq!(
+            sqlite_install(false, false),
+            Err("sqlite3 is not installed and apt-get is not available")
         );
     }
 }
