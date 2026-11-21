@@ -191,7 +191,7 @@ impl FetchCaps {
             return CapAnswer::miss();
         }
         let Ok(body) = from_xml(&exchange.body) else {
-            ferroan_diag::log_malformed(&exchange.name, &exchange.body);
+            ferroan_diag::log_malformed(&exchange.name, &exchange.body, "body is not llsd xml");
             return llsd_ok(empty_folders());
         };
         let folders = body.get("folders");
@@ -451,7 +451,7 @@ impl FetchCaps {
             return plain(StatusCode::NOT_FOUND, Vec::new());
         }
         let Ok(body) = from_xml(&exchange.body) else {
-            ferroan_diag::log_malformed(&exchange.name, &exchange.body);
+            ferroan_diag::log_malformed(&exchange.name, &exchange.body, "body is not llsd xml");
             return refused();
         };
         let items = body.get("items");

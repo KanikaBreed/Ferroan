@@ -146,7 +146,7 @@ The ids and the C# comparison are in [LIMITS.md](LIMITS.md). Three of them can b
 
 `cargo xtask live run limits grid --region ferroan` does all three and checks the readouts.
 
-The warning is on stderr and in the `LOGDIR` file. In plain mode the line contains `limit http.post-body`, `limit udp.datagram` or `limit inventory.fetch-folders`. JSON mode adds `"target":"ferroan::limit"`. The same minute's later hits are one line with `suppressed=`. The hex excerpt of a malformed packet is a debug line, so `set log level debug` is required before it is visible.
+The warning is on stderr and in the `LOGDIR` file. In plain mode the line contains `limit http.post-body`, `limit udp.datagram` or `limit inventory.fetch-folders`. JSON mode adds `"target":"ferroan::limit"`. The same minute's later hits are one line with `suppressed=`. The hex excerpt of a malformed packet is a debug line, so `set log level debug` is required before it is visible. The diagnostics ring, `diag dump` and panic files keep the route, the length and the parse error, and do not keep that excerpt. Known secret fields of a CreateAgent body and of UseCircuitCode are masked before the excerpt is hex-encoded.
 
 `GET http://127.0.0.1:9109/metrics` includes `ferroan_limit_hits_total{limit="http.post-body",action="refuse"}`. Robust's listener is `127.0.0.1:9110` when its metrics switch is on. The snapshot is `diag dump` on the remote console (it prints `diag dump` and the file path), `GET /diag` on that metrics listener, and `cargo xtask live diag`. The file is `diag-<server>-<unix-millis>.txt` under `LOGDIR`, or under `.scratch/` when `LOGDIR` is unset. The live scenario writes `.scratch/live/diag/limits.txt`. A panic writes `panic-<server>-<unix-millis>.txt` beside it.
 
