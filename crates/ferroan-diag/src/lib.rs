@@ -15,7 +15,6 @@
 mod catalog;
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -263,22 +262,26 @@ pub fn log_boundary(route: &str, message: &str) {
     record(&format!("error:{route}"), "error", &text, false);
 }
 
-pub fn log_malformed(route: &str, bytes: &[u8]) {
-    let excerpt = &bytes[..bytes.len().min(EXCERPT_BYTES)];
-    let text = format!(
-        "malformed route={} bytes={} hex={}",
-        field(route),
-        bytes.len(),
-        hex_excerpt(excerpt)
-    );
+/// Record a malformed body.
+///
+/// The ring, `diag dump` files and panic files keep the route, the length and
+/// `error`. They do not keep the body. The hex excerpt is only the debug
+/// line, after the known secret fields of that message type are masked:
+/// CreateAgent's `session_id`, `secure_session_id`, `circuit_code` and
+/// `caps_path` on route `/agent`, and UseCircuitCode's `Code` and `SessionID`
+/// on route `udp`.
+pub fn log_malformed(route: &str, bytes: &[u8], error: &str) {
+    let (ring_text, debug_text) = malformed_record(route, bytes, error);
     let key = format!("malformed:{route}");
     let emit = {
         let mut guard = lock();
-        let redacted = (guard.redactor)(&text);
-        take_log(&mut guard, &key, &redacted)
+        let redacted = (guard.redactor)(&ring_text);
+        let hex_line = (guard.redactor)(&debug_text);
+        take_log(&mut guard, &key, &redacted).map(|line| (line, hex_line))
     };
-    if let Some(message) = emit {
+    if let Some((message, hex_line)) = emit {
         tracing::debug!(target: "ferroan::error", "{message}");
+        tracing::debug!(target: "ferroan::error", "{hex_line}");
     }
 }
 
@@ -351,21 +354,7 @@ pub fn render() -> String {
 }
 
 pub fn write_dump() -> std::io::Result<PathBuf> {
-    let server = {
-        let name = lock().identity.server.clone();
-        if name.is_empty() {
-            "ferroan".to_owned()
-        } else {
-            name
-        }
-    };
-    let text = render();
-    let dir = dump_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("diag-{}-{}.txt", sanitize(&server), unix_millis()));
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(text.as_bytes())?;
-    Ok(path)
+    write_report("diag", &render())
 }
 
 pub fn install_panic_hook() {
@@ -522,18 +511,27 @@ fn push_ring(guard: &mut State, line: &str) {
 
 fn write_panic(info: &std::panic::PanicHookInfo<'_>) -> std::io::Result<()> {
     let backtrace = std::backtrace::Backtrace::force_capture();
-    let mut text = format!("panic: {info}\n{backtrace}\n\n");
-    text.push_str(&render());
-    let server = sanitize(&lock().identity.server);
-    let server = if server.is_empty() {
-        "ferroan".to_owned()
-    } else {
-        server
+    write_panic_report(&format!("{info}\n{backtrace}")).map(|_| ())
+}
+
+fn write_panic_report(summary: &str) -> std::io::Result<PathBuf> {
+    write_report("panic", &format!("panic: {summary}\n\n{}", render()))
+}
+
+fn write_report(kind: &str, text: &str) -> std::io::Result<PathBuf> {
+    let server = {
+        let name = sanitize(&lock().identity.server);
+        if name.is_empty() {
+            "ferroan".to_owned()
+        } else {
+            name
+        }
     };
     let dir = dump_dir();
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("panic-{server}-{}.txt", unix_millis()));
-    std::fs::write(path, text)
+    let path = dir.join(format!("{kind}-{server}-{}.txt", unix_millis()));
+    std::fs::write(&path, text)?;
+    Ok(path)
 }
 
 fn dump_dir() -> PathBuf {
@@ -592,6 +590,127 @@ fn clip(text: &str) -> String {
         out.truncate(MESSAGE_CAP);
     }
     out
+}
+
+fn malformed_record(route: &str, bytes: &[u8], error: &str) -> (String, String) {
+    let ring = format!(
+        "malformed route={} bytes={} error={}",
+        field(route),
+        bytes.len(),
+        field(error)
+    );
+    let masked = mask_known_fields(route, bytes);
+    let excerpt = &masked[..masked.len().min(EXCERPT_BYTES)];
+    let debug = format!("{ring} hex={}", hex_excerpt(excerpt));
+    (ring, debug)
+}
+
+/// Mask secret fields before the debug hex excerpt.
+///
+/// `/agent` is a CreateAgent JSON body, which may already be malformed.
+/// `udp` is a datagram. UseCircuitCode (`message_template.msg`, Low 3,
+/// unencoded) is message number `ff ff 00 03` after the 6-byte header and
+/// its extra bytes (`packet.rs`), then `Code` U32 and `SessionID` LLUUID.
+/// The agent id that follows is not one of the secret fields.
+fn mask_known_fields(route: &str, bytes: &[u8]) -> Vec<u8> {
+    if route == "/agent" {
+        mask_json_fields(
+            bytes,
+            &[
+                b"secure_session_id",
+                b"session_id",
+                b"circuit_code",
+                b"caps_path",
+            ],
+        )
+    } else if route == "udp" {
+        mask_use_circuit_code(bytes)
+    } else {
+        bytes.to_vec()
+    }
+}
+
+fn mask_json_fields(bytes: &[u8], keys: &[&[u8]]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for key in keys {
+        let mut pattern = Vec::with_capacity(key.len() + 2);
+        pattern.push(b'"');
+        pattern.extend_from_slice(key);
+        pattern.push(b'"');
+        let mut search = 0;
+        while let Some(found) = find_slice(&out, &pattern, search) {
+            let mut index = found + pattern.len();
+            while index < out.len() && out[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index >= out.len() || out[index] != b':' {
+                search = found + 1;
+                continue;
+            }
+            index += 1;
+            while index < out.len() && out[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index >= out.len() {
+                break;
+            }
+            if out[index] == b'"' {
+                index += 1;
+                while index < out.len() && out[index] != b'"' {
+                    if out[index] == b'\\' && index + 1 < out.len() {
+                        out[index] = b'*';
+                        out[index + 1] = b'*';
+                        index += 2;
+                        continue;
+                    }
+                    out[index] = b'*';
+                    index += 1;
+                }
+                search = index.saturating_add(1);
+            } else if out[index] == b'-' || out[index].is_ascii_digit() {
+                while index < out.len()
+                    && (out[index].is_ascii_digit()
+                        || matches!(out[index], b'-' | b'+' | b'.' | b'e' | b'E'))
+                {
+                    out[index] = b'*';
+                    index += 1;
+                }
+                search = index;
+            } else {
+                search = found + 1;
+            }
+        }
+    }
+    out
+}
+
+fn mask_use_circuit_code(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    // Zerocoded packets do not keep these offsets. UseCircuitCode is unencoded.
+    if out.len() < 6 || out[0] & 0x80 != 0 {
+        return out;
+    }
+    let message = 6usize.saturating_add(out[5] as usize);
+    let code_at = message.saturating_add(4);
+    let session_at = code_at.saturating_add(4);
+    let session_end = session_at.saturating_add(16);
+    if session_end > out.len() || out.get(message..message + 4) != Some(&[0xff, 0xff, 0x00, 0x03]) {
+        return out;
+    }
+    for byte in &mut out[code_at..session_end] {
+        *byte = b'*';
+    }
+    out
+}
+
+fn find_slice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|index| from + index)
 }
 
 fn hex_excerpt(bytes: &[u8]) -> String {
@@ -732,11 +851,91 @@ mod tests {
         let _hold = hold();
         reset();
         let bytes = vec![0x0a, 0xff, b'A'];
-        log_malformed("udp", &bytes);
+        log_malformed("udp", &bytes, "short");
         let guard = lock();
         assert_eq!(guard.ring.len(), 1);
-        assert!(guard.ring[0].contains("hex=0aff41"));
+        assert!(!guard.ring[0].contains("hex="));
         assert!(guard.ring[0].contains("bytes=3"));
+        assert!(guard.ring[0].contains("error=short"));
+        let (_ring, debug) = malformed_record("udp", &bytes, "short");
+        assert!(debug.contains("hex=0aff41"));
+    }
+
+    #[test]
+    fn malformed_secrets_stay_out_of_the_ring_dump_and_panic_file() {
+        let _hold = hold();
+        reset();
+        set_context("diag-secret", "Test");
+        let session = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let secure = "11111111-2222-3333-4444-555555555555";
+        let code = "987654321";
+        let seed = "SEEDPATHSECRET";
+        let body = format!(
+            "{{\"session_id\":\"{session}\",\"secure_session_id\":\"{secure}\",\"circuit_code\":\"{code}\",\"caps_path\":\"{seed}\","
+        );
+        log_malformed("/agent", body.as_bytes(), "expected value");
+        let mut circuit = vec![0u8; 6];
+        circuit.extend_from_slice(&[0xff, 0xff, 0x00, 0x03]);
+        circuit.extend_from_slice(&0x89ab_cdef_u32.to_le_bytes());
+        circuit.extend_from_slice(&[0xa1; 16]);
+        circuit.extend_from_slice(&[0x11; 16]);
+        circuit.resize(4097, 0x5a);
+        log_malformed("udp", &circuit, "datagram exceeds udp.datagram");
+
+        let forbidden = [
+            session,
+            secure,
+            code,
+            seed,
+            &hex_excerpt(session.as_bytes()),
+            &hex_excerpt(secure.as_bytes()),
+            &hex_excerpt(code.as_bytes()),
+            &hex_excerpt(seed.as_bytes()),
+            "efcdab89",
+            &"a1".repeat(16),
+        ];
+        let ring = {
+            let mut guard = lock();
+            assert_eq!(guard.ring.len(), 2);
+            assert!(guard.ring[0].contains("route=/agent"));
+            assert!(guard.ring[0].contains(&format!("bytes={}", body.len())));
+            assert!(guard.ring[0].contains("error=expected value"));
+            assert!(guard.ring[1].contains("route=udp"));
+            assert!(guard.ring[1].contains("bytes=4097"));
+            assert!(guard.ring[1].contains("error=datagram exceeds udp.datagram"));
+            guard.ring.make_contiguous().join("\n")
+        };
+        let rendered = render();
+        let dump = write_dump().expect("diag dump");
+        let panic_path = write_panic_report("unit").expect("panic file");
+        let dump_text = std::fs::read_to_string(&dump).expect("read dump");
+        let panic_text = std::fs::read_to_string(&panic_path).expect("read panic");
+        let (_agent_ring, agent_debug) =
+            malformed_record("/agent", body.as_bytes(), "expected value");
+        let (_udp_ring, udp_debug) =
+            malformed_record("udp", &circuit, "datagram exceeds udp.datagram");
+        for secret in forbidden {
+            assert!(!ring.contains(secret), "ring contains {secret}");
+            assert!(!rendered.contains(secret), "render contains {secret}");
+            assert!(!dump_text.contains(secret), "dump contains {secret}");
+            assert!(!panic_text.contains(secret), "panic file contains {secret}");
+            assert!(
+                !agent_debug.contains(secret),
+                "create-agent debug contains {secret}"
+            );
+            assert!(
+                !udp_debug.contains(secret),
+                "use-circuit debug contains {secret}"
+            );
+        }
+        assert!(agent_debug.contains("hex="));
+        assert!(udp_debug.contains("hex="));
+        assert!(agent_debug.contains(&"2a".repeat(seed.len())));
+        assert!(udp_debug.contains(&"2a".repeat(20)));
+        assert!(panic_text.contains("panic: unit"));
+        assert!(dump_text.contains("error=expected value"));
+        let _ = std::fs::remove_file(dump);
+        let _ = std::fs::remove_file(panic_path);
     }
 
     #[test]

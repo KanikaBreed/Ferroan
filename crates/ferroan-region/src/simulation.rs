@@ -623,12 +623,12 @@ fn decode_body(body: &[u8], gzip: bool) -> Result<Map<String, Value>, Simulation
     match serde_json::from_slice(bytes) {
         Ok(Value::Object(map)) => Ok(map),
         Ok(_) => {
-            ferroan_diag::log_malformed("/agent", bytes);
+            ferroan_diag::log_malformed("/agent", bytes, "json value is not an object");
             ferroan_diag::log_boundary("/agent", "json value is not an object");
             Err(SimulationError::Json)
         }
         Err(error) => {
-            ferroan_diag::log_malformed("/agent", bytes);
+            ferroan_diag::log_malformed("/agent", bytes, &error.to_string());
             ferroan_diag::log_boundary("/agent", &error.to_string());
             Err(SimulationError::Json)
         }

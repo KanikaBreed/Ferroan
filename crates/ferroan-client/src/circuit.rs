@@ -970,7 +970,7 @@ async fn serve_socket_reporting(
                 len as u64,
                 "udp",
             );
-            ferroan_diag::log_malformed("udp", &buf[..len]);
+            ferroan_diag::log_malformed("udp", &buf[..len], "datagram exceeds udp.datagram");
             continue;
         }
         let Ok(packet) = packet::parse_packet(&buf[..len]) else {

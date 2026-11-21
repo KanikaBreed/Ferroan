@@ -67,7 +67,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
-| Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | READY after Q10w |
+| Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | IN PROGRESS |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | READY after Q13c1 |
 | Q13c3 | P0.13c3: route-labelled Robust metrics, structured log fields, and three readout fixes | READY after Q13c2 |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c3 |
