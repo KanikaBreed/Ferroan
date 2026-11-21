@@ -10,9 +10,9 @@
 //! `XAssetService` serves these HTTP routes on that store, including a chained
 //! `AssetService`. `FsAssetStore` is the MySQL and PostgreSQL FSAssets plugins:
 //! table rows only. `FsFiles` is the hash layout and the spool writer.
-//! There is still no FSAssets HTTP service. The filesystem loader runs when
-//! `DefaultAssetLoader` names it on `AssetService`. `XAssetService` does not
-//! seed the library.
+//! `FsAssetService` serves these HTTP routes on that store. The filesystem
+//! loader runs when `DefaultAssetLoader` names it on `AssetService`, and on
+//! the main `FSAssetService`. `XAssetService` does not seed the library.
 //! `show asset`, `dump asset` and `delete asset` are functions here; the
 //! remote console does not call them yet.
 
@@ -22,6 +22,7 @@ mod decode;
 mod fmysql;
 mod fpostgres;
 mod fsasset;
+mod fservice;
 mod fsfiles;
 mod http;
 mod loader;

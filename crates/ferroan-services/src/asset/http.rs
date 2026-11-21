@@ -38,6 +38,7 @@ use axum::routing::{get, post};
 use ferroan_diag::{self, HTTP_ASSET_BODY, Kind};
 use ferroan_http::MAX_XML_CHARS;
 
+use super::fservice::FsAssetService;
 use super::model::{MAPTILE, parse_id};
 use super::store::AssetStore;
 use super::xml;
@@ -75,6 +76,7 @@ pub struct AssetHttp {
 enum AssetBackend {
     Stock(AssetStore),
     XAsset(XAssetService),
+    FsAsset(FsAssetService),
 }
 
 struct Inner {
@@ -92,6 +94,10 @@ impl AssetHttp {
 
     pub(crate) fn from_xasset(service: XAssetService, options: AssetOptions) -> Self {
         Self::from_backend(AssetBackend::XAsset(service), options)
+    }
+
+    pub(crate) fn from_fsasset(service: FsAssetService, options: AssetOptions) -> Self {
+        Self::from_backend(AssetBackend::FsAsset(service), options)
     }
 
     fn from_backend(backend: AssetBackend, options: AssetOptions) -> Self {
@@ -149,9 +155,17 @@ async fn get_asset(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.backend.get_parsed(&id).await {
-        Some(asset) => xml_bytes(StatusCode::OK, "text/xml", xml::encode_asset(&asset)),
-        None => app.missing(uri.path(), true),
+    match app.inner.backend.read_asset(&id).await {
+        Read::Found(asset) => {
+            let body = if app.inner.backend.omits_creator() {
+                xml::encode_fs_asset(&asset)
+            } else {
+                xml::encode_asset(&asset)
+            };
+            xml_bytes(StatusCode::OK, "text/xml", body)
+        }
+        Read::Missing => app.missing(uri.path(), true),
+        Read::Failed => failed(),
     }
 }
 
@@ -164,9 +178,10 @@ async fn get_data(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.backend.get_parsed(&id).await {
-        Some(asset) => xml_bytes(StatusCode::OK, "application/octet-stream", asset.data),
-        None => app.missing(uri.path(), true),
+    match app.inner.backend.read_data(&id).await {
+        Read::Found(data) => xml_bytes(StatusCode::OK, "application/octet-stream", data),
+        Read::Missing => app.missing(uri.path(), true),
+        Read::Failed => failed(),
     }
 }
 
@@ -179,12 +194,13 @@ async fn get_metadata(
     if let Some(response) = app.shard(&headers) {
         return response;
     }
-    match app.inner.backend.get_parsed(&id).await {
-        Some(asset) => {
-            let content = super::content_type::content_type(asset.type_code);
-            xml_bytes(StatusCode::OK, content, xml::encode_metadata(&asset))
+    match app.inner.backend.read_metadata(&id).await {
+        Read::Found(meta) => {
+            let content = super::content_type::content_type(meta.type_code);
+            xml_bytes(StatusCode::OK, content, meta.body)
         }
-        None => app.missing(uri.path(), true),
+        Read::Missing => app.missing(uri.path(), true),
+        Read::Failed => failed(),
     }
 }
 
@@ -209,16 +225,15 @@ async fn post_store(State(app): State<AssetHttp>, headers: HeaderMap, body: Body
     if decoded.data_nil {
         return bad_xml();
     }
-    let id_text = decoded.id_text.clone();
-    if app
+    let id_text = match app
         .inner
         .backend
-        .store_posted(&decoded.asset)
+        .store_posted(&decoded.asset, &decoded.id_text)
         .await
-        .is_err()
     {
-        return failed();
-    }
+        Ok(id_text) => id_text,
+        Err(()) => return failed(),
+    };
     xml_bytes(
         StatusCode::OK,
         "application/xml",
@@ -273,8 +288,9 @@ async fn post_exists(State(app): State<AssetHttp>, body: Body) -> Response {
         Err(_) => return bad_xml(),
     };
     let found = match exists_flags(&app, &ids).await {
-        Ok(found) => found,
-        Err(()) => vec![false; ids.len()],
+        Exist::Flags(found) => found,
+        Exist::Failed => return failed(),
+        Exist::Absent => vec![false; ids.len()],
     };
     xml_bytes(StatusCode::OK, "application/xml", xml::encode_bools(&found))
 }
@@ -299,8 +315,10 @@ impl AssetHttp {
         if self.inner.options.delete == DeleteMode::None {
             return Ok(false);
         }
-        let Some(asset) = self.inner.backend.get_parsed(id).await else {
-            return Ok(false);
+        let asset = match self.inner.backend.read_asset(id).await {
+            Read::Found(asset) => asset,
+            Read::Missing => return Ok(false),
+            Read::Failed => return Err(()),
         };
         let allowed = self.inner.options.delete == DeleteMode::All || asset.flags & MAPTILE != 0;
         if !allowed {
@@ -310,15 +328,43 @@ impl AssetHttp {
     }
 }
 
-async fn exists_flags(app: &AssetHttp, ids: &[String]) -> Result<Vec<bool>, ()> {
+enum Exist {
+    Flags(Vec<bool>),
+    /// Stock and XAsset: a bad id, or a plugin error the handler turns into false.
+    Absent,
+    /// FSAsset: `UUID.Parse` throws, or the plugin throws. The handler does not catch it.
+    Failed,
+}
+
+async fn exists_flags(app: &AssetHttp, ids: &[String]) -> Exist {
+    if app.inner.backend.checks_files() {
+        return match app.inner.backend.exists_fs(ids).await {
+            Ok(found) => Exist::Flags(found),
+            Err(()) => Exist::Failed,
+        };
+    }
     let mut parsed = Vec::with_capacity(ids.len());
     for id in ids {
         let Some(uuid) = parse_id(id) else {
-            return Ok(vec![false; ids.len()]);
+            return Exist::Absent;
         };
         parsed.push(uuid);
     }
-    app.inner.backend.exists(&parsed).await.map_err(|_| ())
+    match app.inner.backend.exists(&parsed).await {
+        Ok(found) => Exist::Flags(found),
+        Err(()) => Exist::Absent,
+    }
+}
+
+enum Read<T> {
+    Found(T),
+    Missing,
+    Failed,
+}
+
+struct MetaDoc {
+    type_code: i8,
+    body: Vec<u8>,
 }
 
 fn redirect(url: &str, path: &str) -> Response {
@@ -351,40 +397,114 @@ impl AssetBackend {
         match self {
             Self::Stock(store) => store.pool_occupancy(),
             Self::XAsset(service) => service.pool_occupancy(),
+            Self::FsAsset(service) => service.pool_occupancy(),
         }
     }
 
-    async fn get_parsed(&self, id: &str) -> Option<super::model::Asset> {
+    fn omits_creator(&self) -> bool {
+        matches!(self, Self::FsAsset(_))
+    }
+
+    fn checks_files(&self) -> bool {
+        matches!(self, Self::FsAsset(_))
+    }
+
+    async fn read_asset(&self, id: &str) -> Read<super::model::Asset> {
         match self {
-            Self::Stock(store) => store.get_parsed(id).await,
-            Self::XAsset(service) => service.get(id).await,
+            Self::Stock(store) => found_or_missing(store.get_parsed(id).await),
+            Self::XAsset(service) => found_or_missing(service.get(id).await),
+            Self::FsAsset(service) => match service.get(id).await {
+                Ok(asset) => found_or_missing(asset),
+                Err(_) => Read::Failed,
+            },
         }
     }
 
-    async fn store_posted(
-        &self,
-        asset: &super::model::Asset,
-    ) -> Result<(), super::store::StoreError> {
+    async fn read_data(&self, id: &str) -> Read<Vec<u8>> {
         match self {
-            Self::Stock(store) => store.store_new(asset).await,
-            Self::XAsset(service) => service.store(asset).await.map(|_| ()),
+            Self::FsAsset(service) => match service.get_data(id).await {
+                Ok(data) => found_or_missing(data),
+                Err(_) => Read::Failed,
+            },
+            _ => match self.read_asset(id).await {
+                Read::Found(asset) => Read::Found(asset.data),
+                Read::Missing => Read::Missing,
+                Read::Failed => Read::Failed,
+            },
         }
     }
 
-    async fn exists(&self, ids: &[uuid::Uuid]) -> Result<Vec<bool>, super::store::StoreError> {
+    async fn read_metadata(&self, id: &str) -> Read<MetaDoc> {
         match self {
-            Self::Stock(store) => store.exists(ids).await,
-            Self::XAsset(service) => service.exists(ids).await,
+            Self::FsAsset(service) => match service.get_metadata(id).await {
+                Ok(Some(meta)) => Read::Found(MetaDoc {
+                    type_code: meta.asset.type_code,
+                    body: xml::encode_fs_metadata(&meta.asset, meta.created_unix),
+                }),
+                Ok(None) => Read::Missing,
+                Err(_) => Read::Failed,
+            },
+            _ => match self.read_asset(id).await {
+                Read::Found(asset) => Read::Found(MetaDoc {
+                    type_code: asset.type_code,
+                    body: xml::encode_metadata(&asset),
+                }),
+                Read::Missing => Read::Missing,
+                Read::Failed => Read::Failed,
+            },
+        }
+    }
+
+    async fn store_posted(&self, asset: &super::model::Asset, id_text: &str) -> Result<String, ()> {
+        match self {
+            Self::Stock(store) => store
+                .store_new(asset)
+                .await
+                .map(|()| id_text.to_string())
+                .map_err(|_| ()),
+            Self::XAsset(service) => service
+                .store(asset)
+                .await
+                .map(|_| id_text.to_string())
+                .map_err(|_| ()),
+            Self::FsAsset(service) => {
+                let mut asset = asset.clone();
+                service.store_asset(&mut asset, id_text).await
+            }
+        }
+    }
+
+    async fn exists(&self, ids: &[uuid::Uuid]) -> Result<Vec<bool>, ()> {
+        match self {
+            Self::Stock(store) => store.exists(ids).await.map_err(|_| ()),
+            Self::XAsset(service) => service.exists(ids).await.map_err(|_| ()),
+            Self::FsAsset(_) => Err(()),
+        }
+    }
+
+    async fn exists_fs(&self, ids: &[String]) -> Result<Vec<bool>, ()> {
+        match self {
+            Self::FsAsset(service) => service.assets_exist(ids).await.map_err(|_| ()),
+            _ => Err(()),
         }
     }
 
     /// `Ok` is the bool body. `Err` is a plugin exception the handler does
-    /// not catch, which only the XAsset plugin raises.
+    /// not catch. XAsset and FSAsset raise it. The stock store maps its
+    /// error to the bool.
     async fn delete_gated(&self, id: &str, uuid: uuid::Uuid) -> Result<bool, ()> {
         match self {
             Self::Stock(store) => Ok(store.delete(uuid).await.is_ok()),
             Self::XAsset(service) => service.delete(id).await.map_err(|_| ()),
+            Self::FsAsset(service) => service.delete(id).await.map_err(|_| ()),
         }
+    }
+}
+
+fn found_or_missing<T>(value: Option<T>) -> Read<T> {
+    match value {
+        Some(value) => Read::Found(value),
+        None => Read::Missing,
     }
 }
 

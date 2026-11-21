@@ -19,8 +19,6 @@ use super::super::time::{mysql_unix_now, postgres_unix_now};
 use super::AssetStore;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
-static MYSQL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static POSTGRES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn plugin_store_fetch_metadata_exists_and_delete() {
@@ -30,12 +28,12 @@ async fn plugin_store_fetch_metadata_exists_and_delete() {
     let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
 
     if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
-        let _guard = MYSQL.lock().await;
+        let _guard = super::ASSET_MYSQL.lock().await;
         check_plugin(&store).await;
         store.close().await;
     }
     if let Some(store) = open_url("FERROAN_POSTGRES_URL", "PostgreSQL").await {
-        let _guard = POSTGRES.lock().await;
+        let _guard = super::ASSET_POSTGRES.lock().await;
         check_plugin(&store).await;
         store.close().await;
     }
@@ -305,7 +303,7 @@ async fn csharp_and_rust_read_each_others_rows() {
         if ado.is_empty() {
             eprintln!("FERROAN_ASSET_ADO_MYSQL is empty; MySQL cross-read was not run");
         } else {
-            let _guard = MYSQL.lock().await;
+            let _guard = super::ASSET_MYSQL.lock().await;
             if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
                 let backend = store.backend();
                 let page = prepare_cross(&store).await;
@@ -323,7 +321,7 @@ async fn csharp_and_rust_read_each_others_rows() {
         if ado.is_empty() {
             eprintln!("FERROAN_ASSET_ADO_POSTGRES is empty; PostgreSQL cross-read was not run");
         } else {
-            let _guard = POSTGRES.lock().await;
+            let _guard = super::ASSET_POSTGRES.lock().await;
             if let Some(store) = open_url("FERROAN_POSTGRES_URL", "PostgreSQL").await {
                 let backend = store.backend();
                 let page = prepare_cross(&store).await;
