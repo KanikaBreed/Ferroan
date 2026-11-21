@@ -117,10 +117,14 @@ fn store_writes_gzip_and_reads_it_back() {
     );
     let upper = hash.to_ascii_uppercase();
     let upper_files = FsFiles::new(dir.base(), dir.spool(), false);
-    // The path follows the hash text. A matching uppercase hash is another path.
-    assert!(upper_files.read_checked(&upper, 1).unwrap().is_none());
-    fs::create_dir_all(upper_files.gzip_path(&upper).parent().unwrap()).unwrap();
-    fs::copy(files.gzip_path(&hash), upper_files.gzip_path(&upper)).unwrap();
+    let upper_gzip = upper_files.gzip_path(&upper);
+    // The path follows the hash text. A case-sensitive volume keeps the
+    // lowercase file on another path. A case-insensitive volume already
+    // has that file, and the hash compare still matches.
+    if !upper_gzip.exists() {
+        fs::create_dir_all(upper_gzip.parent().unwrap()).unwrap();
+        fs::copy(files.gzip_path(&hash), &upper_gzip).unwrap();
+    }
     assert_eq!(upper_files.read_checked(&upper, 1).unwrap().unwrap(), data);
 }
 
