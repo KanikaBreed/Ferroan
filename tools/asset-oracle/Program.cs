@@ -154,31 +154,46 @@ static class Program
             ["cases"] = cases
         };
         File.WriteAllText(Path.Combine(directory, "manifest.json"), manifest.ToJsonString(JsonOptions) + "\n");
-        // TB1: flags 8 is not a named AssetFlags bit. The record is FromStored
-        // then XmlSerializer, not a manifest case.
-        WriteUnnamedFlags(directory, revision);
+        // TB1: flags 8 is not a named AssetFlags bit, and 9 mixes Maptile with
+        // that bit. Each record is FromStored then the AssetServerGetHandler
+        // document, not a manifest case.
+        WriteFlagProbe(
+            directory,
+            revision,
+            "unnamed-flags",
+            "33333333-4444-5555-6666-777777777777",
+            8);
+        WriteFlagProbe(
+            directory,
+            revision,
+            "mixed-flags",
+            "33333333-4444-5555-6666-777777777778",
+            9);
         PilotMode.Write(directory, revision);
         return cases.Count;
     }
 
-    static void WriteUnnamedFlags(string directory, string revision)
+    /// <summary>
+    /// What <c>AssetServerGetHandler</c> returns for a stored row: the store
+    /// masks with <c>StoredAssetFlags.FromStored</c>, then
+    /// <c>ServerUtils.SerializeResult</c> writes the asset document.
+    /// </summary>
+    static void WriteFlagProbe(string directory, string revision, string id, string uuid, int flags)
     {
-        const int flags = 8;
-        AssetBase asset = new AssetBase(
-            new UUID("33333333-4444-5555-6666-777777777777"),
-            "unnamed-flags",
-            0,
-            "creator")
+        AssetBase asset = new AssetBase(new UUID(uuid), id, 0, "creator")
         {
+            Description = "",
+            Local = false,
+            Temporary = false,
             Data = Array.Empty<byte>()
         };
-        // A store read masks to the named bits before the serializer runs.
         asset.Flags = StoredAssetFlags.FromStored(flags, asset.ID.ToString());
         bool threw = false;
         string exceptionType = "";
         try
         {
-            Serialize(new XmlSerializer(typeof(AssetBase)), asset);
+            byte[] xml = Serialize(new XmlSerializer(typeof(AssetBase)), asset);
+            Write(directory, "asset/" + id + ".xml", xml);
         }
         catch (Exception exception)
         {
@@ -189,7 +204,7 @@ static class Program
 
         JsonObject record = new()
         {
-            ["id"] = "unnamed-flags",
+            ["id"] = id,
             ["tranquillity"] = revision,
             ["flags"] = flags,
             ["known_flags"] = (int)asset.Flags,
@@ -197,7 +212,7 @@ static class Program
             ["exception_type"] = exceptionType
         };
         File.WriteAllText(
-            Path.Combine(directory, "unnamed-flags.json"),
+            Path.Combine(directory, id + ".json"),
             record.ToJsonString(JsonOptions) + "\n");
     }
 

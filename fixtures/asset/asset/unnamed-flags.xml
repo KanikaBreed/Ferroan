@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AssetBase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Data />
+  <FullID>
+    <Guid>33333333-4444-5555-6666-777777777777</Guid>
+  </FullID>
+  <ID>33333333-4444-5555-6666-777777777777</ID>
+  <Name>unnamed-flags</Name>
+  <Description />
+  <Type>0</Type>
+  <UploadAttempts>0</UploadAttempts>
+  <Local>false</Local>
+  <Temporary>false</Temporary>
+  <CreatorID>creator</CreatorID>
+  <Flags>Normal</Flags>
+</AssetBase>
