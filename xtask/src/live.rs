@@ -1581,6 +1581,35 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
     }
 }
 
+/// MSBuild properties for the host Tranquillity publish.
+///
+/// `NBGV_SetCloudBuildVersionVars=false` skips the target that appends to
+/// `GITHUB_ENV`. Nerdbank.GitVersioning 3.10.94 still runs that target when
+/// `GITHUB_ACTIONS` is true, and `File.AppendAllLines` throws if the path is
+/// empty, so removing the variable is not enough on its own.
+#[cfg(any(target_os = "linux", test))]
+fn tranquillity_publish_properties() -> &'static [&'static str] {
+    &[
+        "-p:AllowMissingPrunePackageData=true",
+        "-p:NBGV_SetCloudBuildVersionVars=false",
+    ]
+}
+
+/// Environment of the host Tranquillity `dotnet publish`.
+///
+/// Nerdbank.GitVersioning appends version variables to `GITHUB_ENV` from
+/// several MSBuild nodes at once. A torn line fails the Actions step after
+/// the publish has already succeeded (dotnet/Nerdbank.GitVersioning#683).
+/// Removing the variable leaves the runner's file untouched. The cloud-build
+/// version target is also off, so the publish does not require the file.
+#[cfg(any(target_os = "linux", test))]
+fn configure_dotnet_publish(command: &mut Command) {
+    command
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+        .env("DOTNET_NOLOGO", "1")
+        .env_remove("GITHUB_ENV");
+}
+
 #[cfg(target_os = "linux")]
 fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Result<(), String> {
     require_under_scratch(src)?;
@@ -1595,17 +1624,17 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
         "-r",
         "linux-x64",
         "--nologo",
-        "-p:AllowMissingPrunePackageData=true",
     ];
+    args.extend(tranquillity_publish_properties().iter().copied());
     if self_contained {
         args.push("--self-contained");
         args.push("true");
     }
-    let output = Command::new("dotnet")
+    let mut command = Command::new("dotnet");
+    configure_dotnet_publish(&mut command);
+    let output = command
         .args(&args)
         .current_dir(src)
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("DOTNET_NOLOGO", "1")
         .output()
         .map_err(|error| format!("could not run dotnet: {error}"))?;
     if output.status.success() && binary.is_file() {
@@ -2156,6 +2185,32 @@ mod tests {
         assert!(process_start_time(pid).is_none());
         // Repeated cleanup of a reaped handle never signals a reused PID.
         stop_child(&mut child);
+    }
+
+    #[test]
+    fn tranquillity_publish_environment_has_no_github_env() {
+        let mut command = Command::new("dotnet");
+        command.env("GITHUB_ENV", "/runner/set_env");
+        configure_dotnet_publish(&mut command);
+        let mut saw_github_env = false;
+        let mut saw_telemetry = false;
+        let mut saw_nologo = false;
+        for (key, value) in command.get_envs() {
+            if key == "GITHUB_ENV" {
+                saw_github_env = true;
+                assert!(value.is_none());
+            } else if key == "DOTNET_CLI_TELEMETRY_OPTOUT" {
+                saw_telemetry = value == Some(std::ffi::OsStr::new("1"));
+            } else if key == "DOTNET_NOLOGO" {
+                saw_nologo = value == Some(std::ffi::OsStr::new("1"));
+            }
+        }
+        assert!(saw_github_env);
+        assert!(saw_telemetry);
+        assert!(saw_nologo);
+        assert!(
+            tranquillity_publish_properties().contains(&"-p:NBGV_SetCloudBuildVersionVars=false")
+        );
     }
 
     #[test]
