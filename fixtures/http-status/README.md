@@ -1,6 +1,6 @@
 # Connector HTTP status fault injection
 
-These 36 cases execute unmodified C# connector methods against a local controlled HTTP responder. They were captured at `858321883f5487a5d192d36ea9d7b90fa468310c`. Pin5 regenerated them at `c70fee205f64ee8672a8d607cef6a733931da951`. They are **fault-injection observations**, not claims that a production Robust server emitted these statuses or bodies. The oracle implementation is [StatusCases.cs](../../tools/http-oracle/StatusCases.cs).
+These 36 cases execute unmodified C# connector methods against a local controlled HTTP responder. They were captured at `858321883f5487a5d192d36ea9d7b90fa468310c`. Pin6 regenerated them at `1d7abb8337a477842fe1d7dd84beffe389ee52ac`. The outcomes are unchanged from Pin5 apart from that revision. They are **fault-injection observations**, not claims that a production Robust server emitted these statuses or bodies. The oracle implementation is [StatusCases.cs](../../tools/http-oracle/StatusCases.cs).
 
 Every caller receives the same valid-looking success XML at 200, 201, 302 without `Location`, and 500. Requests are captured from the real C# network client; outcomes are the actual connector return values. Each case is executed twice to check determinism.
 

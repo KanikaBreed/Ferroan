@@ -311,8 +311,13 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
             }),
         );
         assert_eq!(lost["stored"], true);
-        assert!(store.get(fid(3)).await.expect("get").is_none());
-        differences.push("TB22");
+        let kept = store
+            .get(fid(3))
+            .await
+            .expect("get")
+            .expect("emoji dropped");
+        assert_eq!(kept.metadata.name, "bad");
+        assert_eq!(kept.metadata.description, "d");
     }
 
     let second = csharp(
@@ -331,8 +336,8 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     );
     let after = store.clock(fid(2)).await.expect("clock").expect("row");
     same_hash(HASH_B, &after.hash);
+    assert_eq!(second["stored"], true);
     if backend == "postgres" {
-        assert_eq!(second["stored"], false);
         assert!(
             store
                 .store(&meta(fid(2), "", "", 1), HASH_A)
@@ -341,9 +346,6 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
         );
         let still = store.clock(fid(2)).await.expect("clock").expect("row");
         same_hash(HASH_B, &still.hash);
-        differences.push("TB35");
-    } else {
-        assert_eq!(second["stored"], true);
     }
 
     let deleted = csharp(
@@ -379,7 +381,11 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     }
 
     cross_import(store, oracle, backend, ado).await;
-    println!("known differences: {}", differences.join(", "));
+    if differences.is_empty() {
+        println!("fsassets: rows match");
+    } else {
+        println!("known differences: {}", differences.join(", "));
+    }
 }
 
 async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str) {

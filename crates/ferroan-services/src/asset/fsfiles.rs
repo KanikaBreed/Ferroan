@@ -25,7 +25,7 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Services.FSAssetService/FSAssetService.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // The fixed read and write follow the maintainer's branches
 //   fix/fsassets-damaged-file, fix/fsassets-writer-errors and
 //   fix/fsassets-store-spool-errors, except that a file blocking a directory
@@ -57,8 +57,7 @@
 //! A file that occupies a directory component is renamed aside in the same
 //! directory with a `.blocked-<time>` suffix and a warning through
 //! `ferroan_diag` (D31). It is not deleted, and the new name is not an asset.
-//!
-//! This does not change TB19 or TB20 on `AssetService`.
+//! A missing or damaged file is missing on this path and on the pin (TB23, #483).
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};

@@ -4,7 +4,7 @@
 //! The asset service the Robust connectors call.
 //!
 //! Routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity
-//! `c70fee205f64ee8672a8d607cef6a733931da951`. The store follows
+//! `1d7abb8337a477842fe1d7dd84beffe389ee52ac`. The store follows
 //! `AssetService` plus `SQLiteAssetData`, `MySQLAssetData` and
 //! `PGSQLAssetData`. `XAssetStore` is the MySQL and PostgreSQL XAsset plugins.
 //! `XAssetService` serves these HTTP routes on that store, including a chained

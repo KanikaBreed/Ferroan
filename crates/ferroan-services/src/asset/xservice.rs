@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Services.AssetService/XAssetService.cs
 //   Source/OpenSim.Services.AssetService/XAssetServiceBase.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -45,11 +45,10 @@
 //! does not read `AssetLoaderArgs`. An unknown loader name fails only when a
 //! chain is set.
 //!
-//! MySQL `AssetsExist` reads `XAssetsMeta` (TB28), so a chained migrate
+//! MySQL `AssetsExist` reads `XAssetsMeta` (TB28, #476), so a chained migrate
 //! stores the asset and then deletes the chain row (TB33). PostgreSQL
-//! metadata returns the page (TB29). PostgreSQL `Delete` binds `uuid` and
-//! removes only the meta row (TB30). The data row stays. This is not TB19
-//! or TB20.
+//! metadata returns the page (TB29, #479). PostgreSQL `Delete` binds `uuid`
+//! and removes only the meta row (TB30, #480). The data row stays.
 
 use uuid::Uuid;
 

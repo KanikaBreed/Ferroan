@@ -161,16 +161,16 @@ async fn check_plugin(store: &AssetStore) {
     let page = store.metadata_set(0, 3).await.expect("metadata");
     match backend {
         Backend::Postgres => {
-            assert_eq!(page.len(), 2, "LIMIT start+count-1");
+            assert_eq!(page.len(), 3);
             assert_eq!(page[0].id, asset_id(1));
             assert_eq!(page[1].id, asset_id(2));
+            assert_eq!(page[2].id, asset_id(3));
             assert_eq!(page[0].flags, 0);
             let next = store.metadata_set(1, 3).await.expect("offset");
             assert_eq!(next.len(), 3);
             assert_eq!(next[0].id, asset_id(2));
-            let empty = store.metadata_set(0, 1).await.expect("limit 0");
-            assert!(empty.is_empty());
-            assert!(store.metadata_set(0, 0).await.is_err());
+            assert_eq!(store.metadata_set(0, 1).await.expect("one").len(), 1);
+            assert!(store.metadata_set(0, 0).await.expect("zero").is_empty());
         }
         Backend::Sqlite | Backend::Mysql => {
             assert_eq!(page.len(), 3);

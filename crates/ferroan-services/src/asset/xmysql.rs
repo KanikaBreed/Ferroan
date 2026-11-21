@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.MySQL/MySQLXAssetData.cs
 //   Source/OpenSim.Data.MySQL/Resources/XAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -34,15 +34,13 @@
 //!
 //! `StoreAsset` is `REPLACE INTO XAssetsMeta`, so a second store of an id
 //! rewrites `CreateTime` and `AccessTime`, then inserts `XAssetsData` only
-//! when that hash is absent. A failed metadata or data statement rolls back
-//! and returns. The C# method begins a transaction and never assigns
-//! `cmd.Transaction`. MySqlConnector then rejects the command, the method
-//! logs, and no row is written. This store runs those statements on the
-//! transaction so the hash dedupe above can be observed. `GetAsset` joins
-//! the tables and masks flags. It calls `UpdateAccessTime` only when the
-//! stored access time is greater than 0. `AssetsExist` at the pin selects
-//! `assets` (TB28). This store selects `XAssetsMeta`. `Delete` removes the
-//! meta row, leaves the data row, and returns true whenever the statement runs.
+//! when that hash is absent. The metadata replace, the data insert and the
+//! exists-hash read enlist the connection's transaction (TB27, #475). A failed
+//! statement rolls back and the method returns. `GetAsset` joins the tables
+//! and masks flags. It calls `UpdateAccessTime` only when the stored access
+//! time is greater than 0. `AssetsExist` selects `XAssetsMeta` (TB28, #476).
+//! `Delete` removes the meta row, leaves the data row, and returns true
+//! whenever the statement runs.
 
 use sqlx::MySqlPool;
 use uuid::Uuid;
@@ -166,8 +164,7 @@ pub(super) async fn delete(pool: &MySqlPool, id: &str) -> Result<bool, StoreErro
     Ok(true)
 }
 
-/// The pin selects `assets` (TB28). Nothing depends on that miss, so this
-/// store selects `XAssetsMeta`. An empty input returns an empty list.
+/// Selects `XAssetsMeta` (TB28, #476). An empty input returns an empty list.
 pub(super) async fn exists(pool: &MySqlPool, ids: &[Uuid]) -> Result<Vec<bool>, StoreError> {
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {

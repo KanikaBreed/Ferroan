@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.MySQL/MySQLFSAssetData.cs
 //   Source/OpenSim.Data.MySQL/Resources/FSAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -35,9 +35,9 @@
 //! The table name is `Realm`. `Get` selects the row and then
 //! `UpdateAccessTime`. `Store` inserts when the id is absent. The name and
 //! description keep only what a `utf8` column holds, and a failed insert is
-//! returned (TB22). The pin logs that failure and still returns true. An
-//! existing id is not rewritten. `Delete` returns true when the statement
-//! runs. `AssetsExist` and `Count` read this table. `Import` is
+//! returned (TB22, #481). The pin drops those characters and returns the
+//! insert's result. An existing id is not rewritten. `Delete` returns true
+//! when the statement runs. `AssetsExist` and `Count` read this table. `Import` is
 //! `SELECT * FROM {table} LIMIT start, count`.
 
 use sqlx::MySqlPool;

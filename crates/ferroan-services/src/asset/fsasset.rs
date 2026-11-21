@@ -28,7 +28,7 @@
 //   Source/OpenSim.Data.PGSQL/PGSQLFSAssetData.cs
 //   Source/OpenSim.Data.MySQL/Resources/FSAssetStore.migrations
 //   Source/OpenSim.Data.PGSQL/Resources/FSAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -53,8 +53,7 @@
 //! `LIMIT start, count`, and PostgreSQL uses the pin's `LIMIT start OFFSET count`
 //! (TB40). Q23d changes that page to `LIMIT count OFFSET start`. The SQL here
 //! stays the pin's until that command lands. Files are `FsFiles`, not this store.
-//!
-//! This does not change TB19 or TB20 on `AssetService`.
+//! AssetService's metadata page and refused write are that store.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 

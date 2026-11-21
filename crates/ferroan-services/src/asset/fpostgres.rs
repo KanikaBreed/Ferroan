@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.PGSQL/PGSQLFSAssetData.cs
 //   Source/OpenSim.Data.PGSQL/Resources/FSAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -36,8 +36,8 @@
 //! or description columns; `Get` returns empty strings. The stored clock is
 //! `(DateTime.Now.Ticks - epoch) / 10000000`. `Store` inserts when the id is
 //! absent. An existing id updates `access_time` only and answers success
-//! (TB35). The pin sets `found` only on insert, so that second store answers
-//! failure. `Delete` binds `uuid` and returns true when the statement runs.
+//! (TB35, #482). The pin does the same. `Delete` binds `uuid` and returns
+//! true when the statement runs.
 //! An id that is not a uuid deletes nothing and returns false (TB39). The pin
 //! throws from `new UUID(id)` before the query. `Import` uses the pin's
 //! `LIMIT start OFFSET count`.

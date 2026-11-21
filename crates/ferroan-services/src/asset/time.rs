@@ -8,13 +8,8 @@
 //! `DateTime.Now.Ticks`, so the stored number is the local clock read as if
 //! it were UTC. Neither plugin updates `access_time` on get.
 //! `UpdateAccessTime` in `MySQLAssetData` is never called, and the PostgreSQL
-//! copy is commented out.
-
-/// `start + count - 1`, the limit `PGSQLAssetData.FetchAssetMetadataSet` binds
-/// as `:stop`. C# `int` addition is unchecked.
-pub(super) fn postgres_metadata_limit(start: i32, count: i32) -> i32 {
-    start.wrapping_add(count).wrapping_sub(1)
-}
+//! copy is commented out. `FetchAssetMetadataSet` binds `LIMIT count OFFSET
+//! start` (TB19, #477).
 
 pub(super) fn mysql_unix_now() -> i32 {
     let seconds = std::time::SystemTime::now()
@@ -36,15 +31,7 @@ pub(super) fn postgres_unix_now() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{mysql_unix_now, postgres_metadata_limit, postgres_unix_now};
-
-    #[test]
-    fn postgres_metadata_limit_matches_the_csharp_stop() {
-        assert_eq!(postgres_metadata_limit(0, 10), 9);
-        assert_eq!(postgres_metadata_limit(0, 1), 0);
-        assert_eq!(postgres_metadata_limit(2, 5), 6);
-        assert_eq!(postgres_metadata_limit(10, 0), 9);
-    }
+    use super::{mysql_unix_now, postgres_unix_now};
 
     #[test]
     fn the_two_clocks_stay_near_unix_time() {
