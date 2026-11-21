@@ -467,6 +467,8 @@ fn catalog_ids() -> &'static [&'static str] {
         TEXTURE_FACES,
         TEXTURE_BITFIELD,
         EXTRA_BYTES,
+        REDACT_SECRETS,
+        CONSOLE_SESSIONS,
     ]
 }
 

@@ -29,7 +29,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
-pub use redact::{register_circuit_code, register_secret};
+pub use redact::{SessionSecrets, redact, register_circuit_code, register_secret};
 
 use layer::LogLayer;
 use level::RuntimeLevel;
@@ -574,6 +574,7 @@ mod tests {
 
     #[test]
     fn logdir_writes_a_dated_file_and_redacts_a_secret() {
+        let _hold = redact::test_secret_lock();
         register_secret("session-secret-value");
         let dir = std::env::temp_dir().join(format!("ferroan-log-{}", Uuid::new_v4()));
         let mut settings = sample(false);
