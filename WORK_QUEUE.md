@@ -66,7 +66,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10x | P0.10p: faster CI: docs-only PRs skip the live run, and the live job runs as parallel jobs | DONE (#116) |
 | Q10y | P0.10q: the image and docker-smoke live job on the maintainer's self-hosted runner, behind `FERROAN_SELF_HOSTED` | DONE (#117) |
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
-| Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | READY after Q10w |
+| Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | BLOCKED |
 | Q13b | P0.13b: the remote console's four forms over HTTP, compared with the C# server (TB17 stops `OpenSim.ConsoleClient`) | READY after Q13c |
 | Q14 | P2.0e: terrain from the C# region store | READY after Q10k (Q11 to Q13 wait for Q10) |
 | Q15 | P2.0f: appearance from the C# avatar service | READY after Q14 |
@@ -207,6 +207,23 @@ Proposed fix: the maintainer names the messages whose order and count the report
 Q10x (manager, 20 November 2026, at the maintainer's request): CI is the slowest part of every item, and docs-only PRs wait the full 32-minute live run. Q10x makes docs-only PRs pass in under a minute and splits the live job into parallel jobs, with the four required check names unchanged. It goes straight after Q10u so every later item gets the faster CI. Q10y then moves the heaviest of the new jobs (images and docker smoke) to the maintainer's 8-core Arch machine, behind the `FERROAN_SELF_HOSTED` variable and never for fork PRs; the maintainer registers the runner.
 
 Q13c (manager, 20 November 2026, at the maintainer's request for a code review): a review of the code PRs merged today found that raw request bytes can carry session ids into the diagnostics ring, dumps and crash files, plus four unbounded or lossy pieces in logging and metrics. Each finding was checked against the code; the list is the P0.13c row. It comes straight after Q10w because the first one leaks secrets into files the maintainer will share when reporting problems.
+
+
+Q13c BLOCKED (21 November 2026, `docs/diag-review-blocked`): the row is six independent fixes, and together they are more than about a day. No code was changed and no scope was chosen. Part (1) stays first, as the manager asked, rather than growing this item.
+
+Proposed split, in this order. Each piece is its own item. This note does not add or reorder queue rows. Q13b stays `READY after Q13c` until the manager retargets it.
+
+(1) Secrets in the diagnostics ring. `ferroan_diag::log_malformed` (`crates/ferroan-diag/src/lib.rs`) puts a hex excerpt of the raw body into the ring through `take_log` at any log level, and redaction cannot match hex. A malformed `/agent` CreateAgent body (`crates/ferroan-region/src/simulation.rs` `decode_body`) and an oversize datagram (`crates/ferroan-client/src/circuit.rs`, route `udp`) put session ids, the secure session id, the circuit code and the seed capability path into `/diag`, `diag dump` files and crash reports. Keep the excerpt out of the ring and the dump files: it goes only to the debug log line, and only after the known secret fields of that message type are masked. The ring keeps route, length and the parse error. CreateAgent already records that error on a separate `log_boundary` line (`json value is not an object`, or the JSON error). Acceptance: a unit test shows a malformed CreateAgent body's session id in no ring line, `diag dump` or panic file. `cargo xtask check` passes, and the live job passes.
+
+(2) Redaction list without a bound. `SECRETS` in `crates/ferroan-log/src/redact.rs` gains four entries per login (`simulation.rs` registers the session id, the secure session id, the circuit code and the seed path) and is never pruned, and every log line scans all of them under one mutex. Forget a session's secrets when it closes, bound the list with a limit id in `docs/LIMITS.md`, and report a hit through the diagnostics helper. A unit test covers the forget and the bound.
+
+(3) Robust HTTP metrics. `record` in `crates/ferroan-robust/src/status.rs` keys rows by the folded raw path and stops adding at 128, so unauthenticated junk paths fill the table and real routes stop being counted. `fold_route` already rewrites a UUID or a segment longer than 64 characters to `{id}`, but two different junk paths are still two rows. Label by the matched route. Unmatched requests share one `other` row. A unit test shows many junk paths do not add rows and do not stop a known route from being counted.
+
+(4) Remote console sessions. `crates/ferroan-log/src/console.rs` stores sessions in `HashMap<Uuid, u64>` and never expires one. At the pin, `Source/OpenSim.Framework.Console/RemoteConsole.cs` `DoExpire` (lines 360-383) drops a connection whose `last` is more than 500000 ms old. Do the same, and bound the number of sessions with a limit id. An empty `ConsolePass` accepting an empty `PASS` matches C# and stays. A unit test covers idle expiry and the bound.
+
+(5) Structured fields. `EventFields::store` in `crates/ferroan-log/src/layer.rs` keeps only `message` and `agent_id`, so `error = %e` and fields from dependencies vanish from every output. Keep every field: appended as `key=value` in text and as JSON members, redacted like the message. A unit test shows an `error` field and another field in both text and JSON.
+
+(6) Smaller counters. `ferroan_region_udp_unacked` is stored from the resend branch in `crates/ferroan-client/src/circuit.rs` and is not cleared when a circuit ends; make it the sum over open circuits. `Budget::charge` in `crates/ferroan-llsd/src/lib.rs` reports the failing `bytes` charge, and `drop_bound` in `crates/ferroan-protocol/src/reliability.rs` reports `batch.dropped.len()`, rather than the total that crossed the bound, as `observed`. `catalog_ids()` and `static_limit()` in `crates/ferroan-diag/src/lib.rs` re-list the catalogue by hand; count `hit.id` directly so a new limit cannot be missed. A unit test for each.
 
 Q10w (manager, 20 November 2026): the Pin5 live failure is the record-twice rule, not C#: the bot resends `LogoutRequest` until it is answered, and the comparator counted each resent datagram as a message. P0.10n6 counts a resend once and reports resends. It is small and comes straight after Q10u, so the live job stops tripping on it.
 
