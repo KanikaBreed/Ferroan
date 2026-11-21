@@ -77,6 +77,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q16 | P2.0g: local chat | SPLIT into Q16a and Q16b (#140) |
 | Q16a | P2.0g1: two concurrent roots in the Ferroan region: admission, per-agent caps and event queues, one dispatcher serving them | DONE (#144) |
 | Q16b | P2.0g2: local chat on channel 0 as `ChatModule` does, and `cargo xtask live run chat grid --region ferroan` prints `chat: pass` | DONE (#149) |
+| Q16c | P2.0g3: a god or an estate manager enters a full Ferroan region, as `Scene.CheckLandPositionAccess` lets them | READY after Q16b |
 | Q17 | P2.0h: teleport inside the Ferroan region | READY after Q16b |
 | Q18 | P2.0i: teleport to the C# neighbour and back | READY after Q17 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
