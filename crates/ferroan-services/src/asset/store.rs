@@ -177,6 +177,14 @@ impl AssetStore {
     }
 }
 
+/// Tests that write the shared `assets` table take these. `DELETE FROM assets`
+/// in the plugin tests removes every row, including a fallback row another
+/// test still expects to find.
+#[cfg(test)]
+pub(crate) static ASSET_MYSQL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(test)]
+pub(crate) static ASSET_POSTGRES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;

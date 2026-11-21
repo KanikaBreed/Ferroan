@@ -58,6 +58,15 @@ pub struct DecodedAsset {
 }
 
 pub fn encode_asset(asset: &Asset) -> Vec<u8> {
+    encode_asset_inner(asset, Some(asset.creator_id.as_str()))
+}
+
+/// `FSAssetService` does not set `CreatorID`. `XmlSerializer` omits a null string.
+pub(crate) fn encode_fs_asset(asset: &Asset) -> Vec<u8> {
+    encode_asset_inner(asset, None)
+}
+
+fn encode_asset_inner(asset: &Asset, creator: Option<&str>) -> Vec<u8> {
     let mut inner = String::new();
     inner.push_str(&elem(1, "Data", &encode_base64(&asset.data)));
     inner.push_str(&full_id(asset));
@@ -72,25 +81,46 @@ pub fn encode_asset(asset: &Asset) -> Vec<u8> {
     ));
     inner.push_str(&elem(1, "Local", bool_word(asset.local)));
     inner.push_str(&elem(1, "Temporary", bool_word(asset.temporary)));
-    inner.push_str(&elem(1, "CreatorID", &asset.creator_id));
+    if let Some(creator) = creator {
+        inner.push_str(&elem(1, "CreatorID", creator));
+    }
     inner.push_str(&elem(1, "Flags", &flags_text(asset.flags)));
     document("AssetBase", true, &inner)
 }
 
 pub fn encode_metadata(asset: &Asset) -> Vec<u8> {
+    encode_metadata_inner(asset, CREATION_MIN, Some(asset.creator_id.as_str()))
+}
+
+/// FSAssets metadata uses `Util.ToDateTime(create_time)` and omits a null `CreatorID`.
+pub(crate) fn encode_fs_metadata(asset: &Asset, created_unix: i32) -> Vec<u8> {
+    encode_metadata_inner(asset, &xml_unix_date(created_unix), None)
+}
+
+fn encode_metadata_inner(asset: &Asset, created: &str, creator: Option<&str>) -> Vec<u8> {
     let mut inner = String::new();
     inner.push_str(&full_id(asset));
     inner.push_str(&elem(1, "ID", &asset.id.to_string()));
     inner.push_str(&elem(1, "Name", &asset.name));
     inner.push_str(&elem(1, "Description", &asset.description));
-    inner.push_str(&elem(1, "CreationDate", CREATION_MIN));
+    inner.push_str(&elem(1, "CreationDate", created));
     inner.push_str(&elem(1, "Type", &asset.type_code.to_string()));
     inner.push_str(&elem(1, "ContentType", content_type(asset.type_code)));
     inner.push_str(&elem(1, "Local", bool_word(asset.local)));
     inner.push_str(&elem(1, "Temporary", bool_word(asset.temporary)));
-    inner.push_str(&elem(1, "CreatorID", &asset.creator_id));
+    if let Some(creator) = creator {
+        inner.push_str(&elem(1, "CreatorID", creator));
+    }
     inner.push_str(&elem(1, "Flags", &flags_text(asset.flags)));
     document("AssetMetadata", true, &inner)
+}
+
+/// `XmlConvert` round-trip of a UTC `DateTime` whose fractional seconds are zero.
+pub(crate) fn xml_unix_date(seconds: i32) -> String {
+    match chrono::DateTime::from_timestamp(i64::from(seconds), 0) {
+        Some(stamp) => stamp.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        None => "1970-01-01T00:00:00Z".to_string(),
+    }
 }
 
 pub fn encode_bool(value: bool) -> Vec<u8> {
