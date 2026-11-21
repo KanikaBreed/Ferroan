@@ -27,11 +27,15 @@ static class Program
 
     static int Main(string[] args)
     {
-        if (args.Length > 0 && (args[0] == "db" || args[0] == "xdb"))
+        if (args.Length > 0 && (args[0] == "db" || args[0] == "xdb" || args[0] == "fdb"))
         {
             try
             {
-                return args[0] == "db" ? DbMode.Run(args) : XdbMode.Run(args);
+                if (args[0] == "db")
+                    return DbMode.Run(args);
+                if (args[0] == "xdb")
+                    return XdbMode.Run(args);
+                return FdbMode.Run(args);
             }
             catch (Exception exception)
             {
@@ -45,6 +49,7 @@ static class Program
             Console.Error.WriteLine("usage: AssetOracle generate|verify <directory> --revision <40 hex>");
             Console.Error.WriteLine("       AssetOracle db put|get|exists|delete|metadata");
             Console.Error.WriteLine("       AssetOracle xdb put|get|exists|delete|metadata");
+            Console.Error.WriteLine("       AssetOracle fdb put|get|exists|delete|count|import");
             return 2;
         }
 
