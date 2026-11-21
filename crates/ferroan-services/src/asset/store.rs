@@ -46,6 +46,8 @@ pub enum StoreError {
     Row(String),
     #[error("asset metadata window is outside the bound")]
     Bound,
+    #[error("asset file: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub struct AssetStore {
