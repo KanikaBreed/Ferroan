@@ -19,8 +19,8 @@
 //! set, and a parsed id still answers true when the row was already gone,
 //! which is what `SQLiteAssetData.Delete` returns. `XAssetService` uses the
 //! same routes. A plugin error is 500 with an empty body. PostgreSQL
-//! `Delete` binds `uuid` and answers 200 (TB30). The stock store still
-//! answers 200 and a bool.
+//! `Delete` binds `uuid`, removes only the meta row, leaves the data row
+//! and answers 200 (TB30). The stock store still answers 200 and a bool.
 //!
 //! Requests that carry `X-SecondLife-Shard` are 403 on get, post and delete.
 //! That is `DisallowLlHttpRequest`, installed unless `AllowllHTTPRequestIn`
@@ -257,9 +257,9 @@ async fn delete_asset(
     }
     match app.delete_one(&id).await {
         Ok(deleted) => xml_bytes(StatusCode::OK, "application/xml", xml::encode_bool(deleted)),
-        // XAssetService.Delete does not catch the plugin. PostgreSQL throws
-        // and the meta row stays (TB30). The stock store maps its error to
-        // the bool above.
+        // XAssetService.Delete does not catch a plugin error. A parsed
+        // PostgreSQL id deletes only the meta row and answers 200 (TB30).
+        // The stock store maps its error to the bool above.
         Err(()) => failed(),
     }
 }

@@ -40,12 +40,12 @@
 //! Both plugins hash the stored bytes with SHA-256 and keep one `XAssetsData`
 //! row per hash. `StoreAsset` is void: a failed metadata or data write is
 //! logged, the transaction is rolled back, and the method returns. That is
-//! not the ordinary asset store's TB20 choice. MySQL `Delete` removes the
-//! meta row and leaves the data row. PostgreSQL `Delete` binds the id as
-//! `uuid` and deletes the data row when no meta row still has that hash
-//! (TB30). MySQL `AssetsExist` reads `XAssetsMeta` (TB28). PostgreSQL
-//! `FetchAssetMetadataSet` uses `LIMIT count OFFSET start` and returns the
-//! page (TB29).
+//! not the ordinary asset store's TB20 choice. Both `Delete` methods remove
+//! the meta row and leave the data row. PostgreSQL binds the id as `uuid`
+//! (TB30). Rows are shared by hash and there is no reference count, so an
+//! unused data row is not deleted. MySQL `AssetsExist` reads `XAssetsMeta`
+//! (TB28). PostgreSQL `FetchAssetMetadataSet` uses `LIMIT count OFFSET start`
+//! and returns the page (TB29).
 //!
 //! Clocks are `Utils.DateTimeToUnixTime(DateTime.UtcNow)` on both plugins.
 //! That is UTC unix seconds, not the ordinary PostgreSQL asset store's local
