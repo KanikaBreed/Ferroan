@@ -22,9 +22,11 @@ XML bytes are `ServerUtils.SerializeResult`: UTF-8 BOM, LF, two-space indentatio
 
 ## Store
 
-SQLite only, on a file Tranquillity already migrated to AssetStore version 6. This crate does not create the schema and does not run migrations. MySQL asset SQL is not ported.
+SQLite, MySQL and PostgreSQL, on a database Tranquillity already migrated: AssetStore version 6, 10 or 9. This crate does not create the schema and does not run migrations. The HTTP handler still calls `store_new`, which skips a row that already exists. `store_data` is the plugin `StoreAsset` success path: SQLite updates the row, MySQL `REPLACE`s it (and resets both timestamps), and PostgreSQL updates the mutable columns and leaves `asset_flags` and the timestamps alone. PostgreSQL stamps those times with the local clock read as UTC, which is what `PGSQLAssetData` does. Neither `Get` updates `access_time`.
 
-`AssetService.Store` skips the write when the id exists, so a second store does not change the row. `SQLiteAssetData.StoreAsset` would update it; the service never calls that branch for an existing id. Names and descriptions are cut to 64 UTF-16 code units on insert. A non-BMP character that would be split in half by `Substring` is dropped instead, because a Rust string cannot hold a lone surrogate. Existence checks are parameterised. The C# method concatenates ids after `UUID.Parse`. One id that does not parse makes the whole answer false.
+`FetchAssetMetadataSet` is `metadata_set`. SQLite and MySQL return `count` rows from `start` with no `ORDER BY`. PostgreSQL orders by id and uses `LIMIT start+count-1` (TB19). A start past one million, or a count outside 0..=10_000, is refused. HTTP does not add a metadata route.
+
+`AssetService.Store` skips the write when the id exists, so a second store does not change the row. Names and descriptions are cut to 64 UTF-16 code units on insert. A non-BMP character that would be split in half by `Substring` is dropped instead, because a Rust string cannot hold a lone surrogate. Existence checks are parameterised. The C# method concatenates ids after `UUID.Parse`. One id that does not parse makes the whole answer false. Plugin `Delete(string)` on a missing id is true for SQLite and MySQL and false for PostgreSQL. A value that is not a UUID is false for SQLite and PostgreSQL and true for MySQL. The HTTP delete handler still answers from `delete` after it has fetched the row.
 
 `UpdateContent` returns false. Delete is off unless `AllowRemoteDelete` is true, and then only maptiles (`Flags` bit 0) unless `AllowRemoteDeleteAllTypes` is also true. A parsed id answers true after the delete statement even when the row was already gone.
 
@@ -32,7 +34,7 @@ A store document with no `Data` element is 400. C# would insert NULL, and the la
 
 ## Not in this pilot
 
-The filesystem default-asset loader, FSAssets (`XAssetService`), the `show asset` / `delete asset` / `dump asset` console commands, and `FetchAssetMetadataSet`. `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
+The filesystem default-asset loader, FSAssets (`XAssetService`), and the `show asset` / `delete asset` / `dump asset` console commands (issue #60). `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to start. `TrustedGridAuthentication` does not reject when no trust context is set, which is this process. `X-SecondLife-Shard` is 403 on get, post and delete unless `AllowllHTTPRequestIn` is true. Exists does not check that header.
 
 Bodies larger than 50_000_000 bytes are refused. Tranquillity does not cap `XmlSerializer`.
 
@@ -43,7 +45,7 @@ Ordinary CI compares the committed asset XML and SQLite fixtures in Rust tests. 
 P1.2 through P1.12 follow the user-account layout.
 
 1. One module directory under `crates/ferroan-services/src/<service>/`: `mod.rs`, `model.rs`, `store.rs`, `service.rs`, `http.rs`, `open.rs`, and `commands.rs` when the C# service registers console commands.
-2. The store speaks SQLite through `ferroan_db::Pool` and parameterised sqlx queries. It does not run migrations and it does not keep a shared column-name cache. MySQL and PostgreSQL wait until their CI containers exist (P1.A1, #59).
+2. The store speaks SQLite through `ferroan_db::Pool` and parameterised sqlx queries. It does not run migrations and it does not keep a shared column-name cache. The asset store also speaks MySQL and PostgreSQL. A later service still starts on SQLite.
 3. HTTP is a POST of a ServerUtils form. Parse it with `ferroan_http::parse_query_string`. Reply with `ferroan_http::build_xml_response` and content type `application/xml`, except the fixed Failure bytes the handler uses.
 4. `ferroan-robust` mounts that router only when the ini section is present. An asset-only ini still starts.
 5. `cargo xtask live compare <service>` starts the C# connector and `ferroan-robust` against copies of the same SQLite fixture, sends the same forms, and compares the HTTP after folding fields that are the current time.

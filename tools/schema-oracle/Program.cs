@@ -4,12 +4,30 @@
 // Creates SQLite databases by running Tranquillity's Migration.Update.
 // The SQL stays in the reference checkout. This program only calls it.
 
+using System.Data.Common;
 using System.Data.SQLite;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
+using MySqlConnector;
+using Npgsql;
 using OpenSim.Data;
+using OpenSim.Data.PGSQL;
 
 const int MaxPayload = 16 * 1024 * 1024;
+
+if (args.Length > 0 && args[0] == "servers")
+{
+    try
+    {
+        return Servers(args);
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine("schema: " + Scrub(error.ToString()));
+        return 1;
+    }
+}
 
 if (args.Length != 4 || args[2] != "--revision" || !IsRevision(args[3])
     || (args[0] != "generate" && args[0] != "verify"))
@@ -250,4 +268,114 @@ static bool IsRevision(string value)
             return false;
     }
     return true;
+}
+
+static int Servers(string[] args)
+{
+    if (args.Length != 4 || args[2] != "--revision" || !IsRevision(args[3]))
+    {
+        Console.Error.WriteLine("usage: SchemaOracle servers <directory> --revision <40 hex chars>");
+        Console.Error.WriteLine("Set FERROAN_SCHEMA_MYSQL and FERROAN_SCHEMA_POSTGRES to ADO connection strings.");
+        return 2;
+    }
+
+    string directory = Path.GetFullPath(args[1]);
+    string revision = args[3].ToLowerInvariant();
+    string mysql = Environment.GetEnvironmentVariable("FERROAN_SCHEMA_MYSQL") ?? "";
+    string postgres = Environment.GetEnvironmentVariable("FERROAN_SCHEMA_POSTGRES") ?? "";
+    if (mysql.Length == 0 || postgres.Length == 0)
+        throw new InvalidOperationException("FERROAN_SCHEMA_MYSQL and FERROAN_SCHEMA_POSTGRES must be set");
+
+    Directory.CreateDirectory(Path.Combine(directory, "mysql"));
+    Directory.CreateDirectory(Path.Combine(directory, "postgres"));
+
+    var mysqlVersions = MigrateMySql(mysql, typeof(OpenSim.Data.MySQL.MySQLAssetData).Assembly);
+    var postgresVersions = MigratePostgres(postgres, typeof(PGSQLAssetData).Assembly);
+    WriteServerManifest(Path.Combine(directory, "mysql"), revision, "mysql", mysqlVersions);
+    WriteServerManifest(Path.Combine(directory, "postgres"), revision, "postgres", postgresVersions);
+    Console.WriteLine("servers: mysql " + mysqlVersions.Count + " migration rows, postgres " + postgresVersions.Count);
+    return 0;
+}
+
+static Dictionary<string, int> MigrateMySql(string connectionString, Assembly assembly)
+{
+    using var connection = new MySqlConnection(connectionString);
+    connection.Open();
+    foreach (string store in Discover(assembly))
+        Apply(() => new Migration(connection, assembly, store), "mysql", store);
+    var versions = ReadVersions(connection);
+    RequireMeta(versions, "mysql");
+    return versions;
+}
+
+static Dictionary<string, int> MigratePostgres(string connectionString, Assembly assembly)
+{
+    using var connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    foreach (string store in Discover(assembly))
+        Apply(() => new PGSQLMigration(connection, assembly, store), "postgres", store);
+    var versions = ReadVersions(connection);
+    // MuteListStore.migrations is in the PGSQL Resources directory and in ferroan-db's
+    // catalog, but OpenSim.Data.PGSQL.csproj does not embed it (TB21). Apply that file
+    // from this program so the dumped database matches the catalog.
+    if (!versions.ContainsKey("MuteListStore"))
+    {
+        Assembly self = Assembly.GetExecutingAssembly();
+        Apply(() => new PGSQLMigration(connection, self, "MuteListStore"), "postgres", "MuteListStore");
+        versions = ReadVersions(connection);
+    }
+    if (!versions.ContainsKey("MuteListStore"))
+        throw new InvalidOperationException("postgres MuteListStore was not created");
+    RequireMeta(versions, "postgres");
+    return versions;
+}
+
+static void Apply(Func<Migration> create, string backend, string store)
+{
+    try
+    {
+        create().Update();
+    }
+    catch (Exception error)
+    {
+        throw new InvalidOperationException(
+            backend + " " + store + " migration failed: " + Scrub(error.Message), error);
+    }
+}
+
+static void RequireMeta(Dictionary<string, int> versions, string backend)
+{
+    if (!versions.TryGetValue("migrations", out int meta) || meta != 1)
+        throw new InvalidOperationException(backend + " migrations meta version is not 1");
+}
+
+static Dictionary<string, int> ReadVersions(DbConnection connection)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = "select name, version from migrations order by name";
+    using var reader = command.ExecuteReader();
+    var versions = new Dictionary<string, int>(StringComparer.Ordinal);
+    while (reader.Read())
+    {
+        string name = reader.GetString(0);
+        int version = Convert.ToInt32(reader.GetValue(1));
+        versions[name] = version;
+    }
+    return versions;
+}
+
+static void WriteServerManifest(string directory, string revision, string backend, Dictionary<string, int> versions)
+{
+    var manifest = new StringBuilder();
+    manifest.Append("format 1\n");
+    manifest.Append("revision ").Append(revision).Append('\n');
+    manifest.Append("backend ").Append(backend).Append('\n');
+    foreach (string name in versions.Keys.OrderBy(name => name, StringComparer.Ordinal))
+        manifest.Append(name).Append(' ').Append(versions[name]).Append('\n');
+    File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+}
+
+static string Scrub(string text)
+{
+    return Regex.Replace(text, "(?i)(password\\s*=\\s*)([^;\\s'\"]+)", "$1***");
 }

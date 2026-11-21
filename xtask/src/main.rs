@@ -91,6 +91,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask oracle verify [fixture-dir]
        cargo xtask schema generate [directory]
        cargo xtask schema verify [directory]
+       cargo xtask schema servers
        cargo xtask config generate [directory]
        cargo xtask config verify [directory]
        cargo xtask http generate [directory]
@@ -99,6 +100,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
+       cargo xtask asset cross
        cargo xtask pin3 generate|verify
        cargo xtask live build
        cargo xtask live record-twice
@@ -164,6 +166,7 @@ fn main() -> ExitCode {
         ["schema", "generate", directory] => schema::generate(Some(PathBuf::from(directory))),
         ["schema", "verify"] => schema::verify(None),
         ["schema", "verify", directory] => schema::verify(Some(PathBuf::from(directory))),
+        ["schema", "servers"] => schema::servers(),
         ["config", "generate"] => config_oracle::generate(None),
         ["config", "generate", directory] => {
             config_oracle::generate(Some(PathBuf::from(directory)))
@@ -180,6 +183,7 @@ fn main() -> ExitCode {
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),
         ["asset", "verify", directory] => asset_oracle::verify(Some(PathBuf::from(directory))),
+        ["asset", "cross"] => asset_oracle::cross(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
@@ -435,7 +439,11 @@ mod tests {
         let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
         assert_eq!(live.matches("name: live (ubuntu-latest)").count(), 1);
         assert!(ci.contains("name: checks (${{ matrix.os }})"));
-        assert!(ci.contains("ubuntu-latest, windows-latest, macos-latest"));
+        // Linux is its own job so the service containers stay off Windows and
+        // macOS. The job name is still the required check `checks (ubuntu-latest)`.
+        assert_eq!(ci.matches("name: checks (ubuntu-latest)").count(), 1);
+        assert!(ci.contains("os: [windows-latest, macos-latest]"));
+        assert!(!ci.contains("ubuntu-latest, windows-latest, macos-latest"));
         assert_eq!(live.matches("cargo xtask docker smoke").count(), 1);
         assert_eq!(
             live.matches("name: Build images and smoke the example grid")

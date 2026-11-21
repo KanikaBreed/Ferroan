@@ -17,6 +17,288 @@ pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
     run(false, fixture_dir)
 }
 
+/// Migrate empty MySQL and PostgreSQL databases with Tranquillity's `Migration.Update`
+/// and write `fixtures/db/mysql` and `fixtures/db/postgres`.
+///
+/// The local containers are `ferroan-q20-mysql` (port 13306) and `ferroan-q20-postgres`
+/// (port 15432). `FERROAN_MYSQL_CONTAINER` and `FERROAN_POSTGRES_CONTAINER` override the names.
+pub fn servers() -> ExitCode {
+    let root = crate::repo_root();
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("schema: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let revision = match pinned_and_checked(&root, &reference) {
+        Ok(revision) => revision,
+        Err(error) => {
+            eprintln!("schema: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let artifacts = root.join(".scratch/schema-oracle/artifacts");
+    if let Err(error) = fs::create_dir_all(&artifacts) {
+        eprintln!("schema: could not create {}: {error}", artifacts.display());
+        return ExitCode::FAILURE;
+    }
+    let project = root.join("tools/schema-oracle/SchemaOracle.csproj");
+    if !dotnet(
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        &OracleCommand {
+            action: "build",
+            no_build: false,
+            args: &[],
+            env: &[],
+        },
+    ) {
+        return fail_if_dirty(&reference);
+    }
+    if !checkout_is_clean(&reference) {
+        return ExitCode::FAILURE;
+    }
+    let mysql_container = env_or("FERROAN_MYSQL_CONTAINER", "ferroan-q20-mysql");
+    let postgres_container = env_or("FERROAN_POSTGRES_CONTAINER", "ferroan-q20-postgres");
+    if !reset_server_databases(&mysql_container, &postgres_container) {
+        return ExitCode::FAILURE;
+    }
+    let fixtures = root.join("fixtures/db");
+    let program = vec![
+        "servers".to_string(),
+        fixtures.display().to_string(),
+        "--revision".to_string(),
+        revision.clone(),
+    ];
+    let mysql_ado = ado_mysql();
+    let postgres_ado = ado_postgres();
+    let env = [
+        ("FERROAN_SCHEMA_MYSQL", mysql_ado.as_str()),
+        ("FERROAN_SCHEMA_POSTGRES", postgres_ado.as_str()),
+    ];
+    if !dotnet(
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        &OracleCommand {
+            action: "run",
+            no_build: true,
+            args: &program,
+            env: &env,
+        },
+    ) {
+        return fail_if_dirty(&reference);
+    }
+    if !checkout_is_clean(&reference) {
+        return ExitCode::FAILURE;
+    }
+    if !dump_server_schemas(&root, &mysql_container, &postgres_container) {
+        return ExitCode::FAILURE;
+    }
+    println!("schema: servers passed against {revision}");
+    ExitCode::SUCCESS
+}
+
+fn env_or(name: &str, default: &str) -> String {
+    match env::var(name) {
+        Ok(value) if !value.is_empty() => value,
+        _ => default.to_string(),
+    }
+}
+
+fn ado_mysql() -> String {
+    "Server=127.0.0.1;Port=13306;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false".to_string()
+}
+
+fn ado_postgres() -> String {
+    "Server=127.0.0.1;Port=15432;Database=ferroan;User Id=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false".to_string()
+}
+
+fn reset_server_databases(mysql_container: &str, postgres_container: &str) -> bool {
+    // MYSQL_PWD stays in the container environment. psql runs DROP and CREATE
+    // as two commands: one `-c` string is a single transaction, and PostgreSQL
+    // refuses DROP DATABASE inside a transaction block.
+    let mysql = Command::new("docker")
+        .args([
+            "exec",
+            "-e",
+            "MYSQL_PWD=ferroan",
+            mysql_container,
+            "mysql",
+            "-uroot",
+            "-e",
+            "DROP DATABASE IF EXISTS ferroan; CREATE DATABASE ferroan CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci; GRANT ALL ON ferroan.* TO 'ferroan'@'%'; FLUSH PRIVILEGES;",
+        ])
+        .status();
+    if !command_ok("reset mysql", mysql) {
+        return false;
+    }
+    let drop = Command::new("docker")
+        .args([
+            "exec",
+            postgres_container,
+            "psql",
+            "-U",
+            "ferroan",
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "DROP DATABASE IF EXISTS ferroan WITH (FORCE);",
+        ])
+        .status();
+    if !command_ok("reset postgres drop", drop) {
+        return false;
+    }
+    let create = Command::new("docker")
+        .args([
+            "exec",
+            postgres_container,
+            "psql",
+            "-U",
+            "ferroan",
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE DATABASE ferroan;",
+        ])
+        .status();
+    command_ok("reset postgres create", create)
+}
+
+fn dump_server_schemas(root: &Path, mysql_container: &str, postgres_container: &str) -> bool {
+    let mysql_path = root.join("fixtures/db/mysql/schema.sql");
+    let postgres_path = root.join("fixtures/db/postgres/schema.sql");
+    if !dump_mysql(mysql_container, &mysql_path) {
+        return false;
+    }
+    dump_postgres(postgres_container, &postgres_path)
+}
+
+fn dump_mysql(container: &str, path: &Path) -> bool {
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-e",
+            "MYSQL_PWD=ferroan",
+            container,
+            "mysqldump",
+            "-uferroan",
+            "--no-tablespaces",
+            "--skip-comments",
+            "--skip-dump-date",
+            "--set-gtid-purged=OFF",
+            "--routines",
+            "--triggers",
+            "--single-transaction",
+            "--skip-add-locks",
+            "ferroan",
+        ])
+        .output();
+    write_dump("mysqldump", path, output)
+}
+
+fn dump_postgres(container: &str, path: &Path) -> bool {
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-e",
+            "PGPASSWORD=ferroan",
+            container,
+            "pg_dump",
+            "-U",
+            "ferroan",
+            "-d",
+            "ferroan",
+            "--no-owner",
+            "--no-privileges",
+            "--no-comments",
+            "--inserts",
+        ])
+        .output();
+    write_dump("pg_dump", path, output)
+}
+
+fn write_dump(tool: &str, path: &Path, output: std::io::Result<std::process::Output>) -> bool {
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("schema: could not run {tool}: {error}");
+            return false;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "schema: {tool} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return false;
+    }
+    let body = if tool == "pg_dump" {
+        strip_pg_restrict(&output.stdout)
+    } else {
+        output.stdout.clone()
+    };
+    if body.len() < 64 {
+        eprintln!("schema: {tool} wrote too little");
+        return false;
+    }
+    if let Some(parent) = path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        eprintln!("schema: could not create {}: {error}", parent.display());
+        return false;
+    }
+    if let Err(error) = fs::write(path, &body) {
+        eprintln!("schema: could not write {}: {error}", path.display());
+        return false;
+    }
+    println!("schema: wrote {} ({} bytes)", path.display(), body.len());
+    true
+}
+
+/// pg_dump 16.10 writes a random `\restrict` token. It is not schema, and an
+/// older client rejects the command. Drop both lines so the dump stays stable.
+fn strip_pg_restrict(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    for line in input.split_inclusive(|byte| *byte == b'\n') {
+        let mut bare = line;
+        if let Some(stripped) = bare.strip_suffix(b"\n") {
+            bare = stripped;
+        }
+        if let Some(stripped) = bare.strip_suffix(b"\r") {
+            bare = stripped;
+        }
+        if bare.starts_with(b"\\restrict ") || bare.starts_with(b"\\unrestrict ") {
+            continue;
+        }
+        out.extend_from_slice(line);
+    }
+    out
+}
+
+fn command_ok(action: &str, status: std::io::Result<std::process::ExitStatus>) -> bool {
+    match status {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("schema: {action} exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("schema: {action} failed: {error}");
+            false
+        }
+    }
+}
+
 fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
@@ -49,7 +331,18 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
             }
         },
     );
-    if !dotnet(&root, &reference, &artifacts, &project, "build", false, &[]) {
+    if !dotnet(
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        &OracleCommand {
+            action: "build",
+            no_build: false,
+            args: &[],
+            env: &[],
+        },
+    ) {
         return fail_if_dirty(&reference);
     }
     if !checkout_is_clean(&reference) {
@@ -63,7 +356,16 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>) -> ExitCode {
         revision.clone(),
     ];
     if !dotnet(
-        &root, &reference, &artifacts, &project, "run", true, &program,
+        &root,
+        &reference,
+        &artifacts,
+        &project,
+        &OracleCommand {
+            action: "run",
+            no_build: true,
+            args: &program,
+            env: &[],
+        },
     ) {
         return ExitCode::FAILURE;
     }
@@ -191,14 +493,19 @@ fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+struct OracleCommand<'a> {
+    action: &'a str,
+    no_build: bool,
+    args: &'a [String],
+    env: &'a [(&'a str, &'a str)],
+}
+
 fn dotnet(
     root: &Path,
     reference: &Path,
     artifacts: &Path,
     project: &Path,
-    action: &str,
-    no_build: bool,
-    program_args: &[String],
+    run: &OracleCommand<'_>,
 ) -> bool {
     let mut command = Command::new("dotnet");
     command
@@ -206,8 +513,8 @@ fn dotnet(
         .env("DOTNET_NOLOGO", "1")
         .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .env("NUGET_XMLDOC_MODE", "skip")
-        .arg(action);
-    if action == "run" {
+        .arg(run.action);
+    if run.action == "run" {
         command.arg("--project").arg(project);
     } else {
         command.arg(project);
@@ -222,20 +529,24 @@ fn dotnet(
         .arg(format!("-p:ArtifactsPath={}", artifacts.display()))
         .arg("-p:GeneratePackageOnBuild=false")
         .arg("-p:ContinuousIntegrationBuild=true");
-    if no_build {
+    for (key, value) in run.env {
+        command.env(key, value);
+    }
+    if run.no_build {
         command.arg("--no-build");
     }
-    if !program_args.is_empty() {
+    if !run.args.is_empty() {
         command.arg("--");
-        command.args(program_args);
+        command.args(run.args);
     }
     let shown = project.strip_prefix(root).unwrap_or(project).display();
-    if program_args.is_empty() {
-        println!("$ dotnet {action} -c Release {shown}");
+    if run.args.is_empty() {
+        println!("$ dotnet {} -c Release {shown}", run.action);
     } else {
         println!(
-            "$ dotnet {action} -c Release {shown} -- {}",
-            program_args.join(" ")
+            "$ dotnet {} -c Release {shown} -- {}",
+            run.action,
+            run.args.join(" ")
         );
     }
     match command.status() {

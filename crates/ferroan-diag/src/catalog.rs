@@ -35,6 +35,7 @@ pub const ASSET_REMOTE_BODY: &str = "asset.remote-body";
 pub const ASSET_XML_DEPTH: &str = "asset.xml-depth";
 pub const ASSET_XML_ELEMENTS: &str = "asset.xml-elements";
 pub const ASSET_XML_NAME: &str = "asset.xml-name";
+pub const ASSET_METADATA_ROWS: &str = "asset.metadata-rows";
 pub const OTLP_QUEUE: &str = "otlp.queue";
 pub const LLSD_PARSED_BYTES: &str = "llsd.parsed-bytes";
 pub const LLSD_BINARY_DEPTH: &str = "llsd.binary-depth";

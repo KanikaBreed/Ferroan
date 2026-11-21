@@ -9,9 +9,10 @@
 //! directory. Repeat `--inifile` for extra files. `--inidirectory` defaults
 //! to `config` and is skipped when that directory is absent.
 //!
-//! An asset database must already be a Tranquillity SQLite file at AssetStore
-//! version 6. A user-account database must already be at UserAccount version
-//! 4. This program does not create or migrate either file. User aliases need
+//! An asset database must already be a Tranquillity AssetStore: SQLite version
+//! 6, MySQL version 10, or PostgreSQL version 9. A user-account database must
+//! already be at UserAccount version 4. This program does not create or
+//! migrate either file. User aliases need
 //! a table the pin does not ship for SQLite; the process refuses to start
 //! that section until the table exists.
 

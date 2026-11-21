@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -45,6 +45,72 @@ jobs:
       - name: Check documentation only
         if: steps.scope.outputs.docs_only == 'true'
         run: cargo xtask check --docs-only
+
+  checks-linux:
+    name: checks (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FERROAN_MYSQL_URL: mysql://ferroan:ferroan@127.0.0.1:3306/ferroan?ssl-mode=disabled
+      FERROAN_POSTGRES_URL: postgres://ferroan:ferroan@127.0.0.1:5432/ferroan?sslmode=disable
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ferroan
+          MYSQL_USER: ferroan
+          MYSQL_PASSWORD: ferroan
+          MYSQL_DATABASE: ferroan
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uferroan -pferroan"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ferroan
+          POSTGRES_PASSWORD: ferroan
+          POSTGRES_DB: ferroan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ferroan -d ferroan"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Rust
+        run: |
+          rustup show
+          rustc --version
+          cargo clippy --version
+      - name: Classify the pull request
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: cargo xtask ci scope
+      - name: Load Tranquillity schemas
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client postgresql-client
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uferroan -pferroan --ssl-mode=DISABLED ferroan < fixtures/db/mysql/schema.sql
+          PGPASSWORD=ferroan psql -h 127.0.0.1 -p 5432 -U ferroan -d ferroan -v ON_ERROR_STOP=1 -f fixtures/db/postgres/schema.sql
+      - name: Check documentation and Rust workspace
+        if: steps.scope.outputs.docs_only != 'true'
+        run: cargo xtask check
+      - name: Check documentation only
+        if: steps.scope.outputs.docs_only == 'true'
+        run: cargo xtask check --docs-only
       - name: Build container images
-        if: runner.os == 'Linux' && steps.scope.outputs.docs_only != 'true'
+        if: steps.scope.outputs.docs_only != 'true'
         run: cargo xtask docker build
