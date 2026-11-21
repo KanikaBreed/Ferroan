@@ -1,0 +1,4 @@
+<Nini>
+  <Section Name="Same"><Key Name="file" Value="duplicate-section-first.xml"/></Section>
+  <Section Name="Same"><Key Name="file" Value="duplicate-section-second.xml"/></Section>
+</Nini>

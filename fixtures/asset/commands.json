@@ -1,0 +1,446 @@
+{
+  "tranquillity": "c70fee205f64ee8672a8d607cef6a733931da951",
+  "try_parse": [
+    {
+      "raw": "00112233-4455-6677-8899-aabbccddeeff",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "00112233-4455-6677-8899-AABBCCDDEEFF",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "  00112233-4455-6677-8899-aabbccddeeff",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "00112233-4455-6677-8899-aabbccddeeff  ",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "  00112233-4455-6677-8899-aabbccddeeff  ",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "00112233445566778899aabbccddeeff",
+      "ok": true,
+      "id": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "raw": "{00112233-4455-6677-8899-aabbccddeeff}",
+      "ok": false,
+      "id": ""
+    },
+    {
+      "raw": "urn:uuid:00112233-4455-6677-8899-aabbccddeeff",
+      "ok": false,
+      "id": ""
+    },
+    {
+      "raw": "not-a-uuid",
+      "ok": false,
+      "id": ""
+    },
+    {
+      "raw": "",
+      "ok": false,
+      "id": ""
+    },
+    {
+      "raw": "00112233-4455-6677-8899-aabbccddeeff extra",
+      "ok": false,
+      "id": ""
+    },
+    {
+      "raw": "00112233-4455",
+      "ok": false,
+      "id": ""
+    }
+  ],
+  "flags": [
+    {
+      "value": 0,
+      "text": "Normal"
+    },
+    {
+      "value": 1,
+      "text": "Maptile"
+    },
+    {
+      "value": 2,
+      "text": "Rewritable"
+    },
+    {
+      "value": 3,
+      "text": "Maptile, Rewritable"
+    },
+    {
+      "value": 4,
+      "text": "Collectable"
+    },
+    {
+      "value": 5,
+      "text": "Maptile, Collectable"
+    },
+    {
+      "value": 6,
+      "text": "Rewritable, Collectable"
+    },
+    {
+      "value": 7,
+      "text": "Maptile, Rewritable, Collectable"
+    },
+    {
+      "value": 8,
+      "text": "8"
+    },
+    {
+      "value": 9,
+      "text": "9"
+    },
+    {
+      "value": -1,
+      "text": "-1"
+    }
+  ],
+  "types": [
+    {
+      "value": -2,
+      "text": "OSMaterial",
+      "content_type": "application/llsd+xml"
+    },
+    {
+      "value": -1,
+      "text": "Unknown",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 0,
+      "text": "Texture",
+      "content_type": "image/x-j2c"
+    },
+    {
+      "value": 4,
+      "text": "4",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 20,
+      "text": "Animation",
+      "content_type": "application/vnd.ll.animation"
+    },
+    {
+      "value": 26,
+      "text": "MarketplaceFolder",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 56,
+      "text": "Settings",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 58,
+      "text": "GLTF",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 59,
+      "text": "GLTF_bin",
+      "content_type": "application/octet-stream"
+    },
+    {
+      "value": 99,
+      "text": "99",
+      "content_type": "application/octet-stream"
+    }
+  ],
+  "show": [
+    {
+      "args": [
+        "show",
+        "asset"
+      ],
+      "asset": {
+        "present": false
+      },
+      "lines": [
+        "Syntax: show asset <ID>"
+      ]
+    },
+    {
+      "args": [
+        "show",
+        "asset",
+        "extra",
+        "ignored"
+      ],
+      "asset": {
+        "present": false
+      },
+      "lines": [
+        "Asset not found"
+      ]
+    },
+    {
+      "args": [
+        "show",
+        "asset",
+        "00112233-4455-6677-8899-aabbccddeeff"
+      ],
+      "asset": {
+        "present": false
+      },
+      "lines": [
+        "Asset not found"
+      ]
+    },
+    {
+      "args": [
+        "show",
+        "asset",
+        "00112233-4455-6677-8899-aabbccddeeff"
+      ],
+      "asset": {
+        "present": true,
+        "id": "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "name": "Empty",
+        "description": "",
+        "type": 7,
+        "temporary": false,
+        "flags": 0,
+        "hex": ""
+      },
+      "lines": [
+        "Asset not found"
+      ]
+    },
+    {
+      "args": [
+        "show",
+        "asset",
+        "00112233-4455-6677-8899-aabbccddeeff",
+        "extra"
+      ],
+      "asset": {
+        "present": true,
+        "id": "00112233-4455-6677-8899-aabbccddeeff",
+        "name": "Wood",
+        "description": "",
+        "type": 0,
+        "temporary": true,
+        "flags": 7,
+        "hex": "000102030405060708090a0b0c0d0e0f10"
+      },
+      "lines": [
+        "Name: Wood",
+        "Description: ",
+        "Type: Texture (type number = 0)",
+        "Content-type: image/x-j2c",
+        "Size: 17 bytes",
+        "Temporary: yes",
+        "Flags: Maptile, Rewritable, Collectable",
+        "0000: 00-01-02-03-04-05-06-07-08-09-0A-0B-0C-0D-0E-0F",
+        "0010: 10"
+      ]
+    },
+    {
+      "args": [
+        "show",
+        "asset",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      ],
+      "asset": {
+        "present": true,
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "name": "Odd",
+        "description": "line",
+        "type": 4,
+        "temporary": false,
+        "flags": 9,
+        "hex": "000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0"
+      },
+      "lines": [
+        "Name: Odd",
+        "Description: line",
+        "Type: 4 (type number = 4)",
+        "Content-type: application/octet-stream",
+        "Size: 81 bytes",
+        "Temporary: no",
+        "Flags: 9",
+        "0000: 00-03-06-09-0C-0F-12-15-18-1B-1E-21-24-27-2A-2D",
+        "0010: 30-33-36-39-3C-3F-42-45-48-4B-4E-51-54-57-5A-5D",
+        "0020: 60-63-66-69-6C-6F-72-75-78-7B-7E-81-84-87-8A-8D",
+        "0030: 90-93-96-99-9C-9F-A2-A5-A8-AB-AE-B1-B4-B7-BA-BD",
+        "0040: C0-C3-C6-C9-CC-CF-D2-D5-D8-DB-DE-E1-E4-E7-EA-ED"
+      ]
+    }
+  ],
+  "delete": [
+    {
+      "args": [
+        "delete",
+        "asset"
+      ],
+      "asset": {
+        "present": false
+      },
+      "deleted": false,
+      "lines": [
+        "Syntax: delete asset <ID>"
+      ]
+    },
+    {
+      "args": [
+        "delete",
+        "asset",
+        "raw-token"
+      ],
+      "asset": {
+        "present": false
+      },
+      "deleted": false,
+      "lines": [
+        "Could not find asset with ID raw-token"
+      ]
+    },
+    {
+      "args": [
+        "delete",
+        "asset",
+        "raw-token"
+      ],
+      "asset": {
+        "present": false
+      },
+      "deleted": false,
+      "lines": [
+        "Could not find asset with ID raw-token"
+      ]
+    },
+    {
+      "args": [
+        "delete",
+        "asset",
+        "  00112233-4455-6677-8899-aabbccddeeff"
+      ],
+      "asset": {
+        "present": true,
+        "id": "00112233-4455-6677-8899-aabbccddeeff",
+        "name": "Wood",
+        "description": "",
+        "type": 0,
+        "temporary": true,
+        "flags": 7,
+        "hex": "000102030405060708090a0b0c0d0e0f10"
+      },
+      "deleted": true,
+      "lines": [
+        "Deleted asset 00112233-4455-6677-8899-aabbccddeeff Wood"
+      ]
+    },
+    {
+      "args": [
+        "delete",
+        "asset",
+        "00112233-4455-6677-8899-aabbccddeeff"
+      ],
+      "asset": {
+        "present": true,
+        "id": "00112233-4455-6677-8899-aabbccddeeff",
+        "name": "Wood",
+        "description": "",
+        "type": 0,
+        "temporary": true,
+        "flags": 7,
+        "hex": "000102030405060708090a0b0c0d0e0f10"
+      },
+      "deleted": false,
+      "lines": [
+        "ERROR: Could not delete asset 00112233-4455-6677-8899-aabbccddeeff Wood"
+      ]
+    }
+  ],
+  "dump": [
+    {
+      "args": [
+        "dump",
+        "asset"
+      ],
+      "found": false,
+      "file_exists": false,
+      "hex": "",
+      "write": false,
+      "write_hex": "",
+      "lines": [
+        "Usage is dump asset <ID>"
+      ]
+    },
+    {
+      "args": [
+        "dump",
+        "asset",
+        "not-a-uuid"
+      ],
+      "found": false,
+      "file_exists": false,
+      "hex": "",
+      "write": false,
+      "write_hex": "",
+      "lines": [
+        "ERROR: not-a-uuid is not a valid ID format"
+      ]
+    },
+    {
+      "args": [
+        "dump",
+        "asset",
+        "00112233445566778899aabbccddeeff"
+      ],
+      "found": false,
+      "file_exists": false,
+      "hex": "",
+      "write": false,
+      "write_hex": "",
+      "lines": [
+        "ERROR: No asset found with ID 00112233-4455-6677-8899-aabbccddeeff"
+      ]
+    },
+    {
+      "args": [
+        "dump",
+        "asset",
+        "  00112233-4455-6677-8899-aabbccddeeff"
+      ],
+      "found": true,
+      "file_exists": true,
+      "hex": "000102030405060708090a0b0c0d0e0f10",
+      "write": false,
+      "write_hex": "",
+      "lines": [
+        "File   00112233-4455-6677-8899-aabbccddeeff already exists.  Please move or remove it."
+      ]
+    },
+    {
+      "args": [
+        "dump",
+        "asset",
+        "00112233-4455-6677-8899-aabbccddeeff",
+        "extra"
+      ],
+      "found": true,
+      "file_exists": false,
+      "hex": "",
+      "write": true,
+      "write_hex": "",
+      "lines": [
+        "Asset dumped to file 00112233-4455-6677-8899-aabbccddeeff"
+      ]
+    }
+  ]
+}

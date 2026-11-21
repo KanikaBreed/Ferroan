@@ -111,7 +111,7 @@ fn run_side(name: &str, seed: &Path) -> Result<SideReport, String> {
     let mut server = if name == "csharp" {
         start_grid(&database, port, &log, false)?
     } else if name == "ferroan" {
-        start_robust(&database, port, &log)?
+        start_robust(&database, port, &log, false)?
     } else {
         return Err(format!("unknown asset side {name}"));
     };
@@ -182,7 +182,7 @@ pub(crate) fn start_persistent() -> Result<(Owned, u16), String> {
         .map_err(|error| format!("could not copy the asset database: {error}"))?;
     let port = live::allocate_port()?;
     let log = run.join("assets-live.log");
-    let mut server = start_robust(&database, port, &log)?;
+    let mut server = start_robust(&database, port, &log, false)?;
     wait_service(&mut server, "ferroan", port, &log)?;
     Ok((server, port))
 }
@@ -272,26 +272,29 @@ fn seed_database() -> Result<PathBuf, String> {
         .map_err(|error| format!("could not copy {}: {error}", fixture.display()))?;
     let port = live::allocate_port()?;
     let log = run.join("asset-seed.log");
-    let mut server = start_grid(&seed, port, &log, true)?;
+    let mut server = start_robust(&seed, port, &log, true)?;
     let started = Instant::now();
     loop {
-        if library_texture_stored(&seed)? {
-            break;
-        }
         if server
             .child
             .try_wait()
             .map_err(|error| format!("could not check the asset loader: {error}"))?
             .is_some()
-            || started.elapsed() > Duration::from_secs(180)
         {
+            stop_owned(&mut server);
+            return Err(format!("the asset loader exited\n{}", tail(&log)));
+        }
+        if live::require_http_loopback(server.listen_pid, port).is_ok() {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(180) {
             stop_owned(&mut server);
             return Err(format!(
                 "the asset loader did not store the library texture\n{}",
                 tail(&log)
             ));
         }
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(200));
     }
     stop_owned(&mut server);
     let _ = Command::new("sqlite3")
@@ -503,19 +506,39 @@ pub(crate) fn start_grid_services(
 }
 
 #[cfg(target_os = "linux")]
-fn start_robust(database: &Path, port: u16, log: &Path) -> Result<Owned, String> {
+fn start_robust(database: &Path, port: u16, log: &Path, load: bool) -> Result<Owned, String> {
     let binary = live::build_binary("ferroan-robust")?;
     let run = live::scratch_run();
     let empty = run.join("grid-empty");
     fs::create_dir_all(&empty)
         .map_err(|error| format!("could not create {}: {error}", empty.display()))?;
-    let ini_path = run.join("robust.ini");
+    let ini_path = run.join(if load {
+        "robust-seed.ini"
+    } else {
+        "robust.ini"
+    });
+    let loader = if load {
+        let assets = live::asset_set_path();
+        if !assets.is_file() {
+            return Err(format!("missing {}", assets.display()));
+        }
+        let text = assets.display().to_string();
+        if text.contains('"') {
+            return Err("asset set path contains a quote".to_string());
+        }
+        format!(
+            "    DefaultAssetLoader = \"OpenSim.Framework.AssetLoader.Filesystem.dll\"\n    \
+             AssetLoaderArgs = \"{text}\"\n"
+        )
+    } else {
+        String::new()
+    };
     let db = database.display();
     let ini = format!(
         "[Network]\n    port = {port}\n    bind_ip_address = \"127.0.0.1\"\n\n[AssetService]\n    \
          LocalServiceModule = \"OpenSim.Services.AssetService.dll:AssetService\"\n    \
          StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
-         ConnectionString = \"Data Source={db};Version=3;\"\n"
+         ConnectionString = \"Data Source={db};Version=3;\"\n{loader}"
     );
     live::write_secret(&ini_path, &ini)?;
     spawn_owned(

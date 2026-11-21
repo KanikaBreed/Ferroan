@@ -6,7 +6,9 @@
 //! Storage provider and connection string follow `AssetServiceBase`: the
 //! asset section wins, and an empty value falls through to
 //! `[DatabaseService]`. SQLite, MySQL and PostgreSQL providers are opened.
-//! FSAssets and XAssets are not. The filesystem asset loader is not run.
+//! FSAssets and XAssets are not. `DefaultAssetLoader` names the filesystem
+//! loader, and `AssetLoaderArgs` is the asset-set control file. An empty
+//! loader name loads nothing. `AssetLoaderEnabled = false` skips the load.
 //! `AuthType = BasicHttpAuthentication` and `https_main = true` refuse to
 //! start, because this process would otherwise serve the assets without the
 //! protection the file asked for. `TrustedGridAuthentication` does not reject
@@ -17,6 +19,7 @@ use ferroan_config::Config;
 use ferroan_db::{Backend, Pool};
 
 use super::http::{AssetHttp, AssetOptions, DeleteMode};
+use super::loader::{filesystem_loader, load_asset_sets, seed_assets};
 use super::store::AssetStore;
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +65,7 @@ impl AssetHttp {
             .ok_or(AssetError::Config("No ConnectionString configured"))?;
         let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
         let store = AssetStore::new(pool)?;
+        load_configured_assets(&store, config).await?;
         let delete = delete_mode(config)?;
         let redirect_url = nonempty(config, SECTION, "RedirectURL").map(str::to_string);
         if redirect_url
@@ -109,6 +113,27 @@ pub fn listen_address(config: &Config) -> Result<std::net::IpAddr, AssetError> {
     }
     text.parse()
         .map_err(|_| AssetError::Config("[Network] bind_ip_address is not an IP address"))
+}
+
+async fn load_configured_assets(store: &AssetStore, config: &Config) -> Result<(), AssetError> {
+    let Some(name) = nonempty(config, SECTION, "DefaultAssetLoader") else {
+        return Ok(());
+    };
+    if !filesystem_loader(name) {
+        return Err(AssetError::Message(format!(
+            "Asset loader could not be loaded from {name}"
+        )));
+    }
+    if !config_bool_in(config, SECTION, "AssetLoaderEnabled", true)? {
+        return Ok(());
+    }
+    let args = config.get(SECTION, "AssetLoaderArgs").unwrap_or("");
+    let loaded = load_asset_sets(std::path::Path::new(args))
+        .map_err(|error| AssetError::Message(error.to_string()))?;
+    seed_assets(store, &loaded)
+        .await
+        .map_err(|error| AssetError::Message(error.to_string()))?;
+    Ok(())
 }
 
 fn asset_backend(provider: &str) -> Result<Backend, AssetError> {

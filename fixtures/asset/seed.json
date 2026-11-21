@@ -1,0 +1,192 @@
+{
+  "tranquillity": "c70fee205f64ee8672a8d607cef6a733931da951",
+  "cases": [
+    {
+      "name": "fresh",
+      "id": "11111111-1111-1111-1111-111111111111",
+      "before": {
+        "present": false
+      },
+      "input": {
+        "name": "Fresh",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      },
+      "threw": false,
+      "exception_type": "",
+      "after": {
+        "present": true,
+        "name": "Fresh",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      }
+    },
+    {
+      "name": "keep",
+      "id": "22222222-2222-2222-2222-222222222222",
+      "before": {
+        "present": true,
+        "name": "Old",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      },
+      "input": {
+        "name": "New",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      },
+      "threw": false,
+      "exception_type": "",
+      "after": {
+        "present": true,
+        "name": "Old",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      }
+    },
+    {
+      "name": "replace",
+      "id": "33333333-3333-3333-3333-333333333333",
+      "before": {
+        "present": true,
+        "name": "Old",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "61616161"
+      },
+      "input": {
+        "name": "New",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "62626262"
+      },
+      "threw": false,
+      "exception_type": "",
+      "after": {
+        "present": true,
+        "name": "New",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "62626262"
+      }
+    },
+    {
+      "name": "missing-new",
+      "id": "44444444-4444-4444-4444-444444444444",
+      "before": {
+        "present": false
+      },
+      "input": {
+        "name": "Missing",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": true,
+        "hex": ""
+      },
+      "threw": false,
+      "exception_type": "",
+      "after": {
+        "present": true,
+        "name": "Missing",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": true,
+        "hex": ""
+      }
+    },
+    {
+      "name": "missing-existing",
+      "id": "55555555-5555-5555-5555-555555555555",
+      "before": {
+        "present": true,
+        "name": "Kept",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      },
+      "input": {
+        "name": "Missing",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": true,
+        "hex": ""
+      },
+      "threw": true,
+      "exception_type": "System.ArgumentNullException",
+      "after": {
+        "present": true,
+        "name": "Kept",
+        "description": "",
+        "type": 0,
+        "local": false,
+        "temporary": false,
+        "flags": 0,
+        "creator": "11111111-1111-0000-0000-000100bba000",
+        "data_null": false,
+        "hex": "68656c6c6f"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+<Nini>
+  <Section Name="Two">
+    <Key Name="assetID" Value="eeeeeeee-bbbb-cccc-dddd-eeeeeeeeeeee"/>
+    <Key Name="name" Value="second"/>
+    <Key Name="assetType" Value="+1"/>
+    <Key Name="fileName" Value="two.dat"/>
+  </Section>
+</Nini>

@@ -6,4 +6,6 @@
 
 `unnamed-flags.json` records `StoredAssetFlags.FromStored` for `AssetFlags` value 8 (TB1, Pin5). The known bits are 0 and `threw` is false. It is not a `manifest.json` case. `csharp_unnamed_asset_flags_are_masked` names `crates/ferroan-services/src/asset/xml.rs` `flags_text`.
 
+`loader-sample.json`, `seed.json`, `commands.json` and `library-manifest.json` are the same oracle. The sample is a small asset-set tree. The seed file is the loader callback against a copy of the SQLite fixture: a new id is inserted, matching bytes are left alone, different bytes replace the row, and a null payload stops the load. The command file is the connector text for `show asset`, `dump asset` and `delete asset`. The manifest is id, name, type and SHA1 for the pin's library; the library bytes stay in the reference checkout.
+
 The XML files are marked binary in `.gitattributes`. `controls.xml` contains a raw CR, and the repository's LF conversion would delete it.
