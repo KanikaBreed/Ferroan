@@ -315,15 +315,7 @@ static Dictionary<string, int> MigratePostgres(string connectionString, Assembly
     foreach (string store in Discover(assembly))
         Apply(() => new PGSQLMigration(connection, assembly, store), "postgres", store);
     var versions = ReadVersions(connection);
-    // MuteListStore.migrations is in the PGSQL Resources directory and in ferroan-db's
-    // catalog, but OpenSim.Data.PGSQL.csproj does not embed it (TB21). Apply that file
-    // from this program so the dumped database matches the catalog.
-    if (!versions.ContainsKey("MuteListStore"))
-    {
-        Assembly self = Assembly.GetExecutingAssembly();
-        Apply(() => new PGSQLMigration(connection, self, "MuteListStore"), "postgres", "MuteListStore");
-        versions = ReadVersions(connection);
-    }
+    // The pin embeds MuteListStore.migrations (TB21, #473) and applies version 2 (TB34, #474).
     if (!versions.ContainsKey("MuteListStore"))
         throw new InvalidOperationException("postgres MuteListStore was not created");
     RequireMeta(versions, "postgres");

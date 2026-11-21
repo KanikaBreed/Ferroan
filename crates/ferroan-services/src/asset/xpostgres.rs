@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.PGSQL/PGSQLXAssetData.cs
 //   Source/OpenSim.Data.PGSQL/Resources/XAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -38,12 +38,10 @@
 //! back and returns. The clock is UTC unix time, the same helper MySQL uses,
 //! not the ordinary PostgreSQL asset store's local clock.
 //!
-//! `FetchAssetMetadataSet` at the pin sends `LIMIT :start, :count` (TB29).
-//! This store sends `LIMIT count OFFSET start` and returns that page. This
-//! is not the ordinary asset store's TB19 limit. `Delete` at the pin binds
-//! the id as varchar (TB30). This store binds `uuid` and deletes only the
-//! meta row. The data row stays: rows are shared by hash and there is no
-//! reference count.
+//! `FetchAssetMetadataSet` is `ORDER BY id LIMIT count OFFSET start` (TB29,
+//! #479) and returns that page. `Delete` parses the id as a uuid and deletes
+//! only the meta row (TB30, #480). The data row stays: rows are shared by
+//! hash and there is no reference count.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -184,9 +182,7 @@ pub(super) async fn store(pool: &PgPool, asset: &Asset) -> Result<(), StoreError
     Ok(())
 }
 
-/// The pin binds `id` as varchar against `uuid` (TB30) and leaves both rows.
-/// The prepared C# fix binds `uuid` and deletes only the meta row, which is
-/// what MySQL's `Delete` already does. This store does the same. The data
+/// Deletes only the meta row (TB30, #480), as MySQL's `Delete` does. The data
 /// row stays: rows are shared by hash and there is no reference count, so
 /// deleting an unused data row races a concurrent store that found the hash
 /// and skipped its insert. An id that does not parse deletes nothing and
@@ -222,7 +218,7 @@ pub(super) async fn metadata_set(
 ) -> Result<Vec<AssetMetadata>, StoreError> {
     let rows = sqlx::query(
         "SELECT name, description, access_time, \"AssetType\", temporary, id, asset_flags, \
-         creatorid FROM xassetsmeta LIMIT $1 OFFSET $2",
+         creatorid FROM xassetsmeta ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(count)
     .bind(start)

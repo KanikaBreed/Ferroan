@@ -482,6 +482,7 @@ OSSL	Allow_osSetProjectionParams	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetRegionSunSettings	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetRegionWaterHeight	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetRot	false
+OSSL	Allow_osSetScriptEngine	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetSpeed	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetSunParam	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osSetTerrainHeight	ESTATE_MANAGER,ESTATE_OWNER
@@ -553,6 +554,8 @@ Startup	PemCertPrivateKey
 Startup	PemCertPublicKey	
 Startup	PhysicalPrimMax	64
 Startup	RegistryLocation	.
+Startup	ScriptEngineChoice	true
+Startup	ScriptEngineChoiceNoMod	false
 Startup	Stats_URI	jsonSimStats
 Startup	StunServers	stun.l.google.com:19302, stun.cloudflare.com:3478
 Startup	TrustBinaries	false

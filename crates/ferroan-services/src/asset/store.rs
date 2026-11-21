@@ -127,7 +127,7 @@ impl AssetStore {
         Ok(out)
     }
 
-    /// `FetchAssetMetadataSet`. PostgreSQL uses `LIMIT start + count - 1`.
+    /// `FetchAssetMetadataSet`. PostgreSQL uses `LIMIT count OFFSET start`.
     pub async fn metadata_set(
         &self,
         start: i32,

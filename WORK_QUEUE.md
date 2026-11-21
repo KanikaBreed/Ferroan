@@ -89,7 +89,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q23 | P1.A3: FSAssets | SPLIT into Q23a to Q23e (#142) |
 | Q23a | P1.A3a: MySQL and PostgreSQL `fsassets` plugins and fixtures (TB22, TB35 fixed) | DONE (#145) |
 | Q23b | P1.A3b: FSAssets file layout and the spool writer (TB23, TB24, TB36 fixed) | DONE (#146) |
-| Q23p | Pin6: move the Tranquillity pin to `dev-build` `1d7abb8` (upstream `develop` `e28703a`, the Pin5 roll-up and #473 to #487); TB10 to TB30 and TB33 to TB36 fixed | READY after Q23b |
+| Q23p | Pin6: move the Tranquillity pin to `dev-build` `1d7abb8` (upstream `develop` `e28703a`, the Pin5 roll-up and #473 to #487); TB10 to TB30 and TB33 to TB36 fixed | IN PROGRESS |
 | Q23c | P1.A3c: `FSAssetService` on the asset HTTP routes: fallback, access-time interval, secondary instance, default loader (TB25 fixed) | READY after Q23p |
 | Q23d | P1.A3d: FSAssets console commands: `show assets`, `show digest`, `delete asset`, `import`, `force import` | READY after Q23c |
 | Q23e | P1.A3e: `cargo xtask live assets --backend fsassets --db mysql\|pgsql` prints `assets: match`, with the 10,000-asset timing | READY after Q23d |

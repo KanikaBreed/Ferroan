@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Framework.AssetLoader.Filesystem/AssetLoaderFileSystem.cs
 //   Source/OpenSim.Services.AssetService/AssetService.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Nini's XmlConfigSource is not copied. A malformed set file is skipped, as
 // the loader's XmlException catch does. A duplicate key, a bad asset id or a
 // bad assetType fails the load before any row is written. A repeated section

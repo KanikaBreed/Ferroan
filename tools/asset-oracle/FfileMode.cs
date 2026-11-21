@@ -6,6 +6,7 @@
 // or start the writer thread.
 
 using System.IO.Compression;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -57,6 +58,18 @@ static class FfileMode
             });
             return 0;
         }
+        if (args[1] == "checked" && args.Length == 7)
+        {
+            Probe probe = Probe.Create(args[2], args[3], Flag(args[4]));
+            byte[] data = Checked(probe, args[5], sbyte.Parse(args[6]));
+            Write(new JsonObject
+            {
+                ["path"] = probe.HashToPath(args[5]),
+                ["file"] = probe.HashToFile(args[5]),
+                ["data"] = data == null ? null : Bytes(data)
+            });
+            return 0;
+        }
         if ((args[1] == "write" || args[1] == "plain") && args.Length == 7)
         {
             byte[] data = File.ReadAllBytes(args[6]);
@@ -76,6 +89,16 @@ static class FfileMode
             return 0;
         }
         return Usage();
+    }
+
+    static byte[] Checked(Probe probe, string hash, sbyte type)
+    {
+        MethodInfo method = typeof(FSAssetConnector).GetMethod(
+            "GetCheckedFsData",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method == null)
+            throw new InvalidOperationException("GetCheckedFsData is missing");
+        return (byte[])method.Invoke(probe, new object[] { hash, type });
     }
 
     static bool Flag(string text)
@@ -125,6 +148,7 @@ static class FfileMode
     {
         Console.Error.WriteLine("usage: AssetOracle ffile path <0|1> <hash>");
         Console.Error.WriteLine("       AssetOracle ffile read <base> <spool> <0|1> <hash>");
+        Console.Error.WriteLine("       AssetOracle ffile checked <base> <spool> <0|1> <hash> <type>");
         Console.Error.WriteLine("       AssetOracle ffile write <base> <spool> <0|1> <hash> <bytes-file>");
         Console.Error.WriteLine("       AssetOracle ffile plain <base> <spool> <0|1> <hash> <bytes-file>");
         return 2;

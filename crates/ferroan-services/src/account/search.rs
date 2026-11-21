@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `UserSearchWords.From` at Pin5 (`c70fee205f`, TB18, #466).
+//! `UserSearchWords.From` (TB18, #466), on `develop` since `e28703a307`.
 //!
 //! `string.Split()` drops empty pieces. Every word whose UTF-16 length is
 //! under 3 is dropped. More than two words left, or none, means the search

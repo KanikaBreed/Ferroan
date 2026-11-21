@@ -25,7 +25,7 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.SQLite/SQLiteAssetData.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // Existence checks are parameterised. The C# method concatenates UUID text
 // after UUID.Parse has accepted it. The rows returned are the same.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,

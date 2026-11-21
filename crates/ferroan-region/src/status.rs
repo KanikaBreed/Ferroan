@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Region status forms from Tranquillity Pin5 `c70fee205f64ee8672a8d607cef6a733931da951`.
+//! Region status forms from Tranquillity Pin6 `1d7abb8337a477842fe1d7dd84beffe389ee52ac`.
 //!
 //! `/simstatus` follows `SimStatusHandler` in
 //! `Source/OpenSim.Server.RegionServer/OpenSimBase.cs`.
