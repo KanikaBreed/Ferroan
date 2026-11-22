@@ -366,6 +366,8 @@ Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-p
 
 ## Found while working
 
+- 2026-11-21, Q16c: `live services` on `0cb94f0` failed in `cargo xtask live run login grid --rust assets,accounts` ([run 44963949219](https://github.com/KanikaBreed/Ferroan/actions/runs/44963949219), job `live services` `137028859895`). The line was `login: fail (logout service-state probe exceeded its ten-second deadline)`. The same job's accounts-only login passed, including root arrival. Images, ferrobot, scenarios and the three check jobs passed. The same deadline is already recorded under Q10x, Q22b and Q26a. Recorded before the retry. Not a product change.
+
 - 2026-11-21, Q16c: `live images` on `b6248cf` was cancelled while queued ([run 44961412547](https://github.com/KanikaBreed/Ferroan/actions/runs/44961412547), job `137021062636`). The annotation was `Canceling since a higher priority waiting request for ferroan-live-images exists`. The job had no runner. `cancel-in-progress` is false; a newer waiter in that group replaced this pending one. Recorded before the retry. Not a product change.
 
 - 2026-11-21, Q26a: `live images` on `6d052a1` failed in `cargo xtask docker smoke` ([run 44958467849](https://github.com/KanikaBreed/Ferroan/actions/runs/44958467849), job `live images`, 22:49:29Z–22:55:12Z). The images built, both metrics scrapes passed, and Ferrobot answered `SimName` through the 120-second hold. The step then failed with `docker: invalid captured UDP packet` while reading the capture. `live ferrobot` and `live scenarios` passed on the same SHA, and so did the Ubuntu, Windows and macOS checks. Recorded before the retry. Not a product change.
