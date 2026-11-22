@@ -10,4 +10,4 @@ Each invocation reads one JSON object on stdin and writes one JSON object on std
 cargo xtask griduser cross
 ```
 
-`get` returns `{found, user_id, data}` or `{found:false}`. `getall`, `getmany` and `online` return `{rows:[{user_id, data}]}`. `store` returns `{stored}`. `GetAll` on MySQL and PostgreSQL still interpolates the id, so a quote in the id makes that call fail. That is TB43. The Rust store binds an escaped prefix instead.
+`get` returns `{found, user_id, data}` or `{found:false}`. `getall`, `getmany` and `online` return `{rows:[{user_id, data}]}`. `store` returns `{stored}`. `GetAll` of an id with `%` or `_` is compared on SQLite only; that is TB43. The Rust store binds an escaped prefix.
