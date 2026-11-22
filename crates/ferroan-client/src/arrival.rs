@@ -85,6 +85,8 @@ pub struct ArrivalConfig {
     pub land: Vec<LandLayer>,
     /// Avatar full update and appearance. Absent on tests that only check arrival.
     pub avatar: Option<crate::AvatarWire>,
+    /// Local teleport. Absent until the region installs its rectangle and ground.
+    pub teleport: Option<crate::teleport::TeleportRegion>,
 }
 
 /// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
@@ -107,6 +109,7 @@ impl Default for ArrivalConfig {
             channel_version: "Ferroan Server".into(),
             land: Vec::new(),
             avatar: None,
+            teleport: None,
         }
     }
 }

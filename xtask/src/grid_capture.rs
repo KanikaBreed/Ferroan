@@ -420,6 +420,121 @@ pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
     Ok(line)
 }
 
+/// `TeleportStart` then `TeleportLocal` against the committed C# session.
+/// The fixture agent id is redacted. The live agent must be the harness owner.
+/// The two packets do not have to be adjacent.
+pub(super) fn compare_local_teleport(directory: &Path) -> Result<String, String> {
+    let live = records(&directory.join("capture-udp.cap"))?;
+    let fixture = records(&crate::repo_root().join("fixtures/captures/session.cap"))?;
+    let csharp = teleport_pair(&fixture)?;
+    let ferroan = teleport_pair(&live)?;
+    expect_teleport_pair("C# session capture", &csharp)?;
+    expect_teleport_pair("Ferroan capture", &ferroan)?;
+    let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER)
+        .map_err(|_| "estate owner is not a uuid".to_string())?;
+    if ferroan.1.agent_id != owner {
+        return Err("TeleportLocal agent is not the harness owner".into());
+    }
+    Ok(
+        "teleport bytes: TeleportStart flags 16, then TeleportLocal location 2 at (40.0,200.0,30.0) look (1.0,0.0,0.0) flags 16, reliable, not zero-coded; the live agent is the harness owner\nknown differences: a different region gets TeleportFailed and no map block (P2.0i); no post-teleport terse; IsFlying is not tracked; Godlike is not set on this path"
+            .to_string(),
+    )
+}
+
+const TELEPORT_FLAGS: u32 = 16;
+const TELEPORT_LOCATION: u32 = 2;
+const TELEPORT_POSITION: [f32; 3] = [40.0, 200.0, 30.0];
+const TELEPORT_LOOK: [f32; 3] = [1.0, 0.0, 0.0];
+
+struct TeleportStartHit {
+    index: usize,
+    reliable: bool,
+    zerocoded: bool,
+    flags: u32,
+}
+
+struct TeleportLocalHit {
+    index: usize,
+    reliable: bool,
+    zerocoded: bool,
+    agent_id: uuid::Uuid,
+    location_id: u32,
+    position: [f32; 3],
+    look_at: [f32; 3],
+    flags: u32,
+}
+
+fn teleport_pair(records: &[Record]) -> Result<(TeleportStartHit, TeleportLocalHit), String> {
+    use ferroan_protocol::msgs::{TeleportLocal, TeleportStart};
+    use ferroan_protocol::{Msg, PacketFlags, parse_packet};
+    let mut start = None;
+    for (index, record) in records.iter().enumerate() {
+        if record.kind != Kind::UdpOut {
+            continue;
+        }
+        let Ok(packet) = parse_packet(&record.bytes) else {
+            continue;
+        };
+        if start.is_none() && packet.id == TeleportStart::ID {
+            let decoded = packet
+                .decode::<TeleportStart>()
+                .map_err(|_| "captured TeleportStart did not decode".to_string())?;
+            start = Some(TeleportStartHit {
+                index,
+                reliable: packet.reliable(),
+                zerocoded: packet.flags & PacketFlags::ZEROCODED != 0,
+                flags: decoded.info.teleport_flags,
+            });
+        } else if start.is_some() && packet.id == TeleportLocal::ID {
+            let decoded = packet
+                .decode::<TeleportLocal>()
+                .map_err(|_| "captured TeleportLocal did not decode".to_string())?;
+            let Some(found) = start else {
+                return Err("capture has no TeleportStart".into());
+            };
+            return Ok((
+                found,
+                TeleportLocalHit {
+                    index,
+                    reliable: packet.reliable(),
+                    zerocoded: packet.flags & PacketFlags::ZEROCODED != 0,
+                    agent_id: decoded.info.agent_id,
+                    location_id: decoded.info.location_id,
+                    position: decoded.info.position.to_array(),
+                    look_at: decoded.info.look_at.to_array(),
+                    flags: decoded.info.teleport_flags,
+                },
+            ));
+        }
+    }
+    Err("capture has no TeleportStart followed by TeleportLocal".into())
+}
+
+fn expect_teleport_pair(
+    label: &str,
+    pair: &(TeleportStartHit, TeleportLocalHit),
+) -> Result<(), String> {
+    let (start, local) = pair;
+    if !start.reliable || start.zerocoded || start.flags != TELEPORT_FLAGS {
+        return Err(format!(
+            "{label} TeleportStart is not reliable, unencoded, flags {TELEPORT_FLAGS}"
+        ));
+    }
+    if local.index <= start.index
+        || !local.reliable
+        || local.zerocoded
+        || local.location_id != TELEPORT_LOCATION
+        || local.flags != TELEPORT_FLAGS
+        || local.position != TELEPORT_POSITION
+        || local.look_at != TELEPORT_LOOK
+    {
+        return Err(format!(
+            "{label} TeleportLocal does not match location {TELEPORT_LOCATION} at (40.0,200.0,30.0)"
+        ));
+    }
+    Ok(())
+}
+
 /// Presence `logoutregion` at Ferroan region start and stop.
 pub(super) fn compare_logout_region(directory: &Path) -> Result<String, String> {
     let fixture: Value = serde_json::from_slice(&bounded(
@@ -1057,6 +1172,15 @@ mod tests {
             assert_eq!(say.message, b"ferroan harness chat\0");
             assert_eq!(say.source_id, owner);
         }
+    }
+
+    #[test]
+    fn the_committed_session_has_the_local_teleport() {
+        let records = records(&crate::repo_root().join("fixtures/captures/session.cap")).unwrap();
+        let pair = teleport_pair(&records).unwrap();
+        expect_teleport_pair("C# session capture", &pair).unwrap();
+        // The capture redacts the agent to the protocol placeholder, not the harness owner.
+        assert_eq!(pair.1.agent_id, uuid::Uuid::from_u128(1));
     }
 
     #[test]

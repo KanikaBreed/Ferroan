@@ -30,6 +30,8 @@
 //   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs (ping and outgoing workers)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs (async movement dispatch)
+//   Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs
+//     (TeleportAgentWithinRegion)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Ferroan changes: async lifecycle, generation-safe cleanup and process orchestration.
 // Copyright (c) 2026 Ferroan contributors
@@ -45,8 +47,8 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -562,6 +564,8 @@ async fn serve_agent(
     } else {
         terrain_login(terrain.as_deref(), agent.start_pos)
     };
+    // Logout reports this. It starts as the login position and follows a local landing.
+    let landed = Arc::new(Mutex::new(position));
     if !already_stopped {
         let avatar = ferroan_region::avatar::load(
             &config.avatar_server_uri,
@@ -571,9 +575,30 @@ async fn serve_agent(
         )
         .await;
         let expect = agent.expect;
+        let half_height = avatar.height / 2.0;
         let mut arrival = config.arrival(position);
         arrival.land = land;
         arrival.avatar = Some(avatar);
+        // TeleportAgentWithinRegion. Godlike needs a cached user level and
+        // IsFlying is not tracked, so both stay off. Another region fails here;
+        // the crossing is P2.0i. SendLocalTeleport's queue is the circuit's.
+        let ground_terrain = terrain.clone();
+        arrival.teleport = Some(ferroan_client::TeleportRegion {
+            world_x: config.location[0].wrapping_mul(256),
+            world_y: config.location[1].wrapping_mul(256),
+            size_x: config.size[0] as f32,
+            size_y: config.size[1] as f32,
+            default_landing: [128.0, 128.0, 30.0],
+            half_height,
+            allow_movement: true,
+            godlike: false,
+            flying: false,
+            ground: Arc::new(move |x, y| match ground_terrain.as_ref() {
+                Some(frame) => frame.ground(x, y).unwrap_or(21.0),
+                None => 21.0,
+            }),
+            position: Arc::clone(&landed),
+        });
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
@@ -667,13 +692,14 @@ async fn serve_agent(
             }
         }
     }
+    let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
     settle(
         &grid_user,
         &presence,
         &config,
         agent,
         root_arrived,
-        position,
+        logout_position,
     )
     .await;
 }
@@ -772,7 +798,8 @@ async fn notify_logout(
     let grid_result = if agent.is_current() {
         // ActivityDetector reads ScenePresence.Lookat (zero before camera
         // updates), not CompleteMovement's nonzero arrival-packet fallback.
-        // `position` is the terrain-lifted arrival when a heightmap was loaded.
+        // `position` is the terrain-lifted login position, or the local
+        // teleport landing when the avatar moved inside the region.
         grid_user
             .logged_out(agent.expect.agent_id, config.id, position, [0.0; 3])
             .await

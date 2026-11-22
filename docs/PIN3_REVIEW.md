@@ -13,7 +13,7 @@ This review follows the commit diffs and final C# source, including the tests; P
 | `7daeab2e1b` | Refuse child-agent teleports; track destination arrival and close abandoned transfers; event-assisted bounded root/presence waits | Current region accepts only initial root login. Transfer behavior belongs to P2.0i; C# harness inherits it now |
 | `fdf891cc81` | Compare UDP endpoints by value; reopen child connections while retaining authorized circuit and CAPS; refuse a client whose circuit was removed | Applies also to a pre-root ViaLogin connection. Actual merged C# observation exposes TB11: replacement leaves the reopened login offline. Existing Rust endpoint restriction is retained until C# is fixed (maintainer, 19 November 2026); crossing support remains P2.0i |
 | `0e1dd1cf9f` | Reject undersized buffers entering the C# UDP pool | Rust uses bounded safe byte buffers and has no equivalent unsafe pool; capture encoding remains checked |
-| `f6cc9597ad` | Queue local teleport on Task behind preceding avatar updates | P2.0h must preserve this ordering; local teleport is not implemented yet |
+| `f6cc9597ad` | Queue local teleport on Task behind preceding avatar updates | P2.0h queues `TeleportLocal` behind terse updates already on the task queue. `TeleportStart` stays immediate |
 | `6bb0670cb7` | Increase ray budget in sculpt ray tests | Test-only; Rust physics is planned |
 | `9783276432` | Wait for destination removal to finish in logout/teleport regression test | Test-only synchronization fix; no arbitrary Rust delay added |
 | `3a30022b43` | Demote a stale root for a same-session non-login arrival instead of logging it out | P2.0i transfer behavior; current Rust rejects non-ViaLogin admission |

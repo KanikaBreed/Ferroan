@@ -15,6 +15,7 @@ mod circuit;
 mod datagram_log;
 mod event_queue;
 mod handshake;
+mod teleport;
 
 pub use appearance::{AvatarWire, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
@@ -27,3 +28,4 @@ pub use circuit::{
 };
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;
+pub use teleport::{GroundSample, TeleportRegion};
