@@ -86,6 +86,7 @@ jobs:
           cargo xtask live record-twice
           cargo xtask live run all
           cargo xtask live run all grid
+          cargo xtask live run neighbour grid
       - name: Check seed and held event polls against C# and Ferroan
         run: |
           set -euo pipefail

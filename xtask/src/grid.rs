@@ -953,7 +953,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             http_port: neighbour_port,
             public_proxy,
             private_proxy,
-            capture: None,
+            // The return hop's TeleportStart and AgentMovementComplete are
+            // UDP from this region. Home's capture file does not see them.
+            capture: Some(root.join("capture-udp-neighbour.cap")),
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
@@ -1193,6 +1195,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let logout_region = login_capture::compare_logout_region(&root)?;
         Ok(format!(
             "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{logout_region}\n{proxy_report}",
+            report.lines
+        ))
+    } else if scenario == "neighbour" {
+        let comparison = login_capture::compare_neighbour_teleport(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
     } else {
