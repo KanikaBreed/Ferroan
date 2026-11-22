@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Grid services. This crate holds the asset service, the user-account
-//! service (including user aliases), authentication, and the grid-user stores.
+//! service (including user aliases), authentication, the grid-user stores,
+//! and the avatar stores.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies
@@ -16,6 +17,7 @@ pub mod account;
 pub mod alias;
 pub mod asset;
 pub mod auth;
+pub mod avatar;
 pub mod griduser;
 
 pub use account::AccountHttp;

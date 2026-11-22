@@ -23,6 +23,16 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (an out
 
 Items that name a GitHub issue are open to outside contributors too, but the coder does not wait for them. When such an item comes up, check its issue first (`gh issue view <n> --json labels`). If it is labelled `claimed`, a contributor has it: skip the item and go on. If not, it is the coder's: add the `claimed` label, post one comment on the issue ("The project's queue coder is taking this, on branch `<branch>`."), and work it as usual, with `Closes #<n>` in the PR. An item that names several issues is taken one issue at a time, in the order listed. This is the only issue comment the coder posts.
 
+## Paused for handoff (22 November 2026)
+
+The Grok queue coders' shared weekly usage ran out on 22 November 2026 around 01:30 EST (`402 Payment Required`). It resets on Monday 23 November at 21:08 EST. Any coder that resumes first finishes what is in flight, in this order, before taking a new item:
+
+1. **#172** (Q26b, GridUser service), **#173** (Q10ab, the `AgentUpdate` quaternion re-encode) and **#174** (Q27a, avatar stores) have auto-merge on. If one has not merged, read its checks, fix or retry under the flake rule, and record its evidence.
+2. **Q23e** (live FSAssets compare) has uncommitted work in `/home/cinder/Git/work/ferroan/q23e-fsasset-live` on `feat/fsasset-live` (a new `xtask/src/fsasset_live.rs` and harness, workflow and docs edits). Read it, finish it or start again from `origin/main`; it is not pushed.
+3. Then the region track resumes with Q18b.
+
+Remove this section once the queue runs again.
+
 ## Queue
 
 | # | Item | Status |
@@ -69,6 +79,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | DONE (#152) |
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
+| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -110,7 +121,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
-| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
+| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | READY after Q27a |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
@@ -415,6 +426,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (5) Live. `cargo xtask live compare avatar`, following `live compare accounts`. `--rust avatar` points `[LoginService] AvatarService` and `[UserAccountService] AvatarService` at `OpenSim.Services.Connectors.dll:AvatarServicesConnector` and `AvatarServerURI`, drops the in-process `AvatarServiceConnector`, and gives `ferroan-robust` its own `Avatar.db`. Do not share that file with C# Robust. A bot appearance set through one side is what the other side returns, and a C# region sends the same `AvatarAppearance` after a relog. XBakes stays off unless (3) has landed and the harness enables it. The pattern row in `crates/ferroan-services/README.md` gains this connector.
 
 Q27 split (manager, 22 November 2026): the block in #167 is right, and its five parts are taken as Q27a to Q27e. The viewer bake read stays in (Q27d): the pin serves it from the same service. `AvatarHeight` is TB44: Ferroan writes and reads it with a dot decimal in every locale. P1.4 stays TODO until all five are DONE.
+
+Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
 
 ## Found while working
 
