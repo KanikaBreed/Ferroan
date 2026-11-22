@@ -61,7 +61,9 @@
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Ferroan changes: bounded local login admission, concurrent root circuits, gzip limits,
 // a single CreateAgent budget under Robust's 30 s connector timeout, and an
-// empty JSON 403 for a refused control-plane POST.
+// empty JSON 403 for a refused control-plane POST. At pin 1d7abb8337,
+// Scene.CheckLandPositionAccess admits a god or an estate manager before the
+// root-agent count. Those extra roots share region.root-bypass.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -82,6 +84,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
+use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
     Router,
@@ -92,7 +95,7 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{CapsRegistry, CircuitExpect};
-use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS};
+use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -105,6 +108,8 @@ const MAX_VERSION: f32 = 0.8;
 const VIA_LOGIN: u32 = 1 << 7;
 /// `RegionSettings.AgentLimit` at the pin. Not a configuration key.
 pub const ROOT_AGENT_LIMIT: usize = 40;
+/// Queued accepts: the ordinary roots plus the staff and god bypass.
+pub const ADMISSION_QUEUE: usize = ROOT_AGENT_LIMIT + ROOT_BYPASS_LIMIT;
 
 #[derive(Debug, thiserror::Error)]
 enum SimulationError {
@@ -139,6 +144,10 @@ pub struct SimulationState {
     /// Admitted root sessions. A same-agent replacement does not take another
     /// place. Tests lower it. It is not a configuration key.
     root_limit: usize,
+    /// Extra roots past `root_limit` for estate staff and grid gods.
+    /// Tests lower it. It is not a configuration key.
+    bypass_limit: usize,
+    staff: StaffGate,
     meters: Arc<RegionMeters>,
 }
 
@@ -284,8 +293,14 @@ impl SimulationState {
             admission_open: Arc::new(AtomicBool::new(true)),
             create_agent_budget: Duration::from_secs(25),
             root_limit: ROOT_AGENT_LIMIT,
+            bypass_limit: ROOT_BYPASS_LIMIT,
+            staff: StaffGate::from_config(config),
             meters,
         }
+    }
+
+    pub fn apply_estate(&mut self, access: ferroan_scene::EstateAccess) {
+        self.staff.apply_store(access);
     }
 
     pub fn meters(&self) -> Arc<RegionMeters> {
@@ -296,7 +311,25 @@ impl SimulationState {
         self.admission_open.store(false, Ordering::Release);
     }
 
-    fn admission_refusal(&self, agent: Uuid) -> Option<&'static str> {
+    /// Look up a grid-god level when this agent is not already estate staff.
+    /// `None` means the account is not a god, including a failed lookup.
+    async fn lookup_level(&self, agent: Uuid) -> Option<i32> {
+        if !self.staff.needs_account_level(agent) {
+            return None;
+        }
+        if let Some(level) = self.staff.cached_level(agent) {
+            return Some(level);
+        }
+        let level =
+            crate::grid::account_user_level(self.staff.account_uri(), self.staff.scope_id(), agent)
+                .await;
+        if let Some(level) = level {
+            self.staff.note_level(agent, level);
+        }
+        level
+    }
+
+    fn admission_refusal(&self, agent: Uuid, level: Option<i32>) -> Option<&'static str> {
         if !self.admission_open.load(Ordering::Acquire) {
             return Some("Logins to this region are disabled");
         }
@@ -304,21 +337,40 @@ impl SimulationState {
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        self.refusal_locked(&sessions, agent, level)
+    }
+
+    fn refusal_locked(
+        &self,
+        sessions: &HashMap<Uuid, ActiveSession>,
+        agent: Uuid,
+        level: Option<i32>,
+    ) -> Option<&'static str> {
         if sessions.contains_key(&agent) || sessions.len() < self.root_limit {
             return None;
         }
-        self.note_root_limit(sessions.len());
-        Some("The region is full")
-    }
-
-    fn note_root_limit(&self, admitted: usize) {
+        if self.staff.bypasses(agent, level) {
+            let extra = sessions.len() - self.root_limit;
+            if extra < self.bypass_limit {
+                return None;
+            }
+            ferroan_diag::refuse(
+                ROOT_BYPASS,
+                Kind::Hard,
+                self.bypass_limit as u64,
+                extra.saturating_add(1) as u64,
+                "/agent",
+            );
+            return Some("The region is full");
+        }
         ferroan_diag::refuse(
             ROOT_AGENTS,
             Kind::Hard,
             self.root_limit as u64,
-            admitted.saturating_add(1) as u64,
+            sessions.len().saturating_add(1) as u64,
             "/agent",
         );
+        Some("The region is full")
     }
 
     /// Serve using `into_make_service_with_connect_info::<SocketAddr>()`.
@@ -328,7 +380,16 @@ impl SimulationState {
             .with_state(self)
     }
 
+    #[cfg(test)]
     fn accept(&self, fields: AgentFields) -> Result<(), &'static str> {
+        self.accept_with_level(fields, None)
+    }
+
+    fn accept_with_level(
+        &self,
+        fields: AgentFields,
+        level: Option<i32>,
+    ) -> Result<(), &'static str> {
         if !self.admission_open.load(Ordering::Acquire) {
             return Err("Logins to this region are disabled");
         }
@@ -336,10 +397,8 @@ impl SimulationState {
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let replacing = sessions.contains_key(&fields.agent_id);
-        if !replacing && sessions.len() >= self.root_limit {
-            self.note_root_limit(sessions.len());
-            return Err("The region is full");
+        if let Some(reason) = self.refusal_locked(&sessions, fields.agent_id, level) {
+            return Err(reason);
         }
         // Reserve before replacing anything: backpressure or a stopped
         // dispatcher must leave the current sessions and capabilities intact.
@@ -487,11 +546,12 @@ async fn handle(
     if method == "QUERYACCESS" {
         return match query_access(&args, region == Some(state.region_id)) {
             Ok(mut answer) => {
-                if answer["success"] == true
-                    && let Some(reason) = state.admission_refusal(agent)
-                {
-                    answer["success"] = json!(false);
-                    answer["reason"] = json!(reason);
+                if answer["success"] == true {
+                    let level = state.lookup_level(agent).await;
+                    if let Some(reason) = state.admission_refusal(agent, level) {
+                        answer["success"] = json!(false);
+                        answer["reason"] = json!(reason);
+                    }
                 }
                 json_reply(answer, false)
             }
@@ -505,8 +565,10 @@ async fn handle(
     };
     fields.clamp_position(state.region_size);
     // Scene.NewUserConnection checks LoginsEnabled before VerifyUserPresence.
-    // The root-agent bound uses that same early point.
-    if let Some(reason) = state.admission_refusal(agent) {
+    // The root-agent bound uses that same early point. A god level looked up
+    // here is the level accept uses, including when the level cache is full.
+    let level = state.lookup_level(agent).await;
+    if let Some(reason) = state.admission_refusal(agent, level) {
         return create_refused(reason, peer);
     }
     // SimulationServiceConnector.CreateAgent posts with a 30 s timeout. The
@@ -552,7 +614,7 @@ async fn handle(
         );
     }
     let _lifecycle = lifecycle;
-    let answer = match state.accept(fields) {
+    let answer = match state.accept_with_level(fields, level) {
         Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
@@ -1117,7 +1179,7 @@ mod tests {
             .accept(AgentFields::parse(&args, agent, region).unwrap())
             .unwrap();
         let current = receiver.recv().await.unwrap();
-        assert_eq!(state.admission_refusal(agent), None);
+        assert_eq!(state.admission_refusal(agent, None), None);
         let other = Uuid::from_u128(999);
         let request = Request::builder()
             .method("QUERYACCESS")
@@ -1545,6 +1607,95 @@ mod tests {
         assert!(replacement.is_current());
         drop(replacement);
         assert!(state.meters().diag_lines().contains("circuits: 0\n"));
+    }
+
+    fn refuse_count(snapshot: &str, limit: &str) -> u64 {
+        let prefix = format!("ferroan_limit_hits_total{{limit=\"{limit}\",action=\"refuse\"}} ");
+        snapshot
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    fn other_agent(id: u128, code: u32) -> AgentFields {
+        let mut fields = synthetic_agent();
+        fields.agent_id = Uuid::from_u128(id);
+        fields.session_id = Uuid::from_u128(id.saturating_add(1_000));
+        fields.secure_session_id = Uuid::from_u128(id.saturating_add(2_000));
+        fields.circuit_code = code;
+        fields.caps_path = Uuid::from_u128(id.saturating_add(3_000)).to_string();
+        fields
+    }
+
+    #[test]
+    fn estate_manager_enters_a_full_region_and_an_ordinary_account_does_not() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, receiver) = mpsc::channel(4);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.root_limit = 1;
+        state.bypass_limit = 1;
+        let manager = Uuid::from_u128(20);
+        let ordinary = Uuid::from_u128(21);
+        let god = Uuid::from_u128(22);
+        state.staff.set_managers(vec![manager]);
+        state.staff.set_allow_grid_gods(true);
+        state.staff.note_level(god, crate::staff::GOD_USER_LEVEL);
+        // The queued accepts keep both sessions. Dropping one would free its seat.
+        state.accept(synthetic_agent()).unwrap();
+        state.accept(other_agent(manager.as_u128(), 50)).unwrap();
+        let _held = receiver;
+        let agents_before = refuse_count(&ferroan_diag::metrics(), "region.root-agents");
+        assert_eq!(
+            state.accept(other_agent(ordinary.as_u128(), 51)),
+            Err("The region is full")
+        );
+        assert!(refuse_count(&ferroan_diag::metrics(), "region.root-agents") > agents_before);
+        let bypass_before = refuse_count(&ferroan_diag::metrics(), "region.root-bypass");
+        assert_eq!(
+            state.accept(other_agent(god.as_u128(), 52)),
+            Err("The region is full")
+        );
+        assert_eq!(
+            refuse_count(&ferroan_diag::metrics(), "region.root-bypass"),
+            bypass_before + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn getaccount_level_200_admits_a_grid_god_to_a_full_region() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/accounts",
+            axum::routing::post(|| async {
+                "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserLevel>200</UserLevel></result></ServerResponse>"
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let region = Uuid::from_u128(5);
+        let mut config = test_config(&format!("http://{addr}"), region);
+        config.user_account_server_uri = format!("http://{addr}");
+        config.allow_grid_gods = true;
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(4);
+        let mut state = SimulationState::new(&config, caps, sender);
+        state.root_limit = 1;
+        state.bypass_limit = 1;
+        state.accept(synthetic_agent()).unwrap();
+        let god = Uuid::from_u128(80);
+        let level = state.lookup_level(god).await;
+        assert_eq!(level, Some(200));
+        assert_eq!(state.admission_refusal(god, level), None);
+        state
+            .accept_with_level(other_agent(god.as_u128(), 80), level)
+            .unwrap();
     }
 
     #[tokio::test]

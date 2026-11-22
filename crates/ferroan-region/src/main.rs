@@ -55,7 +55,7 @@ use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
-use ferroan_region::simulation::{AcceptedAgent, ROOT_AGENT_LIMIT, SimulationState};
+use ferroan_region::simulation::{ADMISSION_QUEUE, AcceptedAgent, SimulationState};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
 };
@@ -195,10 +195,21 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         config.cap_grants.clone(),
         Some(fetch.service()),
     )?;
-    // One queued accept per admitted root. The dispatcher spawns the circuit,
-    // so a same-agent replacement still fits while the old task is running.
-    let (accepted, agents) = mpsc::channel(ROOT_AGENT_LIMIT);
-    let simulation = SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    // One queued accept per admitted root, including the staff and god bypass.
+    // The dispatcher spawns the circuit, so a same-agent replacement still fits
+    // while the old task is running.
+    let (accepted, agents) = mpsc::channel(ADMISSION_QUEUE);
+    let mut simulation =
+        SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    if let Some(connection) = config.estate_store.as_deref() {
+        match ferroan_scene::open_estate(connection, config.id).await {
+            Ok(Some(access)) => simulation.apply_estate(access),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!("ferroan-region: estate tables were not read: {error}");
+            }
+        }
+    }
     let status = StatusState::new(
         config.id,
         config.name.clone(),
@@ -288,8 +299,9 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         // One active generation and one queued replacement: two arrival writes,
         // up to six failed-login cleanup requests and one admission, each
         // bounded at 30s. Concurrent roots take the same budget. HTTP cleanup
-        // holds one lifecycle lock, so a region at ROOT_AGENT_LIMIT can still
-        // outrun it. Shutdown never cancels a write ahead of its cleanup.
+        // holds one lifecycle lock, so a region at the ordinary root limit plus
+        // the staff bypass can still outrun it. Shutdown never cancels a write
+        // ahead of its cleanup.
         let drained = tokio::time::timeout(Duration::from_secs(275), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
