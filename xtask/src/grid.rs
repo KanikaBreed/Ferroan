@@ -222,6 +222,7 @@ ExternalHostName = {advertised}
 struct ServiceUris<'a> {
     asset: Option<&'a str>,
     account: Option<&'a str>,
+    auth: Option<&'a str>,
 }
 
 fn robust_ini(
@@ -269,6 +270,30 @@ fn robust_ini(
             ),
         )
     };
+    // LLLoginService loads IAuthenticationService with (config, userAccountService).
+    // AuthenticationServicesConnector has no such constructor, so login stays on
+    // PasswordAuthenticationService and opens the same auth.db ferroan-robust
+    // serves. The in-process account service loads the one-argument connector.
+    // Its SetPassword is a no-op; the harness posts setpassword. The HTTP
+    // handler stays omitted so C# does not also listen on /auth.
+    let password_module =
+        "OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService";
+    let remote_auth = "OpenSim.Services.Connectors.dll:AuthenticationServicesConnector";
+    let (auth_connector, login_auth, account_auth, remote_auth_uri) = if let Some(uri) =
+        services.auth
+    {
+        service_uri(uri)?;
+        (String::new(), password_module, remote_auth, Some(uri))
+    } else {
+        (
+            format!(
+                "    AuthenticationServiceConnector = \"{private_port}/OpenSim.Server.Handlers.dll:AuthenticationServiceConnector\"\n"
+            ),
+            password_module,
+            password_module,
+            None,
+        )
+    };
     // LoginService.UserAccountService and the ServiceList connector are the
     // harness Robust loads of UserAccountService. The connector reads
     // UserAccountServerURI from [UserAccountService]. GridUserService stays
@@ -288,18 +313,42 @@ fn robust_ini(
             format!(
                 "    UserAccountServiceConnector = \"{private_port}/OpenSim.Server.Handlers.dll:UserAccountServiceConnector\"\n"
             ),
-            "[UserAccountService]\n    \
+            format!(
+                "[UserAccountService]\n    \
                  LocalServiceModule = \"OpenSim.Services.UserAccountService.dll:UserAccountService\"\n    \
-                 AuthenticationService = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\"\n    \
+                 AuthenticationService = \"{account_auth}\"\n    \
                  PresenceService = \"OpenSim.Services.PresenceService.dll:PresenceService\"\n    \
                  GridService = \"OpenSim.Services.GridService.dll:GridService\"\n    \
                  InventoryService = \"OpenSim.Services.InventoryService.dll:XInventoryService\"\n    \
                  AvatarService = \"OpenSim.Services.AvatarService.dll:AvatarService\"\n    \
                  GridUserService = \"OpenSim.Services.UserAccountService.dll:GridUserService\"\n    \
                  CreateDefaultAvatarEntries = true\n\n"
-                .to_string(),
+            ),
             "OpenSim.Services.UserAccountService.dll:UserAccountService",
             "",
+        )
+    };
+    let auth_section = if let Some(uri) = remote_auth_uri {
+        // start_grid copies the fixture to auth.db beside robust.db. Keep the
+        // separator in the string: Path::with_file_name rewrites `/tmp/...` on
+        // Windows, and this ini is built in tests there. BusyTimeout only.
+        // Journal Mode=Wal would try to change the mode while Ferroan already
+        // holds the file.
+        let auth_path = shared_auth_path(database);
+        plain(&auth_path, "auth database path")?;
+        let shared = format!("Data Source={auth_path};Version=3;BusyTimeout=15000;");
+        format!(
+            "[AuthenticationService]\n    \
+             AuthenticationServerURI = \"{uri}\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"{shared}\"\n\n"
+        )
+    } else {
+        format!(
+            "[AuthenticationService]\n    \
+             LocalServiceModule = \"{password_module}\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"{auth_store}\"{allow_set_password}\n\n"
         )
     };
     Ok(format!(
@@ -324,8 +373,7 @@ fn robust_ini(
 {asset_connector}    InventoryInConnector = "{private_port}/OpenSim.Server.Handlers.dll:XInventoryInConnector"
     GridServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:GridServiceConnector"
     GridInfoServerInConnector = "{public_port}/OpenSim.Server.Handlers.dll:GridInfoServerInConnector"
-    AuthenticationServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:AuthenticationServiceConnector"
-    AvatarServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:AvatarServiceConnector"
+{auth_connector}    AvatarServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:AvatarServiceConnector"
     LLLoginServiceInConnector = "{public_port}/OpenSim.Server.Handlers.dll:LLLoginServiceInConnector"
     PresenceServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:PresenceServiceConnector"
 {account_connector}    GridUserServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:GridUserServiceConnector"
@@ -349,12 +397,7 @@ fn robust_ini(
     StorageProvider = "OpenSim.Data.Null.dll"
     Region_Ferroan_Test = "DefaultRegion"
 
-[AuthenticationService]
-    LocalServiceModule = "OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService"
-    StorageProvider = "OpenSim.Data.SQLite.dll"
-    ConnectionString = "{auth_store}"{allow_set_password}
-
-{account_section}[GridUserService]
+{auth_section}{account_section}[GridUserService]
     LocalServiceModule = "OpenSim.Services.UserAccountService.dll:GridUserService"
 
 [AgentPreferencesService]
@@ -382,7 +425,7 @@ fn robust_ini(
     LocalServiceModule = "OpenSim.Services.LLLoginService.dll:LLLoginService"
     UserAccountService = "{login_account}"
     GridUserService = "OpenSim.Services.UserAccountService.dll:GridUserService"
-    AuthenticationService = "OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService"
+    AuthenticationService = "{login_auth}"
     InventoryService = "OpenSim.Services.InventoryService.dll:XInventoryService"
     AvatarService = "OpenSim.Services.AvatarService.dll:AvatarService"
     PresenceService = "OpenSim.Services.PresenceService.dll:PresenceService"
@@ -445,6 +488,17 @@ fn assignment_name(trimmed: &str) -> Option<&str> {
     let (name, _) = trimmed.split_once('=')?;
     let name = name.trim();
     if name.is_empty() { None } else { Some(name) }
+}
+
+/// `auth.db` in the same directory as Robust's database path.
+///
+/// The separator stays as written. Live runs are Linux. The unit test passes
+/// a `/tmp/...` string on Windows, where `Path` would emit a backslash.
+fn shared_auth_path(database: &str) -> String {
+    match database.rfind(['/', '\\']) {
+        Some(index) => format!("{}auth.db", &database[..=index]),
+        None => "auth.db".to_string(),
+    }
 }
 
 fn plain(value: &str, label: &str) -> Result<(), String> {
@@ -584,6 +638,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let ferroan = spec.ferroan_region;
     let rust_assets = spec.rust_assets();
     let rust_accounts = spec.rust_accounts();
+    let rust_auth = spec.rust_auth();
     if ferroan
         && !matches!(
             scenario,
@@ -635,9 +690,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         None
     };
     let port_count = 6
-        + usize::from(rust_assets || rust_accounts)
+        + usize::from(rust_assets || rust_accounts || rust_auth)
         + usize::from(ferroan)
-        + usize::from(rust_assets || rust_accounts);
+        + usize::from(rust_assets || rust_accounts || rust_auth);
     let mut ports = Vec::new();
     for _ in 0..32 {
         if ports.len() == port_count {
@@ -657,7 +712,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let private_proxy = ports[3];
     let home_port = ports[4];
     let neighbour_port = ports[5];
-    let rust_services = rust_assets || rust_accounts;
+    let rust_services = rust_assets || rust_accounts || rust_auth;
     let rust_port = rust_services.then(|| ports[6]);
     let region_metrics = ferroan.then(|| ports[6 + usize::from(rust_services)]);
     let robust_metrics =
@@ -721,7 +776,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         None
     };
-    let (asset_uri, account_uri) = if let Some(port) = rust_port {
+    let (asset_uri, account_uri, auth_uri) = if let Some(port) = rust_port {
         let uri = format!("http://127.0.0.1:{port}");
         let asset_database = if rust_assets {
             let seed = seeded.as_ref().ok_or("the asset seed was not prepared")?;
@@ -744,14 +799,29 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         } else {
             None
         };
-        let (log_name, ini_name) = if rust_accounts {
+        let auth_database = if rust_auth {
+            let fixture = crate::repo_root().join("fixtures/db/sqlite/AuthStore.db");
+            if !fixture.is_file() {
+                return Err(format!("missing {}", fixture.display()));
+            }
+            let database = root.join("auth.db");
+            fs::copy(&fixture, &database)
+                .map_err(|error| format!("could not copy the auth database: {error}"))?;
+            Some(database)
+        } else {
+            None
+        };
+        let (log_name, ini_name) = if rust_accounts || rust_auth {
             ("rust-services.log", "rust-services.ini")
         } else {
             ("assets-ferroan.log", "assets-ferroan.ini")
         };
         grid.rust_assets = Some(crate::assets::start_grid_services(
-            asset_database.as_deref(),
-            account_database.as_deref(),
+            crate::assets::GridServiceDatabases {
+                asset: asset_database.as_deref(),
+                account: account_database.as_deref(),
+                auth: auth_database.as_deref(),
+            },
             port,
             robust_metrics,
             &root.join(log_name),
@@ -764,12 +834,16 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         if rust_accounts {
             println!("live: rust accounts on {uri}");
         }
+        if rust_auth {
+            println!("live: rust auth on {uri}");
+        }
         (
             rust_assets.then(|| uri.clone()),
-            rust_accounts.then_some(uri),
+            rust_accounts.then(|| uri.clone()),
+            rust_auth.then_some(uri),
         )
     } else {
-        (None, None)
+        (None, None, None)
     };
     println!(
         "live: grid Robust on {ROBUST_BIND}:{robust_public} (private {robust_private}), proxies {public_proxy}/{private_proxy}"
@@ -782,6 +856,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         ServiceUris {
             asset: asset_uri.as_deref(),
             account: account_uri.as_deref(),
+            auth: auth_uri.as_deref(),
         },
         docker,
     )?);
@@ -799,6 +874,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     provision_account(
         require_started_mut(&mut grid.robust, "Robust")?,
         account_uri.as_deref(),
+        auth_uri.as_deref(),
         robust_private,
         AccountSeed {
             first: "Test",
@@ -812,6 +888,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     provision_account(
         require_started_mut(&mut grid.robust, "Robust")?,
         account_uri.as_deref(),
+        auth_uri.as_deref(),
         robust_private,
         AccountSeed {
             first: "Chat",
@@ -851,6 +928,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture: Some(root.join("capture-udp.cap")),
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
+            auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
         },
         &grid.passwords,
@@ -878,6 +956,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture: None,
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
+            auth_uri: auth_uri.clone(),
             metrics_port: None,
         },
         &grid.passwords,
@@ -1521,6 +1600,7 @@ fn start_robust_at(
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
 struct AccountSeed<'a> {
     first: &'a str,
     last: &'a str,
@@ -1533,20 +1613,13 @@ struct AccountSeed<'a> {
 fn provision_account(
     proc: &mut Proc,
     account_uri: Option<&str>,
+    auth_uri: Option<&str>,
     private_port: u16,
     user: AccountSeed<'_>,
     passwords: &[String],
 ) -> Result<(), String> {
     if let Some(uri) = account_uri {
-        provision_remote_account(
-            uri,
-            private_port,
-            user.first,
-            user.last,
-            user.password,
-            user.email,
-            user.uuid,
-        )?;
+        provision_remote_account(uri, auth_uri, private_port, user)?;
         if live::log_contains(&proc.log, user.password)? {
             return Err("the Robust log contains a password".to_string());
         }
@@ -1560,7 +1633,13 @@ fn provision_account(
         user.email,
         user.uuid,
         passwords,
-    )
+    )?;
+    // The in-process account service's auth connector does not store the
+    // password. The harness posts it to the Rust service after create user.
+    if let Some(uri) = auth_uri {
+        store_password(uri, user.uuid, user.password, user.first, user.last)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1603,19 +1682,23 @@ fn create_account(
 
 /// The in-process `create user` command is registered by `UserAccountService`.
 /// With the remote connector, the account row is `POST /accounts`, the
-/// password is `POST /auth/plain` on C# Robust, and the inventory skeleton is
-/// `POST /xinventory`. `AuthenticationServicesConnector` posts to `/auth/plain`;
-/// `/auth` itself returns an empty body. None of these requests is written to a log.
+/// password is `POST /auth/plain`, and the inventory skeleton is
+/// `POST /xinventory`. The password stays on C# Robust unless `--rust auth`
+/// points it at the Rust service. None of these requests is written to a log.
 #[cfg(target_os = "linux")]
 fn provision_remote_account(
     account_uri: &str,
+    auth_uri: Option<&str>,
     private_port: u16,
-    first: &str,
-    last: &str,
-    password: &str,
-    email: &str,
-    uuid: &str,
+    user: AccountSeed<'_>,
 ) -> Result<(), String> {
+    let AccountSeed {
+        first,
+        last,
+        password,
+        email,
+        uuid,
+    } = user;
     let account_port = rust_service_port(account_uri)?;
     let created = post_form(
         SocketAddr::from((Ipv4Addr::LOCALHOST, account_port)),
@@ -1630,8 +1713,12 @@ fn provision_remote_account(
     if !created.contains(uuid) {
         return Err(format!("could not create account {first} {last}"));
     }
+    let auth_address = match auth_uri {
+        Some(uri) => SocketAddr::from((Ipv4Addr::LOCALHOST, rust_service_port(uri)?)),
+        None => SocketAddr::from((ROBUST_BIND, private_port)),
+    };
     let auth = post_form(
-        SocketAddr::from((ROBUST_BIND, private_port)),
+        auth_address,
         "/auth/plain",
         &format!("METHOD=setpassword&PRINCIPAL={uuid}&PASSWORD={password}"),
     )?;
@@ -1653,12 +1740,34 @@ fn provision_remote_account(
 }
 
 #[cfg(target_os = "linux")]
+fn store_password(
+    uri: &str,
+    uuid: &str,
+    password: &str,
+    first: &str,
+    last: &str,
+) -> Result<(), String> {
+    let auth = post_form(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, rust_service_port(uri)?)),
+        "/auth/plain",
+        &format!("METHOD=setpassword&PRINCIPAL={uuid}&PASSWORD={password}"),
+    )?;
+    if auth.contains(password) {
+        return Err("the authentication response contains a password".to_string());
+    }
+    if !auth.contains("Success") {
+        return Err(format!("could not store the password for {first} {last}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn rust_service_port(uri: &str) -> Result<u16, String> {
     let rest = uri
         .strip_prefix("http://127.0.0.1:")
-        .ok_or("the account service URL is not on 127.0.0.1")?;
+        .ok_or("the service URL is not on 127.0.0.1")?;
     rest.parse::<u16>()
-        .map_err(|_| "the account service URL has no port".to_string())
+        .map_err(|_| "the service URL has no port".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -1723,6 +1832,7 @@ struct RegionStart {
     capture: Option<PathBuf>,
     asset_uri: Option<String>,
     account_uri: Option<String>,
+    auth_uri: Option<String>,
     metrics_port: Option<u16>,
 }
 
@@ -1753,6 +1863,9 @@ fn start_region(
     }
     if let Some(uri) = &spec.account_uri {
         rewrites.push(("UserAccountServerURI", uri.as_str()));
+    }
+    if let Some(uri) = &spec.auth_uri {
+        rewrites.push(("AuthenticationServerURI", uri.as_str()));
     }
     if !rewrites.is_empty() {
         install_grid_common(cwd, &rewrites)?;
@@ -2460,6 +2573,7 @@ mod tests {
             ServiceUris {
                 asset: None,
                 account: None,
+                auth: None,
             },
         )
         .unwrap();
@@ -2497,6 +2611,7 @@ mod tests {
             ServiceUris {
                 asset: Some("http://127.0.0.1:9"),
                 account: None,
+                auth: None,
             },
         )
         .unwrap();
@@ -2517,6 +2632,7 @@ mod tests {
                 ServiceUris {
                     asset: Some("http://bad uri"),
                     account: None,
+                    auth: None,
                 },
             )
             .is_err()
@@ -2554,6 +2670,7 @@ mod tests {
             ServiceUris {
                 asset: None,
                 account: Some("http://127.0.0.1:9"),
+                auth: None,
             },
         )
         .unwrap();
@@ -2593,6 +2710,7 @@ mod tests {
             ServiceUris {
                 asset: Some("http://127.0.0.1:9"),
                 account: Some("http://127.0.0.1:9"),
+                auth: None,
             },
         )
         .unwrap();
@@ -2600,6 +2718,66 @@ mod tests {
         assert!(both.contains("UserAccountServerURI = \"http://127.0.0.1:9\""));
         assert!(!both.contains("AssetServiceConnector"));
         assert!(!both.contains("UserAccountServiceConnector"));
+    }
+
+    #[test]
+    fn a_rust_auth_uri_omits_the_local_handler_and_shares_the_auth_file() {
+        let ini = robust_ini(
+            ROBUST_BIND,
+            8002,
+            8003,
+            "/tmp/ferroan-robust.db",
+            "/tmp/Libraries.xml",
+            "/tmp/AssetSets.xml",
+            ServiceUris {
+                asset: None,
+                account: None,
+                auth: Some("http://127.0.0.1:9"),
+            },
+        )
+        .unwrap();
+        assert!(ini.contains("AuthenticationServerURI = \"http://127.0.0.1:9\""));
+        assert!(ini.contains(
+            "AuthenticationService = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""
+        ));
+        assert!(ini.contains(
+            "AuthenticationService = \"OpenSim.Services.Connectors.dll:AuthenticationServicesConnector\""
+        ));
+        assert!(ini.contains("Data Source=/tmp/auth.db;Version=3;BusyTimeout=15000;"));
+        assert!(!ini.contains("AuthenticationServiceConnector"));
+        assert!(!ini.contains("LocalServiceModule = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""));
+        assert!(!ini.contains("AllowSetPassword"));
+        assert!(!ini.contains("ferroan-robust.db.auth"));
+        assert!(ini.contains("UserAccountServiceConnector"));
+        let common = "[AuthenticationService]\n    AuthenticationServerURI = \"${Const|PrivURL}:${Const|PrivatePort}\"\n";
+        let pointed =
+            rewrite_named_server_uri(common, "AuthenticationServerURI", "http://127.0.0.1:9")
+                .unwrap();
+        assert!(pointed.contains("AuthenticationServerURI = \"http://127.0.0.1:9\""));
+        assert!(!pointed.contains("${Const|PrivURL}"));
+
+        let both = robust_ini(
+            ROBUST_BIND,
+            8002,
+            8003,
+            "/tmp/ferroan-robust.db",
+            "/tmp/Libraries.xml",
+            "/tmp/AssetSets.xml",
+            ServiceUris {
+                asset: None,
+                account: Some("http://127.0.0.1:9"),
+                auth: Some("http://127.0.0.1:9"),
+            },
+        )
+        .unwrap();
+        assert!(both.contains("UserAccountServerURI = \"http://127.0.0.1:9\""));
+        assert!(both.contains("AuthenticationServerURI = \"http://127.0.0.1:9\""));
+        assert!(both.contains(
+            "AuthenticationService = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\""
+        ));
+        assert!(both.contains("Data Source=/tmp/auth.db;Version=3;BusyTimeout=15000;"));
+        assert!(!both.contains("AllowSetPassword"));
+        assert!(!both.contains("AuthenticationServicesConnector"));
     }
 
     #[test]
@@ -2626,6 +2804,7 @@ mod tests {
                 ServiceUris {
                     asset: None,
                     account: None,
+                    auth: None,
                 },
             )
             .unwrap();

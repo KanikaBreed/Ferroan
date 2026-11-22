@@ -395,23 +395,36 @@ pub(crate) fn seed_library_database() -> Result<PathBuf, String> {
     seed_database()
 }
 
+/// Databases one `ferroan-robust` may open for the grid `--rust` services.
+#[cfg(target_os = "linux")]
+pub(crate) struct GridServiceDatabases<'a> {
+    pub(crate) asset: Option<&'a Path>,
+    pub(crate) account: Option<&'a Path>,
+    pub(crate) auth: Option<&'a Path>,
+}
+
 /// One `ferroan-robust` for the grid `--rust` services named here.
 ///
 /// An asset database is the seeded library store. An account database is a
-/// copy of the UserAccount fixture, not Robust's file. Asset-only keeps the
-/// ini the harness used before accounts were wired.
+/// copy of the UserAccount fixture, not Robust's file. An auth database is a
+/// copy of the AuthStore fixture. Asset-only keeps the ini the harness used
+/// before accounts were wired.
 #[cfg(target_os = "linux")]
 pub(crate) fn start_grid_services(
-    asset_database: Option<&Path>,
-    account_database: Option<&Path>,
+    databases: GridServiceDatabases<'_>,
     port: u16,
     metrics_port: Option<u16>,
     log: &Path,
     ini_path: &Path,
     docker: bool,
 ) -> Result<Owned, String> {
-    if asset_database.is_none() && account_database.is_none() {
-        return Err("ferroan-robust needs an asset or account database".to_string());
+    let GridServiceDatabases {
+        asset: asset_database,
+        account: account_database,
+        auth: auth_database,
+    } = databases;
+    if asset_database.is_none() && account_database.is_none() && auth_database.is_none() {
+        return Err("ferroan-robust needs an asset, account or auth database".to_string());
     }
     let binary = if docker {
         PathBuf::new()
@@ -445,6 +458,19 @@ pub(crate) fn start_grid_services(
              StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
              ConnectionString = \"Data Source={db};Version=3;\"\n    \
              AllowCreateUser = true\n"
+        ));
+    }
+    if let Some(database) = auth_database {
+        if asset_database.is_some() || account_database.is_some() {
+            ini.push('\n');
+        }
+        let db = database.display();
+        ini.push_str(&format!(
+            "[AuthenticationService]\n    \
+             LocalServiceModule = \"OpenSim.Services.AuthenticationService.dll:PasswordAuthenticationService\"\n    \
+             StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+             ConnectionString = \"Data Source={db};Version=3;\"\n    \
+             AllowSetPassword = true\n"
         ));
     }
     if let Some(metrics) = metrics_port {

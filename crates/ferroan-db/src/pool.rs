@@ -171,7 +171,8 @@ impl Pool {
                 let options = url
                     .parse::<sqlx::sqlite::SqliteConnectOptions>()
                     .map_err(|error| DbError::Input(scrub_driver_message(&error.to_string())))?
-                    .create_if_missing(false);
+                    .create_if_missing(false)
+                    .busy_timeout(std::time::Duration::from_secs(15));
                 let pool = SqlitePoolOptions::new()
                     .max_connections(MAX_POOL_CONNECTIONS)
                     .acquire_timeout(ACQUIRE_TIMEOUT)

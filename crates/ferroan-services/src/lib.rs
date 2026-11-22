@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Grid services. This crate holds the asset service, the user-account
-//! service (including user aliases), and the grid-user stores.
+//! service (including user aliases), authentication, and the grid-user stores.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies
 //! are compared with `fixtures/asset`. Account HTTP is compared with
-//! `cargo xtask live compare accounts`.
+//! `cargo xtask live compare accounts`. Authentication HTTP is compared with
+//! `cargo xtask live compare auth`.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod account;
 pub mod alias;
 pub mod asset;
+pub mod auth;
 pub mod griduser;
 
 pub use account::AccountHttp;
 pub use alias::AliasHttp;
+pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};
 
 pub use asset::{
     Asset, AssetClock, AssetError, AssetHttp, AssetMetadata, AssetOptions, AssetStore, DeleteMode,

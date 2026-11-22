@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-services"
-description = "Grid services. This crate holds the asset service, the user-account service (including user aliases), and the grid-user stores."
+description = "Grid services. This crate holds the asset service, the user-account service (including user aliases), authentication, and the grid-user stores."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ ferroan-diag = { path = "../ferroan-diag" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-http = { path = "../ferroan-http" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+md-5 = "0.10.6"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "mysql", "postgres", "uuid"] }
