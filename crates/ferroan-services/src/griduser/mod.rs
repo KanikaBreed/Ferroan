@@ -32,19 +32,30 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Grid-user rows on SQLite, MySQL and PostgreSQL.
+//! Grid-user rows, the grid-user service, and `POST /griduser`.
 //!
 //! `Get`, `GetAll`, `GetMany`, `GetOnlineInRegion` and `Store` follow the
 //! three `*GridUserData` plugins and the generic table handlers they call.
-//! This module does not serve HTTP, keep a cache, or run migrations.
 //! `GetAll` binds a literal prefix (TB43, D35). The column list is a constant
 //! in this crate, so a query cannot observe a half-built name list (TB8).
+//! The service, its cache, the two console commands, and `POST /griduser`
+//! follow `GridUserService` and `GridUserServerPostHandler`. This module does
+//! not run migrations.
 
+mod commands;
+mod http;
 mod model;
+mod open;
+mod service;
 mod store;
+mod wire;
 
+pub use http::GridUserHttp;
 pub use model::{BATCH_SIZE, DATA_COLUMNS, DEFAULT_REALM, GridUser, ONLINE_TRUE};
+pub use open::GridUserError;
 pub use store::{GridUserStore, StoreError};
 
+#[cfg(test)]
+mod service_tests;
 #[cfg(test)]
 mod tests;

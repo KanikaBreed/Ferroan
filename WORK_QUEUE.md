@@ -104,7 +104,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q25 | P1.2: authentication and authorization | DONE (#160) |
 | Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
-| Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | READY after Q26a |
+| Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | IN PROGRESS (feat/griduser-service) |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |

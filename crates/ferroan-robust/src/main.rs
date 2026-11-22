@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The grid-services process. This build listens for the asset, user-account,
-//! user-alias, authentication and authorization routes whose ini sections are
-//! present.
+//! user-alias, authentication, authorization and grid-user routes whose ini
+//! sections are present.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
@@ -14,10 +14,11 @@
 //! 6, MySQL version 10, or PostgreSQL version 9. A user-account database must
 //! already be at UserAccount version 4. An authentication database must
 //! already be an AuthStore: SQLite version 2, MySQL version 4, or PostgreSQL
-//! version 3. This program does not create or migrate those files. User
-//! aliases need a table the pin does not ship for SQLite; the process refuses
-//! to start that section until the table exists. Authorization does not open
-//! a database.
+//! version 3. A grid-user database must already be a GridUserStore: SQLite
+//! version 1, MySQL version 2, or PostgreSQL version 2. This program does not
+//! create or migrate those files. User aliases need a table the pin does not
+//! ship for SQLite; the process refuses to start that section until the table
+//! exists. Authorization does not open a database.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -27,8 +28,8 @@ use std::process::ExitCode;
 use axum::Router;
 use ferroan_config::GridLoad;
 use ferroan_services::{
-    AccountHttp, AliasHttp, AssetHttp, AuthHttp, authorization_router, listen_address,
-    network_port, open_authorization,
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, GridUserHttp, authorization_router,
+    listen_address, network_port, open_authorization,
 };
 
 mod status;
@@ -76,9 +77,10 @@ fn run() -> Result<(), String> {
         let authorization = config
             .section_names()
             .any(|name| name == "AuthorizationService");
-        if !assets && !accounts && !aliases && !auth && !authorization {
+        let griduser = config.section_names().any(|name| name == "GridUserService");
+        if !assets && !accounts && !aliases && !auth && !authorization && !griduser {
             return Err(
-                "no AssetService, UserAccountService, UserAliasService, AuthenticationService or AuthorizationService section"
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService or GridUserService section"
                     .to_string(),
             );
         }
@@ -120,6 +122,14 @@ fn run() -> Result<(), String> {
             open_authorization(config).map_err(|error| error.to_string())?;
             router = router.merge(authorization_router());
             tracing::info!("ferroan-robust: authorization service on {listen}:{port}");
+        }
+        if griduser {
+            let http = GridUserHttp::open(config)
+                .await
+                .map_err(|error| error.to_string())?;
+            pools = pools.griduser(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: grid user service on {listen}:{port}");
         }
         if let Some(console) = log_guard.console_router() {
             router = router.merge(console);

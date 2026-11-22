@@ -102,6 +102,17 @@ pub fn griduser_cross() -> ExitCode {
     )
 }
 
+/// One `POST /griduser` sequence against the pinned service, on a new SQLite
+/// file. No MySQL, no PostgreSQL, and no live harness.
+pub fn griduser_service() -> ExitCode {
+    run_plugin_cross(
+        &GRIDUSER_CROSS,
+        "griduser_service_matches_the_pin",
+        "FERROAN_GRIDUSER_SERVICE",
+        false,
+    )
+}
+
 fn run_plugin_cross(
     target: &PluginCross,
     test_name: &str,
@@ -432,6 +443,7 @@ fn dotnet(
         .env("DOTNET_NOLOGO", "1")
         .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .env("NUGET_XMLDOC_MODE", "skip")
+        .env("MSBUILDDISABLENODEREUSE", "1")
         .arg(action);
     if action == "run" {
         command.arg("--project").arg(project);
