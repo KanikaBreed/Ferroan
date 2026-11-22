@@ -325,6 +325,7 @@ pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
 mod tests {
     use super::*;
     use crate::msgs::*;
+    use crate::{Quat, Vec3, unpack_quat};
     use uuid::Uuid;
 
     #[test]
@@ -362,6 +363,95 @@ mod tests {
         let p = parse_packet(&buf).unwrap();
         let back: RequestImage = p.decode().unwrap();
         assert_eq!(back, o);
+    }
+
+    #[test]
+    fn a_viewer_style_agent_update_quaternion_round_trips() {
+        // Ferrobot writes glam's normalize, then the sign-flipped x, y, z.
+        // OpenMetaverse ToBytes rescales. For some headings those bytes differ,
+        // so a capture of that AgentUpdate used to fail re-encode.
+        let mut heading = None;
+        for step in 1..20_000 {
+            let turned = ferrobot_quat(Quat::from_rotation_z(step as f32 * 0.001));
+            if openmetaverse_rescale(turned) != turned {
+                heading = Some(turned);
+                break;
+            }
+        }
+        let turned = heading.expect("a heading whose rescaling changes the bytes");
+        let mut message = AgentUpdate::default();
+        message.agent_data.agent_id = Uuid::from_u128(0x1111);
+        message.agent_data.session_id = Uuid::from_u128(0x2222);
+        message.agent_data.body_rotation = Quat::from_xyzw(turned[0], turned[1], turned[2], 1.0);
+        message.agent_data.head_rotation = message.agent_data.body_rotation;
+        message.agent_data.far = 64.0;
+        let mut payload = Vec::new();
+        AgentUpdate::ID.encode(&mut payload);
+        let mut body = crate::Writer::new();
+        message.encode_body(&mut body);
+        payload.extend(body.buf);
+        assert_eq!(payload.len(), 1 + 114, "AgentUpdate id plus body");
+        let packed = turned
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        payload[1 + 32..1 + 44].copy_from_slice(&packed);
+        payload[1 + 44..1 + 56].copy_from_slice(&packed);
+        let datagram = frame_like_ferrobot(&payload, 40, false);
+        let parsed = parse_packet(&datagram).unwrap();
+        assert_eq!(parsed.id, AgentUpdate::ID);
+        assert_eq!(reencode_datagram(&datagram).unwrap(), datagram);
+    }
+
+    #[test]
+    fn a_negative_w_quaternion_is_still_rescaled() {
+        let packed = crate::pack_quat(Quat::from_xyzw(0.0, 0.2, 0.0, -0.8));
+        assert!(packed[1] < 0.0, "{packed:?}");
+    }
+
+    /// Ferrobot `Writer::quat`: normalize, force w non-negative, write x, y, z.
+    fn ferrobot_quat(q: Quat) -> [f32; 3] {
+        let mut q = q.normalize();
+        if !q.is_finite() {
+            q = Quat::IDENTITY;
+        }
+        if q.w < 0.0 {
+            q = -q;
+        }
+        [q.x, q.y, q.z]
+    }
+
+    /// `Quaternion.ToBytes` without the unpacked-form short circuit.
+    fn openmetaverse_rescale(packed: [f32; 3]) -> [f32; 3] {
+        let q = unpack_quat(Vec3::new(packed[0], packed[1], packed[2]));
+        let norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+        let scale = if q.w < 0.0 {
+            -1.0 / norm.sqrt()
+        } else {
+            1.0 / norm.sqrt()
+        };
+        [scale * q.x, scale * q.y, scale * q.z]
+    }
+
+    /// Ferrobot keeps the coded form only when it is strictly smaller.
+    fn frame_like_ferrobot(payload: &[u8], sequence: u32, reliable: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut flags = 0u8;
+        if reliable {
+            flags |= PacketFlags::RELIABLE;
+        }
+        out.push(flags);
+        out.extend_from_slice(&sequence.to_be_bytes());
+        out.push(0);
+        let start = out.len();
+        zero_encode(payload, &mut out);
+        if out.len() - start < payload.len() {
+            out[0] |= PacketFlags::ZEROCODED;
+        } else {
+            out.truncate(start);
+            out.extend_from_slice(payload);
+        }
+        out
     }
 
     #[test]
