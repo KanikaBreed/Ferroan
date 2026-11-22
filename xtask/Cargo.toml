@@ -11,6 +11,7 @@ publish.workspace = true
 ferroan-bot = { path = "../tools/bot" }
 ferroan-log = { path = "../crates/ferroan-log" }
 ferroan-capture = { path = "../crates/ferroan-capture" }
+ferroan-diag = { path = "../crates/ferroan-diag" }
 ferroan-http = { path = "../crates/ferroan-http" }
 ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }

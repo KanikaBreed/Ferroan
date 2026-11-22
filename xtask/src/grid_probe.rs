@@ -16,6 +16,12 @@ use std::{
 };
 
 const LIMIT: usize = 1024 * 1024;
+/// Overall budget for one service-state observation. A healthy GridUser or
+/// Presence handler returns in milliseconds. This stays ten seconds.
+const SERVICE_DEADLINE: Duration = Duration::from_secs(10);
+/// One private POST. `probe.service-attempt`. A socket that does not answer
+/// is abandoned so the next attempt opens a new connection.
+const SERVICE_ATTEMPT: Duration = Duration::from_secs(1);
 const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
@@ -34,7 +40,7 @@ pub async fn online(
     ferroan: bool,
     arrival: ferroan_bot::scenario::RootArrival,
 ) -> Result<String, String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + SERVICE_DEADLINE;
     loop {
         let mut grid = fields("getgriduserinfo");
         grid.insert("UserID".into(), Field::Str(arrival.agent_id.to_string()));
@@ -192,7 +198,7 @@ pub async fn await_settled(private_uri: &str, user: &str) -> Result<(), String> 
     require_principal(user)?;
     // ActivityDetector can finish after LogoutReply; observe bounded eventual
     // service state rather than accepting the viewer acknowledgement as proof.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + SERVICE_DEADLINE;
     let mut grid_offline = false;
     let mut presence_empty = false;
     loop {
@@ -283,49 +289,102 @@ fn service_url(base: &str, path: &str) -> String {
     format!("{base}/{path}")
 }
 
+fn service_name(url: &str) -> &str {
+    match url.rsplit('/').next() {
+        Some(name) if !name.is_empty() => name,
+        _ => url,
+    }
+}
+
+fn deadline_error(service: &str) -> String {
+    format!("logout service-state probe exceeded its ten-second deadline ({service})")
+}
+
+fn abandon_attempt(service: &str, waited: Duration) {
+    let configured = u64::try_from(SERVICE_ATTEMPT.as_millis()).unwrap_or(u64::MAX);
+    let observed = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+    ferroan_diag::hit(&ferroan_diag::Hit {
+        id: ferroan_diag::PROBE_SERVICE_ATTEMPT,
+        kind: ferroan_diag::Kind::Hard,
+        configured,
+        observed,
+        action: ferroan_diag::Action::Delay,
+        route: service,
+        agent_id: None,
+    });
+}
+
+/// Post one service-state form. Each attempt waits at most [`SERVICE_ATTEMPT`].
+///
+/// On Q16c `live services` (run 44963949219) `online` posted through the
+/// private capture proxy and that one socket did not return for the whole
+/// ten-second deadline. Robust logged no slow HTTP line. Logout then opened
+/// a new connection, and GridUser and Presence answered at once. The client
+/// timeout used to be that same deadline, so the first unanswered POST failed
+/// the step. A timed-out attempt is dropped and retried until `deadline`.
+/// A transport or HTTP error is returned as before.
 async fn post_before(
     deadline: tokio::time::Instant,
     url: &str,
     fields: &FieldMap,
 ) -> Result<FieldMap, String> {
-    tokio::time::timeout_at(deadline, async {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| "could not build logout state probe client".to_string())?;
-        let body = ferroan_http::build_query_string(fields).map_err(|error| error.to_string())?;
-        let mut response = client
-            .post(url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("X-Ferroan-Probe", "harness")
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| "logout state probe transport failed".to_string())?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "logout state probe HTTP status {}",
-                response.status().as_u16()
-            ));
+    let service = service_name(url);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(deadline_error(service));
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| "logout state probe body failed".to_string())?
-        {
-            if bytes.len().saturating_add(chunk.len()) > LIMIT {
-                return Err("logout state probe response exceeds limit".to_string());
+        let bound = SERVICE_ATTEMPT.min(deadline.saturating_duration_since(now));
+        let started = tokio::time::Instant::now();
+        match tokio::time::timeout(bound, post_once(url, fields)).await {
+            Ok(result) => return result,
+            Err(_elapsed) => {
+                abandon_attempt(service, started.elapsed());
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(deadline_error(service));
+                }
             }
-            bytes.extend_from_slice(&chunk);
         }
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| "logout state probe response is not UTF-8".to_string())?;
-        ferroan_http::parse_xml_response(text).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|_| "logout service-state probe exceeded its ten-second deadline".to_string())?
+    }
+}
+
+async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
+    // Longer than SERVICE_ATTEMPT so the outer timeout, not this client
+    // timeout, is what abandons a stuck socket and retries.
+    let client = reqwest::Client::builder()
+        .timeout(SERVICE_ATTEMPT + Duration::from_millis(500))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "could not build logout state probe client".to_string())?;
+    let body = ferroan_http::build_query_string(fields).map_err(|error| error.to_string())?;
+    let mut response = client
+        .post(url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("X-Ferroan-Probe", "harness")
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| "logout state probe transport failed".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "logout state probe HTTP status {}",
+            response.status().as_u16()
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "logout state probe body failed".to_string())?
+    {
+        if bytes.len().saturating_add(chunk.len()) > LIMIT {
+            return Err("logout state probe response exceeds limit".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "logout state probe response is not UTF-8".to_string())?;
+    ferroan_http::parse_xml_response(text).map_err(|error| error.to_string())
 }
 
 fn fields(method: &str) -> FieldMap {
@@ -344,7 +403,7 @@ pub async fn missing_presence(private_uri: &str) -> Result<(), String> {
         Field::Str("00000000-0000-4000-8000-000000000004".into()),
     );
     let reply = post_before(
-        tokio::time::Instant::now() + Duration::from_secs(10),
+        tokio::time::Instant::now() + SERVICE_DEADLINE,
         &service_url(private_uri, "presence"),
         &request,
     )
@@ -1011,6 +1070,71 @@ mod tests {
             assert!(generate(&directory).is_err());
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_expired_probe_deadline_names_the_service() {
+        let deadline = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = tokio::time::Instant::now();
+        let error = post_before(deadline, "http://127.0.0.1:9/presence", &fields("getagent"))
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(500), "{error}");
+        assert!(error.contains("ten-second deadline"), "{error}");
+        assert!(error.contains("presence"), "{error}");
+        assert!(!error.contains("127.0.0.1"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_service_post_is_abandoned_inside_one_second() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let count = accepts.clone();
+        let service = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                let request = read_http(&mut socket).await;
+                assert!(request.contains("METHOD=getagent"), "{request}");
+                if index == 0 {
+                    held.push(socket);
+                    continue;
+                }
+                let body = "<ServerResponse><result>null</result></ServerResponse>";
+                let bytes = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(bytes.as_bytes()).await.unwrap();
+                break;
+            }
+            drop(held);
+        });
+        let started = tokio::time::Instant::now();
+        missing_presence(&uri).await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(800),
+            "the first socket was not abandoned: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "one stuck socket still spent the ten-second budget: {elapsed:?}"
+        );
+        assert!(accepts.load(Ordering::SeqCst) >= 2);
+        let metrics = ferroan_diag::metrics();
+        assert!(
+            metrics.contains("limit=\"probe.service-attempt\",action=\"delay\""),
+            "{metrics}"
+        );
+        service.await.unwrap();
     }
 
     async fn read_http(socket: &mut tokio::net::TcpStream) -> String {
