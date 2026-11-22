@@ -20,4 +20,4 @@ pub use proxy::{
     DEFAULT_REPLY_TIMEOUT, ProxyStatus, serve, serve_on, serve_on_with_status,
     serve_on_with_timeout, serve_with_timeout,
 };
-pub use redact::{check_udp, redact_records};
+pub use redact::{UdpMismatch, check_udp, redact_records, udp_mismatch, write_udp_mismatch};

@@ -992,7 +992,18 @@ pub(crate) fn finish_capture(
     }
     records.extend(http.iter().cloned());
     records.sort_by_key(|record| record.time_ms);
-    check_udp(&records).map_err(|error| format!("capture check failed: {error}"))?;
+    if let Err(error) = check_udp(&records) {
+        let mut failure = format!("capture check failed: {error}");
+        if let Some(mismatch) = ferroan_capture::udp_mismatch(&records) {
+            match ferroan_capture::write_udp_mismatch(&live_root().join("diag"), &mismatch) {
+                Ok(path) => failure.push_str(&format!("; wrote {}", path.display())),
+                Err(write_error) => {
+                    failure.push_str(&format!("; could not save the record: {write_error}"))
+                }
+            }
+        }
+        return Err(failure);
+    }
     let redacted = ferroan_capture::redact_records(&records)
         .map_err(|error| format!("redact failed: {error}"))?;
     let bytes = write_capture(&redacted).map_err(|error| error.to_string())?;

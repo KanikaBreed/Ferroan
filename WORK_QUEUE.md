@@ -78,7 +78,7 @@ Remove this section once the queue runs again.
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
 | Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | DONE (#152) |
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
-| Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | READY after Q10aa |
+| Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
