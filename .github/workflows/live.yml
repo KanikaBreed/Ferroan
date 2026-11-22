@@ -205,13 +205,7 @@ jobs:
       - name: Check login with the Rust user account service
         run: cargo xtask live run login grid --rust accounts
       - name: Check login with Rust assets and user accounts
-        run: |
-          set -euo pipefail
-          # Temporary: five runs in a row for P0.10n8. Remove before merge.
-          for attempt in 1 2 3 4 5; do
-            echo "q10aa assets,accounts attempt ${attempt}"
-            cargo xtask live run login grid --rust assets,accounts
-          done
+        run: cargo xtask live run login grid --rust assets,accounts
       - name: Check login with the Rust authentication service
         run: cargo xtask live run login grid --rust auth
       - name: Compare C# and Ferroan asset services
