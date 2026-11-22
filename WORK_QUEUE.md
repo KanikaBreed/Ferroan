@@ -81,7 +81,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q16c | P2.0g3: a god or an estate manager enters a full Ferroan region, as `Scene.CheckLandPositionAccess` lets them | DONE (#158) |
 | Q17 | P2.0h: teleport inside the Ferroan region | DONE (#163) |
 | Q18 | P2.0i: teleport to the C# neighbour and back | SPLIT into Q18a to Q18c (#164) |
-| Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | IN PROGRESS |
+| Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | DONE (#166) |
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | READY after Q18a |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
