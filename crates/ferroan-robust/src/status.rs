@@ -24,7 +24,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
 use ferroan_config::Config;
-use ferroan_services::{AccountHttp, AliasHttp, AssetHttp};
+use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, AuthHttp};
 
 const BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 
@@ -70,6 +70,7 @@ pub struct Pools {
     asset: Option<AssetHttp>,
     account: Option<AccountHttp>,
     alias: Option<AliasHttp>,
+    auth: Option<AuthHttp>,
 }
 
 impl Pools {
@@ -85,6 +86,11 @@ impl Pools {
 
     pub fn alias(mut self, http: AliasHttp) -> Self {
         self.alias = Some(http);
+        self
+    }
+
+    pub fn auth(mut self, http: AuthHttp) -> Self {
+        self.auth = Some(http);
         self
     }
 }
@@ -119,6 +125,10 @@ impl RobustMeters {
             (
                 "alias",
                 self.pools.alias.as_ref().map(AliasHttp::pool_occupancy),
+            ),
+            (
+                "auth",
+                self.pools.auth.as_ref().map(AuthHttp::pool_occupancy),
             ),
         ] {
             match http {
@@ -222,6 +232,10 @@ fn service_label(path: &str) -> &'static str {
         "account"
     } else if path.starts_with("/useralias") {
         "alias"
+    } else if path.starts_with("/authorization") {
+        "authorization"
+    } else if path.starts_with("/auth") {
+        "auth"
     } else if path.starts_with("/get_grid_") || path.starts_with("/json_grid_info") {
         "gridinfo"
     } else if path == "/helo" {

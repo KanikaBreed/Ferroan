@@ -67,13 +67,21 @@ impl RunSpec {
             .iter()
             .any(|service| service == "accounts")
     }
+
+    /// True when this grid run serves authentication from `ferroan-robust`.
+    ///
+    /// The caller lives in the Linux harness. Tests compile it too.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn rust_auth(&self) -> bool {
+        self.rust_services.iter().any(|service| service == "auth")
+    }
 }
 
 pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> {
     for service in services {
-        if service != "assets" && service != "accounts" {
+        if service != "assets" && service != "accounts" && service != "auth" {
             return Err(format!(
-                "{service} is not served by this harness yet; grid --rust wires assets and accounts"
+                "{service} is not served by this harness yet; grid --rust wires assets, accounts and auth"
             ));
         }
     }
@@ -213,8 +221,9 @@ fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCo
     match service {
         "assets" => crate::assets::compare(),
         "accounts" => crate::accounts::compare(),
+        "auth" => crate::auth::compare(),
         _ => live::finish(Err(format!(
-            "live compare serves assets and accounts; {service} is not wired yet"
+            "live compare serves assets, accounts and auth; {service} is not wired yet"
         ))),
     }
 }
@@ -298,6 +307,26 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 service: "assets".to_string(),
                 db: flags.db,
                 backend: flags.backend.unwrap_or(AssetBackend::Stock),
+            })
+        }
+        ["auth", rest @ ..] => {
+            let flags = flags(rest)?;
+            if flags.running
+                || flags.region_ferroan
+                || flags.bind.is_some()
+                || flags.rust_services.is_some()
+                || flags.backend.is_some()
+            {
+                return Err(if flags.backend.is_some() {
+                    ParseFail::Message("--backend is used with live assets".to_string())
+                } else {
+                    ParseFail::Usage
+                });
+            }
+            Ok(Command::Compare {
+                service: "auth".to_string(),
+                db: flags.db,
+                backend: AssetBackend::Stock,
             })
         }
         ["accounts", rest @ ..] => {
@@ -506,6 +535,7 @@ mod tests {
         assert_eq!(spec.db, Database::Sqlite);
         assert!(spec.rust_assets());
         assert!(!spec.rust_accounts());
+        assert!(!spec.rust_auth());
     }
 
     #[test]
@@ -516,7 +546,14 @@ mod tests {
         let both = run(&["run", "login", "grid", "--rust", "assets,accounts"]);
         assert!(both.rust_assets());
         assert!(both.rust_accounts());
+        assert!(!both.rust_auth());
+        let auth = run(&["run", "login", "grid", "--rust", "auth"]);
+        assert!(auth.rust_auth());
+        assert!(!auth.rust_accounts());
+        let all = run(&["run", "login", "grid", "--rust", "assets,accounts,auth"]);
+        assert!(all.rust_assets() && all.rust_accounts() && all.rust_auth());
         assert!(require_known_services(&both.rust_services).is_ok());
+        assert!(require_known_services(&all.rust_services).is_ok());
     }
 
     #[test]
@@ -562,6 +599,13 @@ mod tests {
                 assert_eq!(service, "accounts");
                 assert_eq!(db, Database::Sqlite);
                 assert_eq!(backend, AssetBackend::Stock);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        match parse(&["auth"]).unwrap() {
+            Command::Compare { service, db, .. } => {
+                assert_eq!(service, "auth");
+                assert_eq!(db, Database::Sqlite);
             }
             other => panic!("expected compare, got {other:?}"),
         }

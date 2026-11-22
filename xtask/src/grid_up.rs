@@ -124,6 +124,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         ServiceUris {
             asset: None,
             account: None,
+            auth: None,
         },
         false,
     )?);
@@ -197,6 +198,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 capture: None,
                 asset_uri: None,
                 account_uri: None,
+                auth_uri: None,
                 metrics_port: None,
             },
             &grid.passwords,
