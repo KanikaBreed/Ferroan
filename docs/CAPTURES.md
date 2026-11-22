@@ -93,3 +93,7 @@ The committed UDP bytes are the encoding of the scrubbed message. They round-tri
 `fixtures/captures/session.cap` is a redacted `cargo xtask live run all`. The bot logged in, walked, said `ferroan harness chat`, rezzed a prim, teleported, uploaded a texture, fetched the library kelp texture and fetched inventory, then logged out. Both bots' `UseCircuitCode` packets carry circuit code 1 and the session and agent placeholders. The raw file was checked with `ferroan-capture check` before redaction; that file is not in Git. `the_harness_session_replays` runs `replay` on the committed bytes.
 
 A later session can replace it. Record with `CaptureFile` on a scratch build, run `check` on the raw file, run `redact`, read the chat text, and commit only the redacted file. A message that fails `replay` becomes a task. It is not dropped quietly.
+
+## Neighbour teleport
+
+`fixtures/neighbour-teleport/` is a redacted `cargo xtask live run neighbour grid` at pin `1d7abb8337`. Both regions are the pinned C# server. The home region writes `capture-udp.cap`. The neighbour writes `capture-udp-neighbour.cap`. Region-to-region HTTP is `proxy-home.cap` and `proxy-neighbour.cap`. The raw files were checked with `ferroan-capture check` before redaction. Session ids, circuit codes, capability paths and the `CloseAgent` `auth` query use the same placeholders as the login fixtures. `neighbour_teleport_fixture_replays_and_compares` replays the four files and checks the teleport fields. The live neighbour scenario runs that same compare on a fresh capture.
