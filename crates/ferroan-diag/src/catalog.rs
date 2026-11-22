@@ -55,3 +55,4 @@ pub const TERRAIN_EDGE: &str = "terrain.edge";
 pub const TERRAIN_BLOB: &str = "terrain.blob";
 pub const ROOT_AGENTS: &str = "region.root-agents";
 pub const ROOT_BYPASS: &str = "region.root-bypass";
+pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";

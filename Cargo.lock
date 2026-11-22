@@ -2707,6 +2707,7 @@ version = "0.1.0"
 dependencies = [
  "ferroan-bot",
  "ferroan-capture",
+ "ferroan-diag",
  "ferroan-http",
  "ferroan-llsd",
  "ferroan-log",
