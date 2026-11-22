@@ -13,8 +13,10 @@
 //! `FsAssetService` serves these HTTP routes on that store. The filesystem
 //! loader runs when `DefaultAssetLoader` names it on `AssetService`, and on
 //! the main `FSAssetService`. `XAssetService` does not seed the library.
-//! `show asset`, `dump asset` and `delete asset` are functions here; the
-//! remote console does not call them yet.
+//! `show asset`, `dump asset` and `delete asset` are functions here. The
+//! FSAssets commands `show assets`, `show digest`, `delete asset`, `import`
+//! and `force import` are too, and only a main `FsAssetService` registers
+//! them. The remote console does not call any of them yet.
 
 mod commands;
 mod content_type;
@@ -22,6 +24,7 @@ mod decode;
 mod fmysql;
 mod fpostgres;
 mod fsasset;
+mod fscommands;
 mod fservice;
 mod fsfiles;
 mod http;

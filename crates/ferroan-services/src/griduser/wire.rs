@@ -35,7 +35,7 @@
 //!
 //! A document reformats the stored row: region ids are hyphenated, positions
 //! use `<x, y, z>`, online is `True` or `False`, and login and logout are the
-//! invariant general date (D36). A value that does not parse becomes the zero
+//! invariant general date (D37). A value that does not parse becomes the zero
 //! region, the zero vector, offline, or the epoch.
 
 use ferroan_http::{Field, FieldMap, build_xml_response};

@@ -7,7 +7,7 @@
 //! of the grid-user fixture checks a real store. The C# bytes are
 //! `fixtures/griduser/service.json`. Login and logout in those XML bodies are
 //! folded to one token: the fixture records the process-culture spelling, and
-//! this service writes the invariant spelling (D36). Console text keeps the
+//! this service writes the invariant spelling (D37). Console text keeps the
 //! stored integers.
 
 use std::collections::HashSet;
