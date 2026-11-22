@@ -110,7 +110,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
-| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | IN PROGRESS (feat/avatar-stores) |
+| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | READY after Q27a |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
@@ -416,7 +416,7 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 
 Q27 split (manager, 22 November 2026): the block in #167 is right, and its five parts are taken as Q27a to Q27e. The viewer bake read stays in (Q27d): the pin serves it from the same service. `AvatarHeight` is TB44: Ferroan writes and reads it with a dot decimal in every locale. P1.4 stays TODO until all five are DONE.
 
-Q27a (22 November 2026, `feat/avatar-stores`): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
+Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
 
 ## Found while working
 
