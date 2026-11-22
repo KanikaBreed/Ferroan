@@ -176,7 +176,7 @@ impl RegionChat {
         }
     }
 
-    #[cfg(test)]
+    /// A local teleport moves the seat. Later chat uses the landed position.
     pub(crate) fn set_position(&self, id: Uuid, position: [f32; 3]) {
         if let Some(seat) = self
             .hub

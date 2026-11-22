@@ -64,8 +64,9 @@ bind to loopback by default, so run Firestorm on the same machine.
 Inventory and texture fetch, terrain, and the no-bake avatar appearance
 packets are implemented. The Firestorm inventory window, texture loading, and
 whether the avatar renders as a body rather than a cloud remain pending
-maintainer checks. Local chat (P2.0g), teleports inside the region and to its
-neighbour (P2.0h/P2.0i), objects, physics and scripts are not implemented yet.
+maintainer checks. Local chat and a teleport inside the region are implemented.
+Teleport to the neighbour (P2.0i), objects, physics and scripts are not
+implemented yet.
 A blank scene is not evidence those later items have passed.
 
 Record informal notes with the date, Firestorm version/build, printed Ferroan

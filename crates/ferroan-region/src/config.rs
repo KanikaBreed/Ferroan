@@ -400,6 +400,7 @@ impl RegionConfig {
             channel_version: self.channel_version.clone(),
             land: Vec::new(),
             avatar: None,
+            teleport: None,
         }
     }
 }
@@ -994,6 +995,7 @@ mod tests {
         assert_eq!(arrival.look_at, [0.99, 0.042, 0.0]);
         assert_eq!(arrival.region_handle, (256000u64 << 32) | 256256);
         assert_eq!(arrival.channel_version, "Configured server identity");
+        assert!(arrival.teleport.is_none());
     }
 
     #[test]

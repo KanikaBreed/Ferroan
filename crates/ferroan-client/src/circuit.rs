@@ -34,7 +34,8 @@
 //     (SendLogoutPacket, Close, CloseWithoutChecks, Kick,
 //      SendShutdownConnectionNotice, HandleCompleteAgentMovement,
 //      HandleAgentPause, HandleAgentResume, SendChatMessage,
-//      SendAgentAlertMessage)
+//      SendAgentAlertMessage, HandleTeleportLocationRequest,
+//      SendTeleportStart, SendLocalTeleport, SendTeleportFailed)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/UnackedPacketCollection.cs
 //     (Oldest, GetExpiredPackets)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs
@@ -57,12 +58,13 @@
 
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
+use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, TeleportAnswer};
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, ChatFromViewer, CompleteAgentMovement, CompletePingCheck,
     DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest, PacketAck, StartPingCheck,
-    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    TeleportLocationRequest, UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -319,6 +321,10 @@ struct State {
     /// packets, and `AgentMovementComplete` already occupies one, so the burst
     /// does not fit in `udp.unacked`.
     pending_land: VecDeque<LandLayer>,
+    /// Avatar terse updates and `TeleportLocal`. `f6cc9597ad` puts the teleport
+    /// on this queue, behind terse updates already built, so a moving avatar
+    /// cannot snap back to the pre-teleport position.
+    pending_task: VecDeque<Payload>,
     /// Channel 0 chat for this region. Absent when the serve was not seated.
     chat: Option<RegionChat>,
 }
@@ -361,6 +367,7 @@ impl State {
             udp: None,
             published_unacked: 0,
             pending_land,
+            pending_task: VecDeque::new(),
             chat: None,
         }
     }
@@ -383,7 +390,9 @@ impl State {
         self.published_unacked = waiting;
     }
     fn time_until_work(&self) -> Duration {
-        if self.peer.is_some() && !self.pending_land.is_empty() && self.unacked.len() < MAX_UNACKED
+        if self.peer.is_some()
+            && self.unacked.len() < MAX_UNACKED
+            && (!self.pending_land.is_empty() || !self.pending_task.is_empty())
         {
             return Duration::ZERO;
         }
@@ -452,6 +461,7 @@ impl State {
             self.send_ping(sock, peer).await?;
         }
         self.drain_land(sock, peer).await?;
+        self.drain_task(sock, peer).await?;
         Ok(())
     }
 
@@ -469,6 +479,25 @@ impl State {
             message.layer_data.data = layer.data;
             self.send_message(sock, peer, &message, true).await?;
         }
+        Ok(())
+    }
+
+    async fn drain_task(
+        &mut self,
+        sock: &impl DatagramIo,
+        peer: SocketAddr,
+    ) -> Result<(), CircuitError> {
+        while !self.pending_task.is_empty() && self.unacked.len() < MAX_UNACKED {
+            let Some(payload) = self.pending_task.pop_front() else {
+                break;
+            };
+            self.send_payload(sock, peer, payload, true).await?;
+        }
+        Ok(())
+    }
+
+    fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
+        self.pending_task.push_back(encode_payload(message)?);
         Ok(())
     }
     async fn send_ping(
@@ -497,29 +526,22 @@ impl State {
         message: &M,
         reliable: bool,
     ) -> Result<(), CircuitError> {
+        self.send_payload(sock, to, encode_payload(message)?, reliable)
+            .await
+    }
+    async fn send_payload(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+        payload: Payload,
+        reliable: bool,
+    ) -> Result<(), CircuitError> {
         if reliable && self.unacked.len() >= MAX_UNACKED {
             let count = self.unacked.len() as u64;
             ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
             ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
             return Err(CircuitError::TooManyUnacked(self.unacked.len()));
         }
-        let mut writer = Writer::new();
-        M::ID.encode(&mut writer.buf);
-        message.encode_body(&mut writer);
-        if writer.buf.len() + packet::HEADER_SIZE > MAX_DATAGRAM {
-            ferroan_diag::refuse(
-                UDP_DATAGRAM,
-                Kind::Hard,
-                MAX_DATAGRAM as u64,
-                (writer.buf.len() + packet::HEADER_SIZE) as u64,
-                "udp",
-            );
-            return Err(CircuitError::TooLarge);
-        }
-        let payload = Payload {
-            bytes: writer.buf,
-            zerocoded: M::ZEROCODED,
-        };
         let seq = self.sequence.take();
         let mut bytes = Vec::new();
         packet::build_raw(
@@ -744,6 +766,10 @@ impl State {
                     &text,
                 );
             }
+        } else if packet.id == TeleportLocationRequest::ID {
+            if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
+                self.local_teleport(sock, from, expect, &request).await?;
+            }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
@@ -784,7 +810,77 @@ impl State {
         }
         Ok(())
     }
+
+    /// `TeleportLocationRequest` for this region. `TeleportStart` and
+    /// `TeleportFailed` skip the task queue. `TeleportLocal` is appended
+    /// behind avatar terse updates already queued (`f6cc9597ad`).
+    async fn local_teleport(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+        expect: &CircuitExpect,
+        request: &TeleportLocationRequest,
+    ) -> Result<(), CircuitError> {
+        let Some(region) = self.arrival.teleport.clone() else {
+            let failed = teleport::failed_packet(expect.agent_id, FAIL_PROCESS);
+            return self.send_message(sock, to, &failed, true).await;
+        };
+        let position = request.info.position.to_array();
+        let look_at = request.info.look_at.to_array();
+        match teleport::answer(&region, request.info.region_handle, position, look_at) {
+            TeleportAnswer::Failed(reason) => {
+                let failed = teleport::failed_packet(expect.agent_id, reason);
+                self.send_message(sock, to, &failed, true).await?;
+            }
+            TeleportAnswer::Local(landing) => {
+                if self.pending_task.len() + self.unacked.len() >= MAX_UNACKED {
+                    let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
+                    self.send_message(sock, to, &failed, true).await?;
+                    return Ok(());
+                }
+                let start = teleport::start_packet(landing.flags);
+                self.send_message(sock, to, &start, true).await?;
+                let local = teleport::local_packet(
+                    expect.agent_id,
+                    landing.position,
+                    landing.look_at,
+                    landing.flags,
+                );
+                self.enqueue_task(&local)?;
+                self.arrival.position = landing.position;
+                *region
+                    .position
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = landing.position;
+                if let Some(chat) = &self.chat {
+                    chat.set_position(expect.agent_id, landing.position);
+                }
+            }
+        }
+        Ok(())
+    }
 }
+
+fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
+    let mut writer = Writer::new();
+    M::ID.encode(&mut writer.buf);
+    message.encode_body(&mut writer);
+    if writer.buf.len() + packet::HEADER_SIZE > MAX_DATAGRAM {
+        ferroan_diag::refuse(
+            UDP_DATAGRAM,
+            Kind::Hard,
+            MAX_DATAGRAM as u64,
+            (writer.buf.len() + packet::HEADER_SIZE) as u64,
+            "udp",
+        );
+        return Err(CircuitError::TooLarge);
+    }
+    Ok(Payload {
+        bytes: writer.buf,
+        zerocoded: M::ZEROCODED,
+    })
+}
+
 fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool {
     agent_id == expect.agent_id && session_id == expect.session_id
 }
