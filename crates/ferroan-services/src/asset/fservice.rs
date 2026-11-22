@@ -48,8 +48,11 @@
 //! zero UUID and leaves no partial file (TB36). A failed row write answers
 //! the zero UUID, or the id when the type is -2. `Delete` calls the plugin
 //! and returns true. The plugin's false for a PostgreSQL non-uuid stays
-//! inside that call (TB39). Import and the console commands are Q23d.
-//! `ShowConsoleStats` is not started.
+//! inside that call (TB39). The console commands are `show assets`,
+//! `show digest`, `delete asset`, `import` and `force import`, and only the
+//! main instance registers them. PostgreSQL import uses `LIMIT count OFFSET
+//! start` with `ORDER BY id` (TB40). `force import` updates an existing row's
+//! hash (TB45). `ShowConsoleStats` is not started.
 //!
 //! Only the main instance runs `DefaultAssetLoader` and the writer. A later
 //! instance in the process does not, and neither does `SecondaryInstance`.
@@ -60,7 +63,14 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use super::fsasset::{FsAsset, FsAssetStore, FsMetadata};
+use ferroan_db::{Backend, Pool};
+
+use super::fsasset::{FsAsset, FsAssetStore, FsImportRow, FsMetadata};
+use super::fscommands::{
+    FsDigest, FsImportParse, connection_is_sqlx_url, delete_fs_asset_lines, import_syntax_line,
+    parse_fs_import, registered_fs_commands, show_assets_lines, show_digest_lines,
+    without_ado_pool_keys,
+};
 use super::fsfiles::{
     FsFiles, OBJECT_TYPE, WRITER_INTERVAL_MS, log_fsassets, next_writer_interval, sha256_hex,
 };
@@ -172,13 +182,33 @@ impl FsAssetService {
 
     /// `Get`. `Err` is a plugin failure the handler does not catch.
     pub async fn get(&self, id: &str) -> Result<Option<Asset>, StoreError> {
+        Ok(self.get_with_hash(id).await?.map(|(asset, _)| asset))
+    }
+
+    /// `Get` plus the hash `show digest` prints in `FS file`.
+    async fn get_with_hash(&self, id: &str) -> Result<Option<(Asset, String)>, StoreError> {
         let Some(uuid) = parse_id(id) else {
             return Ok(None);
         };
         match self.store.get(uuid).await? {
-            None => self.take_fallback(id).await,
+            None => match self.take_fallback(id).await? {
+                None => Ok(None),
+                Some(asset) => {
+                    let hash = self.row_hash(uuid).await?;
+                    Ok(Some((asset, hash)))
+                }
+            },
             Some(row) => self.finish_local(id, row).await,
         }
+    }
+
+    async fn row_hash(&self, id: Uuid) -> Result<String, StoreError> {
+        Ok(self
+            .store
+            .get(id)
+            .await?
+            .map(|row| row.hash)
+            .unwrap_or_default())
     }
 
     /// `GetData`. No fallback and no object cleanup.
@@ -239,6 +269,15 @@ impl FsAssetService {
     /// `Store`. `Err` is the object cleanup throwing. `Ok` is the id text,
     /// including the zero UUID when the asset was not stored.
     pub async fn store_asset(&self, asset: &mut Asset, id_text: &str) -> Result<String, ()> {
+        self.store_asset_inner(asset, id_text, false).await
+    }
+
+    async fn store_asset_inner(
+        &self,
+        asset: &mut Asset,
+        id_text: &str,
+        force: bool,
+    ) -> Result<String, ()> {
         let original = asset.data.clone();
         let hash = sha256_hex(&original);
         truncate_name(asset);
@@ -274,7 +313,12 @@ impl FsAssetService {
             type_code: asset.type_code,
             flags: asset.flags,
         };
-        match self.store.store(&meta, &hash).await {
+        let written = if force {
+            self.store.store_forced(&meta, &hash).await
+        } else {
+            self.store.store(&meta, &hash).await
+        };
+        match written {
             Ok(true) => Ok(id_text),
             Ok(false) | Err(_) => {
                 if asset.type_code == -2 {
@@ -292,8 +336,138 @@ impl FsAssetService {
         Ok(true)
     }
 
-    async fn finish_local(&self, id: &str, row: FsAsset) -> Result<Option<Asset>, StoreError> {
-        let data = match self.files.read_checked(&row.hash, row.metadata.type_code) {
+    #[cfg(test)]
+    pub(crate) fn store_for_test(&self) -> &FsAssetStore {
+        &self.store
+    }
+
+    /// Commands the main instance registers. A secondary instance registers none.
+    /// The remote console does not call this yet.
+    #[allow(dead_code)]
+    pub fn console_commands(&self) -> &'static [super::fscommands::FsConsoleCommand] {
+        registered_fs_commands(self.main)
+    }
+
+    /// `HandleShowAssets`. The remote console does not call this yet.
+    #[allow(dead_code)]
+    pub async fn console_show_assets(&self) -> Result<Vec<String>, StoreError> {
+        Ok(show_assets_lines(self.store.count().await?))
+    }
+
+    /// `HandleShowDigest`. A missing file is not found, because this is `Get`.
+    /// The remote console does not call this yet.
+    #[allow(dead_code)]
+    pub async fn console_show_digest(&self, args: &[&str]) -> Result<Vec<String>, StoreError> {
+        if args.len() < 3 {
+            return Ok(show_digest_lines(args, None));
+        }
+        let Some((asset, hash)) = self.get_with_hash(args[2]).await? else {
+            return Ok(show_digest_lines(args, None));
+        };
+        let digest = FsDigest {
+            name: &asset.name,
+            description: &asset.description,
+            type_code: asset.type_code,
+            flags: asset.flags,
+            hash: &hash,
+            osgrid: self.files.osgrid(),
+            data: &asset.data,
+        };
+        Ok(show_digest_lines(args, Some(&digest)))
+    }
+
+    /// `HandleDeleteAsset`. The row is what is deleted, so a missing file
+    /// still deletes. A non-uuid is not found and `Delete` is not called (TB39).
+    /// The remote console does not call this yet.
+    #[allow(dead_code)]
+    pub async fn console_delete_asset(&self, args: &[&str]) -> Result<Vec<String>, StoreError> {
+        if args.len() < 3 {
+            return Ok(delete_fs_asset_lines(args, false));
+        }
+        if self.get_metadata(args[2]).await?.is_none() {
+            return Ok(delete_fs_asset_lines(args, false));
+        }
+        let _deleted = self.store.delete(args[2]).await?;
+        Ok(delete_fs_asset_lines(args, true))
+    }
+
+    /// `HandleImportAssets`. A bad integer does not open the database.
+    /// A failed connection logs and returns no `Import done` line.
+    /// The connection string is not logged. The remote console does not call this yet.
+    #[allow(dead_code)]
+    pub async fn console_import(&self, args: &[&str]) -> Result<Vec<String>, StoreError> {
+        let request = match parse_fs_import(args) {
+            FsImportParse::Syntax => return Ok(vec![import_syntax_line()]),
+            FsImportParse::BadInteger => {
+                return Ok(vec!["ERROR: start and count must be integers".to_string()]);
+            }
+            FsImportParse::Ready(request) => request,
+        };
+        if request.start < 0 || request.count < -1 {
+            return Ok(vec!["ERROR: start and count must be integers".to_string()]);
+        }
+        let pool = match open_import_pool(self.store.backend(), &request.connection).await {
+            Ok(pool) => pool,
+            Err(()) => return Ok(Vec::new()),
+        };
+        let rows = match self
+            .store
+            .import_from(&pool, &request.table, request.start, request.count)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(_) => {
+                log_import_failure(self.store.backend());
+                pool.close().await;
+                return Ok(Vec::new());
+            }
+        };
+        let mut lines = vec!["Querying database".to_string(), "Reading data".to_string()];
+        let mut imported = 0u64;
+        for row in rows {
+            if imported.is_multiple_of(100) {
+                lines.push(format!("{imported} assets imported so far"));
+            }
+            if self.import_one(&row, request.force).await.is_err() {
+                log_fsassets("ERROR", "[FSASSETS]: Error importing assets");
+                pool.close().await;
+                return Ok(lines);
+            }
+            imported += 1;
+        }
+        pool.close().await;
+        lines.push(format!("Import done, {imported} assets imported"));
+        Ok(lines)
+    }
+
+    async fn import_one(&self, row: &FsImportRow, force: bool) -> Result<(), ()> {
+        let mut asset = Asset {
+            id: row.id,
+            name: row.name.clone(),
+            description: row.description.clone(),
+            type_code: row.type_code,
+            local: false,
+            temporary: false,
+            creator_id: String::new(),
+            flags: 0,
+            data: row.data.clone(),
+            upload_attempts: 0,
+        };
+        let id_text = row.id.to_string();
+        self.store_asset_inner(&mut asset, &id_text, force).await?;
+        Ok(())
+    }
+
+    async fn finish_local(
+        &self,
+        id: &str,
+        row: FsAsset,
+    ) -> Result<Option<(Asset, String)>, StoreError> {
+        let stored_hash = row.hash.clone();
+        let data = match self
+            .files
+            .read_checked(&stored_hash, row.metadata.type_code)
+        {
             Ok(Some(data)) => data,
             Ok(None) => {
                 let Some(mut asset) = self.take_fallback(id).await? else {
@@ -303,7 +477,11 @@ impl FsAssetService {
                     log_fsassets("ERROR", &format!("Could not get asset {id}"));
                     return Ok(None);
                 }
-                return Ok(Some(asset));
+                let hash = match parse_id(id) {
+                    Some(uuid) => self.row_hash(uuid).await?,
+                    None => String::new(),
+                };
+                return Ok(Some((asset, hash)));
             }
             Err(error) => {
                 log_fsassets("ERROR", &format!("Could not get asset {id}: {error}"));
@@ -315,7 +493,7 @@ impl FsAssetService {
             log_fsassets("ERROR", &format!("Could not get asset {id}"));
             return Ok(None);
         }
-        Ok(Some(asset))
+        Ok(Some((asset, stored_hash)))
     }
 
     /// Fallback `Get`, then `Store`. The returned asset keeps `Store`'s data.
@@ -340,6 +518,43 @@ impl FsAssetService {
             return Ok(None);
         }
         Ok(Some(asset))
+    }
+}
+
+fn log_import_failure(backend: Backend) {
+    let message = match backend {
+        Backend::Postgres => "[PGSQL FSASSETS]: Error importing assets",
+        _ => "[FSASSETS]: Error importing assets",
+    };
+    log_fsassets("ERROR", message);
+}
+
+fn log_import_connect(backend: Backend) {
+    let message = match backend {
+        Backend::Postgres => "[PGSQL FSASSETS]: Error importing assets",
+        _ => "[FSASSETS]: Can't connect to database",
+    };
+    log_fsassets("ERROR", message);
+}
+
+async fn open_import_pool(backend: Backend, connection: &str) -> Result<Pool, ()> {
+    let opened = if connection_is_sqlx_url(connection) {
+        Pool::connect_sqlx_url(connection).await
+    } else {
+        let stripped = without_ado_pool_keys(connection);
+        Pool::connect(backend, &stripped).await
+    };
+    match opened {
+        Ok(pool) if pool.backend() == backend => Ok(pool),
+        Ok(pool) => {
+            pool.close().await;
+            log_import_connect(backend);
+            Err(())
+        }
+        Err(_) => {
+            log_import_connect(backend);
+            Err(())
+        }
     }
 }
 

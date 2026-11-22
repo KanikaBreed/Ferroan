@@ -10,6 +10,9 @@
 use ferroan_db::{Backend, Pool};
 use uuid::Uuid;
 
+use super::super::fscommands::import_done_lines;
+use super::super::fservice::FsAssetService;
+use super::super::fsfiles::{FsFiles, sha256_hex};
 use super::super::model::KNOWN_FLAGS;
 use super::FsAssetStore;
 use super::FsMetadata;
@@ -67,6 +70,198 @@ async fn fsassets_plugins_cross_read() {
         eprintln!(
             "FERROAN_ASSET_ADO_POSTGRES is unset; PostgreSQL FSAssets cross-read was not run"
         );
+    }
+}
+
+#[tokio::test]
+async fn fs_console_commands_import_show_and_delete() {
+    if let Ok(url) = std::env::var("FERROAN_MYSQL_URL")
+        && !url.is_empty()
+    {
+        let _guard = FSASSET_MYSQL.lock().await;
+        if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
+            command_round_trip(store, &url).await;
+        }
+    }
+    if let Ok(url) = std::env::var("FERROAN_POSTGRES_URL")
+        && !url.is_empty()
+    {
+        let _guard = FSASSET_POSTGRES.lock().await;
+        if let Some(store) = open_url("FERROAN_POSTGRES_URL", "PostgreSQL").await {
+            command_round_trip(store, &url).await;
+        }
+    }
+}
+
+async fn command_round_trip(store: FsAssetStore, url: &str) {
+    store.wipe().await.expect("wipe");
+    let root = std::env::temp_dir().join(format!(
+        "ferroan-fs-cmd-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let base = root.join("base");
+    let spool = root.join("spool");
+    std::fs::create_dir_all(&base).expect("base");
+    std::fs::create_dir_all(&spool).expect("spool");
+    let files = FsFiles::new(&base, &spool, false);
+    let service = FsAssetService::new(store, files.clone(), None, true);
+    assert_eq!(service.console_commands().len(), 5);
+    assert_eq!(
+        service.console_show_assets().await.expect("count"),
+        vec!["Total asset count: 0".to_string()]
+    );
+    assert_eq!(
+        service
+            .console_show_digest(&["show", "digest"])
+            .await
+            .expect("syntax"),
+        vec!["Syntax: show digest <ID>".to_string()]
+    );
+    assert_eq!(
+        service
+            .console_delete_asset(&["delete"])
+            .await
+            .expect("syntax"),
+        vec!["Syntax: delete asset <ID>".to_string()]
+    );
+    assert_eq!(
+        service
+            .console_import(&["import", "conn", "assets", "nope"])
+            .await
+            .expect("bad int"),
+        vec!["ERROR: start and count must be integers".to_string()]
+    );
+    let failed = service
+        .console_import(&["import", "", "assets"])
+        .await
+        .expect("bad conn");
+    assert!(
+        failed.iter().all(|line| !line.contains("Import done")),
+        "a failed connection does not finish the import"
+    );
+    assert!(failed.is_empty());
+
+    reset_import(service_store(&service)).await;
+    insert_import(service_store(&service), 1, "one", vec![1, 2, 3]).await;
+    insert_import(service_store(&service), 2, "two", vec![4]).await;
+    let imported = service
+        .console_import(&["import", url, IMPORT_TABLE])
+        .await
+        .expect("import");
+    assert_eq!(imported, import_done_lines(2));
+    assert_eq!(
+        service.console_show_assets().await.expect("count"),
+        vec!["Total asset count: 2".to_string()]
+    );
+    assert!(files.writer_pass());
+    let first = iid(1);
+    let digest = service
+        .console_show_digest(&["show", "digest", &first.to_string()])
+        .await
+        .expect("digest");
+    let mysql = service_store(&service).backend() == Backend::Mysql;
+    if mysql {
+        assert_eq!(digest[0], "Name: one");
+        assert_eq!(digest[1], "Description: desc");
+    } else {
+        assert_eq!(digest[0], "Name: ");
+        assert_eq!(digest[1], "Description: ");
+    }
+    assert_eq!(digest[2], "Type: 1");
+    assert!(digest.iter().any(|line| line == "0000: 01-02-03"));
+    let old_hash = sha256_hex(&[4]);
+    assert!(digest_of(&service, iid(2)).await.contains(&old_hash));
+
+    let gzip = files.gzip_path(&sha256_hex(&[1, 2, 3]));
+    std::fs::remove_file(&gzip).expect("remove file");
+    assert_eq!(
+        service
+            .console_show_digest(&["show", "digest", &first.to_string()])
+            .await
+            .expect("missing file"),
+        vec!["Asset not found".to_string()]
+    );
+    assert_eq!(
+        service
+            .console_delete_asset(&["delete", "asset", &first.to_string()])
+            .await
+            .expect("delete"),
+        vec!["Asset deleted".to_string()]
+    );
+    assert_eq!(
+        service
+            .console_delete_asset(&["delete", "asset", "not-a-uuid"])
+            .await
+            .expect("non-uuid"),
+        vec!["Asset not found".to_string()]
+    );
+    assert_eq!(
+        service.console_show_assets().await.expect("count"),
+        vec!["Total asset count: 1".to_string()]
+    );
+
+    replace_import_data(service_store(&service), 2, vec![9, 9]).await;
+    let again = service
+        .console_import(&["import", url, IMPORT_TABLE, "1", "1"])
+        .await
+        .expect("page");
+    assert_eq!(again, import_done_lines(1));
+    assert!(files.writer_pass());
+    assert!(
+        digest_of(&service, iid(2)).await.contains(&old_hash),
+        "an ordinary import leaves the stored hash"
+    );
+    let forced = service
+        .console_import(&["force", "import", url, IMPORT_TABLE, "1", "1"])
+        .await
+        .expect("force");
+    assert_eq!(forced, import_done_lines(1));
+    assert!(files.writer_pass());
+    let new_hash = sha256_hex(&[9, 9]);
+    let after = digest_of(&service, iid(2)).await;
+    assert!(after.contains(&new_hash));
+    assert!(!after.contains(&old_hash));
+
+    drop_import(service_store(&service)).await;
+    service_store(&service).wipe().await.expect("wipe");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn service_store(service: &FsAssetService) -> &FsAssetStore {
+    // The commands hold the store. Tests reach the same pool through the
+    // service only for setup rows, via this crate-visible helper.
+    service.store_for_test()
+}
+
+async fn digest_of(service: &FsAssetService, id: Uuid) -> String {
+    service
+        .console_show_digest(&["show", "digest", &id.to_string()])
+        .await
+        .expect("digest")
+        .join("\n")
+}
+
+async fn replace_import_data(store: &FsAssetStore, n: u32, data: Vec<u8>) {
+    let id = iid(n);
+    match store.backend() {
+        Backend::Mysql => {
+            sqlx::query("UPDATE ferroan_fs_import SET data = ? WHERE id = ?")
+                .bind(data)
+                .bind(id.to_string())
+                .execute(store.pool().mysql().expect("mysql"))
+                .await
+                .expect("update import");
+        }
+        Backend::Postgres => {
+            sqlx::query("UPDATE ferroan_fs_import SET data = $1 WHERE id = $2::uuid")
+                .bind(data)
+                .bind(id.to_string())
+                .execute(store.pool().postgres().expect("postgres"))
+                .await
+                .expect("update import");
+        }
+        Backend::Sqlite => panic!("sqlite"),
     }
 }
 
@@ -141,6 +336,33 @@ async fn check_plugin(store: &FsAssetStore) {
         if backend == Backend::Mysql { 3 } else { 2 }
     );
 
+    let forced_id = fid(6);
+    assert!(
+        store
+            .store(&meta(forced_id, "keep", "keep-desc", 2), HASH_A)
+            .await
+            .expect("force seed")
+    );
+    let before_force = store.clock(forced_id).await.expect("clock").expect("row");
+    assert!(
+        store
+            .store_forced(&meta(forced_id, "other", "other", 4), HASH_B)
+            .await
+            .expect("force")
+    );
+    let forced = store.clock(forced_id).await.expect("clock").expect("row");
+    same_hash(HASH_B, &forced.hash);
+    assert_eq!(forced.raw_flags, 2);
+    assert_eq!(forced.create_time, before_force.create_time);
+    match backend {
+        Backend::Mysql => {
+            assert_eq!(forced.name, "keep");
+            assert_eq!(forced.description, "keep-desc");
+        }
+        Backend::Postgres => assert_eq!(forced.name, ""),
+        Backend::Sqlite => panic!("sqlite"),
+    }
+
     check_import(store).await;
     check_interval(store, fid(5)).await;
 
@@ -189,19 +411,14 @@ async fn check_import(store: &FsAssetStore) {
     insert_import(store, 3, "three", vec![3, 3, 3]).await;
     let all = store.import_reader(IMPORT_TABLE, 0, -1).await.expect("all");
     assert_eq!(all.len(), 3);
+    assert_eq!(all[0].id, iid(1));
+    assert_eq!(all[1].id, iid(2));
+    assert_eq!(all[2].id, iid(3));
     match store.backend() {
         Backend::Mysql => {
             assert!(
                 all.iter()
                     .any(|row| row.name == "two" && row.data == vec![2, 2])
-            );
-            assert_eq!(
-                store
-                    .import_reader(IMPORT_TABLE, 1, 1)
-                    .await
-                    .expect("page")
-                    .len(),
-                1
             );
         }
         Backend::Postgres => {
@@ -210,26 +427,20 @@ async fn check_import(store: &FsAssetStore) {
                     .all(|row| row.name.is_empty() && row.description.is_empty())
             );
             assert!(all.iter().any(|row| row.data == vec![2, 2]));
-            assert_eq!(
-                store
-                    .import_reader(IMPORT_TABLE, 2, 1)
-                    .await
-                    .expect("swapped")
-                    .len(),
-                2,
-                "LIMIT start OFFSET count"
-            );
-            assert_eq!(
-                store
-                    .import_reader(IMPORT_TABLE, 1, 0)
-                    .await
-                    .expect("one")
-                    .len(),
-                1
-            );
         }
         Backend::Sqlite => panic!("sqlite"),
     }
+    let page = store.import_reader(IMPORT_TABLE, 1, 1).await.expect("page");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, iid(2));
+    let empty = store
+        .import_reader(IMPORT_TABLE, 1, 0)
+        .await
+        .expect("empty page");
+    assert!(empty.is_empty(), "LIMIT 0");
+    let tail = store.import_reader(IMPORT_TABLE, 2, 1).await.expect("tail");
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].id, iid(3));
     drop_import(store).await;
 }
 
@@ -380,7 +591,47 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
         assert_eq!(bad["deleted"], true);
     }
 
-    cross_import(store, oracle, backend, ado).await;
+    let force_id = fid(8);
+    assert!(
+        store
+            .store(&meta(force_id, "kept-name", "kept-desc", 2), HASH_A)
+            .await
+            .expect("force seed")
+    );
+    let pin_force = csharp(
+        oracle,
+        backend,
+        ado,
+        "put",
+        serde_json::json!({
+            "id": force_id.to_string(),
+            "name": "other",
+            "description": "other",
+            "type": 4,
+            "flags": 1,
+            "hash": HASH_B
+        }),
+    );
+    assert_eq!(pin_force["stored"], true);
+    let pin_row = store.clock(force_id).await.expect("clock").expect("row");
+    same_hash(HASH_A, &pin_row.hash);
+    assert!(
+        store
+            .store_forced(&meta(force_id, "other", "other", 4), HASH_B)
+            .await
+            .expect("rust force")
+    );
+    let forced = store.clock(force_id).await.expect("clock").expect("row");
+    same_hash(HASH_B, &forced.hash);
+    assert_eq!(forced.raw_flags, 2);
+    assert_eq!(forced.create_time, pin_row.create_time);
+    if backend == "mysql" {
+        assert_eq!(forced.name, "kept-name");
+        assert_eq!(forced.description, "kept-desc");
+    }
+    differences.push("TB45");
+
+    differences.extend(cross_import(store, oracle, backend, ado).await);
     if differences.is_empty() {
         println!("fsassets: rows match");
     } else {
@@ -388,7 +639,12 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     }
 }
 
-async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str) {
+async fn cross_import(
+    store: &FsAssetStore,
+    oracle: &str,
+    backend: &str,
+    ado: &str,
+) -> Vec<&'static str> {
     reset_import(store).await;
     insert_import(store, 1, "one", vec![1]).await;
     insert_import(store, 2, "two", vec![2, 2]).await;
@@ -413,7 +669,16 @@ async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &s
                 .any(|item| item["id"] == row.id.to_string() && item["data"] == data)
         );
     }
+    let mut differences = Vec::new();
     if backend == "postgres" {
+        let rust_page = store
+            .import_reader(IMPORT_TABLE, 1, 0)
+            .await
+            .expect("rust page");
+        assert!(
+            rust_page.is_empty(),
+            "LIMIT count OFFSET start with count 0"
+        );
         let page = csharp(
             oracle,
             backend,
@@ -422,8 +687,10 @@ async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &s
             serde_json::json!({"table": IMPORT_TABLE, "start": 1, "count": 0}),
         );
         assert_eq!(page["rows"].as_array().expect("page").len(), 1);
+        differences.push("TB40");
     }
     drop_import(store).await;
+    differences
 }
 
 fn meta(id: Uuid, name: &str, description: &str, flags: i32) -> FsMetadata {

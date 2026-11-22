@@ -49,10 +49,11 @@
 //! left unchanged and answers success. PostgreSQL `Store` of an id that
 //! already has a row updates `access_time` only and answers success (TB35).
 //! PostgreSQL `Delete` of a non-uuid deletes nothing and returns false (TB39).
-//! `AssetsExist` reads the table only. Import is the SQL reader: MySQL uses
-//! `LIMIT start, count`, and PostgreSQL uses the pin's `LIMIT start OFFSET count`
-//! (TB40). Q23d changes that page to `LIMIT count OFFSET start`. The SQL here
-//! stays the pin's until that command lands. Files are `FsFiles`, not this store.
+//! `AssetsExist` reads the table only. Import is the SQL reader. Both engines
+//! order by `id`. MySQL uses `LIMIT start, count`. PostgreSQL uses
+//! `LIMIT count OFFSET start` (TB40, D32). The pin still swaps those
+//! PostgreSQL arguments. `store_forced` updates the hash of an existing row
+//! (TB45). An ordinary `store` does not. Files are `FsFiles`, not this store.
 //! AssetService's metadata page and refused write are that store.
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -165,14 +166,31 @@ impl FsAssetStore {
     }
 
     /// Plugin `Store`. `Ok(true)` means the row is there. A failed insert or
-    /// update is `Err`, which is the failure TB22 reports.
+    /// update is `Err`, which is the failure TB22 reports. An existing id is
+    /// not rewritten.
     pub async fn store(&self, meta: &FsMetadata, hash: &str) -> Result<bool, StoreError> {
+        self.store_row(meta, hash, false).await
+    }
+
+    /// `force import`'s store. An existing row's hash and `access_time` are
+    /// updated. Name, description, type, flags and `create_time` stay (TB45).
+    pub async fn store_forced(&self, meta: &FsMetadata, hash: &str) -> Result<bool, StoreError> {
+        self.store_row(meta, hash, true).await
+    }
+
+    async fn store_row(
+        &self,
+        meta: &FsMetadata,
+        hash: &str,
+        force: bool,
+    ) -> Result<bool, StoreError> {
         match self.backend() {
             Backend::Mysql => {
-                super::fmysql::store(self.mysql()?, &self.table, self.days(), meta, hash).await
+                super::fmysql::store(self.mysql()?, &self.table, self.days(), meta, hash, force)
+                    .await
             }
             Backend::Postgres => {
-                super::fpostgres::store(self.postgres()?, self.days(), meta, hash).await
+                super::fpostgres::store(self.postgres()?, self.days(), meta, hash, force).await
             }
             Backend::Sqlite => Err(StoreError::Backend("sqlite")),
         }
@@ -214,12 +232,33 @@ impl FsAssetStore {
         start: i32,
         count: i32,
     ) -> Result<Vec<FsImportRow>, StoreError> {
-        match self.backend() {
+        self.import_from(self.pool(), table, start, count).await
+    }
+
+    /// The same reader against a connection the operator named. The pool's
+    /// backend must be this store's backend.
+    pub async fn import_from(
+        &self,
+        pool: &Pool,
+        table: &str,
+        start: i32,
+        count: i32,
+    ) -> Result<Vec<FsImportRow>, StoreError> {
+        if pool.backend() != self.backend() {
+            return Err(StoreError::Backend("import"));
+        }
+        match pool.backend() {
             Backend::Mysql => {
-                super::fmysql::import_reader(self.mysql()?, table, start, count).await
+                let Some(mysql) = pool.mysql() else {
+                    return Err(StoreError::Backend("mysql"));
+                };
+                super::fmysql::import_reader(mysql, table, start, count).await
             }
             Backend::Postgres => {
-                super::fpostgres::import_reader(self.postgres()?, table, start, count).await
+                let Some(postgres) = pool.postgres() else {
+                    return Err(StoreError::Backend("postgres"));
+                };
+                super::fpostgres::import_reader(postgres, table, start, count).await
             }
             Backend::Sqlite => Err(StoreError::Backend("sqlite")),
         }
@@ -245,7 +284,6 @@ impl FsAssetStore {
         self.pool.postgres().ok_or(StoreError::Backend("postgres"))
     }
 
-    #[cfg(test)]
     pub(super) fn pool(&self) -> &Pool {
         &self.pool
     }
@@ -305,20 +343,20 @@ pub(super) fn access_is_due(now: i32, stored: i32, days: i32) -> bool {
     i64::from(now).saturating_sub(i64::from(stored)) >= i64::from(days).saturating_mul(86_400)
 }
 
-/// The `LIMIT` text `Import` appends. `count == -1` is the whole table.
-/// PostgreSQL's arguments are `LIMIT start OFFSET count`, which is the pin's
-/// text. MySQL is `LIMIT start, count`.
+/// The page `Import` appends. `count == -1` is the whole table, still ordered
+/// by `id`. PostgreSQL is `ORDER BY id LIMIT count OFFSET start` (TB40).
+/// MySQL is `ORDER BY id LIMIT start, count`.
 pub(super) fn import_suffix(start: i32, count: i32, postgres: bool) -> Result<String, StoreError> {
     if start < 0 || count < -1 {
         return Err(StoreError::Bound);
     }
     if count == -1 {
-        return Ok(String::new());
+        return Ok(" ORDER BY id".to_string());
     }
     if postgres {
-        Ok(format!(" LIMIT {start} OFFSET {count}"))
+        Ok(format!(" ORDER BY id LIMIT {count} OFFSET {start}"))
     } else {
-        Ok(format!(" LIMIT {start},{count}"))
+        Ok(format!(" ORDER BY id LIMIT {start},{count}"))
     }
 }
 
@@ -348,12 +386,15 @@ mod unit {
     }
 
     #[test]
-    fn import_limit_keeps_the_pin_argument_order() {
-        assert_eq!(import_suffix(0, -1, false).expect("all"), "");
-        assert_eq!(import_suffix(1, 2, false).expect("mysql"), " LIMIT 1,2");
+    fn import_limit_is_count_then_start_in_id_order() {
+        assert_eq!(import_suffix(0, -1, false).expect("all"), " ORDER BY id");
+        assert_eq!(
+            import_suffix(1, 2, false).expect("mysql"),
+            " ORDER BY id LIMIT 1,2"
+        );
         assert_eq!(
             import_suffix(2, 1, true).expect("postgres"),
-            " LIMIT 2 OFFSET 1"
+            " ORDER BY id LIMIT 1 OFFSET 2"
         );
         assert!(import_suffix(-1, 1, false).is_err());
         assert!(import_suffix(0, -2, true).is_err());

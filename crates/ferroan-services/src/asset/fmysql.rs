@@ -36,9 +36,10 @@
 //! `UpdateAccessTime`. `Store` inserts when the id is absent. The name and
 //! description keep only what a `utf8` column holds, and a failed insert is
 //! returned (TB22, #481). The pin drops those characters and returns the
-//! insert's result. An existing id is not rewritten. `Delete` returns true
+//! insert's result. An existing id is not rewritten unless `force` is set,
+//! which updates `hash` and `access_time` only (TB45). `Delete` returns true
 //! when the statement runs. `AssetsExist` and `Count` read this table. `Import` is
-//! `SELECT * FROM {table} LIMIT start, count`.
+//! `SELECT * FROM {table} ORDER BY id LIMIT start, count`.
 
 use sqlx::MySqlPool;
 use uuid::Uuid;
@@ -89,8 +90,26 @@ pub(super) async fn store(
     days: i32,
     meta: &FsMetadata,
     hash: &str,
+    force: bool,
 ) -> Result<bool, StoreError> {
     if get(pool, table, days, meta.id).await?.is_some() {
+        if force {
+            let sql =
+                format!("UPDATE {table} SET hash = ?, access_time = UNIX_TIMESTAMP() WHERE id = ?");
+            if let Err(error) = sqlx::query(&sql)
+                .bind(hash)
+                .bind(meta.id.to_string())
+                .execute(pool)
+                .await
+            {
+                tracing::error!(
+                    asset_id = %meta.id,
+                    error = %error,
+                    "fsassets mysql hash update failed"
+                );
+                return Err(error.into());
+            }
+        }
         return Ok(true);
     }
     let name = utf8mb3(&meta.name);

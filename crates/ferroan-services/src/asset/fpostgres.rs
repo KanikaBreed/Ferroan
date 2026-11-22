@@ -39,8 +39,9 @@
 //! (TB35, #482). The pin does the same. `Delete` binds `uuid` and returns
 //! true when the statement runs.
 //! An id that is not a uuid deletes nothing and returns false (TB39). The pin
-//! throws from `new UUID(id)` before the query. `Import` uses the pin's
-//! `LIMIT start OFFSET count`.
+//! throws from `new UUID(id)` before the query. `Import` is
+//! `ORDER BY id LIMIT count OFFSET start` (TB40). `force` updates `hash` and
+//! `access_time` on an existing row (TB45). An ordinary store does not.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -98,14 +99,26 @@ pub(super) async fn store(
     days: i32,
     meta: &FsMetadata,
     hash: &str,
+    force: bool,
 ) -> Result<bool, StoreError> {
     let now = postgres_unix_now();
     if get(pool, days, meta.id).await?.is_some() {
-        sqlx::query("UPDATE fsassets SET \"access_time\" = $2 WHERE \"id\" = $1::uuid")
+        if force {
+            sqlx::query(
+                "UPDATE fsassets SET \"hash\" = $2, \"access_time\" = $3 WHERE \"id\" = $1::uuid",
+            )
             .bind(meta.id.to_string())
+            .bind(hash)
             .bind(now)
             .execute(pool)
             .await?;
+        } else {
+            sqlx::query("UPDATE fsassets SET \"access_time\" = $2 WHERE \"id\" = $1::uuid")
+                .bind(meta.id.to_string())
+                .bind(now)
+                .execute(pool)
+                .await?;
+        }
         return Ok(true);
     }
     sqlx::query(
