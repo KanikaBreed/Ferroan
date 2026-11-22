@@ -113,6 +113,10 @@ impl FsFiles {
         &self.spool
     }
 
+    pub const fn osgrid(&self) -> bool {
+        self.osgrid
+    }
+
     /// Relative path of the file, without `.gz`. This is `HashToFile`.
     pub fn relative_file(&self, hash: &str) -> PathBuf {
         hash_to_file(hash, self.osgrid)
