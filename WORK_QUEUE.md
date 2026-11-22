@@ -80,8 +80,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q16b | P2.0g2: local chat on channel 0 as `ChatModule` does, and `cargo xtask live run chat grid --region ferroan` prints `chat: pass` | DONE (#149) |
 | Q16c | P2.0g3: a god or an estate manager enters a full Ferroan region, as `Scene.CheckLandPositionAccess` lets them | DONE (#158) |
 | Q17 | P2.0h: teleport inside the Ferroan region | DONE (#163) |
-| Q18 | P2.0i: teleport to the C# neighbour and back | BLOCKED |
-| Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18 |
+| Q18 | P2.0i: teleport to the C# neighbour and back | SPLIT into Q18a to Q18c (#164) |
+| Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | READY after Q17 |
+| Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | READY after Q18a |
+| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b |
+| Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
@@ -180,6 +183,8 @@ Q20 to Q39 were added on 18 November 2026: all of Phase 1, starting with Tranqui
 Q18: size it from the C# first, and set it to `BLOCKED` with a proposed split if it is more than two weeks of work.
 
 Q18 BLOCKED (22 November 2026, `docs/q18-blocked`): the row is more than about a day, and the whole module is more than two weeks. No transfer code is in this change. The pin is `1d7abb8337` (the row's `40432e0` is older; those fixes are in this pin). `EntityTransferModule.cs` is 3,172 lines. The agent teleport the harness uses is `TeleportAgentToDifferentRegion` (776), `DoTeleport` (877), `DoTeleportInternal` (915) and `TransferAgent_V2` (1298–1484). `VersionInfo` advertises simulation service 0.3–0.8, and two regions at this pin negotiate 0.8, so `DoTeleportInternal` takes the V2 branch (the threshold is 0.2). `TransferAgent_V1` (1060) is the older fallback. `EntityTransferStateMachine.cs` is 344 lines. `SimulationServiceConnector.cs` is 690: `QueryAccess` (300), `CreateAgent` (109), `UpdateAgent` (180 and 191), `ReleaseAgent` (440), `CloseAgent` (458); the rest creates and recalls objects. `AgentHandlers.cs` is 696: `DoQueryAccess` (315), `DoAgentDelete` (470), `DoAgentPost` (495), `DoAgentPut` (601). `HGEntityTransferModule.cs` is 953 lines and is Hypergrid. Walk-across `Cross` (1837–2167), `EnableChildAgents` (2168–2634) and the object methods from 2905 are a second protocol. Ferroan `simulation.rs` already answers login `QueryAccess` and root `CreateAgent`. A `child` body and a `teleport_flags` value without `ViaLogin` are refused (`Child agent connections are not implemented`, `Only login agent connections are supported`). The file says PUT and DELETE are not implemented. Q17 answers a different-region `TeleportLocationRequest` with `TeleportFailed` (`Could not process the teleport`) and no map block. The bot's `teleport_neighbour` (`tools/bot/src/scenario.rs`) logs into the home region, teleports to the neighbour, then back, and prints `teleport neighbour: pass ({x},{y} and back)`. It parks the source circuit and the return hop sends `CompleteAgentMovement` on that circuit. At version 0.8, `NeedsClosing` keeps that child when the neighbour is inside view; the harness neighbour is the next region. This note does not add or reorder queue rows. Q19 stays `READY after Q18`.
+
+Q18 split (manager, 22 November 2026): the block in #164 is right, and its three parts are taken as Q18a to Q18c. Q18a is fixtures only, no Ferroan transfer code. If Q18b or Q18c is still more than about a day, block it again with a split. P2.0i stays TODO until all three are DONE. Q19 follows Q18c.
 
 Proposed split, for the manager to queue. P2.0i stays the parent row until all three are done.
 
