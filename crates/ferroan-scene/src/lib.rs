@@ -62,12 +62,14 @@
 mod bits;
 mod compress;
 mod error;
+mod estate;
 mod frame;
 mod height;
 mod store;
 
 pub use compress::TerrainLayer;
 pub use error::TerrainError;
+pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
 pub use store::open_terrain;

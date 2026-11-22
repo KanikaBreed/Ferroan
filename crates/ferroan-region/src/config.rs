@@ -89,6 +89,20 @@ pub struct RegionConfig {
     pub grid_user_server_uri: String,
     pub control_plane: ControlPlaneAccess,
     pub estate_owner: Uuid,
+    /// `allow_grid_gods` after `force_grid_gods_only`. Code default is false.
+    /// `RegionServerDefaults.ini` sets it true, and a region process loads that
+    /// file as inimaster.
+    pub allow_grid_gods: bool,
+    /// `region_owner_is_god`. Forced off when `force_grid_gods_only` is set.
+    pub region_owner_is_god: bool,
+    /// `region_manager_is_god`. Forced off when `force_grid_gods_only` is set.
+    pub region_manager_is_god: bool,
+    /// `[UserAccountService] UserAccountServerURI`. Empty skips the level lookup.
+    pub user_account_server_uri: String,
+    /// SQLite estate connection, resolved like `EstateDataService`: DatabaseService
+    /// `ConnectionString`, then `EstateConnectionString`, then
+    /// `[EstateDataStore] ConnectionString`. Absent means no estate tables.
+    pub estate_store: Option<String>,
     pub handshake: HandshakeConfig,
     pub circuit_timing: CircuitTiming,
     /// Deadline for ViaLogin circuits which have not opened a viewer connection.
@@ -303,9 +317,17 @@ impl RegionConfig {
         if product_name.len() > 4096 {
             return Err(value(name, "RegionType", "exceeds 4096 bytes"));
         }
-        // RegionSettings and EstateSettings are not INI sections in C#.
-        // Until their stores are implemented this region uses fresh settings;
-        // only the genuine RegionInfo/estate-owner INI fields override them.
+        // RegionSettings is not an INI section. The handshake owner stays the
+        // INI estate owner. Admission may replace it from the estate tables.
+        let (allow_grid_gods, region_owner_is_god, region_manager_is_god) =
+            crate::staff::fold_god_flags(
+                permission_flag(server, "allow_grid_gods", false)?,
+                permission_flag(server, "region_owner_is_god", false)?,
+                permission_flag(server, "region_manager_is_god", false)?,
+                permission_flag(server, "force_grid_gods_only", false)?,
+            );
+        let user_account_server_uri =
+            optional_uri(server, "UserAccountService", "UserAccountServerURI")?;
         let mut handshake = HandshakeConfig::for_region(id);
         handshake.sim_name = name.to_owned();
         handshake.product_name = product_name.to_owned();
@@ -325,6 +347,11 @@ impl RegionConfig {
             grid_user_server_uri: grid_user_server_uri.to_owned(),
             control_plane: ControlPlaneAccess::from_config(server)?,
             estate_owner,
+            allow_grid_gods,
+            region_owner_is_god,
+            region_manager_is_god,
+            user_account_server_uri,
+            estate_store: estate_connection(server),
             handshake,
             circuit_timing: circuit_timing(server)?,
             login_connect_wait: login_connect_wait(server)?,
@@ -714,6 +741,52 @@ fn metrics_listen_address(server: &Config) -> Result<SocketAddr, RegionConfigErr
     }
 }
 
+/// `[Permissions]` overwrites `[Startup]`, as `GetConfigVarFromSections` does.
+/// A missing key keeps `default`. Only `true` and `false` are accepted.
+fn permission_flag(
+    config: &Config,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, RegionConfigError> {
+    let permissions = nonempty(config, "Permissions", key);
+    let startup = nonempty(config, "Startup", key);
+    let (section, raw) = if permissions.is_some() {
+        ("Permissions", permissions)
+    } else {
+        ("Startup", startup)
+    };
+    match raw {
+        None => Ok(default),
+        Some(text) => match text.to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(value(section, key, "expected true or false")),
+        },
+    }
+}
+
+fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str> {
+    config
+        .get(section, key)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+/// Later keys replace earlier ones. An empty value clears the string.
+fn estate_connection(config: &Config) -> Option<String> {
+    let mut current = None;
+    for (section, key) in [
+        ("DatabaseService", "ConnectionString"),
+        ("DatabaseService", "EstateConnectionString"),
+        ("EstateDataStore", "ConnectionString"),
+    ] {
+        if config.get(section, key).is_some() {
+            current = nonempty(config, section, key).map(str::to_owned);
+        }
+    }
+    current
+}
+
 fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {
     match config
         .get(section, key)
@@ -921,6 +994,53 @@ mod tests {
         assert_eq!(arrival.look_at, [0.99, 0.042, 0.0]);
         assert_eq!(arrival.region_handle, (256000u64 << 32) | 256256);
         assert_eq!(arrival.channel_version, "Configured server identity");
+    }
+
+    #[test]
+    fn permission_flags_follow_startup_then_permissions_and_force_grid_gods() {
+        let config = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        assert!(!config.allow_grid_gods);
+        assert!(!config.region_owner_is_god);
+        assert!(config.user_account_server_uri.is_empty());
+        assert!(config.estate_store.is_none());
+
+        let mut server = server();
+        server.set("Startup", "allow_grid_gods", "false");
+        server.set("Permissions", "allow_grid_gods", "true");
+        server.set("Startup", "region_owner_is_god", "true");
+        server.set(
+            "DatabaseService",
+            "ConnectionString",
+            "Data Source=region.db;Version=3",
+        );
+        server.set(
+            "EstateDataStore",
+            "ConnectionString",
+            "Data Source=estate.db;Version=3",
+        );
+        server.set(
+            "UserAccountService",
+            "UserAccountServerURI",
+            "http://127.0.0.1:8003",
+        );
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert!(config.allow_grid_gods);
+        assert!(config.region_owner_is_god);
+        assert_eq!(config.user_account_server_uri, "http://127.0.0.1:8003");
+        assert_eq!(
+            config.estate_store.as_deref(),
+            Some("Data Source=estate.db;Version=3")
+        );
+
+        server.set("Permissions", "force_grid_gods_only", "true");
+        server.set("Permissions", "region_manager_is_god", "true");
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert!(config.allow_grid_gods);
+        assert!(!config.region_owner_is_god);
+        assert!(!config.region_manager_is_god);
+
+        server.set("Permissions", "allow_grid_gods", "maybe");
+        assert!(RegionConfig::from_configs(&server, &regions()).is_err());
     }
 
     #[test]
