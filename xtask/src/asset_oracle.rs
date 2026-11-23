@@ -44,6 +44,15 @@ const GRIDUSER_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_GRIDUSER_ADO",
 };
 
+const AVATAR_CROSS: PluginCross = PluginCross {
+    label: "avatar",
+    artifacts: ".scratch/avatar-oracle/artifacts",
+    project: "tools/avatar-oracle/AvatarOracle.csproj",
+    dll: "bin/AvatarOracle/release/AvatarOracle.dll",
+    oracle_env: "FERROAN_AVATAR_ORACLE",
+    ado_prefix: "FERROAN_AVATAR_ADO",
+};
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///
@@ -110,6 +119,17 @@ pub fn griduser_service() -> ExitCode {
         "griduser_service_matches_the_pin",
         "FERROAN_GRIDUSER_SERVICE",
         false,
+    )
+}
+
+/// Rust writes `Avatars` rows and the pinned avatar plugins read them, then
+/// the reverse, on SQLite, MySQL and PostgreSQL. No HTTP and no live harness.
+pub fn avatar_cross() -> ExitCode {
+    run_plugin_cross(
+        &AVATAR_CROSS,
+        "avatar_plugins_cross_read",
+        "FERROAN_AVATAR_CROSS",
+        true,
     )
 }
 

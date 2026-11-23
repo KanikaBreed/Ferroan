@@ -249,10 +249,21 @@ pub fn unpack_quat(v: Vec3) -> Quat {
 }
 
 /// Pack a quaternion the way `Quaternion.ToBytes` does: normalize, force w
-/// non-negative, and write x, y, z. A non-finite length writes three zeroes,
-/// which is the branch OpenMetaverse takes when every comparison on the
-/// length is false.
+/// non-negative, and write x, y, z.
+///
+/// [`unpack_quat`] stores the wire x, y, z and a reconstructed w. Those x, y, z
+/// are written back unchanged, so a decoded packet round-trips. Ferrobot
+/// normalizes with glam instead of this rescaling. Some headings are not a
+/// fixed point of the rescaling, and rescaling them changed `AgentUpdate`.
+/// A quaternion that is not already in the unpacked form is still rescaled.
+/// A non-finite length writes three zeroes, which is the branch OpenMetaverse
+/// takes when every comparison on the length is false.
 pub fn pack_quat(q: Quat) -> [f32; 3] {
+    let t = 1.0 - q.x * q.x - q.y * q.y - q.z * q.z;
+    let reconstructed = if t > 1e-6 { t.sqrt() } else { 0.0 };
+    if q.w == reconstructed {
+        return [q.x, q.y, q.z];
+    }
     let norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
     if norm > 1e-6 || norm < 0.9999 {
         let scale = if q.w < 0.0 {

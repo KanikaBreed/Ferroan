@@ -63,7 +63,7 @@ On the raw file, before anything is replaced:
 cargo run -p ferroan-capture -- check /tmp/session.cap
 ```
 
-`check` and `replay` both call `reencode_datagram` on every UDP record and require the same bytes. HTTP records are skipped by that check. The output line is `replay: N records, udp round-trip matched`. A mismatch names the record index and stops. That equality is the wire proof. Keep the raw file out of Git.
+`check` and `replay` both call `reencode_datagram` on every UDP record and require the same bytes. HTTP records are skipped by that check. The output line is `replay: N records, udp round-trip matched`. A mismatch names the record index, the direction, the message name and the capture timestamp, and stops. `check` also writes `reencode-mismatch.log` beside the capture: the index, direction, message name, timestamp, and the original and re-encoded datagrams in hex. The live harness writes the same file at `.scratch/live/diag/reencode-mismatch.log`, which the live job uploads with the other diagnostics. That equality is the wire proof. Keep the raw file out of Git.
 
 ## Redaction
 

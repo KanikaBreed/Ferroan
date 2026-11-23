@@ -52,6 +52,10 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 `cargo xtask griduser service` builds the same oracle and runs one `POST /griduser` sequence on a new SQLite file: `loggedin`, `loggedout`, `loggedoutregion`, `sethome`, `setposition`, `getgriduserinfo`, `getgriduserinfos`, and the two console commands. The committed bytes are [fixtures/griduser/service.json](../fixtures/griduser/service.json). `ferroan-services` replays that file on every platform. Login and logout in the XML are dates; the replay folds the process-culture spelling and the invariant spelling to the same token (D37). Console text stays the stored integers. The command does not run in CI and does not start a server or the live harness. `live compare` is Q26f.
 
+## Avatar stores
+
+`cargo xtask avatar cross` builds [tools/avatar-oracle](../tools/avatar-oracle/README.md) and calls the pinned `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData`. Rust and C# read each other's rows on SQLite, MySQL and PostgreSQL. SQLite uses a copy of `fixtures/db/sqlite/Avatar.db`. MySQL and PostgreSQL use the schema-server containers. The Rust plugin tests run in ordinary CI when `FERROAN_MYSQL_URL` and `FERROAN_POSTGRES_URL` are set, and skip with a printed reason otherwise. The cross-read does not run in CI and does not start a server or the live harness. Get is by `PrincipalID`. Upsert is on `(PrincipalID, Name)`. Delete is by principal, and by principal and name. The store writes the value it is given. Height parsing and the preserve-and-replace rules are the avatar service. PostgreSQL binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed.
+
 ## Known differences
 
 Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. The rows stay open upstream until those PRs merge into `develop`.

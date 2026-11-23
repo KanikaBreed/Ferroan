@@ -8,7 +8,8 @@
 //! The redacted datagram is then `scrub_datagram` of those bytes, so the
 //! committed file still round-trips and no longer carries the session.
 
-use ferroan_protocol::{reencode_datagram, scrub_datagram};
+use ferroan_protocol::{message_info, parse_packet, reencode_datagram, scrub_datagram};
+use std::path::{Path, PathBuf};
 
 use crate::format::{Kind, Record};
 
@@ -22,30 +23,152 @@ pub enum RedactError {
     },
 }
 
-pub fn check_udp(records: &[Record]) -> Result<(), RedactError> {
+/// One UDP record whose bytes do not survive `reencode_datagram`.
+///
+/// `index` is its position among every record in the file, including HTTP.
+/// The harness writes this to `.scratch/live/diag/reencode-mismatch.log`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UdpMismatch {
+    pub index: usize,
+    pub direction: &'static str,
+    pub message: String,
+    pub time_ms: u64,
+    pub original: Vec<u8>,
+    pub encoded: Option<Vec<u8>>,
+    pub detail: String,
+}
+
+impl UdpMismatch {
+    /// One line for the job log. The full datagrams stay in the mismatch file.
+    pub fn summary(&self) -> String {
+        let encoded = self
+            .encoded
+            .as_ref()
+            .map(|bytes| bytes.len().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let at = first_difference(&self.original, self.encoded.as_deref());
+        let place = at
+            .map(|offset| format!("first difference at {offset}"))
+            .unwrap_or_else(|| "no shared prefix".to_string());
+        format!(
+            "{} at {} ms, {}, original {} bytes, encoded {encoded} bytes, {place}",
+            self.message,
+            self.time_ms,
+            self.detail,
+            self.original.len(),
+        )
+    }
+}
+
+/// The first UDP record that does not re-encode, if any.
+pub fn udp_mismatch(records: &[Record]) -> Option<UdpMismatch> {
     for (index, record) in records.iter().enumerate() {
         if !is_udp(record.kind) {
             continue;
         }
+        let direction = kind_name(record.kind);
+        let message = message_name(&record.bytes);
         match reencode_datagram(&record.bytes) {
             Ok(again) if again == record.bytes => {}
-            Ok(_) => {
-                return Err(RedactError::Udp {
+            Ok(again) => {
+                return Some(UdpMismatch {
                     index,
-                    kind: kind_name(record.kind),
+                    direction,
+                    message,
+                    time_ms: record.time_ms,
+                    original: record.bytes.clone(),
+                    encoded: Some(again),
                     detail: "the encoded bytes differ".to_string(),
                 });
             }
             Err(error) => {
-                return Err(RedactError::Udp {
+                return Some(UdpMismatch {
                     index,
-                    kind: kind_name(record.kind),
+                    direction,
+                    message,
+                    time_ms: record.time_ms,
+                    original: record.bytes.clone(),
+                    encoded: None,
                     detail: error.to_string(),
                 });
             }
         }
     }
-    Ok(())
+    None
+}
+
+pub fn check_udp(records: &[Record]) -> Result<(), RedactError> {
+    match udp_mismatch(records) {
+        None => Ok(()),
+        Some(mismatch) => Err(RedactError::Udp {
+            index: mismatch.index,
+            kind: mismatch.direction,
+            detail: mismatch.summary(),
+        }),
+    }
+}
+
+/// Write the failing datagram next to the other live diagnostics.
+/// The name matches the `live-logs-*` artifact glob.
+pub fn write_udp_mismatch(directory: &Path, mismatch: &UdpMismatch) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    let path = directory.join("reencode-mismatch.log");
+    let mut text = format!(
+        "record {}\ndirection {}\nmessage {}\ntime_ms {}\noriginal_len {}\n",
+        mismatch.index,
+        mismatch.direction,
+        mismatch.message,
+        mismatch.time_ms,
+        mismatch.original.len()
+    );
+    match &mismatch.encoded {
+        Some(encoded) => {
+            text.push_str(&format!("encoded_len {}\n", encoded.len()));
+            match first_difference(&mismatch.original, Some(encoded)) {
+                Some(offset) => text.push_str(&format!("first_difference {offset}\n")),
+                None => text.push_str("first_difference none\n"),
+            }
+            text.push_str("encoded_hex\n");
+            text.push_str(&hex(encoded));
+            text.push('\n');
+        }
+        None => text.push_str("encoded_len none\nfirst_difference none\n"),
+    }
+    text.push_str(&format!("detail {}\noriginal_hex\n", mismatch.detail));
+    text.push_str(&hex(&mismatch.original));
+    text.push('\n');
+    std::fs::write(&path, text)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+fn message_name(bytes: &[u8]) -> String {
+    let Ok(packet) = parse_packet(bytes) else {
+        return "unparsed".to_string();
+    };
+    message_info(packet.id)
+        .map(|info| info.name.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn first_difference(original: &[u8], encoded: Option<&[u8]>) -> Option<usize> {
+    let encoded = encoded?;
+    original
+        .iter()
+        .zip(encoded.iter())
+        .position(|(left, right)| left != right)
+        .or_else(|| (original.len() != encoded.len()).then_some(original.len().min(encoded.len())))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 pub fn redact_records(records: &[Record]) -> Result<Vec<Record>, RedactError> {
@@ -403,6 +526,53 @@ Content-Type: text/xml\r\n\
         assert!(!text.contains(">42<"));
         assert!(!text.contains("22222222-2222-2222-2222-222222222222"));
         assert!(text.contains("33333333-3333-3333-3333-333333333333"));
+    }
+
+    #[test]
+    fn a_datagram_that_does_not_reencode_keeps_its_name_and_bytes() {
+        let mut message = UseCircuitCode::default();
+        message.circuit_code.code = 99;
+        message.circuit_code.session_id = Uuid::from_u128(0x1111);
+        message.circuit_code.id = Uuid::from_u128(0x2222);
+        let mut raw = Vec::new();
+        packet::build_packet(&message, 7, true, false, &[], &mut raw);
+        raw.push(0xab);
+        let records = vec![
+            Record {
+                kind: Kind::HttpRequest,
+                time_ms: 4,
+                bytes: b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+            },
+            Record {
+                kind: Kind::UdpIn,
+                time_ms: 90,
+                bytes: raw.clone(),
+            },
+        ];
+        let mismatch = udp_mismatch(&records).unwrap();
+        assert_eq!(mismatch.index, 1);
+        assert_eq!(mismatch.direction, "udp in");
+        assert_eq!(mismatch.message, "UseCircuitCode");
+        assert_eq!(mismatch.time_ms, 90);
+        assert_eq!(mismatch.original, raw);
+        let encoded = mismatch.encoded.as_ref().unwrap();
+        assert_ne!(encoded, &raw);
+        assert_eq!(encoded.len() + 1, raw.len());
+        let error = check_udp(&records).unwrap_err().to_string();
+        assert!(error.contains("record 1 (udp in)"), "{error}");
+        assert!(error.contains("UseCircuitCode"), "{error}");
+        assert!(error.contains("at 90 ms"), "{error}");
+        assert!(error.contains("the encoded bytes differ"), "{error}");
+        let directory = std::env::temp_dir().join(format!("ferroan-reencode-{}", Uuid::new_v4()));
+        let path = write_udp_mismatch(&directory, &mismatch).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("direction udp in"), "{text}");
+        assert!(text.contains("message UseCircuitCode"), "{text}");
+        assert!(text.contains("time_ms 90"), "{text}");
+        assert!(text.contains("record 1\n"), "{text}");
+        assert!(text.contains(&hex(&raw)), "{text}");
+        assert!(text.contains(&hex(encoded)), "{text}");
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use ferroan_capture::{
     DEFAULT_REPLY_TIMEOUT, check_udp, read_capture, redact_records, serve_with_timeout,
-    write_capture,
+    udp_mismatch, write_capture, write_udp_mismatch,
 };
 
 fn main() -> ExitCode {
@@ -33,7 +33,22 @@ fn run() -> Result<(), String> {
         Some("check") | Some("replay") => {
             let path = PathBuf::from(need(&mut args, "file")?);
             let records = load(&path)?;
-            check_udp(&records).map_err(|error| error.to_string())?;
+            if let Err(error) = check_udp(&records) {
+                if let Some(mismatch) = udp_mismatch(&records) {
+                    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+                    match write_udp_mismatch(directory, &mismatch) {
+                        Ok(saved) => {
+                            return Err(format!("{error}; wrote {}", saved.display()));
+                        }
+                        Err(write_error) => {
+                            return Err(format!(
+                                "{error}; could not save the record: {write_error}"
+                            ));
+                        }
+                    }
+                }
+                return Err(error.to_string());
+            }
             println!("replay: {} records, udp round-trip matched", records.len());
             Ok(())
         }

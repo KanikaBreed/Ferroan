@@ -23,6 +23,16 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (an out
 
 Items that name a GitHub issue are open to outside contributors too, but the coder does not wait for them. When such an item comes up, check its issue first (`gh issue view <n> --json labels`). If it is labelled `claimed`, a contributor has it: skip the item and go on. If not, it is the coder's: add the `claimed` label, post one comment on the issue ("The project's queue coder is taking this, on branch `<branch>`."), and work it as usual, with `Closes #<n>` in the PR. An item that names several issues is taken one issue at a time, in the order listed. This is the only issue comment the coder posts.
 
+## Paused for handoff (22 November 2026)
+
+The Grok queue coders' shared weekly usage ran out on 22 November 2026 around 01:30 EST (`402 Payment Required`). It resets on Monday 23 November at 21:08 EST. Any coder that resumes first finishes what is in flight, in this order, before taking a new item:
+
+1. **#172** (Q26b, GridUser service), **#173** (Q10ab, the `AgentUpdate` quaternion re-encode) and **#174** (Q27a, avatar stores) have auto-merge on. If one has not merged, read its checks, fix or retry under the flake rule, and record its evidence.
+2. **Q23e** (live FSAssets compare) has uncommitted work in `/home/cinder/Git/work/ferroan/q23e-fsasset-live` on `feat/fsasset-live` (a new `xtask/src/fsasset_live.rs` and harness, workflow and docs edits). Read it, finish it or start again from `origin/main`; it is not pushed.
+3. Then the region track resumes with Q18b.
+
+Remove this section once the queue runs again.
+
 ## Queue
 
 | # | Item | Status |
@@ -68,7 +78,24 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10w | P0.10n6: record twice counts a resend once (Pin5 live failure: `LogoutRequest` 1 and 3) | DONE (#118) |
 | Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | DONE (#152) |
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
-| Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | READY after Q10aa |
+| Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
+| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
+| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
+| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
+| QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
+| QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
+| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | READY after Q23e |
+| QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | READY after Q26b |
+| QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | READY after QR4 |
+| QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | READY after QR5 |
+| QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
+| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
+| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
+| QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
+| QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
+| QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
+| QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
+| QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker (published loopback ports, no host networking) | READY after QR7 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -86,6 +113,48 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | READY after Q18a |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
+| Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
+| Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |
+| Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
+| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40 |
+| Q44 | P2.2a: `AgentUpdate` into movement intent | READY after Q40 |
+| Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | READY after Q44 |
+| Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | READY after Q45 and Q42 |
+| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46 |
+| Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | READY after Q42 |
+| Q49 | P2.3b1: the animation state machine | READY after Q46 and Q48 |
+| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
+| Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
+| Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
+| Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | READY after Q18a |
+| Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53 |
+| Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
+| Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
+| Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | READY after Q18a |
+| Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | READY after Q18a |
+| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46 |
+| Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
+| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
+| Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | READY after Q42 and Q53 |
+| Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
+| Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
+| Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
+| Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`) | READY after Q68 |
+| Q70 | P2.8b2: edit, texture, shape, extra params, flags and permissions; `build: pass` | READY after Q69 |
+| Q71 | P2.8c: link, unlink and duplicate, `link: pass` | READY after Q70 |
+| Q72 | P2.8d: take and delete to trash, `take: pass` | READY after Q68 and Q57 |
+| Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
+| Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
+| Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
+| Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
+| Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
+| Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46 |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79 |
+| Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
@@ -110,7 +179,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
-| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | READY after Q24 |
+| Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | READY after Q27a |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
@@ -418,6 +487,12 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 
 Q27 split (manager, 22 November 2026): the block in #167 is right, and its five parts are taken as Q27a to Q27e. The viewer bake read stays in (Q27d): the pin serves it from the same service. `AvatarHeight` is TB44: Ferroan writes and reads it with a dot decimal in every locale. P1.4 stays TODO until all five are DONE.
 
+Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
+
+Review fixes added (manager, 22 November 2026): a review of #114 to #174 by four review agents, the top findings checked by the manager, became QR1 to QR15 (TASKS R1 to R15), most important first. QR1 is a security fix and goes first; QR2 can lose assets. Each item cites the file and line and the C# where it matters. The FSAssets items (QR5, QR14) follow Q23e and the GridUser item (QR6) follows Q26b. One finding is the maintainer's to decide and is under "Waiting on the maintainer": whether same-repository coder branches may run Docker on Home1.
+
+Phase 2 slice 2 (manager, 22 November 2026): Q40 to Q81 (TASKS P2.1a to P2.12, and G3) take the region from "logs in and chats" to the Phase 2 gate. The C# line references come from the manager's planning draft at pin `1d7abb8337`; check each one before porting. Chains: the spine is Q40, Q41, Q42 (scene owns presences, then the update queue and prioritizer). Movement is Q44, Q45, Q46, then Q49 and Q50, with Q47 and Q61 after Q46. Objects are Q42 plus Q53, then Q65, Q66 and Q67, Q68, Q69, Q70, Q71. Inventory is Q57 and Q58 plus Q68, then Q72, then Q73. Persistence is Q70, then Q74, then Q75. Crossings are Q18c plus Q57 and Q69, then Q77, then Q78; Q79 and Q80 follow Q18c and Q46. Q81 waits for all of them. In parallel: Q51, Q53 to Q58, Q60, Q62 and Q76 have no scene dependency and are `READY after Q18a`, so a second coder (rule 10) or an outside contributor can run them beside Q18b, Q18c and Q19; they are good `agent-ready` issues. Once the spine and Q46 are done, movement and avatars (P2.2, P2.3), objects and building (P2.5, P2.8), land and permissions (P2.6, P2.7) and transfer (P2.10, P2.11) run independently. Decisions: D38 (walking before Jolt is a BasicPhysics stand-in in `ferroan-scene`, deleted in Phase 3, with walk fixtures from a C# region on `physics = basicphysics`; "next door" at the gate is teleport both ways plus child agents so the C# neighbour is in view, and walking across the border waits; viewer-side bakes first; all three region-store databases at the gate) and D39 (scene state on the frame thread; object crossings advertise no held crossing and pass script state through; Phase 2 reads parcels and writes only the default parcel; persistence has an on/off switch, Ferroan and C# never open the same store at once, and backup timing follows C#; materials pass through only). P2.5d (the `RenderMaterials` cap) is a TASKS row but not queued, under D39. Loading an OAR with terrain-height standing only stays in Phase 2 outside the gate; it gets its row once P2.S and P2.9a are in. Where the draft guessed (Firestorm's bake path and handshake flags, Ferrobot's API at `9cc7ab284c`, the materials size), the rows say so: confirm before relying on it.
+
 ## Found while working
 
 - 2026-11-22, Q23d: `FSAssetService.Store(AssetBase, bool force)` at `1d7abb8337` never reads `force`, so `force import` does not overwrite the hash. Nobody depends on that. Ferroan updates `hash` and `access_time` only when `force` is true (TB45, D36). The PostgreSQL import page is now `ORDER BY id LIMIT count OFFSET start` (TB40). `cargo xtask asset fsassets-cross` prints TB45 on MySQL and TB39, TB45, TB40 on PostgreSQL.
@@ -552,5 +627,7 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 - 2026-11-18, Q10f detector review (**resolved by Q10g, #48**): the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
 
 ## Waiting on the maintainer
+
+- 2026-11-22, review of #117: code from any same-repository branch, including automated coders' branches, runs on Home1 with Docker, which is root-equivalent on that machine. Options: keep coder branches off Home1, or put the images job behind an approval environment. Fork PRs are already kept off. **Decided 22 November 2026:** the maintainer chose rootless Docker for the runner user. QR16 makes `docker smoke` work under it; the maintainer then moves the runner to the rootless socket and takes `ferroan-ci` out of the `docker` group.
 
 - Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
