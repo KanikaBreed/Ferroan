@@ -95,6 +95,7 @@ Remove this section once the queue runs again.
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
 | QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
+| QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker (published loopback ports, no host networking) | READY after QR7 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -581,6 +582,6 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 
 ## Waiting on the maintainer
 
-- 2026-11-22, review of #117: code from any same-repository branch, including automated coders' branches, runs on Home1 with Docker, which is root-equivalent on that machine. Options: keep coder branches off Home1, or put the images job behind an approval environment. Fork PRs are already kept off.
+- 2026-11-22, review of #117: code from any same-repository branch, including automated coders' branches, runs on Home1 with Docker, which is root-equivalent on that machine. Options: keep coder branches off Home1, or put the images job behind an approval environment. Fork PRs are already kept off. **Decided 22 November 2026:** the maintainer chose rootless Docker for the runner user. QR16 makes `docker smoke` work under it; the maintainer then moves the runner to the rootless socket and takes `ferroan-ci` out of the `docker` group.
 
 - Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
