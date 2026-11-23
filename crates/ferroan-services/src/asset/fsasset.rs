@@ -51,8 +51,8 @@
 //! PostgreSQL `Delete` of a non-uuid deletes nothing and returns false (TB39).
 //! `AssetsExist` reads the table only. Import is the SQL reader. Both engines
 //! order by `id`. MySQL uses `LIMIT start, count`. PostgreSQL uses
-//! `LIMIT count OFFSET start` (TB40, D32). The pin still swaps those
-//! PostgreSQL arguments. `store_forced` updates the hash of an existing row
+//! `LIMIT count OFFSET start` (TB40, D32), as the pin does since #491.
+//! `store_forced` updates the hash of an existing row
 //! (TB45). An ordinary `store` does not. Files are `FsFiles`, not this store.
 //! AssetService's metadata page and refused write are that store.
 

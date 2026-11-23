@@ -79,6 +79,7 @@ Remove this section once the queue runs again.
 | Q10z | P0.10n7: hide `GITHUB_ENV` from the C# build in the live images job (the torn NBGV append) | DONE (#152) |
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
+| Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | IN PROGRESS |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |

@@ -261,11 +261,8 @@ async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) 
         "exists",
         serde_json::json!({"ids": [id.to_string(), xid(9).to_string()]}),
     );
-    if backend == "mysql" {
-        assert_eq!(exists["exists"], serde_json::json!([false, false]));
-    } else {
-        assert_eq!(exists["exists"], serde_json::json!([true, false]));
-    }
+    // TB28 fixed (#476): MySQL reads `XAssetsMeta`, as PostgreSQL does.
+    assert_eq!(exists["exists"], serde_json::json!([true, false]));
 
     let page = csharp(
         oracle,
@@ -275,12 +272,9 @@ async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) 
         serde_json::json!({"start": 0, "count": 10}),
     );
     let rows = page["rows"].as_array().expect("rows");
-    if backend == "mysql" {
-        assert!(rows.iter().any(|row| row["id"] == id.to_string()));
-        assert!(rows.iter().any(|row| row["flags"] == 0));
-    } else {
-        assert!(rows.is_empty());
-    }
+    // TB29 fixed (#479): PostgreSQL returns the page, as MySQL does.
+    assert!(rows.iter().any(|row| row["id"] == id.to_string()));
+    assert!(rows.iter().any(|row| row["flags"] == 0));
 
     let stored = csharp(
         oracle,
@@ -322,23 +316,19 @@ async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) 
 
     let reopened = reopen(store.backend()).await;
     assert_eq!(reopened.data_rows().await.expect("data"), 1);
-    if backend == "mysql" {
-        // MySqlConnector rejects the command: StoreAsset begins a transaction
-        // and never assigns it, then logs and returns. The row is not written.
-        assert!(reopened.get(xid(3)).await.expect("get").is_none());
-    } else {
-        let written = reopened
-            .get(xid(3))
-            .await
-            .expect("get")
-            .expect("csharp row");
-        assert_eq!(written.name, "from-csharp");
-        assert_eq!(written.description.len(), 64);
-        assert!(!written.local);
-        assert!(written.temporary);
-        assert_eq!(written.flags, 1);
-        assert_eq!(written.data, bytes);
-    }
+    // TB27 fixed (#475): MySQL enlists the transaction, so both engines
+    // write the row.
+    let written = reopened
+        .get(xid(3))
+        .await
+        .expect("get")
+        .expect("csharp row");
+    assert_eq!(written.name, "from-csharp");
+    assert_eq!(written.description.len(), 64);
+    assert!(!written.local);
+    assert!(written.temporary);
+    assert_eq!(written.flags, 1);
+    assert_eq!(written.data, bytes);
     assert!(reopened.get(xid(4)).await.expect("get").is_none());
 
     let deleted = csharp_status(
@@ -349,18 +339,14 @@ async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) 
         serde_json::json!({"id": id.to_string()}),
     );
     let after = reopen(store.backend()).await;
-    if backend == "mysql" {
-        assert!(deleted.status.success());
-        let body = json_line(&deleted);
-        assert_eq!(body["deleted"], true);
-        assert!(after.get(id).await.expect("get").is_none());
-        assert!(after.get(other).await.expect("get").is_some());
-        assert_eq!(after.data_rows().await.expect("data"), 1);
-    } else {
-        assert!(!deleted.status.success(), "postgres delete rejects text");
-        assert!(after.get(id).await.expect("get").is_some());
-        assert_eq!(after.data_rows().await.expect("data"), 1);
-    }
+    // TB30 fixed (#480): PostgreSQL binds the id as uuid and deletes the meta
+    // row, as MySQL does. The shared data row stays.
+    assert!(deleted.status.success());
+    let body = json_line(&deleted);
+    assert_eq!(body["deleted"], true);
+    assert!(after.get(id).await.expect("get").is_none());
+    assert!(after.get(other).await.expect("get").is_some());
+    assert_eq!(after.data_rows().await.expect("data"), 1);
     after.close().await;
 }
 

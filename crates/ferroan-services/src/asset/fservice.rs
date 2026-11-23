@@ -39,19 +39,19 @@
 //! not clean object XML. `GetMetadata` is the row only, so a missing file is
 //! still metadata. `AssetsExist` is true only when that read would serve the
 //! asset (TB25). An id that does not parse is an error there, as `UUID.Parse`
-//! throws. A non-uuid `Get` is a miss: the PostgreSQL plugin throw is the same
-//! class as TB39, and nothing depends on it.
+//! throws. A non-uuid `Get` is a miss, as the PostgreSQL plugin answers since
+//! TB49 was fixed (#500).
 //!
 //! `Store` hashes the original bytes, truncates the name and description to
 //! 64 UTF-16 code units, and writes an object as sanitized XML ending in a
 //! NUL when the file is not already there. A failed spool write answers the
 //! zero UUID and leaves no partial file (TB36). A failed row write answers
 //! the zero UUID, or the id when the type is -2. `Delete` calls the plugin
-//! and returns true. The plugin's false for a PostgreSQL non-uuid stays
-//! inside that call (TB39). The console commands are `show assets`,
+//! and returns its answer (TB50, #501), so a PostgreSQL non-uuid is false
+//! (TB39, #490). The console commands are `show assets`,
 //! `show digest`, `delete asset`, `import` and `force import`, and only the
 //! main instance registers them. PostgreSQL import uses `LIMIT count OFFSET
-//! start` with `ORDER BY id` (TB40). `force import` updates an existing row's
+//! start` with `ORDER BY id`, as the pin does (TB40, #491). `force import` updates an existing row's
 //! hash (TB45). `ShowConsoleStats` is not started.
 //!
 //! Only the main instance runs `DefaultAssetLoader` and the writer. A later
@@ -330,10 +330,10 @@ impl FsAssetService {
         }
     }
 
-    /// `Delete`. The plugin bool is ignored. `Err` is a statement that failed.
+    /// `Delete`. Answers what the plugin answers (TB50, #501): a PostgreSQL
+    /// non-uuid is false. `Err` is a statement that failed.
     pub async fn delete(&self, id: &str) -> Result<bool, StoreError> {
-        let _ignored = self.store.delete(id).await?;
-        Ok(true)
+        self.store.delete(id).await
     }
 
     #[cfg(test)]

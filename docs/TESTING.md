@@ -58,7 +58,7 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## Known differences
 
-Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. The rows stay open upstream until those PRs merge into `develop`.
+Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. Those rows have been Fixed since Pin6.
 
 - TB1: [fixtures/asset/unnamed-flags.json](../fixtures/asset/unnamed-flags.json) records `StoredAssetFlags.FromStored` masking flags 8, `known_flags` 0 and `threw` false. [fixtures/asset/mixed-flags.json](../fixtures/asset/mixed-flags.json) records flags 9 (Maptile mixed with bit 8), `known_flags` 1 and `threw` false. The GET bodies are [unnamed-flags.xml](../fixtures/asset/asset/unnamed-flags.xml) (`Normal`) and [mixed-flags.xml](../fixtures/asset/asset/mixed-flags.xml) (`Maptile`). `csharp_unnamed_asset_flags_are_masked` and `stored_unnamed_and_mixed_flags_match_the_csharp_get` name `crates/ferroan-services/src/asset/xml.rs` `flags_text`. Neither JSON file is a `manifest.json` case.
 - TB10: `fixtures/http-status/grid-register-302.json`, `grid-register-500.json`, `grid-deregister-302.json` and `grid-deregister-500.json` have `outcome.accepted` false. `csharp_make_post_request_rejects_grid_failure_status` names `crates/ferroan-region/src/grid.rs` `grid_form` and `FormStatusPolicy::Checked`.

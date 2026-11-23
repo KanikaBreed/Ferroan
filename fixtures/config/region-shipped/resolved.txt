@@ -493,8 +493,8 @@ OSSL	Allow_osTeleportAgent	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osTeleportObject	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osTeleportOwner	ESTATE_MANAGER,ESTATE_OWNER
 OSSL	Allow_osTerrainFlush	ESTATE_MANAGER,ESTATE_OWNER
-OSSL	Allow_osWindVolumeCreate	ESTATE_MANAGER,ESTATE_OWNER
-OSSL	Allow_osWindVolumeRemove	ESTATE_MANAGER,ESTATE_OWNER
+OSSL	Allow_osWindVolumeCreate	ESTATE_MANAGER,ESTATE_OWNER,GOD
+OSSL	Allow_osWindVolumeRemove	ESTATE_MANAGER,ESTATE_OWNER,GOD
 OSSL	Include-osslDefaultEnable	config-include/osslDefaultEnable.ini
 OSSL	Include-osslEnable	config-include/osslEnable.ini
 OSSL	OSFunctionThreatLevel	VeryLow

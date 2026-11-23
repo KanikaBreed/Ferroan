@@ -207,9 +207,9 @@ impl RegionChat {
         let frozen = speaker.frozen;
         let speaker_tx = speaker.tx.clone();
         if frozen {
-            // TB37: C# alerts a frozen sender for typing as well, because the
-            // type test is always true. A frozen sender is told only for real
-            // chat. Typing while frozen is not delivered and is not alerted.
+            // A frozen sender is told only for real chat. Typing while frozen
+            // is not delivered and is not alerted, as C# does since TB37 was
+            // fixed (#488, Pin7 `1052cbae82`).
             if !is_typing(chat_type) {
                 let _ = speaker_tx.try_send(ViewerBound::Alert(freeze_alert(from)));
             }

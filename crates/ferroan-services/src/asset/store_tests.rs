@@ -393,27 +393,15 @@ fn drive_csharp(
     );
     let rows = page["rows"].as_array().expect("rows");
     assert_eq!(rows.len(), rust_page.len());
-    if backend == "postgres" {
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows[0]["id"],
-            serde_json::Value::String(asset_id(1).to_string())
-        );
-        assert_eq!(
-            rows[1]["id"],
-            serde_json::Value::String(asset_id(2).to_string())
-        );
-        assert_eq!(rows[0]["flags"], 0);
-    } else {
-        assert_eq!(rows.len(), 3);
-        let ids: std::collections::BTreeSet<_> = rows
-            .iter()
-            .map(|row| row["id"].as_str().unwrap_or("").to_string())
-            .collect();
-        let rust_ids: std::collections::BTreeSet<_> =
-            rust_page.iter().map(|row| row.id.to_string()).collect();
-        assert_eq!(ids, rust_ids);
-    }
+    // TB19 fixed (#477): PostgreSQL returns the full page, as MySQL does.
+    assert_eq!(rows.len(), 3);
+    let ids: std::collections::BTreeSet<_> = rows
+        .iter()
+        .map(|row| row["id"].as_str().unwrap_or("").to_string())
+        .collect();
+    let rust_ids: std::collections::BTreeSet<_> =
+        rust_page.iter().map(|row| row.id.to_string()).collect();
+    assert_eq!(ids, rust_ids);
 
     let exists = csharp(
         oracle,

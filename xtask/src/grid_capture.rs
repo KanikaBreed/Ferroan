@@ -280,8 +280,6 @@ pub(super) fn compare_root_arrival(directory: &Path) -> Result<String, String> {
 }
 
 const HARNESS_CHAT: &str = "ferroan harness chat";
-const FREEZE_ALERT: &[u8] = b"You may not talk as you are frozen.";
-
 struct HarnessSay {
     reliable: bool,
     zerocoded: bool,
@@ -350,15 +348,6 @@ fn arrival_position(records: &[Record]) -> Result<[f32; 3], String> {
     Err("chat capture has no outgoing arrival".into())
 }
 
-fn contains_freeze(records: &[Record]) -> bool {
-    records.iter().any(|record| {
-        record
-            .bytes
-            .windows(FREEZE_ALERT.len())
-            .any(|window| window == FREEZE_ALERT)
-    })
-}
-
 /// Channel 0 say from the Ferroan region against the committed C# session.
 /// `fixtures/captures/session.cap` is a redacted `live run all`, so the name and
 /// owner id in that file are placeholders and the position is after the walk.
@@ -410,14 +399,10 @@ pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
                 .into(),
         );
     }
-    let mut line = format!(
+    Ok(format!(
         "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; position matches this run's arrival",
         ferroan.len()
-    );
-    if contains_freeze(&fixture) || contains_freeze(&live) {
-        line.push_str("\nknown differences: TB37");
-    }
-    Ok(line)
+    ))
 }
 
 /// `TeleportStart` then `TeleportLocal` against the committed C# session.
@@ -1695,7 +1680,6 @@ mod tests {
         let records = records(&crate::repo_root().join("fixtures/captures/session.cap")).unwrap();
         let says = harness_says(&records).unwrap();
         assert!(says.len() >= 2);
-        assert!(!contains_freeze(&records));
         let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
         for say in &says {
             assert!(say.reliable);

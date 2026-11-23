@@ -569,17 +569,17 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     assert_eq!(deleted["deleted"], true);
     assert!(store.get(id).await.expect("get").is_none());
     if backend == "postgres" {
-        let bad = csharp_status(
+        // TB39 fixed (#490): a non-uuid deletes nothing and answers false.
+        let bad = csharp(
             oracle,
             backend,
             ado,
             "delete",
             serde_json::json!({"id": "nope"}),
         );
-        assert!(!bad.status.success(), "the pin throws on a non-uuid");
+        assert_eq!(bad["deleted"], false);
         assert!(!store.delete("nope").await.expect("rust nope"));
         assert!(store.get(fid(2)).await.expect("kept").is_some());
-        differences.push("TB39");
     } else {
         let bad = csharp(
             oracle,
@@ -631,7 +631,7 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     }
     differences.push("TB45");
 
-    differences.extend(cross_import(store, oracle, backend, ado).await);
+    cross_import(store, oracle, backend, ado).await;
     if differences.is_empty() {
         println!("fsassets: rows match");
     } else {
@@ -639,12 +639,7 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     }
 }
 
-async fn cross_import(
-    store: &FsAssetStore,
-    oracle: &str,
-    backend: &str,
-    ado: &str,
-) -> Vec<&'static str> {
+async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str) {
     reset_import(store).await;
     insert_import(store, 1, "one", vec![1]).await;
     insert_import(store, 2, "two", vec![2, 2]).await;
@@ -669,7 +664,6 @@ async fn cross_import(
                 .any(|item| item["id"] == row.id.to_string() && item["data"] == data)
         );
     }
-    let mut differences = Vec::new();
     if backend == "postgres" {
         let rust_page = store
             .import_reader(IMPORT_TABLE, 1, 0)
@@ -686,11 +680,10 @@ async fn cross_import(
             "import",
             serde_json::json!({"table": IMPORT_TABLE, "start": 1, "count": 0}),
         );
-        assert_eq!(page["rows"].as_array().expect("page").len(), 1);
-        differences.push("TB40");
+        // TB40 fixed (#491): the pin reads `limit count offset start` too.
+        assert!(page["rows"].as_array().expect("page").is_empty());
     }
     drop_import(store).await;
-    differences
 }
 
 fn meta(id: Uuid, name: &str, description: &str, flags: i32) -> FsMetadata {
