@@ -80,6 +80,21 @@ Remove this section once the queue runs again.
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
+| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
+| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
+| QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
+| QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
+| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | READY after Q23e |
+| QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | READY after Q26b |
+| QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | READY after QR4 |
+| QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | READY after QR5 |
+| QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
+| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
+| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
+| QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
+| QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
+| QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
+| QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -429,6 +444,8 @@ Q27 split (manager, 22 November 2026): the block in #167 is right, and its five 
 
 Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
 
+Review fixes added (manager, 22 November 2026): a review of #114 to #174 by four review agents, the top findings checked by the manager, became QR1 to QR15 (TASKS R1 to R15), most important first. QR1 is a security fix and goes first; QR2 can lose assets. Each item cites the file and line and the C# where it matters. The FSAssets items (QR5, QR14) follow Q23e and the GridUser item (QR6) follows Q26b. One finding is the maintainer's to decide and is under "Waiting on the maintainer": whether same-repository coder branches may run Docker on Home1.
+
 ## Found while working
 
 - 2026-11-22, Q23d: `FSAssetService.Store(AssetBase, bool force)` at `1d7abb8337` never reads `force`, so `force import` does not overwrite the hash. Nobody depends on that. Ferroan updates `hash` and `access_time` only when `force` is true (TB45, D36). The PostgreSQL import page is now `ORDER BY id LIMIT count OFFSET start` (TB40). `cargo xtask asset fsassets-cross` prints TB45 on MySQL and TB39, TB45, TB40 on PostgreSQL.
@@ -563,5 +580,7 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 - 2026-11-18, Q10f detector review (**resolved by Q10g, #48**): the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
 
 ## Waiting on the maintainer
+
+- 2026-11-22, review of #117: code from any same-repository branch, including automated coders' branches, runs on Home1 with Docker, which is root-equivalent on that machine. Options: keep coder branches off Home1, or put the images job behind an approval environment. Fork PRs are already kept off.
 
 - Nothing. G0 passed on 18 November 2026 at `c85783e` (see its row in TASKS.md).
