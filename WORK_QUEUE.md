@@ -79,6 +79,7 @@ Remove this section once the queue runs again.
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
+| Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
@@ -626,6 +627,8 @@ Q10d validation follow-up: after distinguishing unused zero-byte connections fro
 - 2026-11-18, Q10f detector review (**resolved by Q10g, #48**): the Rust region still lacks the root-arrival service updates `PresenceDetector.DoOnMakeRootAgent` -> `ReportAgent(session, region)` and `ActivityDetector.DoOnMakeRootAgent` -> `SetLastPosition` at `8583218`. Q10f adds the specified admission verification and termination notifications, not these arrival hooks. Proposed follow-up: report the accepted root arrival to both services and verify the live Presence RegionID and GridUser last location while the bot is online. The current offline/second-login proof does not cover active location reporting.
 
 ## Waiting on the maintainer
+
+- 2026-11-22: regions per Ferroan process. Today `ferroan-region` runs one region per process; C# hosts many regions in one simulator process and pays the runtime and shared caches once. One region per process is simpler and isolates crashes; several per process lowers memory per region on a crowded machine. The manager recommends one per process for now, revisited with Q10ad's numbers. Needs a decision before any multi-region work.
 
 - 2026-11-22, review of #117: code from any same-repository branch, including automated coders' branches, runs on Home1 with Docker, which is root-equivalent on that machine. Options: keep coder branches off Home1, or put the images job behind an approval environment. Fork PRs are already kept off. **Decided 22 November 2026:** the maintainer chose rootless Docker for the runner user. QR16 makes `docker smoke` work under it; the maintainer then moves the runner to the rootless socket and takes `ferroan-ci` out of the `docker` group.
 
