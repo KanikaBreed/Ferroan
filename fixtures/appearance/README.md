@@ -1,7 +1,7 @@
 # C# avatar appearance evidence
 
 Captured from the local C# test grid at Tranquillity
-`c70fee205f64ee8672a8d607cef6a733931da951`, using `cargo xtask live run login grid`. Pin6 (`1d7abb8337`) does not change `SendAppearance` or the avatar `ObjectUpdate` those bodies came from, so the bytes stay this capture.
+`c70fee205f64ee8672a8d607cef6a733931da951`, using `cargo xtask live run login grid`. Pin6 (`1d7abb8337`) does not change `SendAppearance` or the avatar `ObjectUpdate` those bodies came from, so the bytes stay this capture. Pin7 (`1052cbae82`) does not change them either: its one baking change (#492) decides whether a Hypergrid visitor is baked, and the harness accounts are local.
 The reference checkout was not modified. Raw captures stay under `.scratch/`.
 
 The region sent one reliable zero-coded `ObjectUpdate` (high 12) and one reliable

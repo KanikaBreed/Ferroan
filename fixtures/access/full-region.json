@@ -1,5 +1,5 @@
 {
-  "pin": "1d7abb8337a477842fe1d7dd84beffe389ee52ac",
+  "pin": "1052cbae82ae7dc3b8abfcffe33e316498eeaad9",
   "method": "Scene.CheckLandPositionAccess",
   "module": "DefaultPermissionsModule",
   "agent_limit": 0,

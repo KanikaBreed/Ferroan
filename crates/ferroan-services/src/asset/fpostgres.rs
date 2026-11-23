@@ -38,9 +38,9 @@
 //! absent. An existing id updates `access_time` only and answers success
 //! (TB35, #482). The pin does the same. `Delete` binds `uuid` and returns
 //! true when the statement runs.
-//! An id that is not a uuid deletes nothing and returns false (TB39). The pin
-//! throws from `new UUID(id)` before the query. `Import` is
-//! `ORDER BY id LIMIT count OFFSET start` (TB40). `force` updates `hash` and
+//! An id that is not a uuid deletes nothing and returns false, and `Get` of
+//! one is missing, as the pin does (TB39 #490, TB49 #500). `Import` is
+//! `ORDER BY id LIMIT count OFFSET start`, as the pin does (TB40, #491). `force` updates `hash` and
 //! `access_time` on an existing row (TB45). An ordinary store does not.
 
 use sqlx::PgPool;

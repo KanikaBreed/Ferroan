@@ -3,7 +3,7 @@
 
 //! Who may enter a full region.
 //!
-//! At pin `1d7abb8337`, `Scene.CheckLandPositionAccess` returns true for
+//! At pin `1052cbae82`, `Scene.CheckLandPositionAccess` returns true for
 //! `Permissions.IsGod` and `Permissions.IsEstateManager` before the root-agent
 //! count. `DefaultPermissionsModule.IsEstateManager` is
 //! `EstateSettings.IsEstateManagerOrOwner`. `IsGod` is `IsAdministrator`: a
@@ -203,7 +203,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             fixture["pin"].as_str().unwrap(),
-            "1d7abb8337a477842fe1d7dd84beffe389ee52ac"
+            "1052cbae82ae7dc3b8abfcffe33e316498eeaad9"
         );
         assert_eq!(fixture["agent_limit"].as_u64().unwrap(), 0);
         let owner = Uuid::parse_str(fixture["owner"].as_str().unwrap()).unwrap();
