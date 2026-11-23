@@ -11,9 +11,22 @@ using OpenSim.Data;
 
 const int MaxPayload = 1024 * 1024;
 
+if (args.Length == 1 && args[0] == "service")
+{
+    try
+    {
+        return ServiceMode.Run();
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine(Scrub(error.ToString()));
+        return 1;
+    }
+}
+
 if (args.Length != 1 || !IsOperation(args[0]))
 {
-    Console.Error.WriteLine("usage: GridUserOracle get|getall|getmany|online|store");
+    Console.Error.WriteLine("usage: GridUserOracle get|getall|getmany|online|store|service");
     return 2;
 }
 

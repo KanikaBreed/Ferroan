@@ -31,8 +31,9 @@
 //! against the local schema-server containers. `asset fsassets-cross` runs the
 //! FSAssets plugins the same way. `asset fsassets-files` compares FSAssets
 //! paths and decompressed bytes. `griduser cross` runs the GridUser plugins
-//! the same way. `avatar cross` runs the avatar plugins the same way. None of
-//! these starts a server or the live harness.
+//! the same way. `griduser service` runs one `POST /griduser` sequence on a
+//! new SQLite file. `avatar cross` runs the avatar plugins the same way. None
+//! of these starts a server or the live harness.
 //!
 //! `access` builds the C# full-region oracle and generates or verifies
 //! `fixtures/access`. It calls `Scene.CheckLandPositionAccess` with
@@ -120,6 +121,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset fsassets-cross
        cargo xtask asset fsassets-files
        cargo xtask griduser cross
+       cargo xtask griduser service
        cargo xtask avatar cross
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
@@ -216,6 +218,7 @@ fn main() -> ExitCode {
         ["asset", "fsassets-cross"] => asset_oracle::fsassets_cross(),
         ["asset", "fsassets-files"] => asset_oracle::fsassets_files(),
         ["griduser", "cross"] => asset_oracle::griduser_cross(),
+        ["griduser", "service"] => asset_oracle::griduser_service(),
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),

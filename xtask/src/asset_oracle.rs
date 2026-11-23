@@ -111,6 +111,17 @@ pub fn griduser_cross() -> ExitCode {
     )
 }
 
+/// One `POST /griduser` sequence against the pinned service, on a new SQLite
+/// file. No MySQL, no PostgreSQL, and no live harness.
+pub fn griduser_service() -> ExitCode {
+    run_plugin_cross(
+        &GRIDUSER_CROSS,
+        "griduser_service_matches_the_pin",
+        "FERROAN_GRIDUSER_SERVICE",
+        false,
+    )
+}
+
 /// Rust writes `Avatars` rows and the pinned avatar plugins read them, then
 /// the reverse, on SQLite, MySQL and PostgreSQL. No HTTP and no live harness.
 pub fn avatar_cross() -> ExitCode {

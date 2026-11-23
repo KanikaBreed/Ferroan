@@ -1,0 +1,253 @@
+{
+  "steps": [
+    {
+      "op": "post",
+      "body": "",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedin",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=nope",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedin&UserID=11111111-1111-1111-1111-111111111111",
+      "time_user": "11111111-1111-1111-1111-111111111111",
+      "time_field": "Login",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>True</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>1/1/1970 12:00:00\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>True</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>1/1/1970 12:00:00\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedout&UserID=11111111-1111-1111-1111-111111111111&RegionID=33333333-3333-3333-3333-333333333333&Position=%3C10%2C%2020%2C%2030%3E&LookAt=%3C0%2C%201%2C%200%3E",
+      "time_user": "11111111-1111-1111-1111-111111111111",
+      "time_field": "Logout",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;10, 20, 30&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=sethome&UserID=11111111-1111-1111-1111-111111111111&RegionID=33333333-3333-3333-3333-333333333333&Position=%3C64%2C%2064%2C%2025%3E&LookAt=%3C0%2C%200%2C%201%3E",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>33333333-3333-3333-3333-333333333333</HomeRegionID><HomePosition>&lt;64, 64, 25&gt;</HomePosition><HomeLookAt>&lt;0, 0, 1&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;10, 20, 30&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=setposition&UserID=11111111-1111-1111-1111-111111111111&RegionID=33333333-3333-3333-3333-333333333333&Position=%3C1.5%2C%200.25%2C%2010%3E&LookAt=%3C0%2C%201%2C%200%3E",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>33333333-3333-3333-3333-333333333333</HomeRegionID><HomePosition>&lt;64, 64, 25&gt;</HomePosition><HomeLookAt>&lt;0, 0, 1&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;1.5, 0.25, 10&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedoutregion",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedoutregion&RegionID=not-a-uuid",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedoutregion&RegionID=00000000-0000-0000-0000-000000000000",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedin&UserID=22222222-2222-2222-2222-222222222222",
+      "time_user": "22222222-2222-2222-2222-222222222222",
+      "time_field": "Login",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>22222222-2222-2222-2222-222222222222</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>True</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>1/1/1970 12:00:00\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=setposition&UserID=22222222-2222-2222-2222-222222222222&RegionID=33333333-3333-3333-3333-333333333333&Position=%3C128%2C%20128%2C%2070%3E&LookAt=%3C0%2C%200%2C%200%3E",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedoutregion&RegionID=33333333-3333-3333-3333-333333333333",
+      "time_user": "22222222-2222-2222-2222-222222222222",
+      "time_field": "Logout",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=22222222-2222-2222-2222-222222222222",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>22222222-2222-2222-2222-222222222222</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;128, 128, 70&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfos&AgentIDs[]=11111111-1111-1111-1111-111111111111&AgentIDs[]=99999999-9999-9999-9999-999999999999&AgentIDs[]=22222222-2222-2222-2222-222222222222",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><griduser0 type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>33333333-3333-3333-3333-333333333333</HomeRegionID><HomePosition>&lt;64, 64, 25&gt;</HomePosition><HomeLookAt>&lt;0, 0, 1&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;1.5, 0.25, 10&gt;</LastPosition><LastLookAt>&lt;0, 1, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></griduser0><griduser1 type=\"List\"><UserID>22222222-2222-2222-2222-222222222222</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;128, 128, 70&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></griduser1></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfos&AgentIDs[]=99999999-9999-9999-9999-999999999999",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse />"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfos&AgentIDs=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=loggedin&UserID=44444444-4444-4444-4444-444444444444extra",
+      "time_user": "44444444-4444-4444-4444-444444444444extra",
+      "time_field": "Login",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>44444444-4444-4444-4444-444444444444extra</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>True</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>1/1/1970 12:00:00\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=44444444-4444-4444-4444-444444444444",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>44444444-4444-4444-4444-444444444444extra</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>True</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>1/1/1970 12:00:00\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=short-id",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "store",
+      "user_id": "short-id",
+      "data": {
+        "Online": "True",
+        "Login": "10",
+        "Logout": "0"
+      },
+      "unix": 1795324483,
+      "stored": true
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=short-id",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Failure</result>\n</ServerResponse>"
+    },
+    {
+      "op": "store",
+      "user_id": "agent-old",
+      "data": {
+        "Online": "False",
+        "Login": "10",
+        "Logout": "1"
+      },
+      "unix": 1795324483,
+      "stored": true
+    },
+    {
+      "op": "store",
+      "user_id": "agent-new",
+      "data": {
+        "Online": "False",
+        "Login": "40",
+        "Logout": "1"
+      },
+      "unix": 1795324483,
+      "stored": true
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=agent",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>agent-new</UserID><HomeRegionID>00000000-0000-0000-0000-000000000000</HomeRegionID><HomePosition>&lt;0, 0, 0&gt;</HomePosition><HomeLookAt>&lt;0, 0, 0&gt;</HomeLookAt><LastRegionID>00000000-0000-0000-0000-000000000000</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>False</Online><Login>1/1/1970 12:00:40\u202fAM</Login><Logout>1/1/1970 12:00:01\u202fAM</Logout></result></ServerResponse>"
+    },
+    {
+      "op": "console",
+      "argv": [
+        "show",
+        "grid",
+        "user",
+        "11111111-1111-1111-1111-111111111111"
+      ],
+      "unix": 1795324483,
+      "text": "User ID      : 11111111-1111-1111-1111-111111111111\nHomeRegionID : 33333333-3333-3333-3333-333333333333\nHomePosition : <64, 64, 25>\nHomeLookAt   : <0, 0, 1>\nLastRegionID : 33333333-3333-3333-3333-333333333333\nLastPosition : <1.5, 0.25, 10>\nLastLookAt   : <0, 1, 0>\nOnline       : False\nLogin        : 1795324483\nLogout       : 1795324483\n\nEntries: 1\n"
+    },
+    {
+      "op": "console",
+      "argv": [
+        "show",
+        "grid",
+        "user"
+      ],
+      "unix": 1795324483,
+      "text": "Usage: show grid user <UUID>\n"
+    },
+    {
+      "op": "console",
+      "argv": [
+        "show",
+        "grid",
+        "users",
+        "online"
+      ],
+      "unix": 1795324483,
+      "text": "Users online: 1\n"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=setposition&UserID=11111111-1111-1111-1111-111111111111&RegionID=33333333-3333-3333-3333-333333333333&Position=nope",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?>\n<ServerResponse>\n  <result>Success</result>\n</ServerResponse>"
+    },
+    {
+      "op": "post",
+      "body": "METHOD=getgriduserinfo&UserID=11111111-1111-1111-1111-111111111111",
+      "unix": 1795324483,
+      "response": "<?xml version=\"1.0\"?><ServerResponse><result type=\"List\"><UserID>11111111-1111-1111-1111-111111111111</UserID><HomeRegionID>33333333-3333-3333-3333-333333333333</HomeRegionID><HomePosition>&lt;64, 64, 25&gt;</HomePosition><HomeLookAt>&lt;0, 0, 1&gt;</HomeLookAt><LastRegionID>33333333-3333-3333-3333-333333333333</LastRegionID><LastPosition>&lt;0, 0, 0&gt;</LastPosition><LastLookAt>&lt;0, 0, 0&gt;</LastLookAt><Online>False</Online><Login>11/22/2026 5:14:43\u202fAM</Login><Logout>11/22/2026 5:14:43\u202fAM</Logout></result></ServerResponse>"
+    }
+  ]
+}

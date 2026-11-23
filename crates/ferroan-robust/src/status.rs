@@ -24,7 +24,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
 use ferroan_config::Config;
-use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, AuthHttp};
+use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, AuthHttp, GridUserHttp};
 
 const BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 
@@ -71,6 +71,7 @@ pub struct Pools {
     account: Option<AccountHttp>,
     alias: Option<AliasHttp>,
     auth: Option<AuthHttp>,
+    griduser: Option<GridUserHttp>,
 }
 
 impl Pools {
@@ -91,6 +92,11 @@ impl Pools {
 
     pub fn auth(mut self, http: AuthHttp) -> Self {
         self.auth = Some(http);
+        self
+    }
+
+    pub fn griduser(mut self, http: GridUserHttp) -> Self {
+        self.griduser = Some(http);
         self
     }
 }
@@ -129,6 +135,13 @@ impl RobustMeters {
             (
                 "auth",
                 self.pools.auth.as_ref().map(AuthHttp::pool_occupancy),
+            ),
+            (
+                "griduser",
+                self.pools
+                    .griduser
+                    .as_ref()
+                    .map(GridUserHttp::pool_occupancy),
             ),
         ] {
             match http {
@@ -460,6 +473,14 @@ fn prometheus(meters: &RobustMeters) -> String {
         (
             "alias",
             meters.pools.alias.as_ref().map(AliasHttp::pool_occupancy),
+        ),
+        (
+            "griduser",
+            meters
+                .pools
+                .griduser
+                .as_ref()
+                .map(GridUserHttp::pool_occupancy),
         ),
     ] {
         if let Some((open, idle)) = http {
