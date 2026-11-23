@@ -112,6 +112,48 @@ Remove this section once the queue runs again.
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | READY after Q18a |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
+| Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
+| Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |
+| Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
+| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40 |
+| Q44 | P2.2a: `AgentUpdate` into movement intent | READY after Q40 |
+| Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | READY after Q44 |
+| Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | READY after Q45 and Q42 |
+| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46 |
+| Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | READY after Q42 |
+| Q49 | P2.3b1: the animation state machine | READY after Q46 and Q48 |
+| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
+| Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
+| Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
+| Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | READY after Q18a |
+| Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53 |
+| Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
+| Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
+| Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | READY after Q18a |
+| Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | READY after Q18a |
+| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46 |
+| Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
+| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
+| Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | READY after Q42 and Q53 |
+| Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
+| Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
+| Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
+| Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`) | READY after Q68 |
+| Q70 | P2.8b2: edit, texture, shape, extra params, flags and permissions; `build: pass` | READY after Q69 |
+| Q71 | P2.8c: link, unlink and duplicate, `link: pass` | READY after Q70 |
+| Q72 | P2.8d: take and delete to trash, `take: pass` | READY after Q68 and Q57 |
+| Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
+| Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
+| Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
+| Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
+| Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
+| Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46 |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79 |
+| Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
@@ -445,6 +487,8 @@ Q27 split (manager, 22 November 2026): the block in #167 is right, and its five 
 Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
 
 Review fixes added (manager, 22 November 2026): a review of #114 to #174 by four review agents, the top findings checked by the manager, became QR1 to QR15 (TASKS R1 to R15), most important first. QR1 is a security fix and goes first; QR2 can lose assets. Each item cites the file and line and the C# where it matters. The FSAssets items (QR5, QR14) follow Q23e and the GridUser item (QR6) follows Q26b. One finding is the maintainer's to decide and is under "Waiting on the maintainer": whether same-repository coder branches may run Docker on Home1.
+
+Phase 2 slice 2 (manager, 22 November 2026): Q40 to Q81 (TASKS P2.1a to P2.12, and G3) take the region from "logs in and chats" to the Phase 2 gate. The C# line references come from the manager's planning draft at pin `1d7abb8337`; check each one before porting. Chains: the spine is Q40, Q41, Q42 (scene owns presences, then the update queue and prioritizer). Movement is Q44, Q45, Q46, then Q49 and Q50, with Q47 and Q61 after Q46. Objects are Q42 plus Q53, then Q65, Q66 and Q67, Q68, Q69, Q70, Q71. Inventory is Q57 and Q58 plus Q68, then Q72, then Q73. Persistence is Q70, then Q74, then Q75. Crossings are Q18c plus Q57 and Q69, then Q77, then Q78; Q79 and Q80 follow Q18c and Q46. Q81 waits for all of them. In parallel: Q51, Q53 to Q58, Q60, Q62 and Q76 have no scene dependency and are `READY after Q18a`, so a second coder (rule 10) or an outside contributor can run them beside Q18b, Q18c and Q19; they are good `agent-ready` issues. Once the spine and Q46 are done, movement and avatars (P2.2, P2.3), objects and building (P2.5, P2.8), land and permissions (P2.6, P2.7) and transfer (P2.10, P2.11) run independently. Decisions: D38 (walking before Jolt is a BasicPhysics stand-in in `ferroan-scene`, deleted in Phase 3, with walk fixtures from a C# region on `physics = basicphysics`; "next door" at the gate is teleport both ways plus child agents so the C# neighbour is in view, and walking across the border waits; viewer-side bakes first; all three region-store databases at the gate) and D39 (scene state on the frame thread; object crossings advertise no held crossing and pass script state through; Phase 2 reads parcels and writes only the default parcel; persistence has an on/off switch, Ferroan and C# never open the same store at once, and backup timing follows C#; materials pass through only). P2.5d (the `RenderMaterials` cap) is a TASKS row but not queued, under D39. Loading an OAR with terrain-height standing only stays in Phase 2 outside the gate; it gets its row once P2.S and P2.9a are in. Where the draft guessed (Firestorm's bake path and handshake flags, Ferrobot's API at `9cc7ab284c`, the materials size), the rows say so: confirm before relying on it.
 
 ## Found while working
 
