@@ -25,11 +25,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 
 ## Paused for handoff (22 November 2026)
 
-The Grok queue coders' shared weekly usage ran out on 22 November 2026 around 01:30 EST (`402 Payment Required`). It resets on Monday 23 November at 21:08 EST. Any coder that resumes first finishes what is in flight, in this order, before taking a new item:
+The Grok queue coders' shared weekly usage ran out on 22 November 2026 around 01:30 EST (`402 Payment Required`). It resets on Monday 23 November at 21:08 EST. Any coder that resumes first finishes what is in flight, in this order, before taking a new item (#172, #173 and #174 have merged):
 
-1. **#172** (Q26b, GridUser service), **#173** (Q10ab, the `AgentUpdate` quaternion re-encode) and **#174** (Q27a, avatar stores) have auto-merge on. If one has not merged, read its checks, fix or retry under the flake rule, and record its evidence.
-2. **Q23e** (live FSAssets compare) has uncommitted work in `/home/cinder/Git/work/ferroan/q23e-fsasset-live` on `feat/fsasset-live` (a new `xtask/src/fsasset_live.rs` and harness, workflow and docs edits). Read it, finish it or start again from `origin/main`; it is not pushed.
-3. Then the region track resumes with Q18b.
+1. **Q23e** (live FSAssets compare) has uncommitted work in `/home/cinder/Git/work/ferroan/q23e-fsasset-live` on `feat/fsasset-live` (a new `xtask/src/fsasset_live.rs` and harness, workflow and docs edits). Read it, finish it or start again from `origin/main`; it is not pushed.
+2. Then the region track resumes with Q18b.
 
 Remove this section once the queue runs again.
 
