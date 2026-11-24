@@ -657,10 +657,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "chat"
                 | "teleport"
                 | "hop"
+                | "neighbour"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport and hop scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop and neighbour scenarios"
                 .to_string(),
         );
     }
@@ -1176,6 +1177,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(format!("{}\n{proxy_report}", report.lines))
     } else if ferroan && scenario == "teleport" {
         let comparison = login_capture::compare_local_teleport(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{comparison}\n{capture}\n{proxy_report}",
+            report.lines
+        ))
+    } else if ferroan && scenario == "neighbour" {
+        let comparison = login_capture::compare_neighbour_teleport(&root)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
             &report.http,

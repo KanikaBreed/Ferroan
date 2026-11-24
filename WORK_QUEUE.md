@@ -112,7 +112,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
 | Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (#202) |
-| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
+| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (this PR) |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |

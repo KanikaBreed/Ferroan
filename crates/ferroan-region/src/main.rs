@@ -57,7 +57,9 @@ use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
-use ferroan_region::simulation::{ADMISSION_QUEUE, AcceptedAgent, SimulationState};
+use ferroan_region::simulation::{
+    ADMISSION_QUEUE, AcceptedAgent, SimulationState, release_callback,
+};
 use ferroan_region::source_hop::{HopEnv, HopLogin, HopPresence};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
@@ -631,6 +633,8 @@ async fn serve_agent(
             }),
             position: Arc::clone(&landed),
         });
+        arrival.return_slot = Some(agent.return_slot.clone());
+        let mut promotions = agent.return_slot.take_promotions();
         arrival.source_hop = Some(hop.install(HopLogin {
             agent_id: expect.agent_id,
             session_id: expect.session_id,
@@ -722,6 +726,58 @@ async fn serve_agent(
                         }
                     }
                 }
+                promoted = async {
+                    match promotions.as_mut() {
+                        Some(incoming) => incoming.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }, if promotions.is_some() => {
+                    let Some(token) = promoted else {
+                        promotions = None;
+                        continue;
+                    };
+                    // The parked circuit already consumed the login signal.
+                    // This one makes the child root again, then the circuit
+                    // sends AgentMovementComplete.
+                    root_arrived = true;
+                    let position = agent.return_slot.position();
+                    *landed.lock().unwrap_or_else(|poison| poison.into_inner()) = position;
+                    let reporting = async {
+                        let _guard = agent.lock_lifecycle().await;
+                        if agent.is_current() {
+                            agent.mark_root();
+                            if let Some(callback) = agent.return_slot.take_callback() {
+                                tokio::spawn(release_callback(callback));
+                            }
+                            notify_root_arrival(
+                                &grid_user,
+                                &presence,
+                                &config,
+                                &agent,
+                                position,
+                            )
+                            .await;
+                        }
+                    };
+                    tokio::pin!(reporting);
+                    let ended = tokio::select! {
+                        _ = &mut reporting => None,
+                        result = &mut serving => {
+                            reporting.await;
+                            Some(result)
+                        }
+                    };
+                    token.complete();
+                    if let Some(result) = ended {
+                        match result {
+                            Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                            Err(error) => {
+                                tracing::error!("ferroan-region: circuit ended: {error}")
+                            }
+                        }
+                        break;
+                    }
+                }
                 result = &mut serving => {
                     match result {
                         Ok(()) if agent.still_root() => {
@@ -734,6 +790,12 @@ async fn serve_agent(
                 }
             }
         }
+    }
+    // The reply is already out. Close the neighbour child before the harness
+    // stops the proxy, the same moment a root logout closes known children.
+    if agent.still_root() {
+        hop.close_open_child(agent.expect.agent_id, agent.expect.session_id)
+            .await;
     }
     let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
     // A demoted child and a far-hop close leave the grid presence where it is.
