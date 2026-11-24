@@ -353,8 +353,9 @@ fn arrival_position(records: &[Record]) -> Result<[f32; 3], String> {
 /// `fixtures/captures/session.cap` is a redacted `live run all`, so the name and
 /// owner id in that file are placeholders and the position is after the walk.
 /// The message bytes, source type, chat type, audible level and header flags
-/// are the comparison. The live name, both ids and this run's arrival position
-/// are checked separately.
+/// are the comparison. The live name, both ids and this run's arrival X and Y
+/// are checked separately. Chat is read after later ticks, so Z may already be
+/// the standing snap (the terrain cell plus 2.1) instead of the arrival Z.
 pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
     let live = records(&directory.join("capture-udp.cap"))?;
     let fixture = records(&crate::repo_root().join("fixtures/captures/session.cap"))?;
@@ -394,16 +395,23 @@ pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
         }
     }
     let arrival = arrival_position(&live)?;
-    if ferroan.iter().any(|say| say.position != arrival) {
-        return Err(
-            "harness say position differs from this run's arrival; terrain Z was not wildcarded"
-                .into(),
-        );
+    let position = ferroan[0].position;
+    if ferroan.iter().any(|say| say.position != position) {
+        return Err("harness says do not share one position".into());
+    }
+    if !say_keeps_arrival_xy(position, arrival) {
+        return Err("harness say X or Y differs from this run's arrival".into());
     }
     Ok(format!(
-        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; position matches this run's arrival",
+        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z may be that arrival or the standing snap",
         ferroan.len()
     ))
+}
+
+/// X and Y stay on the arrival. Z stays finite: it is the arrival until the
+/// first tick, then the standing snap.
+fn say_keeps_arrival_xy(say: [f32; 3], arrival: [f32; 3]) -> bool {
+    say[0] == arrival[0] && say[1] == arrival[1] && say[2].is_finite()
 }
 
 /// `TeleportStart` then `TeleportLocal` against the committed C# session.
@@ -1718,6 +1726,16 @@ mod tests {
             assert_eq!(say.message, b"ferroan harness chat\0");
             assert_eq!(say.source_id, owner);
         }
+    }
+
+    #[test]
+    fn a_standing_snap_keeps_the_chat_on_the_arrival_xy() {
+        let arrival = [128.0, 128.0, 26.0];
+        assert!(say_keeps_arrival_xy(arrival, arrival));
+        assert!(say_keeps_arrival_xy([128.0, 128.0, 23.1], arrival));
+        assert!(!say_keeps_arrival_xy([128.1, 128.0, 23.1], arrival));
+        assert!(!say_keeps_arrival_xy([128.0, 127.0, 23.1], arrival));
+        assert!(!say_keeps_arrival_xy([128.0, 128.0, f32::NAN], arrival));
     }
 
     #[test]
