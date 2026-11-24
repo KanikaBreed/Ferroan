@@ -39,13 +39,15 @@
 
 //! Inventory and asset capabilities. User inventory and asset bytes come from
 //! Robust. The library is the in-process Nini tree. Requests past the folder,
-//! item, asset and LLSD bounds are refused rather than truncated.
+//! item, asset and LLSD bounds are refused rather than truncated. Each agent
+//! has one waiting upload. The uploader path is granted on that agent, and a
+//! later offer replaces it. At most 128 waiting uploads are kept.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
-use ferroan_client::{CapAnswer, CapExchange, CapService};
+use ferroan_client::{CapAnswer, CapExchange, CapService, UploaderRoutes};
 use ferroan_diag::{
     self, INVENTORY_FETCH_FOLDERS, INVENTORY_FETCH_ITEMS, INVENTORY_FETCH_LLSD, Kind,
 };
@@ -64,6 +66,9 @@ const MAX_LLSD: usize = 2 * 1024 * 1024;
 const BAD_LIMIT: usize = 256;
 const BAD_TTL: Duration = Duration::from_secs(30);
 const UPLOAD_TTL: Duration = Duration::from_secs(120);
+/// One waiting upload per agent. Roots, the staff bypass and child caps that
+/// still hold an offer fit under this. A further offer is refused.
+const MAX_PENDING_UPLOADS: usize = 128;
 const LSL_ON_LUAU: u32 = 0x0100_0000;
 const FLAGS_FETCH2: u32 = 0xff;
 const PERM_ALL: u32 = 0x8e000;
@@ -103,6 +108,7 @@ struct FolderRequest {
 }
 
 struct PendingUpload {
+    agent_id: Uuid,
     path: String,
     asset_id: Uuid,
     item_id: Uuid,
@@ -123,7 +129,8 @@ pub struct FetchCaps {
     assets: Option<AssetClient>,
     library: Library,
     bad: Mutex<Vec<(Uuid, Instant)>>,
-    upload: Mutex<Option<PendingUpload>>,
+    upload: Mutex<Vec<PendingUpload>>,
+    routes: std::sync::OnceLock<UploaderRoutes>,
     public_base: String,
 }
 
@@ -160,9 +167,19 @@ impl FetchCaps {
             assets,
             library,
             bad: Mutex::new(Vec::new()),
-            upload: Mutex::new(None),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
             public_base: config.server_uri.trim_end_matches('/').to_owned(),
         }
+    }
+
+    /// Register uploader paths on the agent that asked for them.
+    pub fn bind_uploader_routes(&self, routes: UploaderRoutes) {
+        let _ = self.routes.set(routes);
+    }
+
+    fn routes(&self) -> UploaderRoutes {
+        self.routes.get().cloned().unwrap_or_default()
     }
 
     pub fn service(self: &Arc<Self>) -> CapService {
@@ -579,20 +596,11 @@ impl FetchCaps {
         let Some((asset_code, inv_code)) = kind else {
             return upload_error("this upload type is not served by this capability");
         };
-        let mut slot = self
-            .upload
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if slot
-            .as_ref()
-            .is_some_and(|pending| pending.storing && pending.expires > Instant::now())
-        {
-            return upload_error("Uploader busy processing previous request");
-        }
         let path = format!("/{}", Uuid::new_v4());
         let asset_id = Uuid::new_v4();
         let item_id = Uuid::new_v4();
-        *slot = Some(PendingUpload {
+        let pending = PendingUpload {
+            agent_id: exchange.agent_id,
             path: path.clone(),
             asset_id,
             item_id,
@@ -606,8 +614,43 @@ impl FetchCaps {
             everyone_mask: body.get("everyone_mask").as_i32() as u32,
             expires: Instant::now() + UPLOAD_TTL,
             storing: false,
-        });
-        drop(slot);
+        };
+        let mut slots = self
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        self.drop_expired(&mut slots);
+        if let Some(index) = slots
+            .iter()
+            .position(|slot| slot.agent_id == exchange.agent_id)
+        {
+            if slots[index].storing && slots[index].expires > Instant::now() {
+                return upload_error("Uploader busy processing previous request");
+            }
+            if !self.routes().grant(exchange.agent_id, &path) {
+                return upload_error("uploader path was not registered");
+            }
+            let old = slots[index].path.clone();
+            self.routes().revoke(exchange.agent_id, &old);
+            slots[index] = pending;
+        } else if slots.len() >= MAX_PENDING_UPLOADS {
+            let agent = exchange.agent_id.to_string();
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: ferroan_diag::REGION_PENDING_UPLOADS,
+                kind: Kind::Hard,
+                configured: MAX_PENDING_UPLOADS as u64,
+                observed: slots.len() as u64 + 1,
+                action: ferroan_diag::Action::Refuse,
+                route: "NewFileAgentInventory",
+                agent_id: Some(&agent),
+            });
+            return upload_error("uploader limit reached");
+        } else if !self.routes().grant(exchange.agent_id, &path) {
+            return upload_error("uploader path was not registered");
+        } else {
+            slots.push(pending);
+        }
+        drop(slots);
         let mut map = Llsd::new_map();
         map.insert("uploader", format!("{}{path}", self.public_base));
         map.insert("state", "upload");
@@ -620,20 +663,30 @@ impl FetchCaps {
             return CapAnswer::miss();
         }
         let pending = {
-            let mut slot = self
+            let mut slots = self
                 .upload
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            let Some(pending) = slot.as_mut() else {
+            let Some(index) = slots.iter().position(|pending| {
+                pending.path == exchange.path && pending.agent_id == exchange.agent_id
+            }) else {
                 return CapAnswer::miss();
             };
-            if pending.path != exchange.path || pending.expires <= Instant::now() {
-                *slot = None;
+            if slots[index].storing {
                 return CapAnswer::miss();
             }
-            pending.storing = true;
-            pending.expires = Instant::now() + UPLOAD_TTL;
-            clone_pending(pending)
+            if slots[index].expires <= Instant::now() {
+                let expired = slots.remove(index);
+                self.routes().revoke(expired.agent_id, &expired.path);
+                return CapAnswer::miss();
+            }
+            slots[index].storing = true;
+            slots[index].expires = Instant::now() + UPLOAD_TTL;
+            let pending = clone_pending(&slots[index]);
+            // The bytes are in flight. A second POST on this path is not this
+            // agent's upload, and a new offer while it stores is busy.
+            self.routes().revoke(pending.agent_id, &pending.path);
+            pending
         };
         if exchange.body.len() > crate::remote_asset::MAX_ASSET_BODY {
             self.clear_upload(&pending.path);
@@ -709,12 +762,26 @@ impl FetchCaps {
     }
 
     fn clear_upload(&self, path: &str) {
-        let mut slot = self
+        let mut slots = self
             .upload
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if slot.as_ref().is_some_and(|pending| pending.path == path) {
-            *slot = None;
+        if let Some(index) = slots.iter().position(|pending| pending.path == path) {
+            let pending = slots.remove(index);
+            self.routes().revoke(pending.agent_id, &pending.path);
+        }
+    }
+
+    fn drop_expired(&self, slots: &mut Vec<PendingUpload>) {
+        let now = Instant::now();
+        let expired = slots
+            .iter()
+            .filter(|pending| !pending.storing && pending.expires <= now)
+            .map(|pending| (pending.agent_id, pending.path.clone()))
+            .collect::<Vec<_>>();
+        slots.retain(|pending| pending.storing || pending.expires > now);
+        for (agent_id, path) in expired {
+            self.routes().revoke(agent_id, &path);
         }
     }
 
@@ -741,6 +808,7 @@ impl FetchCaps {
 
 fn clone_pending(pending: &PendingUpload) -> PendingUpload {
     PendingUpload {
+        agent_id: pending.agent_id,
         path: pending.path.clone(),
         asset_id: pending.asset_id,
         item_id: pending.item_id,
@@ -1165,7 +1233,8 @@ mod tests {
             assets: None,
             library,
             bad: Mutex::new(Vec::new()),
-            upload: Mutex::new(None),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
             public_base: "http://127.0.0.1:9".into(),
         };
         let root = Uuid::parse_str("00000112-000f-0000-0000-000100bba000").unwrap();
@@ -1205,5 +1274,399 @@ mod tests {
             "Texture Library"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn offer_body(name: &str) -> Vec<u8> {
+        let mut map = Llsd::new_map();
+        map.insert("asset_type", "texture");
+        map.insert("inventory_type", "texture");
+        map.insert("name", name);
+        map.insert("description", "synthetic");
+        map.insert("folder_id", Uuid::nil());
+        map.insert("next_owner_mask", 0);
+        map.insert("group_mask", 0);
+        map.insert("everyone_mask", 0);
+        to_xml(&map)
+    }
+
+    fn exchange(agent: Uuid, name: &str, path: &str, body: Vec<u8>) -> CapExchange {
+        CapExchange {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            method: "POST".to_owned(),
+            query: String::new(),
+            range: None,
+            body,
+            agent_id: agent,
+        }
+    }
+
+    #[tokio::test]
+    async fn two_agents_keep_their_own_uploads() {
+        let stored = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&stored);
+        let assets = axum::Router::new()
+            .route(
+                "/assets/",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let recorded = Arc::clone(&recorded);
+                    async move {
+                        let text = String::from_utf8_lossy(&body);
+                        let id = text
+                            .split("<ID>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</ID>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        let creator = text
+                            .split("<CreatorID>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</CreatorID>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        recorded.lock().unwrap().push(format!("{creator} {id}"));
+                        (
+                            StatusCode::OK,
+                            format!(
+                                "<?xml version=\"1.0\" encoding=\"utf-8\"?><string xmlns=\"http://schemas.microsoft.com/2003/10/Serialization/\">{id}</string>"
+                            ),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/xinventory",
+                axum::routing::post(|| async {
+                    r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                }),
+            );
+        let asset_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let asset_base = format!("http://{}", asset_listener.local_addr().unwrap());
+        let assets_task = tokio::spawn(async move {
+            axum::serve(asset_listener, assets).await.unwrap();
+        });
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let caps = Arc::new(FetchCaps {
+            inventory: crate::inventory::InventoryClient::new(&asset_base, http.clone()),
+            assets: crate::remote_asset::AssetClient::new(&asset_base, http.clone()),
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let mut grants = ferroan_client::CapGrantSet::default();
+        grants.grant("NewFileAgentInventory", ferroan_client::CapTarget::Local);
+        let registry = ferroan_client::CapsRegistry::with_grants(
+            &format!("{caps_base}/"),
+            grants,
+            Some(caps.service()),
+        )
+        .unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let first_seed = "/CAPS/0000000000000000000000000000000a0000/";
+        let second_seed = "/CAPS/0000000000000000000000000000000b0000/";
+        registry.register_agent(first_seed, first).unwrap();
+        registry.register_agent(second_seed, second).unwrap();
+        let app = registry.router();
+        let caps_task = tokio::spawn(async move { axum::serve(caps_listener, app).await.unwrap() });
+
+        let first_cap = seed_cap(&http, &caps_base, first_seed).await;
+        let second_cap = seed_cap(&http, &caps_base, second_seed).await;
+        let first_offer = post_llsd(&http, &first_cap, &offer_body("left")).await;
+        let second_offer = post_llsd(&http, &second_cap, &offer_body("right")).await;
+        assert_eq!(first_offer.get("state").as_str(), "upload");
+        assert_eq!(second_offer.get("state").as_str(), "upload");
+        let first_uploader = first_offer.get("uploader").as_str().to_owned();
+        let second_uploader = second_offer.get("uploader").as_str().to_owned();
+        assert_ne!(first_uploader, second_uploader);
+        let stranger = format!("{caps_base}/{}", Uuid::new_v4());
+        assert_eq!(post_bytes(&http, &stranger, b"no").await.0, 404);
+
+        let (left, right) = tokio::join!(
+            post_bytes(&http, &first_uploader, b"left-bytes"),
+            post_bytes(&http, &second_uploader, b"right-bytes"),
+        );
+        let left_body = from_xml(&left.1).unwrap();
+        let right_body = from_xml(&right.1).unwrap();
+        assert_eq!(left.0, 200);
+        assert_eq!(right.0, 200);
+        assert_eq!(left_body.get("state").as_str(), "complete");
+        assert_eq!(right_body.get("state").as_str(), "complete");
+        assert_ne!(
+            left_body.get("new_asset").as_str(),
+            right_body.get("new_asset").as_str()
+        );
+        assert_ne!(
+            left_body.get("new_inventory_item").as_uuid(),
+            right_body.get("new_inventory_item").as_uuid()
+        );
+        assert_eq!(post_bytes(&http, &first_uploader, b"again").await.0, 404);
+        assert_eq!(post_bytes(&http, &second_uploader, b"again").await.0, 404);
+
+        let replaced = post_llsd(&http, &first_cap, &offer_body("left-again")).await;
+        assert_eq!(replaced.get("state").as_str(), "upload");
+        let replaced_uploader = replaced.get("uploader").as_str().to_owned();
+        assert_ne!(replaced_uploader, first_uploader);
+        assert_eq!(post_bytes(&http, &first_uploader, b"stale").await.0, 404);
+        let again = post_bytes(&http, &replaced_uploader, b"fresh").await;
+        assert_eq!(
+            from_xml(&again.1).unwrap().get("state").as_str(),
+            "complete"
+        );
+        let right_again = post_llsd(&http, &second_cap, &offer_body("right-again")).await;
+        assert_eq!(right_again.get("state").as_str(), "upload");
+
+        let seen = stored.lock().unwrap().clone();
+        assert!(seen.iter().any(|line| line.starts_with(&first.to_string())));
+        assert!(
+            seen.iter()
+                .any(|line| line.starts_with(&second.to_string()))
+        );
+        caps_task.abort();
+        assets_task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_storing_agent_does_not_block_the_other_agents_offer() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let release_rx = Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+        let started_gate = Arc::clone(&started);
+        let assets = axum::Router::new()
+            .route(
+                "/assets/",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let started_gate = Arc::clone(&started_gate);
+                    let release_rx = Arc::clone(&release_rx);
+                    async move {
+                        let text = String::from_utf8_lossy(&body);
+                        let id = text
+                            .split("<ID>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</ID>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        let gate = release_rx.lock().await.take();
+                        started_gate.notify_one();
+                        if let Some(gate) = gate {
+                            let _ = gate.await;
+                        }
+                        (
+                            StatusCode::OK,
+                            format!(
+                                "<?xml version=\"1.0\" encoding=\"utf-8\"?><string xmlns=\"http://schemas.microsoft.com/2003/10/Serialization/\">{id}</string>"
+                            ),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/xinventory",
+                axum::routing::post(|| async {
+                    r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                }),
+            );
+        let asset_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let asset_base = format!("http://{}", asset_listener.local_addr().unwrap());
+        let assets_task = tokio::spawn(async move {
+            axum::serve(asset_listener, assets).await.unwrap();
+        });
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let caps = Arc::new(FetchCaps {
+            inventory: crate::inventory::InventoryClient::new(&asset_base, http.clone()),
+            assets: crate::remote_asset::AssetClient::new(&asset_base, http.clone()),
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let mut grants = ferroan_client::CapGrantSet::default();
+        grants.grant("NewFileAgentInventory", ferroan_client::CapTarget::Local);
+        let registry = ferroan_client::CapsRegistry::with_grants(
+            &format!("{caps_base}/"),
+            grants,
+            Some(caps.service()),
+        )
+        .unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        let first = Uuid::from_u128(3);
+        let second = Uuid::from_u128(4);
+        let first_seed = "/CAPS/0000000000000000000000000000000c0000/";
+        let second_seed = "/CAPS/0000000000000000000000000000000d0000/";
+        registry.register_agent(first_seed, first).unwrap();
+        registry.register_agent(second_seed, second).unwrap();
+        let app = registry.router();
+        let caps_task = tokio::spawn(async move { axum::serve(caps_listener, app).await.unwrap() });
+        let first_cap = seed_cap(&http, &caps_base, first_seed).await;
+        let second_cap = seed_cap(&http, &caps_base, second_seed).await;
+        let first_offer = post_llsd(&http, &first_cap, &offer_body("busy")).await;
+        let uploader = first_offer.get("uploader").as_str().to_owned();
+        let http_complete = http.clone();
+        let completing =
+            tokio::spawn(async move { post_bytes(&http_complete, &uploader, b"blocked").await });
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .unwrap();
+        let busy = post_llsd(&http, &first_cap, &offer_body("busy-again")).await;
+        assert_eq!(
+            busy.get("error").get("message").as_str(),
+            "Uploader busy processing previous request"
+        );
+        let other = post_llsd(&http, &second_cap, &offer_body("other")).await;
+        assert_eq!(other.get("state").as_str(), "upload");
+        release_tx.send(()).unwrap();
+        let finished = tokio::time::timeout(Duration::from_secs(5), completing)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            from_xml(&finished.1).unwrap().get("state").as_str(),
+            "complete"
+        );
+        let other_done = post_bytes(&http, other.get("uploader").as_str(), b"other-bytes").await;
+        assert_eq!(
+            from_xml(&other_done.1).unwrap().get("state").as_str(),
+            "complete"
+        );
+        caps_task.abort();
+        assets_task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_new_agent_past_the_upload_bound_is_refused() {
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let caps = Arc::new(FetchCaps {
+            inventory: None,
+            assets: None,
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let registry = ferroan_client::CapsRegistry::new(&format!("{caps_base}/")).unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        for n in 1..=MAX_PENDING_UPLOADS {
+            let agent = Uuid::from_u128(n as u128);
+            registry
+                .register_agent(&format!("/CAPS/{n:08x}0000/"), agent)
+                .unwrap();
+            let answer = caps.upload_offer(&exchange(
+                agent,
+                "NewFileAgentInventory",
+                "/seed",
+                offer_body("n"),
+            ));
+            assert_eq!(
+                from_xml(&answer.body).unwrap().get("state").as_str(),
+                "upload"
+            );
+        }
+        let extra = Uuid::from_u128(10_000);
+        registry
+            .register_agent("/CAPS/000027100000/", extra)
+            .unwrap();
+        let refused = caps.upload_offer(&exchange(
+            extra,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_body("over"),
+        ));
+        let body = from_xml(&refused.body).unwrap();
+        assert_eq!(body.get("state").as_str(), "error");
+        assert_eq!(
+            body.get("error").get("message").as_str(),
+            "uploader limit reached"
+        );
+        assert!(ferroan_diag::metrics().contains("region.pending-uploads"));
+        let again = caps.upload_offer(&exchange(
+            Uuid::from_u128(1),
+            "NewFileAgentInventory",
+            "/seed",
+            offer_body("replace"),
+        ));
+        assert_eq!(
+            from_xml(&again.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        drop(caps_listener);
+    }
+
+    async fn seed_cap(http: &reqwest::Client, base: &str, seed: &str) -> String {
+        let (status, bytes) = post_bytes_type(
+            http,
+            &format!("{base}{seed}"),
+            "application/llsd+xml",
+            &to_xml(&{
+                let mut names = Llsd::new_array();
+                names.push("NewFileAgentInventory");
+                names
+            }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        from_xml(&bytes)
+            .unwrap()
+            .get("NewFileAgentInventory")
+            .as_str()
+            .to_owned()
+    }
+
+    async fn post_llsd(http: &reqwest::Client, url: &str, body: &[u8]) -> Llsd {
+        let (status, bytes) = post_bytes_type(http, url, "application/llsd+xml", body).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+        from_xml(&bytes).unwrap()
+    }
+
+    async fn post_bytes(http: &reqwest::Client, url: &str, body: &[u8]) -> (u16, Vec<u8>) {
+        post_bytes_type(http, url, "application/octet-stream", body).await
+    }
+
+    async fn post_bytes_type(
+        http: &reqwest::Client,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> (u16, Vec<u8>) {
+        let response = http
+            .post(url)
+            .header("content-type", content_type)
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await.unwrap().to_vec();
+        (status, bytes)
     }
 }

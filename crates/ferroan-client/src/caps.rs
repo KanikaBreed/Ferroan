@@ -38,6 +38,8 @@
 //! lifetime follows the accepted circuit. Empty polls hold 58 seconds then
 //! return 502, while removal wakes them with 404. Event delivery advances one
 //! id per batch. See event_queue for crossing-marker limitations and bounds.
+//! An uploader path granted to one agent is answered for that agent. An
+//! unmatched `/uuid` path is still that agent's only when one agent is registered.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -142,6 +144,8 @@ const SEED_BODY_LIMIT: usize = 64 * 1024;
 const MAX_SEED_NAMES: usize = 256;
 /// One capability name. The bot's names are shorter.
 const MAX_SEED_NAME_LEN: usize = 128;
+/// Named seed caps plus one uploader path. A second uploader replaces the first.
+const MAX_AGENT_CAPS: usize = 64;
 
 /// Failure to bind the capability listener.
 #[derive(Debug, thiserror::Error)]
@@ -352,6 +356,88 @@ impl CapsRegistry {
             .fallback(registered_caps)
             .with_state(self.clone())
     }
+
+    /// Paths this region can add to one agent after the seed is registered.
+    ///
+    /// The closure that serves caps does not hold this registry, so granting
+    /// an uploader does not keep the registry alive.
+    pub fn uploader_routes(&self) -> UploaderRoutes {
+        UploaderRoutes {
+            active: Some(Arc::clone(&self.active)),
+            base_url: self.base_url.clone(),
+        }
+    }
+}
+
+/// Adds and removes one agent's uploader path.
+///
+/// The path is a granted cap with an empty name. The next POST on it is that
+/// agent's upload completion. A path that is not a bare UUID, or that another
+/// cap already uses, is refused.
+#[derive(Clone, Default)]
+pub struct UploaderRoutes {
+    active: Option<Arc<Mutex<Vec<RegisteredCaps>>>>,
+    base_url: String,
+}
+
+impl UploaderRoutes {
+    pub fn grant(&self, agent_id: Uuid, path: &str) -> bool {
+        let Some(active) = &self.active else {
+            return false;
+        };
+        if !is_uuid_path(path) {
+            return false;
+        }
+        let mut registrations = active.lock().unwrap_or_else(|poison| poison.into_inner());
+        if registrations
+            .iter()
+            .any(|registered| path_owned(registered, path))
+        {
+            return false;
+        }
+        let Some(registered) = registrations
+            .iter_mut()
+            .find(|registered| registered.state.agent_id == agent_id)
+        else {
+            return false;
+        };
+        if registered.state.granted.len() >= MAX_AGENT_CAPS {
+            return false;
+        }
+        registered.state.granted.push(GrantedCap {
+            name: String::new(),
+            url: format!("{}{path}", self.base_url),
+            path: Some(path.to_owned()),
+        });
+        true
+    }
+
+    pub fn revoke(&self, agent_id: Uuid, path: &str) {
+        let Some(active) = &self.active else {
+            return;
+        };
+        let mut registrations = active.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(registered) = registrations
+            .iter_mut()
+            .find(|registered| registered.state.agent_id == agent_id)
+        else {
+            return;
+        };
+        registered
+            .state
+            .granted
+            .retain(|cap| !(cap.name.is_empty() && cap.path.as_deref() == Some(path)));
+    }
+}
+
+fn path_owned(registered: &RegisteredCaps, path: &str) -> bool {
+    registered.seed_path == path
+        || registered.events_path == path
+        || registered
+            .state
+            .granted
+            .iter()
+            .any(|cap| cap.path.as_deref() == Some(path))
 }
 
 async fn registered_caps(State(registry): State<CapsRegistry>, request: Request) -> Response {
@@ -371,9 +457,10 @@ async fn registered_caps(State(registry): State<CapsRegistry>, request: Request)
                     .iter()
                     .any(|cap| cap.path.as_deref() == Some(path.as_str()))
         });
-        // An upload completes on a UUID path that is not in the seed grant
-        // list. With one agent that path is still theirs. With two, guessing
-        // would hand one agent's upload to the other.
+        // An upload completes on a UUID path. A path granted to one agent is
+        // theirs. A path nobody registered is the remaining agent's only when
+        // exactly one agent is registered. With two, guessing would hand one
+        // agent's upload to the other.
         let matched = matched
             .cloned()
             .or_else(|| (alone && is_uuid_path(&path)).then(|| registrations[0].clone()));
@@ -906,6 +993,114 @@ mod tests {
         );
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen, vec![(second_agent, String::new(), upload)]);
+        serving.abort();
+    }
+
+    #[tokio::test]
+    async fn two_agents_receive_posts_on_the_uploader_path_granted_to_them() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let service: CapService = Arc::new(move |exchange| {
+            let record = Arc::clone(&record);
+            Box::pin(async move {
+                record
+                    .lock()
+                    .unwrap()
+                    .push((exchange.agent_id, exchange.path));
+                CapAnswer {
+                    handled: true,
+                    status: StatusCode::OK,
+                    content_type: SEED_MIME.to_owned(),
+                    body: Vec::new(),
+                    content_range: None,
+                }
+            })
+        });
+        let registry =
+            CapsRegistry::with_grants(&base, CapGrantSet::default(), Some(service)).unwrap();
+        let routes = registry.uploader_routes();
+        let app = registry.router();
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let first_agent = Uuid::from_u128(1);
+        let second_agent = Uuid::from_u128(2);
+        registry
+            .register_agent(&format!("/CAPS/{}0000/", Uuid::from_u128(10)), first_agent)
+            .unwrap();
+        registry
+            .register_agent(&format!("/CAPS/{}0000/", Uuid::from_u128(11)), second_agent)
+            .unwrap();
+        let first_path = format!("/{}", Uuid::new_v4());
+        let second_path = format!("/{}", Uuid::new_v4());
+        assert!(routes.grant(first_agent, &first_path));
+        assert!(routes.grant(second_agent, &second_path));
+        assert!(!routes.grant(first_agent, &second_path));
+        assert!(!routes.grant(Uuid::from_u128(99), &format!("/{}", Uuid::new_v4())));
+        let root = base.trim_end_matches('/');
+        assert_eq!(
+            post(
+                &format!("{root}{first_path}"),
+                "application/octet-stream",
+                b"a".to_vec()
+            )
+            .await
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &format!("{root}{second_path}"),
+                "application/octet-stream",
+                b"b".to_vec()
+            )
+            .await
+            .0,
+            200
+        );
+        let stranger = format!("/{}", Uuid::new_v4());
+        assert_eq!(
+            post(
+                &format!("{root}{stranger}"),
+                "application/octet-stream",
+                Vec::new()
+            )
+            .await
+            .0,
+            404
+        );
+        routes.revoke(first_agent, &first_path);
+        assert_eq!(
+            post(
+                &format!("{root}{first_path}"),
+                "application/octet-stream",
+                Vec::new()
+            )
+            .await
+            .0,
+            404
+        );
+        assert_eq!(
+            post(
+                &format!("{root}{second_path}"),
+                "application/octet-stream",
+                Vec::new()
+            )
+            .await
+            .0,
+            200
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                (first_agent, first_path),
+                (second_agent, second_path.clone()),
+                (second_agent, second_path),
+            ]
+        );
         serving.abort();
     }
 
