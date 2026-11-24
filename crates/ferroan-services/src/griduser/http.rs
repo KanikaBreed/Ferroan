@@ -35,14 +35,15 @@
 //! indented `result` document. A grid-user document is `BuildXmlResponse`.
 //! `loggedoutregion` is failure when `RegionID` is missing, not a uuid, or
 //! the zero uuid. A body over [`ferroan_http::MAX_QUERY_BYTES`] is 413.
-//! `X-SecondLife-Shard` is not checked.
+//! A request that carries `X-SecondLife-Shard` is 403 `text/plain` with an
+//! empty body before the body is read, unless `AllowllHTTPRequestIn` is true.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use ferroan_http::{Field, FieldMap, MAX_QUERY_BYTES, parse_query_string};
@@ -53,18 +54,29 @@ use super::wire::{self, FAILURE_XML, SUCCESS_XML, Vec3};
 
 #[derive(Clone)]
 pub struct GridUserHttp {
-    inner: Arc<GridUserService<GridUserStore, SystemClock>>,
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    service: GridUserService<GridUserStore, SystemClock>,
+    reject_shard_header: bool,
 }
 
 impl GridUserHttp {
-    pub fn new(service: GridUserService<GridUserStore, SystemClock>) -> Self {
+    pub fn new(
+        service: GridUserService<GridUserStore, SystemClock>,
+        reject_shard_header: bool,
+    ) -> Self {
         Self {
-            inner: Arc::new(service),
+            inner: Arc::new(Inner {
+                service,
+                reject_shard_header,
+            }),
         }
     }
 
     pub fn pool_occupancy(&self) -> (u32, u32) {
-        self.inner.pool_occupancy()
+        self.inner.service.pool_occupancy()
     }
 
     pub fn into_router(self) -> Router {
@@ -75,15 +87,19 @@ impl GridUserHttp {
 }
 
 async fn post_griduser(
-    State(service): State<Arc<GridUserService<GridUserStore, SystemClock>>>,
+    State(inner): State<Arc<Inner>>,
+    headers: HeaderMap,
     body: Body,
 ) -> Response {
+    if inner.reject_shard_header && headers.get("X-SecondLife-Shard").is_some() {
+        return plain(StatusCode::FORBIDDEN, Vec::new());
+    }
     let bytes = match axum::body::to_bytes(body, MAX_QUERY_BYTES).await {
         Ok(bytes) => bytes,
         Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE, Vec::new()),
     };
     let text = String::from_utf8_lossy(&bytes);
-    xml(dispatch(service.as_ref(), text.trim()).await)
+    xml(dispatch(&inner.service, text.trim()).await)
 }
 
 pub async fn dispatch<D, C>(service: &GridUserService<D, C>, body: &str) -> Vec<u8>
