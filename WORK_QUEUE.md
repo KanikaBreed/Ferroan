@@ -102,8 +102,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q17 | P2.0h: teleport inside the Ferroan region | DONE (#163) |
 | Q18 | P2.0i: teleport to the C# neighbour and back | SPLIT into Q18a to Q18c (#164) |
 | Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | DONE (#166) |
-| Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | BLOCKED |
-| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b |
+| Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
+| Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | READY |
+| Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | READY after Q18b1 |
+| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | READY after Q18b2 |
+| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |
@@ -118,8 +121,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
-| Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | BLOCKED |
-| Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53 |
+| Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
+| Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | READY |
+| Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | READY after Q53a |
+| Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | READY after Q53b |
+| Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53c |
 | Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
 | Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | READY after Q18a |
@@ -512,6 +518,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (3) Startup hook and measurements, from the manager's note above. `ferroan-region` loads every object in its region store at startup and keeps it, logs the object count, the prim count and the load time, and sends no `ObjectUpdate`. The harness copies a seeded store into the per-run region directory. Published databases stay excluded from the runtime tree. The PR reports `ferroan-region` RSS idle at 500, 1,000, 5,000, 10,000 and 40,000 prims, and how those stores were seeded. Merge `origin/main` so the other coders' region and harness edits are kept.
 
 Phase 2 slice 2 (manager, 22 November 2026): Q40 to Q81 (TASKS P2.1a to P2.12, and G3) take the region from "logs in and chats" to the Phase 2 gate. The C# line references come from the manager's planning draft at pin `1d7abb8337`; check each one before porting. Chains: the spine is Q40, Q41, Q42 (scene owns presences, then the update queue and prioritizer). Movement is Q44, Q45, Q46, then Q49 and Q50, with Q47 and Q61 after Q46. Objects are Q42 plus Q53, then Q65, Q66 and Q67, Q68, Q69, Q70, Q71. Inventory is Q57 and Q58 plus Q68, then Q72, then Q73. Persistence is Q70, then Q74, then Q75. Crossings are Q18c plus Q57 and Q69, then Q77, then Q78; Q79 and Q80 follow Q18c and Q46. Q81 waits for all of them. In parallel: Q51, Q53 to Q58, Q60, Q62 and Q76 have no scene dependency and are `READY after Q18a`, so a second coder (rule 10) or an outside contributor can run them beside Q18b, Q18c and Q19; they are good `agent-ready` issues. Once the spine and Q46 are done, movement and avatars (P2.2, P2.3), objects and building (P2.5, P2.8), land and permissions (P2.6, P2.7) and transfer (P2.10, P2.11) run independently. Decisions: D38 (walking before Jolt is a BasicPhysics stand-in in `ferroan-scene`, deleted in Phase 3, with walk fixtures from a C# region on `physics = basicphysics`; "next door" at the gate is teleport both ways plus child agents so the C# neighbour is in view, and walking across the border waits; viewer-side bakes first; all three region-store databases at the gate) and D39 (scene state on the frame thread; object crossings advertise no held crossing and pass script state through; Phase 2 reads parcels and writes only the default parcel; persistence has an on/off switch, Ferroan and C# never open the same store at once, and backup timing follows C#; materials pass through only). P2.5d (the `RenderMaterials` cap) is a TASKS row but not queued, under D39. Loading an OAR with terrain-height standing only stays in Phase 2 outside the gate; it gets its row once P2.S and P2.9a are in. Where the draft guessed (Firestorm's bake path and handshake flags, Ferrobot's API at `9cc7ab284c`, the materials size), the rows say so: confirm before relying on it.
+
+Q18b and Q53 splits (manager, 23 November 2026): the blocks in #186 and #187 are right, and their parts are taken as written there: Q18b1 to Q18b3 are (2a) to (2c) under Q18b, and Q53a to Q53c are (1) to (3) under Q53. Each part's scope and acceptance is that numbered paragraph. If a part is still more than about a day, block it again with a split. P2.0i and P2.4a1 stay `TODO` in TASKS.md until all their parts are `DONE`; the evidence goes into the parent row.
 
 ## Found while working
 
