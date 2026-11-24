@@ -34,7 +34,7 @@ const string PrimF = "ffffffff-ffff-ffff-ffff-fffffffffff1";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count>");
     return 2;
 }
 
@@ -48,8 +48,11 @@ try
         case "load" when args.Length == 4:
             Load(args[1], args[2], args[3]);
             return 0;
+        case "bulk" when args.Length == 4:
+            Bulk(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count>");
             return 2;
     }
 }
@@ -57,6 +60,38 @@ catch (Exception error)
 {
     Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
     return 1;
+}
+
+static void Bulk(string path, string region, string countText)
+{
+    if (!UUID.TryParse(region, out UUID _))
+        throw new ArgumentException("region id is not a UUID");
+    if (!int.TryParse(countText, out int count) || count < 1 || count > 100_000)
+        throw new ArgumentException("count must be from 1 to 100000");
+    string full = Path.GetFullPath(path);
+    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+    if (File.Exists(full))
+        File.Delete(full);
+    string connection = "Data Source=" + full + ";Version=3;";
+    SQLiteSimulationData store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise(connection);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    using SQLiteConnection db = new SQLiteConnection(connection);
+    db.Open();
+    using SQLiteTransaction tx = db.BeginTransaction();
+    for (int index = 0; index < count; index++)
+    {
+        string id = index.ToString("x8") + "-0000-4000-8000-000000000000";
+        BasePrim(id, region, id, "prim").Insert(db, "prims");
+    }
+    tx.Commit();
 }
 
 static void Seed(string path)

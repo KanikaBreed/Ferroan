@@ -154,6 +154,8 @@ pub struct SimulationState {
     meters: Arc<RegionMeters>,
     /// Far-hop release waits, keyed by agent. Shared by every clone.
     releases: Arc<Mutex<HashMap<Uuid, ReleaseSlot>>>,
+    /// Prim groups loaded at startup. Shared by every clone. Not sent on the circuit.
+    objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
 }
 
 struct ActiveSession {
@@ -333,7 +335,17 @@ impl SimulationState {
             staff: StaffGate::from_config(config),
             meters,
             releases: Arc::new(Mutex::new(HashMap::new())),
+            objects: Arc::new(Vec::new()),
         }
+    }
+
+    pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
+        self.objects = objects;
+    }
+
+    pub fn stored_object_counts(&self) -> (usize, usize) {
+        let prims = self.objects.iter().map(|group| group.parts.len()).sum();
+        (self.objects.len(), prims)
     }
 
     pub fn apply_estate(&mut self, access: ferroan_scene::EstateAccess) {
@@ -1128,6 +1140,24 @@ mod tests {
         include_str!("../../../fixtures/region-login/create-agent.request.json");
     const CREATE_RESPONSE: &str =
         include_str!("../../../fixtures/region-login/create-agent.response.json");
+
+    #[test]
+    fn stored_objects_stay_shared_after_clone() {
+        let region = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let mut state =
+            SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        assert_eq!(state.stored_object_counts(), (0, 0));
+        let groups = Arc::new(vec![ferroan_scene::ObjectGroup {
+            rez_parameter: None,
+            parts: Vec::new(),
+        }]);
+        state.keep_objects(Arc::clone(&groups));
+        let cloned = state.clone();
+        assert_eq!(cloned.stored_object_counts(), (1, 0));
+        assert!(Arc::ptr_eq(&state.objects, &cloned.objects));
+    }
 
     fn test_config(base: &str, region: Uuid) -> RegionConfig {
         let server = ferroan_config::Config::parse(&format!(

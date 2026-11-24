@@ -132,6 +132,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask avatar cross
        cargo xtask regionstore generate
        cargo xtask regionstore verify
+       cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask live build
@@ -239,6 +240,7 @@ fn main() -> ExitCode {
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),

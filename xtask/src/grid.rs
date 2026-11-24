@@ -1870,6 +1870,9 @@ fn start_region(
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
+    if spec.ferroan {
+        install_seeded_region_store(cwd)?;
+    }
     let mut rewrites = Vec::new();
     if let Some(uri) = &spec.asset_uri {
         rewrites.push(("AssetServerURI", uri.as_str()));
@@ -2099,6 +2102,25 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
             publish.join("RegionServerDefaults.ini").display()
         ));
     }
+    Ok(())
+}
+
+/// Copy the committed region-store fixture into this run's directory. The
+/// published tree stays without databases. The name is the SQLite file
+/// `URI=file:OpenSim.db` opens from the region working directory.
+#[cfg(target_os = "linux")]
+fn install_seeded_region_store(cwd: &Path) -> Result<(), String> {
+    let source = crate::repo_root().join("fixtures/regionstore/objects.db");
+    if !source.is_file() {
+        return Err(format!("missing {}", source.display()));
+    }
+    fs::copy(&source, cwd.join("OpenSim.db")).map_err(|error| {
+        format!(
+            "could not copy {} to {}: {error}",
+            source.display(),
+            cwd.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -2517,6 +2539,12 @@ mod tests {
         assert_eq!(
             fs::read(root.join("neighbour/OpenSim.db")).unwrap(),
             b"neighbour"
+        );
+        install_seeded_region_store(&root.join("home")).unwrap();
+        assert!(root.join("home/OpenSim.db").is_file());
+        assert_ne!(
+            fs::read(root.join("home/OpenSim.db")).unwrap(),
+            b"standalone state"
         );
         assert_eq!(
             fs::read(publish.join("OpenSim.db")).unwrap(),
