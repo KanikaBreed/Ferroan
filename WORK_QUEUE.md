@@ -79,7 +79,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
-| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
+| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (this PR) |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
 | QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | READY after Q23e |
@@ -541,11 +541,15 @@ QR1 (24 November 2026, `feat/shard-header`): `POST /auth` (plain, crypt, the bar
 
 Q54 (24 November 2026, `feat/prim-inventory`): each loaded prim keeps the `primitems` rows for its id, in stored order, as data. `showcase` has `note` (null description, unparsable experience id), `script` (creator endpoint, name `Unknown User`) and `box` (creator endpoint and name, a real experience id). `child-two` has `mark` (creator id ending in a semicolon). `no-shape` has `blank` (empty creator id). The regionstore dump matches those fields. A row that cannot be built is left out (TB60, D44). Pin8 `c401bceecd`. No new limit.
 
+QR2 (24 November 2026, `feat/xasset-durable`): At Pin8 `c401bceecd`, a metadata or data failure still returns from `StoreAsset` with the write rolled back, and migrate then deletes the chained asset. Two stores of the same new bytes can both miss the data row; the second primary-key failure rolls that store's metadata back and the method returns. A hash-lookup error is treated as the hash being absent. Ferroan reads the asset back before the chain delete, so a missing row leaves the chain in place and that get still returns the chained asset. The data insert is `INSERT IGNORE` on MySQL and `ON CONFLICT (hash) DO NOTHING` on PostgreSQL, and a hash-lookup error is returned. Rows and the HTTP body are unchanged. A four-byte name on the MySQL `utf8mb3` table, and a 129-character creator on PostgreSQL, keep the SQLite chain row. Eight pairs of concurrent stores of the same bytes are both readable, on one data row, on both databases. `xasset_plugins_match_the_pin` and `xasset_service_matches_the_pin` passed. Local `cargo xtask check` passed. TB58, TB59 and D43. The live HTTP compare does not run these cases. P1.A2 is unchanged.
+
 ## Found while working
 
 - 2026-11-24, Q54: At pin `c401bceecd`, a task-inventory row that cannot be built leaves the prim in the region and drops every item that prim held, including items already read (TB60). Ferroan leaves that row out and keeps the others (D44). No viewer depends on the other items being absent.
 
 - 2026-11-24, Q54: The 40,000-prim startup high-water (about 745 MB) sits well above the idle RSS (about 101 MB) because `load_objects_limited` holds the full fetched prim and shape rows while it builds the groups, and each part then keeps the stored cells beside the parsed values. The fetched rows are dropped when the load returns. Not remeasured. The load was not changed.
+
+- 2026-11-24, QR2: At Pin8, two XAsset stores of the same new bytes can leave one id missing, because the second data insert hits the primary key and that store's metadata rolls back, and the method returns. A hash lookup error is treated as the hash being absent (TB58). Migrate deletes the chained asset after a store that rolled back, so the only copy goes (TB59). Ferroan keeps both ids and reads the row back before the chain delete (D43).
 
 - 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
 
