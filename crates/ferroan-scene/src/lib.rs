@@ -57,7 +57,8 @@
 //! writer and the frame thread. The frame ticks at the shipped `FrameTime`,
 //! stores the login presence, and answers a forwarded chat with those positions.
 //! A landing updates the position. An `AgentUpdate` stores movement intent on
-//! that presence.
+//! that presence. Each viewer has an entity-update queue. A second update for
+//! the same local id merges flags. This crate does not write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -66,6 +67,7 @@
 
 mod bits;
 mod compress;
+pub mod entity_queue;
 mod error;
 mod estate;
 mod frame;
@@ -78,6 +80,11 @@ mod store;
 mod xml;
 
 pub use compress::TerrainLayer;
+pub use entity_queue::{
+    ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,
+    FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MAX_ENTITY_UPDATES, POSITION, QueuedUpdate, ROTATION,
+    SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
+};
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{LocalTeleport, Presence, TeleportStored, TerrainFrame, landed_z};
