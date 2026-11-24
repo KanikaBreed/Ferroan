@@ -53,8 +53,8 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the prim load, region settings, the object XML
-//! writer and the frame thread. The frame ticks at the shipped `FrameTime`,
+//! Read-only region terrain, the prim load, region settings, object XML and
+//! the frame thread. The frame ticks at the shipped `FrameTime`,
 //! stores the login presence, and answers a forwarded chat with those positions.
 //! A landing updates the position. An `AgentUpdate` stores movement intent on
 //! that presence. Each tick integrates that intent with the walking stand-in.
@@ -107,4 +107,4 @@ pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;
 pub use walk::AVATAR_SIZE_Z;
-pub use xml::{to_original_xml, to_xml2};
+pub use xml::{from_original_xml, from_xml2, to_original_xml, to_xml2};
