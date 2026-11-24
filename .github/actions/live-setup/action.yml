@@ -54,11 +54,12 @@ runs:
           # The height walk reads older version.json blobs through Nerdbank's
           # own git reader, which does not ask Git to fetch a missing blob.
           # Listing every object does ask, and that downloads every blob, so
-          # the ids come from `git log --raw` (trees only) and only those
-          # version files are fetched.
+          # the ids come from `git log -m --raw` (trees only). `-m` includes
+          # a merge commit whose version.json is not either parent's. Only
+          # those version files are fetched.
           git clone --filter=blob:none "$url" "$dest"
           git -C "$dest" checkout --detach "$rev"
-          git -C "$dest" log --raw --no-abbrev --pretty=format: HEAD \
+          git -C "$dest" log -m --raw --no-abbrev --pretty=format: HEAD \
             | awk -F'\t' 'NF >= 2 && $2 ~ /(^|\/)version\.json$/ {
                 split($1, a, " ")
                 if (a[3] !~ /^0+$/) print a[3]
