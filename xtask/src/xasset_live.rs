@@ -654,30 +654,18 @@ fn apply_mysql(target: &DbTarget, sql_path: &Path, run: &Path) -> Result<(), Str
     )?;
     let input =
         fs::File::open(sql_path).map_err(|error| format!("could not read the seed: {error}"))?;
-    let defaults_arg = defaults
-        .to_str()
-        .ok_or("mysql defaults path is not utf-8")?;
     let port = target.port.to_string();
-    let output = Command::new("mysql")
-        .args([
-            &format!("--defaults-extra-file={defaults_arg}"),
-            "--protocol=TCP",
-            "-h",
-            &target.host,
-            "-P",
-            &port,
-            "-u",
-            &target.user,
-            "--ssl-mode=DISABLED",
-            "--batch",
-            &target.database,
-        ])
-        .stdin(Stdio::from(input))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let output = crate::sql_client::run_mysql(
+        &defaults,
+        &target.host,
+        &port,
+        &target.user,
+        &target.database,
+        &[],
+        Stdio::from(input),
+    );
     let _ = fs::remove_file(&defaults);
-    let output = output.map_err(|error| format!("could not start mysql: {error}"))?;
+    let output = output?;
     if output.status.success() {
         return Ok(());
     }
@@ -690,28 +678,15 @@ fn apply_mysql(target: &DbTarget, sql_path: &Path, run: &Path) -> Result<(), Str
 #[cfg(target_os = "linux")]
 fn apply_postgres(target: &DbTarget, sql_path: &Path) -> Result<(), String> {
     let port = target.port.to_string();
-    let sql_arg = sql_path.to_str().ok_or("postgres seed path is not utf-8")?;
-    let output = Command::new("psql")
-        .env("PGPASSWORD", &target.password)
-        .args([
-            "-h",
-            &target.host,
-            "-p",
-            &port,
-            "-U",
-            &target.user,
-            "-d",
-            &target.database,
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-f",
-            sql_arg,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("could not start psql: {error}"))?;
+    let output = crate::sql_client::run_psql(
+        &target.password,
+        &target.host,
+        &port,
+        &target.user,
+        &target.database,
+        sql_path,
+        &[],
+    )?;
     if output.status.success() {
         return Ok(());
     }

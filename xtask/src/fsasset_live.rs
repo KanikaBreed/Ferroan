@@ -1413,31 +1413,18 @@ fn query_mysql(target: &DbTarget, run: &Path, sql_path: &Path) -> Result<String,
     )?;
     let input = fs::File::open(sql_path)
         .map_err(|error| format!("could not read the statement: {error}"))?;
-    let defaults_arg = defaults
-        .to_str()
-        .ok_or("mysql defaults path is not utf-8")?;
     let port = target.port.to_string();
-    let output = Command::new("mysql")
-        .args([
-            &format!("--defaults-extra-file={defaults_arg}"),
-            "--protocol=TCP",
-            "-h",
-            &target.host,
-            "-P",
-            &port,
-            "-u",
-            &target.user,
-            "--ssl-mode=DISABLED",
-            "--batch",
-            "--skip-column-names",
-            &target.database,
-        ])
-        .stdin(Stdio::from(input))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let output = crate::sql_client::run_mysql(
+        &defaults,
+        &target.host,
+        &port,
+        &target.user,
+        &target.database,
+        &["--skip-column-names"],
+        Stdio::from(input),
+    );
     let _ = fs::remove_file(&defaults);
-    let output = output.map_err(|error| format!("could not start mysql: {error}"))?;
+    let output = output?;
     if output.status.success() {
         return String::from_utf8(output.stdout)
             .map_err(|_| "mysql output is not utf-8".to_string());
@@ -1451,33 +1438,15 @@ fn query_mysql(target: &DbTarget, run: &Path, sql_path: &Path) -> Result<String,
 #[cfg(target_os = "linux")]
 fn query_postgres(target: &DbTarget, sql_path: &Path) -> Result<String, String> {
     let port = target.port.to_string();
-    let sql_arg = sql_path
-        .to_str()
-        .ok_or("postgres statement path is not utf-8")?;
-    let output = Command::new("psql")
-        .env("PGPASSWORD", &target.password)
-        .args([
-            "-h",
-            &target.host,
-            "-p",
-            &port,
-            "-U",
-            &target.user,
-            "-d",
-            &target.database,
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-q",
-            "-t",
-            "-A",
-            "-f",
-            sql_arg,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("could not start psql: {error}"))?;
+    let output = crate::sql_client::run_psql(
+        &target.password,
+        &target.host,
+        &port,
+        &target.user,
+        &target.database,
+        sql_path,
+        &["-q", "-t", "-A"],
+    )?;
     if output.status.success() {
         return String::from_utf8(output.stdout)
             .map_err(|_| "psql output is not utf-8".to_string());

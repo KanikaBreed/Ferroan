@@ -94,6 +94,7 @@ mod pin3_oracle;
 mod ports;
 mod regionstore;
 mod schema;
+mod sql_client;
 mod trailing_fixtures;
 mod twice;
 mod xasset_live;
