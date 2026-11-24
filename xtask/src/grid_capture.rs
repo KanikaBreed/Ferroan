@@ -110,6 +110,7 @@ pub fn compare_two_roots(directory: &Path) -> Result<String, String> {
     let mut normalizer = Normalizer {
         home_port: String::new(),
         item_ids: BTreeMap::new(),
+        rewrites: crate::ports::load_rewrites(directory)?,
     };
     let mut queries = BTreeSet::new();
     let mut creates = BTreeSet::new();
@@ -1107,6 +1108,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
     let normalizer = Normalizer {
         home_port: String::new(),
         item_ids: BTreeMap::new(),
+        rewrites: crate::ports::load_rewrites(directory)?,
     };
     let mut output = Map::new();
     for (index, record) in records.iter().enumerate() {
@@ -1267,6 +1269,7 @@ fn extract(
     let mut normalizer = Normalizer {
         home_port: String::new(),
         item_ids: BTreeMap::new(),
+        rewrites: crate::ports::load_rewrites(directory)?,
     };
     for (index, record) in private.iter().enumerate() {
         if record.kind != Kind::HttpRequest {
@@ -1559,6 +1562,7 @@ fn text_field(fields: &FieldMap, key: &str) -> Result<String, String> {
 struct Normalizer {
     home_port: String,
     item_ids: BTreeMap<String, String>,
+    rewrites: Vec<(String, String)>,
 }
 
 impl Normalizer {
@@ -1572,11 +1576,29 @@ impl Normalizer {
                 "owner_uuid" if text == crate::live::ESTATE_OWNER => AGENT.to_string(),
                 "regionSecret" => non_nil_uuid(text, SECRET)?,
                 "regionName" if text == super::HOME_NAME => "Fixture Region".to_string(),
-                "serverHttpPort" | "serverPort" if text == &self.home_port => "9000".to_string(),
+                "serverHttpPort" | "serverPort" => self.canonical_port(text),
                 _ => self.text(text),
             };
         }
         Ok(())
+    }
+
+    fn canonical_port(&self, text: &str) -> String {
+        if let Some((_, canonical)) = self.rewrites.iter().find(|(actual, _)| actual == text) {
+            return canonical.clone();
+        }
+        if !self.home_port.is_empty() && text == self.home_port {
+            return "9000".to_string();
+        }
+        self.text(text)
+    }
+
+    fn port_pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = self.rewrites.clone();
+        if !self.home_port.is_empty() {
+            pairs.push((self.home_port.clone(), "9000".to_string()));
+        }
+        pairs
     }
 
     fn text(&self, text: &str) -> String {
@@ -1586,11 +1608,7 @@ impl Normalizer {
             .replace("127.0.0.1", "192.0.2.1")
             .replace("127.0.0.2", "192.0.2.2")
             .replace("127.0.0.4", "192.0.2.4");
-        if self.home_port.is_empty() {
-            out
-        } else {
-            out.replace(&format!(":{}", self.home_port), ":9000")
-        }
+        crate::ports::rewrite_ports(&out, &self.port_pairs())
     }
 
     fn json(&mut self, value: &mut Value, key: &str) -> Result<(), String> {
@@ -1650,6 +1668,7 @@ mod tests {
         Normalizer {
             home_port: "12345".to_string(),
             item_ids: BTreeMap::new(),
+            rewrites: Vec::new(),
         }
     }
 
@@ -1669,6 +1688,15 @@ mod tests {
         assert_eq!(input["destination_x"], "256256");
         assert_eq!(input["your_ip"], "192.0.2.2");
         assert_eq!(input["reason"], "different reason");
+        let mut recorded = normalizer();
+        recorded.rewrites = vec![("25004".to_string(), "9000".to_string())];
+        recorded.home_port.clear();
+        let moved = recorded.text("http://127.0.0.1:25004/CAPS http://127.0.0.1:12345/stay");
+        assert_eq!(
+            moved,
+            "http://192.0.2.1:9000/CAPS http://192.0.2.1:12345/stay"
+        );
+        assert!(moved.contains(":12345"));
         let mut invalid = json!({"session_id": uuid::Uuid::nil().to_string()});
         assert!(normalizer().json(&mut invalid, "").is_err());
         let mut invalid = json!({"caps_path": "not-a-uuid"});

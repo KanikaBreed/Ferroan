@@ -142,7 +142,18 @@ enum ParseFail {
 }
 
 pub(crate) fn dispatch(args: &[&str]) -> Outcome {
-    match parse(args) {
+    let (base, args) = match split_port_base(args) {
+        Ok(split) => split,
+        Err(text) => {
+            eprintln!("live: {text}");
+            return Outcome::Exit(ExitCode::from(2));
+        }
+    };
+    if let Err(text) = crate::ports::install(base) {
+        eprintln!("live: {text}");
+        return Outcome::Exit(ExitCode::from(2));
+    }
+    match parse(&args) {
         Ok(command) => Outcome::Exit(execute(command)),
         Err(ParseFail::Usage) => Outcome::Usage,
         Err(ParseFail::Message(text)) => {
@@ -150,6 +161,36 @@ pub(crate) fn dispatch(args: &[&str]) -> Outcome {
             Outcome::Exit(ExitCode::from(2))
         }
     }
+}
+
+fn split_port_base<'a>(args: &[&'a str]) -> Result<(Option<u16>, Vec<&'a str>), String> {
+    let mut base = None;
+    let mut kept = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--port-base" {
+            let value = args
+                .get(index + 1)
+                .copied()
+                .filter(|value| !value.starts_with('-'))
+                .ok_or_else(|| "--port-base needs a port".to_string())?;
+            let port: u16 = value
+                .parse()
+                .map_err(|_| "--port-base needs a port".to_string())?;
+            if port == 0 {
+                return Err("--port-base needs a port from 1024 up".to_string());
+            }
+            if base.is_some() {
+                return Err("--port-base was given twice".to_string());
+            }
+            base = Some(port);
+            index += 2;
+            continue;
+        }
+        kept.push(args[index]);
+        index += 1;
+    }
+    Ok((base, kept))
 }
 
 fn execute(command: Command) -> ExitCode {
@@ -665,6 +706,17 @@ mod tests {
             parse(&["persistent-grid-check"]),
             Ok(Command::PersistentGridCheck)
         ));
+        let (base, kept) =
+            split_port_base(&["run", "login", "grid", "--port-base", "20000"]).unwrap();
+        assert_eq!(base, Some(20_000));
+        assert_eq!(kept, vec!["run", "login", "grid"]);
+        let spec = run(&kept);
+        assert_eq!(spec.scenario, "login");
+        assert!(spec.grid);
+        assert!(split_port_base(&["run", "--port-base"]).is_err());
+        assert!(split_port_base(&["run", "--port-base", "nope"]).is_err());
+        assert!(split_port_base(&["run", "--port-base", "0"]).is_err());
+        assert!(split_port_base(&["--port-base", "20000", "--port-base", "21000"]).is_err());
         let spec = run(&["run", "login"]);
         assert!(!spec.grid);
         assert_eq!(spec.scenario, "login");

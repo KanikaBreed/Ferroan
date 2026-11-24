@@ -91,6 +91,7 @@ mod nodelay;
 mod oracle;
 mod oracle_reference;
 mod pin3_oracle;
+mod ports;
 mod regionstore;
 mod schema;
 mod trailing_fixtures;
@@ -134,6 +135,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask live build
+       FERROAN_LIVE_PORT_BASE or --port-base <port> moves every live port and gives the run its own directory
        cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
@@ -183,6 +185,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         };
+    }
+    // Docker smoke and console-forms open listeners too. `live` installs from
+    // the flag or the environment inside dispatch; every other command reads
+    // the environment here.
+    if let Err(text) = ports::install(None) {
+        eprintln!("xtask: {text}");
+        return ExitCode::from(2);
     }
     match refs.as_slice() {
         ["check"] => check(false),

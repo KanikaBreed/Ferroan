@@ -196,6 +196,8 @@ jobs:
         run: cargo xtask live run chat grid --region ferroan
       - name: Teleport inside the Ferroan region
         run: cargo xtask live run teleport grid --region ferroan
+      - name: Teleport from the Ferroan region onto the C# neighbour
+        run: cargo xtask live run hop grid --region ferroan
       - name: Trip POST-body, datagram and fetch-folder limits
         run: cargo xtask live run limits grid --region ferroan
       - name: Compare inventory and texture caps on the Ferroan region

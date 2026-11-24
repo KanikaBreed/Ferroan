@@ -529,7 +529,11 @@ fn contains_secret(bytes: &[u8], secret: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn grid_root() -> PathBuf {
-    live::live_root().join("grid")
+    if crate::ports::isolated() {
+        crate::ports::run_root().join("grid")
+    } else {
+        live::live_root().join("grid")
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -652,10 +656,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "roots"
                 | "chat"
                 | "teleport"
+                | "hop"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat and teleport scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport and hop scenarios"
                 .to_string(),
         );
     }
@@ -664,7 +669,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     }
     if !matches!(
         scenario,
-        "neighbour" | "caps" | "ferrobot" | "limits" | "roots"
+        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -693,19 +698,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         + usize::from(rust_assets || rust_accounts || rust_auth)
         + usize::from(ferroan)
         + usize::from(rust_assets || rust_accounts || rust_auth);
-    let mut ports = Vec::new();
-    for _ in 0..32 {
-        if ports.len() == port_count {
-            break;
-        }
-        let port = live::free_port()?;
-        if !ports.contains(&port) {
-            ports.push(port);
-        }
-    }
-    if ports.len() != port_count {
-        return Err(format!("could not allocate {port_count} local ports"));
-    }
+    let ports = crate::ports::alloc_grid(port_count)?;
     let robust_public = ports[0];
     let robust_private = ports[1];
     let public_proxy = ports[2];
@@ -724,6 +717,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     }
     fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+    crate::ports::write_fixture_ports(&root)?;
     let estate = live::generate_password()?;
     let chat = live::generate_password()?;
     let mut grid = Grid {
@@ -974,11 +968,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
     if ferroan {
-        let extra = docker.then(|| {
-            live::live_root()
-                .join("docker-log")
-                .join(crate::docker::NAME_HOME)
-        });
+        let extra = docker.then(|| crate::docker::host_log_dir(crate::docker::NAME_HOME));
         ferroan_bot::set_log_redaction_check(true, extra);
     }
     let report = if let Some(executable) = ferrobot_binary {
@@ -1182,6 +1172,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
+    } else if ferroan && scenario == "hop" {
+        Ok(format!("{}\n{proxy_report}", report.lines))
     } else if ferroan && scenario == "teleport" {
         let comparison = login_capture::compare_local_teleport(&root)?;
         let capture = live::finish_capture(
@@ -1228,7 +1220,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
 
 #[cfg(target_os = "linux")]
 fn collect_diag(region: Option<u16>, robust: Option<u16>) -> String {
-    let dir = live::live_root().join("diag");
+    let dir = live::diag_dir();
     if let Err(error) = fs::create_dir_all(&dir) {
         return format!("diag dir: {error}");
     }
@@ -2016,7 +2008,7 @@ fn docker_mounts(name: &str) -> Result<Vec<crate::docker::Mount>, String> {
     let live_root = live::live_root();
     fs::create_dir_all(&live_root)
         .map_err(|error| format!("could not create {}: {error}", live_root.display()))?;
-    let logdata = live_root.join("docker-log").join(name);
+    let logdata = crate::docker::host_log_dir(name);
     fs::create_dir_all(&logdata)
         .map_err(|error| format!("could not create {}: {error}", logdata.display()))?;
     Ok(vec![
@@ -2580,6 +2572,49 @@ mod tests {
         assert!(regions.contains("InternalAddress = 127.0.0.1"));
         assert!(regions.contains("ExternalHostName = 127.0.0.1"));
         assert!(regions.contains("InternalPort = 9000"));
+    }
+
+    #[test]
+    fn generated_listeners_stay_inside_the_port_base() {
+        let base = 25_000u16;
+        let home = base + crate::ports::Slot::Home as u16;
+        let public = base + crate::ports::Slot::PublicProxy as u16;
+        let private = base + crate::ports::Slot::PrivateProxy as u16;
+        let robust_public = base + crate::ports::Slot::RobustPublic as u16;
+        let robust_private = base + crate::ports::Slot::RobustPrivate as u16;
+        let region = RegionIni {
+            http_port: home,
+            public_proxy: public,
+            private_proxy: private,
+            ..sample_region(None)
+        };
+        let ini = region_server_ini(&region).unwrap();
+        let regions = regions_ini(&region);
+        let robust = robust_ini(
+            ROBUST_BIND,
+            robust_public,
+            robust_private,
+            "/tmp/ferroan-robust.db",
+            "/tmp/Libraries.xml",
+            "/tmp/AssetSets.xml",
+            ServiceUris {
+                asset: None,
+                account: None,
+                auth: None,
+            },
+        )
+        .unwrap();
+        let rendered = format!("{ini}\n{regions}\n{robust}");
+        let allowed = [home, public, private, robust_public, robust_private];
+        assert!(
+            crate::ports::ports_outside(&rendered, &allowed).is_empty(),
+            "{rendered}"
+        );
+        let hardcoded = format!("{rendered}\nhttp_listener_port = 9000\n");
+        assert_eq!(
+            crate::ports::ports_outside(&hardcoded, &allowed),
+            vec![9000]
+        );
     }
 
     #[test]

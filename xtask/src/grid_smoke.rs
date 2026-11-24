@@ -134,7 +134,11 @@ fn run_linux() -> Result<String, String> {
             "a live harness is already running; stop it before the persistent grid check".into(),
         );
     }
-    let directory = crate::live::live_root().join("persistent-grid-check");
+    let directory = if crate::ports::isolated() {
+        crate::ports::run_root().join("persistent-grid-check")
+    } else {
+        crate::live::live_root().join("persistent-grid-check")
+    };
     fs::create_dir_all(&directory).map_err(|_| "could not create persistent grid check logs")?;
     let mut observed = None;
     let outcome = (|| {
@@ -166,12 +170,16 @@ fn run_linux() -> Result<String, String> {
             return Err("the printed password file is outside the live harness directory".into());
         }
         let password = read_text(&secret, 1024)?;
+        let region_log = secret
+            .parent()
+            .unwrap_or(secret.as_path())
+            .join("home/region.log");
         let mut harness = crate::live::harness(
             &report.login_uri,
             &report.private_uri,
             password.trim(),
             "",
-            &crate::live::live_root().join("grid/home/region.log"),
+            &region_log,
         )?;
         harness.require_logout_reply = true;
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -223,9 +231,29 @@ fn run_linux() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
+fn leftover_grid_state() -> Option<PathBuf> {
+    let legacy = crate::live::live_root().join("grid-state");
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    let runs = crate::live::live_root().join("runs");
+    let entries = fs::read_dir(&runs).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().join("grid-state");
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn verify_stopped(observed: Option<&(Report, Vec<u64>)>) -> Result<(), String> {
-    if crate::live::live_root().join("grid-state").exists() {
-        return Err("live down left grid process state behind".into());
+    if let Some(path) = leftover_grid_state() {
+        return Err(format!(
+            "live down left grid process state behind ({})",
+            path.display()
+        ));
     }
     if let Some((report, identities)) = observed {
         for (pid, start) in report.pids.iter().zip(identities) {

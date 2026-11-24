@@ -61,14 +61,17 @@
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Ferroan changes: bounded local login admission, concurrent root circuits, gzip limits,
 // a single CreateAgent budget under Robust's 30 s connector timeout, and an
-// empty JSON 403 for a refused control-plane POST. At pin 1d7abb8337,
+// empty JSON 403 for a refused control-plane POST. The release DELETE is
+// AgentHandlers.DoAgentDelete when the action is "release", pin c401bceecd.
+// At pin 1d7abb8337,
 // Scene.CheckLandPositionAccess admits a god or an estate manager before the
 // root-agent count. Those extra roots share region.root-bypass.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The simulation service calls made by C# Robust during a local grid login.
-//! Later transfer operations (PUT/DELETE) are deliberately not implemented here.
+//! The source hop's release DELETE is implemented. Other PUT and DELETE agent
+//! calls stay unimplemented.
 
 use std::{
     collections::HashMap,
@@ -98,7 +101,7 @@ use ferroan_client::{CapsRegistry, CircuitExpect};
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use uuid::Uuid;
 
 const MAX_BODY: usize = 1024 * 1024;
@@ -149,6 +152,8 @@ pub struct SimulationState {
     bypass_limit: usize,
     staff: StaffGate,
     meters: Arc<RegionMeters>,
+    /// Far-hop release waits, keyed by agent. Shared by every clone.
+    releases: Arc<Mutex<HashMap<Uuid, ReleaseSlot>>>,
 }
 
 struct ActiveSession {
@@ -156,6 +161,10 @@ struct ActiveSession {
     generation: Uuid,
     /// Set when this circuit's root arrival is accepted, before the root reports.
     root: bool,
+    /// A hop demoted this root. The caps seed and the circuit stay.
+    child: bool,
+    /// Set when a far hop closes the agent here. Logout must not tell the grid.
+    departed: Arc<AtomicBool>,
     cancel: Option<oneshot::Sender<()>>,
     /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
     /// completes it after logout notification.
@@ -223,14 +232,40 @@ impl AcceptedAgent {
             && session.generation == self._lease.generation
         {
             session.root = true;
+            session.child = false;
             publish_agents(&sessions, &self._lease.meters);
         }
     }
+
+    /// The grid logout runs only while this generation is still the root.
+    /// A demoted child and a far-hop close both leave the presence where it is.
+    pub fn still_root(&self) -> bool {
+        if self._lease.departed.load(Ordering::Acquire) {
+            return false;
+        }
+        self._lease
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&self._lease.agent_id)
+            .is_some_and(|session| session.generation == self._lease.generation && session.root)
+    }
+}
+
+/// One far hop waiting for the destination's release DELETE.
+struct ReleaseSlot {
+    notify: Arc<Notify>,
+    arrived: bool,
 }
 
 fn publish_agents(sessions: &HashMap<Uuid, ActiveSession>, meters: &RegionMeters) {
     let roots = sessions.values().filter(|session| session.root).count() as u64;
-    meters.set_agents(roots, 0, sessions.len() as u64);
+    let children = sessions.values().filter(|session| session.child).count() as u64;
+    meters.set_agents(roots, children, sessions.len() as u64);
+}
+
+fn occupying(sessions: &HashMap<Uuid, ActiveSession>) -> usize {
+    sessions.values().filter(|session| !session.child).count()
 }
 
 struct SessionLease {
@@ -243,6 +278,7 @@ struct SessionLease {
     caps: CapsRegistry,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     meters: Arc<RegionMeters>,
+    departed: Arc<AtomicBool>,
 }
 
 impl Drop for SessionLease {
@@ -296,6 +332,7 @@ impl SimulationState {
             bypass_limit: ROOT_BYPASS_LIMIT,
             staff: StaffGate::from_config(config),
             meters,
+            releases: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -346,11 +383,12 @@ impl SimulationState {
         agent: Uuid,
         level: Option<i32>,
     ) -> Option<&'static str> {
-        if sessions.contains_key(&agent) || sessions.len() < self.root_limit {
+        let occupying = occupying(sessions);
+        if sessions.contains_key(&agent) || occupying < self.root_limit {
             return None;
         }
         if self.staff.bypasses(agent, level) {
-            let extra = sessions.len() - self.root_limit;
+            let extra = occupying - self.root_limit;
             if extra < self.bypass_limit {
                 return None;
             }
@@ -367,7 +405,7 @@ impl SimulationState {
             ROOT_AGENTS,
             Kind::Hard,
             self.root_limit as u64,
-            sessions.len().saturating_add(1) as u64,
+            occupying.saturating_add(1) as u64,
             "/agent",
         );
         Some("The region is full")
@@ -429,6 +467,7 @@ impl SimulationState {
         let last_name = fields.last_name.clone();
         let agent_id = fields.agent_id;
         let generation = Uuid::new_v4();
+        let departed = Arc::new(AtomicBool::new(false));
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
         sessions.insert(
@@ -437,6 +476,8 @@ impl SimulationState {
                 session_id: fields.session_id,
                 generation,
                 root: false,
+                child: false,
+                departed: Arc::clone(&departed),
                 cancel: Some(cancel),
                 logout_done: Some(logout_wait),
             },
@@ -450,6 +491,7 @@ impl SimulationState {
             caps: self.caps.clone(),
             lifecycle: self.lifecycle.clone(),
             meters: self.meters.clone(),
+            departed,
         };
         let accepted = AcceptedAgent {
             logout_done: Some(logout_done),
@@ -501,6 +543,119 @@ impl SimulationState {
         }
         session.logout_done.take()
     }
+
+    /// The root becomes a child before `UpdateAgent`. Caps and the circuit stay.
+    pub fn demote_child(&self, agent: Uuid) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(session) = sessions.get_mut(&agent) else {
+            return;
+        };
+        if session.departed.load(Ordering::Acquire) {
+            return;
+        }
+        session.root = false;
+        session.child = true;
+        publish_agents(&sessions, &self.meters);
+    }
+
+    /// `UpdateAgent` failed. The provisional child flag goes back to root.
+    pub fn restore_root(&self, agent: Uuid) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(session) = sessions.get_mut(&agent) else {
+            return;
+        };
+        if session.departed.load(Ordering::Acquire) {
+            return;
+        }
+        session.child = false;
+        session.root = true;
+        publish_agents(&sessions, &self.meters);
+    }
+
+    /// Arm the release wait before `UpdateAgent`, so a callback during that
+    /// call is not missed. A hop that is inside view does not arm one.
+    pub fn arm_release(&self, agent: Uuid) {
+        let mut slots = self
+            .releases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        slots.insert(
+            agent,
+            ReleaseSlot {
+                notify: Arc::new(Notify::new()),
+                arrived: false,
+            },
+        );
+    }
+
+    pub fn disarm_release(&self, agent: Uuid) {
+        self.releases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent);
+    }
+
+    /// The destination DELETE. A call before the wait is armed is ignored.
+    pub fn note_release(&self, agent: Uuid) {
+        let mut slots = self
+            .releases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(slot) = slots.get_mut(&agent) else {
+            return;
+        };
+        slot.arrived = true;
+        slot.notify.notify_one();
+    }
+
+    /// Wait until the destination releases this agent, or for `budget`.
+    pub async fn wait_release_for(&self, agent: Uuid, budget: Duration) {
+        let notify = {
+            let mut slots = self
+                .releases
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(slot) = slots.get(&agent) else {
+                return;
+            };
+            if slot.arrived {
+                slots.remove(&agent);
+                return;
+            }
+            Arc::clone(&slot.notify)
+        };
+        let _ = tokio::time::timeout(budget, notify.notified()).await;
+        self.releases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent);
+    }
+
+    /// Fifteen seconds, the same bound as the source region's release wait.
+    pub async fn wait_release(&self, agent: Uuid) {
+        self.wait_release_for(agent, Duration::from_secs(15)).await;
+    }
+
+    /// Local close after a far hop. Caps go. The grid presence stays put.
+    pub fn close_departed(&self, agent: Uuid) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(session) = sessions.get(&agent) else {
+            return;
+        };
+        session.departed.store(true, Ordering::Release);
+        self.caps.clear_agent(agent);
+        sessions.remove(&agent);
+        publish_agents(&sessions, &self.meters);
+    }
 }
 
 async fn handle(
@@ -515,6 +670,21 @@ async fn handle(
         return bare(StatusCode::NOT_FOUND);
     };
     let region = path.get(2).and_then(|s| Uuid::parse_str(s).ok());
+    if method == "DELETE" && path.get(3).copied() == Some("release") {
+        if region == Some(state.region_id) {
+            state.note_release(agent);
+        }
+        tracing::debug!("source hop: release");
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain"),
+                (header::CONNECTION, "close"),
+            ],
+            format!("OpenSim agent {agent}"),
+        )
+            .into_response();
+    }
     if method != "POST" && method != "QUERYACCESS" {
         return bare(StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -1540,6 +1710,102 @@ mod tests {
         assert!(state.accept(synthetic_agent()).is_err());
         assert!(state.sessions.lock().unwrap().is_empty());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_demoted_root_keeps_caps_and_frees_a_root_slot() {
+        let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps.clone(),
+            sender,
+        );
+        state.root_limit = 1;
+        state.accept(synthetic_agent()).unwrap();
+        let agent = receiver.recv().await.unwrap();
+        agent.mark_root();
+        let path = format!("/CAPS/{}0000/", synthetic_agent().caps_path);
+        assert!(
+            caps.enqueue_for(agent.expect.agent_id, ferroan_llsd::Llsd::new_map())
+                .is_ok()
+        );
+        state.demote_child(agent.expect.agent_id);
+        let lines = state.meters().diag_lines();
+        assert!(lines.contains("root_agents: 0\n"));
+        assert!(lines.contains("child_agents: 1\n"));
+        assert!(lines.contains("circuits: 1\n"));
+        assert!(
+            caps.enqueue_for(agent.expect.agent_id, ferroan_llsd::Llsd::new_map())
+                .is_ok()
+        );
+        assert!(!agent.still_root());
+        let mut extra = synthetic_agent();
+        extra.agent_id = Uuid::from_u128(6);
+        extra.session_id = Uuid::from_u128(7);
+        extra.circuit_code = 43;
+        extra.caps_path = Uuid::from_u128(8).to_string();
+        state.accept(extra).unwrap();
+        state.restore_root(agent.expect.agent_id);
+        assert!(agent.still_root());
+        assert!(state.meters().diag_lines().contains("root_agents: 1\n"));
+        state.demote_child(agent.expect.agent_id);
+        state.close_departed(agent.expect.agent_id);
+        assert!(
+            caps.enqueue_for(synthetic_agent().agent_id, ferroan_llsd::Llsd::new_map())
+                .is_err()
+        );
+        assert!(!agent.still_root());
+        assert!(state.meters().diag_lines().contains("child_agents: 0\n"));
+        drop(agent);
+        assert!(caps.register(&path).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_release_delete_wakes_the_wait_and_a_miss_is_bounded() {
+        let region = Uuid::from_u128(5);
+        let agent = Uuid::from_u128(1);
+        let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let started = std::time::Instant::now();
+        state
+            .wait_release_for(agent, Duration::from_millis(30))
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        state.arm_release(agent);
+        let waiting = state.clone();
+        let parked = tokio::spawn(async move {
+            waiting.wait_release(agent).await;
+        });
+        let app = state.clone().router();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http = format!("http://{}", listener.local_addr().unwrap());
+        let serving = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let response = client
+            .delete(format!("{http}/agent/{agent}/{region}/release/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert_eq!(body, format!("OpenSim agent {agent}"));
+        tokio::time::timeout(Duration::from_secs(2), parked)
+            .await
+            .unwrap()
+            .unwrap();
+        serving.abort();
     }
 
     #[tokio::test]

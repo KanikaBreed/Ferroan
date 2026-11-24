@@ -49,7 +49,7 @@
 //
 // Ported to Rust for Ferroan from SQLiteSimulationData, SceneObjectGroup,
 // SceneObjectPart and PrimitiveBaseShape at
-// OpenSim-NGC/OpenSim-Tranquillity `develop` @ 1052cbae82ae7dc3b8abfcffe33e316498eeaad9.
+// OpenSim-Tranquillity `dev-build` @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -67,13 +67,14 @@
 //! whose squared length is at most `1e-6` loads as identity; any longer one is
 //! scaled to length 1.
 //!
-//! Texture entries and extra params stay the stored bytes. Media, the materials
-//! override, dynattrs, keyframe motion, vehicle, inertia, animations and
-//! linkset data stay the stored text or bytes. Touch, money and
+//! Texture entries and extra params stay the stored bytes. Dynattrs, keyframe
+//! motion, vehicle, inertia, animations, linkset data, media and the materials
+//! override are parsed beside those stored cells. Touch, money and
 //! allow-inventory-drop are cleared from the stored flags. A non-zero
 //! volume-detect cell sets bit `0x4000`, which viewers read as volume detect.
 //! A null media URL loads as an empty string. A stored pseudo-CRC of 0 is
-//! absent: the part's clock value is not kept. Q65 sends the CRC.
+//! absent: the part's clock value is not kept. An animation sequence number is
+//! a clock and is absent too. Q65 sends both.
 
 use std::collections::{HashMap, HashSet};
 
@@ -84,6 +85,11 @@ use sqlx::sqlite::SqliteRow;
 use uuid::Uuid;
 
 use crate::error::ObjectError;
+use crate::payloads::{
+    DynAttrs, KeyframeMotion, LinksetData, ObjectAnimation, PhysicsInertia, Vehicle,
+    parse_animations, parse_dyn_attrs, parse_inertia, parse_keyframe, parse_linkset,
+    parse_materials, parse_media, parse_vehicle,
+};
 
 /// Prim count a region load admits. Scene startup has no such cap (D42).
 pub const MAX_REGION_OBJECTS: u64 = 100_000;
@@ -180,6 +186,12 @@ pub struct ObjectPart {
     pub pseudo_crc: Option<i32>,
     pub shape: ObjectShape,
     pub raw: ObjectRaw,
+    pub dyn_attrs: Option<DynAttrs>,
+    pub keyframe: Option<KeyframeMotion>,
+    pub vehicle: Option<Vehicle>,
+    pub phys_inertia: Option<PhysicsInertia>,
+    pub animations: Option<Vec<ObjectAnimation>>,
+    pub linkset: Option<LinksetData>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,6 +221,8 @@ pub struct ObjectShape {
     pub last_attach_point: u8,
     pub texture: Vec<u8>,
     pub extra_params: Vec<u8>,
+    pub media_entries: Option<Vec<crate::payloads::MediaFace>>,
+    pub materials: Option<crate::payloads::RenderMaterials>,
 }
 
 /// Stored text and bytes. They are not parsed here.
@@ -466,7 +480,7 @@ fn optional_i32(row: &SqliteRow, name: &str) -> Option<i32> {
 fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<ObjectPart, ()> {
     let uuid = required_uuid(row, "UUID")?;
     let shape_row = shapes.get(&uuid.as_hyphenated().to_string()).copied();
-    let (shape, media, mat_ovrd) = match shape_row {
+    let (mut shape, media, mat_ovrd) = match shape_row {
         Some(shape) => {
             let built = build_shape(shape)?;
             let media = optional_text(shape, "Media");
@@ -474,6 +488,44 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
             (built, media, mat_ovrd)
         }
         None => (default_box(), None, None),
+    };
+    shape.media_entries = match &media {
+        Some(text) => parse_media(text),
+        None => None,
+    };
+    shape.materials = match &mat_ovrd {
+        Some(bytes) => parse_materials(bytes),
+        None => None,
+    };
+    let dyn_text = optional_text(row, "DynAttrs");
+    let dyn_attrs = match &dyn_text {
+        Some(text) => Some(parse_dyn_attrs(text)?),
+        None => None,
+    };
+    let keyframe_motion = optional_blob(row, "KeyframeMotion")?;
+    let keyframe = match &keyframe_motion {
+        Some(data) if !data.is_empty() => parse_keyframe(data),
+        _ => None,
+    };
+    let vehicle_text = optional_text(row, "Vehicle");
+    let vehicle = match &vehicle_text {
+        Some(text) if !text.is_empty() => parse_vehicle(text)?,
+        _ => None,
+    };
+    let inertia_text = optional_text(row, "PhysInertia");
+    let phys_inertia = match &inertia_text {
+        Some(text) if !text.is_empty() => parse_inertia(text)?,
+        _ => None,
+    };
+    let sopanims = optional_blob(row, "sopanims")?;
+    let animations = match &sopanims {
+        Some(data) if !data.is_empty() => parse_animations(data),
+        _ => None,
+    };
+    let linkset_text = optional_text(row, "linksetdata");
+    let linkset = match &linkset_text {
+        Some(text) => parse_linkset(text),
+        None => None,
     };
     let sound = required_uuid(row, "LoopedSound")?;
     let explicit_sit = optional_i32(row, "SitTargetActive");
@@ -590,13 +642,19 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         raw: ObjectRaw {
             media,
             mat_ovrd,
-            dyn_attrs: optional_text(row, "DynAttrs"),
-            keyframe_motion: optional_blob(row, "KeyframeMotion")?,
-            vehicle: optional_text(row, "Vehicle"),
-            phys_inertia: optional_text(row, "PhysInertia"),
-            sopanims: optional_blob(row, "sopanims")?,
-            linkset_data: optional_text(row, "linksetdata"),
+            dyn_attrs: dyn_text,
+            keyframe_motion,
+            vehicle: vehicle_text,
+            phys_inertia: inertia_text,
+            sopanims,
+            linkset_data: linkset_text,
         },
+        dyn_attrs,
+        keyframe,
+        vehicle,
+        phys_inertia,
+        animations,
+        linkset,
     })
 }
 
@@ -627,6 +685,8 @@ fn build_shape(row: &SqliteRow) -> Result<ObjectShape, ()> {
         last_attach_point: required_u8(row, "LastAttachPoint")?,
         texture: required_blob(row, "Texture")?,
         extra_params: required_blob(row, "ExtraParams")?,
+        media_entries: None,
+        materials: None,
     })
 }
 
@@ -657,6 +717,8 @@ fn default_box() -> ObjectShape {
         last_attach_point: 0,
         texture: DEFAULT_BOX_TEXTURE.to_vec(),
         extra_params: vec![0],
+        media_entries: None,
+        materials: None,
     }
 }
 
@@ -986,6 +1048,555 @@ mod tests {
         assert_eq!(got, Uuid::parse_str(text).unwrap(), "{path}");
     }
 
+    fn expect_f32(path: &str, got: f32, value: &Value) {
+        let parsed = value.as_f64().unwrap_or_else(|| panic!("{path}")) as f32;
+        assert_eq!(
+            parsed.to_bits(),
+            got.to_bits(),
+            "{path} dump {value} load {got}"
+        );
+    }
+
+    fn expect_i32(path: &str, got: i32, value: &Value) {
+        assert_eq!(i64::from(got), json_i64(value, path), "{path}");
+    }
+
+    fn expect_bool(path: &str, got: bool, value: &Value) {
+        assert_eq!(
+            got,
+            value.as_bool().unwrap_or_else(|| panic!("{path}")),
+            "{path}"
+        );
+    }
+
+    fn expect_opt_f32(path: &str, got: Option<f32>, value: &Value) {
+        match got {
+            None => assert!(value.is_null(), "{path}"),
+            Some(number) => expect_f32(path, number, value),
+        }
+    }
+
+    fn expect_opt_f32s(path: &str, got: Option<&[f32]>, value: &Value) {
+        match got {
+            None => assert!(value.is_null(), "{path}"),
+            Some(items) => expect_f32s(path, items, value),
+        }
+    }
+
+    fn llsd_value(value: &ferroan_llsd::Llsd) -> Value {
+        use ferroan_llsd::Llsd;
+        match value {
+            Llsd::Undef => Value::Null,
+            Llsd::Boolean(flag) => Value::Bool(*flag),
+            Llsd::Integer(number) => Value::from(*number),
+            Llsd::Real(number) => serde_json::Number::from_f64(*number)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            Llsd::String(text) | Llsd::Uri(text) => Value::String(text.clone()),
+            Llsd::Uuid(id) => Value::String(id.to_string()),
+            Llsd::Date(_) | Llsd::Binary(_) => Value::String(value.to_osd_string()),
+            Llsd::Array(items) => Value::Array(items.iter().map(llsd_value).collect()),
+            Llsd::Map(map) => {
+                let mut obj = Map::new();
+                for (key, child) in map {
+                    obj.insert(key.clone(), llsd_value(child));
+                }
+                Value::Object(obj)
+            }
+        }
+    }
+
+    fn expect_dyn_attrs(got: &Option<DynAttrs>, value: &Value) {
+        match got {
+            None => assert!(value.is_null(), "dyn_attrs"),
+            Some(attrs) => assert_eq!(
+                value,
+                &llsd_value(&ferroan_llsd::Llsd::Map(attrs.namespaces.clone())),
+                "dyn_attrs"
+            ),
+        }
+    }
+
+    fn expect_frame(path: &str, frame: &crate::payloads::Keyframe, value: &Value) {
+        let mut obj = value.as_object().unwrap().clone();
+        expect_opt_f32s(
+            &format!("{path}.position"),
+            frame.position.as_ref().map(|item| item.as_slice()),
+            &take(&mut obj, "position"),
+        );
+        expect_opt_f32s(
+            &format!("{path}.rotation"),
+            frame.rotation.as_ref().map(|item| item.as_slice()),
+            &take(&mut obj, "rotation"),
+        );
+        expect_f32s(
+            &format!("{path}.start_rotation"),
+            &frame.start_rotation,
+            &take(&mut obj, "start_rotation"),
+        );
+        expect_i32(
+            &format!("{path}.time_ms"),
+            frame.time_ms,
+            &take(&mut obj, "time_ms"),
+        );
+        expect_i32(
+            &format!("{path}.time_total"),
+            frame.time_total,
+            &take(&mut obj, "time_total"),
+        );
+        expect_f32s(
+            &format!("{path}.angular_velocity"),
+            &frame.angular_velocity,
+            &take(&mut obj, "angular_velocity"),
+        );
+        expect_f32s(
+            &format!("{path}.start_position"),
+            &frame.start_position,
+            &take(&mut obj, "start_position"),
+        );
+        assert!(
+            obj.is_empty(),
+            "{path} uncompared {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_frames(path: &str, frames: &[crate::payloads::Keyframe], value: &Value) {
+        let items = value.as_array().unwrap_or_else(|| panic!("{path}"));
+        assert_eq!(items.len(), frames.len(), "{path}");
+        for (index, (frame, item)) in frames.iter().zip(items).enumerate() {
+            expect_frame(&format!("{path}[{index}]"), frame, item);
+        }
+    }
+
+    fn expect_keyframe(got: &Option<KeyframeMotion>, value: &Value) {
+        let Some(motion) = got else {
+            assert!(value.is_null(), "keyframe");
+            return;
+        };
+        let mut obj = value.as_object().unwrap().clone();
+        expect_f32s(
+            "serialized_position",
+            &motion.serialized_position,
+            &take(&mut obj, "serialized_position"),
+        );
+        expect_f32s(
+            "base_position",
+            &motion.base_position,
+            &take(&mut obj, "base_position"),
+        );
+        expect_f32s(
+            "base_rotation",
+            &motion.base_rotation,
+            &take(&mut obj, "base_rotation"),
+        );
+        expect_frame(
+            "current_frame",
+            &motion.current_frame,
+            &take(&mut obj, "current_frame"),
+        );
+        expect_frames("frames", &motion.frames, &take(&mut obj, "frames"));
+        match &motion.keyframes {
+            None => assert!(take(&mut obj, "keyframes").is_null(), "keyframes"),
+            Some(frames) => expect_frames("keyframes", frames, &take(&mut obj, "keyframes")),
+        }
+        expect_i32("mode", motion.mode, &take(&mut obj, "mode"));
+        expect_i32("data", motion.data, &take(&mut obj, "data"));
+        expect_bool("running", motion.running, &take(&mut obj, "running"));
+        expect_i32(
+            "iterations",
+            motion.iterations,
+            &take(&mut obj, "iterations"),
+        );
+        expect_i32(
+            "skip_loops",
+            motion.skip_loops,
+            &take(&mut obj, "skip_loops"),
+        );
+        assert!(
+            obj.is_empty(),
+            "keyframe uncompared {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_vehicle(got: &Option<Vehicle>, value: &Value) {
+        let Some(vehicle) = got else {
+            assert!(value.is_null(), "vehicle");
+            return;
+        };
+        let mut obj = value.as_object().unwrap().clone();
+        expect_i32("type", vehicle.kind, &take(&mut obj, "type"));
+        expect_i32("flags", vehicle.flags, &take(&mut obj, "flags"));
+        expect_f32s(
+            "linear_motor_direction",
+            &vehicle.linear_motor_direction,
+            &take(&mut obj, "linear_motor_direction"),
+        );
+        expect_f32s(
+            "linear_friction_timescale",
+            &vehicle.linear_friction_timescale,
+            &take(&mut obj, "linear_friction_timescale"),
+        );
+        expect_f32(
+            "linear_motor_decay_timescale",
+            vehicle.linear_motor_decay_timescale,
+            &take(&mut obj, "linear_motor_decay_timescale"),
+        );
+        expect_f32(
+            "linear_motor_timescale",
+            vehicle.linear_motor_timescale,
+            &take(&mut obj, "linear_motor_timescale"),
+        );
+        expect_f32s(
+            "linear_motor_offset",
+            &vehicle.linear_motor_offset,
+            &take(&mut obj, "linear_motor_offset"),
+        );
+        expect_f32s(
+            "angular_motor_direction",
+            &vehicle.angular_motor_direction,
+            &take(&mut obj, "angular_motor_direction"),
+        );
+        expect_f32(
+            "angular_motor_timescale",
+            vehicle.angular_motor_timescale,
+            &take(&mut obj, "angular_motor_timescale"),
+        );
+        expect_f32(
+            "angular_motor_decay_timescale",
+            vehicle.angular_motor_decay_timescale,
+            &take(&mut obj, "angular_motor_decay_timescale"),
+        );
+        expect_f32s(
+            "angular_friction_timescale",
+            &vehicle.angular_friction_timescale,
+            &take(&mut obj, "angular_friction_timescale"),
+        );
+        for (got, key) in [
+            (
+                vehicle.angular_deflection_efficiency,
+                "angular_deflection_efficiency",
+            ),
+            (
+                vehicle.angular_deflection_timescale,
+                "angular_deflection_timescale",
+            ),
+            (
+                vehicle.linear_deflection_efficiency,
+                "linear_deflection_efficiency",
+            ),
+            (
+                vehicle.linear_deflection_timescale,
+                "linear_deflection_timescale",
+            ),
+            (vehicle.banking_efficiency, "banking_efficiency"),
+            (vehicle.banking_mix, "banking_mix"),
+            (vehicle.banking_timescale, "banking_timescale"),
+            (vehicle.hover_height, "hover_height"),
+            (vehicle.hover_efficiency, "hover_efficiency"),
+            (vehicle.hover_timescale, "hover_timescale"),
+            (vehicle.buoyancy, "buoyancy"),
+            (
+                vehicle.vertical_attraction_efficiency,
+                "vertical_attraction_efficiency",
+            ),
+            (
+                vehicle.vertical_attraction_timescale,
+                "vertical_attraction_timescale",
+            ),
+            (vehicle.mouselook_azimuth, "mouselook_azimuth"),
+            (vehicle.mouselook_altitude, "mouselook_altitude"),
+            (vehicle.banking_azimuth, "banking_azimuth"),
+            (vehicle.disable_motors_above, "disable_motors_above"),
+            (vehicle.disable_motors_after, "disable_motors_after"),
+            (
+                vehicle.inverted_banking_modifier,
+                "inverted_banking_modifier",
+            ),
+        ] {
+            expect_f32(key, got, &take(&mut obj, key));
+        }
+        expect_f32s(
+            "reference_frame",
+            &vehicle.reference_frame,
+            &take(&mut obj, "reference_frame"),
+        );
+        for (got, key) in [
+            (
+                vehicle.linear_motor_timescale_axes,
+                "linear_motor_timescale_axes",
+            ),
+            (
+                vehicle.linear_motor_decay_timescale_axes,
+                "linear_motor_decay_timescale_axes",
+            ),
+            (
+                vehicle.angular_motor_timescale_axes,
+                "angular_motor_timescale_axes",
+            ),
+            (
+                vehicle.angular_motor_decay_timescale_axes,
+                "angular_motor_decay_timescale_axes",
+            ),
+            (vehicle.linear_wind_efficiency, "linear_wind_efficiency"),
+            (vehicle.angular_wind_efficiency, "angular_wind_efficiency"),
+            (
+                vehicle.linear_motor_run_direction,
+                "linear_motor_run_direction",
+            ),
+            (vehicle.linear_motor_run_target, "linear_motor_run_target"),
+            (
+                vehicle.angular_motor_run_direction,
+                "angular_motor_run_direction",
+            ),
+            (vehicle.angular_motor_run_target, "angular_motor_run_target"),
+        ] {
+            expect_opt_f32s(
+                key,
+                got.as_ref().map(|item| item.as_slice()),
+                &take(&mut obj, key),
+            );
+        }
+        expect_opt_f32(
+            "linear_motor_run_age",
+            vehicle.linear_motor_run_age,
+            &take(&mut obj, "linear_motor_run_age"),
+        );
+        expect_opt_f32(
+            "angular_motor_run_age",
+            vehicle.angular_motor_run_age,
+            &take(&mut obj, "angular_motor_run_age"),
+        );
+        assert!(
+            obj.is_empty(),
+            "vehicle uncompared {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_inertia(got: &Option<PhysicsInertia>, value: &Value) {
+        let Some(inertia) = got else {
+            assert!(value.is_null(), "phys_inertia");
+            return;
+        };
+        let mut obj = value.as_object().unwrap().clone();
+        expect_f32("mass", inertia.mass, &take(&mut obj, "mass"));
+        expect_f32s("center", &inertia.center, &take(&mut obj, "center"));
+        expect_f32s("inertia", &inertia.inertia, &take(&mut obj, "inertia"));
+        expect_f32s("rotation", &inertia.rotation, &take(&mut obj, "rotation"));
+        assert!(
+            obj.is_empty(),
+            "phys_inertia uncompared {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_animations(got: &Option<Vec<ObjectAnimation>>, value: &Value) {
+        let Some(list) = got else {
+            assert!(value.is_null(), "animations");
+            return;
+        };
+        let items = value.as_array().unwrap_or_else(|| panic!("animations"));
+        assert_eq!(items.len(), list.len(), "animations");
+        for (index, (animation, item)) in list.iter().zip(items).enumerate() {
+            let mut obj = item.as_object().unwrap().clone();
+            expect_uuid(
+                &format!("animations[{index}].id"),
+                animation.id,
+                &take(&mut obj, "id"),
+            );
+            assert_eq!(
+                obj.remove("name")
+                    .and_then(|name| name.as_str().map(str::to_owned)),
+                Some(animation.name.clone()),
+                "animations[{index}].name"
+            );
+            assert!(obj.is_empty(), "animations[{index}] {obj:?}");
+        }
+    }
+
+    fn expect_linkset(got: &Option<LinksetData>, value: &Value) {
+        let Some(linkset) = got else {
+            assert!(value.is_null(), "linkset");
+            return;
+        };
+        let mut obj = value.as_object().unwrap().clone();
+        match &linkset.entries {
+            None => assert!(take(&mut obj, "entries").is_null(), "entries"),
+            Some(entries) => {
+                let items = take(&mut obj, "entries");
+                let items = items.as_array().unwrap_or_else(|| panic!("entries"));
+                assert_eq!(items.len(), entries.len(), "entries");
+                for (index, (entry, item)) in entries.iter().zip(items).enumerate() {
+                    let mut row = item.as_object().unwrap().clone();
+                    assert_eq!(
+                        row.remove("key")
+                            .and_then(|key| key.as_str().map(str::to_owned)),
+                        Some(entry.key.clone()),
+                        "entries[{index}].key"
+                    );
+                    expect_opt_text(
+                        &format!("entries[{index}].value"),
+                        &entry.value,
+                        &take(&mut row, "value"),
+                    );
+                    expect_opt_text(
+                        &format!("entries[{index}].password"),
+                        &entry.password,
+                        &take(&mut row, "password"),
+                    );
+                    assert!(row.is_empty(), "entries[{index}] {row:?}");
+                }
+            }
+        }
+        expect_i32(
+            "bytes_used",
+            linkset.bytes_used,
+            &take(&mut obj, "bytes_used"),
+        );
+        expect_i32(
+            "bytes_free",
+            linkset.bytes_free,
+            &take(&mut obj, "bytes_free"),
+        );
+        assert!(
+            obj.is_empty(),
+            "linkset uncompared {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn expect_media(got: &Option<Vec<crate::payloads::MediaFace>>, value: &Value) {
+        let Some(faces) = got else {
+            assert!(value.is_null(), "media_entries");
+            return;
+        };
+        let items = value.as_array().unwrap_or_else(|| panic!("media_entries"));
+        assert_eq!(items.len(), faces.len(), "media_entries");
+        for (index, (face, item)) in faces.iter().zip(items).enumerate() {
+            let mut obj = item.as_object().unwrap().clone();
+            let path = format!("media[{index}]");
+            expect_bool(
+                &format!("{path}.alt_image_enable"),
+                face.alt_image_enable,
+                &take(&mut obj, "alt_image_enable"),
+            );
+            expect_bool(
+                &format!("{path}.auto_loop"),
+                face.auto_loop,
+                &take(&mut obj, "auto_loop"),
+            );
+            expect_bool(
+                &format!("{path}.auto_play"),
+                face.auto_play,
+                &take(&mut obj, "auto_play"),
+            );
+            expect_bool(
+                &format!("{path}.auto_scale"),
+                face.auto_scale,
+                &take(&mut obj, "auto_scale"),
+            );
+            expect_bool(
+                &format!("{path}.auto_zoom"),
+                face.auto_zoom,
+                &take(&mut obj, "auto_zoom"),
+            );
+            expect_i32(
+                &format!("{path}.controls"),
+                face.controls,
+                &take(&mut obj, "controls"),
+            );
+            expect_opt_text(
+                &format!("{path}.current_url"),
+                &face.current_url,
+                &take(&mut obj, "current_url"),
+            );
+            expect_bool(
+                &format!("{path}.first_click_interact"),
+                face.first_click_interact,
+                &take(&mut obj, "first_click_interact"),
+            );
+            expect_i32(
+                &format!("{path}.height_pixels"),
+                face.height_pixels,
+                &take(&mut obj, "height_pixels"),
+            );
+            expect_opt_text(
+                &format!("{path}.home_url"),
+                &face.home_url,
+                &take(&mut obj, "home_url"),
+            );
+            expect_i32(
+                &format!("{path}.perms_control"),
+                face.perms_control,
+                &take(&mut obj, "perms_control"),
+            );
+            expect_i32(
+                &format!("{path}.perms_interact"),
+                face.perms_interact,
+                &take(&mut obj, "perms_interact"),
+            );
+            match &face.whitelist {
+                None => assert!(take(&mut obj, "whitelist").is_null(), "{path}.whitelist"),
+                Some(list) => {
+                    let dumped = take(&mut obj, "whitelist");
+                    let dumped = dumped.as_array().unwrap();
+                    let texts: Vec<&str> =
+                        dumped.iter().map(|item| item.as_str().unwrap()).collect();
+                    assert_eq!(
+                        texts,
+                        list.iter().map(String::as_str).collect::<Vec<_>>(),
+                        "{path}.whitelist"
+                    );
+                }
+            }
+            expect_bool(
+                &format!("{path}.whitelist_enable"),
+                face.whitelist_enable,
+                &take(&mut obj, "whitelist_enable"),
+            );
+            expect_i32(
+                &format!("{path}.width_pixels"),
+                face.width_pixels,
+                &take(&mut obj, "width_pixels"),
+            );
+            assert!(obj.is_empty(), "{path} {obj:?}");
+        }
+    }
+
+    fn expect_materials(got: &Option<crate::payloads::RenderMaterials>, value: &Value) {
+        let Some(materials) = got else {
+            assert!(value.is_null(), "materials");
+            return;
+        };
+        let mut obj = value.as_object().unwrap().clone();
+        match &materials.overrides {
+            None => assert!(take(&mut obj, "overrides").is_null(), "overrides"),
+            Some(overrides) => {
+                let items = take(&mut obj, "overrides");
+                let items = items.as_array().unwrap();
+                assert_eq!(items.len(), overrides.len(), "overrides");
+                for (index, (entry, item)) in overrides.iter().zip(items).enumerate() {
+                    let mut row = item.as_object().unwrap().clone();
+                    expect_i32(
+                        &format!("materials[{index}].te_index"),
+                        i32::from(entry.te_index),
+                        &take(&mut row, "te_index"),
+                    );
+                    assert_eq!(
+                        row.remove("data")
+                            .and_then(|data| data.as_str().map(str::to_owned)),
+                        Some(entry.data.clone()),
+                        "materials[{index}].data"
+                    );
+                    assert!(row.is_empty(), "materials[{index}] {row:?}");
+                }
+            }
+        }
+        assert!(obj.is_empty(), "materials {obj:?}");
+    }
+
     fn expect_part(part: &ObjectPart, value: &Value) {
         let mut obj = value.as_object().unwrap().clone();
         let label = take(&mut obj, "name").as_str().unwrap().to_owned();
@@ -1211,6 +1822,12 @@ mod tests {
         }
         expect_shape(&part.shape, &take(&mut obj, "shape"));
         expect_raw(&part.raw, &take(&mut obj, "raw"));
+        expect_dyn_attrs(&part.dyn_attrs, &take(&mut obj, "dyn_attrs"));
+        expect_keyframe(&part.keyframe, &take(&mut obj, "keyframe"));
+        expect_vehicle(&part.vehicle, &take(&mut obj, "vehicle"));
+        expect_inertia(&part.phys_inertia, &take(&mut obj, "phys_inertia"));
+        expect_animations(&part.animations, &take(&mut obj, "animations"));
+        expect_linkset(&part.linkset, &take(&mut obj, "linkset"));
         assert!(
             obj.is_empty(),
             "{label} uncompared {:?}",
@@ -1260,6 +1877,8 @@ mod tests {
             &shape.extra_params,
             &take(&mut obj, "extra_params"),
         );
+        expect_media(&shape.media_entries, &take(&mut obj, "media_entries"));
+        expect_materials(&shape.materials, &take(&mut obj, "materials"));
         assert!(
             obj.is_empty(),
             "shape uncompared {:?}",
@@ -1322,6 +1941,7 @@ mod tests {
             }
         }
         assert!(!ids.contains(&Uuid::parse_str("ffffffff-ffff-ffff-ffff-fffffffffff1").unwrap()));
+        assert!(!ids.contains(&Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1").unwrap()));
         assert_eq!(groups[0].parts[0].name, "showcase");
         assert_eq!(groups[0].parts[0].link_num, 0);
         assert_eq!(groups[0].parts[0].flags, 0x4401);
@@ -1355,6 +1975,42 @@ mod tests {
         assert_eq!(groups[3].parts[0].pay_price, [0, 0, 0, 0, 0]);
         assert_eq!(groups[3].parts[0].pseudo_crc, None);
         assert_eq!(groups[3].parts[0].media_url, "");
+        let showcase = &groups[0].parts[0];
+        assert!(
+            showcase
+                .dyn_attrs
+                .as_ref()
+                .unwrap()
+                .namespaces
+                .contains_key("kept")
+        );
+        assert!(showcase.keyframe.is_some());
+        assert_eq!(showcase.vehicle.as_ref().unwrap().kind, 2);
+        assert_eq!(
+            showcase.phys_inertia.as_ref().unwrap().mass.to_bits(),
+            2.5f32.to_bits()
+        );
+        assert_eq!(showcase.animations.as_ref().unwrap().len(), 1);
+        assert_eq!(showcase.linkset.as_ref().unwrap().bytes_used, 36);
+        assert_eq!(showcase.shape.media_entries.as_ref().unwrap().len(), 2);
+        assert!(
+            showcase
+                .shape
+                .materials
+                .as_ref()
+                .unwrap()
+                .overrides
+                .is_some()
+        );
+        let child = &groups[1].parts[1];
+        assert!(child.dyn_attrs.as_ref().unwrap().namespaces.is_empty());
+        assert!(child.keyframe.is_none());
+        assert!(child.vehicle.is_some());
+        assert!(child.phys_inertia.is_some());
+        assert!(child.animations.as_ref().unwrap().is_empty());
+        assert!(child.linkset.is_none());
+        assert!(child.shape.media_entries.is_none());
+        assert!(child.shape.materials.as_ref().unwrap().overrides.is_none());
     }
 
     #[tokio::test]

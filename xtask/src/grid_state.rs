@@ -193,7 +193,7 @@ impl Drop for Lock {
 
 fn store() -> Store {
     Store {
-        path: crate::live::live_root().join("grid-state"),
+        path: crate::ports::grid_state_file(),
     }
 }
 
@@ -538,7 +538,7 @@ pub(crate) fn down() -> Result<(), String> {
     store().down()
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn down_file(path: &Path) -> Result<(), String> {
     Store {
         path: path.to_path_buf(),
