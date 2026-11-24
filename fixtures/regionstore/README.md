@@ -1,6 +1,6 @@
 # Region store objects
 
-`objects.db` is a SQLite region store seeded by [tools/regionstore-oracle](../../tools/regionstore-oracle/README.md). `objects.json` is the groups that store returns for region `11111111-1111-1111-1111-111111111111`. The `pin` field is the checkout that produced the dump.
+`objects.db` is a SQLite region store seeded by [tools/regionstore-oracle](../../tools/regionstore-oracle/README.md). `objects.json` is the groups that store returns for region `11111111-1111-1111-1111-111111111111`. The `pin` field is the checkout that produced the dump. Pin8 (`c401bceecd`) regenerated it: the groups are unchanged; the database also carries `RegionStore` 48, the two indexes of #507.
 
 The file holds one prim, two linksets, a prim with no shape row, a row that cannot be built, and one prim in another region.
 

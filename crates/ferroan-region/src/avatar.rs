@@ -137,8 +137,18 @@ fn parse_params(text: &str) -> Result<Vec<u8>, AvatarError> {
 }
 
 fn parse_height(text: &str) -> Result<f32, AvatarError> {
+    // `AvatarData.TryParseHeight` (Tranquillity #520, TB44): a C# peer writes
+    // the height in its own culture, so a value with no dot and at most one
+    // comma reads the comma as the decimal mark.
+    let trimmed = text.trim();
+    let dotted;
+    let text = if !trimmed.contains('.') && trimmed.matches(',').count() <= 1 {
+        dotted = trimmed.replace(',', ".");
+        dotted.as_str()
+    } else {
+        trimmed
+    };
     let height = text
-        .trim()
         .parse::<f32>()
         .map_err(|_| AvatarError::InvalidAppearance)?;
     if !height.is_finite() {
@@ -151,6 +161,15 @@ fn parse_height(text: &str) -> Result<f32, AvatarError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_comma_height_reads_as_a_decimal() {
+        assert_eq!(parse_height("1,8125").unwrap(), 1.8125);
+        assert_eq!(parse_height("1.8125").unwrap(), 1.8125);
+        assert_eq!(parse_height("0").unwrap(), 1.9);
+        assert!(parse_height("1,8,1").is_err());
+        assert!(parse_height("1.8,1").is_err());
+    }
 
     #[test]
     fn empty_store_keeps_constructor_fields_absent() {

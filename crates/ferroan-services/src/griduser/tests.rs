@@ -349,25 +349,23 @@ fn expect_special(oracle: &str, backend: &str, ado: &str) {
     let exact = csharp(oracle, backend, ado, "get", &GridUser::new(SPECIAL));
     assert_eq!(exact["found"], true);
     assert_eq!(exact["user_id"], SPECIAL);
-    // TB43: an id with `%` or `_` is compared on SQLite only.
-    if backend == "sqlite" {
-        let status = csharp_status(
-            oracle,
-            backend,
-            ado,
-            "getall",
-            serde_json::json!({"user_id": SPECIAL}),
-        );
-        assert!(status.status.success(), "{}", scrub(&status.stderr));
-        let body = parse_json(&status.stdout);
-        let found = json_ids(&body);
-        assert!(found.contains(SPECIAL));
-        assert!(
-            found.contains("a'bXc_d!e") || found.contains("a'b%c_de"),
-            "unescaped LIKE matched a decoy: {found:?}"
-        );
-    }
-    println!("known differences: TB43");
+    // TB43 fixed (#525): every store matches the id as a literal prefix,
+    // as the Rust store does (D35).
+    let status = csharp_status(
+        oracle,
+        backend,
+        ado,
+        "getall",
+        serde_json::json!({"user_id": SPECIAL}),
+    );
+    assert!(status.status.success(), "{}", scrub(&status.stderr));
+    let body = parse_json(&status.stdout);
+    assert_eq!(
+        json_ids(&body),
+        set(&[SPECIAL, &format!("{SPECIAL}.more")]),
+        "{backend}"
+    );
+    println!("griduser {backend}: literal prefix matches");
 }
 
 async fn store_user(store: &GridUserStore, user: &GridUser) {
