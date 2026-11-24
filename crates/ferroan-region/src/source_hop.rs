@@ -203,6 +203,24 @@ impl HopPresence {
         }
     }
 
+    fn note_child(&self, agent: Uuid, end: &RegionEnd) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.note_open_child(agent, end.clone()),
+            #[cfg(test)]
+            Self::Watch(_) => {}
+        }
+    }
+
+    fn take_child(&self, agent: Uuid) -> Option<RegionEnd> {
+        match self {
+            Self::Idle => None,
+            Self::Live(state) => state.take_open_child(agent),
+            #[cfg(test)]
+            Self::Watch(_) => None,
+        }
+    }
+
     fn arm(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
@@ -306,6 +324,20 @@ impl HopEnv {
         }
     }
 
+    /// Close the in-view neighbour child this root opened. One attempt.
+    /// The error text can carry a URL, so it stays at debug and is not shown.
+    pub async fn close_open_child(&self, agent: Uuid, session: Uuid) {
+        let Some(end) = self.presence.take_child(agent) else {
+            return;
+        };
+        let Some(client) = &self.client else {
+            return;
+        };
+        if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+            tracing::debug!("logout child close: {error}");
+        }
+    }
+
     /// The hop for one accepted root. Events go to that agent's queue.
     pub fn install(&self, login: HopLogin) -> SourceHop {
         let session = HopSession {
@@ -386,7 +418,6 @@ async fn perform(work: HopWork<'_>) {
         out,
         enqueue,
     } = work;
-    let _ = request.look_at;
     let Some((destination, position)) =
         locate(directory, grid, request.region_handle, request.position).await
     else {
@@ -479,7 +510,13 @@ async fn perform(work: HopWork<'_>) {
         None
     };
     presence.demote(session.agent_id);
-    let update = agent_update(session, &destination, position, callback);
+    let update = agent_update(
+        session,
+        &destination,
+        position,
+        departure_look(request.look_at),
+        callback,
+    );
     tracing::debug!("source hop: update");
     let arrived = match client
         .update_agent(&destination.end, &update, &context)
@@ -500,6 +537,10 @@ async fn perform(work: HopWork<'_>) {
         out.teleport_failed(&connect_reason(&destination.end.name))
             .await;
         return;
+    }
+    if !outside {
+        // Logout closes this child. An outside-view hop does not leave one.
+        presence.note_child(session.agent_id, &destination.end);
     }
     if outside {
         presence.wait_release(session.agent_id).await;
@@ -678,10 +719,24 @@ fn child_circuit(
     }
 }
 
+/// The destination copies this axis into the arrival look. A missing heading
+/// stays the fixture default.
+fn departure_look(look_at: [f32; 3]) -> [f32; 3] {
+    if look_at[0].is_finite()
+        && look_at[1].is_finite()
+        && look_at[0].abs() + look_at[1].abs() > 1.0e-6
+    {
+        [look_at[0], look_at[1], 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    }
+}
+
 fn agent_update(
     session: &HopSession,
     destination: &HopDestination,
     position: [f32; 3],
+    look_at: [f32; 3],
     callback: Option<String>,
 ) -> AgentData {
     AgentData {
@@ -693,11 +748,13 @@ fn agent_update(
         velocity: [0.0; 3],
         center: [0.0; 3],
         size: [0.0; 3],
-        at_axis: [0.0; 3],
+        at_axis: look_at,
         left_axis: [0.0; 3],
         up_axis: [0.0; 3],
         wait_for_root: true,
-        far: 0.0,
+        // Default draw. A smaller far clamps the destination view inside this
+        // region, so it never tells the viewer about the region just left.
+        far: f32::from(u16::try_from(REGION_VIEW_METRES).unwrap_or(0)),
         throttles: Vec::new(),
         locomotion_state: 0,
         head_rotation: [0.0; 4],
@@ -760,6 +817,13 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
+
+    #[test]
+    fn departure_look_keeps_a_heading_and_defaults_a_zero() {
+        assert_eq!(super::departure_look([0.0, 2.0, 4.0]), [0.0, 2.0, 0.0]);
+        assert_eq!(super::departure_look([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]);
+        assert_eq!(super::departure_look([f32::NAN, 1.0, 0.0]), [1.0, 0.0, 0.0]);
+    }
 
     const HANDLE: u64 = 256_u64 << 32;
     const POSITION: [f32; 3] = [128.0, 128.0, 30.0];
@@ -953,6 +1017,7 @@ mod tests {
             avatar: None,
             teleport: Some(region),
             source_hop: Some(hop),
+            return_slot: None,
         };
         let server = CircuitServer::bind().await.unwrap();
         let udp = server.local_addr().unwrap();
@@ -1265,6 +1330,8 @@ mod tests {
         let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
         assert_eq!(update["message_type"], "AgentData");
         assert_eq!(update["wait_for_root"], true);
+        assert_eq!(update["at_axis"], "<1, 0, 0>");
+        assert_eq!(update["far"].as_f64(), Some(255.0));
         assert!(update["god_data"].is_object());
         assert!(update.get("cb_uri").is_none());
         assert_eq!(*opened.position.lock().unwrap(), [128.0, 128.0, 25.0]);
