@@ -119,7 +119,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | SPLIT into Q40a to Q40c (#214) |
 | Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | DONE (this PR) |
 | Q40b | P2.1a2: chat reads live positions from the scene | DONE (this PR) |
-| Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | READY after Q40b |
+| Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | DONE (this PR) |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40c |
 | Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
 | Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40c |
@@ -585,6 +585,8 @@ Q40 split (manager, 24 November 2026): the block in #214 is right, and its three
 Q40a DONE (24 November 2026, `feat/scene-frame`): the frame thread ticks at the shipped FrameTime 0.0909 and stores the login presence (position, rotation, velocity, control flags, draw distance). `region.scene-inbound` refuses the 257th waiting post. Login is the only consumer: `AgentMovementComplete` and the avatar position read the stored pose. Chat seats, local teleport and both neighbour directions keep today's arrival fields and `ChatSeat.position`. P2.1a stays TODO until Q40b and Q40c are DONE. Evidence is on the P2.1a row.
 
 Q40b DONE (24 November 2026, `feat/scene-chat`): `ChatFromViewer` is forwarded on `region.scene-inbound`. Distance and the say position use the scene pose. Seats no longer store a position. A local landing and a neighbour return write the scene position and keep the other pose fields. Teleport packets stay on the circuit. P2.1a stays TODO until Q40c is DONE. Evidence is on the P2.1a row.
+
+Q40c DONE (24 November 2026, `feat/scene-teleport`): both teleport directions write the pose on the frame. The circuit forwards `TeleportLocationRequest` and the hop completion. A local teleport applies the landing, flattens the look, stores the heading and zeros velocity. A hop completion stores the update position and heading and keeps velocity, control flags and draw distance. The source hop does not write the local pose. The return token carries the position the frame stored. Teleport packets stay on the circuit. No new TB or D. P2.1a is DONE. Evidence is on the P2.1a row.
 
 QR5 (24 November 2026, `feat/fsassets-async`): FSAssets file reads and spool writes run on a blocking thread. Import reads one legacy row, stores it, and drops it before the next read. A `data` value over `asset.fsassets-import-row` (50,000,000 bytes) is refused and that import stops. Existence is one hash query plus a file check and does not update `access_time`. MySQL answers all false when the database will not open. PostgreSQL returns that failure. `Get` still updates `access_time`. `cargo xtask live assets --backend fsassets --db mysql` printed `assets: match (12 http records)` and `10000-asset read: csharp 4076 ms, ferroan 3144 ms`. `--db pgsql` printed `assets: match (12 http records)` and `10000-asset read: csharp 15387 ms, ferroan 2942 ms`. No new TB or D. Evidence is on the R5 row.
 

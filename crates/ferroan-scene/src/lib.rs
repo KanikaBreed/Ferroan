@@ -76,7 +76,7 @@ mod store;
 pub use compress::TerrainLayer;
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
-pub use frame::{Presence, TerrainFrame, landed_z};
+pub use frame::{LocalTeleport, Presence, TeleportStored, TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
