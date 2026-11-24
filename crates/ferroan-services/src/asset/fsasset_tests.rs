@@ -24,6 +24,36 @@ const HASH_B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876
 const IMPORT_TABLE: &str = "ferroan_fs_import";
 
 #[tokio::test]
+async fn mysql_hashes_are_absent_when_the_database_will_not_open() {
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(500))
+        .connect_lazy("mysql://unused:unused@127.0.0.1:1/unused")
+        .expect("lazy mysql");
+    let rows = super::super::fmysql::hashes(&pool, "fsassets", &[Uuid::nil()])
+        .await
+        .expect("absent");
+    assert_eq!(rows, vec![None]);
+    let empty = super::super::fmysql::hashes(&pool, "fsassets", &[])
+        .await
+        .expect("empty");
+    assert!(empty.is_empty());
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn postgres_hashes_fail_when_the_database_will_not_open() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(500))
+        .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+        .expect("lazy postgres");
+    let rows = super::super::fpostgres::hashes(&pool, &[Uuid::nil()]).await;
+    assert!(rows.is_err());
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn fsassets_plugins_match_the_pin() {
     if let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await {
         let _guard = FSASSET_MYSQL.lock().await;
@@ -331,6 +361,16 @@ async fn check_plugin(store: &FsAssetStore) {
     let exists = store.exists(&[id, fid(9), other]).await.expect("exists");
     assert_eq!(exists, vec![true, false, true]);
     assert!(store.exists(&[]).await.expect("empty").is_empty());
+    set_access(store, other, 50).await;
+    let hashes = store.hashes(&[other, fid(9)]).await.expect("hashes");
+    assert_eq!(hashes.len(), 2);
+    let found = hashes[0].as_ref().expect("hash row");
+    same_hash(HASH_B, &found.hash);
+    assert_eq!(found.type_code, 7);
+    assert!(hashes[1].is_none());
+    let after_hashes = store.clock(other).await.expect("clock").expect("row");
+    assert_eq!(after_hashes.access_time, 50);
+    assert!(store.hashes(&[]).await.expect("empty hashes").is_empty());
     assert_eq!(
         store.count().await.expect("count"),
         if backend == Backend::Mysql { 3 } else { 2 }
