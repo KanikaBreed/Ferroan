@@ -136,6 +136,10 @@ pub struct RegionConfig {
     pub object_store: Option<String>,
     /// `[ClientStack.LindenUDP] CaptureFile`. Empty leaves datagram capture off.
     pub udp_capture: Option<PathBuf>,
+    /// `[InterestManagement] UpdatePrioritizationScheme` when that key is set.
+    /// Absent leaves the shipped default. Startup warns when the value is not
+    /// `BestAvatarResponsiveness`. This process does not compute another scheme.
+    pub prioritization_scheme: Option<String>,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -387,6 +391,9 @@ impl RegionConfig {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            prioritization_scheme: server
+                .get("InterestManagement", "UpdatePrioritizationScheme")
+                .map(str::to_owned),
         })
     }
 
@@ -410,6 +417,19 @@ impl RegionConfig {
             return_slot: None,
         }
     }
+}
+
+/// True when the ini names a scheme other than the one this region computes.
+///
+/// An absent key does not warn. C# falls back when the name is missing or
+/// unrecognized. A name that is set, including `SimpleAngularDistance`, is
+/// still `BestAvatarResponsiveness` here until that scheme is queued.
+pub fn prioritization_scheme_differs(scheme: Option<&str>) -> bool {
+    scheme.is_some_and(|value| {
+        !value
+            .trim()
+            .eq_ignore_ascii_case("BestAvatarResponsiveness")
+    })
 }
 
 fn login_connect_wait(server: &Config) -> Result<std::time::Duration, RegionConfigError> {
@@ -962,6 +982,54 @@ mod tests {
             server.set("Startup", "LoginConnectWaitSeconds", invalid);
             assert!(RegionConfig::from_configs(&server, &regions()).is_err());
         }
+    }
+
+    #[test]
+    fn an_other_prioritization_scheme_is_stored_for_the_startup_warning() {
+        let plain = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        assert!(plain.prioritization_scheme.is_none());
+        assert!(!prioritization_scheme_differs(
+            plain.prioritization_scheme.as_deref()
+        ));
+
+        let mut server = server();
+        server.set(
+            "InterestManagement",
+            "UpdatePrioritizationScheme",
+            "BestAvatarResponsiveness",
+        );
+        let named = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            named.prioritization_scheme.as_deref(),
+            Some("BestAvatarResponsiveness")
+        );
+        assert!(!prioritization_scheme_differs(
+            named.prioritization_scheme.as_deref()
+        ));
+
+        server.set(
+            "InterestManagement",
+            "UpdatePrioritizationScheme",
+            "  bestavatarresponsiveness ",
+        );
+        let folded = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert!(!prioritization_scheme_differs(
+            folded.prioritization_scheme.as_deref()
+        ));
+
+        server.set(
+            "InterestManagement",
+            "UpdatePrioritizationScheme",
+            "SimpleAngularDistance",
+        );
+        let angular = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            angular.prioritization_scheme.as_deref(),
+            Some("SimpleAngularDistance")
+        );
+        assert!(prioritization_scheme_differs(
+            angular.prioritization_scheme.as_deref()
+        ));
     }
 
     #[test]

@@ -155,6 +155,14 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
 
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
+    if ferroan_region::config::prioritization_scheme_differs(
+        config.prioritization_scheme.as_deref(),
+    ) {
+        let scheme = config.prioritization_scheme.as_deref().unwrap_or("").trim();
+        tracing::warn!(
+            "ferroan-region: [InterestManagement] UpdatePrioritizationScheme is {scheme}; entity updates use BestAvatarResponsiveness"
+        );
+    }
     let terrain = load_terrain(&config).await?;
     let objects = load_stored_objects(&config).await?;
     let _region_settings = load_stored_settings(&mut config).await?;

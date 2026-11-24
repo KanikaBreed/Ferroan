@@ -9,7 +9,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -79,7 +79,7 @@ fn judge(output: &str) -> Result<String, String> {
 }
 
 fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
-    let mut child = Command::new(dotnet)
+    let mut child = crate::dotnet_ci::command(dotnet)
         .arg(dll)
         .arg("--console")
         .arg("basic")
@@ -180,7 +180,7 @@ fn build(dotnet: &Path, pin: &Path) -> Result<PathBuf, String> {
     // Keep the reference tree clean. One intermediate directory is enough:
     // per-project paths make ResolveProjectReferences circular.
     let intermediate = format!("IntermediateOutputPath={}/", obj.display());
-    let output = Command::new(dotnet)
+    let output = crate::dotnet_ci::command(dotnet)
         .arg("build")
         .arg(&project)
         .arg("-c")
@@ -188,6 +188,7 @@ fn build(dotnet: &Path, pin: &Path) -> Result<PathBuf, String> {
         .arg("-o")
         .arg(&bin)
         .arg("-p:UseSharedCompilation=false")
+        .arg(crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF)
         .arg(format!("-p:{intermediate}"))
         .output()
         .map_err(|error| format!("could not run dotnet build: {error}"))?;
@@ -334,7 +335,10 @@ fn locate_pin() -> Option<PathBuf> {
 }
 
 fn which_dotnet() -> Option<PathBuf> {
-    let output = Command::new("dotnet").arg("--version").output().ok()?;
+    let output = crate::dotnet_ci::command("dotnet")
+        .arg("--version")
+        .output()
+        .ok()?;
     if output.status.success() {
         Some(PathBuf::from("dotnet"))
     } else {
