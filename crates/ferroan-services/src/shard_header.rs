@@ -18,7 +18,7 @@ const PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
 #[tokio::test]
 async fn shard_header_matches_the_pin_capture() {
     let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/http/shard-header.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/shard/shard-header.json");
     let text = std::fs::read_to_string(&path).expect("fixture");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("json");
     assert_eq!(doc["pin"].as_str(), Some(PIN));
