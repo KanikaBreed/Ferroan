@@ -267,6 +267,10 @@ pub struct MaterialOverride {
 
 pub(crate) fn parse_dyn_attrs(text: &str) -> Result<DynAttrs, ()> {
     let parsed = from_xml(text.as_bytes()).map_err(|_| ())?;
+    dyn_attrs_from_llsd(parsed)
+}
+
+pub(crate) fn dyn_attrs_from_llsd(parsed: Llsd) -> Result<DynAttrs, ()> {
     let Llsd::Map(mut namespaces) = parsed else {
         return Err(());
     };
@@ -337,6 +341,10 @@ pub(crate) fn parse_vehicle(text: &str) -> Result<Option<Vehicle>, ()> {
         return Ok(None);
     }
     let root = ferroan_llsd::xml::parse(text.as_bytes()).map_err(|_| ())?;
+    read_vehicle(&root)
+}
+
+pub(crate) fn read_vehicle(root: &Element) -> Result<Option<Vehicle>, ()> {
     if root.name != "Vehicle" {
         return Err(());
     }
@@ -382,6 +390,10 @@ pub(crate) fn parse_inertia(text: &str) -> Result<Option<PhysicsInertia>, ()> {
         return Ok(None);
     }
     let root = ferroan_llsd::xml::parse(text.as_bytes()).map_err(|_| ())?;
+    read_inertia(&root)
+}
+
+pub(crate) fn read_inertia(root: &Element) -> Result<Option<PhysicsInertia>, ()> {
     if root.name != "PhysicsInertia" {
         return Err(());
     }

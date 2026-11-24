@@ -145,7 +145,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q55b | P2.4b2: PostgreSQL region object load, `regionstore cross` on all three | DONE (#220) |
 | Q56 | P2.4c: region settings and spawn points from the store | DONE (#224) |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
-| Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | READY after Q18a |
+| Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46 |
@@ -600,6 +600,8 @@ Q10aj and Q10ak (manager, 24 November 2026, from the maintainer): the maintainer
 QR6 (24 November 2026, `feat/griduser-position`): GridUser position text is the en-US shortest round trip, including `E` and `∞`. The cache holds 4096 entries (`griduser.cache-entries`) for 300 seconds and drops the soonest entry when a new key would pass that cap. `logged_in` returns a store error, and a store that declines the row without an error still answers online. A non-finite logout is sent. No new TB or D. Evidence is on the R6 row.
 
 Q57 (24 November 2026, `feat/object-xml`): XML2 and original XML for the four regionstore groups match `SceneObjectSerializer` at pin `c401bceecd`. `fixtures/regionstore/objects-xml.json` is that output. `regionstore_xml_matches_the_serializer_oracle` matches both forms byte for byte. An empty element is `<Name />`. `SoundFlags` is the stored byte in decimal. Base64 is one continuous string. A loaded group has no script state. No new TB or D. No live compare. Reading XML is Q58. Coalesced objects are Q59. Evidence is on the P2.S1 row.
+
+Q58 (24 November 2026, `feat/object-xml-reader`): `from_xml2` and `from_original_xml` read the four serializer groups back to the fields the pin reads, including a part with `NotAField` and a shape with `SculptData`. `fixtures/regionstore/objects-xml-read.json` is that re-serialize. No new TB or D. No live compare. Coalesced objects are Q59. Evidence is on the P2.S2 row.
 
 QR8 (24 November 2026, `fix/debug-excerpt`): The debug hex excerpt masks a CreateAgent body's session ids, circuit code, caps path and child seeds, and an unencoded UseCircuitCode's code and session id. Any other message drops the excerpt. A probe limit hit installs a warn subscriber on `ferroan::limit`, and the deadline error names how many attempts were abandoned. The redaction cap stays 488 and is checked against the root and bypass limits. No new TB or D. Evidence is on the R8 row.
 

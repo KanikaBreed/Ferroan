@@ -28,6 +28,7 @@
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
+//! `regionstore read` reads that XML back through the pin and writes the fields.
 //! `regionstore verify` reloads the object fixture. `regionstore cross`
 //! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
 //! the containers. None of them starts a server or the live harness.
@@ -137,6 +138,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore generate
        cargo xtask regionstore settings
        cargo xtask regionstore serialize
+       cargo xtask regionstore read
        cargo xtask regionstore verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
@@ -249,6 +251,7 @@ fn main() -> ExitCode {
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "settings"] => regionstore::settings(),
         ["regionstore", "serialize"] => regionstore::serialize(),
+        ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),

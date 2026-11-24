@@ -75,7 +75,11 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! XML2 and original-format object XML from a loaded [`ObjectGroup`].
+//! XML2 and original-format object XML for a loaded [`ObjectGroup`].
+//!
+//! [`to_xml2`] and [`to_original_xml`] write a group. [`from_xml2`] and
+//! [`from_original_xml`] read one back. A child element whose name is not in
+//! the part, inventory or shape tables is skipped.
 //!
 //! Both forms omit the XML declaration and write no indentation. A part that
 //! has task items has inventory serial 1. Folder id is the part id. Region
@@ -100,6 +104,11 @@ use crate::payloads::{
     RenderMaterials, Vehicle,
 };
 use xml_float::format_f32;
+
+#[path = "xml_read.rs"]
+mod xml_read;
+
+pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.
 pub fn to_xml2(group: &ObjectGroup) -> String {
@@ -158,7 +167,9 @@ fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
         out.elem("CreatorData", &data);
     }
     out.uuid("FolderID", part.uuid);
-    let serial: u32 = if part.items.is_empty() { 0 } else { 1 };
+    let serial = part
+        .inventory_serial
+        .unwrap_or(if part.items.is_empty() { 0 } else { 1 });
     out.display("InventorySerial", serial);
     write_inventory(out, part);
     out.uuid("UUID", part.uuid);

@@ -219,6 +219,10 @@ pub struct ObjectPart {
     pub linkset: Option<LinksetData>,
     /// Task inventory for this prim, in stored order. Empty when the prim has none.
     pub items: Vec<InventoryItem>,
+    /// `None` on a store load. The writer then spells 0 with no items and 1 with
+    /// any. A read records the serial after the inventory is assigned and, when
+    /// that inventory is not empty, after the part id is copied onto each item.
+    pub inventory_serial: Option<u32>,
 }
 
 /// One task-inventory row as the load leaves it. Nothing here is sent.
@@ -765,6 +769,7 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         animations,
         linkset,
         items: Vec::new(),
+        inventory_serial: None,
     })
 }
 
@@ -1525,6 +1530,7 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<Mys
         animations,
         linkset,
         items: Vec::new(),
+        inventory_serial: None,
     };
     Ok(MysqlBuilt {
         uuid,
@@ -2170,6 +2176,7 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
         animations,
         linkset,
         items: Vec::new(),
+        inventory_serial: None,
     };
     Ok(PgBuilt {
         original: uuid,
