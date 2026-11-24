@@ -20,7 +20,7 @@ use std::process::ExitCode;
 #[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "linux", test))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 use flate2::Compression;
@@ -32,8 +32,6 @@ use std::fs;
 use std::io::{Read, Write};
 #[cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-#[cfg(target_os = "linux")]
-use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 #[cfg(target_os = "linux")]
