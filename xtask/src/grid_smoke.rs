@@ -299,6 +299,9 @@ fn command(
     let stderr = directory.join(format!("{name}.stderr"));
     let out = File::create(&stdout).map_err(|_| "could not create command stdout log")?;
     let err = File::create(&stderr).map_err(|_| "could not create command stderr log")?;
+    // The child installs the same base and reserves that block. Listeners
+    // still held here make every slot look busy to that child.
+    crate::ports::release_block();
     let mut child = Command::new(std::env::current_exe().map_err(|_| "could not find xtask")?)
         .args(args)
         .current_dir(crate::repo_root())

@@ -10,10 +10,16 @@
 //! finds that directory. With no setting, ephemeral listeners
 //! stay ephemeral and Docker smoke stays on 3100, 9095, 4317 and 4318.
 //!
-//! A set base reserves its 32 ports for this process. Those ports sit inside
-//! the kernel's ephemeral range, so a client connection (the asset service's
-//! database session, a capture proxy) can otherwise occupy a slot before the
-//! server binds it. The reservation is released when that slot is allocated.
+//! A set base reserves the free ports in its block for this process. Those
+//! ports sit inside the kernel's ephemeral range, so a client connection (the
+//! asset service's database session, a capture proxy) can otherwise occupy a
+//! slot before the server binds it. The reservation for a slot is released
+//! when that slot is allocated. A port something else already holds stays
+//! unreserved: the kernel will not hand it out while it is taken, and a later
+//! allocation of that slot still fails if it is busy. A follow-up command
+//! such as `live down` starts while those servers are listening. Before this
+//! process starts another xtask on the same base, it drops the whole
+//! reservation so the child can reserve the block itself.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
@@ -204,30 +210,31 @@ fn slot_port(base: u16, offset: usize) -> Result<u16, String> {
         .ok_or_else(|| format!("port base {base} has no room at offset {offset}"))
 }
 
-/// Bind every port in the block so the kernel will not hand one out as an
-/// ephemeral client port. A busy port is retried briefly; a listener left by
-/// another process still fails the command.
+/// Bind every free port in the block so the kernel will not hand one out as
+/// an ephemeral client port. A busy port is retried briefly, then left
+/// unreserved. Replacing the stored block drops any listeners this process
+/// still held.
 fn reserve_block(base: u16) -> Result<(), String> {
+    reserve_block_for(base, std::time::Duration::from_secs(5))
+}
+
+fn reserve_block_for(base: u16, wait: std::time::Duration) -> Result<(), String> {
     let mut listeners = std::iter::repeat_with(|| None)
         .take(usize::from(SPAN))
         .collect::<Vec<Option<TcpListener>>>();
     let mut pending: Vec<usize> = (0..usize::from(SPAN)).collect();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    let deadline = std::time::Instant::now() + wait;
+    while !pending.is_empty() {
         let mut still = Vec::new();
         for offset in pending {
             let port = slot_port(base, offset)?;
             match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
                 Ok(listener) => listeners[offset] = Some(listener),
-                Err(error) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(format!("127.0.0.1:{port} is already in use ({error})"));
-                    }
-                    still.push(offset);
-                }
+                Err(_) if std::time::Instant::now() >= deadline => {}
+                Err(_) => still.push(offset),
             }
         }
-        if still.is_empty() {
+        if still.is_empty() || std::time::Instant::now() >= deadline {
             break;
         }
         pending = still;
@@ -236,6 +243,12 @@ fn reserve_block(base: u16) -> Result<(), String> {
     *RESERVED.lock().unwrap_or_else(|poison| poison.into_inner()) =
         Some(ReservedBlock { base, listeners });
     Ok(())
+}
+
+/// Drop every listener this process reserved. A nested xtask with the same
+/// base reserves the block itself.
+pub(crate) fn release_block() {
+    *RESERVED.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
 }
 
 /// Drop the reservation for `port` when this process holds it.
@@ -777,16 +790,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_reserved_slot_stays_unavailable_until_it_is_allocated() {
-        struct Clear;
-        impl Drop for Clear {
-            fn drop(&mut self) {
-                *RESERVED.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
-            }
+    fn reservation_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    struct ClearReservation;
+    impl Drop for ClearReservation {
+        fn drop(&mut self) {
+            release_block();
         }
-        let _clear = Clear;
-        let base = (0..40u16)
+    }
+
+    fn free_block() -> u16 {
+        (0..40u16)
             .map(|step| 20_000 + step * SPAN)
             .find(|candidate| {
                 (0..SPAN).all(|offset| {
@@ -796,7 +813,14 @@ mod tests {
                         .is_ok()
                 })
             })
-            .expect("a free 32-port block");
+            .expect("a free 32-port block")
+    }
+
+    #[test]
+    fn a_reserved_slot_stays_unavailable_until_it_is_allocated() {
+        let _lock = reservation_lock();
+        let _clear = ClearReservation;
+        let base = free_block();
         reserve_block(base).expect("the free block reserves");
         let port = base + u16::from(Slot::StandalonePrivate as u8);
         assert!(
@@ -807,6 +831,43 @@ mod tests {
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the allocated slot is free");
         drop(listener);
+    }
+
+    #[test]
+    fn releasing_the_block_lets_the_next_reserve_hold_it() {
+        let _lock = reservation_lock();
+        let _clear = ClearReservation;
+        let base = free_block();
+        let port = base + u16::from(Slot::StandalonePrivate as u8);
+        reserve_block(base).expect("the free block reserves");
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+        release_block();
+        let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("a released slot binds");
+        drop(taken);
+        reserve_block(base).expect("the block reserves again");
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+    }
+
+    #[test]
+    fn a_port_already_taken_stays_unreserved() {
+        let _lock = reservation_lock();
+        let _clear = ClearReservation;
+        let base = free_block();
+        let busy = base + u16::from(Slot::StandalonePrivate as u8);
+        let held = base + u16::from(Slot::StandalonePublic as u8);
+        let outside =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, busy)).expect("the outside hold binds");
+        reserve_block_for(base, std::time::Duration::ZERO)
+            .expect("a busy slot does not fail the reserve");
+        assert!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, busy)).is_err(),
+            "the outside listener keeps the busy slot"
+        );
+        assert!(ensure_free(busy).is_err());
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, held)).is_err());
+        assert!(ensure_free(held).is_ok());
+        drop(outside);
+        assert!(ensure_free(busy).is_ok());
     }
 
     #[test]
