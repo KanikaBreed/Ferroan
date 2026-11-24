@@ -203,6 +203,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         config.cap_grants.clone(),
         Some(fetch.service()),
     )?;
+    fetch.bind_uploader_routes(caps.uploader_routes());
     // One queued accept per admitted root, including the staff and god bypass.
     // The dispatcher spawns the circuit, so a same-agent replacement still fits
     // while the old task is running.
