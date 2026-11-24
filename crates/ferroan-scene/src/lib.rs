@@ -53,7 +53,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the prim load and the frame thread.
+//! Read-only region terrain, the prim load, region settings and the frame thread.
 //! The frame ticks at the shipped `FrameTime`, stores the login presence, and
 //! answers a forwarded chat with those positions. A landing updates the position.
 //!
@@ -70,6 +70,7 @@ mod frame;
 mod height;
 mod objects;
 mod payloads;
+mod settings;
 mod store;
 
 pub use compress::TerrainLayer;
@@ -85,4 +86,5 @@ pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
+pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;
