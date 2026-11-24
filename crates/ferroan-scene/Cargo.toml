@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-scene"
-description = "Read-only region terrain and the frame thread"
+description = "Read-only region terrain, scalar prims and the frame thread"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,13 @@ publish.workspace = true
 ferroan-db = { path = "../ferroan-db" }
 ferroan-diag = { path = "../ferroan-diag" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+log = "0.4"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 thiserror = "2.0.21"
 uuid = { version = "1.27.0" }
 
 [dev-dependencies]
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]

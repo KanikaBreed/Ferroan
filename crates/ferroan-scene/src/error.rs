@@ -20,3 +20,13 @@ pub enum TerrainError {
     #[error("terrain frame thread did not start")]
     Thread,
 }
+
+#[derive(Debug, Error)]
+pub enum ObjectError {
+    #[error("region store: {0}")]
+    Store(String),
+    #[error("region prim count {observed} exceeds {configured}")]
+    Objects { configured: u64, observed: u64 },
+    #[error("linkset prim count {observed} exceeds {configured}")]
+    Linkset { configured: u64, observed: u64 },
+}
