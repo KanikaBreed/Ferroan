@@ -52,10 +52,12 @@
 //! and returns its answer (TB50, #501), so a PostgreSQL non-uuid is false
 //! (TB39, #490). The console commands are `show assets`,
 //! `show digest`, `delete asset`, `import` and `force import`, and only the
-//! main instance registers them. PostgreSQL import uses `LIMIT count OFFSET
-//! start` with `ORDER BY id`, as the pin does (TB40, #491). `force import` updates an existing row's
-//! hash (TB45). File reads and spool writes run on a blocking thread.
-//! Import reads one source row and stores it before the next read.
+//! main instance registers them. The pin's PostgreSQL import page is
+//! `LIMIT count OFFSET start` with `ORDER BY id` (TB40, #491). This import
+//! seeks that start once and then reads the next id. `force import` updates
+//! an existing row's hash (TB45). File reads and spool writes run on a
+//! blocking thread. Import reads one source row and stores it before the
+//! next read.
 //! `ShowConsoleStats` is not started.
 //!
 //! Only the main instance runs `DefaultAssetLoader` and the writer. A later
@@ -249,7 +251,8 @@ impl FsAssetService {
     /// `AssetsExist`. A bad id is `Err`, which the handler answers as 500.
     /// One hash query, then the file check. The access time is not updated.
     /// A file that cannot be read is false. MySQL answers all false when the
-    /// database will not open. PostgreSQL returns that failure.
+    /// connection cannot be acquired. A statement error after it is open is
+    /// returned. PostgreSQL returns either failure.
     pub async fn assets_exist(&self, ids: &[String]) -> Result<Vec<bool>, StoreError> {
         let mut parsed = Vec::with_capacity(ids.len());
         for id in ids {
@@ -302,20 +305,13 @@ impl FsAssetService {
                 if asset.type_code == OBJECT_TYPE && rewrite_object(&mut stored).is_err() {
                     return Err(());
                 }
-                let files = self.files.clone();
-                let hash_owned = hash.clone();
-                let written = tokio::task::spawn_blocking(move || {
-                    let result = files.write_spool(&hash_owned, &stored);
-                    (result, stored)
-                })
-                .await;
-                match written {
-                    Ok((Ok(()), data)) => stored = data,
-                    Ok((Err(_), data)) => {
+                match write_spool_off(self.files.clone(), hash.clone(), stored).await {
+                    SpoolHandoff::Stored(data) => stored = data,
+                    SpoolHandoff::Failed(data) => {
                         asset.data = data;
                         return Ok(NIL_ID.to_string());
                     }
-                    Err(_) => return Ok(NIL_ID.to_string()),
+                    SpoolHandoff::Stopped => return Ok(NIL_ID.to_string()),
                 }
             }
         }
@@ -559,6 +555,17 @@ impl From<StoreError> for ImportStop {
     }
 }
 
+#[cfg(test)]
+fn note_blocking_thread() {
+    if let Ok(mut slot) = BLOCKING_THREAD.lock() {
+        *slot = Some(std::thread::current().id());
+    }
+}
+
+#[cfg(test)]
+static BLOCKING_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+
 async fn read_checked_off(
     files: &super::fsfiles::FsFiles,
     hash: &str,
@@ -566,11 +573,42 @@ async fn read_checked_off(
 ) -> Result<Option<Vec<u8>>, StoreError> {
     let files = files.clone();
     let hash = hash.to_owned();
-    match tokio::task::spawn_blocking(move || files.read_checked(&hash, type_code)).await {
+    match tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        note_blocking_thread();
+        files.read_checked(&hash, type_code)
+    })
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(StoreError::Io(std::io::Error::other(
             "fsassets file read stopped",
         ))),
+    }
+}
+
+enum SpoolHandoff {
+    Stored(Vec<u8>),
+    Failed(Vec<u8>),
+    Stopped,
+}
+
+async fn write_spool_off(
+    files: super::fsfiles::FsFiles,
+    hash: String,
+    data: Vec<u8>,
+) -> SpoolHandoff {
+    let written = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        note_blocking_thread();
+        let result = files.write_spool(&hash, &data);
+        (result, data)
+    })
+    .await;
+    match written {
+        Ok((Ok(()), data)) => SpoolHandoff::Stored(data),
+        Ok((Err(_), data)) => SpoolHandoff::Failed(data),
+        Err(_) => SpoolHandoff::Stopped,
     }
 }
 
@@ -756,7 +794,7 @@ mod tests {
     use super::*;
     use tower::ServiceExt;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn file_reads_and_spool_writes_run_off_the_async_task() {
         let dir = std::env::temp_dir().join(format!(
             "ferroan-fsassets-block-{}-{}",
@@ -769,18 +807,26 @@ mod tests {
         let files = super::super::fsfiles::FsFiles::new(dir.join("base"), dir.join("spool"), false);
         let bytes = b"blocking-bytes".to_vec();
         let hash = super::sha256_hex(&bytes);
-        let files_for_write = files.clone();
-        let hash_owned = hash.clone();
-        let payload = bytes.clone();
-        tokio::task::spawn_blocking(move || files_for_write.write_spool(&hash_owned, &payload))
-            .await
-            .expect("write task")
-            .expect("spool");
+        let here = std::thread::current().id();
+        let stored = super::write_spool_off(files.clone(), hash.clone(), bytes.clone()).await;
+        let super::SpoolHandoff::Stored(_) = stored else {
+            panic!("spool");
+        };
+        let wrote_on = super::BLOCKING_THREAD
+            .lock()
+            .expect("thread")
+            .expect("write");
+        assert_ne!(wrote_on, here, "spool write stayed on the async task");
         let read = super::read_checked_off(&files, &hash, 0)
             .await
             .expect("read")
             .expect("bytes");
         assert_eq!(read, bytes);
+        let read_on = super::BLOCKING_THREAD
+            .lock()
+            .expect("thread")
+            .expect("read");
+        assert_ne!(read_on, here, "file read stayed on the async task");
         assert!(
             super::read_checked_off(&files, "", 0)
                 .await
@@ -964,34 +1010,20 @@ mod tests {
         assert_eq!(data.status, axum::http::StatusCode::OK);
         assert_eq!(data.content_type, "application/octet-stream");
         assert_eq!(data.body, bytes);
-        let before_exist = look
-            .clock(id)
-            .await
-            .expect("clock")
-            .expect("row")
-            .access_time;
+        // A same-second rewrite of access_time still compares equal. Pin a
+        // sentinel so existence fails unless it leaves the column alone.
+        // Days are 0, so a get would move this value.
+        pin_access(look, id, 50).await;
         let exists = exist_call(app, &[&id.to_string()]).await;
         assert_eq!(exists.status, axum::http::StatusCode::OK);
         assert_eq!(exists.body, super::super::xml::encode_bools(&[true]));
-        let after_exist = look
-            .clock(id)
-            .await
-            .expect("clock")
-            .expect("row")
-            .access_time;
-        assert_eq!(after_exist, before_exist);
+        assert_eq!(access_of(look, id).await, 50);
         let hash = super::sha256_hex(bytes);
         let spool_file = files.spool().join(format!("{hash}.asset"));
         std::fs::remove_file(&spool_file).expect("spool");
         let missing = exist_call(app, &[&id.to_string()]).await;
         assert_eq!(missing.body, super::super::xml::encode_bools(&[false]));
-        let after_missing = look
-            .clock(id)
-            .await
-            .expect("clock")
-            .expect("row")
-            .access_time;
-        assert_eq!(after_missing, before_exist);
+        assert_eq!(access_of(look, id).await, 50);
         let gone = call(app, "GET", &format!("/assets/{id}"), &[]).await;
         assert_eq!(gone.status, axum::http::StatusCode::NOT_FOUND);
         assert_eq!(gone.content_type, "text/plain");
@@ -1542,6 +1574,36 @@ mod tests {
             status,
             content_type,
             body,
+        }
+    }
+
+    async fn access_of(look: &super::super::fsasset::FsAssetStore, id: Uuid) -> i32 {
+        look.clock(id)
+            .await
+            .expect("clock")
+            .expect("row")
+            .access_time
+    }
+
+    async fn pin_access(look: &super::super::fsasset::FsAssetStore, id: Uuid, access: i32) {
+        match look.backend() {
+            ferroan_db::Backend::Mysql => {
+                sqlx::query("UPDATE fsassets SET access_time = ? WHERE id = ?")
+                    .bind(access)
+                    .bind(id.to_string())
+                    .execute(look.pool().mysql().expect("mysql"))
+                    .await
+                    .expect("access");
+            }
+            ferroan_db::Backend::Postgres => {
+                sqlx::query("UPDATE fsassets SET access_time = $2 WHERE id = $1::uuid")
+                    .bind(id.to_string())
+                    .bind(access)
+                    .execute(look.pool().postgres().expect("postgres"))
+                    .await
+                    .expect("access");
+            }
+            ferroan_db::Backend::Sqlite => panic!("sqlite"),
         }
     }
 

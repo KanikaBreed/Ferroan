@@ -41,6 +41,56 @@ async fn mysql_hashes_are_absent_when_the_database_will_not_open() {
     pool.close().await;
 }
 
+/// Access denied and an unknown database fail while the connection is
+/// acquired, so every id is absent. A missing table fails after the
+/// connection is open, so that error is returned.
+#[tokio::test]
+async fn mysql_hashes_split_an_open_failure_from_a_query_error() {
+    let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL is unset; mysql hash phase split was not run");
+        return;
+    };
+    if url.is_empty() {
+        eprintln!("FERROAN_MYSQL_URL is empty; mysql hash phase split was not run");
+        return;
+    }
+    let options = match url.parse::<sqlx::mysql::MySqlConnectOptions>() {
+        Ok(options) => options,
+        Err(_) => {
+            eprintln!("FERROAN_MYSQL_URL is not a mysql url; mysql hash phase split was not run");
+            return;
+        }
+    };
+    let denied = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options.clone().password("ferroan-qr24-wrong"));
+    let rows = super::super::fmysql::hashes(&denied, "fsassets", &[Uuid::nil()])
+        .await
+        .expect("access denied is absent");
+    assert_eq!(rows, vec![None]);
+    denied.close().await;
+
+    let unknown = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options.clone().database("ferroan_qr24_no_such_db"));
+    let rows = super::super::fmysql::hashes(&unknown, "fsassets", &[Uuid::nil()])
+        .await
+        .expect("unknown database is absent");
+    assert_eq!(rows, vec![None]);
+    unknown.close().await;
+
+    let open = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options);
+    let query =
+        super::super::fmysql::hashes(&open, "ferroan_qr24_no_such_table", &[Uuid::nil()]).await;
+    assert!(query.is_err(), "a missing table is a query error");
+    open.close().await;
+}
+
 #[tokio::test]
 async fn postgres_hashes_fail_when_the_database_will_not_open() {
     let pool = sqlx::postgres::PgPoolOptions::new()
