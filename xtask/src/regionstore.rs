@@ -44,7 +44,7 @@ fn regionstore_run() -> RegionstoreRun {
         .ok()
         .and_then(|text| text.parse::<u16>().ok())
         .filter(|base| *base >= 1024 && u32::from(*base) < u32::from(u16::MAX))
-        .unwrap_or_else(|| 20_000 + (std::process::id() % 20_000) as u16);
+        .unwrap_or_else(|| 20_000 + (std::process::id() % 10_000) as u16);
     RegionstoreRun {
         mysql_name: format!("ferroan-regionstore-mysql-{base}"),
         mysql_port: base,

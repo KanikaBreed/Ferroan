@@ -319,7 +319,13 @@ static void InsertPrims(DbConnection db, bool mysql)
         .Set("CollisionSoundVolume", 0.25);
     if (!mysql)
         showcase.Set("VolumeDetect", 1);
+    if (db is MySqlConnection)
+    {
+        showcase.Set("AllowUnsit", 0);
+        showcase.Set("ScriptedSitOnly", 1);
+    }
     showcase
+        .Set("CreatorID", Creator + ";https://host/agent")
         .Set("MediaURL", "http://example.test/media")
         .Set("AttachedPosX", 0.5)
         .Set("DynAttrs", DynXml())
@@ -346,9 +352,12 @@ static void InsertPrims(DbConnection db, bool mysql)
         .Set("ColorA", 40)
         .Insert(db, "prims");
 
-    BasePrim(RootB, Region, RootB, "link-restore").Set("LinkNumber", 9).Insert(db, "prims");
+    BasePrim(RootB, Region, RootB, "link-restore")
+        .Set("LinkNumber", 9)
+        .Set("CreatorID", Creator + ";https://host;Name;extra")
+        .Insert(db, "prims");
     BasePrim(ChildB3, Region, RootB, "child-three").Set("LinkNumber", 3).Insert(db, "prims");
-    BasePrim(ChildB2, Region, RootB, "child-two")
+    Row childTwo = BasePrim(ChildB2, Region, RootB, "child-two")
         .Set("LinkNumber", 2)
         .Set("SitTargetActive", 1)
         .Set("DynAttrs", "<llsd><map></map></llsd>")
@@ -356,8 +365,12 @@ static void InsertPrims(DbConnection db, bool mysql)
         .Set("Vehicle", "<Vehicle></Vehicle>")
         .Set("PhysInertia", "<PhysicsInertia></PhysicsInertia>")
         .Set("sopanims", new byte[] { 0x00 })
-        .Set("linksetdata", "not-json")
-        .Insert(db, "prims");
+        .Set("linksetdata", "not-json");
+    // A null pseudo-CRC skips this prim after link numbers are chosen. MySQL and
+    // PostgreSQL keep a readable value so their load still includes the row.
+    if (db is SQLiteConnection)
+        childTwo.Set("pseudocrc", DBNull.Value);
+    childTwo.Insert(db, "prims");
 
     BasePrim(RootC, Region, RootC, "link-table").Insert(db, "prims");
     BasePrim(ChildC2, Region, RootC, "child-first").Insert(db, "prims");
@@ -1484,6 +1497,8 @@ sealed class DumpPart
     public string touch_name { get; set; }
     public uint flags { get; set; }
     public string creator_id { get; set; }
+    public bool allow_unsit { get; set; }
+    public bool scripted_sit_only { get; set; }
     public string owner_id { get; set; }
     public string group_id { get; set; }
     public string last_owner_id { get; set; }
@@ -1563,6 +1578,8 @@ sealed class DumpPart
             touch_name = part.TouchName,
             flags = (uint)part.Flags,
             creator_id = part.CreatorIdentification,
+            allow_unsit = part.AllowUnsit,
+            scripted_sit_only = part.ScriptedSitOnly,
             owner_id = part.OwnerID.ToString(),
             group_id = part.GroupID.ToString(),
             last_owner_id = part.LastOwnerID.ToString(),

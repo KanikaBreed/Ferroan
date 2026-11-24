@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::error::TerrainError;
 use crate::height::Heightmap;
+use crate::objects::ObjectStoreKind;
 
 /// `None` when the store has no terrain row. A damaged blob is an error.
 pub async fn read_terrain(
@@ -39,15 +40,21 @@ pub async fn read_terrain(
 }
 
 /// Open the region store, require `RegionStore` at the pinned migration, and
-/// read its terrain. `None` means the file is absent or the table has no row
-/// for this region. `Standalone.ini` names `URI=file:OpenSim.db`, which C#
-/// creates; this row does not, so a missing file is no saved heightmap.
+/// read its terrain. `None` means the file is absent, the table has no row
+/// for this region, or the provider is MySQL or PostgreSQL. Those stores have
+/// no saved heightmap yet and the connection string is not read as SQLite.
+/// `Standalone.ini` names `URI=file:OpenSim.db`, which C# creates; this row
+/// does not, so a missing file is no saved heightmap.
 pub async fn open_terrain(
     connection: &str,
     region: Uuid,
     width: i32,
     height: i32,
+    kind: ObjectStoreKind,
 ) -> Result<Option<Heightmap>, TerrainError> {
+    if kind != ObjectStoreKind::Sqlite {
+        return Ok(None);
+    }
     let path = ferroan_db::sqlite_filename(connection)
         .map_err(|error| TerrainError::Store(error.to_string()))?;
     if !path.exists() {
@@ -63,6 +70,8 @@ pub async fn open_terrain(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    use crate::objects::ObjectStoreKind;
 
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -95,7 +104,7 @@ mod tests {
                 .as_nanos()
         ));
         let connection = format!("URI=file:{};UseUTF16Encoding=True", path.display());
-        let map = open_terrain(&connection, Uuid::nil(), 256, 256)
+        let map = open_terrain(&connection, Uuid::nil(), 256, 256, ObjectStoreKind::Sqlite)
             .await
             .unwrap();
         assert!(map.is_none());
@@ -134,5 +143,19 @@ mod tests {
         assert_eq!(map.cells()[15 * 16], 40.0);
         assert_eq!(map.height_at(0.0, 15.0), 40.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn mysql_terrain_does_not_open_the_connection_string() {
+        let map = open_terrain(
+            "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused",
+            Uuid::nil(),
+            256,
+            256,
+            ObjectStoreKind::Mysql,
+        )
+        .await
+        .unwrap();
+        assert!(map.is_none());
     }
 }

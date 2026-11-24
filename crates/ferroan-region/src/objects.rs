@@ -76,7 +76,7 @@ mod tests {
         .unwrap();
         let prims: usize = stored.groups.iter().map(|group| group.parts.len()).sum();
         assert_eq!(stored.groups.len(), 4);
-        assert_eq!(prims, 8);
+        assert_eq!(prims, 7);
         let other = load_stored_objects(
             Some(&ObjectStore {
                 connection,

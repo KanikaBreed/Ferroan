@@ -437,7 +437,13 @@ fn home_terrain_cell(directory: &Path, arrival: [f32; 3]) -> Result<f32, String>
         .enable_all()
         .build()
         .map_err(|error| format!("could not read the home terrain: {error}"))?;
-    match runtime.block_on(ferroan_scene::open_terrain(&connection, region, 256, 256)) {
+    match runtime.block_on(ferroan_scene::open_terrain(
+        &connection,
+        region,
+        256,
+        256,
+        ferroan_scene::ObjectStoreKind::Sqlite,
+    )) {
         Ok(Some(map)) => Ok(map.standing_cell(arrival[0] as i32, arrival[1] as i32)),
         Ok(None) => Ok(0.0),
         Err(error) => Err(format!("could not read the home terrain: {error}")),
