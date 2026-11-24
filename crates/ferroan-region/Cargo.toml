@@ -29,5 +29,6 @@ uuid = { version = "1.27.0", features = ["v4"] }
 workspace = true
 
 [dev-dependencies]
+ferroan-capture = { path = "../ferroan-capture" }
 ferroan-protocol = { path = "../ferroan-protocol" }
 tokio = { version = "1", features = ["test-util"] }
