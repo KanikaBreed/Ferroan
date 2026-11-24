@@ -13,6 +13,12 @@ inputs:
   rust-restore:
     description: Prefix restore key for an older Rust build
     required: true
+  rust-save:
+    description: >-
+      Save the Rust cache at the end of the job. false restores only.
+      Self-hosted images pass false except on main and the nightly schedule.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -54,12 +60,13 @@ runs:
           # The height walk reads older version.json blobs through Nerdbank's
           # own git reader, which does not ask Git to fetch a missing blob.
           # Listing every object does ask, and that downloads every blob, so
-          # the ids come from `git log -m --raw` (trees only). `-m` includes
-          # a merge commit whose version.json is not either parent's. Only
-          # those version files are fetched.
+          # the ids come from `git log -m --raw --no-renames` (trees only).
+          # `-m` includes a merge commit whose version.json is not either
+          # parent's. Rename detection on a blobless clone fetches blobs, so
+          # it is off. Only those version files are fetched.
           git clone --filter=blob:none "$url" "$dest"
           git -C "$dest" checkout --detach "$rev"
-          git -C "$dest" log -m --raw --no-abbrev --pretty=format: HEAD \
+          git -C "$dest" log -m --raw --no-renames --no-abbrev --pretty=format: HEAD \
             | awk -F'\t' 'NF >= 2 && $2 ~ /(^|\/)version\.json$/ {
                 split($1, a, " ")
                 if (a[3] !~ /^0+$/) print a[3]
@@ -98,7 +105,20 @@ runs:
           .scratch/live/src
         key: ${{ inputs.tranquillity-key }}
     - name: Restore the Rust build
+      if: inputs.rust-save != 'false'
       uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ inputs.rust-key }}
+        restore-keys: |
+          ${{ inputs.rust-restore }}
+    - name: Restore the Rust build without saving
+      if: inputs.rust-save == 'false'
+      uses: actions/cache/restore@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
       with:
         path: |
           ~/.cargo/registry/index

@@ -551,11 +551,16 @@ mod tests {
         assert!(images.contains("|| 'ubuntu-latest'"));
         assert!(!images.contains("concurrency:"));
         assert!(!images.contains("cancel-in-progress"));
-        assert!(images.contains("flock /tmp/ferroan-live-images.lock"));
+        assert!(images.contains("flock -o"));
+        assert!(images.contains("${RUNNER_TEMP}/../ferroan-live-images.lock"));
+        assert!(!images.contains("/tmp/ferroan-live-images.lock"));
         assert!(images.contains("RUNNER_ENVIRONMENT"));
         assert!(images.contains("runner.environment == 'self-hosted'"));
         assert!(images.contains("runner.name"));
         assert!(images.contains("rust-live-self-hosted-"));
+        assert!(images.contains("rust-save:"));
+        assert!(images.contains("refs/heads/main"));
+        assert!(images.contains("github.event_name == 'schedule'"));
         let gate = live.split("name: live (ubuntu-latest)").nth(1).unwrap();
         assert!(gate.contains("runs-on: ubuntu-latest"));
         assert!(!gate.contains("self-hosted"));
