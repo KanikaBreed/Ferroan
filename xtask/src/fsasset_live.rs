@@ -11,8 +11,10 @@
 //! A read of 10,000 assets is timed on each side with
 //! `DaysBetweenAccessTimeUpdates` 365, so the interval does not also write
 //! `access_time`. The texture run leaves the pin default of 0. The success
-//! line is `assets: match`. Since Pin8 the pin's force import writes the new
-//! hash (TB45, #524), so a force probe that keeps the old one fails. A miss status or an import page that differs fails the command.
+//! line is `assets: match`. The force probe stores an existing id again
+//! through C# HTTP, an ordinary store, which keeps the old hash on every pin;
+//! the force import itself (TB45, fixed at Pin8 by #524) is compared by
+//! `cargo xtask asset fsassets-cross`. A miss status or an import page that differs fails the command.
 //! Any other HTTP difference fails the command.
 
 use std::process::ExitCode;
@@ -226,15 +228,16 @@ fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
     ))
 }
 
-/// Since Pin8 C# `Store` honours `force` (TB45, #524): both sides' force
-/// update writes the new hash and `access_time` only.
+/// The C# probe is an ordinary `POST /assets` of an existing id, which keeps
+/// the old hash (as Ferroan's ordinary store does). Ferroan's force update,
+/// applied after it, writes the new hash and `access_time` only. Neither is a
+/// known difference: the force import (TB45) is compared by
+/// `asset fsassets-cross` since Pin8.
 #[cfg(any(target_os = "linux", test))]
 fn classify_force(csharp_kept_hash: bool, ferroan_wrote_hash: bool) -> Result<(), String> {
     match (csharp_kept_hash, ferroan_wrote_hash) {
-        (true, true) => Err(
-            "the pin's force import kept the old hash; TB45 is fixed at Pin8 (#524)".to_string(),
-        ),
-        (false, true) => Ok(()),
+        (true, true) => Ok(()),
+        (false, true) => Err("an ordinary C# store overwrote an existing hash".to_string()),
         (true, false) => Err("ferroan force update did not change the hash".to_string()),
         (false, false) => Err("force import changed neither hash".to_string()),
     }
@@ -1553,8 +1556,8 @@ mod tests {
     fn fsasset_probes_fail_a_miss_or_a_page_that_differs() {
         assert!(classify_missing(404, 404).is_ok());
         assert!(classify_missing(500, 404).is_err());
-        assert!(classify_force(true, true).is_err(), "TB45 is fixed at Pin8");
-        assert!(classify_force(false, true).is_ok());
+        assert!(classify_force(true, true).is_ok());
+        assert!(classify_force(false, true).is_err());
         assert!(classify_force(true, false).is_err());
         assert!(pages_match(false, "a\nb\n", "b\na\n").is_ok());
         assert!(pages_match(false, "a\n", "a\nb\n").is_err());
