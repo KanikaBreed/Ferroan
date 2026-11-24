@@ -120,6 +120,29 @@ pub fn finish_flags(flags: u32) -> u32 {
     }
 }
 
+/// One unsigned value the viewer reads from a 4-byte big-endian binary.
+fn u32_binary(value: u32) -> Llsd {
+    Llsd::Binary(value.to_be_bytes().to_vec())
+}
+
+/// Camera and body from the last viewer update. Rotations start as identity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HopPose {
+    pub center: [f32; 3],
+    pub head_rotation: [f32; 4],
+    pub body_rotation: [f32; 4],
+}
+
+impl Default for HopPose {
+    fn default() -> Self {
+        Self {
+            center: [0.0; 3],
+            head_rotation: [0.0, 0.0, 0.0, 1.0],
+            body_rotation: [0.0, 0.0, 0.0, 1.0],
+        }
+    }
+}
+
 /// Fields the viewer reads from one `TeleportFinish` event.
 #[derive(Clone, Debug)]
 pub struct FinishEvent {
@@ -137,7 +160,10 @@ pub struct FinishEvent {
 pub fn teleport_finish_event(event: &FinishEvent) -> Llsd {
     let mut info = Llsd::new_map();
     info.insert("AgentID", Llsd::Uuid(event.agent));
-    info.insert("LocationID", Llsd::Integer(FINISH_LOCATION));
+    info.insert(
+        "LocationID",
+        u32_binary(u32::try_from(FINISH_LOCATION).unwrap_or(0)),
+    );
     info.insert("SimIP", Llsd::Binary(event.endpoint.octets().to_vec()));
     info.insert("SimPort", Llsd::Integer(i32::from(event.port)));
     info.insert(
@@ -146,22 +172,15 @@ pub fn teleport_finish_event(event: &FinishEvent) -> Llsd {
     );
     info.insert("SeedCapability", Llsd::String(event.seed.clone()));
     info.insert("SimAccess", Llsd::Integer(SIM_ACCESS));
-    info.insert(
-        "TeleportFlags",
-        Llsd::Integer(i32::try_from(finish_flags(event.flags)).unwrap_or(i32::MAX)),
-    );
-    info.insert("RegionSizeX", Llsd::Integer(size_u32(event.size_x)));
-    info.insert("RegionSizeY", Llsd::Integer(size_u32(event.size_y)));
+    info.insert("TeleportFlags", u32_binary(finish_flags(event.flags)));
+    info.insert("RegionSizeX", u32_binary(event.size_x));
+    info.insert("RegionSizeY", u32_binary(event.size_y));
     let mut body = Llsd::new_map();
     body.insert("Info", Llsd::Array(vec![info]));
     let mut event = Llsd::new_map();
     event.insert("message", Llsd::String("TeleportFinish".to_owned()));
     event.insert("body", body);
     event
-}
-
-fn size_u32(size: u32) -> i32 {
-    i32::try_from(size).unwrap_or(i32::MAX)
 }
 
 /// What the viewer asked for. Flags already include `ViaLocation`.
@@ -174,6 +193,8 @@ pub struct HopRequest {
     pub look_at: [f32; 3],
     pub flags: u32,
     pub client_ip: String,
+    /// Last camera center and body rotations. Axes are computed later.
+    pub pose: HopPose,
 }
 
 pub(crate) enum HopCommand {
@@ -296,11 +317,19 @@ mod tests {
         });
         let info = event.get("body").get("Info").at(0);
         assert_eq!(event.get("message").as_str(), "TeleportFinish");
-        assert_eq!(info.get("LocationID").as_u32(), 4);
-        assert_eq!(info.get("SimAccess").as_i32(), 13);
-        assert_eq!(info.get("TeleportFlags").as_u32(), VIA_LOCATION);
-        assert_eq!(info.get("RegionSizeX").as_u32(), 256);
-        assert_eq!(info.get("RegionSizeY").as_u32(), 256);
+        assert_u32_binary(info.get("LocationID"), 4);
+        assert!(matches!(info.get("SimAccess"), Llsd::Integer(13)));
+        assert_u32_binary(info.get("TeleportFlags"), VIA_LOCATION);
+        assert_u32_binary(info.get("RegionSizeX"), 256);
+        assert_u32_binary(info.get("RegionSizeY"), 256);
+        let xml = ferroan_llsd::to_xml_string(&event);
+        assert!(xml.contains("<key>LocationID</key><binary>"));
+        assert!(xml.contains("<key>TeleportFlags</key><binary>"));
+        assert!(xml.contains("<key>RegionSizeX</key><binary>"));
+        assert!(xml.contains("<key>RegionSizeY</key><binary>"));
+        assert!(xml.contains("<key>SimPort</key><integer>"));
+        assert!(xml.contains("<key>SimAccess</key><integer>"));
+        assert!(!xml.contains("<key>LocationID</key><integer>"));
         assert_eq!(info.get("RegionHandle").as_u64(), handle);
         assert_eq!(info.get("SimIP").as_binary(), [127, 0, 0, 1]);
         assert_eq!(info.get("SimPort").as_i32(), 9000);
@@ -326,5 +355,17 @@ mod tests {
             caps_seed("http://127.0.0.1:9/", "abc"),
             "http://127.0.0.1:9/CAPS/abc0000/"
         );
+    }
+
+    fn assert_u32_binary(value: &Llsd, expected: u32) {
+        match value {
+            Llsd::Binary(bytes) if bytes.len() == 4 => {
+                assert_eq!(
+                    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                    expected
+                );
+            }
+            _ => panic!("expected a 4-byte binary, value was not that type"),
+        }
     }
 }

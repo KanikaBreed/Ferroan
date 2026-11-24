@@ -58,7 +58,7 @@
 
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
-use crate::source_hop::{HopCommand, HopOut, HopRequest, SourceHop};
+use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{
     self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, TeleportAnswer, VIA_LOCATION,
 };
@@ -458,6 +458,8 @@ struct State {
     return_wait: bool,
     /// This demotion already started a promotion. Cleared once the agent is root.
     return_started: bool,
+    /// Last `AgentUpdate` camera and rotations. A hop copies this into `UpdateAgent`.
+    viewer_pose: HopPose,
 }
 impl State {
     #[cfg(test)]
@@ -518,6 +520,7 @@ impl State {
             login_scene: None,
             return_wait: false,
             return_started: false,
+            viewer_pose: HopPose::default(),
         }
     }
 
@@ -1087,7 +1090,17 @@ impl State {
 
     /// `AgentUpdate` onto the frame. A missing scene or a full queue leaves the
     /// circuit up: the viewer sends another.
-    fn forward_agent_update(&self, expect: &CircuitExpect, sequence: u32, message: &AgentUpdate) {
+    fn forward_agent_update(
+        &mut self,
+        expect: &CircuitExpect,
+        sequence: u32,
+        message: &AgentUpdate,
+    ) {
+        self.viewer_pose = HopPose {
+            center: message.agent_data.camera_center.to_array(),
+            head_rotation: message.agent_data.head_rotation.to_array(),
+            body_rotation: message.agent_data.body_rotation.to_array(),
+        };
         let Some(scene) = &self.login_scene else {
             return;
         };
@@ -1285,6 +1298,7 @@ impl State {
             look_at: request.info.look_at.to_array(),
             flags,
             client_ip: to.ip().to_string(),
+            pose: self.viewer_pose,
         };
         self.in_transit = true;
         self.hop_agent = expect.agent_id;

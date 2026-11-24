@@ -381,10 +381,56 @@ impl GridClient {
             fields.insert(key.to_owned(), Field::Str(value));
         }
         let reply = grid_form(&self.endpoint, &fields).await?;
-        Ok(match reply.get("result") {
-            Some(Field::Map(region)) => parse_located(region),
-            _ => None,
-        })
+        let Some(Field::Map(region)) = reply.get("result") else {
+            return Ok(None);
+        };
+        let Some(mut located) = parse_located(region) else {
+            return Ok(None);
+        };
+        let Some(host) = located_host(region) else {
+            return Ok(None);
+        };
+        let port = located.endpoint.port();
+        located.endpoint = endpoint_for(&host, port).await;
+        Ok(Some(located))
+    }
+}
+
+/// A literal address is used as written. A name is looked up for at most two
+/// seconds, and an IPv4 answer wins. An empty name is not looked up.
+async fn endpoint_for(host: &str, port: u16) -> SocketAddr {
+    if host.is_empty() {
+        return SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+    }
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return SocketAddr::from((ip, port));
+    }
+    if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        return SocketAddr::from((ip, port));
+    }
+    let lookup = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await;
+    let Ok(Ok(addrs)) = lookup else {
+        return SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+    };
+    let addrs: Vec<SocketAddr> = addrs.collect();
+    if let Some(address) = addrs.iter().find(|address| address.is_ipv4()) {
+        return *address;
+    }
+    addrs
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))
+}
+
+fn located_host(map: &FieldMap) -> Option<String> {
+    match map.get("serverIP") {
+        None => Some("127.0.0.1".to_string()),
+        Some(Field::Str(text)) => Some(text.clone()),
+        _ => None,
     }
 }
 
@@ -417,9 +463,13 @@ fn parse_located(map: &FieldMap) -> Option<LocatedRegion> {
         _ => return None,
     };
     let port = endpoint_port(map)?;
+    // The caller resolves a name. A non-address stays unspecified until then.
     let endpoint = match host.parse::<Ipv4Addr>() {
         Ok(ip) => SocketAddr::from((ip, port)),
-        Err(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+        Err(_) => host
+            .parse::<Ipv6Addr>()
+            .map(|ip| SocketAddr::from((ip, port)))
+            .unwrap_or_else(|_| SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))),
     };
     Some(LocatedRegion {
         region_id,
@@ -1367,5 +1417,63 @@ mod tests {
                 .is_none()
         );
         serving.abort();
+    }
+
+    #[tokio::test]
+    async fn a_dns_name_resolves_to_ipv4_and_an_empty_host_does_not() {
+        assert_eq!(
+            endpoint_for("localhost", 9100).await,
+            "127.0.0.1:9100".parse().unwrap()
+        );
+        assert_eq!(
+            endpoint_for("", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+        assert_eq!(
+            endpoint_for("ferroan.invalid", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+    }
+
+    #[tokio::test]
+    async fn region_by_position_resolves_a_dns_name() {
+        let mut region = FieldMap::new();
+        for (key, value) in [
+            ("uuid", Uuid::from_u128(7).to_string()),
+            ("locX", "256".to_string()),
+            ("locY", "256".to_string()),
+            ("serverIP", "localhost".to_string()),
+            ("serverPort", "9100".to_string()),
+            ("serverURI", "http://localhost:9200".to_string()),
+        ] {
+            region.insert(key.to_owned(), Field::Str(value));
+        }
+        let mut ok = FieldMap::new();
+        ok.insert("result".to_owned(), Field::Map(region));
+        let xml = ferroan_http::build_xml_response(&ok).unwrap();
+        let app = axum::Router::new().fallback(move || {
+            let xml = xml.clone();
+            async move {
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/xml")],
+                    xml,
+                )
+            }
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let client = GridClient {
+            endpoint: format!("{base}/grid"),
+        };
+        let found = client
+            .region_by_position(Uuid::from_u128(3), 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        serving.abort();
+        assert_eq!(found.endpoint, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(found.server_uri, "http://localhost:9200/");
     }
 }

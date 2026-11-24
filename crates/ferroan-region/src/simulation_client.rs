@@ -1192,6 +1192,116 @@ fn json_f32(value: Option<&Value>) -> f32 {
         .map_or(0.0, |number| number as f32)
 }
 
+fn json_i32_value(value: Option<&Value>) -> i32 {
+    value
+        .and_then(Value::as_i64)
+        .and_then(|number| i32::try_from(number).ok())
+        .unwrap_or(0)
+}
+
+fn uuid_value(value: Option<&Value>) -> Uuid {
+    value
+        .and_then(Value::as_str)
+        .and_then(|text| Uuid::parse_str(text).ok())
+        .unwrap_or_else(Uuid::nil)
+}
+
+fn byte_list(value: Option<&Value>) -> Vec<u8> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.as_u64().and_then(|number| u8::try_from(number).ok()))
+        .collect()
+}
+
+/// `packed_appearance` from a CreateAgent or AgentData body.
+pub(crate) fn appearance_from_json(value: &Value) -> Appearance {
+    Appearance {
+        serial: json_i32_value(value.get("serial")),
+        height: json_f32(value.get("height")),
+        aphz: json_f32(value.get("aphz")),
+        has_texture: value.get("te8").is_some()
+            || value.get("textures").is_some()
+            || value.get("wearables").is_some(),
+        wearables: wearables_from(value.get("wearables")),
+        te8: byte_list(value.get("te8")),
+        textures: uuid_values(value.get("textures")),
+        baked: baked_from(value.get("bakedcache"))
+            .into_iter()
+            .chain(baked_from(value.get("bc8")))
+            .collect(),
+        visual_params: byte_list(value.get("visualparams")),
+        attachments: attachments_from(value.get("attachments")),
+    }
+}
+
+fn wearables_from(value: Option<&Value>) -> Vec<Vec<WearableItem>> {
+    let Some(Value::Array(slots)) = value else {
+        return Vec::new();
+    };
+    slots
+        .iter()
+        .map(|slot| {
+            slot.as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| WearableItem {
+                            item: uuid_value(item.get("item")),
+                            asset: uuid_value(item.get("asset")),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn baked_from(value: Option<&Value>) -> Vec<BakedCache> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| BakedCache {
+            texture_index: texture_index_from(item.get("textureindex")),
+            cache_id: uuid_value(item.get("cacheid")),
+            texture_id: uuid_value(item.get("textureid")),
+        })
+        .collect()
+}
+
+fn attachments_from(value: Option<&Value>) -> Vec<Attachment> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| Attachment {
+            point: json_i32_value(item.get("point")),
+            item: uuid_value(item.get("item")),
+            asset: uuid_value(item.get("asset")),
+        })
+        .collect()
+}
+
+fn uuid_values(value: Option<&Value>) -> Vec<Uuid> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items.iter().map(|item| uuid_value(Some(item))).collect()
+}
+
+fn texture_index_from(value: Option<&Value>) -> u32 {
+    let bytes = byte_list(value);
+    let Ok(chunk) = <[u8; 4]>::try_from(bytes.as_slice()) else {
+        return 0;
+    };
+    u32::from_be_bytes(chunk)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1321,6 +1431,9 @@ mod tests {
                 &context,
             );
             assert_same(&bodies.create, &created, "create");
+            let source = bodies.source.as_ref().unwrap();
+            assert_eq!(bodies.agent.region_id, source.region_id);
+            assert_ne!(bodies.agent.region_id, bodies.destination.region_id);
             let updated = pack_update(&bodies.destination, &bodies.agent, &context);
             assert_same(&bodies.update, &updated, "update");
             let query = pack_query(&bodies.query);
@@ -1701,7 +1814,7 @@ mod tests {
             mac: text_of(body.get("mac")),
             id0: text_of(body.get("id0")),
             far: json_f32(body.get("far")),
-            appearance: body.get("packed_appearance").map(appearance_from),
+            appearance: body.get("packed_appearance").map(appearance_from_json),
             service_urls: service_urls_of(body.get("service_urls")),
         }
     }
@@ -1734,7 +1847,7 @@ mod tests {
             default_animation: body.get("default_animation").map(anim_from),
             animation_state: body.get("animation_state").map(anim_from),
             motion_state: json_i32(body.get("motion_state")),
-            appearance: body.get("packed_appearance").map(appearance_from),
+            appearance: body.get("packed_appearance").map(appearance_from_json),
             sit_offset: parse_vec3(text_of(body.get("sit_offset")).as_str()),
             children_seeds: seeds_of(body.get("children_seeds")),
             callback: body
@@ -1742,76 +1855,6 @@ mod tests {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         }
-    }
-
-    fn appearance_from(value: &Value) -> Appearance {
-        Appearance {
-            serial: json_i32(value.get("serial")),
-            height: json_f32(value.get("height")),
-            aphz: json_f32(value.get("aphz")),
-            has_texture: value.get("te8").is_some()
-                || value.get("textures").is_some()
-                || value.get("wearables").is_some(),
-            wearables: wearables_of(value.get("wearables")),
-            te8: bytes_of(value.get("te8")),
-            textures: uuid_list(value.get("textures")),
-            baked: baked_list(value.get("bakedcache"))
-                .into_iter()
-                .chain(baked_list(value.get("bc8")))
-                .collect(),
-            visual_params: bytes_of(value.get("visualparams")),
-            attachments: attachments_of(value.get("attachments")),
-        }
-    }
-
-    fn wearables_of(value: Option<&Value>) -> Vec<Vec<WearableItem>> {
-        let Some(Value::Array(slots)) = value else {
-            return Vec::new();
-        };
-        slots
-            .iter()
-            .map(|slot| {
-                slot.as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|item| WearableItem {
-                                item: uuid_of(item.get("item")),
-                                asset: uuid_of(item.get("asset")),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect()
-    }
-
-    fn baked_list(value: Option<&Value>) -> Vec<BakedCache> {
-        let Some(Value::Array(items)) = value else {
-            return Vec::new();
-        };
-        items
-            .iter()
-            .map(|item| BakedCache {
-                texture_index: texture_index(item.get("textureindex")),
-                cache_id: uuid_of(item.get("cacheid")),
-                texture_id: uuid_of(item.get("textureid")),
-            })
-            .collect()
-    }
-
-    fn attachments_of(value: Option<&Value>) -> Vec<Attachment> {
-        let Some(Value::Array(items)) = value else {
-            return Vec::new();
-        };
-        items
-            .iter()
-            .map(|item| Attachment {
-                point: json_i32(item.get("point")),
-                item: uuid_of(item.get("item")),
-                asset: uuid_of(item.get("asset")),
-            })
-            .collect()
     }
 
     fn anim_from(value: &Value) -> Anim {
@@ -1851,13 +1894,6 @@ mod tests {
         pairs
     }
 
-    fn uuid_list(value: Option<&Value>) -> Vec<Uuid> {
-        let Some(Value::Array(items)) = value else {
-            return Vec::new();
-        };
-        items.iter().map(|item| uuid_of(Some(item))).collect()
-    }
-
     fn bytes_of(value: Option<&Value>) -> Vec<u8> {
         let Some(Value::Array(items)) = value else {
             return Vec::new();
@@ -1866,14 +1902,6 @@ mod tests {
             .iter()
             .filter_map(|item| item.as_u64().and_then(|number| u8::try_from(number).ok()))
             .collect()
-    }
-
-    fn texture_index(value: Option<&Value>) -> u32 {
-        let bytes = bytes_of(value);
-        let Ok(chunk) = <[u8; 4]>::try_from(bytes.as_slice()) else {
-            return 0;
-        };
-        u32::from_be_bytes(chunk)
     }
 
     fn uuid_of(value: Option<&Value>) -> Uuid {

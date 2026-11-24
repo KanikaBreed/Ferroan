@@ -65,7 +65,7 @@ use crate::config::RegionConfig;
 use crate::grid::{GridClient, GridError, LocatedRegion};
 use crate::simulation::SimulationState;
 use crate::simulation_client::{
-    AccessQuery, AgentData, Circuit, RegionEnd, SimulationClient, TransferContext,
+    AccessQuery, AgentData, Appearance, Circuit, RegionEnd, SimulationClient, TransferContext,
 };
 
 /// One accepted root, plus the region it is leaving.
@@ -80,6 +80,11 @@ struct HopSession {
     source: RegionEnd,
     size_x: u32,
     size_y: u32,
+    viewer: String,
+    channel: String,
+    mac: String,
+    id0: String,
+    appearance: Option<Appearance>,
 }
 
 /// A neighbour the hop can try. `endpoint` is the address the viewer connects to.
@@ -279,6 +284,11 @@ pub struct HopLogin {
     pub circuit_code: u32,
     pub first_name: String,
     pub last_name: String,
+    pub viewer: String,
+    pub channel: String,
+    pub mac: String,
+    pub id0: String,
+    pub appearance: Option<Appearance>,
 }
 
 /// Shared neighbour client and the source region. One per region process.
@@ -350,6 +360,11 @@ impl HopEnv {
             source: self.source.clone(),
             size_x: self.size_x,
             size_y: self.size_y,
+            viewer: login.viewer,
+            channel: login.channel,
+            mac: login.mac,
+            id0: login.id0,
+            appearance: login.appearance,
         };
         let caps = self.caps.clone();
         let agent_id = login.agent_id;
@@ -486,9 +501,10 @@ async fn perform(work: HopWork<'_>) {
         return;
     }
     let seed = caps_seed(&destination.end.server_uri, &caps_path);
+    let handle = destination_handle(&destination);
     let event = teleport_finish_event(&FinishEvent {
         agent: session.agent_id,
-        handle: request.region_handle,
+        handle,
         endpoint: ip,
         port,
         flags: request.flags,
@@ -502,7 +518,7 @@ async fn perform(work: HopWork<'_>) {
             .await;
         return;
     }
-    let outside = needs_closing(session, &destination, request.region_handle);
+    let outside = needs_closing(session, &destination);
     let callback = if outside {
         presence.arm(session.agent_id);
         Some(release_uri(session))
@@ -510,13 +526,7 @@ async fn perform(work: HopWork<'_>) {
         None
     };
     presence.demote(session.agent_id);
-    let update = agent_update(
-        session,
-        &destination,
-        position,
-        departure_look(request.look_at),
-        callback,
-    );
+    let update = agent_update(session, request, position, callback);
     tracing::debug!("source hop: update");
     let arrived = match client
         .update_agent(&destination.end, &update, &context)
@@ -632,11 +642,16 @@ fn handle_world(handle: u64) -> (u32, u32) {
     ((handle >> 32) as u32, handle as u32)
 }
 
-fn needs_closing(session: &HopSession, destination: &HopDestination, handle: u64) -> bool {
+/// Region handle of the resolved destination, in metres.
+fn destination_handle(destination: &HopDestination) -> u64 {
+    (u64::from(destination.end.loc_x) << 32) | u64::from(destination.end.loc_y)
+}
+
+fn needs_closing(session: &HopSession, destination: &HopDestination) -> bool {
     if destination.end.loc_y == 0 {
         return true;
     }
-    let (new_x, new_y) = handle_cells(handle);
+    let (new_x, new_y) = handle_cells(destination_handle(destination));
     outside_view(
         (session.source.loc_x >> 8, session.source.loc_y >> 8),
         (new_x, new_y),
@@ -709,58 +724,61 @@ fn child_circuit(
         service_session_id: String::new(),
         start_pos: position,
         client_ip: request.client_ip.clone(),
-        viewer: String::new(),
-        channel: String::new(),
-        mac: String::new(),
-        id0: String::new(),
+        viewer: session.viewer.clone(),
+        channel: session.channel.clone(),
+        mac: session.mac.clone(),
+        id0: session.id0.clone(),
         far: 0.0,
-        appearance: None,
+        appearance: session.appearance.clone(),
         service_urls: Vec::new(),
     }
 }
 
-/// The destination copies this axis into the arrival look. A missing heading
-/// stays the fixture default.
-fn departure_look(look_at: [f32; 3]) -> [f32; 3] {
-    if look_at[0].is_finite()
-        && look_at[1].is_finite()
-        && look_at[0].abs() + look_at[1].abs() > 1.0e-6
+/// Horizontal look, normalised. A zero look keeps the forward axis and sets
+/// the up axis. The pinned server writes that up vector into the at axis (TB77).
+fn look_axes(look_at: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let up = [0.0, 0.0, 1.0];
+    if !look_at[0].is_finite()
+        || !look_at[1].is_finite()
+        || (look_at[0] == 0.0 && look_at[1] == 0.0)
     {
-        [look_at[0], look_at[1], 0.0]
-    } else {
-        [1.0, 0.0, 0.0]
+        // Left is (-at.Y, at.X, 0). at.Y is +0, so the wire form is `<-0, 1, 0>`.
+        return ([1.0, 0.0, 0.0], [-0.0, 1.0, 0.0], up);
     }
+    let length = (look_at[0] * look_at[0] + look_at[1] * look_at[1]).sqrt();
+    let at = [look_at[0] / length, look_at[1] / length, 0.0];
+    (at, [-at[1], at[0], 0.0], up)
 }
 
-/// The position and look are the destination the viewer asked for. The source
-/// frame keeps the pose the avatar had in this region. The hop does not write it.
+/// Position is the destination the viewer asked for. `region_id` is this
+/// region. The camera center and rotations are the last viewer update.
 fn agent_update(
     session: &HopSession,
-    destination: &HopDestination,
+    request: &HopRequest,
     position: [f32; 3],
-    look_at: [f32; 3],
     callback: Option<String>,
 ) -> AgentData {
+    let (at_axis, left_axis, up_axis) = look_axes(request.look_at);
     AgentData {
-        region_id: destination.end.region_id,
+        region_id: session.source.region_id,
         circuit_code: session.circuit_code,
         agent_id: session.agent_id,
         session_id: session.session_id,
         position,
         velocity: [0.0; 3],
-        center: [0.0; 3],
+        center: request.pose.center,
         size: [0.0; 3],
-        at_axis: look_at,
-        left_axis: [0.0; 3],
-        up_axis: [0.0; 3],
+        at_axis,
+        left_axis,
+        up_axis,
         wait_for_root: true,
         // Default draw. A smaller far clamps the destination view inside this
         // region, so it never tells the viewer about the region just left.
         far: f32::from(u16::try_from(REGION_VIEW_METRES).unwrap_or(0)),
         throttles: Vec::new(),
         locomotion_state: 0,
-        head_rotation: [0.0; 4],
-        body_rotation: [0.0; 4],
+        head_rotation: request.pose.head_rotation,
+        body_rotation: request.pose.body_rotation,
         control_flags: 0,
         god_data: true,
         agent_access: 0,
@@ -821,10 +839,36 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn departure_look_keeps_a_heading_and_defaults_a_zero() {
-        assert_eq!(super::departure_look([0.0, 2.0, 4.0]), [0.0, 2.0, 0.0]);
-        assert_eq!(super::departure_look([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]);
-        assert_eq!(super::departure_look([f32::NAN, 1.0, 0.0]), [1.0, 0.0, 0.0]);
+    fn look_axes_normalise_a_heading_and_keep_up_on_a_zero() {
+        let (at, left, up) = super::look_axes([0.0, 2.0, 4.0]);
+        assert_eq!(at, [0.0, 1.0, 0.0]);
+        assert_eq!(left, [-1.0, 0.0, 0.0]);
+        assert_eq!(up, [0.0, 0.0, 1.0]);
+        let (at, left, up) = super::look_axes([0.0, 0.0, 1.0]);
+        assert_eq!(at, [1.0, 0.0, 0.0]);
+        assert_ne!(at, [0.0, 0.0, 1.0]);
+        assert!(left[0].is_sign_negative());
+        assert_eq!(left, [-0.0, 1.0, 0.0]);
+        assert_eq!(up, [0.0, 0.0, 1.0]);
+        let (at, _, up) = super::look_axes([f32::NAN, 1.0, 0.0]);
+        assert_eq!(at, [1.0, 0.0, 0.0]);
+        assert_eq!(up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn destination_origin_stays_in_view_inside_a_large_region() {
+        let mut home = session();
+        home.source.loc_x = 0;
+        home.source.loc_y = 256;
+        let mut dest = destination("127.0.0.1:9".parse().unwrap());
+        dest.end.loc_x = 256;
+        dest.end.loc_y = 256;
+        dest.size_x = 768;
+        dest.size_y = 256;
+        assert!(outside_view((0, 1), (2, 1), (256, 256), (256, 256)));
+        assert!(!super::needs_closing(&home, &dest));
+        dest.end.loc_x = 1024;
+        assert!(super::needs_closing(&home, &dest));
     }
 
     const HANDLE: u64 = 256_u64 << 32;
@@ -885,6 +929,22 @@ mod tests {
             },
             size_x: 256,
             size_y: 256,
+            viewer: "Ferroan Bot 0.1.0".to_string(),
+            channel: "Ferroan Bot".to_string(),
+            mac: "aabb".to_string(),
+            id0: "ccdd".to_string(),
+            appearance: Some(crate::simulation_client::Appearance {
+                serial: 1,
+                height: 1.8,
+                aphz: 0.0,
+                has_texture: false,
+                wearables: Vec::new(),
+                te8: Vec::new(),
+                textures: Vec::new(),
+                baked: Vec::new(),
+                visual_params: Vec::new(),
+                attachments: Vec::new(),
+            }),
         }
     }
 
@@ -909,6 +969,9 @@ mod tests {
 
     fn listed_for(addr: SocketAddr, handle: u64, loc_y: u32) -> Arc<dyn RegionDirectory> {
         let mut dest = destination(addr);
+        // Closing follows the destination origin, so a far request handle
+        // needs an origin that is actually outside the view.
+        dest.end.loc_x = (handle >> 32) as u32;
         dest.end.loc_y = loc_y;
         let mut regions = HashMap::new();
         regions.insert(handle, dest);
@@ -1327,12 +1390,28 @@ mod tests {
         assert_eq!(create["teleport_flags"], "16");
         assert_eq!(create["start_pos"], "<128, 128, 30>");
         assert_eq!(create["client_ip"], "127.0.0.1");
+        assert_eq!(create["viewer"], "Ferroan Bot 0.1.0");
+        assert_eq!(create["channel"], "Ferroan Bot");
+        assert_eq!(create["mac"], "aabb");
+        assert_eq!(create["id0"], "ccdd");
+        assert_eq!(
+            create["packed_appearance"]["height"].as_f64(),
+            Some(f64::from(1.8f32))
+        );
+        assert!(create["packed_appearance"].get("wearables").is_none());
         let (method, _) = request_parts(&hits[2].header);
         assert_eq!(method, "PUT");
         let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
         assert_eq!(update["message_type"], "AgentData");
         assert_eq!(update["wait_for_root"], true);
         assert_eq!(update["at_axis"], "<1, 0, 0>");
+        assert_eq!(update["left_axis"], "<-0, 1, 0>");
+        assert_eq!(update["up_axis"], "<0, 0, 1>");
+        assert_eq!(update["center"], "<0, 0, 0>");
+        assert_eq!(update["head_rotation"], "<0, 0, 0, 1>");
+        assert_eq!(update["body_rotation"], "<0, 0, 0, 1>");
+        assert_eq!(update["region_id"], Uuid::from_u128(9).to_string());
+        assert_ne!(update["region_id"], Uuid::from_u128(7).to_string());
         assert_eq!(update["far"].as_f64(), Some(255.0));
         assert!(update["god_data"].is_object());
         assert!(update.get("cb_uri").is_none());
@@ -1341,12 +1420,18 @@ mod tests {
         let info = event.get("events").at(0);
         assert_eq!(info.get("message").as_str(), "TeleportFinish");
         let body = info.get("body").get("Info").at(0);
+        assert!(matches!(body.get("LocationID"), Llsd::Binary(bytes) if bytes.len() == 4));
+        assert!(matches!(body.get("TeleportFlags"), Llsd::Binary(bytes) if bytes.len() == 4));
+        assert!(matches!(body.get("RegionSizeX"), Llsd::Binary(bytes) if bytes.len() == 4));
+        assert!(matches!(body.get("RegionSizeY"), Llsd::Binary(bytes) if bytes.len() == 4));
+        assert!(matches!(body.get("SimPort"), Llsd::Integer(_)));
+        assert!(matches!(body.get("SimAccess"), Llsd::Integer(_)));
         assert_eq!(body.get("LocationID").as_u32(), 4);
         assert_eq!(body.get("SimAccess").as_i32(), 13);
         assert_eq!(body.get("TeleportFlags").as_u32(), 16);
         assert_eq!(body.get("RegionSizeX").as_u32(), 256);
         assert_eq!(body.get("RegionSizeY").as_u32(), 256);
-        assert_eq!(body.get("RegionHandle").as_u64(), HANDLE);
+        assert_eq!(body.get("RegionHandle").as_u64(), (256_u64 << 32) | 256);
         assert_eq!(body.get("SimIP").as_binary(), [127, 0, 0, 1]);
         assert_eq!(body.get("SimPort").as_i32(), 9100);
         assert!(body.get("SeedCapability").as_str().contains("/CAPS/"));
