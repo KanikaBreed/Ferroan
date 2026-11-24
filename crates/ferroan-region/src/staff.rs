@@ -182,6 +182,17 @@ mod tests {
     }
 
     #[test]
+    fn redact_secrets_cover_the_root_and_bypass_limits() {
+        let roots = crate::simulation::ROOT_AGENT_LIMIT + ROOT_BYPASS_LIMIT;
+        let slots = roots * 2 * 4;
+        assert_eq!(
+            ferroan_log::MAX_SECRETS,
+            slots,
+            "log.redact-secrets does not cover {roots} roots with one overlapping login"
+        );
+    }
+
+    #[test]
     fn a_grid_god_needs_the_flag_and_level_200() {
         let mut gate = sample(true, false, false, false);
         let god = Uuid::from_u128(4);

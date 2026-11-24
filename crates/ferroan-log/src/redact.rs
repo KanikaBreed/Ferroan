@@ -9,7 +9,9 @@
 //! in [`SessionSecrets`]. Dropping that value forgets them. The same text
 //! shared by two live sessions stays until the last one drops. The list stops
 //! at [`MAX_SECRETS`]; a distinct secret past that is not stored and the miss
-//! is `log.redact-secrets`.
+//! is `log.redact-secrets`. `ferroan-region` checks that this bound still
+//! covers every ordinary root and every bypass root, including one
+//! overlapping replacement.
 
 use std::sync::Mutex;
 
@@ -17,9 +19,11 @@ use ferroan_diag::{Kind, REDACT_SECRETS};
 
 const REPLACEMENT: &str = "[redacted]";
 const CAPABILITY: &str = "[redacted-capability]";
-/// (40 ordinary roots + 21 staff and god bypass roots), each overlapping one
-/// replacement, times the four login secrets.
-pub(crate) const MAX_SECRETS: usize = 488;
+/// Ordinary roots plus staff and god bypass roots, each overlapping one
+/// replacement, times the four login secrets (session id, secure session id,
+/// circuit code, seed path). `ferroan-region` asserts this equals
+/// `(ROOT_AGENT_LIMIT + ROOT_BYPASS_LIMIT) * 2 * 4`.
+pub const MAX_SECRETS: usize = 488;
 
 struct Entry {
     text: String,
