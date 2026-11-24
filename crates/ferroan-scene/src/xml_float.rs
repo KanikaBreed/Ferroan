@@ -9,6 +9,36 @@
 //! same distance keep the even final digit. Scene does not depend on the
 //! grid-user crate that first checked this against `float.ToString`.
 
+/// en-US general spelling of one `double`, for `SoundGain`.
+///
+/// A value that is exactly a `float` uses [`format_f32`], so a store load keeps
+/// the spelling the serializer already writes. Anything else uses the shortest
+/// round trip, with `E` and a signed two-digit exponent.
+pub(crate) fn format_f64(value: f64) -> String {
+    let narrow = value as f32;
+    if f64::from(narrow) == value {
+        return format_f32(narrow);
+    }
+    if value.is_nan() {
+        return "NaN".to_owned();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            "-∞".to_owned()
+        } else {
+            "∞".to_owned()
+        };
+    }
+    let text = format!("{value}");
+    let Some((body, exponent)) = text.split_once('e') else {
+        return text;
+    };
+    let Ok(exponent) = exponent.parse::<i32>() else {
+        return text;
+    };
+    format!("{body}E{exponent:+03}")
+}
+
 pub(crate) fn format_f32(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_owned();

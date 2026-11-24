@@ -103,7 +103,7 @@ use crate::payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, MediaFace, ObjectAnimation, PhysicsInertia,
     RenderMaterials, Vehicle,
 };
-use xml_float::format_f32;
+use xml_float::{format_f32, format_f64};
 
 #[path = "xml_read.rs"]
 mod xml_read;
@@ -161,7 +161,12 @@ fn write_group(group: &ObjectGroup, original: bool) -> String {
 fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
     out.start_part();
     out.bool("AllowedDrop", part.allowed_drop);
-    let (creator, creator_data) = part_creator(&part.creator_id);
+    let (creator, creator_data) = if let Some(raw) = &part.xml_creator_data {
+        let (id, _) = part_creator(&part.creator_id);
+        (id, Some(raw.clone()))
+    } else {
+        part_creator(&part.creator_id)
+    };
     out.uuid("CreatorID", creator);
     if let Some(data) = creator_data.filter(|text| !text.is_empty()) {
         out.elem("CreatorData", &data);
@@ -267,7 +272,7 @@ fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
     out.vec3("CameraEyeOffset", part.camera_eye);
     out.vec3("CameraAtOffset", part.camera_at);
     out.uuid("SoundID", part.sound);
-    out.float("SoundGain", part.sound_gain);
+    out.elem("SoundGain", &format_f64(part.sound_gain));
     out.display("SoundFlags", part.sound_flags);
     out.elem("SoundRadius", "0");
     out.bool("SoundQueueing", false);
@@ -317,7 +322,12 @@ fn write_item(out: &mut Out, item: &InventoryItem) {
     out.uuid("AssetID", item.asset_id);
     out.display("BasePermissions", item.base_permissions);
     out.display("CreationDate", item.creation_date);
-    let (creator, creator_data) = item_creator(&item.creator_id);
+    let (creator, creator_data) = if let Some(raw) = &item.xml_creator_data {
+        let (id, _) = item_creator(&item.creator_id);
+        (id, Some(raw.clone()))
+    } else {
+        item_creator(&item.creator_id)
+    };
     out.uuid("CreatorID", creator);
     if let Some(data) = creator_data.filter(|text| !text.is_empty()) {
         out.elem("CreatorData", &data);

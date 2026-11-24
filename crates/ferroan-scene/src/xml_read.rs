@@ -38,12 +38,24 @@
 //! number to 0, or to 1 when another part is added. XML2 keeps a child link of
 //! 0 as the added position and restores any other child link. Original XML
 //! restores every child link and trims that child's permission masks.
+//!
+//! A bad value in the shape or task-item table keeps that field's default and
+//! the group. Ten such failures abort that read. A bad value on the part
+//! itself drops the group. XML2 finds a `SceneObjectPart` anywhere in the
+//! document. Original XML reads `KeyframeMotion` and `StartStr` only when they
+//! are the next elements after `OtherParts`, in that order.
 
+use std::collections::HashSet;
+
+use ferroan_diag::{Kind, OBJECT_TASK_ITEMS, OBJECT_XML_BYTES, REGION_LINKSET_PRIMS, refuse};
 use ferroan_llsd::from_xml_element;
-use ferroan_llsd::xml::Element;
+use ferroan_llsd::xml::{Element, Node};
 use uuid::Uuid;
 
-use crate::objects::{InventoryItem, ObjectGroup, ObjectPart, ObjectRaw, ObjectShape};
+use crate::objects::{
+    DEFAULT_BOX_TEXTURE, InventoryItem, MAX_LINKSET_PRIMS, MAX_OBJECT_XML_BYTES, MAX_TASK_ITEMS,
+    ObjectGroup, ObjectPart, ObjectRaw, ObjectShape,
+};
 use crate::payloads::{
     dyn_attrs_from_llsd, parse_animations, parse_keyframe, parse_linkset, parse_materials,
     parse_media, read_inertia, read_vehicle,
@@ -51,8 +63,12 @@ use crate::payloads::{
 
 const PERM_ALL: u32 = 0x8_e000;
 const PERM_EXPORT: u32 = 0x1_0000;
+const ITEM_PERM: u32 = 0x7fff_ffff;
 const FLAG_STRIP: u32 = 0x0000_0080 | 0x0000_0200 | 0x0001_0000;
 const FLAG_VOLUME: u32 = 0x0000_4000;
+const SHAPE_ERRORS: u32 = 10;
+const SCULPT_MESH: u8 = 5;
+const PHYS_CONVEX: u8 = 2;
 
 const MATERIAL: [(f32, f32); 8] = [
     (0.8, 0.4),
@@ -67,40 +83,112 @@ const MATERIAL: [(f32, f32); 8] = [
 
 /// XML2. No scene object parts is no group.
 pub fn from_xml2(xml: &str) -> Option<ObjectGroup> {
-    let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
-    read_group(&root, false)
+    from_xml2_at(xml, unix_now())
 }
 
 /// Original XML. A repeated `xmlns:` prefix is collapsed before the read.
 pub fn from_original_xml(xml: &str) -> Option<ObjectGroup> {
-    let xml = sanitize_xml(xml);
-    let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
-    read_group(&root, true)
+    from_original_xml_at(xml, unix_now())
 }
 
-fn read_group(root: &Element, original: bool) -> Option<ObjectGroup> {
+/// XML2 with the clock a missing item `CreationDate` uses.
+pub(crate) fn from_xml2_at(xml: &str, now: u32) -> Option<ObjectGroup> {
+    bounded(xml)?;
+    let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
+    read_xml2(&root, now)
+}
+
+/// Original XML with the clock a missing item `CreationDate` uses.
+pub(crate) fn from_original_xml_at(xml: &str, now: u32) -> Option<ObjectGroup> {
+    bounded(xml)?;
+    let xml = sanitize_xml(xml);
+    let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
+    read_original(&root, now)
+}
+
+fn bounded(xml: &str) -> Option<()> {
+    let bytes = u64::try_from(xml.len()).unwrap_or(u64::MAX);
+    if bytes > MAX_OBJECT_XML_BYTES {
+        refuse(
+            OBJECT_XML_BYTES,
+            Kind::Hard,
+            MAX_OBJECT_XML_BYTES,
+            bytes,
+            "object-xml",
+        );
+        return None;
+    }
+    Some(())
+}
+
+fn unix_now() -> u32 {
+    u32::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn read_xml2(root: &Element, now: u32) -> Option<ObjectGroup> {
+    let mut part_els = Vec::new();
+    gather(root, "SceneObjectPart", &mut part_els);
+    if part_els.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(part_els.len());
+    for el in part_els {
+        parts.push(read_part(el, now)?);
+    }
+    accept_parts(&mut parts, false)?;
+    let mut motions = Vec::new();
+    gather(root, "KeyframeMotion", &mut motions);
+    if let Some(child) = motions.first() {
+        attach_motion(&mut parts, child)?;
+    }
+    let mut starts = Vec::new();
+    gather(root, "StartStr", &mut starts);
+    Some(ObjectGroup {
+        rez_parameter: starts.first().map(|child| child.text()),
+        parts,
+    })
+}
+
+fn read_original(root: &Element, now: u32) -> Option<ObjectGroup> {
     if root.name != "SceneObjectGroup" {
         return None;
     }
-    let mut parts = parts_of(root, original)?;
-    if parts.is_empty() {
-        return None;
-    }
-    finish_parts(&mut parts, original);
-    let mut rez = None;
-    let mut saw_motion = false;
-    for child in root.elements() {
-        if child.name == "KeyframeMotion" && !saw_motion {
-            saw_motion = true;
-            let bytes = decode_b64(&child.text())?;
-            if let Some(mut motion) = parse_keyframe(&bytes) {
-                // Writing the motion stores the group's position in place of the
-                // position that was in the blob. The other positions stay as read.
-                motion.serialized_position = parts[0].group_position;
-                parts[0].keyframe = Some(motion);
+    let children: Vec<&Element> = root.elements().collect();
+    let root_part = children.iter().find(|child| child.name == "RootPart")?;
+    let mut parts = vec![read_part(part_element(root_part)?, now)?];
+    let other_at = children.iter().position(|child| child.name == "OtherParts");
+    if let Some(index) = other_at {
+        for wrap in children[index].elements() {
+            if wrap.name != "Part" {
+                continue;
             }
-        } else if child.name == "StartStr" && rez.is_none() {
-            rez = Some(child.text());
+            if let Some(part) = part_element(wrap) {
+                parts.push(read_part(part, now)?);
+            }
+        }
+    }
+    accept_parts(&mut parts, true)?;
+    let mut rez = None;
+    if let Some(index) = other_at {
+        let mut cursor = index + 1;
+        if children
+            .get(cursor)
+            .is_some_and(|child| child.name == "KeyframeMotion")
+        {
+            attach_motion(&mut parts, children[cursor])?;
+            cursor += 1;
+        }
+        if children
+            .get(cursor)
+            .is_some_and(|child| child.name == "StartStr")
+        {
+            rez = Some(children[cursor].text());
         }
     }
     Some(ObjectGroup {
@@ -109,35 +197,46 @@ fn read_group(root: &Element, original: bool) -> Option<ObjectGroup> {
     })
 }
 
-fn parts_of(root: &Element, original: bool) -> Option<Vec<ObjectPart>> {
-    let mut parts = Vec::new();
-    if original {
-        let root_part = root.child("RootPart")?;
-        parts.push(read_part(part_element(root_part)?)?);
-        if let Some(other) = root.child("OtherParts") {
-            for wrap in other.elements() {
-                if wrap.name != "Part" {
-                    continue;
-                }
-                if let Some(part) = part_element(wrap) {
-                    parts.push(read_part(part)?);
-                }
-            }
-        }
-    } else {
-        for child in root.elements() {
-            if child.name == "SceneObjectPart" {
-                parts.push(read_part(child)?);
-            } else if child.name == "OtherParts" {
-                for inner in child.elements() {
-                    if inner.name == "SceneObjectPart" {
-                        parts.push(read_part(inner)?);
-                    }
-                }
-            }
+fn gather<'a>(el: &'a Element, name: &str, out: &mut Vec<&'a Element>) {
+    if el.name == name {
+        out.push(el);
+    }
+    for child in el.elements() {
+        gather(child, name, out);
+    }
+}
+
+fn attach_motion(parts: &mut [ObjectPart], child: &Element) -> Option<()> {
+    let bytes = decode_b64(&child.text())?;
+    if let Some(mut motion) = parse_keyframe(&bytes) {
+        // Writing the motion stores the group's position in place of the
+        // position that was in the blob. The other positions stay as read.
+        motion.serialized_position = parts[0].group_position;
+        parts[0].keyframe = Some(motion);
+    }
+    Some(())
+}
+
+fn accept_parts(parts: &mut [ObjectPart], original: bool) -> Option<()> {
+    let count = u64::try_from(parts.len()).unwrap_or(u64::MAX);
+    if count > MAX_LINKSET_PRIMS {
+        refuse(
+            REGION_LINKSET_PRIMS,
+            Kind::Hard,
+            MAX_LINKSET_PRIMS,
+            count,
+            "object-xml",
+        );
+        return None;
+    }
+    let mut seen = HashSet::new();
+    for part in parts.iter() {
+        if !seen.insert(part.uuid) {
+            return None;
         }
     }
-    if parts.is_empty() { None } else { Some(parts) }
+    finish_parts(parts, original);
+    Some(())
 }
 
 fn part_element(el: &Element) -> Option<&Element> {
@@ -164,7 +263,7 @@ fn finish_parts(parts: &mut [ObjectPart], original: bool) {
     }
 }
 
-fn read_part(el: &Element) -> Option<ObjectPart> {
+fn read_part(el: &Element, now: u32) -> Option<ObjectPart> {
     let mut part = blank_part();
     let mut creator = Uuid::nil();
     let mut creator_data = None;
@@ -178,9 +277,11 @@ fn read_part(el: &Element) -> Option<ObjectPart> {
             &mut creator_data,
             &mut sit_explicit,
             &mut serial,
+            now,
         )?;
     }
     part.creator_id = combine_creator(creator, creator_data.as_deref());
+    part.xml_creator_data = creator_data.filter(|text| !text.is_empty());
     let derived = super::sit_derived(part.sit_target_position, part.sit_target_rotation);
     part.sit_target_active = sit_explicit.unwrap_or(derived);
     part.inventory_serial = Some(serial);
@@ -194,6 +295,7 @@ fn apply_part(
     creator_data: &mut Option<String>,
     sit_explicit: &mut Option<bool>,
     serial: &mut u32,
+    now: u32,
 ) -> Option<()> {
     match child.name.as_str() {
         "AllowedDrop" => part.allowed_drop = read_bool(child),
@@ -204,9 +306,9 @@ fn apply_part(
                 *creator_data = Some(text);
             }
         }
-        "InventorySerial" => *serial = need_u32(child)?,
+        "InventorySerial" => *serial = need_i32(child)? as u32,
         "TaskInventory" => {
-            part.items = read_inventory(child)?;
+            part.items = read_inventory(child, now)?;
             *serial = serial.wrapping_add(1);
         }
         "UUID" => {
@@ -228,12 +330,12 @@ fn apply_part(
         "ScriptAccessPin" => part.script_access_pin = need_i32(child)?,
         "GroupPosition" => part.group_position = vec3_of(child)?,
         "OffsetPosition" => part.offset = vec3_of(child)?,
-        "RotationOffset" => part.rotation = quat_of(child)?,
+        "RotationOffset" => part.rotation = normalize_quat(quat_of(child)?),
         "Velocity" => part.velocity = vec3_of(child)?,
         "AngularVelocity" => part.angular_velocity = vec3_of(child)?,
         "Acceleration" => part.acceleration = vec3_of(child)?,
         "Description" => part.description = child.text(),
-        "Color" => part.color = color_of(child),
+        "Color" => part.color = color_of(child)?,
         "Text" => part.text = child.text(),
         "SitName" => part.sit_name = child.text(),
         "TouchName" => part.touch_name = child.text(),
@@ -302,7 +404,7 @@ fn apply_part(
         "CameraEyeOffset" => part.camera_eye = vec3_of(child)?,
         "CameraAtOffset" => part.camera_at = vec3_of(child)?,
         "SoundID" => part.sound = uuid_of(child),
-        "SoundGain" => part.sound_gain = need_f32(child)?,
+        "SoundGain" => part.sound_gain = need_f64(child)?,
         "SoundFlags" => part.sound_flags = need_i32(child)? as u8,
         "SOPAnims" => {
             let text = child.text();
@@ -319,7 +421,7 @@ fn apply_part(
         "LinksetData" => part.linkset = parse_linkset(&child.text()),
         "SitTargetActive" => *sit_explicit = Some(read_bool(child)),
         // Known elements the object model does not keep. The writer emits the
-        // fixed defaults, and crossing targets are not in these groups.
+        // fixed defaults. Crossing targets stay for Q77 and Q78.
         "FolderID" | "RegionHandle" | "Category" | "OwnershipCost" | "Buoyancy" | "Force"
         | "Torque" | "SoundRadius" | "SoundQueueing" | "AllowUnsit" | "ScriptedSitOnly"
         | "CTMoveTarget" | "CTMoveTau" | "CTHoverHeight" | "CTHoverType" | "CTHoverTau"
@@ -330,74 +432,122 @@ fn apply_part(
     Some(())
 }
 
-fn read_inventory(el: &Element) -> Option<Vec<InventoryItem>> {
+fn read_inventory(el: &Element, now: u32) -> Option<Vec<InventoryItem>> {
     let mut items = Vec::new();
+    let mut seen = HashSet::new();
     for child in el.elements() {
-        if child.name == "TaskInventoryItem" {
-            items.push(read_item(child)?);
+        if child.name != "TaskInventoryItem" {
+            continue;
         }
+        let item = read_item(child, now)?;
+        if !seen.insert(item.item_id) {
+            return None;
+        }
+        items.push(item);
+    }
+    let count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+    if count > MAX_TASK_ITEMS {
+        refuse(
+            OBJECT_TASK_ITEMS,
+            Kind::Hard,
+            MAX_TASK_ITEMS,
+            count,
+            "object-xml",
+        );
+        return None;
     }
     Some(items)
 }
 
-fn read_item(el: &Element) -> Option<InventoryItem> {
-    let mut item = blank_item();
+fn read_item(el: &Element, now: u32) -> Option<InventoryItem> {
+    let mut item = blank_item(now);
     let mut creator = Uuid::nil();
     let mut creator_data = None;
+    let mut errors = 0u32;
     for child in el.elements() {
-        match child.name.as_str() {
-            "AssetID" => item.asset_id = uuid_of(child),
-            "BasePermissions" => item.base_permissions = need_i64(child)? as u32,
-            "CreationDate" => item.creation_date = need_i64(child)? as u32,
-            "CreatorID" => creator = uuid_of(child),
-            "CreatorData" => {
-                let text = child.text();
-                if !text.is_empty() {
-                    creator_data = Some(text);
-                }
+        if apply_item(&mut item, child, &mut creator, &mut creator_data).is_none() {
+            errors += 1;
+            if errors == SHAPE_ERRORS {
+                return None;
             }
-            "Description" => item.description = child.text(),
-            "EveryonePermissions" => item.everyone_permissions = need_i64(child)? as u32,
-            "Flags" => item.flags = need_i64(child)? as u32,
-            "GroupID" => item.group_id = uuid_of(child),
-            "GroupPermissions" => item.group_permissions = need_i64(child)? as u32,
-            "InvType" => item.inv_type = need_i32(child)?,
-            "ItemID" => item.item_id = uuid_of(child),
-            "LastOwnerID" => item.last_owner_id = uuid_of(child),
-            "Name" => item.name = child.text(),
-            "NextPermissions" => item.next_permissions = need_i64(child)? as u32,
-            "OwnerID" => item.owner_id = uuid_of(child),
-            "CurrentPermissions" => item.current_permissions = need_i64(child)? as u32,
-            "ParentID" => item.parent_id = uuid_of(child),
-            "ParentPartID" => item.parent_part_id = uuid_of(child),
-            "Type" => item.asset_type = need_i32(child)?,
-            "ExperienceID" => item.experience_id = uuid_of(child),
-            "OldItemID" | "PermsGranter" | "PermsMask" | "OwnerChanged" => {}
-            _ => {}
         }
     }
     item.creator_id = combine_item_creator(creator, creator_data.as_deref());
+    item.xml_creator_data = creator_data.filter(|text| !text.is_empty());
     Some(item)
+}
+
+fn apply_item(
+    item: &mut InventoryItem,
+    child: &Element,
+    creator: &mut Uuid,
+    creator_data: &mut Option<String>,
+) -> Option<()> {
+    match child.name.as_str() {
+        "AssetID" => item.asset_id = uuid_of(child),
+        "BasePermissions" => item.base_permissions = need_i64(child)? as u32,
+        "CreationDate" => item.creation_date = need_i64(child)? as u32,
+        "CreatorID" => *creator = uuid_of(child),
+        "CreatorData" => {
+            let text = child.text();
+            if !text.is_empty() {
+                *creator_data = Some(text);
+            }
+        }
+        "Description" => item.description = child.text(),
+        "EveryonePermissions" => item.everyone_permissions = need_i64(child)? as u32,
+        "Flags" => item.flags = need_i64(child)? as u32,
+        "GroupID" => item.group_id = uuid_of(child),
+        "GroupPermissions" => item.group_permissions = need_i64(child)? as u32,
+        "InvType" => item.inv_type = need_i32(child)?,
+        "ItemID" => item.item_id = uuid_of(child),
+        "LastOwnerID" => item.last_owner_id = uuid_of(child),
+        "Name" => item.name = child.text(),
+        "NextPermissions" => item.next_permissions = need_i64(child)? as u32,
+        "OwnerID" => item.owner_id = uuid_of(child),
+        "CurrentPermissions" => item.current_permissions = need_i64(child)? as u32,
+        "ParentID" => item.parent_id = uuid_of(child),
+        "ParentPartID" => item.parent_part_id = uuid_of(child),
+        "Type" => item.asset_type = need_i32(child)?,
+        "ExperienceID" => item.experience_id = uuid_of(child),
+        "OldItemID" | "PermsGranter" | "PermsMask" | "OwnerChanged" => {}
+        _ => {}
+    }
+    Some(())
 }
 
 fn read_shape(el: &Element) -> Option<ObjectShape> {
     let mut shape = blank_shape();
+    // The sculpt, flexi and light elements edit this value. Encoding after
+    // every one would drop a sculpt type that is stored while sculpt is off.
+    let mut extras = super::decode_extras(&shape.extra_params);
+    let mut errors = 0u32;
     for child in el.elements() {
-        apply_shape(&mut shape, child)?;
+        if apply_shape(&mut shape, &mut extras, child).is_none() {
+            errors += 1;
+            if errors == SHAPE_ERRORS {
+                return None;
+            }
+        }
     }
+    shape.extra_params = super::encode_extras(&extras);
     Some(shape)
 }
 
-fn apply_shape(shape: &mut ObjectShape, child: &Element) -> Option<()> {
+fn apply_shape(shape: &mut ObjectShape, extras: &mut super::Extras, child: &Element) -> Option<()> {
     match child.name.as_str() {
         "ProfileCurve" => set_profile_byte(shape, need_i32(child)? as u8),
         // Shorter than one face id: the entry is dropped and the written
         // element is empty. A longer entry is kept as the bytes given.
+        // A bad encoding keeps the plywood default.
         "TextureEntry" => {
             let bytes = decode_b64(&child.text())?;
             shape.texture = if bytes.len() < 16 { Vec::new() } else { bytes };
         }
-        "ExtraParams" => shape.extra_params = decode_b64(&child.text())?,
+        "ExtraParams" => {
+            let bytes = decode_b64(&child.text())?;
+            *extras = super::decode_extras(&bytes);
+        }
         "PathBegin" => shape.path_begin = need_i32(child)? as u16,
         "PathCurve" => shape.path_curve = need_i32(child)? as u8,
         "PathEnd" => shape.path_end = need_i32(child)? as u16,
@@ -420,35 +570,48 @@ fn apply_shape(shape: &mut ObjectShape, child: &Element) -> Option<()> {
         "State" => shape.state = need_i32(child)? as u8,
         "LastAttachPoint" => shape.last_attach_point = need_i32(child)? as u8,
         "ProfileShape" => {
-            if let Some(profile) = profile_nibble(&child.text()) {
-                shape.profile_curve = (shape.profile_curve & 0xf0) | profile;
-            }
+            let profile = profile_nibble(&child.text())?;
+            shape.profile_curve = (shape.profile_curve & 0xf0) | profile;
         }
         "HollowShape" => {
-            if let Some(hollow) = hollow_nibble(&child.text()) {
-                shape.profile_curve = (shape.profile_curve & 0x0f) | hollow;
-            }
+            let hollow = hollow_nibble(&child.text())?;
+            shape.profile_curve = (shape.profile_curve & 0x0f) | hollow;
         }
         "Media" => shape.media_entries = parse_media(&child.text()),
         "MatOvrd" => {
             shape.materials = decode_b64(&child.text()).and_then(|bytes| parse_materials(&bytes));
         }
-        // Sculpt, flexi and light elements repeat the extra-params blob.
-        // SculptData is not in the table.
-        "SculptTexture" | "SculptType" | "SculptData" | "FlexiSoftness" | "FlexiTension"
-        | "FlexiDrag" | "FlexiGravity" | "FlexiWind" | "FlexiForceX" | "FlexiForceY"
-        | "FlexiForceZ" | "LightColorR" | "LightColorG" | "LightColorB" | "LightColorA"
-        | "LightRadius" | "LightCutoff" | "LightFalloff" | "LightIntensity" | "FlexiEntry"
-        | "LightEntry" | "SculptEntry" => {}
+        // SculptData is not in the shape table. The other sculpt, flexi and
+        // light elements update the fields the extra-params blob is rebuilt from.
+        "SculptData" => {}
+        "SculptTexture" => extras.sculpt_texture = uuid_of(child),
+        "SculptType" => extras.sculpt_type = need_i32(child)? as u8,
+        "SculptEntry" => extras.sculpt = read_bool(child),
+        "FlexiEntry" => extras.flexi = read_bool(child),
+        "LightEntry" => extras.light_on = read_bool(child),
+        "FlexiSoftness" => extras.softness = need_i32(child)?,
+        "FlexiTension" => extras.tension = need_f32(child)?,
+        "FlexiDrag" => extras.drag = need_f32(child)?,
+        "FlexiGravity" => extras.gravity = need_f32(child)?,
+        "FlexiWind" => extras.wind = need_f32(child)?,
+        "FlexiForceX" => extras.force[0] = need_f32(child)?,
+        "FlexiForceY" => extras.force[1] = need_f32(child)?,
+        "FlexiForceZ" => extras.force[2] = need_f32(child)?,
+        "LightColorR" => extras.light[0] = need_f32(child)?.clamp(0.0, 1.0),
+        "LightColorG" => extras.light[1] = need_f32(child)?.clamp(0.0, 1.0),
+        "LightColorB" => extras.light[2] = need_f32(child)?.clamp(0.0, 1.0),
+        "LightColorA" => extras.light_a = need_f32(child)?.clamp(0.0, 1.0),
+        "LightRadius" => extras.radius = need_f32(child)?,
+        "LightCutoff" => extras.cutoff = need_f32(child)?,
+        "LightFalloff" => extras.falloff = need_f32(child)?,
+        "LightIntensity" => extras.intensity = need_f32(child)?,
         _ => {}
     }
     Some(())
 }
 
 fn read_dyn(el: &Element) -> Option<Option<crate::payloads::DynAttrs>> {
-    let Some(inner) = el.elements().next() else {
-        return Some(None);
-    };
+    let inner = el.elements().next()?;
     let value = from_xml_element(inner).ok()?;
     let attrs = dyn_attrs_from_llsd(value).ok()?;
     if attrs.namespaces.is_empty() {
@@ -459,10 +622,10 @@ fn read_dyn(el: &Element) -> Option<Option<crate::payloads::DynAttrs>> {
 }
 
 fn set_material(part: &mut ObjectPart, value: i32) {
-    if !(0..=7).contains(&value) {
+    let value = value as u8;
+    if value > 7 {
         return;
     }
-    let value = u8::try_from(value).unwrap_or(0);
     part.material = value;
     let (friction, bounce) = MATERIAL[usize::from(value)];
     part.friction = friction;
@@ -487,11 +650,20 @@ fn set_ranged(part: &mut ObjectPart, value: f32, range: Range) {
 }
 
 fn set_physics_shape(part: &mut ObjectPart, value: i32) {
-    if (0..=2).contains(&value) {
-        part.physics_shape_type = u8::try_from(value).unwrap_or(0);
+    let value = value as u8;
+    if value <= PHYS_CONVEX {
+        // The part has no group while it is read, so `none` stays `none`.
+        part.physics_shape_type = value;
+    } else if shape_is_mesh(&part.shape) {
+        part.physics_shape_type = PHYS_CONVEX;
     } else {
         part.physics_shape_type = 0;
     }
+}
+
+fn shape_is_mesh(shape: &ObjectShape) -> bool {
+    let extras = super::decode_extras(&shape.extra_params);
+    extras.sculpt && extras.sculpt_type == SCULPT_MESH
 }
 
 fn set_profile_byte(shape: &mut ObjectShape, value: u8) {
@@ -575,50 +747,87 @@ fn uuid_of(el: &Element) -> Uuid {
     } else {
         el.text()
     };
-    Uuid::parse_str(text.trim()).unwrap_or(Uuid::nil())
+    let text = text.trim();
+    // A leading brace is not a uuid here. The pin's parser returns the zero id.
+    if text.starts_with('{') || text.ends_with('}') {
+        return Uuid::nil();
+    }
+    Uuid::parse_str(text).unwrap_or(Uuid::nil())
 }
 
 fn vec3_of(el: &Element) -> Option<[f32; 3]> {
-    let children: Vec<&Element> = el.elements().collect();
-    if children.len() != 3 {
+    let mut values = [0.0; 3];
+    let mut count = 0usize;
+    for node in &el.children {
+        match node {
+            Node::Text(text) if text.trim().is_empty() => {}
+            Node::Text(_) => return None,
+            Node::Element(child) => {
+                if count == 3 {
+                    return None;
+                }
+                values[count] = need_f32(child)?;
+                count += 1;
+            }
+        }
+    }
+    if count != 3 {
         return None;
     }
-    Some([
-        need_f32(children[0])?,
-        need_f32(children[1])?,
-        need_f32(children[2])?,
-    ])
+    Some(values)
 }
 
 fn quat_of(el: &Element) -> Option<[f32; 4]> {
     let mut value = [0.0; 4];
     for child in el.elements() {
-        let parsed = need_f32(child)?;
         match child.name.to_ascii_lowercase().as_str() {
-            "x" => value[0] = parsed,
-            "y" => value[1] = parsed,
-            "z" => value[2] = parsed,
-            "w" => value[3] = parsed,
+            "x" => value[0] = need_f32(child)?,
+            "y" => value[1] = need_f32(child)?,
+            "z" => value[2] = need_f32(child)?,
+            "w" => value[3] = need_f32(child)?,
+            // An unknown child is skipped. The pin's reader never advances on
+            // one, so this is the fixed behaviour (TB72).
             _ => {}
         }
     }
     Some(value)
 }
 
-fn color_of(el: &Element) -> u32 {
-    let channel = |name: &str| -> u32 {
-        el.child(name)
-            .and_then(|child| child.text().trim().parse::<f32>().ok())
-            .unwrap_or(0.0) as i32 as u32
+fn normalize_quat(value: [f32; 4]) -> [f32; 4] {
+    let mag = value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3];
+    if mag > 1e-6 {
+        let scale = mag.sqrt().recip();
+        [
+            value[0] * scale,
+            value[1] * scale,
+            value[2] * scale,
+            value[3] * scale,
+        ]
+    } else {
+        [0.0, 0.0, 0.0, 1.0]
+    }
+}
+
+fn color_of(el: &Element) -> Option<u32> {
+    let channel = |name: &str| -> Option<u32> {
+        let Some(child) = el.child(name) else {
+            return Some(0);
+        };
+        let value = child.text().trim().parse::<f32>().ok()?;
+        Some(value as i32 as u32)
     };
-    let red = channel("R");
-    let green = channel("G");
-    let blue = channel("B");
-    let alpha = channel("A");
-    (alpha << 24) | (red << 16) | (green << 8) | blue
+    let red = channel("R")?;
+    let green = channel("G")?;
+    let blue = channel("B")?;
+    let alpha = channel("A")?;
+    Some((alpha << 24) | (red << 16) | (green << 8) | blue)
 }
 
 fn need_f32(el: &Element) -> Option<f32> {
+    el.text().trim().parse().ok()
+}
+
+fn need_f64(el: &Element) -> Option<f64> {
     el.text().trim().parse().ok()
 }
 
@@ -645,7 +854,10 @@ fn decode_b64(text: &str) -> Option<Vec<u8>> {
             _ => None,
         }
     }
-    let bytes = text.trim().as_bytes();
+    let bytes: Vec<u8> = text
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
     if bytes.is_empty() {
         return Some(Vec::new());
     }
@@ -738,14 +950,14 @@ fn blank_shape() -> ObjectShape {
         profile_hollow: 0,
         state: 0,
         last_attach_point: 0,
-        texture: Vec::new(),
+        texture: DEFAULT_BOX_TEXTURE.to_vec(),
         extra_params: vec![0],
         media_entries: None,
         materials: None,
     }
 }
 
-fn blank_item() -> InventoryItem {
+fn blank_item(now: u32) -> InventoryItem {
     InventoryItem {
         item_id: Uuid::nil(),
         parent_part_id: Uuid::nil(),
@@ -755,16 +967,17 @@ fn blank_item() -> InventoryItem {
         asset_type: 0,
         name: String::new(),
         description: String::new(),
-        creation_date: 0,
+        creation_date: now,
         creator_id: String::new(),
+        xml_creator_data: None,
         owner_id: Uuid::nil(),
         last_owner_id: Uuid::nil(),
         group_id: Uuid::nil(),
-        next_permissions: 0,
-        current_permissions: 0,
-        base_permissions: 0,
-        everyone_permissions: 0,
-        group_permissions: 0,
+        next_permissions: ITEM_PERM,
+        current_permissions: ITEM_PERM,
+        base_permissions: ITEM_PERM,
+        everyone_permissions: ITEM_PERM,
+        group_permissions: ITEM_PERM,
         flags: 0,
         experience_id: Uuid::nil(),
     }
@@ -785,6 +998,7 @@ fn blank_part() -> ObjectPart {
         touch_name: String::new(),
         flags: 0,
         creator_id: String::new(),
+        xml_creator_data: None,
         owner_id: Uuid::nil(),
         group_id: Uuid::nil(),
         last_owner_id: Uuid::nil(),
@@ -799,7 +1013,7 @@ fn blank_part() -> ObjectPart {
         velocity: [0.0; 3],
         angular_velocity: [0.0; 3],
         acceleration: [0.0; 3],
-        rotation: [0.0; 4],
+        rotation: [0.0, 0.0, 0.0, 1.0],
         sit_target_position: [0.0; 3],
         sit_target_rotation: [0.0; 4],
         sit_target_active: false,
@@ -850,7 +1064,8 @@ fn blank_part() -> ObjectPart {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_original_xml, from_xml2};
+    use super::{from_original_xml, from_original_xml_at, from_xml2, from_xml2_at};
+    use crate::objects::{MAX_LINKSET_PRIMS, MAX_OBJECT_XML_BYTES, MAX_TASK_ITEMS};
     use crate::xml::{to_original_xml, to_xml2};
 
     const PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
@@ -942,5 +1157,250 @@ mod tests {
         assert!(!got2.contains("SculptData"));
         assert_eq!(got2, expected[0]["xml2"].as_str().unwrap());
         assert_eq!(got_original, expected[0]["original"].as_str().unwrap());
+    }
+
+    /// The review probes. `refuse` drops the group even when the pin returned
+    /// a damaged one. `mask`, `media`, `skip` and `clock` are the reads that
+    /// deliberately do not copy the pin.
+    #[test]
+    fn regionstore_xml_reader_matches_the_probe_oracle() {
+        let probes = fixture("objects-xml-probes.json");
+        assert_eq!(probes["pin"], PIN);
+        let clean = fixture("objects-xml-read.json");
+        let clean_xml2 = clean["groups"][0]["xml2"].as_str().unwrap();
+        let cases = probes["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 41);
+        let mut failures = Vec::new();
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            check_probe(name, "xml2", case, clean_xml2, &mut failures);
+            check_probe(name, "original", case, clean_xml2, &mut failures);
+        }
+        assert!(
+            failures.is_empty(),
+            "{} probe mismatch(es):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    fn check_probe(
+        name: &str,
+        form: &str,
+        case: &serde_json::Value,
+        clean_xml2: &str,
+        failures: &mut Vec<String>,
+    ) {
+        let expect_key = format!("{form}_expect");
+        let input_key = format!("{form}_in");
+        let expect = case[&expect_key].as_str().unwrap();
+        let input = case[&input_key].as_str().unwrap();
+        let label = format!("{name} {form}");
+        match (form, expect) {
+            (_, "match") => {
+                let Some(group) = read_form(form, input, None) else {
+                    failures.push(format!("{label} returned no group"));
+                    return;
+                };
+                let got = write_form(form, &group);
+                let Some(expected) = case[form].as_str() else {
+                    failures.push(format!("{label} fixture has no output"));
+                    return;
+                };
+                if got != expected {
+                    failures.push(diff_line(&label, &got, expected));
+                }
+            }
+            (_, "refuse") => {
+                if read_form(form, input, None).is_some() {
+                    failures.push(format!("{label} kept the group"));
+                }
+            }
+            ("xml2", "mask") => {
+                let Some(group) = read_form(form, input, None) else {
+                    failures.push(format!("{label} returned no group"));
+                    return;
+                };
+                let got = write_form(form, &group);
+                if !got.contains("<BaseMask>4294967295</BaseMask>") {
+                    failures.push(format!("{label} dropped the unsigned mask"));
+                }
+                if !case["xml2"].is_null() {
+                    failures.push(format!("{label} pin returned a group"));
+                }
+            }
+            ("xml2", "media") => {
+                let Some(group) = read_form(form, input, None) else {
+                    failures.push(format!("{label} returned no group"));
+                    return;
+                };
+                let got = write_form(form, &group);
+                if !got.contains("<MatOvrd>") || !got.contains("<SoundGain>0.5</SoundGain>") {
+                    failures.push(format!("{label} lost a field after the media element"));
+                }
+                if !got.contains("<X>1</X>") {
+                    failures.push(format!("{label} cleared the scale"));
+                }
+                let csharp = case["xml2"].as_str().unwrap_or("");
+                if csharp.contains("<MatOvrd>") {
+                    failures.push(format!("{label} pin kept MatOvrd"));
+                }
+            }
+            ("xml2", "skip") => {
+                let Some(group) = read_form(form, input, None) else {
+                    failures.push(format!("{label} returned no group"));
+                    return;
+                };
+                let got = write_form(form, &group);
+                if got != clean_xml2 {
+                    failures.push(diff_line(&label, &got, clean_xml2));
+                }
+            }
+            ("xml2", "clock") => {
+                let Some(csharp) = case["xml2"].as_str() else {
+                    failures.push(format!("{label} fixture has no output"));
+                    return;
+                };
+                let date = first_creation(csharp);
+                let Some(group) = read_form(form, input, Some(date)) else {
+                    failures.push(format!("{label} returned no group"));
+                    return;
+                };
+                let got = write_form(form, &group);
+                if got != csharp {
+                    failures.push(diff_line(&label, &got, csharp));
+                }
+            }
+            _ => failures.push(format!("{label} has expect {expect}")),
+        }
+    }
+
+    fn read_form(form: &str, input: &str, now: Option<u32>) -> Option<crate::objects::ObjectGroup> {
+        match (form, now) {
+            ("xml2", Some(now)) => from_xml2_at(input, now),
+            ("xml2", None) => from_xml2(input),
+            ("original", Some(now)) => from_original_xml_at(input, now),
+            ("original", None) => from_original_xml(input),
+            _ => None,
+        }
+    }
+
+    fn write_form(form: &str, group: &crate::objects::ObjectGroup) -> String {
+        match form {
+            "xml2" => to_xml2(group),
+            "original" => to_original_xml(group),
+            _ => String::new(),
+        }
+    }
+
+    fn first_creation(xml: &str) -> u32 {
+        let start = xml.find("<CreationDate>").unwrap() + "<CreationDate>".len();
+        let end = xml[start..].find("</CreationDate>").unwrap() + start;
+        xml[start..end].parse().unwrap()
+    }
+
+    fn diff_line(label: &str, got: &str, expected: &str) -> String {
+        let at = got
+            .bytes()
+            .zip(expected.bytes())
+            .position(|(left, right)| left != right)
+            .unwrap_or(got.len().min(expected.len()));
+        let window = 120;
+        format!(
+            "{label} differs at byte {at} (got {}, expected {}) got {:?} exp {:?}",
+            got.len(),
+            expected.len(),
+            got.get(at..got.len().min(at + window)).unwrap_or(""),
+            expected
+                .get(at..expected.len().min(at + window))
+                .unwrap_or("")
+        )
+    }
+
+    /// The pin's reader never finishes this element. This input is not sent
+    /// to the oracle.
+    #[test]
+    fn an_unknown_quaternion_child_is_skipped() {
+        let xml = "\
+<SceneObjectPart>\
+<UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1</UUID>\
+<RotationOffset><Nope/><X>0</X><Y>0</Y><Z>0</Z><W>1</W></RotationOffset>\
+</SceneObjectPart>";
+        let group = from_xml2(xml).unwrap();
+        assert_eq!(group.parts[0].rotation, [0.0, 0.0, 0.0, 1.0]);
+        let bare = "\
+<SceneObjectPart>\
+<UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1</UUID>\
+<RotationOffset>text<W>1</W></RotationOffset>\
+</SceneObjectPart>";
+        let group = from_xml2(bare).unwrap();
+        assert_eq!(group.parts[0].rotation, [0.0, 0.0, 0.0, 1.0]);
+        let bad = "\
+<SceneObjectPart>\
+<UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1</UUID>\
+<RotationOffset><X>abc</X></RotationOffset>\
+</SceneObjectPart>";
+        assert!(from_xml2(bad).is_none());
+    }
+
+    #[test]
+    fn a_missing_item_creation_date_uses_the_supplied_instant() {
+        let xml = "\
+<SceneObjectPart>\
+<UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1</UUID>\
+<TaskInventory>\
+<TaskInventoryItem>\
+<ItemID>00000000-0000-0000-0000-000000000001</ItemID>\
+</TaskInventoryItem>\
+</TaskInventory>\
+</SceneObjectPart>";
+        let group = from_xml2_at(xml, 1_700_000_999).unwrap();
+        assert_eq!(group.parts[0].items[0].creation_date, 1_700_000_999);
+        assert_eq!(group.parts[0].items[0].base_permissions, 0x7fff_ffff);
+        let written = to_xml2(&group);
+        assert!(written.contains("<CreationDate>1700000999</CreationDate>"));
+        assert!(written.contains("<BasePermissions>2147483647</BasePermissions>"));
+    }
+
+    #[test]
+    fn object_xml_bounds_refuse_through_diagnostics() {
+        let over = " ".repeat(usize::try_from(MAX_OBJECT_XML_BYTES).unwrap() + 1);
+        assert!(from_xml2(&over).is_none());
+        assert!(ferroan_diag::metrics().contains("object.xml-bytes"));
+
+        assert!(from_xml2(&parts_xml(MAX_LINKSET_PRIMS)).is_some());
+        assert!(from_xml2(&parts_xml(MAX_LINKSET_PRIMS + 1)).is_none());
+        assert!(ferroan_diag::metrics().contains("region.linkset-prims"));
+
+        assert!(from_xml2(&items_xml(MAX_TASK_ITEMS)).is_some());
+        assert!(from_xml2(&items_xml(MAX_TASK_ITEMS + 1)).is_none());
+        assert!(ferroan_diag::metrics().contains("object.task-items"));
+    }
+
+    fn parts_xml(count: u64) -> String {
+        let mut xml = String::from("<SceneObjectGroup>");
+        for index in 0..count {
+            xml.push_str(&format!(
+                "<SceneObjectPart><UUID>{:08x}-0000-4000-8000-{:012x}</UUID></SceneObjectPart>",
+                1, index
+            ));
+        }
+        xml.push_str("</SceneObjectGroup>");
+        xml
+    }
+
+    fn items_xml(count: u64) -> String {
+        let mut xml = String::from(
+            "<SceneObjectPart><UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1</UUID><TaskInventory>",
+        );
+        for index in 0..count {
+            xml.push_str(&format!(
+                "<TaskInventoryItem><ItemID>{:08x}-0000-4000-8000-{:012x}</ItemID></TaskInventoryItem>",
+                2,
+                index
+            ));
+        }
+        xml.push_str("</TaskInventory></SceneObjectPart>");
+        xml
     }
 }

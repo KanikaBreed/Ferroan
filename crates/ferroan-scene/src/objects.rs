@@ -120,6 +120,10 @@ use crate::payloads::{
 pub const MAX_REGION_OBJECTS: u64 = 100_000;
 /// Prim count one linkset admits. A default region allows any size (D42).
 pub const MAX_LINKSET_PRIMS: u64 = 10_000;
+/// Bytes of one object-XML document. The same ceiling as `http.xml-chars`.
+pub const MAX_OBJECT_XML_BYTES: u64 = 50_000_000;
+/// Task-inventory rows one part admits from object XML. The pin has no cap.
+pub const MAX_TASK_ITEMS: u64 = 10_000;
 
 /// Cleared from the stored flags when the part is loaded.
 const FLAG_TOUCH: u32 = 0x0000_0080;
@@ -129,7 +133,8 @@ const FLAG_ALLOW_DROP: u32 = 0x0001_0000;
 const FLAG_VOLUME_DETECT: u32 = 0x0000_4000;
 
 /// Plywood face bytes of a prim that has no shape row, captured at pin `1052cbae82`.
-const DEFAULT_BOX_TEXTURE: &[u8] = &[
+/// The same bytes as `PrimitiveBaseShape.DEFAULT_TEXTURE` at the current pin.
+pub(crate) const DEFAULT_BOX_TEXTURE: &[u8] = &[
     0x89, 0x55, 0x67, 0x47, 0x24, 0xcb, 0x43, 0xed, 0x92, 0x0b, 0x47, 0xca, 0xed, 0x15, 0x46, 0x5f,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -157,6 +162,9 @@ pub struct ObjectPart {
     pub touch_name: String,
     pub flags: u32,
     pub creator_id: String,
+    /// CreatorData text from object XML, unchanged. `None` on a store load, which
+    /// still writes `creator_id` through the database spelling.
+    pub xml_creator_data: Option<String>,
     pub owner_id: Uuid,
     pub group_id: Uuid,
     pub last_owner_id: Uuid,
@@ -180,7 +188,7 @@ pub struct ObjectPart {
     pub click_action: u8,
     pub pay_price: [i32; 5],
     pub sound: Uuid,
-    pub sound_gain: f32,
+    pub sound_gain: f64,
     pub sound_flags: u8,
     pub texture_animation: Vec<u8>,
     pub particles: Vec<u8>,
@@ -238,6 +246,8 @@ pub struct InventoryItem {
     pub description: String,
     pub creation_date: u32,
     pub creator_id: String,
+    /// CreatorData text from object XML, unchanged. `None` on a store load.
+    pub xml_creator_data: Option<String>,
     pub owner_id: Uuid,
     pub last_owner_id: Uuid,
     pub group_id: Uuid,
@@ -676,6 +686,7 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         touch_name: required_text(row, "TouchName")?,
         flags,
         creator_id: required_text(row, "CreatorID")?,
+        xml_creator_data: None,
         owner_id: required_uuid(row, "OwnerID")?,
         group_id: required_uuid(row, "GroupID")?,
         last_owner_id: required_uuid(row, "LastOwnerID")?,
@@ -719,7 +730,7 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
             required_i32(row, "PayButton4")?,
         ],
         sound,
-        sound_gain: required_f32(row, "LoopedSoundGain")?,
+        sound_gain: f64::from(required_f32(row, "LoopedSoundGain")?),
         sound_flags: u8::from(!sound.is_nil()),
         texture_animation: base64_cell(row, "TextureAnimation")?,
         particles: base64_cell(row, "ParticleSystem")?,
@@ -1103,6 +1114,7 @@ fn build_item(row: &SqliteRow) -> Option<InventoryItem> {
         description: optional_text(row, "description").unwrap_or_default(),
         creation_date: required_u32(row, "creationDate").ok()?,
         creator_id: creator_identification(&creator),
+        xml_creator_data: None,
         owner_id: required_uuid(row, "ownerID").ok()?,
         last_owner_id: required_uuid(row, "lastOwnerID").ok()?,
         group_id: required_uuid(row, "groupID").ok()?,
@@ -1419,6 +1431,7 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<Mys
         touch_name: mysql_text(row, "TouchName").unwrap_or_default(),
         flags,
         creator_id: creator_identification(&creator),
+        xml_creator_data: None,
         owner_id: mysql_uuid(row, "OwnerID").unwrap_or(Uuid::nil()),
         group_id: mysql_uuid(row, "GroupID").unwrap_or(Uuid::nil()),
         last_owner_id: mysql_uuid(row, "LastOwnerID").unwrap_or(Uuid::nil()),
@@ -1473,7 +1486,7 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<Mys
             mysql_i32(row, "PayButton4")?,
         ],
         sound,
-        sound_gain: mysql_f32(row, "LoopedSoundGain", 0.0)?,
+        sound_gain: f64::from(mysql_f32(row, "LoopedSoundGain", 0.0)?),
         sound_flags: u8::from(!sound.is_nil()),
         texture_animation: mysql_blob(row, "TextureAnimation")?.unwrap_or_default(),
         particles: mysql_blob(row, "ParticleSystem")?.unwrap_or_default(),
@@ -1598,6 +1611,7 @@ fn mysql_item(row: &MySqlRow, prim: Uuid) -> Option<InventoryItem> {
         description: mysql_text(row, "description").unwrap_or_default(),
         creation_date: mysql_u32(row, "creationDate", 0).ok()?,
         creator_id: creator_identification(&creator),
+        xml_creator_data: None,
         owner_id: mysql_uuid(row, "ownerID").unwrap_or(Uuid::nil()),
         last_owner_id: mysql_uuid(row, "lastOwnerID").unwrap_or(Uuid::nil()),
         group_id: mysql_uuid(row, "groupID").unwrap_or(Uuid::nil()),
@@ -2083,6 +2097,7 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
         touch_name: pg_text_req(row, "TouchName")?,
         flags,
         creator_id: creator_identification(&creator),
+        xml_creator_data: None,
         owner_id: pg_uuid_required(row, "OwnerID")?,
         group_id: pg_uuid_required(row, "GroupID")?,
         last_owner_id: pg_uuid_required(row, "LastOwnerID")?,
@@ -2126,7 +2141,7 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
             pg_i32_req(row, "PayButton4")?,
         ],
         sound,
-        sound_gain: pg_f32_req(row, "LoopedSoundGain")?,
+        sound_gain: f64::from(pg_f32_req(row, "LoopedSoundGain")?),
         sound_flags: u8::from(!sound.is_nil()),
         texture_animation: pg_blob(row, "TextureAnimation")?.unwrap_or_default(),
         particles: pg_blob(row, "ParticleSystem")?.unwrap_or_default(),
@@ -2237,6 +2252,7 @@ fn pg_item(row: &PgRow, prim: Uuid) -> Option<InventoryItem> {
         description: pg_text_req(row, "description").ok()?,
         creation_date: pg_u32_req(row, "creationDate").ok()?,
         creator_id: creator_identification(&creator),
+        xml_creator_data: None,
         owner_id: pg_uuid_required(row, "ownerID").ok()?,
         last_owner_id: pg_uuid_required(row, "lastOwnerID").ok()?,
         group_id: pg_uuid_required(row, "groupID").ok()?,
@@ -3157,7 +3173,11 @@ mod tests {
         }
         expect_uuid("sound", part.sound, &take(&mut obj, "sound"));
         let gain = take(&mut obj, "sound_gain").as_f64().unwrap() as f32;
-        assert_eq!(gain.to_bits(), part.sound_gain.to_bits(), "sound_gain");
+        assert_eq!(
+            f64::from(gain).to_bits(),
+            part.sound_gain.to_bits(),
+            "sound_gain"
+        );
         assert_eq!(
             i64::from(part.sound_flags),
             json_i64(&take(&mut obj, "sound_flags"), "sound_flags")

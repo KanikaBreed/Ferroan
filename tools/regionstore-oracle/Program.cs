@@ -47,7 +47,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
     return 2;
 }
 
@@ -88,8 +88,11 @@ try
         case "read" when args.Length == 3:
             ReadXml(args[1], args[2]);
             return 0;
+        case "probe" when args.Length == 3:
+            ProbeXml(args[1], args[2]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
             return 2;
     }
 }
@@ -839,6 +842,74 @@ static void ReadXml(string dumpPath, string pin)
     JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
     Console.Out.Write(JsonSerializer.Serialize(dump, options));
     Console.Out.Write('\n');
+}
+
+static void ProbeXml(string dumpPath, string pin)
+{
+    JsonNode root = JsonNode.Parse(File.ReadAllText(dumpPath))
+        ?? throw new InvalidOperationException("empty probe dump");
+    JsonArray cases = root["cases"]?.AsArray()
+        ?? throw new InvalidOperationException("probe dump has no cases");
+    JsonArray rows = new();
+    foreach (JsonNode node in cases)
+    {
+        if (node is null)
+            continue;
+        JsonObject row = new()
+        {
+            ["name"] = node["name"]?.GetValue<string>() ?? "case",
+            ["xml2_in"] = node["xml2"]?.DeepClone(),
+            ["original_in"] = node["original"]?.DeepClone()
+        };
+        if (node["xml2_expect"] is JsonNode xml2Expect)
+            row["xml2_expect"] = xml2Expect.DeepClone();
+        if (node["original_expect"] is JsonNode originalExpect)
+            row["original_expect"] = originalExpect.DeepClone();
+        ProbeOne(row, node["xml2"], true);
+        ProbeOne(row, node["original"], false);
+        rows.Add(row);
+    }
+    JsonObject dump = new()
+    {
+        ["pin"] = pin,
+        ["cases"] = rows
+    };
+    JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+    Console.Out.Write(JsonSerializer.Serialize(dump, options));
+    Console.Out.Write('\n');
+}
+
+static void ProbeOne(JsonObject row, JsonNode xmlNode, bool xml2)
+{
+    string field = xml2 ? "xml2" : "original";
+    if (xmlNode is null)
+    {
+        row[field] = null;
+        row[field + "_error"] = null;
+        return;
+    }
+    string xml = xmlNode.GetValue<string>();
+    try
+    {
+        SceneObjectGroup group = xml2
+            ? SceneObjectSerializer.FromXml2Format(xml)
+            : SceneObjectSerializer.FromOriginalXmlFormat(xml);
+        if (group is null)
+        {
+            row[field] = null;
+            row[field + "_error"] = "null";
+            return;
+        }
+        row[field] = xml2
+            ? SceneObjectSerializer.ToXml2Format(group)
+            : SceneObjectSerializer.ToOriginalXmlFormat(group);
+        row[field + "_error"] = null;
+    }
+    catch (Exception error)
+    {
+        row[field] = null;
+        row[field + "_error"] = error.GetType().Name + ": " + error.Message;
+    }
 }
 
 static string InsertUnknown(string xml)
