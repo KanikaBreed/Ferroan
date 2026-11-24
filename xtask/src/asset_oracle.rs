@@ -329,7 +329,7 @@ fn pilot_tests(root: &Path, reference: &Path) -> bool {
     }
 }
 
-fn reference_root() -> Result<PathBuf, String> {
+pub(crate) fn reference_root() -> Result<PathBuf, String> {
     match env::var("FERROAN_REF") {
         Ok(value) if !value.is_empty() => Ok(expand_user(&value)),
         Ok(_) | Err(_) => home_dir().map(|home| home.join("Git/reference")),
@@ -355,7 +355,7 @@ fn expand_user(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
+pub(crate) fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
     let text = fs::read_to_string(root.join("docs/REFERENCES.md"))
         .map_err(|error| format!("could not read docs/REFERENCES.md: {error}"))?;
     let pinned = pinned_revision(&text)?;
@@ -383,7 +383,7 @@ fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
     Ok(pinned)
 }
 
-fn pinned_revision(markdown: &str) -> Result<String, String> {
+pub(crate) fn pinned_revision(markdown: &str) -> Result<String, String> {
     for line in markdown.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("| `OpenSim-Tranquillity`") {
@@ -405,7 +405,7 @@ fn pinned_revision(markdown: &str) -> Result<String, String> {
     Err("docs/REFERENCES.md has no OpenSim-Tranquillity row".to_string())
 }
 
-fn checkout_is_clean(label: &str, reference: &Path) -> bool {
+pub(crate) fn checkout_is_clean(label: &str, reference: &Path) -> bool {
     match git(
         &reference.join("OpenSim-Tranquillity"),
         &["status", "--porcelain"],
@@ -424,12 +424,12 @@ fn checkout_is_clean(label: &str, reference: &Path) -> bool {
     }
 }
 
-fn fail_if_dirty(label: &str, reference: &Path) -> ExitCode {
+pub(crate) fn fail_if_dirty(label: &str, reference: &Path) -> ExitCode {
     let _ = checkout_is_clean(label, reference);
     ExitCode::FAILURE
 }
 
-fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(checkout)
@@ -447,7 +447,7 @@ fn git(checkout: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dotnet(
+pub(crate) fn dotnet(
     label: &str,
     root: &Path,
     reference: &Path,

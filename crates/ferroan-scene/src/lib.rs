@@ -53,9 +53,10 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain and the frame thread.
+//! Read-only region terrain, the scalar prim load and the frame thread.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
+//! Structured prim payloads and the region startup hook are later rows.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -65,11 +66,16 @@ mod error;
 mod estate;
 mod frame;
 mod height;
+mod objects;
 mod store;
 
 pub use compress::TerrainLayer;
-pub use error::TerrainError;
+pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
+pub use objects::{
+    MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw, ObjectShape,
+    load_objects, load_objects_limited, open_objects,
+};
 pub use store::open_terrain;
