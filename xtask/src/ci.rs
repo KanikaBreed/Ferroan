@@ -15,6 +15,12 @@
 //! `cargo xtask ci ensure-sqlite` installs the `sqlite3` command when it is
 //! missing and `apt-get` is on `PATH`. When `sqlite3` is already present it
 //! does nothing, which is the Arch runner (no `apt-get`).
+//!
+//! `cargo xtask ci live-port-base --offset <0|32|64|96>` prints the harness
+//! port base for one live job. `cargo xtask ci live-db-ports` prints the
+//! MySQL and PostgreSQL host ports for that same workflow run. Both read
+//! `GITHUB_RUN_ID`. A local run leaves `FERROAN_LIVE_PORT_BASE` unset; these
+//! commands are what CI uses so its listeners stay off that default.
 
 use std::env;
 use std::fs::OpenOptions;
@@ -276,6 +282,112 @@ fn apt_install_db_clients() -> Result<(), String> {
     )
 }
 
+/// First harness port a CI job may use. Local runs leave the port base unset.
+pub(crate) const LIVE_PORT_ORIGIN: u16 = 8192;
+/// Ports reserved for one workflow run: four jobs, each with a span of 32.
+pub(crate) const LIVE_PORT_SLOT_STRIDE: u16 = 128;
+/// Distinct run slots. The workflow run id modulo this value picks the slot.
+pub(crate) const LIVE_PORT_SLOTS: u64 = 400;
+/// Scenarios, Ferrobot, services, then images.
+pub(crate) const LIVE_JOB_OFFSETS: [u16; 4] = [0, 32, 64, 96];
+/// Distinct database host-port slots. The run id modulo this value picks one.
+pub(crate) const LIVE_DB_SLOTS: u64 = 2000;
+/// MySQL host ports sit above every harness slot.
+pub(crate) const MYSQL_PORT_ORIGIN: u16 = 60000;
+/// PostgreSQL host ports sit above the MySQL range.
+pub(crate) const POSTGRES_PORT_ORIGIN: u16 = 62000;
+
+/// Harness base for one CI job. `offset` is one of [`LIVE_JOB_OFFSETS`].
+/// Two jobs in one run do not share a port. Two runs share a base only when
+/// their run ids are equal modulo [`LIVE_PORT_SLOTS`].
+pub(crate) fn live_port_base(run_id: u64, offset: u16) -> Result<u16, String> {
+    if !LIVE_JOB_OFFSETS.contains(&offset) {
+        return Err(format!("port offset {offset} is not one of 0, 32, 64, 96"));
+    }
+    let slot = u16::try_from(run_id % LIVE_PORT_SLOTS)
+        .map_err(|_| "the port slot does not fit in a u16".to_string())?;
+    let base_u32 = u32::from(LIVE_PORT_ORIGIN)
+        + u32::from(slot) * u32::from(LIVE_PORT_SLOT_STRIDE)
+        + u32::from(offset);
+    let base = u16::try_from(base_u32)
+        .map_err(|_| format!("port base {base_u32} does not fit in a u16"))?;
+    if u32::from(base) + u32::from(crate::ports::SPAN) - 1 > u32::from(u16::MAX) {
+        return Err(format!(
+            "port base {base} does not leave room for {} ports",
+            crate::ports::SPAN
+        ));
+    }
+    Ok(base)
+}
+
+/// Host ports for the services job's MySQL and PostgreSQL containers.
+/// They sit above the harness range and away from the local schema ports.
+pub(crate) fn live_db_ports(run_id: u64) -> Result<(u16, u16), String> {
+    let slot = u16::try_from(run_id % LIVE_DB_SLOTS)
+        .map_err(|_| "the database port slot does not fit in a u16".to_string())?;
+    let mysql = u16::try_from(u32::from(MYSQL_PORT_ORIGIN) + u32::from(slot))
+        .map_err(|_| "the MySQL port does not fit in a u16".to_string())?;
+    let postgres = u16::try_from(u32::from(POSTGRES_PORT_ORIGIN) + u32::from(slot))
+        .map_err(|_| "the PostgreSQL port does not fit in a u16".to_string())?;
+    Ok((mysql, postgres))
+}
+
+fn github_run_id() -> Result<u64, String> {
+    let text = env::var("GITHUB_RUN_ID").map_err(|_| "GITHUB_RUN_ID is not set".to_string())?;
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("GITHUB_RUN_ID is not a number".to_string());
+    }
+    text.parse::<u64>()
+        .map_err(|_| "GITHUB_RUN_ID is not a number".to_string())
+}
+
+pub(crate) fn print_live_port_base(offset: &str) -> ExitCode {
+    let offset: u16 = match offset.parse() {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("ci live-port-base: offset is not a number");
+            return ExitCode::from(2);
+        }
+    };
+    let run_id = match github_run_id() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("ci live-port-base: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match live_port_base(run_id, offset) {
+        Ok(base) => {
+            println!("{base}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("ci live-port-base: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+pub(crate) fn print_live_db_ports() -> ExitCode {
+    let run_id = match github_run_id() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("ci live-db-ports: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match live_db_ports(run_id) {
+        Ok((mysql, postgres)) => {
+            println!("{mysql} {postgres}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("ci live-db-ports: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn run_apt(args: &[&str], failure: &str) -> Result<(), String> {
     let status = Command::new("sudo")
         .args(["-n", "apt-get"])
@@ -293,8 +405,9 @@ fn run_apt(args: &[&str], failure: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SqliteInstall, db_client_install, documentation_only, evaluate, paths_are_docs_only,
-        sqlite_install,
+        LIVE_JOB_OFFSETS, LIVE_PORT_ORIGIN, LIVE_PORT_SLOTS, MYSQL_PORT_ORIGIN,
+        POSTGRES_PORT_ORIGIN, SqliteInstall, db_client_install, documentation_only, evaluate,
+        live_db_ports, live_port_base, paths_are_docs_only, sqlite_install,
     };
 
     #[test]
@@ -321,6 +434,49 @@ mod tests {
         assert!(!documentation_only("pull_request", "", Ok(paths)));
         assert!(!documentation_only("pull_request", &sha, Err(())));
         assert!(documentation_only("pull_request", &sha, Ok(paths)));
+    }
+
+    #[test]
+    fn ci_port_bases_stay_apart_and_off_the_local_default() {
+        let runs = [0_u64, 1, 399, 400, 401, 45352025217, u64::MAX];
+        for run_id in runs {
+            let mut bases = Vec::new();
+            for offset in LIVE_JOB_OFFSETS {
+                let base = live_port_base(run_id, offset).unwrap();
+                assert!(base >= LIVE_PORT_ORIGIN);
+                assert!(u32::from(base) + 31 < u32::from(MYSQL_PORT_ORIGIN));
+                bases.push(base);
+            }
+            for left in 0..bases.len() {
+                for right in (left + 1)..bases.len() {
+                    let (lo, hi) = if bases[left] < bases[right] {
+                        (bases[left], bases[right])
+                    } else {
+                        (bases[right], bases[left])
+                    };
+                    assert!(u32::from(hi) >= u32::from(lo) + 32);
+                }
+            }
+            let (mysql, postgres) = live_db_ports(run_id).unwrap();
+            assert!((60000..=61999).contains(&mysql));
+            assert!((62000..=63999).contains(&postgres));
+            assert_ne!(mysql, postgres);
+            assert!(mysql < POSTGRES_PORT_ORIGIN);
+        }
+        assert!(live_port_base(1, 1).is_err());
+        assert!(live_port_base(1, 128).is_err());
+        // The next slot starts where this slot's last job ends.
+        let last = live_port_base(0, 96).unwrap();
+        let next = live_port_base(1, 0).unwrap();
+        assert_eq!(u32::from(next), u32::from(last) + 32);
+        // 400 run ids later is the same slot.
+        assert_eq!(
+            live_port_base(5, 64).unwrap(),
+            live_port_base(5 + LIVE_PORT_SLOTS, 64).unwrap()
+        );
+        let (mysql, postgres) = live_db_ports(0).unwrap();
+        assert_eq!(mysql, MYSQL_PORT_ORIGIN);
+        assert_eq!(postgres, POSTGRES_PORT_ORIGIN);
     }
 
     #[test]

@@ -77,7 +77,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (this PR) |
-| Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
+| Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | DONE (this PR) |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |

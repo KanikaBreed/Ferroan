@@ -172,7 +172,9 @@ usage: cargo xtask check [--docs-only]
        cargo xtask ci scope
        cargo xtask ci gate
        cargo xtask ci ensure-sqlite
-       cargo xtask ci ensure-db-clients";
+       cargo xtask ci ensure-db-clients
+       cargo xtask ci live-port-base --offset <0|32|64|96>
+       cargo xtask ci live-db-ports";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -247,6 +249,8 @@ fn main() -> ExitCode {
         ["ci", "gate"] => ci::gate(),
         ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),
         ["ci", "ensure-db-clients"] => ci::ensure_db_clients(),
+        ["ci", "live-port-base", "--offset", offset] => ci::print_live_port_base(offset),
+        ["ci", "live-db-ports"] => ci::print_live_db_ports(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -535,8 +539,40 @@ mod tests {
         );
         assert!(images.contains("fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"ferroan\"]')"));
         assert!(images.contains("|| 'ubuntu-latest'"));
-        assert!(images.contains("ferroan-live-images"));
-        assert!(images.contains("cancel-in-progress: false"));
+        assert!(!live.contains("ferroan-live-images"));
+        assert!(!images.contains("cancel-in-progress: false"));
+        let runs_on = "runs-on: ${{ vars.FERROAN_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"ferroan\"]') || 'ubuntu-latest' }}";
+        assert_eq!(live.matches(runs_on).count(), 4);
+        assert_eq!(
+            live.matches("cargo xtask ci live-port-base --offset 0")
+                .count(),
+            1
+        );
+        assert_eq!(
+            live.matches("cargo xtask ci live-port-base --offset 32")
+                .count(),
+            1
+        );
+        assert_eq!(
+            live.matches("cargo xtask ci live-port-base --offset 64")
+                .count(),
+            1
+        );
+        assert_eq!(
+            live.matches("cargo xtask ci live-port-base --offset 96")
+                .count(),
+            1
+        );
+        assert_eq!(live.matches("cargo xtask ci live-db-ports").count(), 1);
+        assert_eq!(
+            live.matches("uses: ./.github/actions/live-cleanup").count(),
+            4
+        );
+        assert!(live.contains("databases: \"true\""));
+        assert!(live.contains("ferroan-ci-mysql-"));
+        assert!(live.contains("ferroan-ci-postgres-"));
+        assert!(!live.contains("image: mysql:8.4"));
+        assert!(!live.contains("image: postgres:16"));
         let gate = live.split("name: live (ubuntu-latest)").nth(1).unwrap();
         assert!(gate.contains("runs-on: ubuntu-latest"));
         assert!(!gate.contains("self-hosted"));

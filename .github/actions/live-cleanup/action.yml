@@ -1,0 +1,50 @@
+name: Stop this job's live processes and containers
+description: >-
+  Stops harness processes recorded in this workspace and removes this job's
+  Docker containers. The calling step uses if: always(), including after
+  cancellation. A missing container is left alone. Other jobs' containers
+  stay, because the names carry this job's port base.
+
+inputs:
+  offset:
+    description: Port-base offset for this job (0, 32, 64 or 96)
+    required: true
+  databases:
+    description: Also remove this run's MySQL and PostgreSQL containers
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Stop processes and containers
+      shell: bash
+      run: |
+        set +e
+        if ! command -v cargo >/dev/null 2>&1; then
+          exit 0
+        fi
+        cargo xtask live down
+        base="${FERROAN_LIVE_PORT_BASE:-}"
+        if [ -z "$base" ]; then
+          base="$(cargo xtask ci live-port-base --offset "${{ inputs.offset }}")"
+        fi
+        if [ -n "$base" ] && command -v docker >/dev/null 2>&1; then
+          for name in ferroan-p011-home ferroan-p011-neighbour ferroan-p011-robust ferroan-p011-assets ferroan-p011-persist ferroan-p011-loki ferroan-p011-otelcol; do
+            docker rm -f "${name}-${base}" >/dev/null 2>&1
+          done
+          compose="deploy/compose/compose.yaml"
+          if [ -f "$compose" ]; then
+            docker compose -p "ferroan-grid-${base}" -f "$compose" down --remove-orphans >/dev/null 2>&1
+          fi
+        fi
+        if [ "${{ inputs.databases }}" = "true" ] && command -v docker >/dev/null 2>&1; then
+          read -r mysql_port postgres_port < <(cargo xtask ci live-db-ports)
+          if [ -n "${mysql_port:-}" ]; then
+            docker rm -f "ferroan-ci-mysql-${mysql_port}" >/dev/null 2>&1
+          fi
+          if [ -n "${postgres_port:-}" ]; then
+            docker rm -f "ferroan-ci-postgres-${postgres_port}" >/dev/null 2>&1
+          fi
+        fi
+        exit 0
