@@ -26,8 +26,9 @@
 //! runs `verify` and `status-verify`.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
-//! object fixture. `regionstore verify` reloads that fixture. Neither starts a
-//! server or the live harness.
+//! object fixture. `regionstore verify` reloads that fixture. `regionstore cross`
+//! reloads SQLite and a throwaway MySQL container, then removes the container.
+//! None of them starts a server or the live harness. PostgreSQL waits.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -133,6 +134,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask avatar cross
        cargo xtask regionstore generate
        cargo xtask regionstore verify
+       cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
@@ -242,6 +244,7 @@ fn main() -> ExitCode {
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),

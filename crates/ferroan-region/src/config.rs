@@ -130,9 +130,9 @@ pub struct RegionConfig {
     /// `[DatabaseService] ConnectionString` when it is present and not empty.
     /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
     pub terrain_store: Option<String>,
-    /// SQLite region store for prims. `[SimulationDataStore]` replaces
-    /// `[DatabaseService]` when its key is present. A null provider and a
-    /// non-SQLite provider leave this empty. MySQL and PostgreSQL are a later row.
+    /// Region store for prims. `[SimulationDataStore]` replaces
+    /// `[DatabaseService]` when its key is present. A SQLite or MySQL provider
+    /// is kept. A null provider and a PostgreSQL provider leave this empty.
     pub object_store: Option<String>,
     /// `[ClientStack.LindenUDP] CaptureFile`. Empty leaves datagram capture off.
     pub udp_capture: Option<PathBuf>,
@@ -781,7 +781,8 @@ fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str>
 }
 
 /// `[SimulationDataStore]` replaces `[DatabaseService]` for a key that is present.
-/// A SQLite provider, or a SQLite connection with no provider, is the object store.
+/// A SQLite provider, a MySQL provider, or a SQLite connection with no provider, is the object store.
+/// PostgreSQL stays empty until its load is in place.
 fn object_store(config: &Config) -> Option<String> {
     let mut provider = nonempty(config, "DatabaseService", "StorageProvider").map(str::to_owned);
     let mut connection = nonempty(config, "DatabaseService", "ConnectionString").map(str::to_owned);
@@ -801,6 +802,7 @@ fn object_store(config: &Config) -> Option<String> {
     match provider.as_deref() {
         Some(provider) if provider.to_ascii_lowercase().contains("null") => None,
         Some(provider) if provider.to_ascii_lowercase().contains("sqlite") => Some(connection),
+        Some(provider) if provider.to_ascii_lowercase().contains("mysql") => Some(connection),
         Some(_) => None,
         None if sqlite_connection(&connection) => Some(connection),
         None => None,
@@ -1088,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn object_store_follows_the_simulation_section_and_stays_sqlite() {
+    fn object_store_follows_the_simulation_section() {
         let mut server = server();
         assert!(
             RegionConfig::from_configs(&server, &regions())
@@ -1136,6 +1138,23 @@ mod tests {
             "SimulationDataStore",
             "StorageProvider",
             "OpenSim.Data.MySQL.dll",
+        );
+        server.set(
+            "SimulationDataStore",
+            "ConnectionString",
+            "Server=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None",
+        );
+        assert_eq!(
+            RegionConfig::from_configs(&server, &regions())
+                .unwrap()
+                .object_store
+                .as_deref(),
+            Some("Server=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None")
+        );
+        server.set(
+            "SimulationDataStore",
+            "StorageProvider",
+            "OpenSim.Data.PGSQL.dll",
         );
         assert!(
             RegionConfig::from_configs(&server, &regions())
