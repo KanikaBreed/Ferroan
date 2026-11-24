@@ -384,7 +384,10 @@ async fn load_stored_settings(
     config: &mut RegionConfig,
 ) -> Result<Option<std::sync::Arc<ferroan_scene::RegionSettings>>, RunError> {
     ferroan_region::settings::apply_stored_settings(
-        config.object_store.as_deref(),
+        config
+            .object_store
+            .as_ref()
+            .map(|store| store.connection.as_str()),
         config.id,
         &mut config.handshake,
     )
@@ -396,7 +399,7 @@ async fn load_stored_objects(
     config: &RegionConfig,
 ) -> Result<Arc<Vec<ferroan_scene::ObjectGroup>>, RunError> {
     let stored =
-        ferroan_region::objects::load_stored_objects(config.object_store.as_deref(), config.id)
+        ferroan_region::objects::load_stored_objects(config.object_store.as_ref(), config.id)
             .await
             .map_err(RunError::Objects)?;
     let (objects, prims) = {
