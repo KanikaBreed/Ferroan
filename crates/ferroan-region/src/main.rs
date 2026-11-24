@@ -92,6 +92,8 @@ enum RunError {
     LogoutDrainTimeout,
     #[error("terrain: {0}")]
     Terrain(String),
+    #[error("objects: {0}")]
+    Objects(String),
 }
 
 fn main() -> ExitCode {
@@ -150,6 +152,7 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     let terrain = load_terrain(&config).await?;
+    let objects = load_stored_objects(&config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -204,6 +207,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let (accepted, agents) = mpsc::channel(ADMISSION_QUEUE);
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    simulation.keep_objects(objects);
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
             Ok(Some(access)) => simulation.apply_estate(access),
@@ -357,6 +361,24 @@ async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     if let Err(error) = grid_user.logged_out_region(region).await {
         tracing::error!("ferroan-region: startup GridUser cleanup failed: {error}");
     }
+}
+
+async fn load_stored_objects(
+    config: &RegionConfig,
+) -> Result<Arc<Vec<ferroan_scene::ObjectGroup>>, RunError> {
+    let stored =
+        ferroan_region::objects::load_stored_objects(config.object_store.as_deref(), config.id)
+            .await
+            .map_err(RunError::Objects)?;
+    let (objects, prims) = {
+        let prims: usize = stored.groups.iter().map(|group| group.parts.len()).sum();
+        (stored.groups.len(), prims)
+    };
+    tracing::info!(
+        "ferroan-region: loaded {objects} objects, {prims} prims in {ms} ms",
+        ms = stored.elapsed_ms
+    );
+    Ok(stored.groups)
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {

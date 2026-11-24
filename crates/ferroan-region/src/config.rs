@@ -130,6 +130,10 @@ pub struct RegionConfig {
     /// `[DatabaseService] ConnectionString` when it is present and not empty.
     /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
     pub terrain_store: Option<String>,
+    /// SQLite region store for prims. `[SimulationDataStore]` replaces
+    /// `[DatabaseService]` when its key is present. A null provider and a
+    /// non-SQLite provider leave this empty. MySQL and PostgreSQL are a later row.
+    pub object_store: Option<String>,
     /// `[ClientStack.LindenUDP] CaptureFile`. Empty leaves datagram capture off.
     pub udp_capture: Option<PathBuf>,
 }
@@ -377,6 +381,7 @@ impl RegionConfig {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
+            object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
                 .map(str::trim)
@@ -774,6 +779,41 @@ fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str>
         .filter(|text| !text.is_empty())
 }
 
+/// `[SimulationDataStore]` replaces `[DatabaseService]` for a key that is present.
+/// A SQLite provider, or a SQLite connection with no provider, is the object store.
+fn object_store(config: &Config) -> Option<String> {
+    let mut provider = nonempty(config, "DatabaseService", "StorageProvider").map(str::to_owned);
+    let mut connection = nonempty(config, "DatabaseService", "ConnectionString").map(str::to_owned);
+    if config
+        .get("SimulationDataStore", "StorageProvider")
+        .is_some()
+    {
+        provider = nonempty(config, "SimulationDataStore", "StorageProvider").map(str::to_owned);
+    }
+    if config
+        .get("SimulationDataStore", "ConnectionString")
+        .is_some()
+    {
+        connection = nonempty(config, "SimulationDataStore", "ConnectionString").map(str::to_owned);
+    }
+    let connection = connection?;
+    match provider.as_deref() {
+        Some(provider) if provider.to_ascii_lowercase().contains("null") => None,
+        Some(provider) if provider.to_ascii_lowercase().contains("sqlite") => Some(connection),
+        Some(_) => None,
+        None if sqlite_connection(&connection) => Some(connection),
+        None => None,
+    }
+}
+
+fn sqlite_connection(connection: &str) -> bool {
+    let lower = connection.to_ascii_lowercase();
+    if lower.contains("uri=file:") {
+        return !lower.contains("mode=memory");
+    }
+    lower.contains("data source=") && lower.contains("version=3") && !lower.contains("database=")
+}
+
 /// Later keys replace earlier ones. An empty value clears the string.
 fn estate_connection(config: &Config) -> Option<String> {
     let mut current = None;
@@ -1044,6 +1084,64 @@ mod tests {
 
         server.set("Permissions", "allow_grid_gods", "maybe");
         assert!(RegionConfig::from_configs(&server, &regions()).is_err());
+    }
+
+    #[test]
+    fn object_store_follows_the_simulation_section_and_stays_sqlite() {
+        let mut server = server();
+        assert!(
+            RegionConfig::from_configs(&server, &regions())
+                .unwrap()
+                .object_store
+                .is_none()
+        );
+        server.set(
+            "DatabaseService",
+            "ConnectionString",
+            "URI=file:OpenSim.db;UseUTF16Encoding=True",
+        );
+        server.set(
+            "DatabaseService",
+            "StorageProvider",
+            "OpenSim.Data.SQLite.dll",
+        );
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.object_store.as_deref(),
+            Some("URI=file:OpenSim.db;UseUTF16Encoding=True")
+        );
+        server.set(
+            "SimulationDataStore",
+            "ConnectionString",
+            "Data Source=prims.db;Version=3",
+        );
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.object_store.as_deref(),
+            Some("Data Source=prims.db;Version=3")
+        );
+        server.set(
+            "SimulationDataStore",
+            "StorageProvider",
+            "OpenSim.Data.Null.dll",
+        );
+        assert!(
+            RegionConfig::from_configs(&server, &regions())
+                .unwrap()
+                .object_store
+                .is_none()
+        );
+        server.set(
+            "SimulationDataStore",
+            "StorageProvider",
+            "OpenSim.Data.MySQL.dll",
+        );
+        assert!(
+            RegionConfig::from_configs(&server, &regions())
+                .unwrap()
+                .object_store
+                .is_none()
+        );
     }
 
     #[test]

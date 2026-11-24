@@ -19,3 +19,5 @@ tools/schema-oracle/bin/
 tools/schema-oracle/obj/
 tools/config-oracle/bin/
 tools/config-oracle/obj/
+tools/shard-oracle/bin/
+tools/shard-oracle/obj/

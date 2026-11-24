@@ -56,7 +56,7 @@ fn password_service(store: AuthStore) -> AuthService {
 }
 
 fn http(service: AuthService) -> Router {
-    AuthHttp::new(service, true, true, true).into_router()
+    AuthHttp::new(service, true, true, true, true).into_router()
 }
 
 async fn call(app: Router, uri: &str, body: &str) -> (StatusCode, String) {
@@ -188,13 +188,35 @@ async fn http_plain_methods_and_authorization_match_the_captured_documents() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain")
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), MAX_QUERY_BYTES)
+        .await
+        .unwrap();
+    assert!(bytes.is_empty());
 
     let authz = authorization_router();
     let request = "\u{feff}<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<AuthorizationRequest xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n  <ID>11111111-1111-1111-1111-111111111111</ID>\n  <FirstName>Test</FirstName>\n  <SurName>User</SurName>\n  <Email>a@b.invalid</Email>\n  <RegionName>Region</RegionName>\n  <RegionID>22222222-2222-2222-2222-222222222222</RegionID>\n</AuthorizationRequest>";
-    let (status, body) = call(authz, "/authorization", request).await;
+    let (status, body) = call(authz.clone(), "/authorization", request).await;
     assert_eq!(status, StatusCode::OK);
+    let shard = authz
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/authorization")
+                .header("X-SecondLife-Shard", "OpenSim")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shard.status(), StatusCode::OK);
     assert!(body.starts_with('\u{feff}'));
     assert!(
         body.contains(

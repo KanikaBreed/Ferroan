@@ -31,28 +31,24 @@ pub fn verify() -> ExitCode {
     dispatch(false)
 }
 
+pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    if oracle(&dll, &["bulk", db, region, count]) {
+        println!("{LABEL}: wrote {count} prims for {region} to {db}");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn dispatch(writing: bool) -> ExitCode {
     let root = crate::repo_root();
-    let source = match reference_root() {
-        Ok(path) => path.join("OpenSim-Tranquillity"),
-        Err(error) => {
-            eprintln!("{LABEL}: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let source_head = match git(&source, &["rev-parse", "HEAD"]) {
-        Ok(head) => head,
-        Err(error) => {
-            eprintln!("{LABEL}: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let reference = match prepare(source.parent().unwrap_or(&source).to_path_buf()) {
+    let dll = match build_oracle() {
         Ok(path) => path,
-        Err(error) => {
-            eprintln!("{LABEL}: {error}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
         .map_err(|error| error.to_string())
@@ -64,19 +60,58 @@ fn dispatch(writing: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if writing {
+        return write_fixture(&root, &dll, &pinned);
+    }
+    verify_fixture(&root, &dll)
+}
+
+fn build_oracle() -> Result<std::path::PathBuf, ExitCode> {
+    let root = crate::repo_root();
+    let source = match reference_root() {
+        Ok(path) => path.join("OpenSim-Tranquillity"),
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let source_head = match git(&source, &["rev-parse", "HEAD"]) {
+        Ok(head) => head,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let reference = match prepare(source.parent().unwrap_or(&source).to_path_buf()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
     let clone = reference.join("OpenSim-Tranquillity");
     if let Err(error) = detach_at_pin(&clone, &source, &pinned) {
         eprintln!("{LABEL}: {error}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     if let Err(error) = pinned_and_checked(&root, &reference) {
         eprintln!("{LABEL}: {error}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let artifacts = root.join(ARTIFACTS);
     if let Err(error) = fs::create_dir_all(&artifacts) {
         eprintln!("{LABEL}: could not create {}: {error}", artifacts.display());
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let project = root.join(PROJECT);
     if !dotnet(
@@ -89,23 +124,20 @@ fn dispatch(writing: bool) -> ExitCode {
         false,
         &[],
     ) {
-        return fail_if_dirty(LABEL, &reference);
+        return Err(fail_if_dirty(LABEL, &reference));
     }
     if !checkout_is_clean(LABEL, &reference) {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     if !source_unchanged(&source, &source_head) {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let dll = artifacts.join(DLL);
     if !dll.is_file() {
         eprintln!("{LABEL}: missing {}", dll.display());
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
-    if writing {
-        return write_fixture(&root, &dll, &pinned);
-    }
-    verify_fixture(&root, &dll)
+    Ok(dll)
 }
 
 fn detach_at_pin(clone: &Path, source: &Path, pin: &str) -> Result<(), String> {

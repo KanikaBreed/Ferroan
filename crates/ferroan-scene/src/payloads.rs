@@ -82,7 +82,22 @@
 // @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Media entry fields follow libopenmetaverse ObjectMedia.cs
 // @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
-// LinksetData.cs has no licence header at that pin.
+//
+// Source/OpenSim.Region.Framework/Scenes/LinksetData.cs at
+// c401bceecd1684832ae8ba86a31b5ee01a4ded7b has no licence header.
+// LICENSE.txt at that revision says OpenSimulator-originated code is BSD
+// (Copyright (c) Contributors, http://opensimulator.org/, the notice above)
+// and new Tranquillity files are MPL-2.0:
+//
+// Copyright (c) 2025 Utopia Skye LLC
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// The file's history in Tranquillity starts in 2023, so which of the two
+// applies is not certain. This port keeps both. Both are compatible with
+// GPL-3.0-or-later.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 

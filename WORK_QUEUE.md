@@ -76,9 +76,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (#192) |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
-| Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (this PR) |
+| Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | DONE (this PR) |
-| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
+| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
@@ -111,7 +111,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
-| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (this PR) |
+| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (#202) |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
@@ -129,8 +129,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
 | Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | DONE (#193) |
-| Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (this PR) |
-| Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | READY after Q53b |
+| Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (#201) |
+| Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | DONE (this PR) |
 | Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53c |
 | Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
 | Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
@@ -537,11 +537,15 @@ Q10ah and Q10ai (manager, 23 November 2026, at the maintainer's request): the sl
 
 Q10ag closed by the manager (24 November 2026): the cause was found and fixed in Pin8 (#190). In Ferroan-region Ferrobot runs the region and the Ferrobot relay both wrote `capture-udp.cap`, so their records overwrote each other; each damaged datagram held its own record's `time_ms`. With the relay the region now writes `capture-udp-region.cap` (`xtask/src/grid.rs`), and #190's live jobs passed on `d031cd9`. If `does not re-encode` comes back, reopen it as a new item with that capture as a fixture.
 
+QR1 (24 November 2026, `feat/shard-header`): `POST /auth` (plain, crypt, the bare path and `/auth/`) and `POST /griduser` answer 403 `text/plain` with an empty body when the request carries `X-SecondLife-Shard`, before the body is read, unless `AllowllHTTPRequestIn` is true. The default is false. `[Network]` is read first and the service section overwrites it. The Pin8 capture is `fixtures/shard/shard-header.json` (25 cases, pin `c401bceecd`), outside `fixtures/http` so the ServerUtils oracle does not treat it as one of its cases. A served plain failure reads 11 bytes and handles the request once; crypt with no header reads 3 bytes; the bare path with no header reads nothing. Every 403 case handles nothing and reads nothing, including a body of 1,048,577 bytes. Accounts, user alias, and asset get, post and delete already refused the header. Authorization and asset exists stay served: those C# handlers are built without the check. Not ported, and the C# connectors apply the same check: presence, grid, inventory, friends, agent preferences, avatar, mute list, appearance, map add, map remove, estate, experience, baked textures, offline IM, groups, voice, and the region bakes module. `shard_header_matches_the_pin_capture`, `http_plain_methods_and_authorization_match_the_captured_documents` and `post_answers_xml_and_a_huge_body_is_413` passed. Local `cargo xtask check` passed. No new TB or D. P1.2 is unchanged. R1 is this item.
+
 ## Found while working
 
 - 2026-11-24, Q10ai: `live services` on `fada980` failed in `cargo xtask live run assets --running` ([run 45360736959](https://github.com/KanikaBreed/Ferroan/actions/runs/45360736959), job `138330379541` on Home1, 09:06:04Z–09:19:42Z). `live up --assets ferroan` printed `live: up`, and the next process printed `run cargo xtask live up --assets ferroan first`. The port-base directory is `runs/<base>-<pid>/`, so the second process did not see the first process's state, and `live down` from a later process did not recognise that region or asset service. Fixed in this pull request. Scenarios (7m44s), Ferrobot (8m25s) and images (6m54s) passed on that run.
 
 - 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
+
+- 2026-11-24, QR1: A present empty `AllowllHTTPRequestIn` makes connector startup fail in C#: the ini reader rejects a value that is not a boolean. Ferroan keeps the running value, the same rule accounts, aliases and assets already use. The default stays false, so the header is still refused. The capture has no empty key. No TB.
 
 - 2026-11-24, Q18b2: A second `TeleportLocationRequest` while a hop runs is answered by `Teleport()` with `Previous teleport process incomplete.  Please retry shortly.` (two spaces). `DoTeleport` sends `Agent is already in transit.` Paragraph (2b) names the `DoTeleport` sentence. The viewer packet takes the `Teleport()` path, so this hop sends that sentence. No TB.
 
