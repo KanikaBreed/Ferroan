@@ -3,12 +3,17 @@
 
 //! Replace identity fields before a capture is committed.
 //!
-//! UDP records are refused when `reencode_datagram` does not reproduce the
-//! stored bytes. That check has to pass on the raw file, before redaction.
-//! The redacted datagram is then `scrub_datagram` of those bytes, so the
-//! committed file still round-trips and no longer carries the session.
+//! A packet the server sent is refused when `reencode_datagram` does not
+//! reproduce the stored bytes. A packet the client sent may differ in packed
+//! quaternion components, within the packing tolerance, and nowhere else.
+//! That check has to pass on the raw file, before redaction. The redacted
+//! datagram is then `scrub_datagram` of those bytes, so the committed file
+//! still round-trips and no longer carries the session.
 
-use ferroan_protocol::{message_info, parse_packet, reencode_datagram, scrub_datagram};
+use ferroan_protocol::{
+    client_datagram_within_quat_packing, message_info, parse_packet, reencode_datagram,
+    scrub_datagram,
+};
 use std::path::{Path, PathBuf};
 
 use crate::format::{Kind, Record};
@@ -70,6 +75,9 @@ pub fn udp_mismatch(records: &[Record]) -> Option<UdpMismatch> {
         let message = message_name(&record.bytes);
         match reencode_datagram(&record.bytes) {
             Ok(again) if again == record.bytes => {}
+            Ok(_)
+                if record.kind == Kind::UdpIn
+                    && matches!(client_datagram_within_quat_packing(&record.bytes), Ok(true)) => {}
             Ok(again) => {
                 return Some(UdpMismatch {
                     index,
@@ -602,5 +610,96 @@ Content-Type: text/xml\r\n\
             circuits += 1;
         }
         assert!(circuits >= 2, "both bots send UseCircuitCode");
+    }
+
+    #[test]
+    fn a_ferrobot_agent_update_is_field_checked_and_a_server_copy_stays_exact() {
+        let datagram = ferrobot_agent_update();
+        assert_ne!(reencode_datagram(&datagram).unwrap(), datagram);
+        let client = vec![Record {
+            kind: Kind::UdpIn,
+            time_ms: 40,
+            bytes: datagram.clone(),
+        }];
+        check_udp(&client).unwrap();
+        let redacted = redact_records(&client).unwrap();
+        check_udp(&redacted).unwrap();
+        let server = vec![Record {
+            kind: Kind::UdpOut,
+            time_ms: 41,
+            bytes: datagram.clone(),
+        }];
+        let mismatch = udp_mismatch(&server).unwrap();
+        assert_eq!(mismatch.direction, "udp out");
+        assert_eq!(mismatch.message, "AgentUpdate");
+        assert_eq!(mismatch.detail, "the encoded bytes differ");
+        let error = check_udp(&server).unwrap_err().to_string();
+        assert!(error.contains("udp out"), "{error}");
+        let mut torn = datagram.clone();
+        torn.push(0xab);
+        let torn_records = vec![Record {
+            kind: Kind::UdpIn,
+            time_ms: 42,
+            bytes: torn,
+        }];
+        assert!(check_udp(&torn_records).is_err());
+    }
+
+    /// Ferrobot writes glam's normalize, then the sign-flipped x, y, z.
+    fn ferrobot_agent_update() -> Vec<u8> {
+        use ferroan_protocol::Msg;
+        use ferroan_protocol::msgs::AgentUpdate;
+        use glam::Quat;
+
+        let mut heading = None;
+        for step in 1..20_000 {
+            let turned = ferrobot_quat(Quat::from_rotation_z(step as f32 * 0.001));
+            let decoded =
+                ferroan_protocol::unpack_quat(glam::Vec3::new(turned[0], turned[1], turned[2]));
+            if ferroan_protocol::pack_quat(decoded) != turned {
+                heading = Some(turned);
+                break;
+            }
+        }
+        let turned = heading.expect("a heading whose rescaling changes the bytes");
+        let mut message = AgentUpdate::default();
+        message.agent_data.agent_id = Uuid::from_u128(0x1111);
+        message.agent_data.session_id = Uuid::from_u128(0x2222);
+        message.agent_data.body_rotation = Quat::from_xyzw(turned[0], turned[1], turned[2], 1.0);
+        message.agent_data.head_rotation = message.agent_data.body_rotation;
+        message.agent_data.far = 64.0;
+        let mut payload = Vec::new();
+        AgentUpdate::ID.encode(&mut payload);
+        let mut body = ferroan_protocol::Writer::new();
+        message.encode_body(&mut body);
+        payload.extend(body.buf);
+        let packed = turned
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        payload[1 + 32..1 + 44].copy_from_slice(&packed);
+        payload[1 + 44..1 + 56].copy_from_slice(&packed);
+        let mut datagram = Vec::new();
+        packet::build_raw(
+            &payload,
+            AgentUpdate::ZEROCODED,
+            40,
+            false,
+            false,
+            &[],
+            &mut datagram,
+        );
+        datagram
+    }
+
+    fn ferrobot_quat(q: glam::Quat) -> [f32; 3] {
+        let mut q = q.normalize();
+        if !q.is_finite() {
+            q = glam::Quat::IDENTITY;
+        }
+        if q.w < 0.0 {
+            q = -q;
+        }
+        [q.x, q.y, q.z]
     }
 }
