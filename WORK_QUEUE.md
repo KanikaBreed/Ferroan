@@ -81,7 +81,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
 | Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY |
-| Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | BLOCKED (waits for the maintainer's new CI servers) |
+| Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | READY |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
 | QR3 | R3: asset uploads work with two or more avatars in the region | DONE (#209) |
@@ -612,6 +612,8 @@ QR17 to QR19 (manager, 24 November 2026, from the review of the fifth upstream b
 QR17 (24 November 2026, `fix/pending-uploader`): Each offered uploader path stays until that upload is posted or its 120 second timer fires, and a new offer does not remove an earlier path. Past 128 waiting uploads the offer is `uploader limit reached`. While that agent's bytes are being stored, a new offer is `Uploader busy processing previous request`. D45 is withdrawn. TB61 is a not-a-bug note. No new TB or D. Evidence is on the R17 row.
 
 Home1 stopped (maintainer, 24 November 2026): "Lets stop the home thing, it has been taking 12 hours for pointless." Q10ai's PR #203 is closed unmerged; each CI round on Home1 found a new environment difference (port blocks inside the kernel's ephemeral range, missing database clients, nested port reservations). The live jobs stay on GitHub-hosted runners; `live images` keeps its current switch. Q10aj (split `live services` into parallel GitHub jobs) no longer waits for Q10ai and is the way to shorten CI now. Q10ak waits until the maintainer's dedicated servers exist; when it runs, build on the CI image so the job environment does not depend on the machine.
+
+Q10ak unblocked (manager, 24 November 2026): the maintainer registered two dedicated runners, anubis and osiris, beside Home1, all with the labels `self-hosted, Linux, X64, ferroan`, and asked that CI use all of them. anubis failed its first images job on a missing `rustup` (#235 makes the live setup install it). Q10ak is how every runner gets the same environment: the live jobs run inside one CI image, so a runner needs only Docker; the pool label and `cargo xtask runner doctor` as the item says. Q10ak goes before Q10aj: with three machines, parallel jobs need the pool first. Fork PRs never reach self-hosted runners.
 
 ## Found while working
 
