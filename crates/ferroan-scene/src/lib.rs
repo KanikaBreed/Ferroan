@@ -54,6 +54,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Read-only region terrain, the prim load and the frame thread.
+//! The frame ticks at the shipped `FrameTime` and stores the login presence.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -73,7 +74,7 @@ mod store;
 pub use compress::TerrainLayer;
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
-pub use frame::{TerrainFrame, landed_z};
+pub use frame::{Presence, TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,

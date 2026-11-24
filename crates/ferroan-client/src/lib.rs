@@ -26,8 +26,8 @@ pub use caps::{
     CapsServer, UploaderRoutes,
 };
 pub use circuit::{
-    CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, RootArrival,
-    UdpCounters,
+    CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, LoginPose, LoginScene,
+    RootArrival, UdpCounters,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::HandshakeConfig;

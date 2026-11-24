@@ -19,6 +19,10 @@ pub enum TerrainError {
     Stopped,
     #[error("terrain frame thread did not start")]
     Thread,
+    #[error("terrain frame has no heightmap")]
+    NoMap,
+    #[error("scene inbound queue is full")]
+    InboundFull,
 }
 
 #[derive(Debug, Error)]

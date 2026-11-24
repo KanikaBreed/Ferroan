@@ -59,3 +59,4 @@ pub const REGION_PENDING_UPLOADS: &str = "region.pending-uploads";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_OBJECTS: &str = "region.objects";
 pub const REGION_LINKSET_PRIMS: &str = "region.linkset-prims";
+pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";

@@ -115,7 +115,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (#208) |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | DONE (#210) |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | SPLIT into Q40a to Q40c (#214) |
-| Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | READY |
+| Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | DONE (this PR) |
 | Q40b | P2.1a2: chat reads live positions from the scene | READY after Q40a |
 | Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | READY after Q40b |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40c |
@@ -573,6 +573,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (3) Teleport, both ways, moves its pose writes onto the frame. The circuit forwards `TeleportLocationRequest` and the hop completion. The source hop and the return hop stop owning the pose. Evidence: `teleport` and `teleport neighbour` pass, and `cargo xtask live compare region` still prints `region: match` with `login: pass`, `chat: pass`, `teleport: pass`, `teleport neighbour: pass` and `live: run passed`, and an empty known-difference list. If (3) is still more than about a day, split the local teleport from the neighbour hop (`crates/ferroan-region/src/source_hop.rs` is 1867 lines).
 
 Q40 split (manager, 24 November 2026): the block in #214 is right, and its three parts are taken as Q40a to Q40c, each scoped by its numbered paragraph under Q40; if Q40c is still too big, split the local teleport from the neighbour hop. P2.1a stays `TODO` until all three are `DONE`. Q41, Q43 and Q44 wait for Q40c.
+
+Q40a DONE (24 November 2026, `feat/scene-frame`): the frame thread ticks at the shipped FrameTime 0.0909 and stores the login presence (position, rotation, velocity, control flags, draw distance). `region.scene-inbound` refuses the 257th waiting post. Login is the only consumer: `AgentMovementComplete` and the avatar position read the stored pose. Chat seats, local teleport and both neighbour directions keep today's arrival fields and `ChatSeat.position`. P2.1a stays TODO until Q40b and Q40c are DONE. Evidence is on the P2.1a row.
 
 ## Found while working
 
