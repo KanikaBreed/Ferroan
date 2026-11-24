@@ -482,6 +482,7 @@ name = "ferroan-region"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ferroan-capture",
  "ferroan-client",
  "ferroan-config",
  "ferroan-diag",

@@ -85,9 +85,9 @@ use uuid::Uuid;
 
 use crate::error::ObjectError;
 
-/// Prim count a region load admits. Scene startup has no such cap (D40).
+/// Prim count a region load admits. Scene startup has no such cap (D42).
 pub const MAX_REGION_OBJECTS: u64 = 100_000;
-/// Prim count one linkset admits. A default region allows any size (D40).
+/// Prim count one linkset admits. A default region allows any size (D42).
 pub const MAX_LINKSET_PRIMS: u64 = 10_000;
 
 /// Cleared from the stored flags when the part is loaded.
