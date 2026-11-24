@@ -40,15 +40,22 @@
 //! true when the statement runs.
 //! An id that is not a uuid deletes nothing and returns false, and `Get` of
 //! one is missing, as the pin does (TB39 #490, TB49 #500). `Import` is
-//! `ORDER BY id LIMIT count OFFSET start`, as the pin does (TB40, #491). `force` updates `hash` and
+//! `ORDER BY id LIMIT count OFFSET start`, as the pin does (TB40, #491).
+//! The hash query reads `id`, `hash` and `type` once and does not update
+//! `access_time`. A failure to open or to run that query is returned.
+//! `Import` reads one source row at a time. `force` updates `hash` and
 //! `access_time` on an existing row (TB45). An ordinary store does not.
 
+use std::collections::HashMap;
+
 use sqlx::PgPool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use super::decode::{column_bytes, column_i32, column_string, column_uuid};
 use super::fsasset::{
-    FsAsset, FsClock, FsImportRow, FsMetadata, access_is_due, import_suffix, sql_ident,
+    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_row_within_bound,
+    import_suffix, sql_ident,
 };
 use super::model::KNOWN_FLAGS;
 use super::store::StoreError;
@@ -162,6 +169,48 @@ pub(super) async fn exists(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<bool>, Sto
     Ok(ids.iter().map(|id| found.contains(id)).collect())
 }
 
+/// One hash query. A missing id, or a null hash, is `None`. This does not
+/// update `access_time`. A failure to open or to run the query is returned.
+pub(super) async fn hashes(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Option<FsHash>>, StoreError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut marks = String::new();
+    for index in 0..ids.len() {
+        if index > 0 {
+            marks.push(',');
+        }
+        marks.push('$');
+        marks.push_str(&index.saturating_add(1).to_string());
+        marks.push_str("::uuid");
+    }
+    let sql = format!("SELECT \"id\", \"hash\", \"type\" FROM fsassets WHERE id IN ({marks})");
+    let mut query = sqlx::query(&sql);
+    for id in ids {
+        query = query.bind(id.to_string());
+    }
+    let rows = query.fetch_all(pool).await?;
+    let mut by_id = HashMap::with_capacity(rows.len());
+    for row in &rows {
+        let id = column_uuid(row, "id")?;
+        match optional_text(row, "hash")? {
+            Some(hash) => {
+                by_id.insert(
+                    id,
+                    FsHash {
+                        hash,
+                        type_code: column_i32(row, "type")? as i8,
+                    },
+                );
+            }
+            None => {
+                by_id.remove(&id);
+            }
+        }
+    }
+    Ok(ids.iter().map(|id| by_id.get(id).cloned()).collect())
+}
+
 pub(super) async fn count(pool: &PgPool) -> Result<i64, StoreError> {
     let row = sqlx::query("SELECT COUNT(*) AS n FROM fsassets")
         .fetch_one(pool)
@@ -180,28 +229,46 @@ pub(super) async fn delete(pool: &PgPool, id: &str) -> Result<bool, StoreError> 
     Ok(true)
 }
 
-pub(super) async fn import_reader(
+/// One page of the legacy import table. `count == 0` reads nothing. Name and
+/// description stay empty. A `data` value past the import bound is refused
+/// and is not returned.
+pub(super) async fn import_page(
     pool: &PgPool,
     table: &str,
     start: i32,
     count: i32,
 ) -> Result<Vec<FsImportRow>, StoreError> {
     sql_ident(table)?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
     let suffix = import_suffix(start, count, true)?;
     let sql = format!("SELECT * FROM {table}{suffix}");
     let rows = sqlx::query(&sql).fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
-        out.push(FsImportRow {
+        let parsed = FsImportRow {
             id: column_uuid(row, "id")?,
             name: String::new(),
             description: String::new(),
             type_code: column_i32(row, "assetType")? as i8,
             create_time: column_i32(row, "create_time")?,
             data: column_bytes(row, "data")?,
-        });
+        };
+        import_row_within_bound(parsed.data.len())?;
+        out.push(parsed);
     }
     Ok(out)
+}
+
+fn optional_text(row: &sqlx::postgres::PgRow, name: &str) -> Result<Option<String>, StoreError> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(name) {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<String, _>(name) {
+        return Ok(Some(value));
+    }
+    Err(StoreError::Row(format!("{name} is not text")))
 }
 
 pub(super) async fn clock(pool: &PgPool, id: Uuid) -> Result<Option<FsClock>, StoreError> {

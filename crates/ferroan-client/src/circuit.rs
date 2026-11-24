@@ -171,7 +171,29 @@ pub enum CircuitError {
     /// `DisableSimulator`: that close matches `Close(false, false)`.
     #[error("source child closed after a far teleport")]
     Departed,
+    /// The frame thread refused the login pose or had already stopped.
+    #[error("scene did not accept the login pose")]
+    SceneInbound,
 }
+
+/// Pose posted for one login. A fresh root has identity body rotation, zero
+/// velocity, no control flags, and the shipped draw distance of 255.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoginPose {
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub velocity: [f32; 3],
+    pub control_flags: u32,
+    pub draw_distance: f32,
+}
+
+/// Identity `(x, y, z, w)` before any `AgentUpdate`.
+pub const LOGIN_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// `DefaultDrawDistance` when the viewer has not sent a far plane above 32.
+pub const LOGIN_DRAW_DISTANCE: f32 = 255.0;
+
+pub type LoginScene = Arc<dyn Fn(Uuid, LoginPose) -> Result<LoginPose, ()> + Send + Sync>;
 
 /// Why the region stopped a live circuit. Ordinary logout is not one of these:
 /// `LogoutHandler` closes with `sendStop` false and does not send either packet.
@@ -347,6 +369,8 @@ struct State {
     /// Child update shared with the simulation service. Absent when this
     /// circuit cannot accept a return.
     return_slot: Option<crate::return_hop::ReturnSlot>,
+    /// Login pose owner. Absent in tests and on a circuit the region has not armed.
+    login_scene: Option<LoginScene>,
     /// A child `CompleteAgentMovement` is waiting for `UpdateAgent`.
     return_wait: bool,
     /// This demotion already started a promotion. Cleared once the agent is root.
@@ -408,6 +432,7 @@ impl State {
             hop_tx,
             hop_rx,
             return_slot,
+            login_scene: None,
             return_wait: false,
             return_started: false,
         }
@@ -866,11 +891,12 @@ impl State {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
-        let reply = self.arrival.build(expect, timestamp);
+        let mut reply = self.arrival.build(expect, timestamp);
         let avatar = self.arrival.avatar.clone();
         let region_handle = self.arrival.region_handle;
-        let position = self.arrival.position;
+        let position = self.login_position(expect.agent_id)?;
         let look_at = self.arrival.look_at;
+        reply.data.position = position.into();
         self.send_message(sock, to, &reply, true).await?;
         // CompleteMovement sends the avatar full update, then appearance.
         // Land stays queued until the reliable window has room.
@@ -881,6 +907,25 @@ impl State {
             self.send_message(sock, to, &appearance, true).await?;
         }
         Ok(())
+    }
+
+    /// Post the landed pose and use the frame's record. Without a scene, the
+    /// arrival position is the one the region already computed. Chat and
+    /// teleport keep that field either way.
+    fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
+        let Some(scene) = &self.login_scene else {
+            return Ok(self.arrival.position);
+        };
+        let pose = LoginPose {
+            position: self.arrival.position,
+            rotation: LOGIN_ROTATION,
+            velocity: [0.0, 0.0, 0.0],
+            control_flags: 0,
+            draw_distance: LOGIN_DRAW_DISTANCE,
+        };
+        scene(agent, pose)
+            .map(|stored| stored.position)
+            .map_err(|_| CircuitError::SceneInbound)
     }
 
     /// `TeleportLocationRequest` for this region. `TeleportStart` and
@@ -1236,6 +1281,8 @@ struct CircuitInner {
     chat: Mutex<Option<RegionChat>>,
     /// Seats waiting for the serve that owns that agent.
     waiting_seats: Mutex<HashMap<Uuid, ChatSeat>>,
+    /// Login posts its landed pose here and reads that record back.
+    login_scene: Mutex<Option<LoginScene>>,
 }
 
 impl Drop for CircuitInner {
@@ -1411,8 +1458,18 @@ impl CircuitServer {
                 next_id: AtomicU64::new(1),
                 chat: Mutex::new(None),
                 waiting_seats: Mutex::new(HashMap::new()),
+                login_scene: Mutex::new(None),
             }),
         })
+    }
+
+    /// Arm the frame thread that owns login poses. Later serves post there.
+    pub fn set_login_scene(&self, scene: LoginScene) {
+        *self
+            .inner
+            .login_scene
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(scene);
     }
 
     /// Record inbound and outbound datagrams. The region keeps running when this fails.
@@ -1623,6 +1680,12 @@ impl CircuitServer {
             .timing
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let login_scene = self
+            .inner
+            .login_scene
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
         serve_socket_reporting(
             &session,
             expect,
@@ -1637,6 +1700,7 @@ impl CircuitServer {
                 pending: None,
                 stop,
                 chat,
+                login_scene,
             },
         )
         .await
@@ -1650,6 +1714,7 @@ struct ServeExtra<'a> {
     pending: Option<&'a PendingUseCircuit>,
     stop: Option<oneshot::Receiver<CircuitStop>>,
     chat: Option<ChatSeat>,
+    login_scene: Option<LoginScene>,
 }
 
 #[cfg(test)]
@@ -1673,6 +1738,7 @@ async fn serve_socket(
             pending: None,
             stop: None,
             chat: None,
+            login_scene: None,
         },
     )
     .await
@@ -1706,6 +1772,7 @@ async fn serve_socket_reporting(
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
+    state.login_scene = extra.login_scene;
     let mut hop_rx = state.hop_rx.take();
     let mut seated = extra.chat;
     state.chat = seated.as_ref().map(|seat| seat.hub.clone());

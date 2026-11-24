@@ -894,3 +894,61 @@ async fn wrong_agent_or_session_cannot_acknowledge_the_window() {
     );
     assert!(!state.unacked.contains(1));
 }
+
+#[tokio::test]
+async fn login_arrival_reads_the_pose_back_from_the_scene() {
+    let expect = identity(Uuid::from_u128(7));
+    let config = ArrivalConfig {
+        position: [10.0, 20.0, 30.0],
+        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    state.login_scene = Some(Arc::new(move |agent, pose| {
+        assert_eq!(agent, expect.agent_id);
+        assert_eq!(pose.position, [10.0, 20.0, 30.0]);
+        assert_eq!(pose.rotation, LOGIN_ROTATION);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(pose.control_flags, 0);
+        assert_eq!(pose.draw_distance, LOGIN_DRAW_DISTANCE);
+        let mut stored = pose;
+        stored.position[2] = 41.5;
+        Ok(stored)
+    }));
+    let io = FakeIo::default();
+    state.send_arrival(&io, peer(), &expect).await.unwrap();
+    assert_eq!(state.arrival.position, [10.0, 20.0, 30.0]);
+    let sent = io.sent.lock().unwrap();
+    let mut movement_z = None;
+    let mut avatar_z = None;
+    for bytes in sent.iter() {
+        let packet = parse_packet(bytes).unwrap();
+        if packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID {
+            let message = packet
+                .decode::<ferroan_protocol::msgs::AgentMovementComplete>()
+                .unwrap();
+            movement_z = Some(message.data.position.z);
+        }
+        if packet.id == ferroan_protocol::msgs::ObjectUpdate::ID {
+            let message = packet
+                .decode::<ferroan_protocol::msgs::ObjectUpdate>()
+                .unwrap();
+            if let Some(object) = message
+                .object_data
+                .iter()
+                .find(|object| object.p_code == 47)
+            {
+                let z = f32::from_le_bytes([
+                    object.object_data[24],
+                    object.object_data[25],
+                    object.object_data[26],
+                    object.object_data[27],
+                ]);
+                avatar_z = Some(z);
+            }
+        }
+    }
+    assert_eq!(movement_z, Some(41.5));
+    assert_eq!(avatar_z, Some(41.5));
+}

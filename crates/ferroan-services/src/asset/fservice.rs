@@ -38,8 +38,10 @@
 //! The fallback row is left in place. `GetData` does not fall back and does
 //! not clean object XML. `GetMetadata` is the row only, so a missing file is
 //! still metadata. `AssetsExist` is true only when that read would serve the
-//! asset (TB25). An id that does not parse is an error there, as `UUID.Parse`
-//! throws. A non-uuid `Get` is a miss, as the PostgreSQL plugin answers since
+//! asset (TB25). It reads the hashes in one query and does not update
+//! `access_time`. An id that does not parse is an error. A missing or
+//! unreadable file is false. MySQL answers all false when the database will
+//! not open. PostgreSQL returns that failure. A non-uuid `Get` is a miss, as the PostgreSQL plugin answers since
 //! TB49 was fixed (#500).
 //!
 //! `Store` hashes the original bytes, truncates the name and description to
@@ -52,7 +54,9 @@
 //! `show digest`, `delete asset`, `import` and `force import`, and only the
 //! main instance registers them. PostgreSQL import uses `LIMIT count OFFSET
 //! start` with `ORDER BY id`, as the pin does (TB40, #491). `force import` updates an existing row's
-//! hash (TB45). `ShowConsoleStats` is not started.
+//! hash (TB45). File reads and spool writes run on a blocking thread.
+//! Import reads one source row and stores it before the next read.
+//! `ShowConsoleStats` is not started.
 //!
 //! Only the main instance runs `DefaultAssetLoader` and the writer. A later
 //! instance in the process does not, and neither does `SecondaryInstance`.
@@ -219,7 +223,7 @@ impl FsAssetService {
         let Some(row) = self.store.get(uuid).await? else {
             return Ok(None);
         };
-        match self.files.read_checked(&row.hash, row.metadata.type_code) {
+        match read_checked_off(&self.files, &row.hash, row.metadata.type_code).await {
             Ok(data) => Ok(data),
             Err(error) => {
                 log_fsassets("ERROR", &format!("Could not get asset {id}: {error}"));
@@ -243,7 +247,9 @@ impl FsAssetService {
     }
 
     /// `AssetsExist`. A bad id is `Err`, which the handler answers as 500.
-    /// Each id is `Get`, so the access time updates, then the file is checked.
+    /// One hash query, then the file check. The access time is not updated.
+    /// A file that cannot be read is false. MySQL answers all false when the
+    /// database will not open. PostgreSQL returns that failure.
     pub async fn assets_exist(&self, ids: &[String]) -> Result<Vec<bool>, StoreError> {
         let mut parsed = Vec::with_capacity(ids.len());
         for id in ids {
@@ -252,12 +258,14 @@ impl FsAssetService {
             };
             parsed.push(uuid);
         }
-        let mut found = Vec::with_capacity(parsed.len());
-        for uuid in parsed {
-            let present = match self.store.get(uuid).await? {
-                Some(row) => self
-                    .files
-                    .read_checked(&row.hash, row.metadata.type_code)?
+        let rows = self.store.hashes(&parsed).await?;
+        let mut found = Vec::with_capacity(rows.len());
+        for row in rows {
+            let present = match row {
+                Some(row) => read_checked_off(&self.files, &row.hash, row.type_code)
+                    .await
+                    .ok()
+                    .flatten()
                     .is_some(),
                 None => false,
             };
@@ -283,9 +291,8 @@ impl FsAssetService {
         truncate_name(asset);
         truncate_description(asset);
         let mut stored = original;
-        if self
-            .files
-            .read_checked(&hash, asset.type_code)
+        if read_checked_off(&self.files, &hash, asset.type_code)
+            .await
             .ok()
             .flatten()
             .is_none()
@@ -295,9 +302,20 @@ impl FsAssetService {
                 if asset.type_code == OBJECT_TYPE && rewrite_object(&mut stored).is_err() {
                     return Err(());
                 }
-                if self.files.write_spool(&hash, &stored).is_err() {
-                    asset.data = stored;
-                    return Ok(NIL_ID.to_string());
+                let files = self.files.clone();
+                let hash_owned = hash.clone();
+                let written = tokio::task::spawn_blocking(move || {
+                    let result = files.write_spool(&hash_owned, &stored);
+                    (result, stored)
+                })
+                .await;
+                match written {
+                    Ok((Ok(()), data)) => stored = data,
+                    Ok((Err(_), data)) => {
+                        asset.data = data;
+                        return Ok(NIL_ID.to_string());
+                    }
+                    Err(_) => return Ok(NIL_ID.to_string()),
                 }
             }
         }
@@ -410,50 +428,62 @@ impl FsAssetService {
             Ok(pool) => pool,
             Err(()) => return Ok(Vec::new()),
         };
-        let rows = match self
-            .store
-            .import_from(&pool, &request.table, request.start, request.count)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(_) => {
-                log_import_failure(self.store.backend());
-                pool.close().await;
-                return Ok(Vec::new());
-            }
-        };
+        let backend = self.store.backend();
+        let force = request.force;
+        let table = request.table.clone();
+        let start = request.start;
+        let count = request.count;
         let mut lines = vec!["Querying database".to_string(), "Reading data".to_string()];
         let mut imported = 0u64;
-        for row in rows {
+        let walked = super::fsasset::import_walk(&pool, &table, start, count, async |row| {
             if imported.is_multiple_of(100) {
                 lines.push(format!("{imported} assets imported so far"));
             }
-            if self.import_one(&row, request.force).await.is_err() {
-                log_fsassets("ERROR", "[FSASSETS]: Error importing assets");
-                pool.close().await;
-                return Ok(lines);
+            if self.import_one(row, force).await.is_err() {
+                return Err(ImportStop::Store);
             }
             imported += 1;
-        }
+            Ok(())
+        })
+        .await;
         pool.close().await;
-        lines.push(format!("Import done, {imported} assets imported"));
-        Ok(lines)
+        match walked {
+            Ok(()) => {
+                lines.push(format!("Import done, {imported} assets imported"));
+                Ok(lines)
+            }
+            Err(ImportStop::Store) => {
+                log_fsassets("ERROR", "[FSASSETS]: Error importing assets");
+                Ok(lines)
+            }
+            Err(ImportStop::Query(error)) => {
+                let bound = matches!(error, StoreError::Bound);
+                if !bound {
+                    log_import_failure(backend);
+                }
+                if bound || imported > 0 {
+                    Ok(lines)
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+        }
     }
 
-    async fn import_one(&self, row: &FsImportRow, force: bool) -> Result<(), ()> {
+    async fn import_one(&self, row: FsImportRow, force: bool) -> Result<(), ()> {
+        let id_text = row.id.to_string();
         let mut asset = Asset {
             id: row.id,
-            name: row.name.clone(),
-            description: row.description.clone(),
+            name: row.name,
+            description: row.description,
             type_code: row.type_code,
             local: false,
             temporary: false,
             creator_id: String::new(),
             flags: 0,
-            data: row.data.clone(),
+            data: row.data,
             upload_attempts: 0,
         };
-        let id_text = row.id.to_string();
         self.store_asset_inner(&mut asset, &id_text, force).await?;
         Ok(())
     }
@@ -464,10 +494,7 @@ impl FsAssetService {
         row: FsAsset,
     ) -> Result<Option<(Asset, String)>, StoreError> {
         let stored_hash = row.hash.clone();
-        let data = match self
-            .files
-            .read_checked(&stored_hash, row.metadata.type_code)
-        {
+        let data = match read_checked_off(&self.files, &stored_hash, row.metadata.type_code).await {
             Ok(Some(data)) => data,
             Ok(None) => {
                 let Some(mut asset) = self.take_fallback(id).await? else {
@@ -518,6 +545,32 @@ impl FsAssetService {
             return Ok(None);
         }
         Ok(Some(asset))
+    }
+}
+
+enum ImportStop {
+    Query(StoreError),
+    Store,
+}
+
+impl From<StoreError> for ImportStop {
+    fn from(error: StoreError) -> Self {
+        Self::Query(error)
+    }
+}
+
+async fn read_checked_off(
+    files: &super::fsfiles::FsFiles,
+    hash: &str,
+    type_code: i8,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let files = files.clone();
+    let hash = hash.to_owned();
+    match tokio::task::spawn_blocking(move || files.read_checked(&hash, type_code)).await {
+        Ok(result) => result,
+        Err(_) => Err(StoreError::Io(std::io::Error::other(
+            "fsassets file read stopped",
+        ))),
     }
 }
 
@@ -703,6 +756,46 @@ mod tests {
     use super::*;
     use tower::ServiceExt;
 
+    #[tokio::test]
+    async fn file_reads_and_spool_writes_run_off_the_async_task() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-fsassets-block-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("base")).expect("base");
+        std::fs::create_dir_all(dir.join("spool")).expect("spool");
+        let files = super::super::fsfiles::FsFiles::new(dir.join("base"), dir.join("spool"), false);
+        let bytes = b"blocking-bytes".to_vec();
+        let hash = super::sha256_hex(&bytes);
+        let files_for_write = files.clone();
+        let hash_owned = hash.clone();
+        let payload = bytes.clone();
+        tokio::task::spawn_blocking(move || files_for_write.write_spool(&hash_owned, &payload))
+            .await
+            .expect("write task")
+            .expect("spool");
+        let read = super::read_checked_off(&files, &hash, 0)
+            .await
+            .expect("read")
+            .expect("bytes");
+        assert_eq!(read, bytes);
+        assert!(
+            super::read_checked_off(&files, "", 0)
+                .await
+                .expect("empty hash")
+                .is_none()
+        );
+        assert!(
+            super::read_checked_off(&files, "not-a-stored-hash", 0)
+                .await
+                .expect("missing")
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn sanitize_rewrites_a_doubled_xmlns_and_stops_at_the_colon() {
         let xml = r#"<a xmlns:xmlns:os="urn:x">hi</a>"#;
@@ -871,14 +964,34 @@ mod tests {
         assert_eq!(data.status, axum::http::StatusCode::OK);
         assert_eq!(data.content_type, "application/octet-stream");
         assert_eq!(data.body, bytes);
+        let before_exist = look
+            .clock(id)
+            .await
+            .expect("clock")
+            .expect("row")
+            .access_time;
         let exists = exist_call(app, &[&id.to_string()]).await;
         assert_eq!(exists.status, axum::http::StatusCode::OK);
         assert_eq!(exists.body, super::super::xml::encode_bools(&[true]));
+        let after_exist = look
+            .clock(id)
+            .await
+            .expect("clock")
+            .expect("row")
+            .access_time;
+        assert_eq!(after_exist, before_exist);
         let hash = super::sha256_hex(bytes);
         let spool_file = files.spool().join(format!("{hash}.asset"));
         std::fs::remove_file(&spool_file).expect("spool");
         let missing = exist_call(app, &[&id.to_string()]).await;
         assert_eq!(missing.body, super::super::xml::encode_bools(&[false]));
+        let after_missing = look
+            .clock(id)
+            .await
+            .expect("clock")
+            .expect("row")
+            .access_time;
+        assert_eq!(after_missing, before_exist);
         let gone = call(app, "GET", &format!("/assets/{id}"), &[]).await;
         assert_eq!(gone.status, axum::http::StatusCode::NOT_FOUND);
         assert_eq!(gone.content_type, "text/plain");

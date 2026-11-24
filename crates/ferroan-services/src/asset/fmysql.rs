@@ -38,15 +38,22 @@
 //! returned (TB22, #481). The pin drops those characters and returns the
 //! insert's result. An existing id is not rewritten unless `force` is set,
 //! which updates `hash` and `access_time` only (TB45). `Delete` returns true
-//! when the statement runs. `AssetsExist` and `Count` read this table. `Import` is
-//! `SELECT * FROM {table} ORDER BY id LIMIT start, count`.
+//! when the statement runs. `AssetsExist` and `Count` read this table. The
+//! hash query reads `id`, `hash` and `type` once and does not update
+//! `access_time`. When the database will not open, that query answers a null
+//! hash for each id. A later statement error is returned. `Import` reads one
+//! source row at a time, still `ORDER BY id LIMIT start, count`.
+
+use std::collections::HashMap;
 
 use sqlx::MySqlPool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use super::decode::{ReadColumn, column_bytes, column_i32, column_string, column_uuid};
 use super::fsasset::{
-    FsAsset, FsClock, FsImportRow, FsMetadata, access_is_due, import_suffix, sql_ident, utf8mb3,
+    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_row_within_bound,
+    import_suffix, sql_ident, utf8mb3,
 };
 use super::model::KNOWN_FLAGS;
 use super::store::StoreError;
@@ -161,6 +168,53 @@ pub(super) async fn exists(
     Ok(ids.iter().map(|id| found.contains(id)).collect())
 }
 
+/// One hash query. A missing id, or a null hash, is `None`. This does not
+/// update `access_time`. When the database will not open, every id is `None`.
+/// A statement error after the connection is open is returned.
+pub(super) async fn hashes(
+    pool: &MySqlPool,
+    table: &str,
+    ids: &[Uuid],
+) -> Result<Vec<Option<FsHash>>, StoreError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let marks = "?,".repeat(ids.len());
+    let marks = marks.trim_end_matches(',');
+    let sql = format!("SELECT id, hash, type FROM {table} WHERE id IN ({marks})");
+    let mut query = sqlx::query(&sql);
+    for id in ids {
+        query = query.bind(id.to_string());
+    }
+    let rows = match query.fetch_all(pool).await {
+        Ok(rows) => rows,
+        Err(error) if mysql_will_not_open(&error) => {
+            tracing::error!("fsassets mysql hashes: the database did not open");
+            return Ok(vec![None; ids.len()]);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut by_id = HashMap::with_capacity(rows.len());
+    for row in &rows {
+        let id = column_uuid(row, "id")?;
+        match optional_text(row, "hash")? {
+            Some(hash) => {
+                by_id.insert(
+                    id,
+                    FsHash {
+                        hash,
+                        type_code: column_i32(row, "type")? as i8,
+                    },
+                );
+            }
+            None => {
+                by_id.remove(&id);
+            }
+        }
+    }
+    Ok(ids.iter().map(|id| by_id.get(id).cloned()).collect())
+}
+
 pub(super) async fn count(pool: &MySqlPool, table: &str) -> Result<i64, StoreError> {
     let sql = format!("SELECT COUNT(*) AS n FROM {table}");
     let row = sqlx::query(&sql).fetch_one(pool).await?;
@@ -173,26 +227,33 @@ pub(super) async fn delete(pool: &MySqlPool, table: &str, id: &str) -> Result<bo
     Ok(true)
 }
 
-pub(super) async fn import_reader(
+/// One page of the legacy import table. `count == 0` reads nothing. A `data`
+/// value past the import bound is refused and is not returned.
+pub(super) async fn import_page(
     pool: &MySqlPool,
     table: &str,
     start: i32,
     count: i32,
 ) -> Result<Vec<FsImportRow>, StoreError> {
     sql_ident(table)?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
     let suffix = import_suffix(start, count, false)?;
     let sql = format!("SELECT * FROM {table}{suffix}");
     let rows = sqlx::query(&sql).fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
-        out.push(FsImportRow {
+        let parsed = FsImportRow {
             id: column_uuid(row, "id")?,
             name: column_string(row, "name")?,
             description: column_string(row, "description")?,
             type_code: column_i32(row, "assetType")? as i8,
             create_time: column_i32(row, "create_time")?,
             data: column_bytes(row, "data")?,
-        });
+        };
+        import_row_within_bound(parsed.data.len())?;
+        out.push(parsed);
     }
     Ok(out)
 }
@@ -221,6 +282,28 @@ pub(super) async fn clock(
         name: column_string(&row, "name")?,
         description: column_string(&row, "description")?,
     }))
+}
+
+fn mysql_will_not_open(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::PoolClosed
+            | sqlx::Error::PoolTimedOut
+            | sqlx::Error::WorkerCrashed
+            | sqlx::Error::Io(_)
+            | sqlx::Error::Tls(_)
+            | sqlx::Error::Configuration(_)
+    )
+}
+
+fn optional_text(row: &sqlx::mysql::MySqlRow, name: &str) -> Result<Option<String>, StoreError> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(name) {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<String, _>(name) {
+        return Ok(Some(value));
+    }
+    Err(StoreError::Row(format!("{name} is not text")))
 }
 
 fn row_asset(row: &sqlx::mysql::MySqlRow, id: Uuid) -> Result<FsAsset, StoreError> {

@@ -1,12 +1,16 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Data;
+using System.Data.Common;
 using System.Data.SQLite;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MySqlConnector;
 using OpenMetaverse;
 using OpenMetaverse.StructuredData;
+using OpenSim.Data.MySQL;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
@@ -31,10 +35,13 @@ const string ChildC2 = "cccccccc-cccc-cccc-cccc-ccccccccccc2";
 const string ChildC3 = "cccccccc-cccc-cccc-cccc-ccccccccccc3";
 const string PrimD = "dddddddd-dddd-dddd-dddd-ddddddddddd1";
 const string PrimF = "ffffffff-ffff-ffff-ffff-fffffffffff1";
+const string NullPrim = "99999999-9999-9999-9999-999999999991";
+const string Orphan = "99999999-9999-9999-9999-999999999992";
+const string MissingParent = "abababab-abab-abab-abab-abababababab";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
     return 2;
 }
 
@@ -51,8 +58,14 @@ try
         case "bulk" when args.Length == 4:
             Bulk(args[1], args[2], args[3]);
             return 0;
+        case "mysql-seed" when args.Length == 2:
+            SeedMysql(args[1]);
+            return 0;
+        case "mysql-load" when args.Length == 4:
+            LoadMysql(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
             return 2;
     }
 }
@@ -114,15 +127,92 @@ static void Seed(string path)
     using SQLiteConnection db = new SQLiteConnection(connection);
     db.Open();
     using SQLiteTransaction tx = db.BeginTransaction();
-    InsertPrims(db);
-    InsertShapes(db);
-    InsertItems(db);
+    InsertPrims(db, false);
+    InsertShapes(db, false);
+    InsertItems(db, false);
     tx.Commit();
 }
 
-static void InsertPrims(SQLiteConnection db)
+static void SeedMysql(string ado)
 {
-    BasePrim(PrimA, Region, PrimA, "showcase")
+    MySQLSimulationData store = new MySQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    using MySqlConnection db = new MySqlConnection(ado);
+    db.Open();
+    using (MySqlCommand version = db.CreateCommand())
+    {
+        version.CommandText = "SELECT version FROM migrations WHERE name = 'RegionStore'";
+        object found = version.ExecuteScalar();
+        if (found == null || Convert.ToInt32(found) != 71)
+            throw new InvalidOperationException("RegionStore version is " + found);
+    }
+    InsertPrims(db, true);
+    InsertShapes(db, true);
+    InsertItems(db, true);
+    InsertNullPrim(db);
+    InsertOrphan(db);
+}
+
+static void InsertNullPrim(MySqlConnection db)
+{
+    using (MySqlCommand insert = db.CreateCommand())
+    {
+        insert.CommandText = "INSERT INTO prims (UUID, RegionUUID, SceneGroupID) VALUES (@id, @region, @id)";
+        insert.Parameters.AddWithValue("@id", NullPrim);
+        insert.Parameters.AddWithValue("@region", Region);
+        insert.ExecuteNonQuery();
+    }
+    NullNullable(db, "prims", "UUID", NullPrim, new HashSet<string> { "UUID", "RegionUUID", "SceneGroupID" });
+    using (MySqlCommand shape = db.CreateCommand())
+    {
+        shape.CommandText = "INSERT INTO primshapes (UUID, Shape) VALUES (@id, 0)";
+        shape.Parameters.AddWithValue("@id", NullPrim);
+        shape.ExecuteNonQuery();
+    }
+    NullNullable(db, "primshapes", "UUID", NullPrim, new HashSet<string> { "UUID", "Shape" });
+}
+
+static void InsertOrphan(MySqlConnection db)
+{
+    BasePrim(Orphan, Region, MissingParent, "orphan").Set("LinkNumber", 4).Insert(db, "prims");
+    PlainShape(Orphan).Set("Shape", 0).Insert(db, "primshapes");
+}
+
+static void NullNullable(MySqlConnection db, string table, string key, string id, HashSet<string> keep)
+{
+    List<string> columns = new List<string>();
+    using (MySqlCommand list = db.CreateCommand())
+    {
+        list.CommandText = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @table AND IS_NULLABLE = 'YES'";
+        list.Parameters.AddWithValue("@table", table);
+        using MySqlDataReader reader = list.ExecuteReader();
+        while (reader.Read())
+        {
+            string name = reader.GetString(0);
+            if (!keep.Contains(name))
+                columns.Add(name);
+        }
+    }
+    if (columns.Count == 0)
+        return;
+    string assigns = string.Join(", ", columns.ConvertAll(name => "`" + name.Replace("`", "``") + "` = NULL"));
+    using MySqlCommand update = db.CreateCommand();
+    update.CommandText = "UPDATE `" + table + "` SET " + assigns + " WHERE `" + key + "` = @id";
+    update.Parameters.AddWithValue("@id", id);
+    update.ExecuteNonQuery();
+}
+
+static void InsertPrims(DbConnection db, bool mysql)
+{
+    Row showcase = BasePrim(PrimA, Region, PrimA, "showcase")
         .Set("Text", "hello")
         .Set("Description", "desc")
         .Set("SitName", "sit")
@@ -164,8 +254,10 @@ static void InsertPrims(SQLiteConnection db)
         .Set("SaleType", 2)
         .Set("Material", 7)
         .Set("CollisionSound", CollisionSound)
-        .Set("CollisionSoundVolume", 0.25)
-        .Set("VolumeDetect", 1)
+        .Set("CollisionSoundVolume", 0.25);
+    if (!mysql)
+        showcase.Set("VolumeDetect", 1);
+    showcase
         .Set("MediaURL", "http://example.test/media")
         .Set("AttachedPosX", 0.5)
         .Set("DynAttrs", DynXml())
@@ -208,20 +300,26 @@ static void InsertPrims(SQLiteConnection db)
     BasePrim(RootC, Region, RootC, "link-table").Insert(db, "prims");
     BasePrim(ChildC2, Region, RootC, "child-first").Insert(db, "prims");
     BasePrim(ChildC3, Region, RootC, "child-second").Set("LinkNumber", 5).Insert(db, "prims");
-    BasePrim("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1", Region, RootC, "unparsed")
-        .Set("DynAttrs", "<llsd><integer>1</integer></llsd>")
-        .Insert(db, "prims");
+    // SQLite leaves this prim out and continues. On MySQL the same document
+    // stops the region's load, so the successful MySQL seed does not include it.
+    if (!mysql)
+        BasePrim("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1", Region, RootC, "unparsed")
+            .Set("DynAttrs", "<llsd><integer>1</integer></llsd>")
+            .Insert(db, "prims");
 
     BasePrim(PrimD, Region, PrimD, "no-shape")
         .Set("SitTargetOffsetX", 2.0)
         .Set("pseudocrc", 0)
         .Insert(db, "prims");
 
-    BasePrim("not-a-uuid", Region, "not-a-uuid", "unbuildable").Insert(db, "prims");
+    // The SQLite fixture keeps a row whose id does not parse. MySQL's load
+    // reads that id as text and a bad id is not part of this store's dump.
+    if (!mysql)
+        BasePrim("not-a-uuid", Region, "not-a-uuid", "unbuildable").Insert(db, "prims");
     BasePrim(PrimF, OtherRegion, PrimF, "other-region").Insert(db, "prims");
 }
 
-static void InsertItems(SQLiteConnection db)
+static void InsertItems(DbConnection db, bool mysql)
 {
     // Stored order is not item-id order. A null description, a creator id, a
     // creator endpoint with no name, and an unparsable experience id all load.
@@ -234,7 +332,9 @@ static void InsertItems(SQLiteConnection db)
         .Set("everyonePermissions", 44)
         .Set("groupPermissions", 55)
         .Set("flags", 66)
-        .Set("experienceID", "nope")
+        // "nope" is the SQLite cell. A CHAR(36) value that is not a uuid stops
+        // the MySQL load, so that seed stores the zero id the load would keep.
+        .Set("experienceID", mysql ? "00000000-0000-0000-0000-000000000000" : "nope")
         .Insert(db, "primitems");
     TaskItem(PrimA, "c0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000d1", "script", 10, 10)
         .Set("description", "runs")
@@ -312,19 +412,25 @@ static Row TaskItem(string prim, string item, string asset, string folder, strin
         .Set("groupID", GroupOwner);
 }
 
-static void InsertShapes(SQLiteConnection db)
+static void InsertShapes(DbConnection db, bool mysql)
 {
-    ShowcaseShape(PrimA).Insert(db, "primshapes");
-    PlainShape(RootB).Insert(db, "primshapes");
-    PlainShape(ChildB3).Insert(db, "primshapes");
-    PlainShape(ChildB2)
+    Row Mark(Row row)
+    {
+        if (mysql)
+            row.Set("Shape", 0);
+        return row;
+    }
+    Mark(ShowcaseShape(PrimA)).Insert(db, "primshapes");
+    Mark(PlainShape(RootB)).Insert(db, "primshapes");
+    Mark(PlainShape(ChildB3)).Insert(db, "primshapes");
+    Mark(PlainShape(ChildB2)
         .Set("Media", "<OSMedia type=\"none\"></OSMedia>")
-        .Set("MatOvrd", new byte[] { 0x00 })
+        .Set("MatOvrd", new byte[] { 0x00 }))
         .Insert(db, "primshapes");
-    PlainShape(RootC).Insert(db, "primshapes");
-    PlainShape(ChildC2).Insert(db, "primshapes");
-    PlainShape(ChildC3).Insert(db, "primshapes");
-    PlainShape(PrimF).Insert(db, "primshapes");
+    Mark(PlainShape(RootC)).Insert(db, "primshapes");
+    Mark(PlainShape(ChildC2)).Insert(db, "primshapes");
+    Mark(PlainShape(ChildC3)).Insert(db, "primshapes");
+    Mark(PlainShape(PrimF)).Insert(db, "primshapes");
 }
 
 static Row BasePrim(string uuid, string region, string group, string name)
@@ -559,7 +665,35 @@ static void Load(string path, string regionText, string pin)
     {
         store.Dispose();
     }
+    WriteDump(groups, prims, shapes, region, pin);
+}
 
+static void LoadMysql(string ado, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    Dictionary<string, RawPrim> prims = ReadPrimRawMysql(ado);
+    Dictionary<string, RawShape> shapes = ReadShapeRawMysql(ado);
+    List<SceneObjectGroup> groups;
+    MySQLSimulationData store = new MySQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+        groups = store.LoadObjects(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteDump(groups, prims, shapes, region, pin);
+}
+
+static void WriteDump(
+    List<SceneObjectGroup> groups,
+    Dictionary<string, RawPrim> prims,
+    Dictionary<string, RawShape> shapes,
+    UUID region,
+    string pin)
+{
     Dump root = new Dump
     {
         pin = pin,
@@ -633,6 +767,61 @@ static Dictionary<string, RawShape> ReadShapeRaw(string path)
         };
     }
     return rows;
+}
+
+static Dictionary<string, RawPrim> ReadPrimRawMysql(string ado)
+{
+    Dictionary<string, RawPrim> rows = new Dictionary<string, RawPrim>();
+    using MySqlConnection db = new MySqlConnection(ado);
+    db.Open();
+    using MySqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT UUID, DynAttrs, KeyframeMotion, Vehicle, PhysInertia, pseudocrc, sopanims, linksetdata FROM prims";
+    using MySqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawPrim
+        {
+            DynAttrs = reader.IsDBNull(1) ? null : reader.GetString(1),
+            Keyframe = reader.IsDBNull(2) ? null : (byte[])reader.GetValue(2),
+            Vehicle = reader.IsDBNull(3) ? null : reader.GetString(3),
+            Inertia = reader.IsDBNull(4) ? null : reader.GetString(4),
+            PseudoCrc = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+            Animations = reader.IsDBNull(6) ? null : (byte[])reader.GetValue(6),
+            Linkset = reader.IsDBNull(7) ? null : reader.GetString(7)
+        };
+    }
+    return rows;
+}
+
+static Dictionary<string, RawShape> ReadShapeRawMysql(string ado)
+{
+    Dictionary<string, RawShape> rows = new Dictionary<string, RawShape>();
+    using MySqlConnection db = new MySqlConnection(ado);
+    db.Open();
+    using MySqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT UUID, Media, MatOvrd, Texture, ExtraParams FROM primshapes";
+    using MySqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawShape
+        {
+            Media = reader.IsDBNull(1) ? null : reader.GetString(1),
+            MatOvrd = reader.IsDBNull(2) ? null : (byte[])reader.GetValue(2),
+            Texture = reader.IsDBNull(3) ? null : (byte[])reader.GetValue(3),
+            Extra = reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4)
+        };
+    }
+    return rows;
+}
+
+static string CellText(MySqlDataReader reader, int index)
+{
+    object value = reader.GetValue(index);
+    if (value is Guid guid)
+        return guid.ToString();
+    return value.ToString();
 }
 
 sealed class RawPrim
@@ -1371,15 +1560,32 @@ sealed class Row
         return this;
     }
 
-    public void Insert(SQLiteConnection db, string table)
+    public void Insert(DbConnection db, string table)
     {
-        string names = string.Join(", ", cells.ConvertAll(cell => cell.Name));
-        string marks = string.Join(", ", cells.ConvertAll(cell => "@" + cell.Name));
-        using SQLiteCommand command = db.CreateCommand();
-        command.CommandText = "INSERT INTO " + table + " (" + names + ") VALUES (" + marks + ")";
+        bool mysql = db is MySqlConnection;
+        // A later Set for the same column replaces the earlier value. MySQL rejects
+        // two parameters of one name; the stored row is the last value either way.
+        List<string> names = new List<string>();
+        Dictionary<string, object> values = new Dictionary<string, object>();
         foreach ((string name, object value) in cells)
         {
-            command.Parameters.AddWithValue("@" + name, value ?? DBNull.Value);
+            if (!values.ContainsKey(name))
+                names.Add(name);
+            values[name] = value;
+        }
+        string columns = string.Join(", ", names);
+        string marks = string.Join(", ", names.ConvertAll(name => "@" + name));
+        using DbCommand command = db.CreateCommand();
+        command.CommandText = "INSERT INTO " + table + " (" + columns + ") VALUES (" + marks + ")";
+        foreach (string name in names)
+        {
+            object stored = values[name] ?? DBNull.Value;
+            if (mysql && stored is string text && (name == "TextureAnimation" || name == "ParticleSystem"))
+                stored = Convert.FromBase64String(text);
+            DbParameter parameter = command.CreateParameter();
+            parameter.ParameterName = "@" + name;
+            parameter.Value = stored;
+            command.Parameters.Add(parameter);
         }
         command.ExecuteNonQuery();
     }
