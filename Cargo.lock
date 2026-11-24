@@ -520,9 +520,11 @@ dependencies = [
 name = "ferroan-scene"
 version = "0.1.0"
 dependencies = [
+ "ferroan-capture",
  "ferroan-db",
  "ferroan-diag",
  "ferroan-llsd",
+ "ferroan-protocol",
  "flate2",
  "log",
  "serde_json",

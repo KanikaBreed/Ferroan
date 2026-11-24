@@ -134,6 +134,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                     flags: request.flags,
                 }))
             }
+            SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
             SceneCall::Read => poses
                 .get(&agent)
                 .copied()
@@ -715,6 +716,72 @@ fn use_circuit(expect: CircuitExpect) -> Vec<u8> {
     message.circuit_code.session_id = expect.session_id;
     message.circuit_code.code = expect.circuit_code;
     wire(&message, 1, &[])
+}
+
+#[tokio::test]
+async fn an_agent_update_and_always_run_are_forwarded() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let store = Arc::clone(&seen);
+    state.login_scene = Some(Arc::new(move |_agent, call| {
+        store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(call);
+        Ok(SceneReply::Applied)
+    }));
+    let mut message = ferroan_protocol::msgs::AgentUpdate::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.agent_data.body_rotation = glam::Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+    message.agent_data.head_rotation = glam::Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+    message.agent_data.control_flags = 1;
+    message.agent_data.far = 64.0;
+    message.agent_data.flags = 0x80;
+    let bytes = wire(&message, 4, &[]);
+    let io = FakeIo::default();
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let mut run = ferroan_protocol::msgs::SetAlwaysRun::default();
+    run.agent_data.agent_id = expect.agent_id;
+    run.agent_data.session_id = expect.session_id;
+    run.agent_data.always_run = true;
+    let bytes = wire(&run, 5, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap_or_else(|poison| poison.into_inner());
+    assert_eq!(seen.len(), 2);
+    match &seen[0] {
+        SceneCall::AgentUpdate(update) => {
+            assert_eq!(update.sequence, 4);
+            assert!(!update.child && !update.in_transit);
+            assert_eq!(update.control_flags, 1);
+            assert_eq!(update.far, 64.0);
+            assert_eq!(update.flags, 0x80);
+            assert_eq!(update.body_rotation, [0.0, 0.0, 0.0, 1.0]);
+            assert!(update.now_ms > 0);
+        }
+        other => panic!("expected an agent update, got {other:?}"),
+    }
+    assert!(matches!(seen[1], SceneCall::AlwaysRun(true)));
 }
 
 fn logout(expect: CircuitExpect, acks: &[u32]) -> Vec<u8> {
