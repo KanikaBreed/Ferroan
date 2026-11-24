@@ -39,9 +39,9 @@
 
 //! Inventory and asset capabilities. User inventory and asset bytes come from
 //! Robust. The library is the in-process Nini tree. Requests past the folder,
-//! item, asset and LLSD bounds are refused rather than truncated. Each agent
-//! has one waiting upload. The uploader path is granted on that agent, and a
-//! later offer replaces it. At most 128 waiting uploads are kept.
+//! item, asset and LLSD bounds are refused rather than truncated. Each offered
+//! uploader path stays until that upload is posted or its 120 second timer
+//! fires. An agent may hold more than one. At most 128 waiting uploads are kept.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -66,8 +66,7 @@ const MAX_LLSD: usize = 2 * 1024 * 1024;
 const BAD_LIMIT: usize = 256;
 const BAD_TTL: Duration = Duration::from_secs(30);
 const UPLOAD_TTL: Duration = Duration::from_secs(120);
-/// One waiting upload per agent. Roots, the staff bypass and child caps that
-/// still hold an offer fit under this. A further offer is refused.
+/// Waiting uploader paths across every agent. A further offer is refused.
 const MAX_PENDING_UPLOADS: usize = 128;
 const LSL_ON_LUAU: u32 = 0x0100_0000;
 const FLAGS_FETCH2: u32 = 0xff;
@@ -589,9 +588,7 @@ impl FetchCaps {
         };
         let asset_type = body.get("asset_type").as_str();
         let inventory_type = body.get("inventory_type").as_str();
-        if asset_type == "mesh" || inventory_type == "mesh" {
-            return upload_error("mesh upload is not served by this capability");
-        }
+        let mesh_fee = asset_type == "mesh";
         let kind = upload_kind(inventory_type, asset_type);
         let Some((asset_code, inv_code)) = kind else {
             return upload_error("this upload type is not served by this capability");
@@ -620,20 +617,13 @@ impl FetchCaps {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         self.drop_expired(&mut slots);
-        if let Some(index) = slots
+        if slots
             .iter()
-            .position(|slot| slot.agent_id == exchange.agent_id)
+            .any(|slot| slot.agent_id == exchange.agent_id && slot.storing)
         {
-            if slots[index].storing && slots[index].expires > Instant::now() {
-                return upload_error("Uploader busy processing previous request");
-            }
-            if !self.routes().grant(exchange.agent_id, &path) {
-                return upload_error("uploader path was not registered");
-            }
-            let old = slots[index].path.clone();
-            self.routes().revoke(exchange.agent_id, &old);
-            slots[index] = pending;
-        } else if slots.len() >= MAX_PENDING_UPLOADS {
+            return upload_error("Uploader busy processing previous request");
+        }
+        if slots.len() >= MAX_PENDING_UPLOADS {
             let agent = exchange.agent_id.to_string();
             ferroan_diag::hit(&ferroan_diag::Hit {
                 id: ferroan_diag::REGION_PENDING_UPLOADS,
@@ -645,16 +635,19 @@ impl FetchCaps {
                 agent_id: Some(&agent),
             });
             return upload_error("uploader limit reached");
-        } else if !self.routes().grant(exchange.agent_id, &path) {
-            return upload_error("uploader path was not registered");
-        } else {
-            slots.push(pending);
         }
+        if !self.routes().grant(exchange.agent_id, &path) {
+            return upload_error("uploader path was not registered");
+        }
+        slots.push(pending);
         drop(slots);
         let mut map = Llsd::new_map();
         map.insert("uploader", format!("{}{path}", self.public_base));
         map.insert("state", "upload");
         map.insert("upload_price", 0);
+        if mesh_fee {
+            map.insert("data", mesh_fee_data());
+        }
         llsd_ok(map)
     }
 
@@ -683,8 +676,8 @@ impl FetchCaps {
             slots[index].storing = true;
             slots[index].expires = Instant::now() + UPLOAD_TTL;
             let pending = clone_pending(&slots[index]);
-            // The bytes are in flight. A second POST on this path is not this
-            // agent's upload, and a new offer while it stores is busy.
+            // The bytes are in flight. A second POST on this path misses, and a
+            // new offer while it stores is busy. Another waiting path stays.
             self.routes().revoke(pending.agent_id, &pending.path);
             pending
         };
@@ -826,6 +819,11 @@ fn clone_pending(pending: &PendingUpload) -> PendingUpload {
 }
 
 fn upload_kind(inventory_type: &str, asset_type: &str) -> Option<(i8, i8)> {
+    // A mesh fee's later POST is an object item. The posted body is stored as
+    // that asset; this region does not build the linkset from it.
+    if asset_type == "mesh" || inventory_type == "mesh" {
+        return Some((6, 6));
+    }
     if inventory_type == "sound" || asset_type == "sound" && inventory_type.is_empty() {
         return Some((1, 1));
     }
@@ -857,6 +855,22 @@ fn upload_permissions(
         next = PERM_TRANSFER;
     }
     (base, group, everyone, next)
+}
+
+fn mesh_fee_data() -> Llsd {
+    let mut breakdown = Llsd::new_map();
+    breakdown.insert("mesh_streaming", 0);
+    breakdown.insert("mesh_physics", 0);
+    breakdown.insert("mesh_instance", 0);
+    breakdown.insert("texture", 0);
+    breakdown.insert("model", 0);
+    let mut data = Llsd::new_map();
+    data.insert("resource_cost", 0.0);
+    data.insert("model_streaming_cost", 0.0);
+    data.insert("simulation_cost", 0.0);
+    data.insert("physics_cost", 0.0);
+    data.insert("upload_price_breakdown", breakdown);
+    data
 }
 
 fn upload_error(message: &str) -> CapAnswer {
@@ -1289,6 +1303,19 @@ mod tests {
         to_xml(&map)
     }
 
+    fn mesh_fee_body(name: &str) -> Vec<u8> {
+        let mut map = Llsd::new_map();
+        map.insert("asset_type", "mesh");
+        map.insert("inventory_type", "object");
+        map.insert("name", name);
+        map.insert("description", "synthetic model");
+        map.insert("folder_id", Uuid::nil());
+        map.insert("next_owner_mask", 0);
+        map.insert("group_mask", 0);
+        map.insert("everyone_mask", 0);
+        to_xml(&map)
+    }
+
     fn exchange(agent: Uuid, name: &str, path: &str, body: Vec<u8>) -> CapExchange {
         CapExchange {
             name: name.to_owned(),
@@ -1613,13 +1640,217 @@ mod tests {
             Uuid::from_u128(1),
             "NewFileAgentInventory",
             "/seed",
-            offer_body("replace"),
+            offer_body("second"),
         ));
+        let again_body = from_xml(&again.body).unwrap();
+        assert_eq!(again_body.get("state").as_str(), "error");
         assert_eq!(
-            from_xml(&again.body).unwrap().get("state").as_str(),
-            "upload"
+            again_body.get("error").get("message").as_str(),
+            "uploader limit reached"
         );
+        let slots = caps
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert_eq!(slots.len(), MAX_PENDING_UPLOADS);
+        assert!(slots.iter().any(|slot| slot.agent_id == Uuid::from_u128(1)));
+        drop(slots);
         drop(caps_listener);
+    }
+
+    #[tokio::test]
+    async fn an_expired_waiting_upload_is_dropped_when_the_next_offer_arrives() {
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let caps = Arc::new(FetchCaps {
+            inventory: None,
+            assets: None,
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let registry = ferroan_client::CapsRegistry::new(&format!("{caps_base}/")).unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        let agent = Uuid::from_u128(7);
+        registry
+            .register_agent("/CAPS/000000070000/", agent)
+            .unwrap();
+        let first = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_body("waiting"),
+        ));
+        let first_body = from_xml(&first.body).unwrap();
+        assert_eq!(first_body.get("state").as_str(), "upload");
+        let first_path = {
+            let mut slots = caps
+                .upload
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert_eq!(slots.len(), 1);
+            slots[0].expires = Instant::now();
+            slots[0].path.clone()
+        };
+        let second = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_body("after"),
+        ));
+        let second_body = from_xml(&second.body).unwrap();
+        assert_eq!(second_body.get("state").as_str(), "upload");
+        assert_ne!(
+            second_body.get("uploader").as_str(),
+            first_body.get("uploader").as_str()
+        );
+        {
+            let slots = caps
+                .upload
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert_eq!(slots.len(), 1);
+            assert_ne!(slots[0].path, first_path);
+        }
+        let missed = caps
+            .upload_complete(&exchange(agent, "", &first_path, b"late".to_vec()))
+            .await;
+        assert!(!missed.handled);
+        drop(caps_listener);
+    }
+
+    #[tokio::test]
+    async fn mesh_fee_then_texture_then_the_first_uploader_completes() {
+        let stored = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&stored);
+        let assets = axum::Router::new()
+            .route(
+                "/assets/",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let recorded = Arc::clone(&recorded);
+                    async move {
+                        let text = String::from_utf8_lossy(&body);
+                        let name = text
+                            .split("<Name>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</Name>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        let kind = text
+                            .split("<Type>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</Type>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        let id = text
+                            .split("<ID>")
+                            .nth(1)
+                            .and_then(|rest| rest.split("</ID>").next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        recorded
+                            .lock()
+                            .unwrap()
+                            .push(format!("{name} {kind} {id}"));
+                        (
+                            StatusCode::OK,
+                            format!(
+                                "<?xml version=\"1.0\" encoding=\"utf-8\"?><string xmlns=\"http://schemas.microsoft.com/2003/10/Serialization/\">{id}</string>"
+                            ),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/xinventory",
+                axum::routing::post(|| async {
+                    r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                }),
+            );
+        let asset_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let asset_base = format!("http://{}", asset_listener.local_addr().unwrap());
+        let assets_task = tokio::spawn(async move {
+            axum::serve(asset_listener, assets).await.unwrap();
+        });
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let caps = Arc::new(FetchCaps {
+            inventory: crate::inventory::InventoryClient::new(&asset_base, http.clone()),
+            assets: crate::remote_asset::AssetClient::new(&asset_base, http.clone()),
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let mut grants = ferroan_client::CapGrantSet::default();
+        grants.grant("NewFileAgentInventory", ferroan_client::CapTarget::Local);
+        let registry = ferroan_client::CapsRegistry::with_grants(
+            &format!("{caps_base}/"),
+            grants,
+            Some(caps.service()),
+        )
+        .unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        let agent = Uuid::from_u128(9);
+        let seed = "/CAPS/000000000000000000000000000000090000/";
+        registry.register_agent(seed, agent).unwrap();
+        let app = registry.router();
+        let caps_task = tokio::spawn(async move { axum::serve(caps_listener, app).await.unwrap() });
+
+        let cap = seed_cap(&http, &caps_base, seed).await;
+        let fee = post_llsd(&http, &cap, &mesh_fee_body("model")).await;
+        assert_eq!(fee.get("state").as_str(), "upload");
+        assert_eq!(fee.get("upload_price").as_i32(), 0);
+        assert_eq!(fee.get("data").get("resource_cost").as_f64(), 0.0);
+        assert_eq!(
+            fee.get("data")
+                .get("upload_price_breakdown")
+                .get("model")
+                .as_i32(),
+            0
+        );
+        let mesh_uploader = fee.get("uploader").as_str().to_owned();
+        let texture = post_llsd(&http, &cap, &offer_body("cloth")).await;
+        assert_eq!(texture.get("state").as_str(), "upload");
+        let texture_uploader = texture.get("uploader").as_str().to_owned();
+        assert_ne!(texture_uploader, mesh_uploader);
+        let texture_done = post_bytes(&http, &texture_uploader, b"texture-bytes").await;
+        assert_eq!(texture_done.0, 200);
+        assert_eq!(
+            from_xml(&texture_done.1).unwrap().get("state").as_str(),
+            "complete"
+        );
+        let mesh_done = post_bytes(&http, &mesh_uploader, b"mesh-bytes").await;
+        assert_eq!(mesh_done.0, 200);
+        let mesh_body = from_xml(&mesh_done.1).unwrap();
+        assert_eq!(mesh_body.get("state").as_str(), "complete");
+        assert_ne!(
+            mesh_body.get("new_asset").as_str(),
+            from_xml(&texture_done.1).unwrap().get("new_asset").as_str()
+        );
+        assert_eq!(post_bytes(&http, &mesh_uploader, b"again").await.0, 404);
+        let seen = stored.lock().unwrap().clone();
+        assert!(seen.iter().any(|line| line.starts_with("cloth 0 ")));
+        assert!(seen.iter().any(|line| line.starts_with("model 6 ")));
+        caps_task.abort();
+        assets_task.abort();
     }
 
     async fn seed_cap(http: &reqwest::Client, base: &str, seed: &str) -> String {
