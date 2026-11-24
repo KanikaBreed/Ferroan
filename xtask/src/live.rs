@@ -1613,11 +1613,14 @@ fn tranquillity_publish_properties() -> &'static [&'static str] {
 /// the publish has already succeeded (dotnet/Nerdbank.GitVersioning#683).
 /// Removing the variable leaves the runner's file untouched. The cloud-build
 /// version target is also off, so the publish does not require the file.
+/// `MSBUILDDISABLENODEREUSE` keeps a worker node from holding file locks
+/// after this process exits.
 #[cfg(any(target_os = "linux", test))]
 fn configure_dotnet_publish(command: &mut Command) {
     command
         .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .env("DOTNET_NOLOGO", "1")
+        .env("MSBUILDDISABLENODEREUSE", "1")
         .env_remove("GITHUB_ENV");
 }
 
@@ -2206,6 +2209,7 @@ mod tests {
         let mut saw_github_env = false;
         let mut saw_telemetry = false;
         let mut saw_nologo = false;
+        let mut saw_node_reuse = false;
         for (key, value) in command.get_envs() {
             if key == "GITHUB_ENV" {
                 saw_github_env = true;
@@ -2214,11 +2218,14 @@ mod tests {
                 saw_telemetry = value == Some(std::ffi::OsStr::new("1"));
             } else if key == "DOTNET_NOLOGO" {
                 saw_nologo = value == Some(std::ffi::OsStr::new("1"));
+            } else if key == "MSBUILDDISABLENODEREUSE" {
+                saw_node_reuse = value == Some(std::ffi::OsStr::new("1"));
             }
         }
         assert!(saw_github_env);
         assert!(saw_telemetry);
         assert!(saw_nologo);
+        assert!(saw_node_reuse);
         assert!(
             tranquillity_publish_properties().contains(&"-p:NBGV_SetCloudBuildVersionVars=false")
         );

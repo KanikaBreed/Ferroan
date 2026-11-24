@@ -243,6 +243,12 @@ jobs:
       - name: Compare XAsset on PostgreSQL
         if: success()
         run: cargo xtask live assets --backend xasset --db pgsql
+      - name: Compare FSAssets on MySQL
+        if: success()
+        run: cargo xtask live assets --backend fsassets --db mysql
+      - name: Compare FSAssets on PostgreSQL
+        if: success()
+        run: cargo xtask live assets --backend fsassets --db pgsql
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
