@@ -4,8 +4,8 @@
 //! Objects loaded from the region store and kept for the life of the process.
 //!
 //! `Scene.LoadPrimsFromStorage` reads every group for the region id. This load
-//! keeps that result. It does not assign local ids and it does not send an
-//! object update.
+//! keeps that result, including each prim's task inventory. It does not assign
+//! local ids and it does not send an object update.
 
 use std::sync::Arc;
 use std::time::Instant;

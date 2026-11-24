@@ -63,7 +63,7 @@ On the raw file, before anything is replaced:
 cargo run -p ferroan-capture -- check /tmp/session.cap
 ```
 
-`check` and `replay` both call `reencode_datagram` on every UDP record and require the same bytes. HTTP records are skipped by that check. The output line is `replay: N records, udp round-trip matched`. A mismatch names the record index, the direction, the message name and the capture timestamp, and stops. `check` also writes `reencode-mismatch.log` beside the capture: the index, direction, message name, timestamp, and the original and re-encoded datagrams in hex. The live harness writes the same file at `.scratch/live/diag/reencode-mismatch.log`, which the live job uploads with the other diagnostics. That equality is the wire proof. Keep the raw file out of Git.
+`check` and `replay` both call `reencode_datagram` on every UDP record. A packet the server sent (`udp out`) must come back as the same bytes. A packet the client sent (`udp in`) is compared field by field: packed quaternion components may differ by at most `1e-5` (the gap between a client's own normalize and `Quaternion.ToBytes`), and the header, the body length and every other byte must match. A trailing byte or a non-quaternion difference still fails. HTTP records are skipped by that check. The output line is `replay: N records, udp round-trip matched`. A mismatch names the record index, the direction, the message name and the capture timestamp, and stops. `check` also writes `reencode-mismatch.log` beside the capture: the index, direction, message name, timestamp, and the original and re-encoded datagrams in hex. The live harness writes the same file at `.scratch/live/diag/reencode-mismatch.log`, which the live job uploads with the other diagnostics. That check is the wire proof. Keep the raw file out of Git.
 
 ## Redaction
 
@@ -86,7 +86,7 @@ Object UUIDs stay, including `SourceID`, which is an agent id on some chat and a
 
 HTTP `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` values become `Redacted`. Other header lines, and a body whose `Content-Type` contains text, xml, json, form or llsd, have dotted IPv4 addresses replaced with `127.0.0.1`. An XML-RPC `<string>`, `<int>` or `<i4>` that follows `<name>password</name>`, or the same shape for passwd, token, secret, first, last, firstname, lastname, session, session_id, secure_session_id, agent_id, circuit_code or seed_capability, becomes `Redacted`. An LLSD `<uuid>` or `<string>` that follows `<key>owner_id</key>`, or the same shape for agent_id, creator_id, last_owner_id, session_id or secure_session_id, becomes `Redacted`. An `asset_id` stays. A body with another content type is copied unchanged. A missing `Content-Type` is treated as text.
 
-The committed UDP bytes are the encoding of the scrubbed message. They round-trip through `reencode_datagram`. They are not the original datagram. The equality that matters for the wire is the `check` on the raw file, done before `redact`.
+The committed UDP bytes are the encoding of the scrubbed message. A server record round-trips through `reencode_datagram`. A client record matches field by field, including the packing tolerance: one rescaling is not always a fixed point of the next. They are not the original datagram. The check that matters for the wire is the one on the raw file, done before `redact`.
 
 ## The committed session
 

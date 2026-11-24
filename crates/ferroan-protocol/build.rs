@@ -724,6 +724,28 @@ fn generate(msgs: &[Message]) -> String {
     }
     s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
 
+    // Same decode and encode, plus which body bytes are packed quaternions.
+    // The client capture check allows only those bytes to differ, and only
+    // by the packing tolerance. Server packets stay byte-exact.
+    s.push_str("pub fn reencode_body_quat_marks(id: MsgId, body: &[u8]) -> Result<(Vec<u8>, Vec<bool>), DecodeError> {\n    match id {\n");
+    let mut marked = std::collections::BTreeSet::new();
+    for m in msgs {
+        let id = match m.freq.as_str() {
+            "High" => format!("MsgId::High({})", m.number),
+            "Medium" => format!("MsgId::Medium({})", m.number),
+            _ => format!("MsgId::Low({})", m.number & 0xFFFF),
+        };
+        if !marked.insert(id.clone()) {
+            panic!("duplicate message id {id} ({})", m.name);
+        }
+        let _ = writeln!(
+            s,
+            "        {id} => {{ let m = {}::decode(body)?; let mut w = Writer::new(); w.record_quat_marks(); m.encode_body(&mut w); let marks = w.take_quat_marks(); Ok((w.buf, marks)) }},",
+            m.name
+        );
+    }
+    s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
+
     s.push_str("pub fn scrub_body(id: MsgId, body: &[u8]) -> Result<Vec<u8>, DecodeError> {\n    match id {\n");
     let mut scrubbed = std::collections::BTreeSet::new();
     for m in msgs {

@@ -6,8 +6,9 @@
 //! The file layout is shared with `tools/capture/tranquillity-capture.patch`,
 //! which writes the UDP records from `LLUDPServer` at Tranquillity
 //! `713857f10b8e91a639a967d4354a4682b080793c`. This crate writes the HTTP
-//! records, redacts both, and checks that every UDP datagram decodes and
-//! encodes back to the same bytes.
+//! records, redacts both, and checks UDP datagrams. A packet the server sent
+//! must encode back to the same bytes. A packet the client sent may differ
+//! only in packed quaternion components, within the packing tolerance.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

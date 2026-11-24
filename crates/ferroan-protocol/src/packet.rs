@@ -294,6 +294,88 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
+/// Whether `original` matches [`reencode_datagram`] except for packed
+/// quaternion components inside [`crate::QUAT_PACKING_TOLERANCE`].
+///
+/// The header, message, acks and every non-quaternion body byte must match.
+/// The body length must match, so a trailing byte is not treated as packing.
+/// A packet the server sent is not checked here: that path stays byte-exact.
+pub fn client_datagram_within_quat_packing(original: &[u8]) -> Result<bool, DecodeError> {
+    let again = reencode_datagram(original)?;
+    if again == original {
+        return Ok(true);
+    }
+    let parsed = parse_packet(original)?;
+    let encoded = parse_packet(&again)?;
+    if parsed.flags != encoded.flags
+        || parsed.sequence != encoded.sequence
+        || parsed.id != encoded.id
+        || parsed.acks != encoded.acks
+        || parsed.extra != encoded.extra
+        || parsed.body.len() != encoded.body.len()
+    {
+        return Ok(false);
+    }
+    let (marked, marks) = crate::reencode_body_quat_marks(parsed.id, &parsed.body)?;
+    if marked != encoded.body || marks.len() != parsed.body.len() {
+        return Ok(false);
+    }
+    Ok(quat_slots_within_tolerance(
+        &parsed.body,
+        &encoded.body,
+        &marks,
+    ))
+}
+
+fn quat_slots_within_tolerance(original: &[u8], encoded: &[u8], marks: &[bool]) -> bool {
+    let mut index = 0;
+    while index < original.len() {
+        if !marks[index] {
+            if original[index] != encoded[index] {
+                return false;
+            }
+            index += 1;
+            continue;
+        }
+        let end = index + 12;
+        if end > original.len() || marks[index..end].iter().any(|mark| !*mark) {
+            return false;
+        }
+        if !quat_slot_within(&original[index..end], &encoded[index..end]) {
+            return false;
+        }
+        index = end;
+    }
+    true
+}
+
+fn quat_slot_within(original: &[u8], encoded: &[u8]) -> bool {
+    for component in 0..3 {
+        let start = component * 4;
+        let Some(left) = f32_le(&original[start..start + 4]) else {
+            return false;
+        };
+        let Some(right) = f32_le(&encoded[start..start + 4]) else {
+            return false;
+        };
+        if !left.is_finite() || !right.is_finite() {
+            if left.to_bits() != right.to_bits() {
+                return false;
+            }
+            continue;
+        }
+        if (left - right).abs() > crate::QUAT_PACKING_TOLERANCE {
+            return false;
+        }
+    }
+    true
+}
+
+fn f32_le(bytes: &[u8]) -> Option<f32> {
+    let chunk: [u8; 4] = bytes.try_into().ok()?;
+    Some(f32::from_le_bytes(chunk))
+}
+
 /// Decode, replace session, agent, name, circuit and IP fields, and encode
 /// again. Other bytes follow the same path as [`reencode_datagram`].
 pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
@@ -400,13 +482,101 @@ mod tests {
         let datagram = frame_like_ferrobot(&payload, 40, false);
         let parsed = parse_packet(&datagram).unwrap();
         assert_eq!(parsed.id, AgentUpdate::ID);
-        assert_eq!(reencode_datagram(&datagram).unwrap(), datagram);
+        let again = reencode_datagram(&datagram).unwrap();
+        assert_ne!(again, datagram);
+        assert!(client_datagram_within_quat_packing(&datagram).unwrap());
+        let mut torn = datagram.clone();
+        torn.push(0xab);
+        assert!(!matches!(
+            client_datagram_within_quat_packing(&torn),
+            Ok(true)
+        ));
+        let mut body = parsed.body.clone();
+        // A non-unit x of 2 packs near 1. That gap is a different value, not packing.
+        body[32..36].copy_from_slice(&2.0f32.to_le_bytes());
+        body[36..40].copy_from_slice(&0.0f32.to_le_bytes());
+        body[40..44].copy_from_slice(&0.0f32.to_le_bytes());
+        let mut shifted = Vec::new();
+        AgentUpdate::ID.encode(&mut shifted);
+        shifted.extend(body);
+        let shifted = frame_like_ferrobot(&shifted, 40, false);
+        assert!(!client_datagram_within_quat_packing(&shifted).unwrap());
+    }
+
+    #[test]
+    fn a_non_quaternion_byte_the_encoder_rewrites_is_outside_packing() {
+        let message = SimulatorLoad::default();
+        let mut payload = Vec::new();
+        SimulatorLoad::ID.encode(&mut payload);
+        let mut body = crate::Writer::new();
+        message.encode_body(&mut body);
+        payload.extend(body.buf);
+        // TimeDilation f32, AgentCount i32, then CanAcceptAgents. A stored 2
+        // decodes as true and encodes as 1.
+        assert_eq!(payload[4 + 8], 0);
+        payload[4 + 8] = 2;
+        let mut datagram = Vec::new();
+        build_raw(&payload, false, 3, true, false, &[], &mut datagram);
+        assert!(!client_datagram_within_quat_packing(&datagram).unwrap());
     }
 
     #[test]
     fn a_negative_w_quaternion_is_still_rescaled() {
         let packed = crate::pack_quat(Quat::from_xyzw(0.0, 0.2, 0.0, -0.8));
         assert!(packed[1] < 0.0, "{packed:?}");
+    }
+
+    #[test]
+    fn pack_quat_matches_openmetaverse_tobytes_fixtures() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/oracle/bytes");
+        let sources = [
+            (
+                "quaternion-tobytes-identity.bin",
+                Quat::from_xyzw(0.0, 0.0, 0.0, 1.0),
+            ),
+            (
+                "quaternion-tobytes-tilt.bin",
+                Quat::from_xyzw(0.1, -0.2, 0.3, 0.9),
+            ),
+            (
+                "quaternion-tobytes-neg-w.bin",
+                Quat::from_xyzw(0.0, 0.70710677, 0.0, -0.70710677),
+            ),
+        ];
+        for (name, source) in sources {
+            let file = std::fs::read(root.join(name)).unwrap();
+            let packed = crate::pack_quat(source);
+            let mut bytes = Vec::new();
+            for value in packed {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            assert_eq!(bytes, file, "{name}");
+            let decoded = unpack_quat(Vec3::new(packed[0], packed[1], packed[2]));
+            assert_eq!(crate::pack_quat(decoded), packed, "{name} is a fixed point");
+        }
+    }
+
+    #[test]
+    fn ferrobot_headings_stay_inside_the_packing_tolerance() {
+        let mut widest = 0.0f32;
+        let mut differed = false;
+        for step in 1..20_000 {
+            let turned = ferrobot_quat(Quat::from_rotation_z(step as f32 * 0.001));
+            let scaled = openmetaverse_rescale(turned);
+            if scaled != turned {
+                differed = true;
+            }
+            for (left, right) in turned.iter().zip(scaled) {
+                widest = widest.max((left - right).abs());
+            }
+        }
+        assert!(differed);
+        assert!(
+            widest <= crate::QUAT_PACKING_TOLERANCE,
+            "widest packing gap {widest} exceeds {}",
+            crate::QUAT_PACKING_TOLERANCE
+        );
     }
 
     /// Ferrobot `Writer::quat`: normalize, force w non-negative, write x, y, z.
@@ -421,7 +591,7 @@ mod tests {
         [q.x, q.y, q.z]
     }
 
-    /// `Quaternion.ToBytes` without the unpacked-form short circuit.
+    /// `Quaternion.ToBytes` applied to a quaternion unpacked from packed x, y, z.
     fn openmetaverse_rescale(packed: [f32; 3]) -> [f32; 3] {
         let q = unpack_quat(Vec3::new(packed[0], packed[1], packed[2]));
         let norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;

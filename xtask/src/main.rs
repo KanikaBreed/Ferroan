@@ -92,6 +92,7 @@ mod oracle;
 mod oracle_reference;
 mod pin3_oracle;
 mod ports;
+mod region_report;
 mod regionstore;
 mod schema;
 mod sql_client;
@@ -163,6 +164,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live trailing-fixtures <udp-capture>
        cargo xtask live run assets --running
        cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
+       cargo xtask live compare region
        cargo xtask live assets [--db sqlite|mysql|pgsql]
        cargo xtask live assets --backend xasset --db mysql|pgsql
        cargo xtask live accounts [--db sqlite|mysql|pgsql]

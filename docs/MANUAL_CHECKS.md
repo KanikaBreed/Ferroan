@@ -64,10 +64,10 @@ bind to loopback by default, so run Firestorm on the same machine.
 Inventory and texture fetch, terrain, and the no-bake avatar appearance
 packets are implemented. The Firestorm inventory window, texture loading, and
 whether the avatar renders as a body rather than a cloud remain pending
-maintainer checks. Local chat and a teleport inside the region are implemented.
-Teleport to the neighbour (P2.0i), objects, physics and scripts are not
-implemented yet.
-A blank scene is not evidence those later items have passed.
+maintainer checks. Local chat, a teleport inside the region, and the teleport
+to the neighbour and back are in the harness. [G2](#g2-first-login) is where
+the maintainer checks those steps in Firestorm. Objects, physics and scripts
+are not this check. A blank scene is not evidence those later items have passed.
 
 Record informal notes with the date, Firestorm version/build, printed Ferroan
 commit, Tranquillity pin and result for each step. The maintainer supplies
@@ -81,6 +81,51 @@ cargo xtask live down
 Use the same command after an interrupted launch. The harness retains process
 identities for recovery. Stop this grid before running another live scenario.
 
+## G2: first login
+
+This is the maintainer's Firestorm check. It stays pending until the maintainer
+records the Firestorm version and the result in the G2 row of
+[TASKS.md](../TASKS.md). The harness does not pass G2.
+
+`cargo xtask live compare region` runs login, local chat, the in-region
+teleport and the teleport to the neighbour in grid mode, once against the C#
+home region and once against the Ferroan home region. Each side has its own
+port base. The command fails if those report lines differ. The queue allows
+no TB or D id for these lines, so the command lists none.
+
+Firestorm still has to show what the bot cannot see. Start the grid and leave
+it up:
+
+```sh
+cargo xtask live build
+cargo xtask live up grid --region ferroan
+```
+
+Add the printed Robust login URL in Firestorm's Grid Manager. Log in as the
+printed account using the password from the printed file path. Keep that
+password and private viewer logs out of public reports. The servers bind to
+loopback, so run Firestorm on the same machine. After logging out:
+
+```sh
+cargo xtask live down
+```
+
+| # | Step | Expected |
+| --- | --- | --- |
+| 1 | Log in as the test account | Login completes. You arrive standing on Ferroan Test |
+| 2 | Stay connected for two minutes | The session stays up, with no timeout dialog |
+| 3 | Say something in local chat | The text appears in local chat |
+| 4 | Teleport within the region (map, double click) | You arrive at the clicked point |
+| 5 | Teleport to Ferroan Neighbour, then back to Ferroan Test | You arrive on the neighbour, then back on the home region |
+| 6 | Log out | Clean logout, no crash dialog |
+
+Record the date, Firestorm version and build (Help > About Firestorm), the
+printed Ferroan commit, the Tranquillity pin, and a pass, fail or note for
+every step. A failed step gets a bug report
+([BUG_REPORTING.md](BUG_REPORTING.md)) with the viewer log. Do not mark G2
+passed from the harness result.
+
 ## Later gates
 
-Each phase adds a section here when its packages are written. The Phase 2 first-login milestone and gate will cover the same steps against a Ferroan region, side by side with a C# region.
+Each phase adds a section here when its packages are written. The Phase 2 gate
+is G3, after the later region work.
