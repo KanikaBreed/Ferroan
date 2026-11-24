@@ -248,22 +248,25 @@ pub fn unpack_quat(v: Vec3) -> Quat {
     Quat::from_xyzw(v.x, v.y, v.z, w)
 }
 
-/// Pack a quaternion the way `Quaternion.ToBytes` does: normalize, force w
-/// non-negative, and write x, y, z.
+/// Absolute gap allowed on one packed component when a client datagram is
+/// compared field by field.
 ///
-/// [`unpack_quat`] stores the wire x, y, z and a reconstructed w. Those x, y, z
-/// are written back unchanged, so a decoded packet round-trips. Ferrobot
-/// normalizes with glam instead of this rescaling. Some headings are not a
-/// fixed point of the rescaling, and rescaling them changed `AgentUpdate`.
-/// A quaternion that is not already in the unpacked form is still rescaled.
-/// A non-finite length writes three zeroes, which is the branch OpenMetaverse
-/// takes when every comparison on the length is false.
+/// Ferrobot normalizes with glam, forces `w` non-negative and writes `x`, `y`
+/// and `z`. [`pack_quat`] rescales with the OpenMetaverse length rule. Across
+/// the headings the protocol test scans, those two stay inside this gap. A
+/// larger gap is a different rotation, not packing.
+pub const QUAT_PACKING_TOLERANCE: f32 = 1.0e-5;
+
+/// Pack a quaternion the way `Quaternion.ToBytes` does.
+///
+/// When `x² + y² + z² + w² > 1e-6` or that length is `< 0.9999`, the three
+/// written floats are `scale * x`, `scale * y` and `scale * z`, with
+/// `scale = -1/sqrt(length)` when `w < 0` and `1/sqrt(length)` otherwise.
+/// Otherwise three zeroes are written. A real length cannot miss both
+/// comparisons, so that branch is the non-finite path. The rebuilt `w` from
+/// [`unpack_quat`] is not the `w` that was scaled, so bytes this function just
+/// wrote are not always what a second call writes.
 pub fn pack_quat(q: Quat) -> [f32; 3] {
-    let t = 1.0 - q.x * q.x - q.y * q.y - q.z * q.z;
-    let reconstructed = if t > 1e-6 { t.sqrt() } else { 0.0 };
-    if q.w == reconstructed {
-        return [q.x, q.y, q.z];
-    }
     let norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
     if norm > 1e-6 || norm < 0.9999 {
         let scale = if q.w < 0.0 {
@@ -281,13 +284,30 @@ pub fn pack_quat(q: Quat) -> [f32; 3] {
 #[derive(Default)]
 pub struct Writer {
     pub buf: Vec<u8>,
+    /// Set by [`Writer::record_quat_marks`]. Each `true` is a byte [`Writer::quat`] wrote.
+    quat_marks: Option<Vec<bool>>,
 }
 
 impl Writer {
     pub fn new() -> Self {
         Self {
             buf: Vec::with_capacity(256),
+            quat_marks: None,
         }
+    }
+
+    /// Record which bytes the next [`Writer::quat`] calls write.
+    pub(crate) fn record_quat_marks(&mut self) {
+        self.quat_marks = Some(Vec::new());
+    }
+
+    /// Marks from [`Writer::record_quat_marks`], padded to the body length.
+    pub(crate) fn take_quat_marks(&mut self) -> Vec<bool> {
+        let mut marks = self.quat_marks.take().unwrap_or_default();
+        if marks.len() < self.buf.len() {
+            marks.resize(self.buf.len(), false);
+        }
+        marks
     }
     #[inline]
     pub fn u8(&mut self, v: u8) {
@@ -354,10 +374,17 @@ impl Writer {
     }
     #[inline]
     pub fn quat(&mut self, q: Quat) {
+        let start = self.buf.len();
         let packed = pack_quat(q);
         self.f32(packed[0]);
         self.f32(packed[1]);
         self.f32(packed[2]);
+        if let Some(marks) = self.quat_marks.as_mut() {
+            if marks.len() < start {
+                marks.resize(start, false);
+            }
+            marks.extend(std::iter::repeat_n(true, self.buf.len() - start));
+        }
     }
     #[inline]
     pub fn uuid(&mut self, v: Uuid) {
@@ -411,8 +438,10 @@ pub mod msgs {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-pub use msgs::{IdCheck, id_check, message_info, reencode_body, scrub_body};
-pub use packet::{reencode_datagram, scrub_datagram};
+pub use msgs::{
+    IdCheck, id_check, message_info, reencode_body, reencode_body_quat_marks, scrub_body,
+};
+pub use packet::{client_datagram_within_quat_packing, reencode_datagram, scrub_datagram};
 
 #[cfg(test)]
 mod tests {
