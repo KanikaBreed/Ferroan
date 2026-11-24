@@ -65,9 +65,10 @@ use crate::teleport::{
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, ChatFromViewer, CompleteAgentMovement, CompletePingCheck,
-    DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest, PacketAck, StartPingCheck,
-    TeleportLocationRequest, UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    AgentPause, AgentResume, AgentUpdate, ChatFromViewer, CompleteAgentMovement, CompletePingCheck,
+    DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest, PacketAck, SetAlwaysRun,
+    StartPingCheck, TeleportLocationRequest, UseCircuitCode, logout_reply, packet_ack,
+    start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -217,6 +218,26 @@ pub struct SceneMove {
     pub flags: u32,
 }
 
+/// One decoded `AgentUpdate`. The frame applies the significance filters.
+/// One inbound slot.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentMotionUpdate {
+    pub now_ms: u64,
+    pub sequence: u32,
+    pub child: bool,
+    pub in_transit: bool,
+    pub body_rotation: [f32; 4],
+    pub head_rotation: [f32; 4],
+    pub state: u8,
+    pub camera_center: [f32; 3],
+    pub camera_at: [f32; 3],
+    pub camera_left: [f32; 3],
+    pub camera_up: [f32; 3],
+    pub far: f32,
+    pub control_flags: u32,
+    pub flags: u8,
+}
+
 /// What the circuit asks the frame thread to do.
 #[derive(Clone, Debug)]
 pub enum SceneCall {
@@ -233,6 +254,10 @@ pub enum SceneCall {
         position: [f32; 3],
         look_at: [f32; 3],
     },
+    /// `AgentUpdate`. One inbound slot. A full queue drops the packet.
+    AgentUpdate(AgentMotionUpdate),
+    /// `SetAlwaysRun`. One inbound slot.
+    AlwaysRun(bool),
     /// The stored pose. A miss is an error. This does not take an inbound slot.
     Read,
 }
@@ -243,6 +268,8 @@ pub enum SceneReply {
     Pose(LoginPose),
     Places(HashMap<Uuid, [f32; 3]>),
     Moved(SceneMove),
+    /// An agent update or always-run was accepted or dropped. No packet uses it.
+    Applied,
 }
 
 pub type LoginScene = Arc<dyn Fn(Uuid, SceneCall) -> Result<SceneReply, ()> + Send + Sync>;
@@ -924,6 +951,14 @@ impl State {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
             }
+        } else if packet.id == AgentUpdate::ID {
+            if let Ok(update) = packet.decode::<AgentUpdate>() {
+                self.forward_agent_update(expect, packet.sequence, &update);
+            }
+        } else if packet.id == SetAlwaysRun::ID {
+            if let Ok(update) = packet.decode::<SetAlwaysRun>() {
+                self.forward_always_run(expect, update.agent_data.always_run);
+            }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
@@ -1039,6 +1074,44 @@ impl State {
             Ok(SceneReply::Pose(stored)) => Ok(stored.position),
             _ => Err(CircuitError::SceneInbound),
         }
+    }
+
+    /// `AgentUpdate` onto the frame. A missing scene or a full queue leaves the
+    /// circuit up: the viewer sends another.
+    fn forward_agent_update(&self, expect: &CircuitExpect, sequence: u32, message: &AgentUpdate) {
+        let Some(scene) = &self.login_scene else {
+            return;
+        };
+        let child = self
+            .return_slot
+            .as_ref()
+            .is_some_and(|slot| slot.is_child());
+        let _ = scene(
+            expect.agent_id,
+            SceneCall::AgentUpdate(AgentMotionUpdate {
+                now_ms: unix_ms(),
+                sequence,
+                child,
+                in_transit: self.in_transit,
+                body_rotation: message.agent_data.body_rotation.to_array(),
+                head_rotation: message.agent_data.head_rotation.to_array(),
+                state: message.agent_data.state,
+                camera_center: message.agent_data.camera_center.to_array(),
+                camera_at: message.agent_data.camera_at_axis.to_array(),
+                camera_left: message.agent_data.camera_left_axis.to_array(),
+                camera_up: message.agent_data.camera_up_axis.to_array(),
+                far: message.agent_data.far,
+                control_flags: message.agent_data.control_flags,
+                flags: message.agent_data.flags,
+            }),
+        );
+    }
+
+    fn forward_always_run(&self, expect: &CircuitExpect, always_run: bool) {
+        let Some(scene) = &self.login_scene else {
+            return;
+        };
+        let _ = scene(expect.agent_id, SceneCall::AlwaysRun(always_run));
     }
 
     /// Forward the seated ids. The frame answers with the poses it has.
@@ -1384,6 +1457,16 @@ fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
 fn same_agent(agent_id: Uuid, session_id: Uuid, expect: &CircuitExpect) -> bool {
     agent_id == expect.agent_id && session_id == expect.session_id
 }
+fn unix_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 fn valid_packet_ids(packet: &IncomingPacket, expect: &CircuitExpect) -> bool {
     // NeedValidateIDs is every template message whose AgentData block carries
     // both ids. A short body cannot hold them and is dropped before ACKs.
@@ -2429,6 +2512,7 @@ mod tests {
                         flags: request.flags,
                     }))
                 }
+                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
                 SceneCall::Read => match poses.get(&agent).copied() {
                     Some(position) => Ok(SceneReply::Pose(LoginPose {
                         position,

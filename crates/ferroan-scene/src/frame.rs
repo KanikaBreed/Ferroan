@@ -3,8 +3,9 @@
 
 //! The region frame thread. [D6](../../../docs/DECISIONS.md) keeps it off the
 //! async runtime. It ticks at the shipped `FrameTime` and still answers height
-//! and layer queries. This row has no physics. Login, chat, a local teleport
-//! and a hop completion store the pose. Teleport packets stay on the circuit.
+//! and layer queries. This row has no physics step. Login, chat, a local
+//! teleport and a hop completion store the pose. An `AgentUpdate` stores
+//! movement intent. Teleport packets stay on the circuit.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -17,6 +18,7 @@ use uuid::Uuid;
 use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
+use crate::motion::{Applied, Body, Motion, MotionUpdate};
 
 /// `Constants.MinSimulationHeight`.
 const MIN_HEIGHT: f32 = -100.0;
@@ -77,6 +79,10 @@ enum Request {
         agent: Uuid,
         reply: Sender<Option<Presence>>,
     },
+    Motion {
+        agent: Uuid,
+        reply: Sender<Option<Motion>>,
+    },
     Frames {
         reply: Sender<u64>,
     },
@@ -114,12 +120,31 @@ struct CompletePost {
     reply: Sender<Presence>,
 }
 
+struct AgentPost {
+    agent: Uuid,
+    update: MotionUpdate,
+    reply: Sender<Applied>,
+}
+
+struct AlwaysRunPost {
+    agent: Uuid,
+    always_run: bool,
+    reply: Sender<bool>,
+}
+
+struct Avatar {
+    pose: Presence,
+    body: Body,
+}
+
 enum Inbound {
     Pose(PresencePost),
     Land(LandPost),
     Places(PlacesPost),
     Teleport(TeleportPost),
     Complete(CompletePost),
+    Agent(AgentPost),
+    AlwaysRun(AlwaysRunPost),
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -232,6 +257,37 @@ impl TerrainFrame {
         rx.recv().map_err(|_| TerrainError::Stopped)
     }
 
+    /// One forwarded `AgentUpdate`. A missing avatar is dropped. One inbound slot.
+    pub fn agent_update(&self, agent: Uuid, update: MotionUpdate) -> Result<Applied, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Agent(AgentPost {
+            agent,
+            update,
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// One forwarded `SetAlwaysRun`. A missing avatar reports false. One inbound slot.
+    pub fn set_always_run(&self, agent: Uuid, always_run: bool) -> Result<bool, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::AlwaysRun(AlwaysRunPost {
+            agent,
+            always_run,
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// The movement intent. This does not take an inbound slot.
+    pub fn motion(&self, agent: Uuid) -> Result<Option<Motion>, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.tx
+            .send(Request::Motion { agent, reply })
+            .map_err(|_| TerrainError::Stopped)?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
     /// Positions for one forwarded `ChatFromViewer`. Missing agents are omitted.
     pub fn chat_positions(&self, agents: &[Uuid]) -> Result<HashMap<Uuid, [f32; 3]>, TerrainError> {
         let (reply, rx) = mpsc::channel();
@@ -298,27 +354,29 @@ fn frame_wait() -> Duration {
 
 fn drain_inbound(
     rx: &Receiver<Inbound>,
-    presences: &mut HashMap<Uuid, Presence>,
+    presences: &mut HashMap<Uuid, Avatar>,
     map: Option<&Heightmap>,
 ) {
     while let Ok(post) = rx.try_recv() {
         match post {
             Inbound::Pose(post) => {
-                presences.insert(post.agent, post.pose);
-                let _ = post.reply.send(post.pose);
+                let avatar = Avatar::new(post.pose);
+                let pose = avatar.pose;
+                presences.insert(post.agent, avatar);
+                let _ = post.reply.send(pose);
             }
             Inbound::Land(post) => {
-                let pose = presences
+                let avatar = presences
                     .entry(post.agent)
-                    .or_insert_with(|| fresh(post.position));
-                pose.position = post.position;
-                let _ = post.reply.send(*pose);
+                    .or_insert_with(|| Avatar::new(fresh(post.position)));
+                avatar.pose.position = post.position;
+                let _ = post.reply.send(avatar.pose);
             }
             Inbound::Places(post) => {
                 let mut found = HashMap::new();
                 for agent in post.agents {
-                    if let Some(pose) = presences.get(&agent) {
-                        found.insert(agent, pose.position);
+                    if let Some(avatar) = presences.get(&agent) {
+                        found.insert(agent, avatar.pose.position);
                     }
                 }
                 let _ = post.reply.send(found);
@@ -326,26 +384,57 @@ fn drain_inbound(
             Inbound::Teleport(post) => {
                 let position = place_teleport(map, &post.request);
                 let look_at = flatten_look(post.request.look_at);
-                let pose = presences
+                let avatar = presences
                     .entry(post.agent)
-                    .or_insert_with(|| fresh(position));
-                pose.position = position;
-                pose.rotation = look_rotation(look_at);
-                pose.velocity = [0.0, 0.0, 0.0];
+                    .or_insert_with(|| Avatar::new(fresh(position)));
+                avatar.pose.position = position;
+                avatar.pose.rotation = look_rotation(look_at);
+                avatar.pose.velocity = [0.0, 0.0, 0.0];
+                avatar.body.halt_command();
                 let _ = post.reply.send(TeleportStored {
-                    pose: *pose,
+                    pose: avatar.pose,
                     look_at,
                     flags: post.request.flags,
                 });
             }
             Inbound::Complete(post) => {
-                let pose = presences
+                let avatar = presences
                     .entry(post.agent)
-                    .or_insert_with(|| fresh(post.position));
-                pose.position = post.position;
-                pose.rotation = look_rotation(post.look_at);
-                let _ = post.reply.send(*pose);
+                    .or_insert_with(|| Avatar::new(fresh(post.position)));
+                avatar.pose.position = post.position;
+                avatar.pose.rotation = look_rotation(post.look_at);
+                let _ = post.reply.send(avatar.pose);
             }
+            Inbound::Agent(post) => {
+                let applied = if let Some(avatar) = presences.get_mut(&post.agent) {
+                    avatar.body.apply(&post.update, &mut avatar.pose)
+                } else {
+                    Applied {
+                        dropped: true,
+                        movement: false,
+                        camera: false,
+                    }
+                };
+                let _ = post.reply.send(applied);
+            }
+            Inbound::AlwaysRun(post) => {
+                let applied = if let Some(avatar) = presences.get_mut(&post.agent) {
+                    avatar.body.set_always_run(post.always_run);
+                    true
+                } else {
+                    false
+                };
+                let _ = post.reply.send(applied);
+            }
+        }
+    }
+}
+
+impl Avatar {
+    fn new(pose: Presence) -> Self {
+        Self {
+            body: Body::new(&pose),
+            pose,
         }
     }
 }
@@ -421,7 +510,7 @@ fn run(
     if ready.send(()).is_err() {
         return;
     }
-    let mut presences = HashMap::new();
+    let mut presences: HashMap<Uuid, Avatar> = HashMap::new();
     let mut frames = 0u64;
     let mut next = Instant::now() + frame_wait();
     loop {
@@ -441,7 +530,10 @@ fn run(
                 let _ = reply.send(layers.clone());
             }
             Ok(Request::Read { agent, reply }) => {
-                let _ = reply.send(presences.get(&agent).copied());
+                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
+            }
+            Ok(Request::Motion { agent, reply }) => {
+                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
             }
             Ok(Request::Frames { reply }) => {
                 let _ = reply.send(frames);
@@ -718,6 +810,96 @@ mod tests {
         assert_eq!(
             frame.chat_positions(&[agent]).unwrap().get(&agent).copied(),
             Some([128.0, 128.0, 30.0])
+        );
+    }
+
+    #[test]
+    fn an_agent_update_is_stored_on_the_frame_and_a_teleport_stops_the_command() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(11);
+        frame
+            .post_login(
+                agent,
+                Presence {
+                    position: [128.0, 128.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 255.0,
+                },
+            )
+            .unwrap();
+        assert!(frame.motion(Uuid::from_u128(99)).unwrap().is_none());
+        let applied = frame
+            .agent_update(
+                agent,
+                crate::motion::MotionUpdate {
+                    now_ms: 1_000,
+                    sequence: 1,
+                    child: false,
+                    in_transit: false,
+                    body_rotation: [0.0, 0.0, 0.0, 1.0],
+                    head_rotation: [0.0, 0.0, 0.0, 1.0],
+                    state: 0,
+                    camera_center: [128.0, 128.0, 26.0],
+                    camera_at: [1.0, 0.0, 0.0],
+                    camera_left: [0.0, 1.0, 0.0],
+                    camera_up: [0.0, 0.0, 1.0],
+                    far: 96.0,
+                    control_flags: crate::motion::CONTROL_AT_POS,
+                    flags: 0,
+                },
+            )
+            .unwrap();
+        assert!(applied.movement);
+        let motion = frame.motion(agent).unwrap().unwrap();
+        assert!(motion.target_velocity[0] > 0.0);
+        assert_eq!(frame.presence(agent).unwrap().unwrap().draw_distance, 96.0);
+        assert!(frame.set_always_run(agent, true).unwrap());
+        assert!(frame.motion(agent).unwrap().unwrap().always_run);
+        assert!(!frame.set_always_run(Uuid::from_u128(99), true).unwrap());
+        let dropped = frame
+            .agent_update(
+                Uuid::from_u128(99),
+                crate::motion::MotionUpdate {
+                    now_ms: 1_100,
+                    sequence: 1,
+                    child: false,
+                    in_transit: false,
+                    body_rotation: [0.0, 0.0, 0.0, 1.0],
+                    head_rotation: [0.0, 0.0, 0.0, 1.0],
+                    state: 0,
+                    camera_center: [0.0, 0.0, 0.0],
+                    camera_at: [1.0, 0.0, 0.0],
+                    camera_left: [0.0, 1.0, 0.0],
+                    camera_up: [0.0, 0.0, 1.0],
+                    far: 32.0,
+                    control_flags: 0,
+                    flags: 0,
+                },
+            )
+            .unwrap();
+        assert!(dropped.dropped);
+        frame
+            .teleport_local(
+                agent,
+                LocalTeleport {
+                    position: [40.0, 200.0, 30.0],
+                    look_at: [1.0, 0.0, 0.0],
+                    half_height: 0.95,
+                    default_landing: [128.0, 128.0, 30.0],
+                    size_x: 256.0,
+                    size_y: 256.0,
+                    flags: 16,
+                },
+            )
+            .unwrap();
+        let stopped = frame.motion(agent).unwrap().unwrap();
+        assert_eq!(stopped.target_velocity, [0.0, 0.0, 0.0]);
+        assert!(stopped.always_run);
+        assert_eq!(
+            frame.presence(agent).unwrap().unwrap().velocity,
+            [0.0, 0.0, 0.0]
         );
     }
 }

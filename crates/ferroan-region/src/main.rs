@@ -541,6 +541,25 @@ impl DispatchCtx {
     }
 }
 
+fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::MotionUpdate {
+    ferroan_scene::MotionUpdate {
+        now_ms: update.now_ms,
+        sequence: update.sequence,
+        child: update.child,
+        in_transit: update.in_transit,
+        body_rotation: update.body_rotation,
+        head_rotation: update.head_rotation,
+        state: update.state,
+        camera_center: update.camera_center,
+        camera_at: update.camera_at,
+        camera_left: update.camera_left,
+        camera_up: update.camera_up,
+        far: update.far,
+        control_flags: update.control_flags,
+        flags: update.flags,
+    }
+}
+
 async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
@@ -611,6 +630,16 @@ async fn dispatch_circuits(
                         .complete_hop(agent, position, look_at)
                         .map_err(|_| ())?;
                     Ok(pose_of(stored))
+                }
+                ferroan_client::SceneCall::AgentUpdate(update) => {
+                    frame
+                        .agent_update(agent, motion_of(update))
+                        .map_err(|_| ())?;
+                    Ok(ferroan_client::SceneReply::Applied)
+                }
+                ferroan_client::SceneCall::AlwaysRun(always_run) => {
+                    frame.set_always_run(agent, always_run).map_err(|_| ())?;
+                    Ok(ferroan_client::SceneReply::Applied)
                 }
                 ferroan_client::SceneCall::Read => match frame.presence(agent).map_err(|_| ())? {
                     Some(stored) => Ok(pose_of(stored)),
