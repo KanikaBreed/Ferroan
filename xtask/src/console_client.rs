@@ -97,11 +97,11 @@ fn invoke(dotnet: &Path, dll: &Path, port: u16) -> Result<String, String> {
         .spawn()
         .map_err(|error| format!("could not start OpenSim.ConsoleClient: {error}"))?;
     // Leave stdin open. Closing it makes Prompt() parse a null line and throw.
-    // Login is asynchronous. `ReadResponses` (ConsoleClient.cs lines 283–293)
-    // drops a line that is not three colon-separated fields, so the server
-    // prompt `Region (root) # ` never reaches stdout. The client prints its
-    // own `Client> ` prompt (line 134). `remote console ready` is a scroll
-    // line from after `FromXml`, so the help tree is loaded before the send.
+    // Login is asynchronous. Since Pin8 (TB32, #528) `ReadResponses` shows
+    // every line as sent and takes its prompt from StartSession. The client
+    // still prints its own `Client> ` prompt first (line 134). `remote
+    // console ready` is a scroll line from after `FromXml`, so the help tree
+    // is loaded before the send.
     let mut stdin = child.stdin.take();
     let collected = Arc::new(Mutex::new(String::new()));
     if let Some(pipe) = child.stdout.take() {

@@ -636,7 +636,8 @@ CREATE TABLE `land` (
   `AnyAVSounds` tinyint NOT NULL DEFAULT '1',
   `GroupAVSounds` tinyint NOT NULL DEFAULT '1',
   `environment` mediumtext,
-  PRIMARY KEY (`UUID`)
+  PRIMARY KEY (`UUID`),
+  KEY `land_regionuuid` (`RegionUUID`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -649,7 +650,8 @@ CREATE TABLE `landaccesslist` (
   `LandUUID` varchar(255) DEFAULT NULL,
   `AccessUUID` varchar(255) DEFAULT NULL,
   `Flags` int DEFAULT NULL,
-  `Expires` int NOT NULL DEFAULT '0'
+  `Expires` int NOT NULL DEFAULT '0',
+  KEY `landaccesslist_landuuid` (`LandUUID`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -682,7 +684,7 @@ CREATE TABLE `migrations` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 /*!40000 ALTER TABLE `migrations` DISABLE KEYS */;
-INSERT INTO `migrations` VALUES ('migrations',1),('AgentPrefs',1),('AssetStore',10),('AuthStore',4),('Avatar',3),('EstateStore',38),('Experience',4),('FSAssetStore',1),('FriendsStore',4),('GridStore',11),('GridUserStore',2),('HGTravelStore',2),('IM_Store',5),('InventoryStore',8),('LogStore',1),('MuteListStore',1),('Presence',4),('RegionStore',70),('TrustedGrid',1),('UserAccount',8),('UserAlias',1),('UserProfiles',5),('XAssetStore',2),('os_groups_Store',5);
+INSERT INTO `migrations` VALUES ('migrations',1),('AgentPrefs',1),('AssetStore',10),('AuthStore',4),('Avatar',3),('EstateStore',38),('Experience',4),('FSAssetStore',1),('FriendsStore',4),('GridStore',11),('GridUserStore',2),('HGTravelStore',2),('IM_Store',5),('InventoryStore',8),('LogStore',1),('MuteListStore',1),('Presence',4),('RegionStore',71),('TrustedGrid',1),('UserAccount',8),('UserAlias',1),('UserProfiles',5),('XAssetStore',2),('os_groups_Store',5);
 /*!40000 ALTER TABLE `migrations` ENABLE KEYS */;
 DROP TABLE IF EXISTS `os_groups_bans`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;

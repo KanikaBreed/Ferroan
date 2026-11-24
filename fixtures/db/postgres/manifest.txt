@@ -1,5 +1,5 @@
 format 1
-revision 1052cbae82ae7dc3b8abfcffe33e316498eeaad9
+revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 backend postgres
 AgentPrefs 1
 AssetStore 9
@@ -16,7 +16,7 @@ InventoryStore 11
 LogStore 1
 MuteListStore 2
 Presence 4
-RegionStore 61
+RegionStore 62
 UserAccount 7
 UserProfiles 6
 UserStore 11

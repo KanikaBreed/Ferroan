@@ -93,7 +93,9 @@ static class FdbMode
             Type = (sbyte)body["type"].GetValue<int>(),
             Flags = (AssetFlags)body["flags"].GetValue<int>()
         };
-        bool stored = plugin.Store(meta, Text(body, "hash"));
+        // "force" is the force import's update (Tranquillity #524, TB45).
+        bool force = body["force"]?.GetValue<bool>() ?? false;
+        bool stored = plugin.Store(meta, Text(body, "hash"), force);
         Write(new JsonObject { ["stored"] = stored });
     }
 

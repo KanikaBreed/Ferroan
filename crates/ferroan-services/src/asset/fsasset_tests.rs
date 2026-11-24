@@ -446,7 +446,6 @@ async fn check_import(store: &FsAssetStore) {
 
 async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str) {
     store.wipe().await.expect("wipe");
-    let mut differences = Vec::new();
     let id = fid(1);
     let rusted = meta(id, "sea😀weed", "€ok😀", 9);
     assert!(store.store(&rusted, HASH_A).await.expect("rust store"));
@@ -615,6 +614,32 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     assert_eq!(pin_force["stored"], true);
     let pin_row = store.clock(force_id).await.expect("clock").expect("row");
     same_hash(HASH_A, &pin_row.hash);
+    // TB45 fixed (#524): a forced store gives the row the new hash and keeps
+    // its name, description, type, flags and creation time.
+    let pin_forced = csharp(
+        oracle,
+        backend,
+        ado,
+        "put",
+        serde_json::json!({
+            "id": force_id.to_string(),
+            "name": "other",
+            "description": "other",
+            "type": 4,
+            "flags": 1,
+            "hash": HASH_B,
+            "force": true
+        }),
+    );
+    assert_eq!(pin_forced["stored"], true);
+    let csharp_forced = store.clock(force_id).await.expect("clock").expect("row");
+    same_hash(HASH_B, &csharp_forced.hash);
+    assert!(
+        store
+            .store_forced(&meta(force_id, "kept-name", "kept-desc", 2), HASH_A)
+            .await
+            .expect("rust force back")
+    );
     assert!(
         store
             .store_forced(&meta(force_id, "other", "other", 4), HASH_B)
@@ -623,20 +648,17 @@ async fn cross_one(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str)
     );
     let forced = store.clock(force_id).await.expect("clock").expect("row");
     same_hash(HASH_B, &forced.hash);
-    assert_eq!(forced.raw_flags, 2);
-    assert_eq!(forced.create_time, pin_row.create_time);
-    if backend == "mysql" {
-        assert_eq!(forced.name, "kept-name");
-        assert_eq!(forced.description, "kept-desc");
+    for row in [&csharp_forced, &forced] {
+        assert_eq!(row.raw_flags, 2);
+        assert_eq!(row.create_time, pin_row.create_time);
+        if backend == "mysql" {
+            assert_eq!(row.name, "kept-name");
+            assert_eq!(row.description, "kept-desc");
+        }
     }
-    differences.push("TB45");
 
     cross_import(store, oracle, backend, ado).await;
-    if differences.is_empty() {
-        println!("fsassets: rows match");
-    } else {
-        println!("known differences: {}", differences.join(", "));
-    }
+    println!("fsassets: rows match");
 }
 
 async fn cross_import(store: &FsAssetStore, oracle: &str, backend: &str, ado: &str) {

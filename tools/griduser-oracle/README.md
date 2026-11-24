@@ -10,7 +10,7 @@ Each invocation reads one JSON object on stdin and writes one JSON object on std
 cargo xtask griduser cross
 ```
 
-`get` returns `{found, user_id, data}` or `{found:false}`. `getall`, `getmany` and `online` return `{rows:[{user_id, data}]}`. `store` returns `{stored}`. `GetAll` of an id with `%` or `_` is compared on SQLite only; that is TB43. The Rust store binds an escaped prefix.
+`get` returns `{found, user_id, data}` or `{found:false}`. `getall`, `getmany` and `online` return `{rows:[{user_id, data}]}`. `store` returns `{stored}`. `GetAll` of an id with `%` or `_` is compared on every store: since Pin8 the pin matches a literal prefix (TB43, #525), as the Rust store's escaped, bound prefix does.
 
 `service` runs one sequence of `post`, `store` and `console` steps against `GridUserService` and `POST /griduser` on a new SQLite file. The connection string is not printed. `cargo xtask griduser service` builds the oracle and compares the Rust service with a fresh capture of that sequence. Ordinary tests replay [fixtures/griduser/service.json](../../fixtures/griduser/service.json) and do not start the oracle.
 

@@ -80,6 +80,7 @@ Remove this section once the queue runs again.
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | DONE (#185) |
+| Q10af | Pin8: move the Tranquillity pin to the maintainer's `dev-build` roll-up (`develop` `923a4cd70b` plus their 29 open OpenSim-NGC PRs #499 and #503 to #530) | IN PROGRESS (`feat/pin8`) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
@@ -511,6 +512,9 @@ Phase 2 slice 2 (manager, 22 November 2026): Q40 to Q81 (TASKS P2.1a to P2.12, a
 
 ## Found while working
 
+- 2026-11-23, Q10af: Pin8 raises `RegionStore` to SQLite 48, MySQL 71 and PostgreSQL 62 (two indexes, #507, no column change), and #508 makes the MySQL region store load a prim row with NULL columns with defaults (identity rotation, zero masks, empty text). Q53 and later object-store items read prims at this pin and should follow both.
+- 2026-11-23, Q10af: TB55 is fixed at Pin8 (#526): a C# region now runs server GC from its runtimeconfig. C# memory baselines taken before Pin8 (Q10ad) are workstation GC and are not comparable with ones taken after.
+- 2026-11-23, Q10af: TB42's fix (#527) still loads a `StorageProvider` that is named, so a C# authorization service with a broken one refuses to start; Ferroan opens none (D34). `live compare auth` still gives the C# side a scratch asset SQLite file it no longer needs.
 - 2026-11-22, Q23d: `FSAssetService.Store(AssetBase, bool force)` at `1d7abb8337` never reads `force`, so `force import` does not overwrite the hash. Nobody depends on that. Ferroan updates `hash` and `access_time` only when `force` is true (TB45, D36). The PostgreSQL import page is now `ORDER BY id LIMIT count OFFSET start` (TB40). `cargo xtask asset fsassets-cross` prints TB45 on MySQL and TB39, TB45, TB40 on PostgreSQL.
 
 - 2026-11-22, Q18a: `checks (macos-latest)` on `ee3873c` failed `bot_login_survives_one_second_of_viewer_ack_loss` ([run 44982931302](https://github.com/KanikaBreed/Ferroan/actions/runs/44982931302), job `137087192788`). The relay's send to the test server returned `Connection refused` at `crates/ferroan-client/tests/login_loss.rs:263`, and the relay task then returned an error at line 357. The other three loss tests passed. Windows checks had passed. The same macOS job passed on `291e9b7`. The commit is the ferrobot flake note. Recorded before the retry. Not a product change. Attempt 1.
