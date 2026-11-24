@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Build `tools/regionstore-oracle` against a task-owned clone of the pin and
-//! compare its SQLite object dump with the committed fixture. The shared
-//! reference checkout is only read.
+//! compare its object dump with the committed fixture. SQLite is a file.
+//! MySQL is a throwaway container this command removes. The shared reference
+//! checkout is only read. PostgreSQL is a later row.
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use crate::asset_oracle::{
     checkout_is_clean, dotnet, fail_if_dirty, git, pinned_and_checked, pinned_revision,
@@ -21,7 +24,10 @@ const PROJECT: &str = "tools/regionstore-oracle/RegionStoreOracle.csproj";
 const DLL: &str = "bin/RegionStoreOracle/release/RegionStoreOracle.dll";
 const FIXTURE: &str = "fixtures/regionstore/objects.db";
 const DUMP: &str = "fixtures/regionstore/objects.json";
+const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
+const MYSQL_NAME: &str = "ferroan-regionstore-mysql";
+const MYSQL_PORT: &str = "13317";
 
 pub fn generate() -> ExitCode {
     dispatch(true)
@@ -41,6 +47,214 @@ pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// SQLite fixture compare, then the same groups from a throwaway MySQL
+/// container. The container is removed when this returns. PostgreSQL waits.
+pub fn cross() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    if verify_fixture(&root, &dll) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let container = match start_mysql() {
+        Ok(container) => container,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = mysql_cross(&root, &dll, &pinned);
+    drop(container);
+    code
+}
+
+struct MysqlContainer;
+
+impl Drop for MysqlContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", MYSQL_NAME])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn start_mysql() -> Result<MysqlContainer, String> {
+    let _ = Command::new("docker")
+        .args(["rm", "-f", MYSQL_NAME])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    println!("$ docker run --name {MYSQL_NAME} -p 127.0.0.1:{MYSQL_PORT}:3306 mysql:8.4");
+    let status = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--name",
+            MYSQL_NAME,
+            "-e",
+            "MYSQL_ROOT_PASSWORD=ferroan",
+            "-e",
+            "MYSQL_DATABASE=ferroan",
+            "-e",
+            "MYSQL_USER=ferroan",
+            "-e",
+            "MYSQL_PASSWORD=ferroan",
+            "-p",
+            &format!("127.0.0.1:{MYSQL_PORT}:3306"),
+            "mysql:8.4",
+            "--character-set-server=utf8mb3",
+            "--collation-server=utf8mb3_general_ci",
+        ])
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|error| format!("could not run docker: {error}"))?;
+    if !status.success() {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", MYSQL_NAME])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        return Err(format!("docker run exited with {status}"));
+    }
+    let container = MysqlContainer;
+    for _ in 0..60 {
+        let ready = Command::new("docker")
+            .args([
+                "exec",
+                MYSQL_NAME,
+                "mysqladmin",
+                "ping",
+                "-uroot",
+                "-pferroan",
+                "--silent",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(ready, Ok(status) if status.success()) {
+            return Ok(container);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    Err("MySQL container did not become ready".to_owned())
+}
+
+fn mysql_urls() -> (String, String) {
+    let csharp = format!(
+        "Server=127.0.0.1;Port={MYSQL_PORT};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false"
+    );
+    let rust = format!(
+        "Server=127.0.0.1;Port={MYSQL_PORT};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None"
+    );
+    (csharp, rust)
+}
+
+fn mysql_cross(root: &Path, dll: &Path, pin: &str) -> ExitCode {
+    let (csharp, rust_url) = mysql_urls();
+    if run_oracle(dll, "mysql-seed", &["mysql-seed", &csharp]).is_none() {
+        return ExitCode::FAILURE;
+    }
+    let fresh = match run_oracle(dll, "mysql-load", &["mysql-load", &csharp, REGION, pin]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let dump = root.join(MYSQL_DUMP);
+    let committed = match fs::read_to_string(&dump) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("{LABEL}: could not read {}: {error}", dump.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if fresh != committed {
+        eprintln!("{LABEL}: MySQL oracle dump differs from {}", MYSQL_DUMP);
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: MySQL oracle dump matches {MYSQL_DUMP}");
+    if mysql_tests(root, dll, &rust_url) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(root)
+        .env("FERROAN_REGIONSTORE", "1")
+        .env("FERROAN_REGIONSTORE_ORACLE", dll)
+        .env("FERROAN_REGIONSTORE_CROSS", "1")
+        .env("FERROAN_REGIONSTORE_MYSQL", connection)
+        .args([
+            "test",
+            "-p",
+            "ferroan-scene",
+            "--lib",
+            "regionstore_",
+            "--",
+            "--nocapture",
+        ]);
+    println!("$ cargo test -p ferroan-scene --lib regionstore_");
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("{LABEL}: MySQL fixture tests exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("{LABEL}: could not run cargo: {error}");
+            false
+        }
+    }
+}
+
+fn run_oracle(dll: &Path, label: &str, args: &[&str]) -> Option<String> {
+    println!("$ dotnet {} {label}", dll.display());
+    let mut command = Command::new("dotnet");
+    command
+        .arg(dll)
+        .args(args)
+        .env("DOTNET_NOLOGO", "1")
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+        .env("MSBUILDDISABLENODEREUSE", "1");
+    match command.output() {
+        Ok(output) if output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                eprint!("{stderr}");
+            }
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(output) => {
+            eprintln!(
+                "{LABEL}: {label} exited with {}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            None
+        }
+        Err(error) => {
+            eprintln!("{LABEL}: could not run dotnet: {error}");
+            None
+        }
     }
 }
 

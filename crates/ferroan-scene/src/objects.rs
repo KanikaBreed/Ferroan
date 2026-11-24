@@ -90,6 +90,7 @@ use std::collections::{HashMap, HashSet};
 use ferroan_db::{Backend, Pool};
 use ferroan_diag::{Kind, REGION_LINKSET_PRIMS, REGION_OBJECTS, refuse};
 use sqlx::Row;
+use sqlx::mysql::MySqlRow;
 use sqlx::sqlite::SqliteRow;
 use uuid::Uuid;
 
@@ -283,8 +284,15 @@ struct PrimRow {
     part: Result<ObjectPart, ()>,
 }
 
-/// Open the region store and load one region's prims. A missing file is an empty list.
+/// Open the region store and load one region's prims. A missing SQLite file is an empty list.
+/// A MySQL connection loads that region. PostgreSQL is left to a later row.
 pub async fn open_objects(connection: &str, region: Uuid) -> Result<Vec<ObjectGroup>, ObjectError> {
+    if mysql_connection(connection) {
+        let pool = Pool::open(Backend::Mysql, connection, &["RegionStore"])
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        return load_objects(&pool, region).await;
+    }
     let path = ferroan_db::sqlite_filename(connection)
         .map_err(|error| ObjectError::Store(error.to_string()))?;
     if !path.exists() {
@@ -294,6 +302,17 @@ pub async fn open_objects(connection: &str, region: Uuid) -> Result<Vec<ObjectGr
         .await
         .map_err(|error| ObjectError::Store(error.to_string()))?;
     load_objects(&pool, region).await
+}
+
+fn mysql_connection(connection: &str) -> bool {
+    let lower = connection.trim().to_ascii_lowercase();
+    if lower.starts_with("mysql:") {
+        return true;
+    }
+    if lower.contains("version=3") || lower.contains("uri=file:") || lower.contains("ssl mode=") {
+        return false;
+    }
+    lower.contains("server=") && lower.contains("database=")
 }
 
 /// Load with [`MAX_REGION_OBJECTS`] and [`MAX_LINKSET_PRIMS`].
@@ -308,8 +327,13 @@ pub async fn load_objects_limited(
     max_objects: u64,
     max_linkset: u64,
 ) -> Result<Vec<ObjectGroup>, ObjectError> {
+    if pool.mysql().is_some() {
+        return load_mysql(pool, region, max_objects, max_linkset).await;
+    }
     let Some(sqlite) = pool.sqlite() else {
-        return Err(ObjectError::Store("connection is not SQLite".to_owned()));
+        return Err(ObjectError::Store(
+            "connection is not SQLite or MySQL".to_owned(),
+        ));
     };
     let prims = sqlx::query(PRIM_SQL)
         .fetch_all(sqlite)
@@ -1087,6 +1111,667 @@ fn experience_id(row: &SqliteRow) -> Option<Uuid> {
             }
             Ok(_) => Some(Uuid::nil()),
             Err(_) => None,
+        },
+    }
+}
+
+const MYSQL_PRIM_SQL: &str = "SELECT UUID, SceneGroupID, CreationDate, Name, Text, Description, \
+SitName, TouchName, ColorR, ColorG, ColorB, ColorA, ObjectFlags, CreatorID, OwnerID, GroupID, \
+LastOwnerID, RezzerID, OwnerMask, NextOwnerMask, GroupMask, EveryoneMask, BaseMask, PositionX, \
+PositionY, PositionZ, GroupPositionX, GroupPositionY, GroupPositionZ, VelocityX, VelocityY, \
+VelocityZ, AngularVelocityX, AngularVelocityY, AngularVelocityZ, AccelerationX, AccelerationY, \
+AccelerationZ, RotationX, RotationY, RotationZ, RotationW, SitTargetOffsetX, SitTargetOffsetY, \
+SitTargetOffsetZ, SitTargetOrientX, SitTargetOrientY, SitTargetOrientZ, SitTargetOrientW, \
+SitTargetActive, standtargetx, standtargety, standtargetz, sitactrange, ClickAction, PayPrice, \
+PayButton1, PayButton2, PayButton3, PayButton4, LoopedSound, LoopedSoundGain, TextureAnimation, \
+ParticleSystem, CameraEyeOffsetX, CameraEyeOffsetY, CameraEyeOffsetZ, CameraAtOffsetX, \
+CameraAtOffsetY, CameraAtOffsetZ, ForceMouselook, ScriptAccessPin, AllowedDrop, DieAtEdge, \
+SalePrice, SaleType, Material, CollisionSound, CollisionSoundVolume, MediaURL, AttachedPosX, \
+AttachedPosY, AttachedPosZ, DynAttrs, PhysicsShapeType, Density, GravityModifier, Friction, \
+Restitution, KeyframeMotion, PassCollisions, PassTouches, RotationAxisLocks, Vehicle, PhysInertia, \
+pseudocrc, sopanims, linksetdata, StartStr, LinkNumber FROM prims WHERE RegionUUID = ? \
+ORDER BY LinkNumber";
+
+const MYSQL_SHAPE_SQL: &str = "SELECT UUID, Shape, ScaleX, ScaleY, ScaleZ, PCode, PathBegin, PathEnd, \
+PathScaleX, PathScaleY, PathShearX, PathShearY, PathSkew, PathCurve, PathRadiusOffset, \
+PathRevolutions, PathTaperX, PathTaperY, PathTwist, PathTwistBegin, ProfileBegin, ProfileEnd, \
+ProfileCurve, ProfileHollow, Texture, ExtraParams, State, Media, LastAttachPoint, MatOvrd \
+FROM primshapes";
+
+const MYSQL_ITEM_IDS_SQL: &str = "SELECT DISTINCT primID FROM primitems";
+
+const MYSQL_ITEM_SQL: &str = "SELECT itemID, primID, assetID, parentFolderID, invType, assetType, \
+name, description, creationDate, creatorID, ownerID, lastOwnerID, groupID, nextPermissions, \
+currentPermissions, basePermissions, everyonePermissions, groupPermissions, flags, experienceID \
+FROM primitems WHERE primID = ?";
+
+struct MysqlBuilt {
+    uuid: Uuid,
+    group: Uuid,
+    start: Option<String>,
+    part: ObjectPart,
+}
+
+async fn load_mysql(
+    pool: &Pool,
+    region: Uuid,
+    max_objects: u64,
+    max_linkset: u64,
+) -> Result<Vec<ObjectGroup>, ObjectError> {
+    let Some(mysql) = pool.mysql() else {
+        return Err(ObjectError::Store("connection is not MySQL".to_owned()));
+    };
+    let region_text = region.as_hyphenated().to_string();
+    let prims = sqlx::query(MYSQL_PRIM_SQL)
+        .bind(&region_text)
+        .fetch_all(mysql)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let shape_rows = sqlx::query(MYSQL_SHAPE_SQL)
+        .fetch_all(mysql)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let mut shapes = HashMap::new();
+    for row in &shape_rows {
+        let id = mysql_text(row, "UUID").unwrap_or_default();
+        shapes.insert(id, row);
+    }
+    let mut built = Vec::new();
+    for row in &prims {
+        match mysql_part(row, &shapes) {
+            Ok(prim) => built.push(prim),
+            Err(()) => {
+                let label = mysql_text(row, "UUID").unwrap_or_else(|| "unknown".to_owned());
+                log::warn!("prim {label} could not be built and was skipped");
+            }
+        }
+    }
+    let mut groups = assemble_mysql(&built);
+    let item_ids = sqlx::query(MYSQL_ITEM_IDS_SQL)
+        .fetch_all(mysql)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    for id_row in &item_ids {
+        let Some(prim_text) = mysql_text(id_row, "primID") else {
+            continue;
+        };
+        let Some(prim_id) = parse_uuid(&prim_text) else {
+            continue;
+        };
+        if !groups
+            .iter()
+            .any(|group| group.parts.iter().any(|part| part.uuid == prim_id))
+        {
+            continue;
+        }
+        let rows = sqlx::query(MYSQL_ITEM_SQL)
+            .bind(&prim_text)
+            .fetch_all(mysql)
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        let mut items = Vec::new();
+        for row in &rows {
+            match mysql_item(row, prim_id) {
+                Some(item) => items.push(item),
+                None => {
+                    let label = mysql_text(row, "itemID").unwrap_or_else(|| "unknown".to_owned());
+                    log::warn!("inventory item {label} could not be built and was left out");
+                }
+            }
+        }
+        for group in &mut groups {
+            if let Some(part) = group.parts.iter_mut().find(|part| part.uuid == prim_id) {
+                part.items = items;
+                break;
+            }
+        }
+    }
+    enforce(groups, max_objects, max_linkset)
+}
+
+fn assemble_mysql(rows: &[MysqlBuilt]) -> Vec<ObjectGroup> {
+    let mut groups = Vec::new();
+    let mut index: HashMap<Uuid, usize> = HashMap::new();
+    for row in rows {
+        if row.uuid != row.group {
+            continue;
+        }
+        if index.contains_key(&row.uuid) {
+            log::warn!("prim {} could not be built and was skipped", row.uuid);
+            continue;
+        }
+        index.insert(row.uuid, groups.len());
+        let mut part = row.part.clone();
+        part.link_num = 0;
+        groups.push(ObjectGroup {
+            rez_parameter: row.start.clone(),
+            parts: vec![part],
+        });
+    }
+    for row in rows {
+        if row.uuid == row.group {
+            continue;
+        }
+        let Some(&slot) = index.get(&row.group) else {
+            log::warn!("prim {} has no root and was skipped", row.part.uuid);
+            continue;
+        };
+        let mut part = row.part.clone();
+        let original = part.link_num;
+        let count = groups[slot].parts.len().saturating_add(1);
+        let Ok(link_num) = i32::try_from(count) else {
+            log::warn!("prim {} could not be built and was skipped", row.uuid);
+            continue;
+        };
+        part.link_num = link_num;
+        if link_num == 2 {
+            groups[slot].parts[0].link_num = 1;
+        }
+        if original != 0 {
+            part.link_num = original;
+        }
+        groups[slot].parts.push(part);
+    }
+    groups
+}
+
+fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<MysqlBuilt, ()> {
+    let uuid_text = mysql_text(row, "UUID").ok_or(())?;
+    let uuid = parse_uuid(&uuid_text).ok_or(())?;
+    let group =
+        parse_uuid(&mysql_text(row, "SceneGroupID").unwrap_or_default()).unwrap_or(Uuid::nil());
+    let shape_row = shapes.get(&uuid.as_hyphenated().to_string()).copied();
+    let shape_missing = match shape_row {
+        None => true,
+        Some(shape) => mysql_i64(shape, "Shape").is_none(),
+    };
+    let (mut shape, media, mat_ovrd) = if shape_missing {
+        let mut boxed = default_box();
+        boxed.default_box = shape_row.is_none();
+        (boxed, None, None)
+    } else {
+        let shape = shape_row.ok_or(())?;
+        let built = mysql_shape(shape)?;
+        let media = mysql_text(shape, "Media");
+        let mat_ovrd = mysql_blob(shape, "MatOvrd")?;
+        (built, media, mat_ovrd)
+    };
+    if !shape_missing {
+        shape.media_entries = match &media {
+            Some(text) => parse_media(text),
+            None => None,
+        };
+        shape.materials = match &mat_ovrd {
+            Some(bytes) => parse_materials(bytes),
+            None => parse_materials_null(),
+        };
+    }
+    let stored_media = shape_row.and_then(|shape| mysql_text(shape, "Media"));
+    let stored_mat = match shape_row {
+        Some(shape) => mysql_blob(shape, "MatOvrd")?,
+        None => None,
+    };
+    let dyn_text = mysql_text(row, "DynAttrs");
+    let dyn_attrs = match &dyn_text {
+        Some(text) => Some(parse_dyn_attrs(text)?),
+        None => None,
+    };
+    let keyframe_motion = mysql_blob(row, "KeyframeMotion")?;
+    let keyframe = match &keyframe_motion {
+        Some(data) if !data.is_empty() => parse_keyframe(data),
+        _ => None,
+    };
+    let vehicle_text = mysql_text(row, "Vehicle").filter(|text| !text.is_empty());
+    let vehicle = match &vehicle_text {
+        Some(text) => parse_vehicle(text)?,
+        None => None,
+    };
+    let inertia_text = mysql_text(row, "PhysInertia").filter(|text| !text.is_empty());
+    let phys_inertia = match &inertia_text {
+        Some(text) => parse_inertia(text)?,
+        None => None,
+    };
+    let sopanims = mysql_blob(row, "sopanims")?;
+    let animations = match &sopanims {
+        Some(data) if !data.is_empty() => parse_animations(data),
+        _ => None,
+    };
+    let linkset_text = mysql_text(row, "linksetdata");
+    let linkset = linkset_text.as_deref().and_then(parse_linkset);
+    let sound = mysql_uuid(row, "LoopedSound").ok_or(())?;
+    let explicit_sit =
+        mysql_i64(row, "SitTargetActive").and_then(|value| i32::try_from(value).ok());
+    let offset = mysql_vec3(row, "PositionX", "PositionY", "PositionZ", 0.0)?;
+    let sit_target_position = mysql_vec3(
+        row,
+        "SitTargetOffsetX",
+        "SitTargetOffsetY",
+        "SitTargetOffsetZ",
+        0.0,
+    )?;
+    let sit_target_rotation = mysql_quat(
+        row,
+        "SitTargetOrientX",
+        "SitTargetOrientY",
+        "SitTargetOrientZ",
+        "SitTargetOrientW",
+        0.0,
+        1.0,
+    )?;
+    let pseudo = mysql_i64(row, "pseudocrc")
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value != 0);
+    let flags = mysql_u32(row, "ObjectFlags", 0)? & !(FLAG_TOUCH | FLAG_MONEY | FLAG_ALLOW_DROP);
+    let creator = mysql_text(row, "CreatorID").ok_or(())?;
+    let part = ObjectPart {
+        uuid,
+        link_num: mysql_i32(row, "LinkNumber")?,
+        local_id: 0,
+        parent_id: 0,
+        creation_date: mysql_i32_default(row, "CreationDate", 0)?,
+        name: mysql_text(row, "Name").unwrap_or_default(),
+        text: mysql_text(row, "Text").unwrap_or_default(),
+        color: mysql_color(row)?,
+        description: mysql_text(row, "Description").unwrap_or_default(),
+        sit_name: mysql_text(row, "SitName").unwrap_or_default(),
+        touch_name: mysql_text(row, "TouchName").unwrap_or_default(),
+        flags,
+        creator_id: creator_identification(&creator),
+        owner_id: mysql_uuid(row, "OwnerID").unwrap_or(Uuid::nil()),
+        group_id: mysql_uuid(row, "GroupID").unwrap_or(Uuid::nil()),
+        last_owner_id: mysql_uuid(row, "LastOwnerID").unwrap_or(Uuid::nil()),
+        rezzer_id: match mysql_text(row, "RezzerID") {
+            Some(text) => parse_uuid(&text).unwrap_or(Uuid::nil()),
+            None => Uuid::nil(),
+        },
+        owner_mask: mysql_u32(row, "OwnerMask", 0)?,
+        next_owner_mask: mysql_u32(row, "NextOwnerMask", 0)?,
+        group_mask: mysql_u32(row, "GroupMask", 0)?,
+        everyone_mask: mysql_u32(row, "EveryoneMask", 0)?,
+        base_mask: mysql_u32(row, "BaseMask", 0)?,
+        offset,
+        group_position: mysql_vec3(
+            row,
+            "GroupPositionX",
+            "GroupPositionY",
+            "GroupPositionZ",
+            0.0,
+        )?,
+        velocity: mysql_vec3(row, "VelocityX", "VelocityY", "VelocityZ", 0.0)?,
+        angular_velocity: mysql_vec3(
+            row,
+            "AngularVelocityX",
+            "AngularVelocityY",
+            "AngularVelocityZ",
+            0.0,
+        )?,
+        acceleration: mysql_vec3(row, "AccelerationX", "AccelerationY", "AccelerationZ", 0.0)?,
+        rotation: loaded_rotation(mysql_quat(
+            row,
+            "RotationX",
+            "RotationY",
+            "RotationZ",
+            "RotationW",
+            0.0,
+            1.0,
+        )?),
+        sit_target_position,
+        sit_target_rotation,
+        sit_target_active: sit_active(explicit_sit, sit_target_position, sit_target_rotation),
+        stand_offset: mysql_vec3(row, "standtargetx", "standtargety", "standtargetz", 0.0)?,
+        sit_active_range: mysql_f32(row, "sitactrange", 0.0)?,
+        click_action: mysql_i64(row, "ClickAction")
+            .map(|value| value as u8)
+            .unwrap_or(0),
+        pay_price: [
+            mysql_i32(row, "PayPrice")?,
+            mysql_i32(row, "PayButton1")?,
+            mysql_i32(row, "PayButton2")?,
+            mysql_i32(row, "PayButton3")?,
+            mysql_i32(row, "PayButton4")?,
+        ],
+        sound,
+        sound_gain: mysql_f32(row, "LoopedSoundGain", 0.0)?,
+        sound_flags: u8::from(!sound.is_nil()),
+        texture_animation: mysql_blob(row, "TextureAnimation")?.unwrap_or_default(),
+        particles: mysql_blob(row, "ParticleSystem")?.unwrap_or_default(),
+        camera_eye: mysql_vec3(
+            row,
+            "CameraEyeOffsetX",
+            "CameraEyeOffsetY",
+            "CameraEyeOffsetZ",
+            0.0,
+        )?,
+        camera_at: mysql_vec3(
+            row,
+            "CameraAtOffsetX",
+            "CameraAtOffsetY",
+            "CameraAtOffsetZ",
+            0.0,
+        )?,
+        force_mouselook: mysql_flag(row, "ForceMouselook")?,
+        script_access_pin: mysql_i32(row, "ScriptAccessPin")?,
+        allowed_drop: mysql_flag(row, "AllowedDrop")?,
+        die_at_edge: mysql_flag(row, "DieAtEdge")?,
+        sale_price: mysql_i32(row, "SalePrice")?,
+        sale_type: mysql_i64(row, "SaleType").ok_or(())? as u8,
+        material: mysql_i64(row, "Material").ok_or(())? as u8,
+        collision_sound: mysql_uuid(row, "CollisionSound").ok_or(())?,
+        collision_sound_volume: mysql_f32_required(row, "CollisionSoundVolume")?,
+        volume_detect: (flags & FLAG_VOLUME_DETECT) != 0,
+        media_url: mysql_text(row, "MediaURL").unwrap_or_default(),
+        attached_pos: mysql_attached(row)?,
+        physics_shape_type: mysql_parse_int(row, "PhysicsShapeType")? as u8,
+        density: mysql_f32(row, "Density", 1000.0)?,
+        gravity_modifier: mysql_f32(row, "GravityModifier", 1.0)?,
+        friction: mysql_f32(row, "Friction", 0.6)?,
+        restitution: mysql_f32(row, "Restitution", 0.5)?,
+        pass_collisions: mysql_flag(row, "PassCollisions")?,
+        pass_touches: mysql_flag(row, "PassTouches")?,
+        rotation_axis_locks: mysql_parse_int(row, "RotationAxisLocks")? as u8,
+        pseudo_crc: pseudo,
+        shape,
+        raw: ObjectRaw {
+            media: stored_media,
+            mat_ovrd: stored_mat,
+            dyn_attrs: dyn_text,
+            keyframe_motion,
+            vehicle: mysql_text(row, "Vehicle"),
+            phys_inertia: mysql_text(row, "PhysInertia"),
+            sopanims,
+            linkset_data: linkset_text,
+        },
+        dyn_attrs,
+        keyframe,
+        vehicle,
+        phys_inertia,
+        animations,
+        linkset,
+        items: Vec::new(),
+    };
+    Ok(MysqlBuilt {
+        uuid,
+        group,
+        start: mysql_text(row, "StartStr"),
+        part,
+    })
+}
+
+fn parse_materials_null() -> Option<crate::payloads::RenderMaterials> {
+    parse_materials(&[])
+}
+
+fn mysql_shape(row: &MySqlRow) -> Result<ObjectShape, ()> {
+    let texture = match mysql_blob(row, "Texture")? {
+        Some(bytes) => bytes,
+        None => DEFAULT_BOX_TEXTURE.to_vec(),
+    };
+    let extra = match mysql_blob(row, "ExtraParams")? {
+        Some(bytes) => bytes,
+        None => vec![0],
+    };
+    Ok(ObjectShape {
+        default_box: false,
+        scale: mysql_vec3_required(row, "ScaleX", "ScaleY", "ScaleZ")?,
+        pcode: mysql_u8(row, "PCode", 9)?,
+        path_begin: mysql_u16(row, "PathBegin", 0)?,
+        path_end: mysql_u16(row, "PathEnd", 0)?,
+        path_scale_x: mysql_u8(row, "PathScaleX", 100)?,
+        path_scale_y: mysql_u8(row, "PathScaleY", 100)?,
+        path_shear_x: mysql_u8(row, "PathShearX", 0)?,
+        path_shear_y: mysql_u8(row, "PathShearY", 0)?,
+        path_skew: mysql_i8(row, "PathSkew", 0)?,
+        path_curve: mysql_u8(row, "PathCurve", 16)?,
+        path_radius_offset: mysql_i8(row, "PathRadiusOffset", 0)?,
+        path_revolutions: mysql_u8(row, "PathRevolutions", 0)?,
+        path_taper_x: mysql_i8(row, "PathTaperX", 0)?,
+        path_taper_y: mysql_i8(row, "PathTaperY", 0)?,
+        path_twist: mysql_i8(row, "PathTwist", 0)?,
+        path_twist_begin: mysql_i8(row, "PathTwistBegin", 0)?,
+        profile_begin: mysql_u16(row, "ProfileBegin", 0)?,
+        profile_end: mysql_u16(row, "ProfileEnd", 0)?,
+        profile_curve: profile_curve(mysql_u8(row, "ProfileCurve", 1)?),
+        profile_hollow: mysql_u16(row, "ProfileHollow", 0)?,
+        state: mysql_u8(row, "State", 0)?,
+        last_attach_point: mysql_i64(row, "LastAttachPoint").ok_or(())? as u8,
+        texture,
+        extra_params: extra,
+        media_entries: None,
+        materials: None,
+    })
+}
+
+fn mysql_item(row: &MySqlRow, prim: Uuid) -> Option<InventoryItem> {
+    let creator = mysql_text(row, "creatorID")?;
+    let flags = mysql_u32_strict(row, "flags")?;
+    Some(InventoryItem {
+        item_id: mysql_uuid(row, "itemID").unwrap_or(Uuid::nil()),
+        parent_part_id: mysql_uuid(row, "primID").unwrap_or(prim),
+        asset_id: mysql_uuid(row, "assetID").unwrap_or(Uuid::nil()),
+        parent_id: prim,
+        inv_type: mysql_i32_default(row, "invType", -1).ok()?,
+        asset_type: mysql_i32_default(row, "assetType", -1).ok()?,
+        name: mysql_text(row, "name").unwrap_or_default(),
+        description: mysql_text(row, "description").unwrap_or_default(),
+        creation_date: mysql_u32(row, "creationDate", 0).ok()?,
+        creator_id: creator_identification(&creator),
+        owner_id: mysql_uuid(row, "ownerID").unwrap_or(Uuid::nil()),
+        last_owner_id: mysql_uuid(row, "lastOwnerID").unwrap_or(Uuid::nil()),
+        group_id: mysql_uuid(row, "groupID").unwrap_or(Uuid::nil()),
+        next_permissions: mysql_u32(row, "nextPermissions", 0).ok()?,
+        current_permissions: mysql_u32(row, "currentPermissions", 0).ok()?,
+        base_permissions: mysql_u32(row, "basePermissions", 0).ok()?,
+        everyone_permissions: mysql_u32(row, "everyonePermissions", 0).ok()?,
+        group_permissions: mysql_u32(row, "groupPermissions", 0).ok()?,
+        flags,
+        experience_id: mysql_uuid(row, "experienceID").unwrap_or(Uuid::nil()),
+    })
+}
+
+fn mysql_attached(row: &MySqlRow) -> Result<[f32; 3], ()> {
+    if mysql_f64(row, "AttachedPosX").is_none() {
+        return Ok([0.0, 0.0, 0.0]);
+    }
+    Ok([
+        mysql_f32_required(row, "AttachedPosX")?,
+        mysql_f32(row, "AttachedPosY", 0.0)?,
+        mysql_f32(row, "AttachedPosZ", 0.0)?,
+    ])
+}
+
+fn mysql_color(row: &MySqlRow) -> Result<u32, ()> {
+    let alpha = mysql_i32(row, "ColorA")? as u32;
+    let red = mysql_i32(row, "ColorR")? as u32;
+    let green = mysql_i32(row, "ColorG")? as u32;
+    let blue = mysql_i32(row, "ColorB")? as u32;
+    Ok((alpha << 24) | (red << 16) | (green << 8) | blue)
+}
+
+fn mysql_vec3(row: &MySqlRow, x: &str, y: &str, z: &str, fallback: f32) -> Result<[f32; 3], ()> {
+    Ok([
+        mysql_f32(row, x, fallback)?,
+        mysql_f32(row, y, fallback)?,
+        mysql_f32(row, z, fallback)?,
+    ])
+}
+
+fn mysql_vec3_required(row: &MySqlRow, x: &str, y: &str, z: &str) -> Result<[f32; 3], ()> {
+    Ok([
+        mysql_f32_required(row, x)?,
+        mysql_f32_required(row, y)?,
+        mysql_f32_required(row, z)?,
+    ])
+}
+
+fn mysql_quat(
+    row: &MySqlRow,
+    x: &str,
+    y: &str,
+    z: &str,
+    w: &str,
+    fallback: f32,
+    fallback_w: f32,
+) -> Result<[f32; 4], ()> {
+    Ok([
+        mysql_f32(row, x, fallback)?,
+        mysql_f32(row, y, fallback)?,
+        mysql_f32(row, z, fallback)?,
+        mysql_f32(row, w, fallback_w)?,
+    ])
+}
+
+fn mysql_text(row: &MySqlRow, name: &str) -> Option<String> {
+    if let Ok(value) = row.try_get::<Option<String>, _>(name) {
+        return value;
+    }
+    if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(name) {
+        return String::from_utf8(bytes).ok();
+    }
+    None
+}
+
+fn mysql_uuid(row: &MySqlRow, name: &str) -> Option<Uuid> {
+    let text = mysql_text(row, name)?;
+    Some(parse_uuid(&text).unwrap_or(Uuid::nil()))
+}
+
+fn mysql_i64(row: &MySqlRow, name: &str) -> Option<i64> {
+    if let Ok(value) = row.try_get::<Option<i8>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<i16>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<i32>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(name) {
+        return value;
+    }
+    if let Ok(value) = row.try_get::<Option<u32>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<u64>, _>(name) {
+        return value.and_then(|number| i64::try_from(number).ok());
+    }
+    if let Ok(value) = row.try_get::<Option<f32>, _>(name) {
+        return value.and_then(|number| whole_i64(f64::from(number)));
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(name) {
+        return value.and_then(whole_i64);
+    }
+    if let Ok(Some(text)) = row.try_get::<Option<String>, _>(name) {
+        return text.trim().parse().ok();
+    }
+    None
+}
+
+fn whole_i64(value: f64) -> Option<i64> {
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || !(i64::MIN as f64..=i64::MAX as f64).contains(&value)
+    {
+        return None;
+    }
+    Some(value as i64)
+}
+
+fn mysql_f64(row: &MySqlRow, name: &str) -> Option<f64> {
+    if let Ok(value) = row.try_get::<Option<f32>, _>(name) {
+        return value.map(f64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(name) {
+        return value;
+    }
+    mysql_i64(row, name).map(|number| number as f64)
+}
+
+fn mysql_f32(row: &MySqlRow, name: &str, fallback: f32) -> Result<f32, ()> {
+    match mysql_f64(row, name) {
+        Some(value) => {
+            let narrow = value as f32;
+            if narrow.is_finite() {
+                Ok(narrow)
+            } else {
+                Err(())
+            }
+        }
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_f32_required(row: &MySqlRow, name: &str) -> Result<f32, ()> {
+    let value = mysql_f64(row, name).ok_or(())?;
+    let narrow = value as f32;
+    if narrow.is_finite() {
+        Ok(narrow)
+    } else {
+        Err(())
+    }
+}
+
+fn mysql_i32(row: &MySqlRow, name: &str) -> Result<i32, ()> {
+    let value = mysql_i64(row, name).ok_or(())?;
+    i32::try_from(value).map_err(|_| ())
+}
+
+fn mysql_i32_default(row: &MySqlRow, name: &str, fallback: i32) -> Result<i32, ()> {
+    match mysql_i64(row, name) {
+        Some(value) => i32::try_from(value).map_err(|_| ()),
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_u32(row: &MySqlRow, name: &str, fallback: u32) -> Result<u32, ()> {
+    match mysql_i64(row, name) {
+        Some(value) => Ok(value as u32),
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_u32_strict(row: &MySqlRow, name: &str) -> Option<u32> {
+    let value = mysql_i64(row, name)?;
+    u32::try_from(value).ok()
+}
+
+fn mysql_u16(row: &MySqlRow, name: &str, fallback: u16) -> Result<u16, ()> {
+    match mysql_i64(row, name) {
+        Some(value) => Ok(value as u16),
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_u8(row: &MySqlRow, name: &str, fallback: u8) -> Result<u8, ()> {
+    match mysql_i64(row, name) {
+        Some(value) => Ok(value as u8),
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_i8(row: &MySqlRow, name: &str, fallback: i8) -> Result<i8, ()> {
+    match mysql_i64(row, name) {
+        Some(value) => Ok(value as i8),
+        None => Ok(fallback),
+    }
+}
+
+fn mysql_flag(row: &MySqlRow, name: &str) -> Result<bool, ()> {
+    Ok((mysql_i64(row, name).ok_or(())? as i8) != 0)
+}
+
+fn mysql_parse_int(row: &MySqlRow, name: &str) -> Result<i32, ()> {
+    if let Some(text) = mysql_text(row, name) {
+        return text.trim().parse::<i32>().map_err(|_| ());
+    }
+    mysql_i32(row, name)
+}
+
+fn mysql_blob(row: &MySqlRow, name: &str) -> Result<Option<Vec<u8>>, ()> {
+    match row.try_get::<Option<Vec<u8>>, _>(name) {
+        Ok(value) => Ok(value),
+        Err(_) => match row.try_get::<Option<String>, _>(name) {
+            Ok(value) => Ok(value.map(String::into_bytes)),
+            Err(_) => Err(()),
         },
     }
 }
@@ -2082,12 +2767,18 @@ mod tests {
         ] {
             assert_eq!(got, json_i64(&take(&mut obj, key), key), "{key}");
         }
-        expect_bytes("texture", &shape.texture, &take(&mut obj, "texture"));
-        expect_bytes(
-            "extra_params",
-            &shape.extra_params,
-            &take(&mut obj, "extra_params"),
-        );
+        let texture = take(&mut obj, "texture");
+        if texture.is_null() {
+            assert_eq!(shape.texture, DEFAULT_BOX_TEXTURE, "texture");
+        } else {
+            expect_bytes("texture", &shape.texture, &texture);
+        }
+        let extra = take(&mut obj, "extra_params");
+        if extra.is_null() {
+            assert_eq!(shape.extra_params, vec![0], "extra_params");
+        } else {
+            expect_bytes("extra_params", &shape.extra_params, &extra);
+        }
         expect_media(&shape.media_entries, &take(&mut obj, "media_entries"));
         expect_materials(&shape.materials, &take(&mut obj, "materials"));
         assert!(
@@ -2372,5 +3063,194 @@ mod tests {
         );
         let fresh: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(fresh, dump);
+    }
+
+    fn mysql_cross_connection() -> Option<String> {
+        if std::env::var("FERROAN_REGIONSTORE_CROSS").ok().as_deref() != Some("1") {
+            return None;
+        }
+        Some(std::env::var("FERROAN_REGIONSTORE_MYSQL").unwrap())
+    }
+
+    fn mysql_test_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        &LOCK
+    }
+
+    fn mysql_dump() -> Value {
+        let text = std::fs::read_to_string(fixture_dir().join("objects-mysql.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn expect_groups(groups: &[ObjectGroup], dump: &Value) {
+        let dumped = dump["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), dumped.len());
+        for (group, dumped_group) in groups.iter().zip(dumped) {
+            expect_opt_text(
+                "rez_parameter",
+                &group.rez_parameter,
+                &dumped_group["rez_parameter"],
+            );
+            let parts = dumped_group["parts"].as_array().unwrap();
+            assert_eq!(group.parts.len(), parts.len());
+            for (part, dumped_part) in group.parts.iter().zip(parts) {
+                expect_part(part, dumped_part);
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn regionstore_mysql_load_matches_the_committed_dump() {
+        let Some(connection) = mysql_cross_connection() else {
+            eprintln!("regionstore mysql load skipped");
+            return;
+        };
+        let _guard = mysql_test_lock().lock().unwrap();
+        let dump = mysql_dump();
+        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["region"], REGION);
+        let groups = open_objects(&connection, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        expect_groups(&groups, &dump);
+        let mut ids = BTreeSet::new();
+        for group in &groups {
+            for part in &group.parts {
+                ids.insert(part.uuid);
+            }
+        }
+        assert!(!ids.contains(&Uuid::parse_str("99999999-9999-9999-9999-999999999992").unwrap()));
+        assert!(!ids.contains(&Uuid::parse_str("ffffffff-ffff-ffff-ffff-fffffffffff1").unwrap()));
+        let showcase = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "showcase")
+            .unwrap();
+        assert_eq!(showcase.flags, 0x401);
+        assert!(!showcase.volume_detect);
+        assert_eq!(
+            showcase
+                .items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["script", "box", "note"]
+        );
+        let null_prim = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| {
+                part.uuid == Uuid::parse_str("99999999-9999-9999-9999-999999999991").unwrap()
+            })
+            .unwrap();
+        assert!(!null_prim.shape.default_box);
+        assert_eq!(null_prim.shape.scale, [0.0, 0.0, 0.0]);
+        assert_eq!(null_prim.shape.texture, DEFAULT_BOX_TEXTURE);
+        assert_eq!(null_prim.shape.extra_params, vec![0]);
+        assert_eq!(null_prim.sale_price, 10);
+        assert_eq!(null_prim.material, 3);
+        assert!(!null_prim.sit_target_active);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn regionstore_mysql_unreadable_rows_are_left_out() {
+        let Some(connection) = mysql_cross_connection() else {
+            eprintln!("regionstore mysql unreadable rows skipped");
+            return;
+        };
+        let _guard = mysql_test_lock().lock().unwrap();
+        let pool = Pool::open(Backend::Mysql, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let mysql = pool.mysql().unwrap();
+        let region = Uuid::parse_str(REGION).unwrap();
+        reset_mysql_extras(mysql).await;
+        sqlx::query(
+            "INSERT INTO primitems (itemID, primID, assetID, parentFolderID, invType, assetType, \
+             name, description, creationDate, creatorID, ownerID, lastOwnerID, groupID, \
+             nextPermissions, currentPermissions, basePermissions, everyonePermissions, \
+             groupPermissions, flags, experienceID) VALUES \
+             ('d1000000-0000-0000-0000-000000000001', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'kept', '', 1700000200, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 1, \
+             '00000000-0000-0000-0000-000000000000'), \
+             ('d1000000-0000-0000-0000-000000000002', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'dropped', '', 1700000201, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, -1, \
+             '00000000-0000-0000-0000-000000000000')",
+        )
+        .execute(mysql)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO prims (UUID, RegionUUID, SceneGroupID, DynAttrs) VALUES \
+             ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1', '11111111-1111-1111-1111-111111111111', \
+             'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1', '<llsd><integer>1</integer></llsd>')",
+        )
+        .execute(mysql)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE primitems SET experienceID = 'nope' WHERE itemID = \
+             'c0000000-0000-0000-0000-000000000003'",
+        )
+        .execute(mysql)
+        .await
+        .unwrap();
+        let loaded = load_objects(&pool, region).await;
+        reset_mysql_extras(mysql).await;
+        let groups = loaded.unwrap();
+        let no_shape = groups
+            .iter()
+            .find_map(|group| group.parts.iter().find(|part| part.name == "no-shape"))
+            .unwrap();
+        assert!(no_shape.items.iter().any(|item| item.name == "kept"));
+        assert!(no_shape.items.iter().all(|item| {
+            item.item_id != Uuid::parse_str("d1000000-0000-0000-0000-000000000002").unwrap()
+        }));
+        let note = groups
+            .iter()
+            .find_map(|group| {
+                group
+                    .parts
+                    .iter()
+                    .find(|part| part.name == "showcase")
+                    .and_then(|part| part.items.iter().find(|item| item.name == "note"))
+            })
+            .unwrap();
+        assert_eq!(note.experience_id, Uuid::nil());
+        assert!(groups.iter().all(|group| {
+            group.parts.iter().all(|part| {
+                part.uuid != Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1").unwrap()
+            })
+        }));
+        assert!(groups.len() >= 5);
+    }
+
+    async fn reset_mysql_extras(mysql: &sqlx::MySqlPool) {
+        sqlx::query(
+            "DELETE FROM primitems WHERE itemID IN \
+             ('d1000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000002')",
+        )
+        .execute(mysql)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM prims WHERE UUID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1'")
+            .execute(mysql)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE primitems SET experienceID = '00000000-0000-0000-0000-000000000000' \
+             WHERE itemID = 'c0000000-0000-0000-0000-000000000003'",
+        )
+        .execute(mysql)
+        .await
+        .unwrap();
     }
 }

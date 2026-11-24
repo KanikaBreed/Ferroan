@@ -18,8 +18,8 @@ pub struct StoredObjects {
     pub elapsed_ms: u128,
 }
 
-/// `None` is an empty region. A missing file is empty. A store that cannot be
-/// read is an error, and startup stops.
+/// `None` is an empty region. A missing SQLite file is empty. A MySQL store
+/// loads its region. A store that cannot be read is an error, and startup stops.
 pub async fn load_stored_objects(
     connection: Option<&str>,
     region: Uuid,
