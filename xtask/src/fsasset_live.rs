@@ -51,25 +51,25 @@ const SEED_QUERY: &str = "SELECT json_object(\
     'flags', asset_flags, \
     'data', hex(Data)) FROM assets;";
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const BULK_COUNT: u32 = 10_000;
 #[cfg(any(target_os = "linux", test))]
 const TIMED_ACCESS_DAYS: i32 = 365;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const BULK_BODY: &[u8] = b"1";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const RUST_WROTE: &str = "f23e00c0-0000-4000-8000-000000000001";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const CSHARP_WROTE: &str = "f23e00c0-0000-4000-8000-000000000002";
 #[cfg(any(target_os = "linux", test))]
 const FORCE_ID: &str = "f23e00c0-0000-4000-8000-000000000003";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const RUST_BODY: &[u8] = b"fsasset-rust-wrote";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const CSHARP_BODY: &[u8] = b"fsasset-csharp-wrote";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const FORCE_OLD: &[u8] = b"fsasset-force-old";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const FORCE_NEW: &[u8] = b"fsasset-force-new";
 #[cfg(any(target_os = "linux", test))]
 const EMPTY_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -105,7 +105,7 @@ impl FsassetDb {
         }
     }
 
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(target_os = "linux")]
     fn postgres(self) -> bool {
         self == Self::Pgsql
     }
@@ -309,7 +309,7 @@ struct DbTarget {
     database: String,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn parse_database_url(raw: &str) -> Result<DbTarget, String> {
     let rest = raw
         .strip_prefix("mysql://")
@@ -436,6 +436,7 @@ struct SeedAsset {
     type_code: i64,
     flags: i64,
     hash_hex: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     data: Vec<u8>,
 }
 
@@ -456,7 +457,7 @@ fn library_sql(db: FsassetDb, rows: &[SeedAsset], now: i64) -> Result<String, St
     Ok(sql)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn timing_sql(
     db: FsassetDb,
     now: i64,
@@ -1164,7 +1165,7 @@ impl Conn {
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 struct HttpReply {
     status: u16,
     body: Vec<u8>,
@@ -1260,7 +1261,7 @@ fn http_request(method: &str, path: &str, port: u16, body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn asset_xml(id: &str, name: &str, data: &[u8]) -> Vec<u8> {
     let encoded = base64(data);
     let text = format!(
@@ -1328,7 +1329,7 @@ fn probe_import(db: FsassetDb, target: &DbTarget, run: &Path) -> Result<(), Stri
     pages_match(db.postgres(), &pin, &ferroan)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn import_seed_sql(postgres: bool) -> &'static str {
     if postgres {
         "DROP TABLE IF EXISTS ferroan_q23e_import;\n\
