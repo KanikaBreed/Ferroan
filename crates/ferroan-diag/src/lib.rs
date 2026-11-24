@@ -266,10 +266,12 @@ pub fn log_boundary(route: &str, message: &str) {
 ///
 /// The ring, `diag dump` files and panic files keep the route, the length and
 /// `error`. They do not keep the body. The hex excerpt is only the debug
-/// line, after the known secret fields of that message type are masked:
-/// CreateAgent's `session_id`, `secure_session_id`, `circuit_code` and
-/// `caps_path` on route `/agent`, and UseCircuitCode's `Code` and `SessionID`
-/// on route `udp`.
+/// line, and only when every secret field of that message is masked.
+/// CreateAgent masks `session_id`, `secure_session_id`, `service_session_id`,
+/// `circuit_code`, `caps_path` and each `children_seeds` `seed`. Unencoded
+/// UseCircuitCode masks `Code` and `SessionID`. Any other route, a zerocoded
+/// datagram, or a datagram that is not UseCircuitCode has no excerpt: those
+/// messages carry a session id or a capability whose offset is not known.
 pub fn log_malformed(route: &str, bytes: &[u8], error: &str) {
     let (ring_text, debug_text) = malformed_record(route, bytes, error);
     let key = format!("malformed:{route}");
@@ -547,7 +549,9 @@ fn malformed_record(route: &str, bytes: &[u8], error: &str) -> (String, String) 
         bytes.len(),
         field(error)
     );
-    let masked = mask_known_fields(route, bytes);
+    let Some(masked) = mask_known_fields(route, bytes) else {
+        return (ring.clone(), ring);
+    };
     let excerpt = &masked[..masked.len().min(EXCERPT_BYTES)];
     let debug = format!("{ring} hex={}", hex_excerpt(excerpt));
     (ring, debug)
@@ -555,26 +559,32 @@ fn malformed_record(route: &str, bytes: &[u8], error: &str) -> (String, String) 
 
 /// Mask secret fields before the debug hex excerpt.
 ///
-/// `/agent` is a CreateAgent JSON body, which may already be malformed.
-/// `udp` is a datagram. UseCircuitCode (`message_template.msg`, Low 3,
-/// unencoded) is message number `ff ff 00 03` after the 6-byte header and
-/// its extra bytes (`packet.rs`), then `Code` U32 and `SessionID` LLUUID.
-/// The agent id that follows is not one of the secret fields.
-fn mask_known_fields(route: &str, bytes: &[u8]) -> Vec<u8> {
+/// `None` means the excerpt is omitted. `/agent` is a CreateAgent JSON body,
+/// which may already be malformed. `seed` is the child capability written
+/// next to `caps_path`. `udp` is a datagram. UseCircuitCode
+/// (`message_template.msg`, Low 3, unencoded) is message number
+/// `ff ff 00 03` after the 6-byte header and its extra bytes (`packet.rs`),
+/// then `Code` U32 and `SessionID` LLUUID. The agent id that follows is not
+/// one of the secret fields. A zerocoded packet does not keep those offsets,
+/// and any other message can carry `AgentData.SessionID` at an offset this
+/// mask does not know.
+fn mask_known_fields(route: &str, bytes: &[u8]) -> Option<Vec<u8>> {
     if route == "/agent" {
-        mask_json_fields(
+        Some(mask_json_fields(
             bytes,
             &[
+                b"service_session_id",
                 b"secure_session_id",
                 b"session_id",
                 b"circuit_code",
                 b"caps_path",
+                b"seed",
             ],
-        )
+        ))
     } else if route == "udp" {
         mask_use_circuit_code(bytes)
     } else {
-        bytes.to_vec()
+        None
     }
 }
 
@@ -632,23 +642,23 @@ fn mask_json_fields(bytes: &[u8], keys: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-fn mask_use_circuit_code(bytes: &[u8]) -> Vec<u8> {
-    let mut out = bytes.to_vec();
+fn mask_use_circuit_code(bytes: &[u8]) -> Option<Vec<u8>> {
     // Zerocoded packets do not keep these offsets. UseCircuitCode is unencoded.
-    if out.len() < 6 || out[0] & 0x80 != 0 {
-        return out;
+    if bytes.len() < 6 || bytes[0] & 0x80 != 0 {
+        return None;
     }
-    let message = 6usize.saturating_add(out[5] as usize);
+    let mut out = bytes.to_vec();
+    let message = 6usize.saturating_add(usize::from(out[5]));
     let code_at = message.saturating_add(4);
     let session_at = code_at.saturating_add(4);
     let session_end = session_at.saturating_add(16);
     if session_end > out.len() || out.get(message..message + 4) != Some(&[0xff, 0xff, 0x00, 0x03]) {
-        return out;
+        return None;
     }
     for byte in &mut out[code_at..session_end] {
         *byte = b'*';
     }
-    out
+    Some(out)
 }
 
 fn find_slice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
@@ -798,15 +808,24 @@ mod tests {
     fn malformed_excerpt_is_hex_and_bounded() {
         let _hold = hold();
         reset();
-        let bytes = vec![0x0a, 0xff, b'A'];
-        log_malformed("udp", &bytes, "short");
+        let mut circuit = vec![0u8; 6];
+        circuit.extend_from_slice(&[0xff, 0xff, 0x00, 0x03]);
+        circuit.extend_from_slice(&1u32.to_le_bytes());
+        circuit.extend_from_slice(&[0xa1; 16]);
+        circuit.resize(EXCERPT_BYTES + 32, 0x5a);
+        log_malformed("udp", &circuit, "short");
         let guard = lock();
         assert_eq!(guard.ring.len(), 1);
         assert!(!guard.ring[0].contains("hex="));
-        assert!(guard.ring[0].contains("bytes=3"));
+        assert!(guard.ring[0].contains(&format!("bytes={}", circuit.len())));
         assert!(guard.ring[0].contains("error=short"));
-        let (_ring, debug) = malformed_record("udp", &bytes, "short");
-        assert!(debug.contains("hex=0aff41"));
+        let (_ring, debug) = malformed_record("udp", &circuit, "short");
+        let hex = debug.split_once("hex=").expect("excerpt").1;
+        assert_eq!(hex.len(), EXCERPT_BYTES * 2);
+        assert!(!hex.contains(&"a1".repeat(16)));
+        let unknown = vec![0x0a, 0xff, b'A'];
+        let (_ring, dropped) = malformed_record("udp", &unknown, "short");
+        assert!(!dropped.contains("hex="));
     }
 
     #[test]
@@ -816,10 +835,12 @@ mod tests {
         set_context("diag-secret", "Test");
         let session = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         let secure = "11111111-2222-3333-4444-555555555555";
+        let service = "99999999-aaaa-bbbb-cccc-121212121212";
         let code = "987654321";
         let seed = "SEEDPATHSECRET";
+        let child = "http://127.0.0.1/CAPS/CHILDSEEDSECRET/";
         let body = format!(
-            "{{\"session_id\":\"{session}\",\"secure_session_id\":\"{secure}\",\"circuit_code\":\"{code}\",\"caps_path\":\"{seed}\","
+            "{{\"caps_path\":\"{seed}\",\"children_seeds\":[{{\"handle\":\"1\",\"seed\":\"{child}\"}}],\"service_session_id\":\"{service}\",\"session_id\":\"{session}\",\"secure_session_id\":\"{secure}\",\"circuit_code\":\"{code}\","
         );
         log_malformed("/agent", body.as_bytes(), "expected value");
         let mut circuit = vec![0u8; 6];
@@ -833,12 +854,16 @@ mod tests {
         let forbidden = [
             session,
             secure,
+            service,
             code,
             seed,
+            child,
             &hex_excerpt(session.as_bytes()),
             &hex_excerpt(secure.as_bytes()),
+            &hex_excerpt(service.as_bytes()),
             &hex_excerpt(code.as_bytes()),
             &hex_excerpt(seed.as_bytes()),
+            &hex_excerpt(child.as_bytes()),
             "efcdab89",
             &"a1".repeat(16),
         ];
@@ -879,7 +904,27 @@ mod tests {
         assert!(agent_debug.contains("hex="));
         assert!(udp_debug.contains("hex="));
         assert!(agent_debug.contains(&"2a".repeat(seed.len())));
+        assert!(agent_debug.contains(&"2a".repeat(child.len())));
+        assert!(agent_debug.contains(&"2a".repeat(service.len())));
         assert!(udp_debug.contains(&"2a".repeat(20)));
+        let mut other = vec![0u8; 6];
+        other.extend_from_slice(&[0xff, 0xff, 0x00, 0x01]);
+        other.extend_from_slice(&[0xab; 16]);
+        other.resize(300, 0x11);
+        let (_ring, other_debug) = malformed_record("udp", &other, "datagram exceeds udp.datagram");
+        assert!(!other_debug.contains("hex="), "{other_debug}");
+        assert!(!other_debug.contains(&"ab".repeat(16)), "{other_debug}");
+        let mut coded = circuit.clone();
+        coded[0] |= 0x80;
+        let (_ring, coded_debug) = malformed_record("udp", &coded, "datagram exceeds udp.datagram");
+        assert!(!coded_debug.contains("hex="), "{coded_debug}");
+        let (_ring, other_route) = malformed_record(
+            "NewFileAgentInventory",
+            child.as_bytes(),
+            "body is not llsd xml",
+        );
+        assert!(!other_route.contains("hex="), "{other_route}");
+        assert!(!other_route.contains(child), "{other_route}");
         assert!(panic_text.contains("panic: unit"));
         assert!(dump_text.contains("error=expected value"));
         let _ = std::fs::remove_file(dump);

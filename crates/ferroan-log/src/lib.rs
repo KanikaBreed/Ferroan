@@ -29,7 +29,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
-pub use redact::{SessionSecrets, redact, register_circuit_code, register_secret};
+pub use redact::{MAX_SECRETS, SessionSecrets, redact, register_circuit_code, register_secret};
 
 use layer::LogLayer;
 use level::RuntimeLevel;
