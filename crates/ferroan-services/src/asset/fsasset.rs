@@ -49,8 +49,11 @@
 //! left unchanged and answers success. PostgreSQL `Store` of an id that
 //! already has a row updates `access_time` only and answers success (TB35).
 //! PostgreSQL `Delete` of a non-uuid deletes nothing and returns false (TB39).
-//! `AssetsExist` reads the table only. Import is the SQL reader. Both engines
-//! order by `id`. MySQL uses `LIMIT start, count`. PostgreSQL uses
+//! Plugin `AssetsExist` reads the table only. The service existence check is
+//! a separate hash query plus a file check, and it does not update
+//! `access_time`. Import reads one source row, then the caller stores it,
+//! before the next read. Both engines order by `id`. MySQL uses
+//! `LIMIT start, count`. PostgreSQL uses
 //! `LIMIT count OFFSET start` (TB40, D32), as the pin does since #491.
 //! `store_forced` updates the hash of an existing row
 //! (TB45). An ordinary `store` does not. Files are `FsFiles`, not this store.
@@ -59,6 +62,7 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use ferroan_db::{Backend, Pool};
+use ferroan_diag::{self, ASSET_FSASSETS_IMPORT_ROW, Kind};
 use uuid::Uuid;
 
 use super::store::StoreError;
@@ -83,6 +87,14 @@ pub struct FsAsset {
     pub metadata: FsMetadata,
     pub hash: String,
     pub create_time: i32,
+}
+
+/// Hash and type from one existence query. A missing id is `None`, not this
+/// struct. The query does not update `access_time`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsHash {
+    pub hash: String,
+    pub type_code: i8,
 }
 
 /// A row `Import` would hand to its store delegate. PostgreSQL leaves the
@@ -206,6 +218,18 @@ impl FsAssetStore {
         }
     }
 
+    /// Hash and type for each id, in request order. `None` is a missing id
+    /// or a null hash. This does not update `access_time`. MySQL answers
+    /// `None` for every id when the database will not open. PostgreSQL
+    /// returns that failure.
+    pub async fn hashes(&self, ids: &[Uuid]) -> Result<Vec<Option<FsHash>>, StoreError> {
+        match self.backend() {
+            Backend::Mysql => super::fmysql::hashes(self.mysql()?, &self.table, ids).await,
+            Backend::Postgres => super::fpostgres::hashes(self.postgres()?, ids).await,
+            Backend::Sqlite => Err(StoreError::Backend("sqlite")),
+        }
+    }
+
     pub async fn count(&self) -> Result<i64, StoreError> {
         match self.backend() {
             Backend::Mysql => super::fmysql::count(self.mysql()?, &self.table).await,
@@ -224,8 +248,9 @@ impl FsAssetStore {
         }
     }
 
-    /// Plugin `Import`'s reader. `count == -1` selects the whole table.
-    /// The caller stores the rows. This method does not write `fsassets`.
+    /// Plugin `Import`'s reader. `count == -1` selects the whole table, one
+    /// row at a time. The caller stores the rows. This method does not write
+    /// `fsassets`.
     pub async fn import_reader(
         &self,
         table: &str,
@@ -236,7 +261,9 @@ impl FsAssetStore {
     }
 
     /// The same reader against a connection the operator named. The pool's
-    /// backend must be this store's backend.
+    /// backend must be this store's backend. The rows are collected after
+    /// each page of one so a caller that only needs the list still does not
+    /// ask the driver for the whole table at once.
     pub async fn import_from(
         &self,
         pool: &Pool,
@@ -247,21 +274,13 @@ impl FsAssetStore {
         if pool.backend() != self.backend() {
             return Err(StoreError::Backend("import"));
         }
-        match pool.backend() {
-            Backend::Mysql => {
-                let Some(mysql) = pool.mysql() else {
-                    return Err(StoreError::Backend("mysql"));
-                };
-                super::fmysql::import_reader(mysql, table, start, count).await
-            }
-            Backend::Postgres => {
-                let Some(postgres) = pool.postgres() else {
-                    return Err(StoreError::Backend("postgres"));
-                };
-                super::fpostgres::import_reader(postgres, table, start, count).await
-            }
-            Backend::Sqlite => Err(StoreError::Backend("sqlite")),
-        }
+        let mut out = Vec::new();
+        import_walk(pool, table, start, count, async |row| {
+            out.push(row);
+            Ok::<(), StoreError>(())
+        })
+        .await?;
+        Ok(out)
     }
 
     pub async fn clock(&self, id: Uuid) -> Result<Option<FsClock>, StoreError> {
@@ -343,6 +362,108 @@ pub(super) fn access_is_due(now: i32, stored: i32, days: i32) -> bool {
     i64::from(now).saturating_sub(i64::from(stored)) >= i64::from(days).saturating_mul(86_400)
 }
 
+/// Largest `data` value one legacy import row may carry.
+pub(super) const IMPORT_ROW_BYTES: usize = 50_000_000;
+
+/// Refuse a legacy `data` value past [`IMPORT_ROW_BYTES`]. Import reads one
+/// row at a time and does not cap that column.
+pub(super) fn import_row_within_bound(len: usize) -> Result<(), StoreError> {
+    if len <= IMPORT_ROW_BYTES {
+        return Ok(());
+    }
+    ferroan_diag::refuse(
+        ASSET_FSASSETS_IMPORT_ROW,
+        Kind::Hard,
+        u64::try_from(IMPORT_ROW_BYTES).unwrap_or(u64::MAX),
+        u64::try_from(len).unwrap_or(u64::MAX),
+        "fsassets import",
+    );
+    Err(StoreError::Bound)
+}
+
+/// Read the legacy table one row at a time and hand each row to `on_row`
+/// before the next read. `count == -1` reads until the table ends. `count == 0`
+/// reads nothing. The callback's error stops the read.
+pub(super) async fn import_walk<F, E>(
+    pool: &Pool,
+    table: &str,
+    start: i32,
+    count: i32,
+    mut on_row: F,
+) -> Result<(), E>
+where
+    F: AsyncFnMut(FsImportRow) -> Result<(), E>,
+    E: From<StoreError>,
+{
+    if count == 0 {
+        return Ok(());
+    }
+    if start < 0 || count < -1 {
+        return Err(E::from(StoreError::Bound));
+    }
+    let mut produced = 0i32;
+    let mut offset = start;
+    loop {
+        if count >= 0 && produced >= count {
+            break;
+        }
+        let page = if count < 0 {
+            1
+        } else {
+            1.min(count.saturating_sub(produced))
+        };
+        if page <= 0 {
+            break;
+        }
+        let rows = fetch_import_page(pool, table, offset, page)
+            .await
+            .map_err(E::from)?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut taken = 0i32;
+        for row in rows {
+            if count >= 0 && produced >= count {
+                break;
+            }
+            on_row(row).await?;
+            produced = produced.saturating_add(1);
+            taken = taken.saturating_add(1);
+        }
+        if taken < page {
+            break;
+        }
+        let Some(next) = offset.checked_add(taken) else {
+            break;
+        };
+        offset = next;
+    }
+    Ok(())
+}
+
+async fn fetch_import_page(
+    pool: &Pool,
+    table: &str,
+    start: i32,
+    count: i32,
+) -> Result<Vec<FsImportRow>, StoreError> {
+    match pool.backend() {
+        Backend::Mysql => {
+            let Some(mysql) = pool.mysql() else {
+                return Err(StoreError::Backend("mysql"));
+            };
+            super::fmysql::import_page(mysql, table, start, count).await
+        }
+        Backend::Postgres => {
+            let Some(postgres) = pool.postgres() else {
+                return Err(StoreError::Backend("postgres"));
+            };
+            super::fpostgres::import_page(postgres, table, start, count).await
+        }
+        Backend::Sqlite => Err(StoreError::Backend("sqlite")),
+    }
+}
+
 /// The page `Import` appends. `count == -1` is the whole table, still ordered
 /// by `id`. PostgreSQL is `ORDER BY id LIMIT count OFFSET start` (TB40).
 /// MySQL is `ORDER BY id LIMIT start, count`.
@@ -362,7 +483,9 @@ pub(super) fn import_suffix(start: i32, count: i32, postgres: bool) -> Result<St
 
 #[cfg(test)]
 mod unit {
-    use super::{access_is_due, import_suffix, sql_ident, utf8mb3};
+    use super::{
+        IMPORT_ROW_BYTES, access_is_due, import_row_within_bound, import_suffix, sql_ident, utf8mb3,
+    };
 
     #[test]
     fn utf8mb3_drops_four_byte_characters_and_keeps_the_rest() {
@@ -383,6 +506,13 @@ mod unit {
         assert!(!access_is_due(now, now, 30));
         assert!(!access_is_due(now, now - 29 * day, 30));
         assert!(access_is_due(now, now - 30 * day, 30));
+    }
+
+    #[test]
+    fn import_row_bound_refuses_past_the_cap() {
+        assert!(import_row_within_bound(0).is_ok());
+        assert!(import_row_within_bound(IMPORT_ROW_BYTES).is_ok());
+        assert!(import_row_within_bound(IMPORT_ROW_BYTES.saturating_add(1)).is_err());
     }
 
     #[test]
