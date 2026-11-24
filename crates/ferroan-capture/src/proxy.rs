@@ -9,11 +9,13 @@
 //! Each connection carries one exchange. Forwarded messages explicitly say
 //! `Connection: close`; captures retain the original received headers and body.
 //! The configurable reply deadline includes held polls and their complete body.
-//! Capture disk writes happen after the client has the response bytes, on the
-//! blocking pool. A full pipe or a stalled disk must not hold the next POST,
-//! and a client that leaves does not fail the proxy or keep the upstream open.
-//! One exchange appends its request and response together, stamped when those
-//! bytes were exchanged, so a later poll cannot land between them.
+//! The request is queued as soon as it is in hand, and a side thread writes
+//! the file. A held poll is therefore in the capture before its response,
+//! and a stalled disk does not sit on the path that owes the client a reply.
+//! The response is queued before that reply is written, so the next poll
+//! cannot land between them. This task waits for the disk only after the
+//! client has the bytes. A reset does not fail the proxy. A client that
+//! shuts down only its write side still receives the response.
 //!
 //! Timeout reference (no C# code copied): EventQueueGetModule.cs, KEEPALIVE,
 //! VIEWERKEEPALIVE and OnRegisterCaps, under
@@ -209,9 +211,7 @@ async fn serve_inner(
         .write(true)
         .open(path)?;
     file.write_all(crate::format::MAGIC)?;
-    let capture = Arc::new(Capture {
-        file: Mutex::new(file),
-    });
+    let capture = Arc::new(Capture::start(file));
     let mut exchanges = JoinSet::new();
     loop {
         if status.0.stopping.load(Ordering::Acquire) {
@@ -273,25 +273,107 @@ fn validate_timeout(wait: Duration) -> io::Result<()> {
     Ok(())
 }
 
+enum Job {
+    Write(Vec<Record>),
+    Flush(std::sync::mpsc::Sender<io::Result<()>>),
+}
+
+/// One writer thread, in submission order. Callers enqueue without waiting,
+/// so a full pipe cannot hold the next POST. `flushed` waits until that
+/// thread has applied every record submitted so far.
 struct Capture {
-    file: Mutex<std::fs::File>,
+    tx: Mutex<Option<std::sync::mpsc::Sender<Job>>>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Capture {
-    /// One append. The mutex covers every record in `records`, so a second
-    /// exchange cannot insert itself between a request and its response.
-    fn push_many(&self, records: &[Record]) -> io::Result<()> {
+    fn start(file: std::fs::File) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || writer_loop(file, rx));
+        Self {
+            tx: Mutex::new(Some(tx)),
+            writer: Mutex::new(Some(writer)),
+        }
+    }
+
+    fn submit(&self, records: Vec<Record>) -> io::Result<()> {
         if records.is_empty() {
             return Ok(());
         }
-        let encoded = write_capture(records).map_err(io::Error::other)?;
-        let mut file = self
-            .file
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        file.write_all(&encoded[crate::format::MAGIC.len()..])?;
-        file.flush()
+        let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("capture writer stopped"))?;
+        tx.send(Job::Write(records))
+            .map_err(|_| io::Error::other("capture writer stopped"))
     }
+
+    async fn flushed(&self) -> io::Result<()> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        {
+            let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
+            let tx = guard
+                .as_ref()
+                .ok_or_else(|| io::Error::other("capture writer stopped"))?;
+            tx.send(Job::Flush(ack_tx))
+                .map_err(|_| io::Error::other("capture writer stopped"))?;
+        }
+        tokio::task::spawn_blocking(move || {
+            ack_rx
+                .recv()
+                .unwrap_or_else(|_| Err(io::Error::other("capture writer stopped")))
+        })
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.tx
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        if let Some(writer) = self
+            .writer
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            let _ = writer.join();
+        }
+    }
+}
+
+fn writer_loop(mut file: std::fs::File, rx: std::sync::mpsc::Receiver<Job>) {
+    let mut error: Option<String> = None;
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Write(records) => {
+                if error.is_none()
+                    && let Err(err) = append_records(&mut file, &records)
+                {
+                    error = Some(err.to_string());
+                }
+            }
+            Job::Flush(ack) => {
+                let result = match &error {
+                    Some(message) => Err(io::Error::other(message.clone())),
+                    None => Ok(()),
+                };
+                let _ = ack.send(result);
+            }
+        }
+    }
+}
+
+fn append_records(file: &mut std::fs::File, records: &[Record]) -> io::Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let encoded = write_capture(records).map_err(io::Error::other)?;
+    file.write_all(&encoded[crate::format::MAGIC.len()..])?;
+    file.flush()
 }
 
 async fn forward(
@@ -308,64 +390,49 @@ async fn forward(
     // Record the bytes the upstream server reads. C# copies the request's
     // Connection onto the response, so the fixture has to show this rewrite.
     // The stamp is this moment, before the upstream wait, so a held poll still
-    // shows its wait in the capture times.
+    // shows its wait in the capture times. The write itself is the side
+    // thread: waiting for it here is what made getgriduserinfo miss its second.
     let request_ms = unix_ms();
     let forwarded = close_connection(&request)?;
+    capture.submit(vec![Record {
+        kind: Kind::HttpRequest,
+        time_ms: request_ms,
+        bytes: forwarded.clone(),
+    }])?;
     let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
         Ok(Some(response)) => response,
-        Ok(None) => return Ok(()),
+        Ok(None) => {
+            // The client reset after the request was queued. Leave that
+            // request in the capture and keep the listener up.
+            capture.flushed().await?;
+            return Ok(());
+        }
         Err(error) => {
-            // The client was still waiting. Keep the request evidence, with no
-            // response, as the failed-exchange tests require.
-            record_many(
-                &capture,
-                vec![Record {
-                    kind: Kind::HttpRequest,
-                    time_ms: request_ms,
-                    bytes: forwarded,
-                }],
-            )
-            .await?;
+            // The client was still waiting. The request is already queued,
+            // with no response, as the failed-exchange tests require.
+            let _ = capture.flushed().await;
             return Err(error);
         }
     };
     let response_ms = unix_ms();
     let to_client = close_connection(&response)?;
+    // Queue the response before the client can send the next poll. Ferrobot
+    // polls again as soon as it has this reply; a later append let that poll
+    // land between this request and this response.
+    capture.submit(vec![Record {
+        kind: Kind::HttpResponse,
+        time_ms: response_ms,
+        bytes: response,
+    }])?;
     if let Err(error) = write_message(&mut client, &to_client).await {
+        capture.flushed().await?;
         if client_went_away(&error) {
             return Ok(());
         }
-        record_many(
-            &capture,
-            vec![Record {
-                kind: Kind::HttpRequest,
-                time_ms: request_ms,
-                bytes: forwarded,
-            }],
-        )
-        .await?;
         return Err(error);
     }
-    // The client has the response. Disk IO is after that: a stalled capture
-    // write used to sit on this path before the upstream read, so every
-    // GridUser probe attempt through this proxy timed out together. The pair
-    // is one append, so the next poll cannot be written between these two.
-    record_many(
-        &capture,
-        vec![
-            Record {
-                kind: Kind::HttpRequest,
-                time_ms: request_ms,
-                bytes: forwarded,
-            },
-            Record {
-                kind: Kind::HttpResponse,
-                time_ms: response_ms,
-                bytes: response,
-            },
-        ],
-    )
-    .await?;
+    // The client has the response. Waiting for the disk is after that.
+    capture.flushed().await?;
     Ok(())
 }
 
@@ -389,13 +456,16 @@ async fn exchange(
     }
 }
 
-/// The request is already consumed. The next read ends only when the client
-/// leaves, which drops the upstream socket with this task.
+/// The request is already consumed. A reset drops the upstream socket with
+/// this task. A clean end of the request (the client shut down its write
+/// side and is still reading) must not: that is how an event-queue poll ends
+/// its request, and treating it as a departure recorded no reply.
 async fn client_left(client: &mut TcpStream) {
     let mut buf = [0u8; 1];
     loop {
         match client.read(&mut buf).await {
-            Ok(0) | Err(_) => return,
+            Err(_) => return,
+            Ok(0) => std::future::pending::<()>().await,
             Ok(_) => continue,
         }
     }
@@ -410,16 +480,6 @@ fn client_went_away(error: &io::Error) -> bool {
             | io::ErrorKind::UnexpectedEof
             | io::ErrorKind::NotConnected
     )
-}
-
-/// File IO stays off the accept loop. The capture mutex is held across the
-/// whole append, so this must not run before the client has its response.
-async fn record_many(capture: &Arc<Capture>, records: Vec<Record>) -> io::Result<()> {
-    let capture = Arc::clone(capture);
-    match tokio::task::spawn_blocking(move || capture.push_many(&records)).await {
-        Ok(result) => result,
-        Err(error) => Err(io::Error::other(error.to_string())),
-    }
 }
 
 async fn write_message(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
@@ -681,12 +741,7 @@ mod tests {
         let path = dir.join(format!("{}.cap", uuid::Uuid::new_v4()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(crate::format::MAGIC).unwrap();
-        (
-            Arc::new(Capture {
-                file: Mutex::new(file),
-            }),
-            path,
-        )
+        (Arc::new(Capture::start(file)), path)
     }
 
     #[tokio::test]
@@ -1434,23 +1489,87 @@ mod tests {
         }
     }
 
+    /// A quiet event queue holds a poll for about 58 seconds, so a 120-second
+    /// session finishes two polls and is still inside the third. The capture
+    /// check counts requests. That third request has to be in the file before
+    /// its response, or the check reports too few polls.
     #[tokio::test]
-    async fn a_client_that_leaves_does_not_fail_the_proxy_or_hold_upstream() {
+    async fn a_held_poll_is_captured_before_its_response() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            seen_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: 4\r\n\r\npong")
+                .await
+                .unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+        let client = tokio::spawn(async move {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket
+                .write_all(
+                    b"POST /CE/held HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            timeout(Duration::from_secs(2), socket.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            response
+        });
+        seen_rx.await.unwrap();
+        let path_wait = path.clone();
+        let recorded = timeout(Duration::from_secs(2), async move {
+            loop {
+                if let Ok(bytes) = std::fs::read(&path_wait)
+                    && let Ok(records) = read_capture(&bytes)
+                    && records.len() == 1
+                    && records[0].kind == Kind::HttpRequest
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            recorded.is_ok(),
+            "held poll request was not captured before the response"
+        );
+        release_tx.send(()).unwrap();
+        let response = client.await.unwrap();
+        assert!(response.windows(4).any(|window| window == b"pong"));
+        status.finish(IO_WAIT).await.unwrap();
+        task.await.unwrap().unwrap();
+        server.await.unwrap();
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].kind, Kind::HttpResponse);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An event-queue client shuts down its write side after the poll and
+    /// keeps reading. Treating that end as a departure dropped the upstream
+    /// socket, so the capture kept too few polls.
+    #[tokio::test]
+    async fn a_half_closed_request_still_receives_the_response() {
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = upstream.accept().await.unwrap();
             read_message(&mut socket, true, IO_WAIT).await.unwrap();
-            let mut byte = [0u8; 1];
-            let n = timeout(Duration::from_secs(2), socket.read(&mut byte))
-                .await
-                .expect("abandoned upstream stayed open")
-                .unwrap();
-            assert_eq!(n, 0, "abandoned upstream was not closed");
-            let (mut socket, _) = upstream.accept().await.unwrap();
-            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: 4\r\n\r\npong")
                 .await
                 .unwrap();
         });
@@ -1458,17 +1577,25 @@ mod tests {
             tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
         let mut client = TcpStream::connect(address).await.unwrap();
         client
-            .write_all(b"POST /griduser HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            .write_all(b"POST /CE/poll HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
             .await
             .unwrap();
-        drop(client);
-        assert!(request(address).await.starts_with(b"HTTP/1.1 200 OK"));
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.windows(4).any(|window| window == b"pong"));
         status.finish(IO_WAIT).await.unwrap();
         task.await.unwrap().unwrap();
         server.await.unwrap();
         assert_eq!(status.failures(), 0);
         let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(records.len(), 2, "a client that left is not an exchange");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind, Kind::HttpRequest);
+        assert_eq!(records[1].kind, Kind::HttpResponse);
+        assert!(records[1].time_ms >= records[0].time_ms);
         std::fs::remove_file(path).unwrap();
     }
 
