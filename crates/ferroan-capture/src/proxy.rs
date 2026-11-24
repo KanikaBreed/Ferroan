@@ -1251,6 +1251,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(unix)]
     async fn read_bounded_response(address: SocketAddr, request: &[u8]) {
         let mut client = TcpStream::connect(address).await.unwrap();
         client.write_all(request).await.unwrap();
