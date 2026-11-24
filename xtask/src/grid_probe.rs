@@ -157,6 +157,11 @@ where
     if scenario == "all" {
         names.push("neighbour");
     }
+    if scenario == "report" {
+        // Login, chat, the in-region teleport and the neighbour teleport.
+        // One grid, then the compare keeps only those report lines.
+        names = vec!["login", "chat", "teleport", "neighbour"];
+    }
     let mut lines = Vec::new();
     for name in names {
         let result = async {

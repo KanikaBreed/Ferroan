@@ -200,6 +200,8 @@ jobs:
         run: cargo xtask live run hop grid --region ferroan
       - name: Teleport both ways with Ferroan as the home region
         run: cargo xtask live run neighbour grid --region ferroan
+      - name: Compare grid report lines on the C# and Ferroan regions
+        run: cargo xtask live compare region
       - name: Trip POST-body, datagram and fetch-folder limits
         run: cargo xtask live run limits grid --region ferroan
       - name: Compare inventory and texture caps on the Ferroan region
