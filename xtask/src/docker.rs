@@ -13,20 +13,36 @@
 //! On a rootful daemon the process runs as the invoking user, which is not
 //! root, so mode-0600 configuration stays private. On a rootless daemon that
 //! host uid is a subordinate id and cannot read those files; container uid 0
-//! is the host user, so the process uses that. The image default user is
-//! checked separately and is also not root. Each container's logs are written
-//! under `.scratch/live` before the container is removed.
+//! is the host user, so the process uses that. Before the first grid launch,
+//! a rootless smoke checks that container uid 0 creates a scratch file owned
+//! by the invoking user. The image default user is checked separately and is
+//! also not root. Detached container logs are streamed under
+//! `.scratch/live/docker-logs` before removal, at most 64 MiB. Attached
+//! `--rm` containers are already gone by then; their output is in the harness
+//! log under `.scratch/live/grid`.
 
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(any(target_os = "linux", test))]
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::io::{Seek, SeekFrom};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 #[cfg(any(target_os = "linux", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+#[cfg(any(target_os = "linux", test))]
+use std::sync::Mutex;
+#[cfg(any(target_os = "linux", test))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::thread;
 #[cfg(target_os = "linux")]
@@ -229,9 +245,9 @@ fn smoke_linux() -> Result<String, String> {
             "grid process {pid} is still running; cargo xtask live down stops an interrupted run"
         ));
     }
-    remove_known();
+    discard_known();
     let built = build_linux()?;
-    let users = prove_non_root()?;
+    let users = format!("{}\n{}", prove_non_root()?, prove_rootless_owner()?);
     let restart = prove_volume_restart()?;
     let env_note = write_example_env()?;
     let collectors = start_collectors()?;
@@ -300,6 +316,32 @@ fn security_options_are_rootless(text: &str) -> bool {
         ch.is_ascii_whitespace() || matches!(ch, ',' | '[' | ']' | '"' | '\'' | '{' | '}')
     })
     .any(|part| part == "name=rootless")
+}
+
+/// Rootful smoke does not run the probe. Rootless smoke refuses unless
+/// container uid 0 created the scratch file as the invoking user. A daemon
+/// that reports `name=rootless` but writes as another account fails here.
+#[cfg(any(target_os = "linux", test))]
+fn probe_owner_result(
+    rootless: bool,
+    host_uid: &str,
+    file_uid: Option<u32>,
+) -> Result<String, String> {
+    if !rootless {
+        return Ok(format!("rootful daemon: grid user is host uid {host_uid}"));
+    }
+    let Some(file_uid) = file_uid else {
+        return Err("rootless owner check could not read the probe file".to_string());
+    };
+    if host_uid == file_uid.to_string() {
+        Ok(format!(
+            "rootless owner check: container uid 0 wrote the probe file as host uid {host_uid}"
+        ))
+    } else {
+        Err(format!(
+            "refusing rootless smoke: container uid 0 created the probe file as uid {file_uid}, not host uid {host_uid}"
+        ))
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -389,11 +431,81 @@ fn docker_log_file(live_root: &Path, name: &str) -> PathBuf {
     live_root.join("docker-logs").join(format!("{name}.log"))
 }
 
+/// Same directory, with `.partial` appended, so a failed `docker logs` can be
+/// deleted without replacing a log that was already saved.
+#[cfg(any(target_os = "linux", test))]
+fn partial_log_path(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    let mut partial = name.to_os_string();
+    partial.push(".partial");
+    Some(path.with_file_name(partial))
+}
+
 /// A failed `docker logs` means the container is already gone. Keep the file
 /// from the remove that found it. Do not replace that file with the error.
 #[cfg(any(target_os = "linux", test))]
 fn retained_container_log(status_ok: bool, text: &str) -> Option<&str> {
     if status_ok { Some(text) } else { None }
+}
+
+/// `docker logs` can be large. Stop writing at this bound and keep reading so
+/// the pipe does not fill. Same ceiling as `log_tail_secrets`.
+#[cfg(any(target_os = "linux", test))]
+const DOCKER_LOG_LIMIT: u64 = 64 * 1024 * 1024;
+
+#[cfg(any(target_os = "linux", test))]
+const DOCKER_ERROR_CHARS: usize = 400;
+
+#[cfg(any(target_os = "linux", test))]
+fn first_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn docker_failure_text(stderr: &str) -> String {
+    let head = first_chars(stderr, DOCKER_ERROR_CHARS);
+    if head.is_empty() {
+        "docker command failed".to_string()
+    } else {
+        format!("docker command failed: {head}")
+    }
+}
+
+/// Copy until `limit` bytes have been written, then drain the rest.
+#[cfg(any(target_os = "linux", test))]
+fn copy_bounded(
+    mut reader: impl Read,
+    file: &Mutex<impl Write>,
+    written: &AtomicU64,
+    limit: u64,
+) -> bool {
+    let mut ok = true;
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                ok = false;
+                break;
+            }
+        };
+        let so_far = written.load(Ordering::Relaxed);
+        if so_far < limit {
+            let room = (limit - so_far) as usize;
+            let take = read.min(room);
+            if take > 0 {
+                let mut guard = file.lock().unwrap_or_else(|poison| poison.into_inner());
+                if guard.write_all(&buf[..take]).is_err() {
+                    ok = false;
+                } else {
+                    written.fetch_add(take as u64, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+    ok
 }
 
 /// Unused BuildKit cache older than seven days. Recent cache stays, which is
@@ -497,6 +609,53 @@ fn prove_non_root() -> Result<String, String> {
         lines.push(format!("{image} user {configured} uid {uid}"));
     }
     Ok(lines.join("\n"))
+}
+
+/// `name=rootless` alone is not enough: another account's daemon, reached
+/// through `DOCKER_HOST`, also reports that token. Container uid 0 must create
+/// a scratch file owned by this process. The probe does not run on a rootful
+/// daemon, and it does not print the scratch path.
+#[cfg(target_os = "linux")]
+fn prove_rootless_owner() -> Result<String, String> {
+    let host_uid = command_trim(&["id", "-u"])?;
+    let user = run_as()?;
+    if user != "0:0" {
+        return probe_owner_result(false, &host_uid, None);
+    }
+    let dir = container_log_root().join("owner-probe");
+    fs::create_dir_all(&dir)
+        .map_err(|_| "rootless owner check could not create the probe directory".to_string())?;
+    let probe = dir.join("owner");
+    let _ = fs::remove_file(&probe);
+    let mount = format!("{}:/probe", dir.display());
+    let output = Command::new(DOCKER)
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "-v",
+            &mount,
+            "--entrypoint",
+            "/bin/sh",
+            REGION_IMAGE,
+            "-c",
+            "touch /probe/owner",
+        ])
+        .output()
+        .map_err(|_| "rootless owner check could not run the probe container".to_string())?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let head =
+            first_chars(&err, DOCKER_ERROR_CHARS).replace(&dir.display().to_string(), "probe-dir");
+        let _ = fs::remove_file(&probe);
+        return Err(format!("rootless owner check failed: {head}"));
+    }
+    let file_uid = fs::metadata(&probe).ok().map(|meta| meta.uid());
+    let _ = fs::remove_file(&probe);
+    probe_owner_result(true, &host_uid, file_uid)
 }
 
 #[cfg(target_os = "linux")]
@@ -877,8 +1036,15 @@ fn container_pid(name: &str) -> Result<u32, String> {
 
 #[cfg(target_os = "linux")]
 fn pid_failure(name: &str, snapshot: Option<&ContainerSnapshot>) -> String {
-    save_container_log(name);
-    missing_pid_report(name, snapshot, &container_log_text(name))
+    let logs = if save_container_log(name) {
+        container_log_text(name)
+    } else {
+        // `docker logs` failed, usually because an attached `--rm` container
+        // is already gone. Do not append the daemon error. That container's
+        // output is in its harness log under `.scratch/live/grid`.
+        String::new()
+    };
+    missing_pid_report(name, snapshot, &logs)
 }
 
 #[cfg(target_os = "linux")]
@@ -902,19 +1068,33 @@ fn docker_stdout(args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|error| format!("could not run docker: {error}"))?;
     if !output.status.success() {
-        return Err("docker command failed".to_string());
+        return Err(docker_failure_text(&String::from_utf8_lossy(
+            &output.stderr,
+        )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Tail of the log `save_container_log` wrote. Empty when that save failed,
+/// so a missing container does not contribute `docker logs` error text.
 #[cfg(target_os = "linux")]
 fn container_log_text(name: &str) -> String {
-    let Ok(output) = Command::new(DOCKER).args(["logs", name]).output() else {
+    let path = docker_log_file(&container_log_root(), name);
+    let Ok(mut file) = fs::File::open(&path) else {
         return String::new();
     };
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    text
+    let Ok(len) = file.metadata().map(|meta| meta.len()) else {
+        return String::new();
+    };
+    let start = len.saturating_sub(8192);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if file.take(8192).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    last_log_lines(&String::from_utf8_lossy(&buf))
 }
 
 #[cfg(target_os = "linux")]
@@ -926,33 +1106,91 @@ fn container_log_root() -> PathBuf {
     }
 }
 
+/// Stream `docker logs` into the artifact. A non-zero exit leaves any earlier
+/// file in place: the partial copy, which would be the daemon's "No such
+/// container" text, is deleted. Returns whether a log was saved.
 #[cfg(target_os = "linux")]
-fn save_container_log(name: &str) {
+fn save_container_log(name: &str) -> bool {
     if require_known_name(name).is_err() {
-        return;
+        return false;
     }
-    let Ok(output) = Command::new(DOCKER).args(["logs", name]).output() else {
-        return;
-    };
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    let Some(text) = retained_container_log(output.status.success(), &text) else {
-        return;
-    };
     let path = docker_log_file(&container_log_root(), name);
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return false;
     }
-    let _ = fs::write(path, text);
+    let Some(partial) = partial_log_path(&path) else {
+        return false;
+    };
+    let mut child = match Command::new(DOCKER)
+        .args(["logs", name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let Ok(file) = fs::File::create(&partial) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let file = Arc::new(Mutex::new(file));
+    let written = Arc::new(AtomicU64::new(0));
+    let stdout_thread = {
+        let file = Arc::clone(&file);
+        let written = Arc::clone(&written);
+        thread::spawn(move || copy_bounded(stdout, &file, &written, DOCKER_LOG_LIMIT))
+    };
+    let stderr_thread = {
+        let file = Arc::clone(&file);
+        let written = Arc::clone(&written);
+        thread::spawn(move || copy_bounded(stderr, &file, &written, DOCKER_LOG_LIMIT))
+    };
+    let status = child.wait();
+    let stdout_ok = stdout_thread.join().unwrap_or(false);
+    let stderr_ok = stderr_thread.join().unwrap_or(false);
+    let flush_ok = file
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .flush()
+        .is_ok();
+    drop(file);
+    let docker_ok = status.is_ok_and(|status| status.success());
+    // Keep a previous good log when `docker logs` fails or the copy stops short.
+    if retained_container_log(docker_ok && stdout_ok && stderr_ok && flush_ok, "").is_none() {
+        let _ = fs::remove_file(&partial);
+        return false;
+    }
+    if fs::rename(&partial, &path).is_err() {
+        let _ = fs::remove_file(&partial);
+        return false;
+    }
+    true
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn remove_container(name: &str) {
+    remove_container_saving(name, true);
+}
+
+#[cfg(target_os = "linux")]
+fn remove_container_saving(name: &str, save: bool) {
     let name = runtime_name(name);
     if require_known_name(&name).is_err() {
         return;
     }
-    save_container_log(&name);
+    if save {
+        save_container_log(&name);
+    }
     let _ = Command::new(DOCKER).args(["rm", "-f", &name]).output();
 }
 
@@ -972,7 +1210,22 @@ pub(crate) fn stop_container(name: &str) {
 
 #[cfg(target_os = "linux")]
 fn remove_known() {
-    for name in [
+    for name in known_container_names() {
+        remove_container(name);
+    }
+}
+
+/// Drop a previous run's containers without copying their logs into this run.
+#[cfg(target_os = "linux")]
+fn discard_known() {
+    for name in known_container_names() {
+        remove_container_saving(name, false);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn known_container_names() -> [&'static str; 7] {
+    [
         NAME_HOME,
         NAME_NEIGHBOUR,
         NAME_ROBUST,
@@ -980,9 +1233,7 @@ fn remove_known() {
         NAME_PERSIST,
         NAME_LOKI,
         NAME_OTELCOL,
-    ] {
-        remove_container(name);
-    }
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -1135,6 +1386,21 @@ fn start_detached(name: &str, extra: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn exporter_validate_args<'a>(mount: &'a str, image: &'a str) -> [&'a str; 9] {
+    [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "-v",
+        mount,
+        image,
+        "validate",
+        "--config=/etc/otelcol-contrib/config.yaml",
+    ]
+}
+
 #[cfg(target_os = "linux")]
 fn validate_exporters() -> Result<String, String> {
     let root = crate::repo_root().join("deploy/monitoring/collector");
@@ -1147,16 +1413,9 @@ fn validate_exporters() -> Result<String, String> {
     ] {
         let path = root.join(name);
         let mount = format!("{}:/etc/otelcol-contrib/config.yaml:ro", path.display());
+        let args = exporter_validate_args(&mount, OTELCOL_IMAGE);
         let output = Command::new(DOCKER)
-            .args([
-                "run",
-                "--rm",
-                "-v",
-                &mount,
-                OTELCOL_IMAGE,
-                "validate",
-                "--config=/etc/otelcol-contrib/config.yaml",
-            ])
+            .args(args)
             .output()
             .map_err(|error| format!("could not validate {name}: {error}"))?;
         if !output.status.success() {
@@ -1584,6 +1843,24 @@ mod tests {
     }
 
     #[test]
+    fn rootless_owner_check_requires_the_host_uid() {
+        assert_eq!(
+            probe_owner_result(false, "1000", None).unwrap(),
+            "rootful daemon: grid user is host uid 1000"
+        );
+        assert_eq!(
+            probe_owner_result(true, "1001", Some(1001)).unwrap(),
+            "rootless owner check: container uid 0 wrote the probe file as host uid 1001"
+        );
+        let refused = probe_owner_result(true, "1001", Some(0)).unwrap_err();
+        assert!(refused.contains("refusing rootless smoke"), "{refused}");
+        assert!(refused.contains("uid 0"), "{refused}");
+        assert!(refused.contains("host uid 1001"), "{refused}");
+        let unread = probe_owner_result(true, "1001", None).unwrap_err();
+        assert!(unread.contains("could not read the probe file"), "{unread}");
+    }
+
+    #[test]
     fn rootless_smoke_uses_container_root_and_rootful_keeps_the_host_user() {
         assert_eq!(container_user("1001", "1001", true).unwrap(), "0:0");
         assert_eq!(container_user("1000", "1000", false).unwrap(), "1000:1000");
@@ -1671,6 +1948,51 @@ mod tests {
         );
         assert_eq!(retained_container_log(true, ""), Some(""));
         assert_eq!(retained_container_log(false, "No such container"), None);
+        let partial = partial_log_path(Path::new(
+            ".scratch/live/docker-logs/ferroan-p011-persist.log",
+        ))
+        .unwrap();
+        let partial = partial.to_string_lossy().replace('\\', "/");
+        assert!(partial.ends_with("ferroan-p011-persist.log.partial"));
+        assert_eq!(DOCKER_LOG_LIMIT, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn docker_failure_includes_the_start_of_stderr() {
+        assert_eq!(docker_failure_text(""), "docker command failed");
+        assert_eq!(
+            docker_failure_text("No such container"),
+            "docker command failed: No such container"
+        );
+        let long = "e".repeat(500);
+        let text = docker_failure_text(&long);
+        let prefix = "docker command failed: ";
+        assert!(text.starts_with(prefix), "{text}");
+        assert_eq!(
+            text.chars().count(),
+            prefix.chars().count() + DOCKER_ERROR_CHARS
+        );
+    }
+
+    #[test]
+    fn copy_bounded_stops_writing_at_the_limit_and_drains() {
+        let file = Mutex::new(Vec::new());
+        let written = AtomicU64::new(0);
+        assert!(copy_bounded(&b"0123456789"[..], &file, &written, 10));
+        assert!(copy_bounded(&b"abcdefghij"[..], &file, &written, 10));
+        assert_eq!(written.load(Ordering::Relaxed), 10);
+        assert_eq!(file.into_inner().unwrap(), b"0123456789");
+    }
+
+    #[test]
+    fn exporter_validate_uses_network_none() {
+        let args = exporter_validate_args(
+            "config.yaml",
+            "otel/opentelemetry-collector-contrib:0.128.0",
+        );
+        assert_eq!(args[2], "--network");
+        assert_eq!(args[3], "none");
+        assert!(!args.contains(&"host"));
     }
 
     #[test]
