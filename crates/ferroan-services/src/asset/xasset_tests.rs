@@ -173,6 +173,16 @@ async fn check_plugin(store: &XAssetStore) {
     store.store(&bad).await.expect("swallowed write");
     assert!(store.get(xid(4)).await.expect("get").is_none());
     assert_eq!(store.data_rows().await.expect("data"), before);
+    if backend == Backend::Mysql {
+        let mut emoji = sample(xid(5), "😀", 1);
+        emoji.data = vec![3];
+        store.store(&emoji).await.expect("four-byte name returns");
+        assert!(
+            store.get(xid(5)).await.expect("get").is_none(),
+            "a four-byte name on utf8mb3 rolls the write back"
+        );
+        assert_eq!(store.data_rows().await.expect("data"), before);
+    }
 
     let exists = store.exists(&[id, xid(9)]).await.expect("exists");
     match backend {
@@ -223,6 +233,35 @@ async fn check_plugin(store: &XAssetStore) {
         Backend::Sqlite => panic!("sqlite"),
     }
     assert!(store.get(xid(8)).await.expect("missing").is_none());
+
+    store.wipe().await.expect("wipe");
+    let shared = b"same-bytes-qr2".to_vec();
+    for n in 0..8 {
+        let mut left = sample(xid(30 + n * 2), "left", 1);
+        let mut right = sample(xid(31 + n * 2), "right", 1);
+        left.data.clone_from(&shared);
+        right.data.clone_from(&shared);
+        let (first, second) = tokio::join!(store.store(&left), store.store(&right));
+        first.expect("left");
+        second.expect("right");
+    }
+    for n in 0..8 {
+        let left = store
+            .get(xid(30 + n * 2))
+            .await
+            .expect("get")
+            .expect("left row");
+        let right = store
+            .get(xid(31 + n * 2))
+            .await
+            .expect("get")
+            .expect("right row");
+        assert_eq!(left.name, "left");
+        assert_eq!(right.name, "right");
+        assert_eq!(left.data, shared);
+        assert_eq!(right.data, shared);
+    }
+    assert_eq!(store.data_rows().await.expect("data"), 1);
 }
 
 async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) {

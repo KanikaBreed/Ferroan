@@ -34,9 +34,11 @@
 //!
 //! `StoreAsset` inserts the meta row when the id is absent, then updates that
 //! id, including `create_time` and `access_time`, to now. Data is inserted
-//! only when the hash is absent. A failed metadata or data statement rolls
-//! back and returns. The clock is UTC unix time, the same helper MySQL uses,
-//! not the ordinary PostgreSQL asset store's local clock.
+//! with `ON CONFLICT (hash) DO NOTHING`, so a hash another store just wrote
+//! does not roll this one back (TB58, D43). A failed metadata or data
+//! statement rolls back and returns. A hash-lookup error is returned. The
+//! clock is UTC unix time, the same helper MySQL uses, not the ordinary
+//! PostgreSQL asset store's local clock.
 //!
 //! `FetchAssetMetadataSet` is `ORDER BY id LIMIT count OFFSET start` (TB29,
 //! #479) and returns that page. `Delete` parses the id as a uuid and deletes
@@ -159,15 +161,18 @@ pub(super) async fn store(pool: &PgPool, asset: &Asset) -> Result<(), StoreError
                 error = %error,
                 "xasset postgres hash lookup failed"
             );
-            false
+            tx.rollback().await?;
+            return Err(error.into());
         }
     };
     if !present {
-        let inserted = sqlx::query("INSERT INTO xassetsdata(hash, data) VALUES ($1, $2)")
-            .bind(hash.as_slice())
-            .bind(&asset.data)
-            .execute(&mut *tx)
-            .await;
+        let inserted = sqlx::query(
+            "INSERT INTO xassetsdata(hash, data) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING",
+        )
+        .bind(hash.as_slice())
+        .bind(&asset.data)
+        .execute(&mut *tx)
+        .await;
         if let Err(error) = inserted {
             tracing::error!(
                 asset_id = %asset.id,
