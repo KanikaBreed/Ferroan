@@ -9,6 +9,9 @@
 //! lines, so any difference fails the command. An id is listed only when a
 //! queue row already allows that difference.
 
+// The harness runs on Linux. macOS and Windows still compile these helpers.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::process::ExitCode;
 
 /// Report lines, in order. A trailing space means the line must start with
