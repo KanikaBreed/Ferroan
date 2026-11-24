@@ -301,11 +301,33 @@ fn service_name(url: &str) -> &str {
     }
 }
 
-fn deadline_error(service: &str) -> String {
-    format!("logout service-state probe exceeded its ten-second deadline ({service})")
+fn deadline_error(service: &str, abandoned: u32) -> String {
+    let attempts = if abandoned == 1 {
+        "1 attempt abandoned".to_owned()
+    } else {
+        format!("{abandoned} attempts abandoned")
+    };
+    format!("logout service-state probe exceeded its ten-second deadline ({service}); {attempts}")
+}
+
+/// `hit` only reaches a log line when a subscriber is installed. The live
+/// probe does not go through `ferroan_log::install`, so this path installs
+/// one before the first `probe.service-attempt` hit. A subscriber that is
+/// already installed stays.
+fn ensure_probe_readout() {
+    use std::sync::Once;
+    static START: Once = Once::new();
+    START.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_target(true)
+            .with_ansi(false)
+            .try_init();
+    });
 }
 
 fn abandon_attempt(service: &str, waited: Duration) {
+    ensure_probe_readout();
     let configured = u64::try_from(SERVICE_ATTEMPT.as_millis()).unwrap_or(u64::MAX);
     let observed = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
     ferroan_diag::hit(&ferroan_diag::Hit {
@@ -327,17 +349,19 @@ fn abandon_attempt(service: &str, waited: Duration) {
 /// a new connection, and GridUser and Presence answered at once. The client
 /// timeout used to be that same deadline, so the first unanswered POST failed
 /// the step. A timed-out attempt is dropped and retried until `deadline`.
-/// A transport or HTTP error is returned as before.
+/// A transport or HTTP error is returned as before. The deadline error names
+/// how many attempts were abandoned.
 async fn post_before(
     deadline: tokio::time::Instant,
     url: &str,
     fields: &FieldMap,
 ) -> Result<FieldMap, String> {
     let service = service_name(url);
+    let mut abandoned = 0u32;
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Err(deadline_error(service));
+            return Err(deadline_error(service, abandoned));
         }
         let bound = SERVICE_ATTEMPT.min(deadline.saturating_duration_since(now));
         let started = tokio::time::Instant::now();
@@ -345,8 +369,9 @@ async fn post_before(
             Ok(result) => return result,
             Err(_elapsed) => {
                 abandon_attempt(service, started.elapsed());
+                abandoned = abandoned.saturating_add(1);
                 if tokio::time::Instant::now() >= deadline {
-                    return Err(deadline_error(service));
+                    return Err(deadline_error(service, abandoned));
                 }
             }
         }
@@ -1088,7 +1113,59 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500), "{error}");
         assert!(error.contains("ten-second deadline"), "{error}");
         assert!(error.contains("presence"), "{error}");
+        assert!(error.contains("0 attempts abandoned"), "{error}");
         assert!(!error.contains("127.0.0.1"), "{error}");
+    }
+
+    #[test]
+    fn a_probe_limit_hit_reaches_the_readout() {
+        ensure_probe_readout();
+        assert!(
+            tracing::enabled!(target: "ferroan::limit", tracing::Level::WARN),
+            "probe.service-attempt has no log subscriber"
+        );
+        abandon_attempt("presence", Duration::from_secs(1));
+        assert!(
+            ferroan_diag::render().contains("probe.service-attempt"),
+            "{}",
+            ferroan_diag::render()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_deadline_names_the_abandoned_attempts() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                held.push(socket);
+            }
+        });
+        let error = post_before(
+            tokio::time::Instant::now() + Duration::from_millis(3500),
+            &format!("http://{address}/presence"),
+            &fields("getagent"),
+        )
+        .await
+        .unwrap_err();
+        service.abort();
+        let _ = service.await;
+        assert!(error.contains("ten-second deadline"), "{error}");
+        assert!(error.contains("presence"), "{error}");
+        assert!(!error.contains("127.0.0.1"), "{error}");
+        let count: u32 = error
+            .split(" attempts abandoned")
+            .next()
+            .and_then(|prefix| prefix.rsplit([' ', ';']).next())
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(0);
+        assert!(count >= 2, "{error}");
     }
 
     #[tokio::test]

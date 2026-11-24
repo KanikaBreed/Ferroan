@@ -115,6 +115,14 @@ const VIA_LOGIN: u32 = 1 << 7;
 pub const ROOT_AGENT_LIMIT: usize = 40;
 /// Queued accepts: the ordinary roots plus the staff and god bypass.
 pub const ADMISSION_QUEUE: usize = ROOT_AGENT_LIMIT + ROOT_BYPASS_LIMIT;
+/// Two overlapping logins, four secrets each, for every queued root.
+/// [`ferroan_log::MAX_SECRETS`] has to stay equal to this or a full region
+/// fails open and leaves a session id in a log line.
+const ADMISSION_SECRET_SLOTS: usize = ADMISSION_QUEUE * 2 * 4;
+const _: () = assert!(
+    ferroan_log::MAX_SECRETS == ADMISSION_SECRET_SLOTS,
+    "log.redact-secrets does not cover the root and bypass limits"
+);
 
 #[derive(Debug, thiserror::Error)]
 enum SimulationError {
