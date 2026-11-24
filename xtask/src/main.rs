@@ -27,8 +27,8 @@
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore verify` reloads that fixture. `regionstore cross`
-//! reloads SQLite and a throwaway MySQL container, then removes the container.
-//! None of them starts a server or the live harness. PostgreSQL waits.
+//! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
+//! the containers. None of them starts a server or the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux

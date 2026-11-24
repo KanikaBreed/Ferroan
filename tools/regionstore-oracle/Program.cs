@@ -8,9 +8,11 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MySqlConnector;
+using Npgsql;
 using OpenMetaverse;
 using OpenMetaverse.StructuredData;
 using OpenSim.Data.MySQL;
+using OpenSim.Data.PGSQL;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
@@ -38,10 +40,13 @@ const string PrimF = "ffffffff-ffff-ffff-ffff-fffffffffff1";
 const string NullPrim = "99999999-9999-9999-9999-999999999991";
 const string Orphan = "99999999-9999-9999-9999-999999999992";
 const string MissingParent = "abababab-abab-abab-abab-abababababab";
+const string RewriteGroup = "88888888-8888-8888-8888-888888888880";
+const string RewriteRoot = "88888888-8888-8888-8888-888888888881";
+const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin>");
     return 2;
 }
 
@@ -64,8 +69,14 @@ try
         case "mysql-load" when args.Length == 4:
             LoadMysql(args[1], args[2], args[3]);
             return 0;
+        case "postgres-seed" when args.Length == 2:
+            SeedPostgres(args[1]);
+            return 0;
+        case "postgres-load" when args.Length == 4:
+            LoadPostgres(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin>");
             return 2;
     }
 }
@@ -159,6 +170,41 @@ static void SeedMysql(string ado)
     InsertItems(db, true);
     InsertNullPrim(db);
     InsertOrphan(db);
+}
+
+static void SeedPostgres(string ado)
+{
+    PGSQLSimulationData store = new PGSQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using (NpgsqlCommand version = db.CreateCommand())
+    {
+        version.CommandText = "SELECT version FROM migrations WHERE name = 'RegionStore'";
+        object found = version.ExecuteScalar();
+        if (found == null || Convert.ToInt32(found) != 62)
+            throw new InvalidOperationException("RegionStore version is " + found);
+    }
+    InsertPrims(db, true);
+    InsertShapes(db, true);
+    InsertItems(db, true);
+    InsertRewriteGroup(db);
+}
+
+static void InsertRewriteGroup(NpgsqlConnection db)
+{
+    BasePrim(RewriteRoot, Region, RewriteGroup, "rewrite-root").Set("LinkNumber", 0).Insert(db, "prims");
+    BasePrim(RewriteChild, Region, RewriteGroup, "rewrite-child").Set("LinkNumber", 4).Insert(db, "prims");
+    PlainShape(RewriteRoot).Set("Shape", 0).Insert(db, "primshapes");
+    PlainShape(RewriteChild).Set("Shape", 0).Insert(db, "primshapes");
 }
 
 static void InsertNullPrim(MySqlConnection db)
@@ -323,7 +369,7 @@ static void InsertItems(DbConnection db, bool mysql)
 {
     // Stored order is not item-id order. A null description, a creator id, a
     // creator endpoint with no name, and an unparsable experience id all load.
-    TaskItem(PrimA, "c0000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-0000000000c3", "00000000-0000-0000-0000-0000000000d3", "note", 7, 7)
+    Row note = TaskItem(PrimA, "c0000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-0000000000c3", "00000000-0000-0000-0000-0000000000d3", "note", 7, 7)
         .Set("creationDate", 1700000103)
         .Set("creatorID", Creator)
         .Set("nextPermissions", 11)
@@ -334,8 +380,11 @@ static void InsertItems(DbConnection db, bool mysql)
         .Set("flags", 66)
         // "nope" is the SQLite cell. A CHAR(36) value that is not a uuid stops
         // the MySQL load, so that seed stores the zero id the load would keep.
-        .Set("experienceID", mysql ? "00000000-0000-0000-0000-000000000000" : "nope")
-        .Insert(db, "primitems");
+        .Set("experienceID", mysql ? "00000000-0000-0000-0000-000000000000" : "nope");
+    // A null description stops the PostgreSQL load. The successful seed stores empty text.
+    if (db is NpgsqlConnection)
+        note.Set("description", "");
+    note.Insert(db, "primitems");
     TaskItem(PrimA, "c0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000d1", "script", 10, 10)
         .Set("description", "runs")
         .Set("creationDate", 1700000101)
@@ -687,6 +736,25 @@ static void LoadMysql(string ado, string regionText, string pin)
     WriteDump(groups, prims, shapes, region, pin);
 }
 
+static void LoadPostgres(string ado, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    Dictionary<string, RawPrim> prims = ReadPrimRawPostgres(ado);
+    Dictionary<string, RawShape> shapes = ReadShapeRawPostgres(ado);
+    List<SceneObjectGroup> groups;
+    PGSQLSimulationData store = new PGSQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+        groups = store.LoadObjects(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteDump(groups, prims, shapes, region, pin);
+}
+
 static void WriteDump(
     List<SceneObjectGroup> groups,
     Dictionary<string, RawPrim> prims,
@@ -816,7 +884,54 @@ static Dictionary<string, RawShape> ReadShapeRawMysql(string ado)
     return rows;
 }
 
-static string CellText(MySqlDataReader reader, int index)
+static Dictionary<string, RawPrim> ReadPrimRawPostgres(string ado)
+{
+    Dictionary<string, RawPrim> rows = new Dictionary<string, RawPrim>();
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using NpgsqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT \"UUID\", \"DynAttrs\", \"Vehicle\", \"PhysInertia\", \"pseudocrc\", \"sopanims\", \"linksetdata\" FROM prims";
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawPrim
+        {
+            DynAttrs = reader.IsDBNull(1) ? null : reader.GetString(1),
+            Keyframe = null,
+            Vehicle = reader.IsDBNull(2) ? null : reader.GetString(2),
+            Inertia = reader.IsDBNull(3) ? null : reader.GetString(3),
+            PseudoCrc = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+            Animations = reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5),
+            Linkset = reader.IsDBNull(6) ? null : reader.GetString(6)
+        };
+    }
+    return rows;
+}
+
+static Dictionary<string, RawShape> ReadShapeRawPostgres(string ado)
+{
+    Dictionary<string, RawShape> rows = new Dictionary<string, RawShape>();
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using NpgsqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT \"UUID\", \"Media\", \"MatOvrd\", \"Texture\", \"ExtraParams\" FROM primshapes";
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawShape
+        {
+            Media = reader.IsDBNull(1) ? null : reader.GetString(1),
+            MatOvrd = reader.IsDBNull(2) ? null : (byte[])reader.GetValue(2),
+            Texture = reader.IsDBNull(3) ? null : (byte[])reader.GetValue(3),
+            Extra = reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4)
+        };
+    }
+    return rows;
+}
+
+static string CellText(DbDataReader reader, int index)
 {
     object value = reader.GetValue(index);
     if (value is Guid guid)
@@ -1563,30 +1678,83 @@ sealed class Row
     public void Insert(DbConnection db, string table)
     {
         bool mysql = db is MySqlConnection;
+        bool postgres = db is NpgsqlConnection;
         // A later Set for the same column replaces the earlier value. MySQL rejects
         // two parameters of one name; the stored row is the last value either way.
         List<string> names = new List<string>();
         Dictionary<string, object> values = new Dictionary<string, object>();
         foreach ((string name, object value) in cells)
         {
+            if (postgres && PostgresSkip.Contains(name))
+                continue;
             if (!values.ContainsKey(name))
                 names.Add(name);
             values[name] = value;
         }
-        string columns = string.Join(", ", names);
+        // The boolean conversion drops the old default, so an omitted cell is rejected.
+        // Sit-target numbers have no default. A null one stops the load, so the
+        // successful seed stores zero unless the row already set the cell.
+        if (postgres && table == "prims")
+        {
+            if (!values.ContainsKey("PassCollisions"))
+            {
+                names.Add("PassCollisions");
+                values["PassCollisions"] = false;
+            }
+            foreach (string sit in new[]
+            {
+                "SitTargetOffsetX", "SitTargetOffsetY", "SitTargetOffsetZ",
+                "SitTargetOrientX", "SitTargetOrientY", "SitTargetOrientZ", "SitTargetOrientW"
+            })
+            {
+                if (!values.ContainsKey(sit))
+                {
+                    names.Add(sit);
+                    values[sit] = 0.0;
+                }
+            }
+        }
+        string columns = postgres
+            ? string.Join(", ", names.ConvertAll(name => "\"" + name.Replace("\"", "\"\"") + "\""))
+            : string.Join(", ", names);
         string marks = string.Join(", ", names.ConvertAll(name => "@" + name));
         using DbCommand command = db.CreateCommand();
         command.CommandText = "INSERT INTO " + table + " (" + columns + ") VALUES (" + marks + ")";
         foreach (string name in names)
         {
             object stored = values[name] ?? DBNull.Value;
-            if (mysql && stored is string text && (name == "TextureAnimation" || name == "ParticleSystem"))
+            if ((mysql || postgres) && stored is string text && (name == "TextureAnimation" || name == "ParticleSystem"))
                 stored = Convert.FromBase64String(text);
+            if (postgres)
+                stored = PostgresValue(table, name, stored);
             DbParameter parameter = command.CreateParameter();
             parameter.ParameterName = "@" + name;
             parameter.Value = stored;
             command.Parameters.Add(parameter);
         }
         command.ExecuteNonQuery();
+    }
+
+    static readonly HashSet<string> PostgresSkip = new HashSet<string>
+    {
+        "VolumeDetect", "AttachedPosX", "AttachedPosY", "AttachedPosZ", "KeyframeMotion", "LastAttachPoint"
+    };
+
+    static readonly HashSet<string> UuidColumns = new HashSet<string>
+    {
+        "UUID", "RegionUUID", "SceneGroupID", "OwnerID", "GroupID", "LastOwnerID",
+        "LoopedSound", "CollisionSound", "RezzerID",
+        "itemID", "primID", "assetID", "parentFolderID", "ownerID", "lastOwnerID", "groupID", "experienceID"
+    };
+
+    static object PostgresValue(string table, string name, object stored)
+    {
+        if (stored is int number && (name == "PassTouches" || name == "PassCollisions"))
+            return number != 0;
+        if (stored is int date && table == "primitems" && name == "creationDate")
+            return date.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (stored is string text && UuidColumns.Contains(name) && Guid.TryParse(text, out Guid guid))
+            return guid;
+        return stored;
     }
 }
