@@ -11,7 +11,7 @@
 //! stored integers.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ferroan_config::Config;
@@ -19,7 +19,7 @@ use ferroan_http::{Field, FieldMap};
 
 use super::http::{self, GridUserHttp};
 use super::model::GridUser;
-use super::service::{CACHE_MS, GridClock, GridData, GridUserService, SystemClock};
+use super::service::{CACHE_CAP, CACHE_MS, GridClock, GridData, GridUserService, SystemClock};
 use super::store::{GridUserStore, StoreError};
 use super::wire::{self, FAILURE_XML, SUCCESS_XML, Vec3};
 
@@ -38,6 +38,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 struct Mem {
     rows: Mutex<Vec<GridUser>>,
     fail: Mutex<HashSet<String>>,
+    down: AtomicBool,
 }
 
 struct TestClock {
@@ -104,6 +105,9 @@ impl GridData for Arc<Mem> {
     }
 
     async fn store(&self, user: &GridUser) -> Result<bool, StoreError> {
+        if self.down.load(Ordering::Relaxed) {
+            return Err(StoreError::Row("database is closed".to_string()));
+        }
         let fail = self.fail.lock().unwrap_or_else(|error| error.into_inner());
         if fail.contains(&user.user_id) {
             return Ok(false);
@@ -131,6 +135,7 @@ fn world() -> World {
     let mem = Arc::new(Mem {
         rows: Mutex::new(Vec::new()),
         fail: Mutex::new(HashSet::new()),
+        down: AtomicBool::new(false),
     });
     let clock = Arc::new(TestClock::new(UNIX));
     let service = GridUserService::new(Arc::clone(&mem), Arc::clone(&clock));
@@ -174,6 +179,18 @@ fn documents_use_the_invariant_date_and_the_indented_result() {
             .as_deref(),
         Some("<0, 0, 0>")
     );
+    let odd = f32::from_bits(0x4300_4CCD);
+    assert_eq!(wire::format_f32(odd), "128.3");
+    assert_eq!(
+        wire::format_vector(Vec3 {
+            x: odd,
+            y: f32::from_bits(0x322B_CC77),
+            z: f32::NAN,
+        }),
+        "<128.3, 1E-08, NaN>"
+    );
+    let round = wire::parse_vector("<∞, -∞, 1E+10>").expect("infinity");
+    assert_eq!(wire::format_vector(round), "<∞, -∞, 1E+10>");
     assert_eq!(wire::parse_bool("True "), Some(true));
     assert_eq!(wire::parse_bool("false"), Some(false));
     assert_eq!(wire::parse_i32("1700000000      "), Some(UNIX));
@@ -333,6 +350,95 @@ async fn loggedoutregion_keeps_going_when_one_store_fails_and_an_empty_region_su
 }
 
 #[tokio::test]
+async fn loggedin_returns_failure_when_the_store_errors() {
+    let (service, mem, _) = world();
+    mem.store(&row(
+        USER,
+        &[("Online", "False"), ("Login", "4"), ("Logout", "9")],
+    ))
+    .await
+    .expect("seed");
+    mem.down.store(true, Ordering::Relaxed);
+    assert!(service.logged_in(USER).await.is_err());
+    assert_eq!(
+        http::dispatch(&service, &format!("METHOD=loggedin&UserID={USER}")).await,
+        FAILURE_XML
+    );
+    let cached = service.get_info(USER).await.expect("cached").expect("row");
+    assert!(!cached.online);
+    assert_eq!(cached.login, 4);
+}
+
+#[tokio::test]
+async fn a_full_cache_drops_the_soonest_entry_and_an_expired_cache_does_not() {
+    let (service, mem, _) = world();
+    for index in 0..CACHE_CAP {
+        assert!(
+            service
+                .get_info(&cache_id(index))
+                .await
+                .expect("miss")
+                .is_none()
+        );
+    }
+    let before = cache_drops();
+    assert!(
+        service
+            .get_info(&cache_id(CACHE_CAP))
+            .await
+            .expect("extra")
+            .is_none()
+    );
+    assert_eq!(cache_drops(), before + 1);
+    mem.store(&row(
+        &cache_id(0),
+        &[("Online", "True"), ("Login", "10"), ("Logout", "0")],
+    ))
+    .await
+    .expect("store");
+    let reloaded = service
+        .get_info(&cache_id(0))
+        .await
+        .expect("reload")
+        .expect("row");
+    assert!(reloaded.online);
+
+    let (service, _, clock) = world();
+    for index in 0..CACHE_CAP {
+        assert!(
+            service
+                .get_info(&cache_id(index))
+                .await
+                .expect("fill")
+                .is_none()
+        );
+    }
+    clock.advance(CACHE_MS);
+    let expired = cache_drops();
+    assert!(
+        service
+            .get_info(&cache_id(CACHE_CAP))
+            .await
+            .expect("after")
+            .is_none()
+    );
+    assert_eq!(cache_drops(), expired);
+}
+
+fn cache_id(index: usize) -> String {
+    format!("00000000-0000-0000-0000-{index:012x}")
+}
+
+fn cache_drops() -> u64 {
+    ferroan_diag::metrics()
+        .lines()
+        .find(|line| line.contains("limit=\"griduser.cache-entries\"") && line.contains("drop"))
+        .and_then(|line| line.rsplit_once(' '))
+        .and_then(|(_, count)| count.parse().ok())
+        .unwrap_or(0)
+}
+
+#[tokio::test]
 async fn loggedin_still_answers_when_the_store_refuses_the_row() {
     let (service, mem, _) = world();
     mem.fail
@@ -401,6 +507,21 @@ async fn the_handler_rejects_a_bad_region_logout_and_formats_the_other_methods()
     assert!(read.contains(&format!("<HomeRegionID>{REGION}</HomeRegionID>")));
     assert!(read.contains("&lt;10, 20, 30&gt;"));
     assert!(read.contains("&lt;128, 128, 70&gt;"));
+
+    let odd = http::dispatch(
+        &service,
+        &format!(
+            "METHOD=loggedout&UserID={USER}&RegionID={REGION}&Position=%3C128.3%2C%200%2C%20NaN%3E&LookAt=%3C%E2%88%9E%2C%20-%E2%88%9E%2C%201E-08%3E"
+        ),
+    )
+    .await;
+    assert_eq!(odd, SUCCESS_XML);
+    let placed = String::from_utf8(
+        http::dispatch(&service, &format!("METHOD=getgriduserinfo&UserID={USER}")).await,
+    )
+    .expect("utf8");
+    assert!(placed.contains("&lt;128.3, 0, NaN&gt;"));
+    assert!(placed.contains("&lt;∞, -∞, 1E-08&gt;"));
 
     let gone = http::dispatch(
         &service,

@@ -34,9 +34,10 @@
 //! Grid-user values on the wire.
 //!
 //! A document reformats the stored row: region ids are hyphenated, positions
-//! use `<x, y, z>`, online is `True` or `False`, and login and logout are the
-//! invariant general date (D37). A value that does not parse becomes the zero
-//! region, the zero vector, offline, or the epoch.
+//! use `<x, y, z>` in the en-US general spelling, online is `True` or `False`,
+//! and login and logout are the invariant general date (D37). A value that
+//! does not parse becomes the zero region, the zero vector, offline, or the
+//! epoch. `∞` and `-∞` parse as infinities.
 
 use ferroan_http::{Field, FieldMap, build_xml_response};
 use uuid::Uuid;
@@ -156,13 +157,21 @@ pub fn parse_uuid(text: &str) -> Option<Uuid> {
 pub fn parse_vector(text: &str) -> Option<Vec3> {
     let inner = text.trim().trim_matches(|ch| ch == '<' || ch == '>');
     let mut parts = inner.split(',');
-    let x = parts.next()?.trim().parse().ok()?;
-    let y = parts.next()?.trim().parse().ok()?;
-    let z = parts.next()?.trim().parse().ok()?;
+    let x = parse_coordinate(parts.next()?.trim())?;
+    let y = parse_coordinate(parts.next()?.trim())?;
+    let z = parse_coordinate(parts.next()?.trim())?;
     if parts.next().is_some() {
         return None;
     }
     Some(Vec3 { x, y, z })
+}
+
+fn parse_coordinate(text: &str) -> Option<f32> {
+    match text {
+        "∞" | "+∞" => Some(f32::INFINITY),
+        "-∞" => Some(f32::NEG_INFINITY),
+        _ => text.parse().ok(),
+    }
 }
 
 pub fn format_vector(value: Vec3) -> String {
@@ -274,18 +283,9 @@ fn document(fields: &FieldMap) -> Vec<u8> {
         .unwrap_or_else(|_| FAILURE_XML.to_vec())
 }
 
-/// Default general format for the finite values a position uses.
-fn format_f32(value: f32) -> String {
-    if !value.is_finite() {
-        return "0".to_string();
-    }
-    let text = format!("{value:.7}");
-    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
-    if trimmed.is_empty() || trimmed == "-" {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    }
+/// en-US general spelling, including non-finite coordinates.
+pub fn format_f32(value: f32) -> String {
+    super::float_text::format_f32(value)
 }
 
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
