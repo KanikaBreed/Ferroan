@@ -189,6 +189,10 @@ pub(crate) enum HopCommand {
         message: MapBlockReply,
         done: oneshot::Sender<bool>,
     },
+    /// Far teleport: leave the circuit without `KickUser` or `DisableSimulator`.
+    Leave {
+        done: oneshot::Sender<bool>,
+    },
     Settle,
 }
 
@@ -217,6 +221,11 @@ impl HopOut {
     pub async fn map_block(&self, message: MapBlockReply) -> bool {
         self.round_trip(|done| HopCommand::Map { message, done })
             .await
+    }
+
+    /// Far teleport. The circuit stops without a kick or `DisableSimulator`.
+    pub async fn leave(&self) -> bool {
+        self.round_trip(|done| HopCommand::Leave { done }).await
     }
 
     /// Queue the in-transit clear. The circuit applies it on its own task.

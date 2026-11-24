@@ -53,10 +53,10 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the scalar prim load and the frame thread.
+//! Read-only region terrain, the prim load and the frame thread.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
-//! Structured prim payloads and the region startup hook are later rows.
+//! The region startup hook is a later row.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -67,6 +67,7 @@ mod estate;
 mod frame;
 mod height;
 mod objects;
+mod payloads;
 mod store;
 
 pub use compress::TerrainLayer;
@@ -77,5 +78,9 @@ pub use height::{Heightmap, movement_z};
 pub use objects::{
     MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw, ObjectShape,
     load_objects, load_objects_limited, open_objects,
+};
+pub use payloads::{
+    DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
+    ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
 pub use store::open_terrain;

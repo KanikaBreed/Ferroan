@@ -58,7 +58,7 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{ADMISSION_QUEUE, AcceptedAgent, SimulationState};
-use ferroan_region::source_hop::{HopEnv, HopLogin};
+use ferroan_region::source_hop::{HopEnv, HopLogin, HopPresence};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
 };
@@ -271,7 +271,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let region_name = &config.name;
     tracing::info!("INITIALIZATION COMPLETE FOR {region_name} - LOGINS ENABLED");
     let (stop_circuits, stopped_circuits) = watch::channel(false);
-    let hop = HopEnv::from_region(&config, caps.clone());
+    let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(simulation.clone()));
     let mut circuits = tokio::spawn(dispatch_circuits(
         circuit,
         config.clone(),
@@ -590,7 +590,8 @@ async fn serve_agent(
         // TeleportAgentWithinRegion. Godlike needs a cached user level and
         // IsFlying is not tracked, so both stay off. A handle this grid does
         // not know gets the not-found packet and one offline map block.
-        // Child demotion is Q18b3. SendLocalTeleport's queue is the circuit's.
+        // An in-view hop demotes this root and keeps the caps and the circuit.
+        // SendLocalTeleport's queue is the circuit's.
         let ground_terrain = terrain.clone();
         arrival.teleport = Some(ferroan_client::TeleportRegion {
             world_x: config.location[0].wrapping_mul(256),
@@ -701,7 +702,10 @@ async fn serve_agent(
                 }
                 result = &mut serving => {
                     match result {
-                        Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
+                        Ok(()) if agent.still_root() => {
+                            tracing::info!("ferroan-region: LogoutReply sent")
+                        }
+                        Ok(()) => tracing::info!("ferroan-region: circuit closed"),
                         Err(error) => tracing::error!("ferroan-region: circuit ended: {error}"),
                     }
                     break;
@@ -710,12 +714,14 @@ async fn serve_agent(
         }
     }
     let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
+    // A demoted child and a far-hop close leave the grid presence where it is.
+    let tell_grid = root_arrived && agent.still_root();
     settle(
         &grid_user,
         &presence,
         &config,
         agent,
-        root_arrived,
+        tell_grid,
         logout_position,
     )
     .await;
@@ -1010,7 +1016,7 @@ mod tests {
                 .unwrap();
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
-            let hop = HopEnv::from_region(&config, caps.clone());
+            let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(state.clone()));
             let running = tokio::spawn(dispatch_circuits(
                 circuit,
                 config,

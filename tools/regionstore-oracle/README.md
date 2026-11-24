@@ -9,4 +9,4 @@ cargo xtask regionstore generate
 cargo xtask regionstore verify
 ```
 
-`seed <db>` creates the file and inserts the fixture rows. `load <db> <region-uuid> <pin>` writes one JSON object to stdout and records that pin. A row that cannot be built is absent. Texture entries and extra params of a stored shape stay the stored bytes. The eight structured payloads stay the stored text or bytes and are not parsed. Inventory items are a later row.
+`seed <db>` creates the file and inserts the fixture rows. `load <db> <region-uuid> <pin>` writes one JSON object to stdout and records that pin. A row that cannot be built is absent. Texture entries and extra params of a stored shape stay the stored bytes. The eight structured payloads are dumped both as the stored cell and as the value the load produced. An animation sequence number is a clock and is absent. Inventory items are a later row.

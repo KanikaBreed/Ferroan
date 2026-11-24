@@ -25,30 +25,45 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs
-//     (DoTeleportInternal, TransferAgent_V2, Fail, the unknown-region map block)
+//     (DoTeleportInternal, TransferAgent_V2, Fail, NeedsClosing, the unknown-region map block)
+//   Source/OpenSim.Framework/Util.cs (IsOutsideView, region-handle conversion)
 //   Source/OpenSim.Framework/CapsUtil.cs (GetCapsSeedPath, GetRandomCapsObjectPath)
+//   Source/OpenSim.Framework/ChildAgentDataUpdate.cs (NewCallbackURI packed as cb_uri)
+//   Source/OpenSim.Services.Connectors/Grid/GridServicesConnector.cs (GetRegionByPosition)
+//   Source/OpenSim.Region.Framework/Scenes/Scene.cs (CloseAgent with force false)
 //   OpenSim-NGC/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Viewer half of one source-region hop.
+//! One source-region hop.
 //!
 //! `QueryAccess`, then `TeleportStart`, then `CreateAgent` with `child` true,
-//! then an event-queue `TeleportFinish`, then `UpdateAgent`. The root stays a
-//! root. A failure after a successful create closes the destination agent.
-//! The grid directory is empty until the child demotion plugs a real lookup in.
+//! then an event-queue `TeleportFinish`. The root is demoted before
+//! `UpdateAgent`. An in-view neighbour keeps that child: the caps seed and the
+//! circuit stay, and the hop does not release or close the agent. A destination
+//! outside that view, or one whose grid Y is 0, waits for the destination's
+//! release DELETE and then closes the circuit without a kick. The grid is asked
+//! when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::time::Duration;
 
 use ferroan_client::{
     CapsRegistry, EventQueueError, FinishEvent, HopOut, HopRequest, INTERNAL, NOT_FOUND,
     RESOLVE_FAILED, SourceHop, caps_seed, connect_reason, offline_map_block, teleport_finish_event,
 };
 use ferroan_llsd::Llsd;
+#[cfg(test)]
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::config::RegionConfig;
+use crate::grid::{GridClient, GridError, LocatedRegion};
+use crate::simulation::SimulationState;
 use crate::simulation_client::{
     AccessQuery, AgentData, Circuit, RegionEnd, SimulationClient, TransferContext,
 };
@@ -63,6 +78,8 @@ struct HopSession {
     first_name: String,
     last_name: String,
     source: RegionEnd,
+    size_x: u32,
+    size_y: u32,
 }
 
 /// A neighbour the hop can try. `endpoint` is the address the viewer connects to.
@@ -74,12 +91,12 @@ pub struct HopDestination {
     pub size_y: u32,
 }
 
-/// Looks up a region handle. Production has no grid lookup yet.
+/// Looks up a region handle. Production is empty; the grid is the fallback.
 pub trait RegionDirectory: Send + Sync {
     fn find(&self, handle: u64) -> Option<HopDestination>;
 }
 
-/// Every foreign handle is unknown. The viewer gets the not-found packet.
+/// Every foreign handle is unknown until the grid answers.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyDirectory;
 
@@ -87,6 +104,152 @@ impl RegionDirectory for EmptyDirectory {
     fn find(&self, _handle: u64) -> Option<HopDestination> {
         None
     }
+}
+
+/// Default draw distance clamped into the region view. The view test then
+/// steps one metre in, so adjacent 256 m regions stay in view.
+const REGION_VIEW_METRES: u64 = 255;
+
+/// The root this hop demotes. Tests record the calls instead of touching a session.
+#[derive(Clone)]
+pub enum HopPresence {
+    /// No session. Unit hops that stay in view use this.
+    Idle,
+    /// The region's sessions, caps and release table.
+    Live(Box<SimulationState>),
+    #[cfg(test)]
+    Watch(Arc<PresenceWatch>),
+}
+
+#[cfg(test)]
+pub struct PresenceWatch {
+    demoted: AtomicBool,
+    restored: AtomicBool,
+    armed: AtomicBool,
+    closed: AtomicBool,
+    woke: AtomicBool,
+    budget: Duration,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl PresenceWatch {
+    pub(crate) fn new(budget: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            demoted: AtomicBool::new(false),
+            restored: AtomicBool::new(false),
+            armed: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            woke: AtomicBool::new(false),
+            budget,
+            release: Notify::new(),
+        })
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+
+    pub(crate) fn demoted(&self) -> bool {
+        self.demoted.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn restored(&self) -> bool {
+        self.restored.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn woke(&self) -> bool {
+        self.woke.load(Ordering::Acquire)
+    }
+}
+
+impl HopPresence {
+    pub fn live(state: SimulationState) -> Self {
+        Self::Live(Box::new(state))
+    }
+
+    pub fn idle() -> Self {
+        Self::Idle
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watch(watch: Arc<PresenceWatch>) -> Self {
+        Self::Watch(watch)
+    }
+
+    fn demote(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.demote_child(agent),
+            #[cfg(test)]
+            Self::Watch(watch) => watch.demoted.store(true, Ordering::Release),
+        }
+    }
+
+    fn restore(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.restore_root(agent),
+            #[cfg(test)]
+            Self::Watch(watch) => watch.restored.store(true, Ordering::Release),
+        }
+    }
+
+    fn arm(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.arm_release(agent),
+            #[cfg(test)]
+            Self::Watch(watch) => watch.armed.store(true, Ordering::Release),
+        }
+    }
+
+    fn disarm(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.disarm_release(agent),
+            #[cfg(test)]
+            Self::Watch(watch) => watch.armed.store(false, Ordering::Release),
+        }
+    }
+
+    async fn wait_release(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.wait_release(agent).await,
+            #[cfg(test)]
+            Self::Watch(watch) => {
+                let notified = watch.release.notified();
+                tokio::pin!(notified);
+                if tokio::time::timeout(watch.budget, notified).await.is_ok() {
+                    watch.woke.store(true, Ordering::Release);
+                }
+            }
+        }
+    }
+
+    fn close_local(&self, agent: Uuid) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.close_departed(agent),
+            #[cfg(test)]
+            Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct HopGrid {
+    client: GridClient,
+    scope: Uuid,
 }
 
 /// Login facts the hop needs. The destination caps path is a new object path.
@@ -104,13 +267,18 @@ pub struct HopLogin {
 #[derive(Clone)]
 pub struct HopEnv {
     source: RegionEnd,
+    size_x: u32,
+    size_y: u32,
     client: Option<SimulationClient>,
     caps: CapsRegistry,
+    grid: HopGrid,
+    presence: HopPresence,
 }
 
 impl HopEnv {
-    /// An empty directory. A client that cannot be built still reports unknown regions.
-    pub fn from_region(config: &RegionConfig, caps: CapsRegistry) -> Self {
+    /// An empty directory plus the grid. A client that cannot be built still
+    /// reports unknown regions.
+    pub fn from_region(config: &RegionConfig, caps: CapsRegistry, presence: HopPresence) -> Self {
         let client = match SimulationClient::new() {
             Ok(client) => Some(client),
             Err(error) => {
@@ -126,8 +294,15 @@ impl HopEnv {
                 loc_x: config.location[0].wrapping_mul(256),
                 loc_y: config.location[1].wrapping_mul(256),
             },
+            size_x: config.size[0],
+            size_y: config.size[1],
             client,
             caps,
+            grid: HopGrid {
+                client: GridClient::new(config),
+                scope: config.scope_id,
+            },
+            presence,
         }
     }
 
@@ -141,6 +316,8 @@ impl HopEnv {
             first_name: login.first_name,
             last_name: login.last_name,
             source: self.source.clone(),
+            size_x: self.size_x,
+            size_y: self.size_y,
         };
         let caps = self.caps.clone();
         let agent_id = login.agent_id;
@@ -148,15 +325,30 @@ impl HopEnv {
             session,
             self.client.clone(),
             Arc::new(EmptyDirectory),
+            Some(self.grid.clone()),
+            self.presence.clone(),
             move |event| caps.enqueue_for(agent_id, event),
         )
     }
+}
+
+struct HopWork<'a> {
+    session: &'a HopSession,
+    client: Option<&'a SimulationClient>,
+    directory: &'a dyn RegionDirectory,
+    grid: Option<&'a HopGrid>,
+    presence: &'a HopPresence,
+    request: &'a HopRequest,
+    out: &'a HopOut,
+    enqueue: &'a (dyn Fn(Llsd) -> Result<(), EventQueueError> + Send + Sync),
 }
 
 fn drive(
     session: HopSession,
     client: Option<SimulationClient>,
     directory: Arc<dyn RegionDirectory>,
+    grid: Option<HopGrid>,
+    presence: HopPresence,
     enqueue: impl Fn(Llsd) -> Result<(), EventQueueError> + Send + Sync + 'static,
 ) -> SourceHop {
     let enqueue = Arc::new(enqueue);
@@ -164,31 +356,40 @@ fn drive(
         let session = session.clone();
         let client = client.clone();
         let directory = Arc::clone(&directory);
+        let grid = grid.clone();
+        let presence = presence.clone();
         let enqueue = Arc::clone(&enqueue);
         Box::pin(async move {
-            perform(
-                &session,
-                client.as_ref(),
-                directory.as_ref(),
-                &request,
-                &out,
-                enqueue.as_ref(),
-            )
-            .await;
+            let work = HopWork {
+                session: &session,
+                client: client.as_ref(),
+                directory: directory.as_ref(),
+                grid: grid.as_ref(),
+                presence: &presence,
+                request: &request,
+                out: &out,
+                enqueue: enqueue.as_ref(),
+            };
+            perform(work).await;
         })
     })
 }
 
-async fn perform(
-    session: &HopSession,
-    client: Option<&SimulationClient>,
-    directory: &dyn RegionDirectory,
-    request: &HopRequest,
-    out: &HopOut,
-    enqueue: &(dyn Fn(Llsd) -> Result<(), EventQueueError> + Send + Sync),
-) {
+async fn perform(work: HopWork<'_>) {
+    let HopWork {
+        session,
+        client,
+        directory,
+        grid,
+        presence,
+        request,
+        out,
+        enqueue,
+    } = work;
     let _ = request.look_at;
-    let Some(destination) = directory.find(request.region_handle) else {
+    let Some((destination, position)) =
+        locate(directory, grid, request.region_handle, request.position).await
+    else {
         tracing::debug!("source hop: unknown region");
         out.teleport_failed(NOT_FOUND).await;
         out.map_block(offline_map_block(session.agent_id, request.region_handle))
@@ -205,7 +406,7 @@ async fn perform(
     };
     tracing::debug!("source hop: query");
     let outcome = match client
-        .query_access(&destination.end, &access_query(session, request))
+        .query_access(&destination.end, &access_query(session, position))
         .await
     {
         Ok(outcome) => outcome,
@@ -230,7 +431,7 @@ async fn perform(
     // No child seed is stored yet, so the destination circuit gets a new path.
     // The viewer seed uses that same path.
     let caps_path = Uuid::new_v4().to_string();
-    let mut circuit = child_circuit(session, request, &caps_path);
+    let mut circuit = child_circuit(session, request, &caps_path, position);
     tracing::debug!("source hop: create");
     let created = match client
         .create_agent(
@@ -270,7 +471,15 @@ async fn perform(
             .await;
         return;
     }
-    let update = agent_update(session, request, &destination);
+    let outside = needs_closing(session, &destination, request.region_handle);
+    let callback = if outside {
+        presence.arm(session.agent_id);
+        Some(release_uri(session))
+    } else {
+        None
+    };
+    presence.demote(session.agent_id);
+    let update = agent_update(session, &destination, position, callback);
     tracing::debug!("source hop: update");
     let arrived = match client
         .update_agent(&destination.end, &update, &context)
@@ -283,10 +492,141 @@ async fn perform(
         }
     };
     if !arrived {
+        if outside {
+            presence.disarm(session.agent_id);
+        }
+        presence.restore(session.agent_id);
         close_destination(client, &destination.end, session).await;
         out.teleport_failed(&connect_reason(&destination.end.name))
             .await;
+        return;
     }
+    if outside {
+        presence.wait_release(session.agent_id).await;
+        presence.close_local(session.agent_id);
+        out.leave().await;
+    }
+}
+
+async fn locate(
+    directory: &dyn RegionDirectory,
+    grid: Option<&HopGrid>,
+    handle: u64,
+    position: [f32; 3],
+) -> Option<(HopDestination, [f32; 3])> {
+    if let Some(found) = directory.find(handle) {
+        return Some((found, position));
+    }
+    let grid = grid?;
+    match grid_destination(grid, handle, position).await {
+        Ok(found) => found,
+        Err(_) => {
+            tracing::debug!("source hop: grid lookup failed");
+            None
+        }
+    }
+}
+
+async fn grid_destination(
+    grid: &HopGrid,
+    handle: u64,
+    mut position: [f32; 3],
+) -> Result<Option<(HopDestination, [f32; 3])>, GridError> {
+    let (world_x, world_y) = handle_world(handle);
+    let (x, y, adjust) = if world_y == 0 {
+        let Ok(x) = i32::try_from(world_x) else {
+            return Ok(None);
+        };
+        (x, 0, false)
+    } else {
+        let (Some(x), Some(y)) = (
+            grid_corner(world_x, position[0]),
+            grid_corner(world_y, position[1]),
+        ) else {
+            return Ok(None);
+        };
+        (x, y, true)
+    };
+    let Some(found) = grid.client.region_by_position(grid.scope, x, y).await? else {
+        return Ok(None);
+    };
+    if adjust {
+        position[0] += world_x as f32 - found.loc_x as f32;
+        position[1] += world_y as f32 - found.loc_y as f32;
+    }
+    Ok(Some((destination_from(found), position)))
+}
+
+fn destination_from(found: LocatedRegion) -> HopDestination {
+    HopDestination {
+        end: RegionEnd {
+            server_uri: found.server_uri,
+            region_id: found.region_id,
+            name: found.name,
+            loc_x: found.loc_x,
+            loc_y: found.loc_y,
+        },
+        endpoint: found.endpoint,
+        size_x: found.size_x,
+        size_y: found.size_y,
+    }
+}
+
+fn grid_corner(world: u32, offset: f32) -> Option<i32> {
+    let metres = f64::from(world) + f64::from(offset);
+    if !metres.is_finite() || metres < 0.0 || metres > f64::from(u32::MAX) {
+        return None;
+    }
+    i32::try_from((metres as u32) & 0xffff_ff00).ok()
+}
+
+fn handle_cells(handle: u64) -> (u32, u32) {
+    (
+        ((handle >> 40) & 0x00ff_ffff) as u32,
+        ((handle >> 8) & 0x00ff_ffff) as u32,
+    )
+}
+
+fn handle_world(handle: u64) -> (u32, u32) {
+    ((handle >> 32) as u32, handle as u32)
+}
+
+fn needs_closing(session: &HopSession, destination: &HopDestination, handle: u64) -> bool {
+    if destination.end.loc_y == 0 {
+        return true;
+    }
+    let (new_x, new_y) = handle_cells(handle);
+    outside_view(
+        (session.source.loc_x >> 8, session.source.loc_y >> 8),
+        (new_x, new_y),
+        (session.size_x, session.size_y),
+        (destination.size_x, destination.size_y),
+    )
+}
+
+fn outside_view(
+    old: (u32, u32),
+    new: (u32, u32),
+    old_size: (u32, u32),
+    new_size: (u32, u32),
+) -> bool {
+    let draw = REGION_VIEW_METRES - 1;
+    let old_x = u64::from(old.0) * 256;
+    let new_x = u64::from(new.0) * 256;
+    let old_y = u64::from(old.1) * 256;
+    let new_y = u64::from(new.1) * 256;
+    old_x + u64::from(old_size.0) + draw < new_x
+        || new_x + u64::from(new_size.0) + draw < old_x
+        || old_y + u64::from(old_size.1) + draw < new_y
+        || new_y + u64::from(new_size.1) + draw < old_y
+}
+
+fn release_uri(session: &HopSession) -> String {
+    let base = session.source.server_uri.trim_end_matches('/');
+    format!(
+        "{base}/agent/{}/{}/release/",
+        session.agent_id, session.source.region_id
+    )
 }
 
 fn viewer_endpoint(endpoint: SocketAddr) -> Option<(Ipv4Addr, u16)> {
@@ -296,18 +636,23 @@ fn viewer_endpoint(endpoint: SocketAddr) -> Option<(Ipv4Addr, u16)> {
     }
 }
 
-fn access_query(session: &HopSession, request: &HopRequest) -> AccessQuery {
+fn access_query(session: &HopSession, position: [f32; 3]) -> AccessQuery {
     AccessQuery {
         agent_id: session.agent_id,
         agent_home_uri: None,
         via_teleport: true,
-        position: request.position,
+        position,
         features: Vec::new(),
         context: TransferContext::negotiated(),
     }
 }
 
-fn child_circuit(session: &HopSession, request: &HopRequest, caps_path: &str) -> Circuit {
+fn child_circuit(
+    session: &HopSession,
+    request: &HopRequest,
+    caps_path: &str,
+    position: [f32; 3],
+) -> Circuit {
     Circuit {
         agent_id: session.agent_id,
         base_folder: Uuid::nil(),
@@ -321,7 +666,7 @@ fn child_circuit(session: &HopSession, request: &HopRequest, caps_path: &str) ->
         secure_session_id: session.secure_session_id,
         session_id: session.session_id,
         service_session_id: String::new(),
-        start_pos: request.position,
+        start_pos: position,
         client_ip: request.client_ip.clone(),
         viewer: String::new(),
         channel: String::new(),
@@ -335,15 +680,16 @@ fn child_circuit(session: &HopSession, request: &HopRequest, caps_path: &str) ->
 
 fn agent_update(
     session: &HopSession,
-    request: &HopRequest,
     destination: &HopDestination,
+    position: [f32; 3],
+    callback: Option<String>,
 ) -> AgentData {
     AgentData {
         region_id: destination.end.region_id,
         circuit_code: session.circuit_code,
         agent_id: session.agent_id,
         session_id: session.session_id,
-        position: request.position,
+        position,
         velocity: [0.0; 3],
         center: [0.0; 3],
         size: [0.0; 3],
@@ -365,6 +711,7 @@ fn agent_update(
         appearance: None,
         sit_offset: [0.0; 3],
         children_seeds: Vec::new(),
+        callback,
     }
 }
 
@@ -392,7 +739,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        EmptyDirectory, HopDestination, HopSession, RegionDirectory, drive, viewer_endpoint,
+        EmptyDirectory, HopDestination, HopGrid, HopPresence, HopSession, PresenceWatch,
+        RegionDirectory, drive, outside_view, viewer_endpoint,
     };
     use crate::simulation_client::{RegionEnd, SimulationClient};
     use ferroan_client::{
@@ -401,8 +749,8 @@ mod tests {
     };
     use ferroan_llsd::Llsd;
     use ferroan_protocol::msgs::{
-        MapBlockReply, TeleportFailed, TeleportFinish, TeleportLocal, TeleportLocationRequest,
-        TeleportStart, UseCircuitCode,
+        DisableSimulator, KickUser, MapBlockReply, TeleportFailed, TeleportFinish, TeleportLocal,
+        TeleportLocationRequest, TeleportStart, UseCircuitCode,
     };
     use ferroan_protocol::{Msg, build_packet, parse_packet};
     use flate2::read::GzDecoder;
@@ -469,6 +817,8 @@ mod tests {
                 loc_x: 0,
                 loc_y: 0,
             },
+            size_x: 256,
+            size_y: 256,
         }
     }
 
@@ -479,7 +829,7 @@ mod tests {
                 region_id: Uuid::from_u128(7),
                 name: "Neighbour".to_string(),
                 loc_x: 256,
-                loc_y: 0,
+                loc_y: 256,
             },
             endpoint: "127.0.0.1:9100".parse().unwrap(),
             size_x: 256,
@@ -488,9 +838,29 @@ mod tests {
     }
 
     fn listed(addr: SocketAddr) -> Arc<dyn RegionDirectory> {
+        listed_for(addr, HANDLE, 256)
+    }
+
+    fn listed_for(addr: SocketAddr, handle: u64, loc_y: u32) -> Arc<dyn RegionDirectory> {
+        let mut dest = destination(addr);
+        dest.end.loc_y = loc_y;
         let mut regions = HashMap::new();
-        regions.insert(HANDLE, destination(addr));
+        regions.insert(handle, dest);
         Arc::new(Listed(regions))
+    }
+
+    struct HopChoice {
+        presence: HopPresence,
+        handle: u64,
+        grid: Option<HopGrid>,
+    }
+
+    fn idle_choice() -> HopChoice {
+        HopChoice {
+            presence: HopPresence::idle(),
+            handle: HANDLE,
+            grid: None,
+        }
     }
 
     async fn listen() -> (TcpListener, SocketAddr) {
@@ -514,6 +884,27 @@ mod tests {
         hold_query: bool,
         enqueue: impl Fn(Llsd) -> Result<(), EventQueueError> + Send + Sync + 'static,
     ) -> Opened {
+        open_at(
+            directory,
+            client,
+            listener,
+            steps,
+            hold_query,
+            enqueue,
+            idle_choice(),
+        )
+        .await
+    }
+
+    async fn open_at(
+        directory: Arc<dyn RegionDirectory>,
+        client: Option<SimulationClient>,
+        listener: Option<TcpListener>,
+        steps: Vec<(u16, String)>,
+        hold_query: bool,
+        enqueue: impl Fn(Llsd) -> Result<(), EventQueueError> + Send + Sync + 'static,
+        choice: HopChoice,
+    ) -> Opened {
         let release = hold_query.then(Notify::new).map(Arc::new);
         let hits = Arc::new(Mutex::new(Vec::new()));
         let script = match listener {
@@ -525,7 +916,14 @@ mod tests {
         let caps_server = CapsServer::bind().await.unwrap();
         let events = caps_server.event_queue_url().to_owned();
         let caps = Arc::new(Mutex::new(caps_server));
-        let hop = drive(session(), client, directory, enqueue);
+        let hop = drive(
+            session(),
+            client,
+            directory,
+            choice.grid,
+            choice.presence,
+            enqueue,
+        );
         let position = Arc::new(Mutex::new([128.0, 128.0, 25.0]));
         let region = ferroan_client::TeleportRegion {
             world_x: 0,
@@ -576,7 +974,7 @@ mod tests {
             &socket,
             expect,
             2,
-            teleport_packet(expect, HANDLE, POSITION),
+            teleport_packet(expect, choice.handle, POSITION),
         )
         .await;
         Opened {
@@ -868,6 +1266,7 @@ mod tests {
         assert_eq!(update["message_type"], "AgentData");
         assert_eq!(update["wait_for_root"], true);
         assert!(update["god_data"].is_object());
+        assert!(update.get("cb_uri").is_none());
         assert_eq!(*opened.position.lock().unwrap(), [128.0, 128.0, 25.0]);
         let event = poll_finish(&opened).await;
         let info = event.get("events").at(0);
@@ -1134,5 +1533,268 @@ mod tests {
         assert!(viewer_endpoint(endpoint).is_none());
         let endpoint: SocketAddr = "[::1]:9000".parse().unwrap();
         assert!(viewer_endpoint(endpoint).is_none());
+    }
+
+    #[test]
+    fn an_adjacent_region_stays_in_view_and_two_cells_do_not() {
+        assert!(!outside_view((0, 0), (1, 0), (256, 256), (256, 256)));
+        assert!(!outside_view((0, 0), (1, 1), (256, 256), (256, 256)));
+        assert!(outside_view((0, 0), (3, 0), (256, 256), (256, 256)));
+    }
+
+    fn watched(budget: Duration, handle: u64) -> (Arc<PresenceWatch>, HopChoice) {
+        let watch = PresenceWatch::new(budget);
+        let choice = HopChoice {
+            presence: HopPresence::watch(Arc::clone(&watch)),
+            handle,
+            grid: None,
+        };
+        (watch, choice)
+    }
+
+    fn no_kick(packets: &[Vec<u8>]) {
+        assert!(!has_id(packets, KickUser::ID));
+        assert!(!has_id(packets, DisableSimulator::ID));
+    }
+
+    #[tokio::test]
+    async fn an_in_view_hop_demotes_and_keeps_the_circuit() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let (watch, choice) = watched(Duration::from_secs(2), HANDLE);
+        let mut opened = open_at(
+            listed(addr),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            choice,
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 3);
+        let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
+        assert!(update.get("cb_uri").is_none());
+        assert!(watch.demoted());
+        assert!(!watch.restored());
+        assert!(!watch.armed());
+        assert!(!watch.closed());
+        assert!(!opened.running.is_finished());
+        no_kick(&opened.gathered.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_update_failure_restores_the_root() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let (watch, choice) = watched(Duration::from_secs(2), HANDLE);
+        let mut opened = open_at(
+            listed(addr),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "false".to_string()),
+                (200, "closed".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            choice,
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        let expected = connect_reason("Neighbour");
+        assert!(
+            until(&opened.gathered, |packets| {
+                reasons(packets).iter().any(|reason| reason == &expected)
+            })
+            .await
+        );
+        assert_eq!(request_parts(&hits[3].header).0, "DELETE");
+        assert!(watch.demoted());
+        assert!(watch.restored());
+        assert!(!watch.armed());
+        assert!(!watch.closed());
+        assert!(!opened.running.is_finished());
+    }
+
+    #[tokio::test]
+    async fn an_enqueue_failure_does_not_demote() {
+        let (listener, addr) = listen().await;
+        let (watch, choice) = watched(Duration::from_secs(2), HANDLE);
+        let mut opened = open_at(
+            listed(addr),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "closed".to_string()),
+            ],
+            false,
+            |_event| Err(EventQueueError::Closed),
+            choice,
+        )
+        .await;
+        let _hits = finish_script(&mut opened).await;
+        assert!(!watch.demoted());
+        assert!(!watch.closed());
+        assert!(!opened.running.is_finished());
+    }
+
+    const FAR_HANDLE: u64 = 3 << 40;
+
+    #[tokio::test]
+    async fn a_far_hop_sends_the_callback_and_closes_when_released() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let (watch, choice) = watched(Duration::from_secs(5), FAR_HANDLE);
+        let mut opened = open_at(
+            listed_for(addr, FAR_HANDLE, 256),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            choice,
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        watch.release();
+        let ended = tokio::time::timeout(Duration::from_secs(2), &mut opened.running).await;
+        assert!(ended.is_ok(), "circuit did not close after release");
+        assert!(watch.woke());
+        assert!(watch.demoted());
+        assert!(!watch.restored());
+        assert!(watch.armed());
+        assert!(watch.closed());
+        assert_eq!(hits.len(), 3);
+        assert!(
+            hits.iter()
+                .all(|hit| request_parts(&hit.header).0 != "DELETE")
+        );
+        let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
+        let callback = update["cb_uri"].as_str().unwrap();
+        assert!(callback.starts_with("http://127.0.0.1:8/agent/"));
+        assert!(callback.ends_with("/release/"));
+        assert!(callback.contains(&Uuid::from_u128(1).to_string()));
+        assert!(callback.contains(&Uuid::from_u128(9).to_string()));
+        no_kick(&opened.gathered.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_region_at_grid_y_zero_closes_when_the_release_does_not_arrive() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let (watch, choice) = watched(Duration::from_millis(40), HANDLE);
+        let mut opened = open_at(
+            listed_for(addr, HANDLE, 0),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            choice,
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        let ended = tokio::time::timeout(Duration::from_secs(2), &mut opened.running).await;
+        assert!(
+            ended.is_ok(),
+            "circuit did not close after the release budget"
+        );
+        assert!(!watch.woke());
+        assert!(watch.closed());
+        assert!(watch.armed());
+        assert_eq!(hits.len(), 3);
+        assert!(
+            hits.iter()
+                .all(|hit| request_parts(&hit.header).0 != "DELETE")
+        );
+        let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
+        assert!(update["cb_uri"].as_str().unwrap().ends_with("/release/"));
+        no_kick(&opened.gathered.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_grid_lookup_runs_the_in_view_hop() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let region_id = Uuid::from_u128(7);
+        let mut region = ferroan_http::FieldMap::new();
+        for (key, value) in [
+            ("uuid", region_id.to_string()),
+            ("locX", "256".to_string()),
+            ("locY", "256".to_string()),
+            ("sizeX", "256".to_string()),
+            ("sizeY", "256".to_string()),
+            ("regionName", "Neighbour".to_string()),
+            ("serverIP", "127.0.0.1".to_string()),
+            ("serverPort", "9100".to_string()),
+            ("serverURI", format!("http://{addr}")),
+        ] {
+            region.insert(key.to_owned(), ferroan_http::Field::Str(value));
+        }
+        let mut root = ferroan_http::FieldMap::new();
+        root.insert("result".to_owned(), ferroan_http::Field::Map(region));
+        let xml = ferroan_http::build_xml_response(&root).unwrap();
+        let app = axum::Router::new().fallback(move |body: String| {
+            assert!(body.contains("METHOD=get_region_by_position"), "{body}");
+            assert!(body.contains("X=256"), "{body}");
+            assert!(body.contains("Y=0"), "{body}");
+            let xml = xml.clone();
+            async move {
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/xml")],
+                    xml,
+                )
+            }
+        });
+        let grid_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let grid_base = format!("http://{}", grid_socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(grid_socket, app).await.unwrap() });
+        let (watch, mut choice) = watched(Duration::from_secs(2), HANDLE);
+        choice.grid = Some(HopGrid {
+            client: crate::grid::GridClient::from_base(&grid_base),
+            scope: Uuid::from_u128(3),
+        });
+        let mut opened = open_at(
+            Arc::new(EmptyDirectory),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            choice,
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 3);
+        let update: Value = serde_json::from_slice(&plain(&hits[2])).unwrap();
+        assert!(update.get("cb_uri").is_none());
+        assert_eq!(update["position"], "<128, 128, 30>");
+        assert!(watch.demoted());
+        assert!(!watch.closed());
+        assert!(!opened.running.is_finished());
+        serving.abort();
     }
 }

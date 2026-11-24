@@ -154,17 +154,260 @@
             "state": 2,
             "last_attach_point": 3,
             "texture": "11223344",
-            "extra_params": "00aa"
+            "extra_params": "00aa",
+            "media_entries": [
+              {
+                "alt_image_enable": true,
+                "auto_loop": true,
+                "auto_play": false,
+                "auto_scale": true,
+                "auto_zoom": false,
+                "controls": 1,
+                "current_url": "http://current.test",
+                "first_click_interact": true,
+                "height_pixels": 480,
+                "home_url": "http://home.test",
+                "perms_control": 1,
+                "perms_interact": 4,
+                "whitelist": [
+                  "http://ok.test"
+                ],
+                "whitelist_enable": true,
+                "width_pixels": 640
+              },
+              {
+                "alt_image_enable": false,
+                "auto_loop": false,
+                "auto_play": false,
+                "auto_scale": false,
+                "auto_zoom": false,
+                "controls": 0,
+                "current_url": null,
+                "first_click_interact": false,
+                "height_pixels": 0,
+                "home_url": null,
+                "perms_control": 0,
+                "perms_interact": 0,
+                "whitelist": null,
+                "whitelist_enable": false,
+                "width_pixels": 0
+              }
+            ],
+            "materials": {
+              "overrides": [
+                {
+                  "te_index": 1,
+                  "data": "face-data"
+                }
+              ]
+            }
+          },
+          "dyn_attrs": {
+            "kept": {
+              "store": {
+                "n": 7
+              }
+            }
+          },
+          "keyframe": {
+            "serialized_position": [
+              1,
+              2,
+              3
+            ],
+            "base_position": [
+              4,
+              5,
+              6
+            ],
+            "base_rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "current_frame": {
+              "position": [
+                7,
+                8,
+                9
+              ],
+              "rotation": null,
+              "start_rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "time_ms": 10,
+              "time_total": 20,
+              "angular_velocity": [
+                0,
+                1,
+                0
+              ],
+              "start_position": [
+                1,
+                0,
+                0
+              ]
+            },
+            "frames": [
+              {
+                "position": null,
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "start_rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "time_ms": 5,
+                "time_total": 5,
+                "angular_velocity": [
+                  0,
+                  0,
+                  0
+                ],
+                "start_position": [
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ],
+            "keyframes": [],
+            "mode": 2,
+            "data": 3,
+            "running": true,
+            "iterations": 4,
+            "skip_loops": 6
+          },
+          "vehicle": {
+            "type": 2,
+            "flags": 0,
+            "linear_motor_direction": [
+              0,
+              0,
+              0
+            ],
+            "linear_friction_timescale": [
+              0,
+              0,
+              0
+            ],
+            "linear_motor_decay_timescale": 0,
+            "linear_motor_timescale": 1.5,
+            "linear_motor_offset": [
+              0,
+              0,
+              0
+            ],
+            "angular_motor_direction": [
+              0,
+              0,
+              0
+            ],
+            "angular_motor_timescale": 0,
+            "angular_motor_decay_timescale": 0,
+            "angular_friction_timescale": [
+              0,
+              0,
+              0
+            ],
+            "angular_deflection_efficiency": 0,
+            "angular_deflection_timescale": 0,
+            "linear_deflection_efficiency": 0,
+            "linear_deflection_timescale": 0,
+            "banking_efficiency": 0,
+            "banking_mix": 0,
+            "banking_timescale": 0,
+            "hover_height": 0,
+            "hover_efficiency": 0,
+            "hover_timescale": 0,
+            "buoyancy": 0,
+            "vertical_attraction_efficiency": 0,
+            "vertical_attraction_timescale": 0,
+            "reference_frame": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "linear_motor_timescale_axes": null,
+            "linear_motor_decay_timescale_axes": null,
+            "angular_motor_timescale_axes": null,
+            "angular_motor_decay_timescale_axes": null,
+            "mouselook_azimuth": 0.7853982,
+            "mouselook_altitude": 0.7853982,
+            "banking_azimuth": 1.5707964,
+            "disable_motors_above": 0.75,
+            "disable_motors_after": 2.5,
+            "inverted_banking_modifier": 1,
+            "linear_wind_efficiency": null,
+            "angular_wind_efficiency": null,
+            "linear_motor_run_age": null,
+            "linear_motor_run_direction": null,
+            "linear_motor_run_target": null,
+            "angular_motor_run_age": null,
+            "angular_motor_run_direction": null,
+            "angular_motor_run_target": null
+          },
+          "phys_inertia": {
+            "mass": 2.5,
+            "center": [
+              1,
+              2,
+              3
+            ],
+            "inertia": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "animations": [
+            {
+              "id": "12345678-1234-1234-1234-123456789abc",
+              "name": "wave"
+            }
+          ],
+          "linkset": {
+            "entries": [
+              {
+                "key": "a",
+                "value": "w",
+                "password": ""
+              },
+              {
+                "key": "b",
+                "value": "v",
+                "password": "secret"
+              }
+            ],
+            "bytes_used": 36,
+            "bytes_free": 131036
           },
           "raw": {
-            "media": "\u003COSMedia type=\u0022none\u0022\u003E\u003C/OSMedia\u003E",
-            "mat_ovrd": "00",
-            "dyn_attrs": "\u003Cllsd\u003E\u003Cmap\u003E\u003C/map\u003E\u003C/llsd\u003E",
-            "keyframe_motion": "01020304",
-            "vehicle": "\u003CVehicle\u003E\u003C/Vehicle\u003E",
-            "phys_inertia": "\u003CPhysicsInertia\u003E\u003C/PhysicsInertia\u003E",
-            "sopanims": "00",
-            "linkset_data": "not-json"
+            "media": "\u003COSMedia type=\u0022sl\u0022 version=\u00220.1\u0022\u003E\u003COSData\u003E\u003Cllsd\u003E\u003Carray\u003E\u003Cmap\u003E\u003Ckey\u003Ealt_image_enable\u003C/key\u003E\u003Cboolean\u003E1\u003C/boolean\u003E\u003Ckey\u003Eauto_loop\u003C/key\u003E\u003Cboolean\u003E1\u003C/boolean\u003E\u003Ckey\u003Eauto_play\u003C/key\u003E\u003Cboolean\u003E0\u003C/boolean\u003E\u003Ckey\u003Eauto_scale\u003C/key\u003E\u003Cboolean\u003E1\u003C/boolean\u003E\u003Ckey\u003Eauto_zoom\u003C/key\u003E\u003Cboolean\u003E0\u003C/boolean\u003E\u003Ckey\u003Econtrols\u003C/key\u003E\u003Cinteger\u003E1\u003C/integer\u003E\u003Ckey\u003Ecurrent_url\u003C/key\u003E\u003Cstring\u003Ehttp://current.test\u003C/string\u003E\u003Ckey\u003Efirst_click_interact\u003C/key\u003E\u003Cboolean\u003E1\u003C/boolean\u003E\u003Ckey\u003Eheight_pixels\u003C/key\u003E\u003Cinteger\u003E480\u003C/integer\u003E\u003Ckey\u003Ehome_url\u003C/key\u003E\u003Cstring\u003Ehttp://home.test\u003C/string\u003E\u003Ckey\u003Eperms_control\u003C/key\u003E\u003Cinteger\u003E1\u003C/integer\u003E\u003Ckey\u003Eperms_interact\u003C/key\u003E\u003Cinteger\u003E4\u003C/integer\u003E\u003Ckey\u003Ewhitelist\u003C/key\u003E\u003Carray\u003E\u003Cstring\u003Ehttp://ok.test\u003C/string\u003E\u003C/array\u003E\u003Ckey\u003Ewhitelist_enable\u003C/key\u003E\u003Cboolean\u003E1\u003C/boolean\u003E\u003Ckey\u003Ewidth_pixels\u003C/key\u003E\u003Cinteger\u003E640\u003C/integer\u003E\u003C/map\u003E\u003Cinteger\u003E0\u003C/integer\u003E\u003C/array\u003E\u003C/llsd\u003E\u003C/OSData\u003E\u003C/OSMedia\u003E",
+            "mat_ovrd": "01010900666163652d64617461",
+            "dyn_attrs": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Ekept\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Estore\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003En\u003C/key\u003E\u003Cinteger\u003E7\u003C/integer\u003E\u003C/map\u003E\u003Ckey\u003Edropped\u003C/key\u003E\u003Cinteger\u003E1\u003C/integer\u003E\u003C/map\u003E\u003Ckey\u003Ebadns\u003C/key\u003E\u003Cstring\u003Enope\u003C/string\u003E\u003C/map\u003E\u003C/llsd\u003E",
+            "keyframe_motion": "4b464d31010000000000803f0000004000004040000080400000a0400000c0400000000000000000000000000000803f010000e0400000004100001041000000000000000000000000000000803f0a00000014000000000000000000803f000000000000803f00000000000000000100000000010000000000000000000000000000803f0000000000000000000000000000803f0500000005000000000000000000000000000000000000000000000000000000000000000200000003000000010400000006000000",
+            "vehicle": "\u003CVehicle\u003E\u003CTYPE\u003E2\u003C/TYPE\u003E\u003CLMTIME\u003E1.5\u003C/LMTIME\u003E\u003C/Vehicle\u003E",
+            "phys_inertia": "\u003CPhysicsInertia\u003E\u003CMASS\u003E2.5\u003C/MASS\u003E\u003CCM\u003E\u003CX\u003E1\u003C/X\u003E\u003CY\u003E2\u003C/Y\u003E\u003CZ\u003E3\u003C/Z\u003E\u003C/CM\u003E\u003C/PhysicsInertia\u003E",
+            "sopanims": "020012345678123412341234123456789abc047761766500000000000000000000000000000000",
+            "linkset_data": "{\u0022a\u0022:{\u0022Value\u0022:\u0022w\u0022,\u0022Password\u0022:\u0022\u0022},\u0022b\u0022:{\u0022Value\u0022:\u0022v\u0022,\u0022Password\u0022:\u0022secret\u0022}}"
           }
         }
       ]
@@ -321,8 +564,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,
@@ -483,17 +734,114 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": {
+              "overrides": null
+            }
           },
+          "dyn_attrs": {},
+          "keyframe": null,
+          "vehicle": {
+            "type": 0,
+            "flags": 0,
+            "linear_motor_direction": [
+              0,
+              0,
+              0
+            ],
+            "linear_friction_timescale": [
+              0,
+              0,
+              0
+            ],
+            "linear_motor_decay_timescale": 0,
+            "linear_motor_timescale": 0,
+            "linear_motor_offset": [
+              0,
+              0,
+              0
+            ],
+            "angular_motor_direction": [
+              0,
+              0,
+              0
+            ],
+            "angular_motor_timescale": 0,
+            "angular_motor_decay_timescale": 0,
+            "angular_friction_timescale": [
+              0,
+              0,
+              0
+            ],
+            "angular_deflection_efficiency": 0,
+            "angular_deflection_timescale": 0,
+            "linear_deflection_efficiency": 0,
+            "linear_deflection_timescale": 0,
+            "banking_efficiency": 0,
+            "banking_mix": 0,
+            "banking_timescale": 0,
+            "hover_height": 0,
+            "hover_efficiency": 0,
+            "hover_timescale": 0,
+            "buoyancy": 0,
+            "vertical_attraction_efficiency": 0,
+            "vertical_attraction_timescale": 0,
+            "reference_frame": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "linear_motor_timescale_axes": null,
+            "linear_motor_decay_timescale_axes": null,
+            "angular_motor_timescale_axes": null,
+            "angular_motor_decay_timescale_axes": null,
+            "mouselook_azimuth": 0.7853982,
+            "mouselook_altitude": 0.7853982,
+            "banking_azimuth": 1.5707964,
+            "disable_motors_above": 0,
+            "disable_motors_after": 0,
+            "inverted_banking_modifier": 1,
+            "linear_wind_efficiency": null,
+            "angular_wind_efficiency": null,
+            "linear_motor_run_age": null,
+            "linear_motor_run_direction": null,
+            "linear_motor_run_target": null,
+            "angular_motor_run_age": null,
+            "angular_motor_run_direction": null,
+            "angular_motor_run_target": null
+          },
+          "phys_inertia": {
+            "mass": 0,
+            "center": [
+              0,
+              0,
+              0
+            ],
+            "inertia": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "animations": [],
+          "linkset": null,
           "raw": {
-            "media": null,
-            "mat_ovrd": null,
-            "dyn_attrs": null,
-            "keyframe_motion": null,
-            "vehicle": null,
-            "phys_inertia": null,
-            "sopanims": null,
-            "linkset_data": null
+            "media": "\u003COSMedia type=\u0022none\u0022\u003E\u003C/OSMedia\u003E",
+            "mat_ovrd": "00",
+            "dyn_attrs": "\u003Cllsd\u003E\u003Cmap\u003E\u003C/map\u003E\u003C/llsd\u003E",
+            "keyframe_motion": "01020304",
+            "vehicle": "\u003CVehicle\u003E\u003C/Vehicle\u003E",
+            "phys_inertia": "\u003CPhysicsInertia\u003E\u003C/PhysicsInertia\u003E",
+            "sopanims": "00",
+            "linkset_data": "not-json"
           }
         },
         {
@@ -645,8 +993,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,
@@ -812,8 +1168,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,
@@ -974,8 +1338,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,
@@ -1136,8 +1508,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "010203",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,
@@ -1303,8 +1683,16 @@
             "state": 0,
             "last_attach_point": 0,
             "texture": "8955674724cb43ed920b47caed15465f0000000000000000803f000000803f000000000000000000000000000000000000000000000000000000000000000000",
-            "extra_params": "00"
+            "extra_params": "00",
+            "media_entries": null,
+            "materials": null
           },
+          "dyn_attrs": null,
+          "keyframe": null,
+          "vehicle": null,
+          "phys_inertia": null,
+          "animations": null,
+          "linkset": null,
           "raw": {
             "media": null,
             "mat_ovrd": null,

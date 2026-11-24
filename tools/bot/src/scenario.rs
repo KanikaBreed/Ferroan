@@ -138,6 +138,10 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = teleport_neighbour(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
+    if name == "hop" {
+        let line = teleport_hop(&http, harness).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
     if name == "roots" {
         let line = roots_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
@@ -681,6 +685,38 @@ async fn teleport_neighbour(http: &reqwest::Client, harness: &Harness) -> Result
     drop(parked);
     Ok(format!(
         "teleport neighbour: pass ({},{} and back)",
+        neighbour.x, neighbour.y
+    ))
+}
+
+/// One hop onto the neighbour. The source keeps the child circuit.
+/// The return hop is a separate check.
+async fn teleport_hop(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let neighbour = harness
+        .neighbour
+        .as_ref()
+        .ok_or("neighbour hop needs a grid-mode harness")?;
+    let (session, _) = enter(http, harness, &harness.owner).await?;
+    let mut parked: Vec<Session> = Vec::new();
+    let away = cross_to(
+        http,
+        session,
+        region_handle(neighbour.x, neighbour.y),
+        &mut parked,
+    )
+    .await?;
+    if away.region_id() != Some(neighbour.region_id) {
+        return Err(format!(
+            "landed in {:?}, expected {}",
+            away.region_id(),
+            neighbour.region_id
+        ));
+    }
+    let mut away = away;
+    leave(harness, &mut away, &harness.owner).await?;
+    drop(parked);
+    Ok(format!(
+        "teleport hop: pass ({},{})",
         neighbour.x, neighbour.y
     ))
 }
@@ -1666,6 +1702,7 @@ mod tests {
         assert_eq!(selection("assets").unwrap(), &["texture", "inventory"]);
         assert!(selection("capture").is_none());
         assert!(selection("neighbour").is_none());
+        assert!(selection("hop").is_none());
     }
 
     #[test]
