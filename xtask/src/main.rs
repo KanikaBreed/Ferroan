@@ -28,6 +28,7 @@
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
+//! `regionstore read` reads that XML back through the pin and writes the fields.
 //! `regionstore verify` reloads the object fixture. `regionstore cross`
 //! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
 //! the containers. None of them starts a server or the live harness.
@@ -76,6 +77,7 @@ mod console_client;
 mod console_forms;
 mod diag_fetch;
 mod docker;
+mod dotnet_ci;
 mod ferrobot;
 mod ferrobot_build;
 mod fsasset_live;
@@ -137,6 +139,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore generate
        cargo xtask regionstore settings
        cargo xtask regionstore serialize
+       cargo xtask regionstore read
        cargo xtask regionstore verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
@@ -150,7 +153,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
-       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--rust <service>,…] [--db sqlite|mysql|pgsql]
+       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]
@@ -249,6 +252,7 @@ fn main() -> ExitCode {
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "settings"] => regionstore::settings(),
         ["regionstore", "serialize"] => regionstore::serialize(),
+        ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
@@ -514,7 +518,7 @@ mod tests {
         assert_eq!(ci.matches("name: checks (ubuntu-latest)").count(), 1);
         assert!(ci.contains("os: [windows-latest, macos-latest]"));
         assert!(!ci.contains("ubuntu-latest, windows-latest, macos-latest"));
-        assert_eq!(live.matches("cargo xtask docker smoke").count(), 1);
+        assert_eq!(live.matches("cargo xtask docker smoke").count(), 2);
         assert_eq!(
             live.matches("name: Build images and smoke the example grid")
                 .count(),
@@ -548,8 +552,18 @@ mod tests {
         );
         assert!(images.contains("fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"ferroan\"]')"));
         assert!(images.contains("|| 'ubuntu-latest'"));
-        assert!(images.contains("ferroan-live-images"));
-        assert!(images.contains("cancel-in-progress: false"));
+        assert!(!images.contains("concurrency:"));
+        assert!(!images.contains("cancel-in-progress"));
+        assert!(images.contains("flock -o"));
+        assert!(images.contains("${RUNNER_TEMP}/../ferroan-live-images.lock"));
+        assert!(!images.contains("/tmp/ferroan-live-images.lock"));
+        assert!(images.contains("RUNNER_ENVIRONMENT"));
+        assert!(images.contains("runner.environment == 'self-hosted'"));
+        assert!(images.contains("runner.name"));
+        assert!(images.contains("rust-live-self-hosted-"));
+        assert!(images.contains("rust-save:"));
+        assert!(images.contains("refs/heads/main"));
+        assert!(images.contains("github.event_name == 'schedule'"));
         let gate = live.split("name: live (ubuntu-latest)").nth(1).unwrap();
         assert!(gate.contains("runs-on: ubuntu-latest"));
         assert!(!gate.contains("self-hosted"));

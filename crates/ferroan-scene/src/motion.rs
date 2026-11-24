@@ -22,13 +22,15 @@
 //! selects the run speed (`SetAlwaysRun` at `LLClientView.cs` line 9451 and
 //! `ScenePresence.cs` lines 1141–1143 and 3953–3955). The vector is rotated
 //! by the body, flattened to yaw when not flying, scaled, and multiplied by
-//! four while flying (`AddNewMovement`, lines 3987–4048). Releasing the keys
+//! four while flying. Flying into the ground (the last step was colliding and
+//! the command's Z is negative) zeros the whole command instead; the animator
+//! lands in a later row (`AddNewMovement`, lines 3987–4048). Releasing the keys
 //! on the ground or in the air leaves that command for 250 ms. Stop replaces
 //! it immediately, at 0.2 times 4.096.
 //!
-//! Not in this row: the position step (the walking integrator), terse
-//! updates, the camera ray, scripted control grabs, the hide-title broadcast,
-//! and the animation machine. The animator starts on the surface, so a key
+//! The frame tick integrates this command (`walk`). Terse updates, the camera
+//! ray, scripted control grabs, the hide-title broadcast, and the animation
+//! machine stay later rows. The animator starts on the surface, so a key
 //! release takes the 250 ms path. The avatar counts as on the ground when it
 //! is not flying. Move-to-target stays off: neither of these packets starts it.
 
@@ -205,8 +207,20 @@ pub(crate) struct Body {
     motion: Motion,
     filter: Filter,
     last_finite: [f32; 3],
+    /// Velocity the tick integrates. A new actor starts at rest even when the
+    /// presence velocity is not. A command copies the target here. The tick
+    /// writes the result back and does not copy the target again.
+    physics_velocity: [f32; 3],
+    /// Ground contact from the last kinematic step. A fresh actor is not colliding.
+    colliding: bool,
     /// No physics actor: sitting on the ground. Later updates skip the command.
     seated: bool,
+    /// Away in another region. The record stays. The tick does not move it.
+    child: bool,
+    /// False until the arrival packet has sampled the pose. The tick does not
+    /// move a seated record, so that packet and the GridUser report stay the
+    /// position written for the login.
+    actor: bool,
 }
 
 impl Body {
@@ -255,8 +269,21 @@ impl Body {
                 camera_up: [0.0, 0.0, 0.0],
             },
             last_finite: pose.position,
+            physics_velocity: [0.0, 0.0, 0.0],
+            colliding: false,
             seated: false,
+            child: false,
+            // Direct steps in tests have an actor. A login pose holds it.
+            actor: true,
         }
+    }
+
+    pub(crate) fn set_child(&mut self, child: bool) {
+        self.child = child;
+    }
+
+    pub(crate) fn set_actor(&mut self, actor: bool) {
+        self.actor = actor;
     }
 
     pub(crate) fn view(&self) -> Motion {
@@ -272,6 +299,7 @@ impl Body {
         self.motion.target_velocity = [0.0, 0.0, 0.0];
         self.motion.angular_velocity = [0.0, 0.0, 0.0];
         self.motion.delayed_stop_ms = -1;
+        self.physics_velocity = [0.0, 0.0, 0.0];
     }
 
     pub(crate) fn apply(&mut self, update: &MotionUpdate, pose: &mut Presence) -> Applied {
@@ -353,6 +381,7 @@ impl Body {
             self.seated = true;
             self.motion.angular_velocity = [0.0, 0.0, 0.0];
             self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.physics_velocity = [0.0, 0.0, 0.0];
             pose.velocity = [0.0, 0.0, 0.0];
         }
 
@@ -476,15 +505,64 @@ impl Body {
             direc[2] = 0.0;
         }
         direc = scale3(direc, speed);
-        // Flying is not on the ground, so the landing zero does not apply and
-        // the command is scaled by four. On the ground an up or a downward
-        // result contributes no Z: the jump itself is the animator's.
+        // Flying into the ground zeros the whole command. The animator lands
+        // in a later row. Otherwise flying is scaled by four. On the ground an
+        // up or a downward result contributes no Z: the jump itself is the animator's.
         if self.motion.flying {
-            direc = scale3(direc, FLY_SPEED_SCALE);
+            if self.colliding && direc[2] < 0.0 {
+                direc = [0.0, 0.0, 0.0];
+            } else {
+                direc = scale3(direc, FLY_SPEED_SCALE);
+            }
         } else if self.motion.control_flags & CONTROL_UP_POS != 0 || direc[2] < 0.0 {
             direc[2] = 0.0;
         }
         self.motion.target_velocity = direc;
+        self.physics_velocity = direc;
+    }
+
+    /// One tick. A seated avatar, a child, and a pose that the arrival packet
+    /// has not sampled yet are skipped. The delayed stop is applied after the
+    /// move, so the deadline's frame still travels and the next one rests.
+    pub(crate) fn step_physics(
+        &mut self,
+        pose: &mut Presence,
+        terrain: f32,
+        extent_x: f32,
+        extent_y: f32,
+        dt: f32,
+        now_ms: u64,
+    ) {
+        if self.seated || self.child || !self.actor {
+            return;
+        }
+        let step = crate::walk::integrate(
+            pose.position,
+            self.physics_velocity,
+            self.motion.flying,
+            extent_x,
+            extent_y,
+            terrain,
+            dt,
+        );
+        let (position, velocity) =
+            crate::walk::fail_border(step.position, step.velocity, extent_x, extent_y, dt);
+        if position != step.position || velocity != step.velocity {
+            self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.motion.angular_velocity = [0.0, 0.0, 0.0];
+        }
+        pose.position = position;
+        pose.velocity = velocity;
+        self.physics_velocity = velocity;
+        self.colliding = step.colliding;
+        self.last_finite = position;
+        let deadline = self.motion.delayed_stop_ms;
+        if deadline > 0 && now_ms as i64 > deadline {
+            self.motion.delayed_stop_ms = -1;
+            self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.physics_velocity = [0.0, 0.0, 0.0];
+            pose.velocity = [0.0, 0.0, 0.0];
+        }
     }
 }
 
@@ -943,5 +1021,176 @@ mod tests {
         body.apply(&update(1_030, 2, CONTROL_FLY), &mut pose);
         assert!(body.view().angular_velocity[2] < FLY_ROLL_STEP);
         assert!(body.view().angular_velocity[2] > 0.0);
+    }
+
+    #[test]
+    fn a_tick_uses_the_physics_velocity_and_the_stop_lands_after_that_move() {
+        let mut pose = login_pose();
+        pose.velocity = [9.0, 0.0, 0.0];
+        let mut body = Body::new(&pose);
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert_eq!(pose.position[0], 128.0);
+        assert_eq!(pose.position[2], 21.0 + crate::walk::AVATAR_SIZE_Z);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+
+        body.apply(&update(1_000, 1, CONTROL_AT_POS), &mut pose);
+        let speed = body.view().target_velocity[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_050,
+        );
+        assert!((pose.position[0] - (128.0 + speed * crate::frame::FRAME_TIME)).abs() < 1.0e-5);
+        assert_eq!(pose.velocity[0], speed);
+        assert_eq!(pose.velocity[2], 0.0);
+
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        let deadline = body.view().delayed_stop_ms;
+        assert!(deadline > 1_100);
+        let before = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64,
+        );
+        assert!(pose.position[0] > before);
+        assert_ne!(pose.velocity[0], 0.0);
+        let moved = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64 + 1,
+        );
+        assert!(pose.position[0] > moved);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        let stopped = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64 + 200,
+        );
+        assert_eq!(pose.position[0], stopped);
+
+        body.apply(&update(2_000, 3, CONTROL_AT_POS), &mut pose);
+        body.apply(
+            &update(2_030, 4, CONTROL_AT_POS | CONTROL_SIT_ON_GROUND),
+            &mut pose,
+        );
+        let seated = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            2_100,
+        );
+        assert_eq!(pose.position, seated);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_border_crossing_stops_the_body() {
+        let mut pose = login_pose();
+        pose.position = [255.6, 128.0, 25.0];
+        let mut body = Body::new(&pose);
+        body.physics_velocity = [2.4576, 0.0, 0.0];
+        body.motion.target_velocity = [2.4576, 0.0, 0.0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert!(pose.position[0] < 256.0);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+        let stopped = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_200,
+        );
+        assert_eq!(pose.position[0], stopped[0]);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn flying_into_the_ground_zeros_the_command() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        let down = CONTROL_FLY | CONTROL_AT_POS | CONTROL_UP_NEG;
+        body.apply(&update(1_000, 1, down), &mut pose);
+        assert!(body.view().target_velocity[0] != 0.0);
+        assert!(body.view().target_velocity[2] < 0.0);
+
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_100,
+        );
+        // Drop onto the ground so this step is colliding. The next command
+        // is still flying, and a downward result zeros the whole command.
+        pose.position[2] = 23.0;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_150,
+        );
+        assert!(body.colliding);
+        body.apply(&update(1_200, 2, down), &mut pose);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_child_is_not_integrated() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        body.physics_velocity = [2.0, 0.0, 0.0];
+        body.set_child(true);
+        let stayed = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert_eq!(pose.position, stayed);
+        assert_eq!(body.physics_velocity, [2.0, 0.0, 0.0]);
     }
 }

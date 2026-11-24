@@ -155,6 +155,14 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
 
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
+    if ferroan_region::config::prioritization_scheme_differs(
+        config.prioritization_scheme.as_deref(),
+    ) {
+        let scheme = config.prioritization_scheme.as_deref().unwrap_or("").trim();
+        tracing::warn!(
+            "ferroan-region: [InterestManagement] UpdatePrioritizationScheme is {scheme}; entity updates use BestAvatarResponsiveness"
+        );
+    }
     let terrain = load_terrain(&config).await?;
     let objects = load_stored_objects(&config).await?;
     let _region_settings = load_stored_settings(&mut config).await?;
@@ -214,6 +222,9 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.keep_objects(objects);
+    if let Some(frame) = &terrain {
+        simulation.keep_scene(Arc::clone(frame));
+    }
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
             Ok(Some(access)) => simulation.apply_estate(access),
@@ -645,6 +656,12 @@ async fn dispatch_circuits(
                     Some(stored) => Ok(pose_of(stored)),
                     None => Err(()),
                 },
+                ferroan_client::SceneCall::Reuse => {
+                    match frame.reuse_arrival(agent).map_err(|_| ())? {
+                        Some(stored) => Ok(pose_of(stored)),
+                        None => Err(()),
+                    }
+                }
                 ferroan_client::SceneCall::Places(ids) => {
                     let places = frame.chat_positions(&ids).map_err(|_| ())?;
                     Ok(ferroan_client::SceneReply::Places(places))

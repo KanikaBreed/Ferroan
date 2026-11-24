@@ -27,6 +27,7 @@ const DUMP: &str = "fixtures/regionstore/objects.json";
 const SETTINGS_FIXTURE: &str = "fixtures/regionstore/settings.db";
 const SETTINGS_DUMP: &str = "fixtures/regionstore/settings.json";
 const XML_DUMP: &str = "fixtures/regionstore/objects-xml.json";
+const XML_READ_DUMP: &str = "fixtures/regionstore/objects-xml-read.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
@@ -124,6 +125,44 @@ pub fn serialize() -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: wrote {XML_DUMP}");
+    ExitCode::SUCCESS
+}
+
+/// Read each group in the serializer fixture and write the XML C# produces
+/// from the objects it read. One group also carries an unknown part element
+/// and an unknown shape element; both are skipped.
+pub fn read() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let source = root.join(XML_DUMP);
+    if !source.is_file() {
+        eprintln!("{LABEL}: missing {XML_DUMP}");
+        return ExitCode::FAILURE;
+    }
+    let source_arg = source.display().to_string();
+    let json = match oracle_stdout(&dll, &["read", &source_arg, &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let dump = root.join(XML_READ_DUMP);
+    if let Err(error) = fs::write(&dump, json) {
+        eprintln!("{LABEL}: could not write {}: {error}", dump.display());
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: wrote {XML_READ_DUMP}");
     ExitCode::SUCCESS
 }
 
@@ -475,13 +514,8 @@ fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
 
 fn run_oracle(dll: &Path, label: &str, args: &[&str]) -> Option<String> {
     println!("$ dotnet {} {label}", dll.display());
-    let mut command = Command::new("dotnet");
-    command
-        .arg(dll)
-        .args(args)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("MSBUILDDISABLENODEREUSE", "1");
+    let mut command = crate::dotnet_ci::command("dotnet");
+    command.arg(dll).args(args);
     match command.output() {
         Ok(output) if output.status.success() => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -700,13 +734,8 @@ fn oracle(dll: &Path, args: &[&str]) -> bool {
 }
 
 fn oracle_stdout(dll: &Path, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("dotnet");
-    command
-        .arg(dll)
-        .args(args)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("MSBUILDDISABLENODEREUSE", "1");
+    let mut command = crate::dotnet_ci::command("dotnet");
+    command.arg(dll).args(args);
     println!("$ dotnet {} {}", dll.display(), args.join(" "));
     match command.output() {
         Ok(output) if output.status.success() => {

@@ -53,12 +53,15 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the prim load, region settings, the object XML
-//! writer and the frame thread. The frame ticks at the shipped `FrameTime`,
+//! Read-only region terrain, the prim load, region settings, object XML and
+//! the frame thread. The frame ticks at the shipped `FrameTime`,
 //! stores the login presence, and answers a forwarded chat with those positions.
 //! A landing updates the position. An `AgentUpdate` stores movement intent on
-//! that presence. Each viewer has an entity-update queue. A second update for
-//! the same local id merges flags. This crate does not write those packets.
+//! that presence. Each tick integrates that intent with the walking stand-in.
+//! Each viewer has an entity-update queue. A second update for the same local
+//! id merges flags. The default prioritizer places that viewer's avatar first,
+//! then other avatars, attachments, and prims by distance. This crate does not
+//! write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -75,8 +78,10 @@ mod height;
 mod motion;
 mod objects;
 mod payloads;
+pub mod prioritizer;
 mod settings;
 mod store;
+mod walk;
 mod xml;
 
 pub use compress::TerrainLayer;
@@ -98,6 +103,8 @@ pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
+pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;
-pub use xml::{to_original_xml, to_xml2};
+pub use walk::AVATAR_SIZE_Z;
+pub use xml::{from_original_xml, from_xml2, to_original_xml, to_xml2};

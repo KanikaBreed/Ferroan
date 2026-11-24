@@ -166,6 +166,8 @@ pub struct SimulationState {
     releases: Arc<Mutex<HashMap<Uuid, ReleaseSlot>>>,
     /// Prim groups loaded at startup. Shared by every clone. Not sent on the circuit.
     objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
+    /// The frame, when this process has one. Child hops skip its physics tick.
+    scene: Option<Arc<ferroan_scene::TerrainFrame>>,
     /// In-view child this root opened on a neighbour. Logout closes it.
     open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
 }
@@ -356,11 +358,25 @@ impl SimulationState {
             releases: Arc::new(Mutex::new(HashMap::new())),
             objects: Arc::new(Vec::new()),
             open_children: Arc::new(Mutex::new(HashMap::new())),
+            scene: None,
         }
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
         self.objects = objects;
+    }
+
+    pub fn keep_scene(&mut self, frame: Arc<ferroan_scene::TerrainFrame>) {
+        self.scene = Some(frame);
+    }
+
+    fn mark_child(&self, agent: Uuid, child: bool) {
+        let Some(frame) = &self.scene else {
+            return;
+        };
+        if let Err(error) = frame.set_child(agent, child) {
+            tracing::debug!("scene child flag was not set: {error}");
+        }
     }
 
     pub fn stored_object_counts(&self) -> (usize, usize) {
@@ -592,38 +608,44 @@ impl SimulationState {
 
     /// The root becomes a child before `UpdateAgent`. Caps and the circuit stay.
     pub fn demote_child(&self, agent: Uuid) {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let Some(session) = sessions.get_mut(&agent) else {
-            return;
-        };
-        if session.departed.load(Ordering::Acquire) {
-            return;
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(session) = sessions.get_mut(&agent) else {
+                return;
+            };
+            if session.departed.load(Ordering::Acquire) {
+                return;
+            }
+            session.root = false;
+            session.child = true;
+            session.slot.arm_child();
+            publish_agents(&sessions, &self.meters);
         }
-        session.root = false;
-        session.child = true;
-        session.slot.arm_child();
-        publish_agents(&sessions, &self.meters);
+        self.mark_child(agent, true);
     }
 
     /// `UpdateAgent` failed. The provisional child flag goes back to root.
     pub fn restore_root(&self, agent: Uuid) {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let Some(session) = sessions.get_mut(&agent) else {
-            return;
-        };
-        if session.departed.load(Ordering::Acquire) {
-            return;
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(session) = sessions.get_mut(&agent) else {
+                return;
+            };
+            if session.departed.load(Ordering::Acquire) {
+                return;
+            }
+            session.child = false;
+            session.root = true;
+            session.slot.disarm();
+            publish_agents(&sessions, &self.meters);
         }
-        session.child = false;
-        session.root = true;
-        session.slot.disarm();
-        publish_agents(&sessions, &self.meters);
+        self.mark_child(agent, false);
     }
 
     /// Same session, not a login. Keep the circuit and the caps. A stale root
@@ -648,6 +670,7 @@ impl SimulationState {
             session.slot.arm_child();
             publish_agents(&sessions, &self.meters);
         }
+        self.mark_child(fields.agent_id, true);
         let path = format!("/CAPS/{}0000/", fields.caps_path);
         match self.caps.register_agent(&path, fields.agent_id) {
             Ok(()) | Err(CapsError::Occupied) => Ok(()),
