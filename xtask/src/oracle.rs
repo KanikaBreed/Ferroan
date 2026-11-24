@@ -281,12 +281,9 @@ fn dotnet(
     no_build: bool,
     program_args: &[String],
 ) -> bool {
-    let mut command = Command::new("dotnet");
+    let mut command = crate::dotnet_ci::command("dotnet");
     command
         .current_dir(root)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("NUGET_XMLDOC_MODE", "skip")
         .env("FERROAN_REF", reference)
         .arg(action);
     if action == "run" {
@@ -303,7 +300,8 @@ fn dotnet(
         .arg("-p:UseArtifactsOutput=true")
         .arg(format!("-p:ArtifactsPath={}", artifacts.display()))
         .arg("-p:GeneratePackageOnBuild=false")
-        .arg("-p:ContinuousIntegrationBuild=true");
+        .arg("-p:ContinuousIntegrationBuild=true")
+        .arg(crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF);
     if no_build {
         command.arg("--no-build");
     }
