@@ -211,6 +211,9 @@ pub struct AgentData {
     pub appearance: Option<Appearance>,
     pub sit_offset: [f32; 3],
     pub children_seeds: Vec<ChildSeed>,
+    /// Release callback for a hop outside the view. Packed as `cb_uri`.
+    /// An in-view hop leaves this empty, so the key is omitted.
+    pub callback: Option<String>,
 }
 
 /// What the caller asks `QueryAccess`.
@@ -868,6 +871,9 @@ fn pack_update(destination: &RegionEnd, data: &AgentData, context: &TransferCont
     ]);
     if !data.children_seeds.is_empty() {
         entries.push(("children_seeds", pack_seeds(&data.children_seeds)));
+    }
+    if let Some(callback) = &data.callback {
+        entries.push(("cb_uri", Osd::Str(callback.clone())));
     }
     if let Some(anim) = data.default_animation {
         entries.push(("default_animation", pack_anim(anim)));
@@ -1731,6 +1737,10 @@ mod tests {
             appearance: body.get("packed_appearance").map(appearance_from),
             sit_offset: parse_vec3(text_of(body.get("sit_offset")).as_str()),
             children_seeds: seeds_of(body.get("children_seeds")),
+            callback: body
+                .get("cb_uri")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         }
     }
 
@@ -1993,6 +2003,7 @@ mod tests {
             appearance: None,
             sit_offset: [0.0; 3],
             children_seeds: Vec::new(),
+            callback: None,
         }
     }
 

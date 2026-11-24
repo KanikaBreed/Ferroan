@@ -167,6 +167,10 @@ pub enum CircuitError {
     InvalidTiming,
     #[error("circuit closed")]
     Closed,
+    /// The source hop closed this circuit after a far teleport. No kick and no
+    /// `DisableSimulator`: that close matches `Close(false, false)`.
+    #[error("source child closed after a far teleport")]
+    Departed,
 }
 
 /// Why the region stopped a live circuit. Ordinary logout is not one of these:
@@ -332,6 +336,8 @@ struct State {
     chat: Option<RegionChat>,
     /// Set before the source hop is spawned. Cleared when that task settles.
     in_transit: bool,
+    /// A far hop asked this circuit to stop without a viewer kick.
+    leave: bool,
     /// Agent the in-flight hop belongs to. Failure packets use this id.
     hop_agent: Uuid,
     source_hop: Option<SourceHop>,
@@ -388,6 +394,7 @@ impl State {
             pending_task: VecDeque::new(),
             chat: None,
             in_transit: false,
+            leave: false,
             hop_agent: Uuid::nil(),
             source_hop,
             hop_tx,
@@ -431,6 +438,9 @@ impl State {
     }
     async fn maintain(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
         self.drain_hop(sock).await?;
+        if self.leave {
+            return Err(CircuitError::Departed);
+        }
         let now = Instant::now();
         if now >= self.resend_at {
             self.resend_at = now + RESEND_INTERVAL;
@@ -970,6 +980,11 @@ impl State {
             HopCommand::Map { message, done } => {
                 let sent = self.send_reliable(sock, &message).await?;
                 let _ = done.send(sent);
+                Ok(())
+            }
+            HopCommand::Leave { done } => {
+                self.leave = true;
+                let _ = done.send(true);
                 Ok(())
             }
         }
@@ -1593,7 +1608,11 @@ async fn serve_socket_reporting(
     // instead of silently truncating it to `MAX_DATAGRAM`.
     let mut buf = [0u8; MAX_DATAGRAM + 1];
     loop {
-        state.maintain(sock).await?;
+        match state.maintain(sock).await {
+            Ok(()) => {}
+            Err(CircuitError::Departed) => return Ok(()),
+            Err(error) => return Err(error),
+        }
         if let Some(kind) = take_stop(&mut extra.stop) {
             return state.finish_close(sock, &expect, kind).await;
         }
@@ -1642,7 +1661,12 @@ async fn serve_socket_reporting(
                 }
             }, if hop_rx.is_some() => {
                 match command {
-                    Some(command) => state.apply_hop(sock, command).await?,
+                    Some(command) => {
+                        state.apply_hop(sock, command).await?;
+                        if state.leave {
+                            return Ok(());
+                        }
+                    }
                     None => hop_rx = None,
                 }
                 continue;

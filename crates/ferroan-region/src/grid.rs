@@ -47,6 +47,8 @@
 //! Transport has a 30 second deadline and ferroan-http's bounded XML reader.
 //! No retries: startup fails when registration is refused or unconfirmed.
 
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
 use ferroan_http::{Field, FieldMap};
 use uuid::Uuid;
 
@@ -318,6 +320,20 @@ fn service_result(reply: &FieldMap) -> Result<(), GridError> {
     }
 }
 
+/// One grid row a hop can address. The region secret is not stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocatedRegion {
+    pub region_id: Uuid,
+    pub name: String,
+    pub loc_x: u32,
+    pub loc_y: u32,
+    pub size_x: u32,
+    pub size_y: u32,
+    pub server_uri: String,
+    pub endpoint: SocketAddr,
+}
+
+#[derive(Clone)]
 pub struct GridClient {
     endpoint: String,
 }
@@ -325,8 +341,12 @@ pub struct GridClient {
 impl GridClient {
     pub fn new(config: &RegionConfig) -> Self {
         // The reference appends to serviceURI, not its trimmed m_ServerURI.
+        Self::from_base(&config.grid_server_uri)
+    }
+
+    pub fn from_base(grid_server_uri: &str) -> Self {
         Self {
-            endpoint: format!("{}/grid", config.grid_server_uri),
+            endpoint: format!("{grid_server_uri}/grid"),
         }
     }
 
@@ -341,6 +361,99 @@ impl GridClient {
         // GridServicesConnector.DeregisterRegion calls MakePostRequest (TB10).
         // A failed status is false.
         check_result(&grid_form(&self.endpoint, &deregistration_fields(region_id)).await?)
+    }
+
+    /// `GetRegionByPosition`. A missing result map is an unknown region.
+    /// A present value that cannot be read is an unknown region too.
+    pub async fn region_by_position(
+        &self,
+        scope: Uuid,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<LocatedRegion>, GridError> {
+        let mut fields = FieldMap::new();
+        for (key, value) in [
+            ("SCOPEID", scope.to_string()),
+            ("X", x.to_string()),
+            ("Y", y.to_string()),
+            ("METHOD", "get_region_by_position".to_string()),
+        ] {
+            fields.insert(key.to_owned(), Field::Str(value));
+        }
+        let reply = grid_form(&self.endpoint, &fields).await?;
+        Ok(match reply.get("result") {
+            Some(Field::Map(region)) => parse_located(region),
+            _ => None,
+        })
+    }
+}
+
+fn parse_located(map: &FieldMap) -> Option<LocatedRegion> {
+    let region_id = match map.get("uuid") {
+        None => Uuid::nil(),
+        Some(Field::Str(text)) => Uuid::parse_str(text).ok()?,
+        _ => return None,
+    };
+    let loc_x = taken_u32(map, "locX", 0)?;
+    let loc_y = taken_u32(map, "locY", 0)?;
+    let size_x = taken_u32(map, "sizeX", 256)?;
+    let size_y = taken_u32(map, "sizeY", 256)?;
+    let name = match map.get("regionName") {
+        None => String::new(),
+        Some(Field::Str(text)) => text.clone(),
+        _ => return None,
+    };
+    let server_uri = match map.get("serverURI") {
+        None => String::new(),
+        Some(Field::Str(text)) if text.is_empty() => String::new(),
+        Some(Field::Str(text)) if text.ends_with('/') => text.clone(),
+        Some(Field::Str(text)) => format!("{text}/"),
+        _ => return None,
+    };
+    let host = match map.get("serverIP") {
+        None => "127.0.0.1",
+        Some(Field::Str(text)) if text.is_empty() => "",
+        Some(Field::Str(text)) => text.as_str(),
+        _ => return None,
+    };
+    let port = endpoint_port(map)?;
+    let endpoint = match host.parse::<Ipv4Addr>() {
+        Ok(ip) => SocketAddr::from((ip, port)),
+        Err(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+    };
+    Some(LocatedRegion {
+        region_id,
+        name,
+        loc_x,
+        loc_y,
+        size_x,
+        size_y,
+        server_uri,
+        endpoint,
+    })
+}
+
+/// Missing uses `default`. A non-integer or a negative value is unreadable.
+fn taken_u32(map: &FieldMap, key: &str, default: u32) -> Option<u32> {
+    let number = match map.get(key) {
+        None => return Some(default),
+        Some(Field::Str(text)) => text.parse::<i32>().ok()?,
+        Some(Field::Int(number)) => *number,
+        _ => return None,
+    };
+    u32::try_from(number).ok()
+}
+
+/// `TryParse` failure is port 0. A port outside 0..=65535 cannot be an endpoint.
+fn endpoint_port(map: &FieldMap) -> Option<u16> {
+    match map.get("serverPort") {
+        None => Some(0),
+        Some(Field::Str(text)) => match text.parse::<i32>() {
+            Ok(port) => u16::try_from(port).ok(),
+            Err(_) => Some(0),
+        },
+        Some(Field::Int(port)) => u16::try_from(*port).ok(),
+        _ => None,
     }
 }
 
@@ -1134,5 +1247,102 @@ mod tests {
             },
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn region_by_position_reads_a_result_map_and_ignores_a_miss() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(String::new()));
+        let recorded = Arc::clone(&seen);
+        let region_id = Uuid::from_u128(7);
+        let mut region = FieldMap::new();
+        for (key, value) in [
+            ("uuid", region_id.to_string()),
+            ("locX", "256".to_string()),
+            ("locY", "512".to_string()),
+            ("sizeX", "256".to_string()),
+            ("regionName", "Neighbour".to_string()),
+            ("serverIP", "127.0.0.1".to_string()),
+            ("serverPort", "9100".to_string()),
+            ("serverURI", "http://127.0.0.1:9200".to_string()),
+            ("regionSecret", "do-not-keep".to_string()),
+        ] {
+            region.insert(key.to_owned(), Field::Str(value));
+        }
+        let mut ok = FieldMap::new();
+        ok.insert("result".to_owned(), Field::Map(region));
+        let ok_xml = ferroan_http::build_xml_response(&ok).unwrap();
+        let mut missing = FieldMap::new();
+        missing.insert("result".to_owned(), Field::Str("null".to_owned()));
+        let missing_xml = ferroan_http::build_xml_response(&missing).unwrap();
+        let mut bad = FieldMap::new();
+        let mut bad_region = FieldMap::new();
+        bad_region.insert("uuid".to_owned(), Field::Str(region_id.to_string()));
+        bad_region.insert("sizeX".to_owned(), Field::Str("nope".to_owned()));
+        bad.insert("result".to_owned(), Field::Map(bad_region));
+        let bad_xml = ferroan_http::build_xml_response(&bad).unwrap();
+        let bodies = Arc::new(Mutex::new(vec![ok_xml, missing_xml, bad_xml]));
+        let queued = Arc::clone(&bodies);
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+            *recorded.lock().unwrap() = format!("{} {body}", uri.path());
+            let next = queued.lock().unwrap().remove(0);
+            async move {
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/xml")],
+                    next,
+                )
+            }
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let client = GridClient {
+            endpoint: format!("{base}/grid"),
+        };
+        let scope = Uuid::from_u128(3);
+        let found = client.region_by_position(scope, 256, 512).await.unwrap();
+        let request = seen.lock().unwrap().clone();
+        assert!(request.starts_with("/grid "), "{request}");
+        assert!(request.contains(&format!("SCOPEID={scope}")), "{request}");
+        assert!(request.contains("X=256"), "{request}");
+        assert!(request.contains("Y=512"), "{request}");
+        assert!(
+            request.contains("METHOD=get_region_by_position"),
+            "{request}"
+        );
+        let scope_at = request.find("SCOPEID=").unwrap();
+        let x_at = request.find("X=").unwrap();
+        let y_at = request.find("Y=").unwrap();
+        let method_at = request.find("METHOD=").unwrap();
+        assert!(scope_at < x_at && x_at < y_at && y_at < method_at);
+        assert_eq!(
+            found,
+            Some(LocatedRegion {
+                region_id,
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 512,
+                size_x: 256,
+                size_y: 256,
+                server_uri: "http://127.0.0.1:9200/".to_string(),
+                endpoint: "127.0.0.1:9100".parse().unwrap(),
+            })
+        );
+        assert!(
+            client
+                .region_by_position(scope, 1, 2)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            client
+                .region_by_position(scope, 1, 2)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        serving.abort();
     }
 }
