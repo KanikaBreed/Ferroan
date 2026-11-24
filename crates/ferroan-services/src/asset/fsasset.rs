@@ -54,7 +54,9 @@
 //! `access_time`. Import reads one source row, then the caller stores it,
 //! before the next read. Both engines order by `id`. The walk seeks the
 //! start row once, then reads `WHERE id > ? ORDER BY id LIMIT 1`, so a long
-//! table is not rescanned for every row. The pin's own page is still MySQL
+//! table is not rescanned for every row. MySQL binds the stored id text.
+//! A row that does not sort after that text is an error. A whole-table read
+//! still skips `start` rows. The pin's own page is still MySQL
 //! `LIMIT start, count` and PostgreSQL `LIMIT count OFFSET start` (TB40).
 //! `store_forced` updates the hash of an existing row
 //! (TB45). An ordinary `store` does not. Files are `FsFiles`, not this store.
@@ -250,9 +252,9 @@ impl FsAssetStore {
         }
     }
 
-    /// Plugin `Import`'s reader. `count == -1` selects the whole table, one
-    /// row at a time. The caller stores the rows. This method does not write
-    /// `fsassets`.
+    /// Plugin `Import`'s reader. `count == -1` reads until the table ends,
+    /// after skipping `start` rows, one row at a time. The caller stores the
+    /// rows. This method does not write `fsassets`.
     pub async fn import_reader(
         &self,
         table: &str,
@@ -383,11 +385,28 @@ pub(super) fn import_row_within_bound(len: usize) -> Result<(), StoreError> {
     Err(StoreError::Bound)
 }
 
+/// The value the next keyset predicate binds. MySQL keeps the stored id
+/// text. PostgreSQL keeps the uuid.
+enum ImportCursor {
+    Mysql(String),
+    Postgres(Uuid),
+}
+
+fn cursor_advances(previous: &ImportCursor, next: &ImportCursor) -> bool {
+    match (previous, next) {
+        (ImportCursor::Mysql(previous), ImportCursor::Mysql(next)) => next > previous,
+        (ImportCursor::Postgres(previous), ImportCursor::Postgres(next)) => next > previous,
+        _ => false,
+    }
+}
+
 /// Read the legacy table one row at a time and hand each row to `on_row`
-/// before the next read. `count == -1` reads until the table ends. `count == 0`
-/// reads nothing. `start` skips that many rows in `id` order. The skip is one
-/// id-only seek. Each later read is `WHERE id > ? ORDER BY id LIMIT 1`, so
-/// the prefix is not scanned again. The callback's error stops the read.
+/// before the next read. `count == -1` reads until the table ends, after
+/// skipping `start` rows. `count == 0` reads nothing. `start` skips that many
+/// rows in `id` order. The skip is one id-only seek. Each later read is
+/// `WHERE id > ? ORDER BY id LIMIT 1`, so the prefix is not scanned again.
+/// MySQL binds the stored id text. A row that does not sort after the
+/// previous cursor is an error. The callback's error stops the read.
 pub(super) async fn import_walk<F, E>(
     pool: &Pool,
     table: &str,
@@ -421,13 +440,20 @@ where
         if count >= 0 && produced >= count {
             break;
         }
-        let rows = fetch_import_keyset(pool, table, after, 1)
+        let rows = fetch_import_keyset(pool, table, after.as_ref(), 1)
             .await
             .map_err(E::from)?;
-        let Some(row) = rows.into_iter().next() else {
+        let Some((row, cursor)) = rows.into_iter().next() else {
             break;
         };
-        after = Some(row.id);
+        if let Some(previous) = &after
+            && !cursor_advances(previous, &cursor)
+        {
+            return Err(E::from(StoreError::Row(
+                "fsassets import id did not advance".into(),
+            )));
+        }
+        after = Some(cursor);
         on_row(row).await?;
         produced = produced.saturating_add(1);
     }
@@ -438,19 +464,23 @@ async fn fetch_import_seek(
     pool: &Pool,
     table: &str,
     offset: i32,
-) -> Result<Option<Uuid>, StoreError> {
+) -> Result<Option<ImportCursor>, StoreError> {
     match pool.backend() {
         Backend::Mysql => {
             let Some(mysql) = pool.mysql() else {
                 return Err(StoreError::Backend("mysql"));
             };
-            super::fmysql::import_seek(mysql, table, offset).await
+            Ok(super::fmysql::import_seek(mysql, table, offset)
+                .await?
+                .map(ImportCursor::Mysql))
         }
         Backend::Postgres => {
             let Some(postgres) = pool.postgres() else {
                 return Err(StoreError::Backend("postgres"));
             };
-            super::fpostgres::import_seek(postgres, table, offset).await
+            Ok(super::fpostgres::import_seek(postgres, table, offset)
+                .await?
+                .map(ImportCursor::Postgres))
         }
         Backend::Sqlite => Err(StoreError::Backend("sqlite")),
     }
@@ -459,21 +489,42 @@ async fn fetch_import_seek(
 async fn fetch_import_keyset(
     pool: &Pool,
     table: &str,
-    after: Option<Uuid>,
+    after: Option<&ImportCursor>,
     limit: i32,
-) -> Result<Vec<FsImportRow>, StoreError> {
+) -> Result<Vec<(FsImportRow, ImportCursor)>, StoreError> {
     match pool.backend() {
         Backend::Mysql => {
             let Some(mysql) = pool.mysql() else {
                 return Err(StoreError::Backend("mysql"));
             };
-            super::fmysql::import_keyset(mysql, table, after, limit).await
+            let text = match after {
+                None => None,
+                Some(ImportCursor::Mysql(text)) => Some(text.as_str()),
+                Some(ImportCursor::Postgres(_)) => return Err(StoreError::Backend("mysql")),
+            };
+            let rows = super::fmysql::import_keyset(mysql, table, text, limit).await?;
+            Ok(rows
+                .into_iter()
+                .map(|(row, text)| (row, ImportCursor::Mysql(text)))
+                .collect())
         }
         Backend::Postgres => {
             let Some(postgres) = pool.postgres() else {
                 return Err(StoreError::Backend("postgres"));
             };
-            super::fpostgres::import_keyset(postgres, table, after, limit).await
+            let id = match after {
+                None => None,
+                Some(ImportCursor::Postgres(id)) => Some(*id),
+                Some(ImportCursor::Mysql(_)) => return Err(StoreError::Backend("postgres")),
+            };
+            let rows = super::fpostgres::import_keyset(postgres, table, id, limit).await?;
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let cursor = ImportCursor::Postgres(row.id);
+                    (row, cursor)
+                })
+                .collect())
         }
         Backend::Sqlite => Err(StoreError::Backend("sqlite")),
     }

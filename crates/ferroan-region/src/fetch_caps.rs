@@ -72,8 +72,9 @@ const UPLOAD_TTL: Duration = Duration::from_secs(120);
 /// Waiting uploader paths across every agent. A further offer is refused.
 const MAX_PENDING_UPLOADS: usize = 128;
 /// Waiting paths one agent may hold. A mesh fee and a texture both stay, and
-/// a sound, an animation and a snapshot fit as well. C# does not cap one
-/// agent. This stays under [`MAX_PENDING_UPLOADS`].
+/// a sound, an animation and a snapshot fit as well. A new mesh fee drops
+/// that agent's earlier waiting mesh-fee path. C# does not cap one agent.
+/// This stays under [`MAX_PENDING_UPLOADS`].
 const MAX_AGENT_UPLOADS: usize = 8;
 const LSL_ON_LUAU: u32 = 0x0100_0000;
 const FLAGS_FETCH2: u32 = 0xff;
@@ -633,6 +634,9 @@ impl FetchCaps {
         {
             return upload_error("Uploader busy processing previous request");
         }
+        if mesh_fee {
+            self.drop_waiting_mesh_fees(&mut slots, exchange.agent_id);
+        }
         let agent_waiting = slots
             .iter()
             .filter(|slot| slot.agent_id == exchange.agent_id)
@@ -793,6 +797,23 @@ impl FetchCaps {
         if let Some(index) = slots.iter().position(|pending| pending.path == path) {
             let pending = slots.remove(index);
             self.routes().revoke(pending.agent_id, &pending.path);
+        }
+    }
+
+    /// A repeated "Calculate weights & fee" leaves one waiting mesh path.
+    /// A storing mesh upload stays. A texture, sound or animation stays.
+    fn drop_waiting_mesh_fees(&self, slots: &mut Vec<PendingUpload>, agent_id: Uuid) {
+        let stale = slots
+            .iter()
+            .filter(|slot| slot.agent_id == agent_id && slot.mesh && !slot.storing)
+            .map(|slot| (slot.agent_id, slot.path.clone()))
+            .collect::<Vec<_>>();
+        if stale.is_empty() {
+            return;
+        }
+        slots.retain(|slot| !(slot.agent_id == agent_id && slot.mesh && !slot.storing));
+        for (agent_id, path) in stale {
+            self.routes().revoke(agent_id, &path);
         }
     }
 
@@ -1331,6 +1352,18 @@ mod tests {
             "Texture Library"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn agent_upload_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.agent-uploads\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
     }
 
     fn offer_body(name: &str) -> Vec<u8> {
@@ -1977,6 +2010,7 @@ mod tests {
                 "upload"
             );
         }
+        let before = agent_upload_refuses();
         let refused = caps.upload_offer(&exchange(
             agent,
             "NewFileAgentInventory",
@@ -1989,7 +2023,7 @@ mod tests {
             body.get("error").get("message").as_str(),
             "uploader limit reached for this agent"
         );
-        assert!(ferroan_diag::metrics().contains("region.agent-uploads"));
+        assert_eq!(agent_upload_refuses(), before + 1);
         let allowed = caps.upload_offer(&exchange(
             other,
             "NewFileAgentInventory",
@@ -2007,6 +2041,84 @@ mod tests {
         assert_eq!(slots.len(), MAX_AGENT_UPLOADS + 1);
         assert!(slots.len() < MAX_PENDING_UPLOADS);
         drop(slots);
+        drop(caps_listener);
+    }
+
+    #[tokio::test]
+    async fn a_new_mesh_fee_drops_the_earlier_waiting_fee() {
+        let caps_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let caps_base = format!("http://{}", caps_listener.local_addr().unwrap());
+        let caps = Arc::new(FetchCaps {
+            inventory: None,
+            assets: None,
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: caps_base.clone(),
+        });
+        let registry = ferroan_client::CapsRegistry::new(&format!("{caps_base}/")).unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        let agent = Uuid::from_u128(15);
+        registry
+            .register_agent("/CAPS/0000000f0000/", agent)
+            .unwrap();
+        let first = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            mesh_fee_body("first"),
+        ));
+        assert_eq!(
+            from_xml(&first.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let first_path = {
+            let slots = caps
+                .upload
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            slots[0].path.clone()
+        };
+        let texture = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_body("cloth"),
+        ));
+        assert_eq!(
+            from_xml(&texture.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let second = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            mesh_fee_body("second"),
+        ));
+        assert_eq!(
+            from_xml(&second.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        {
+            let slots = caps
+                .upload
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert_eq!(slots.len(), 2);
+            assert!(slots.iter().all(|slot| slot.path != first_path));
+            assert_eq!(slots.iter().filter(|slot| slot.mesh).count(), 1);
+            assert!(slots.iter().any(|slot| !slot.mesh && slot.name == "cloth"));
+        }
+        let again = caps
+            .upload_complete(&exchange(agent, "", &first_path, b"old-fee".to_vec()))
+            .await;
+        assert!(
+            !again.handled,
+            "the replaced mesh fee URL still accepted a POST"
+        );
         drop(caps_listener);
     }
 

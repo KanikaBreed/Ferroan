@@ -226,7 +226,7 @@ impl FsAssetService {
             return Ok(None);
         };
         match read_checked_off(&self.files, &row.hash, row.metadata.type_code).await {
-            Ok(data) => Ok(data),
+            Ok(done) => Ok(done.value),
             Err(error) => {
                 log_fsassets("ERROR", &format!("Could not get asset {id}: {error}"));
                 Ok(None)
@@ -268,7 +268,7 @@ impl FsAssetService {
                 Some(row) => read_checked_off(&self.files, &row.hash, row.type_code)
                     .await
                     .ok()
-                    .flatten()
+                    .and_then(|done| done.value)
                     .is_some(),
                 None => false,
             };
@@ -297,7 +297,7 @@ impl FsAssetService {
         if read_checked_off(&self.files, &hash, asset.type_code)
             .await
             .ok()
-            .flatten()
+            .and_then(|done| done.value)
             .is_none()
         {
             let final_file = self.files.spool().join(format!("{hash}.asset"));
@@ -306,7 +306,7 @@ impl FsAssetService {
                     return Err(());
                 }
                 match write_spool_off(self.files.clone(), hash.clone(), stored).await {
-                    SpoolHandoff::Stored(data) => stored = data,
+                    SpoolHandoff::Stored { data, .. } => stored = data,
                     SpoolHandoff::Failed(data) => {
                         asset.data = data;
                         return Ok(NIL_ID.to_string());
@@ -490,7 +490,10 @@ impl FsAssetService {
         row: FsAsset,
     ) -> Result<Option<(Asset, String)>, StoreError> {
         let stored_hash = row.hash.clone();
-        let data = match read_checked_off(&self.files, &stored_hash, row.metadata.type_code).await {
+        let data = match read_checked_off(&self.files, &stored_hash, row.metadata.type_code)
+            .await
+            .map(|done| done.value)
+        {
             Ok(Some(data)) => data,
             Ok(None) => {
                 let Some(mut asset) = self.take_fallback(id).await? else {
@@ -555,32 +558,38 @@ impl From<StoreError> for ImportStop {
     }
 }
 
-#[cfg(test)]
-fn note_blocking_thread() {
-    if let Ok(mut slot) = BLOCKING_THREAD.lock() {
-        *slot = Some(std::thread::current().id());
-    }
+struct BlockingDone<T> {
+    value: T,
+    /// The worker that ran the closure. Production ignores it. The off-thread
+    /// test reads this value, which is the closure's own thread.
+    #[cfg_attr(not(test), allow(dead_code))]
+    thread: std::thread::ThreadId,
 }
-
-#[cfg(test)]
-static BLOCKING_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
-    std::sync::Mutex::new(None);
 
 async fn read_checked_off(
     files: &super::fsfiles::FsFiles,
     hash: &str,
     type_code: i8,
-) -> Result<Option<Vec<u8>>, StoreError> {
+) -> Result<BlockingDone<Option<Vec<u8>>>, StoreError> {
     let files = files.clone();
     let hash = hash.to_owned();
     match tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        note_blocking_thread();
-        files.read_checked(&hash, type_code)
+        let thread = std::thread::current().id();
+        BlockingDone {
+            value: files.read_checked(&hash, type_code),
+            thread,
+        }
     })
     .await
     {
-        Ok(result) => result,
+        Ok(BlockingDone {
+            value: Ok(value),
+            thread,
+        }) => Ok(BlockingDone { value, thread }),
+        Ok(BlockingDone {
+            value: Err(error),
+            thread: _,
+        }) => Err(error),
         Err(_) => Err(StoreError::Io(std::io::Error::other(
             "fsassets file read stopped",
         ))),
@@ -588,7 +597,11 @@ async fn read_checked_off(
 }
 
 enum SpoolHandoff {
-    Stored(Vec<u8>),
+    Stored {
+        data: Vec<u8>,
+        #[cfg_attr(not(test), allow(dead_code))]
+        thread: std::thread::ThreadId,
+    },
     Failed(Vec<u8>),
     Stopped,
 }
@@ -599,15 +612,14 @@ async fn write_spool_off(
     data: Vec<u8>,
 ) -> SpoolHandoff {
     let written = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        note_blocking_thread();
+        let thread = std::thread::current().id();
         let result = files.write_spool(&hash, &data);
-        (result, data)
+        (result, data, thread)
     })
     .await;
     match written {
-        Ok((Ok(()), data)) => SpoolHandoff::Stored(data),
-        Ok((Err(_), data)) => SpoolHandoff::Failed(data),
+        Ok((Ok(()), data, thread)) => SpoolHandoff::Stored { data, thread },
+        Ok((Err(_), data, _)) => SpoolHandoff::Failed(data),
         Err(_) => SpoolHandoff::Stopped,
     }
 }
@@ -809,34 +821,30 @@ mod tests {
         let hash = super::sha256_hex(&bytes);
         let here = std::thread::current().id();
         let stored = super::write_spool_off(files.clone(), hash.clone(), bytes.clone()).await;
-        let super::SpoolHandoff::Stored(_) = stored else {
+        let super::SpoolHandoff::Stored {
+            thread: wrote_on, ..
+        } = stored
+        else {
             panic!("spool");
         };
-        let wrote_on = super::BLOCKING_THREAD
-            .lock()
-            .expect("thread")
-            .expect("write");
         assert_ne!(wrote_on, here, "spool write stayed on the async task");
         let read = super::read_checked_off(&files, &hash, 0)
             .await
-            .expect("read")
-            .expect("bytes");
-        assert_eq!(read, bytes);
-        let read_on = super::BLOCKING_THREAD
-            .lock()
-            .expect("thread")
             .expect("read");
-        assert_ne!(read_on, here, "file read stayed on the async task");
+        assert_eq!(read.value.expect("bytes"), bytes);
+        assert_ne!(read.thread, here, "file read stayed on the async task");
         assert!(
             super::read_checked_off(&files, "", 0)
                 .await
                 .expect("empty hash")
+                .value
                 .is_none()
         );
         assert!(
             super::read_checked_off(&files, "not-a-stored-hash", 0)
                 .await
                 .expect("missing")
+                .value
                 .is_none()
         );
         let _ = std::fs::remove_dir_all(&dir);

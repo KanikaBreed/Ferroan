@@ -233,49 +233,71 @@ pub(super) async fn delete(pool: &MySqlPool, table: &str, id: &str) -> Result<bo
     Ok(true)
 }
 
-/// The id at `offset` in id order. The selected column is the id only.
+/// The stored id text at `offset` in id order. The selected column is the id
+/// only, and the text is not rewritten into canonical form.
 pub(super) async fn import_seek(
     pool: &MySqlPool,
     table: &str,
     offset: i32,
-) -> Result<Option<Uuid>, StoreError> {
+) -> Result<Option<String>, StoreError> {
     let sql = import_seek_sql(table, false, offset)?;
     let row = sqlx::query(&sql).fetch_optional(pool).await?;
-    row.as_ref().map(|row| column_uuid(row, "id")).transpose()
+    match row {
+        Some(row) => Ok(Some(mysql_id_text(&row)?)),
+        None => Ok(None),
+    }
 }
 
-/// The next legacy rows after `after`, in id order. A `data` value past the
-/// import bound is refused and is not returned.
+/// The next legacy rows after `after`, in id order. `after` is the stored id
+/// text from the previous row. A `data` value past the import bound is
+/// refused and is not returned. Each row keeps that same stored text.
 pub(super) async fn import_keyset(
     pool: &MySqlPool,
     table: &str,
-    after: Option<Uuid>,
+    after: Option<&str>,
     limit: i32,
-) -> Result<Vec<FsImportRow>, StoreError> {
+) -> Result<Vec<(FsImportRow, String)>, StoreError> {
     let sql = import_keyset_sql(table, false, after.is_some(), limit)?;
     let mut query = sqlx::query(&sql);
     if let Some(id) = after {
-        query = query.bind(id.to_string());
+        query = query.bind(id);
     }
     let rows = query.fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
-        let parsed = mysql_import_row(row)?;
+        let (parsed, stored) = mysql_import_row(row)?;
         import_row_within_bound(parsed.data.len())?;
-        out.push(parsed);
+        out.push((parsed, stored));
     }
     Ok(out)
 }
 
-fn mysql_import_row(row: &sqlx::mysql::MySqlRow) -> Result<FsImportRow, StoreError> {
-    Ok(FsImportRow {
-        id: column_uuid(row, "id")?,
-        name: column_string(row, "name")?,
-        description: column_string(row, "description")?,
-        type_code: column_i32(row, "assetType")? as i8,
-        create_time: column_i32(row, "create_time")?,
-        data: column_bytes(row, "data")?,
-    })
+/// The stored id characters. A binary collation comes back as bytes. The
+/// text is not rewritten into canonical form.
+fn mysql_id_text(row: &sqlx::mysql::MySqlRow) -> Result<String, StoreError> {
+    if let Ok(value) = row.try_get::<String, _>("id") {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<Vec<u8>, _>("id") {
+        return String::from_utf8(value).map_err(|_| StoreError::Row("id is not text".into()));
+    }
+    Err(StoreError::Row("id is not text".into()))
+}
+
+fn mysql_import_row(row: &sqlx::mysql::MySqlRow) -> Result<(FsImportRow, String), StoreError> {
+    let stored = mysql_id_text(row)?;
+    let id = Uuid::parse_str(stored.trim()).map_err(|_| StoreError::Row(stored.clone()))?;
+    Ok((
+        FsImportRow {
+            id,
+            name: column_string(row, "name")?,
+            description: column_string(row, "description")?,
+            type_code: column_i32(row, "assetType")? as i8,
+            create_time: column_i32(row, "create_time")?,
+            data: column_bytes(row, "data")?,
+        },
+        stored,
+    ))
 }
 
 pub(super) async fn clock(
