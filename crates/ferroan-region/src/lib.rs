@@ -15,5 +15,6 @@ pub mod inventory;
 pub mod library;
 pub mod remote_asset;
 pub mod simulation;
+pub mod simulation_client;
 pub mod staff;
 pub mod status;
