@@ -135,6 +135,17 @@ struct AlwaysRunPost {
     reply: Sender<bool>,
 }
 
+struct ChildPost {
+    agent: Uuid,
+    child: bool,
+    reply: Sender<()>,
+}
+
+struct ReusePost {
+    agent: Uuid,
+    reply: Sender<Option<Presence>>,
+}
+
 struct Avatar {
     pose: Presence,
     body: Body,
@@ -146,6 +157,10 @@ enum Inbound {
     Places(PlacesPost),
     Teleport(TeleportPost),
     Complete(CompletePost),
+    /// A later arrival that reuses the record. The command returns to rest.
+    Reuse(ReusePost),
+    /// The avatar is away, or has come back, for the physics tick.
+    Child(ChildPost),
     Agent(AgentPost),
     AlwaysRun(AlwaysRunPost),
 }
@@ -243,7 +258,8 @@ impl TerrainFrame {
         rx.recv().map_err(|_| TerrainError::Stopped)
     }
 
-    /// A hop completion. Position and heading change. The other fields stay.
+    /// A hop completion. Position and heading change. Velocity and the command
+    /// return to rest. Control flags and draw distance stay.
     pub fn complete_hop(
         &self,
         agent: Uuid,
@@ -255,6 +271,26 @@ impl TerrainFrame {
             agent,
             position,
             look_at,
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// A later arrival that already has a record. The position stays. The
+    /// command and the physics velocity return to rest. A miss is `None`.
+    pub fn reuse_arrival(&self, agent: Uuid) -> Result<Option<Presence>, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Reuse(ReusePost { agent, reply }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// Skip the physics tick while the avatar is a child. A missing avatar
+    /// is left alone. One inbound slot.
+    pub fn set_child(&self, agent: Uuid, child: bool) -> Result<(), TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Child(ChildPost {
+            agent,
+            child,
             reply,
         }))?;
         rx.recv().map_err(|_| TerrainError::Stopped)
@@ -406,7 +442,21 @@ fn drain_inbound(
                     .or_insert_with(|| Avatar::new(fresh(post.position)));
                 avatar.pose.position = post.position;
                 avatar.pose.rotation = look_rotation(post.look_at);
+                arrive_at_rest(avatar);
                 let _ = post.reply.send(avatar.pose);
+            }
+            Inbound::Reuse(post) => {
+                let pose = presences.get_mut(&post.agent).map(|avatar| {
+                    arrive_at_rest(avatar);
+                    avatar.pose
+                });
+                let _ = post.reply.send(pose);
+            }
+            Inbound::Child(post) => {
+                if let Some(avatar) = presences.get_mut(&post.agent) {
+                    avatar.body.set_child(post.child);
+                }
+                let _ = post.reply.send(());
             }
             Inbound::Agent(post) => {
                 let applied = if let Some(avatar) = presences.get_mut(&post.agent) {
@@ -440,6 +490,13 @@ impl Avatar {
             pose,
         }
     }
+}
+
+/// A new physics actor on return. The record stays; the command does not.
+fn arrive_at_rest(avatar: &mut Avatar) {
+    avatar.pose.velocity = [0.0, 0.0, 0.0];
+    avatar.body.halt_command();
+    avatar.body.set_child(false);
 }
 
 fn fresh(position: [f32; 3]) -> Presence {
@@ -578,6 +635,8 @@ fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) 
     }
 }
 
+/// Wall clock. The delayed stop compares this with the packet's `now_ms`.
+/// The frame tick itself is monotonic. Both clocks change together later.
 fn unix_ms() -> u64 {
     u64::try_from(
         SystemTime::now()
@@ -850,11 +909,7 @@ mod tests {
             .complete_hop(traveller, [128.0, 128.0, 30.0], [1.0, 0.0, 0.0])
             .unwrap();
         assert_eq!(completed.position, [128.0, 128.0, 30.0]);
-        assert!(
-            completed.velocity == [2.0, 0.0, 0.0] || completed.velocity == [0.0, 0.0, 0.0],
-            "{:?}",
-            completed.velocity
-        );
+        assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
         assert_eq!(completed.control_flags, 7);
         assert_eq!(completed.draw_distance, 80.0);
         let completed = frame
@@ -963,5 +1018,90 @@ mod tests {
             frame.presence(agent).unwrap().unwrap().velocity,
             [0.0, 0.0, 0.0]
         );
+    }
+
+    fn walking_update(now_ms: u64, sequence: u32) -> crate::motion::MotionUpdate {
+        crate::motion::MotionUpdate {
+            now_ms,
+            sequence,
+            child: false,
+            in_transit: false,
+            body_rotation: [0.0, 0.0, 0.0, 1.0],
+            head_rotation: [0.0, 0.0, 0.0, 1.0],
+            state: 0,
+            camera_center: [128.0, 128.0, 26.0],
+            camera_at: [1.0, 0.0, 0.0],
+            camera_left: [0.0, 1.0, 0.0],
+            camera_up: [0.0, 0.0, 1.0],
+            far: 96.0,
+            control_flags: crate::motion::CONTROL_AT_POS,
+            flags: 0,
+        }
+    }
+
+    fn wait_frames(frame: &TerrainFrame, extra: u64) {
+        let start = frame.frames().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while frame.frames().unwrap() < start.saturating_add(extra) {
+            assert!(std::time::Instant::now() < deadline, "frame did not tick");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_return_rests_and_a_child_is_not_stepped() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(21);
+        frame
+            .post_login(
+                agent,
+                Presence {
+                    position: [8.0, 8.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [2.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 64.0,
+                },
+            )
+            .unwrap();
+        assert!(frame.reuse_arrival(Uuid::from_u128(99)).unwrap().is_none());
+        frame.set_child(Uuid::from_u128(99), true).unwrap();
+        let applied = frame.agent_update(agent, walking_update(1_000, 1)).unwrap();
+        assert!(applied.movement);
+        assert!(frame.motion(agent).unwrap().unwrap().target_velocity[0] > 0.0);
+        let completed = frame
+            .complete_hop(agent, [128.0, 128.0, 30.0], [1.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(completed.position, [128.0, 128.0, 30.0]);
+        assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(
+            frame.motion(agent).unwrap().unwrap().target_velocity,
+            [0.0, 0.0, 0.0]
+        );
+        wait_frames(&frame, 2);
+        let later = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(later.position[0], 128.0);
+        assert_eq!(later.position[1], 128.0);
+        assert_eq!(later.velocity, [0.0, 0.0, 0.0]);
+        assert!(z_is_written_or_snapped(later.position[2], 30.0));
+        frame.agent_update(agent, walking_update(2_000, 2)).unwrap();
+        assert!(frame.motion(agent).unwrap().unwrap().target_velocity[0] > 0.0);
+        frame.set_child(agent, true).unwrap();
+        let parked = frame.presence(agent).unwrap().unwrap().position;
+        wait_frames(&frame, 2);
+        assert_eq!(frame.presence(agent).unwrap().unwrap().position, parked);
+        let reused = frame.reuse_arrival(agent).unwrap().unwrap();
+        assert_eq!(reused.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(reused.position[0], parked[0]);
+        assert_eq!(reused.position[1], parked[1]);
+        assert_eq!(
+            frame.motion(agent).unwrap().unwrap().target_velocity,
+            [0.0, 0.0, 0.0]
+        );
+        wait_frames(&frame, 2);
+        let home = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(home.position[0], parked[0]);
+        assert_eq!(home.position[1], parked[1]);
+        assert_eq!(home.velocity, [0.0, 0.0, 0.0]);
     }
 }

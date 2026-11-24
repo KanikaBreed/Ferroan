@@ -198,8 +198,12 @@ impl Heightmap {
         self.cells.get(index).copied().unwrap_or(DEFAULT_HEIGHT)
     }
 
-    /// Integer cell, `y * width + x`. Out of range is 0. The walking stand-in
-    /// uses this. [`Heightmap::height_at`] still interpolates.
+    /// Integer cell under a standing avatar, `y * width + x`. Out of range is 0.
+    /// [`Heightmap::height_at`] still interpolates.
+    pub fn standing_cell(&self, x: i32, y: i32) -> f32 {
+        self.cell_height(x, y)
+    }
+
     pub(crate) fn cell_height(&self, x: i32, y: i32) -> f32 {
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return 0.0;

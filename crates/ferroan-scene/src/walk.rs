@@ -4,13 +4,15 @@
 //! One walking step for an avatar that is not sitting on the ground.
 //!
 //! Each frame tick moves X and Y by the physics velocity times `FrameTime`.
-//! A position that was already outside the region is pulled to the 0.1 m
-//! inset. A step that would leave the region stops on that inset and keeps
-//! the velocity, so the avatar does not sit outside for a frame. The captured
-//! BasicPhysics trace does store that outside sample and pulls it back on the
-//! next tick; [D38](../../../docs/DECISIONS.md) says stop with no crossing, so
-//! this stand-in does not keep the outside sample. Nothing in this region sets
-//! the carried-avatar flag, so that branch is not taken.
+//! This kinematic step is `BasicScene.Simulate`: a position that was already
+//! outside the region is pulled to the 0.1 m inset and the velocity is kept,
+//! and a step that finishes outside stays there for that sample. The presence
+//! tick then applies the no-neighbour border stop. It projects
+//! `position + velocity * FrameTime`. When that point leaves the region, an
+//! axis that is already strictly outside is pushed by twice the velocity, and
+//! the velocity becomes 0. A step that is still inside keeps its position.
+//! Nothing in this region sets the carried-avatar flag, so that branch is not
+//! taken.
 //!
 //! Ground height is the integer terrain cell of the position before the step,
 //! clamped into the region. The stored map is `y * width + x`. A missing map
@@ -30,7 +32,7 @@
 use crate::height::Heightmap;
 
 /// `1.9` box plus the `0.2` box adjust. Appearance replaces this in a later row.
-pub(crate) const AVATAR_SIZE_Z: f32 = 2.1;
+pub const AVATAR_SIZE_Z: f32 = 2.1;
 
 /// Inset used when a coordinate is already outside, or would leave the region.
 pub(crate) const BORDER_INSET: f32 = 0.1;
@@ -100,23 +102,46 @@ pub(crate) fn integrate(
     }
 }
 
-/// Pull a coordinate that is already outside back to the inset, then stop a
-/// step that would still finish outside. The test uses the pre-step value.
+/// Pull a coordinate that was already outside back to the inset. A step whose
+/// old position is inside keeps the moved value, even when that finishes
+/// outside. That is the kinematic sample. The presence tick stops it.
 fn stop_at_border(old: f32, moved: f32, extent: f32) -> f32 {
-    let pulled = if (0.0..extent).contains(&old) {
+    if (0.0..extent).contains(&old) {
         moved
     } else if old >= extent {
         extent - BORDER_INSET
     } else {
         BORDER_INSET
-    };
-    if (0.0..extent).contains(&pulled) {
-        pulled
-    } else if pulled >= extent {
-        extent - BORDER_INSET
-    } else {
-        BORDER_INSET
     }
+}
+
+/// No neighbour. `CheckForBorderCrossing` projects one frame ahead. When that
+/// point is outside `[0, extent)`, an axis already strictly outside is pushed
+/// by twice the velocity and the velocity becomes 0. Equality at the edge
+/// does not push. A step that is still inside keeps its position.
+pub(crate) fn fail_border(
+    mut position: [f32; 3],
+    velocity: [f32; 3],
+    extent_x: f32,
+    extent_y: f32,
+    dt: f32,
+) -> ([f32; 3], [f32; 3]) {
+    let projected_x = position[0] + velocity[0] * dt;
+    let projected_y = position[1] + velocity[1] * dt;
+    if (0.0..extent_x).contains(&projected_x) && (0.0..extent_y).contains(&projected_y) {
+        return (position, velocity);
+    }
+    if position[0] < 0.0 {
+        position[0] += velocity[0] * 2.0;
+    } else if position[0] > extent_x {
+        position[0] -= velocity[0] * 2.0;
+    }
+    if position[1] < 0.0 {
+        position[1] += velocity[1] * 2.0;
+    } else if position[1] > extent_y {
+        position[1] -= velocity[1] * 2.0;
+    }
+    (position, [0.0, 0.0, 0.0])
 }
 
 #[cfg(test)]
@@ -211,11 +236,12 @@ mod tests {
         token.clear();
     }
 
-    fn replay(samples: &[Vec<f32>], extent: f32, terrain: f32) {
+    fn replay(json: &str, key: &str, extent: f32, terrain: f32) {
+        let samples = rows(json, key);
+        let flying = scalar(json, &format!("{key}_flying")) != 0.0;
         let first = &samples[0];
         let mut position = [first[0], first[1], first[2]];
         let mut velocity = [first[3], first[4], first[5]];
-        let flying = first[6] != 0.0;
         for sample in &samples[1..] {
             let step = integrate(
                 position, velocity, flying, extent, extent, terrain, FRAME_TIME,
@@ -243,12 +269,13 @@ mod tests {
         assert_eq!(scalar(&json, "size_z").to_bits(), AVATAR_SIZE_Z.to_bits());
         // Flat ground in the capture is 21, so the snapped box is 23.1.
         let ground = 21.0;
-        replay(&rows(&json, "flat_walk"), DEFAULT_EXTENT, ground);
-        replay(&rows(&json, "fall"), DEFAULT_EXTENT, ground);
-        replay(&rows(&json, "fly_hold"), DEFAULT_EXTENT, ground);
-        replay(&rows(&json, "fly_snap"), DEFAULT_EXTENT, ground);
-        replay(&rows(&json, "outside"), 16.0, ground);
-        replay(&rows(&json, "slope"), 16.0, 30.0);
+        replay(&json, "flat_walk", DEFAULT_EXTENT, ground);
+        replay(&json, "fall", DEFAULT_EXTENT, ground);
+        replay(&json, "fly_hold", DEFAULT_EXTENT, ground);
+        replay(&json, "fly_snap", DEFAULT_EXTENT, ground);
+        replay(&json, "border", 16.0, ground);
+        replay(&json, "outside", 16.0, ground);
+        replay(&json, "slope", 16.0, 30.0);
         let landed = &rows(&json, "no_map")[0];
         let step = integrate(
             [4.0, 5.0, 26.0],
@@ -267,19 +294,51 @@ mod tests {
     }
 
     #[test]
-    fn a_leaving_step_stops_on_the_inset() {
-        let json = capture();
-        let first = &rows(&json, "border")[0];
-        let mut position = [first[0], first[1], first[2]];
-        let velocity = [first[3], first[4], first[5]];
-        for _ in 0..4 {
-            let step = integrate(position, velocity, false, 16.0, 16.0, 21.0, FRAME_TIME);
-            assert_eq!(step.position[0], 15.9);
-            assert!(step.position[0] < 16.0);
-            assert_eq!(step.velocity[0], velocity[0]);
-            assert!(step.colliding);
-            position = step.position;
-        }
+    fn a_leaving_step_rests_at_the_border() {
+        // Still inside, but the next projection leaves: the position stays and
+        // the velocity becomes 0. Walking at 2.4576 toward x = 256 is this case.
+        let velocity = [2.4576, 0.0, 0.0];
+        let step = integrate(
+            [255.6, 128.0, 23.1],
+            velocity,
+            false,
+            DEFAULT_EXTENT,
+            DEFAULT_EXTENT,
+            21.0,
+            FRAME_TIME,
+        );
+        assert!(step.position[0] < DEFAULT_EXTENT);
+        assert!(step.position[0] + velocity[0] * FRAME_TIME >= DEFAULT_EXTENT);
+        let (stopped, rest) = fail_border(
+            step.position,
+            step.velocity,
+            DEFAULT_EXTENT,
+            DEFAULT_EXTENT,
+            FRAME_TIME,
+        );
+        assert_eq!(stopped[0].to_bits(), step.position[0].to_bits());
+        assert_eq!(stopped[1].to_bits(), step.position[1].to_bits());
+        assert_eq!(rest, [0.0, 0.0, 0.0]);
+
+        // Already outside: pushed by twice the velocity, then rest.
+        let step = integrate(
+            [15.95, 8.0, 23.1],
+            [4.0, 0.0, 0.0],
+            false,
+            16.0,
+            16.0,
+            21.0,
+            FRAME_TIME,
+        );
+        assert!(step.position[0] > 16.0);
+        let (stopped, rest) = fail_border(step.position, step.velocity, 16.0, 16.0, FRAME_TIME);
+        let pushed = step.position[0] - 4.0 * 2.0;
+        assert_eq!(stopped[0].to_bits(), pushed.to_bits());
+        assert_eq!(stopped[1].to_bits(), step.position[1].to_bits());
+        assert_eq!(rest, [0.0, 0.0, 0.0]);
+        let (held, rest) = fail_border(stopped, rest, 16.0, 16.0, FRAME_TIME);
+        assert_eq!(held[0].to_bits(), stopped[0].to_bits());
+        assert_eq!(rest, [0.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -102,4 +102,5 @@ pub use payloads::{
 };
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;
+pub use walk::AVATAR_SIZE_Z;
 pub use xml::{to_original_xml, to_xml2};

@@ -2719,6 +2719,7 @@ dependencies = [
  "ferroan-llsd",
  "ferroan-log",
  "ferroan-protocol",
+ "ferroan-scene",
  "flate2",
  "reqwest",
  "serde_json",

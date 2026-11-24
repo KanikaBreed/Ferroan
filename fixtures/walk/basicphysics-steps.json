@@ -1,6 +1,13 @@
 {
   "dt": 0.0909,
   "size_z": 2.1,
+  "flat_walk_flying": 0,
+  "fall_flying": 0,
+  "fly_hold_flying": 1,
+  "fly_snap_flying": 1,
+  "border_flying": 0,
+  "outside_flying": 0,
+  "slope_flying": 0,
   "flat_walk": [
     [
       8,

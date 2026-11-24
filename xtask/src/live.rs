@@ -1378,6 +1378,13 @@ fn start_region_with_proxy(
     };
     match waited {
         Waited::Ready => {
+            if basic_physics
+                && let Err(error) = require_basic_physics(&log, &publish, "Ferroan Test")
+            {
+                stop_child(&mut child);
+                tracked.forget()?;
+                return Err(error);
+            }
             let mut started = finish_start(
                 child,
                 tracked,
@@ -1908,6 +1915,71 @@ fn wait_region(
     }
 }
 
+/// A `--physics basicphysics` region has started that engine. The scene name
+/// `basicphysics/<region>` is enough. Otherwise the log must name basicphysics
+/// and must not show the ubODE library line. The default harness does not call this.
+pub(crate) fn basic_physics_log_ok(text: &str, region: &str) -> bool {
+    if text.contains(&format!("basicphysics/{region}")) {
+        return true;
+    }
+    text.contains("basicphysics") && !text.contains("ode library configuration")
+}
+
+pub(crate) fn require_basic_physics(log: &Path, cwd: &Path, region: &str) -> Result<(), String> {
+    let text = physics_log_text(log, cwd)?;
+    if basic_physics_log_ok(&text, region) {
+        Ok(())
+    } else {
+        Err(format!(
+            "--physics basicphysics did not select basicphysics for {region}"
+        ))
+    }
+}
+
+fn physics_log_text(log: &Path, cwd: &Path) -> Result<String, String> {
+    let mut text = read_capped(log)?;
+    let mut dirs = Vec::new();
+    if let Some(parent) = log.parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    if cwd != log.parent().unwrap_or(Path::new("")) {
+        dirs.push(cwd.to_path_buf());
+    }
+    for dir in dirs {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("could not read {}: {error}", dir.display()));
+            }
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("could not read {}: {error}", dir.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("OpenSim.Server.RegionServer") && name.ends_with(".log") {
+                text.push('\n');
+                text.push_str(&read_capped(&entry.path())?);
+            }
+        }
+    }
+    Ok(text)
+}
+
+fn read_capped(path: &Path) -> Result<String, String> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            if bytes.len() > 32 * 1024 * 1024 {
+                return Err(format!("{} is larger than 32 MiB", path.display()));
+            }
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn log_contains(path: &Path, needle: &str) -> Result<bool, String> {
     match fs::read(path) {
@@ -2396,6 +2468,19 @@ mod tests {
         assert!(ini.contains("DefaultEstateOwnerPassword = \"0123456789abcdef\""));
         assert!(ini.contains("regionload_regionsdir = \"/tmp/regions\""));
         assert!(!ini.contains("physics ="));
+        assert!(basic_physics_log_ok(
+            "Adding scene \"Ferroan Test\" to non-shared module \"basicphysics\"\n",
+            "Ferroan Test"
+        ));
+        assert!(basic_physics_log_ok(
+            "physics scene basicphysics/Ferroan Test\n[ubODE] ode library configuration\n",
+            "Ferroan Test"
+        ));
+        assert!(!basic_physics_log_ok(
+            "[ubODE] ode library configuration\nAdding scene to module \"basicphysics\"\n",
+            "Ferroan Test"
+        ));
+        assert!(!basic_physics_log_ok("region ready\n", "Ferroan Test"));
         let basic = standalone(None, 9100, 9103, None, true);
         assert!(basic.contains("physics = basicphysics"));
         assert!(basic.find("physics = basicphysics").unwrap() < basic.find("[Network]").unwrap());

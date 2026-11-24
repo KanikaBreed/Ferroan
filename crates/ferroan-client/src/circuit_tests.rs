@@ -135,7 +135,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                 }))
             }
             SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
-            SceneCall::Read => poses
+            SceneCall::Read | SceneCall::Reuse => poses
                 .get(&agent)
                 .copied()
                 .map(|position| SceneReply::Pose(stored_pose(position)))

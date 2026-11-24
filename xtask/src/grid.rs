@@ -2035,6 +2035,9 @@ fn start_region(
         live::START_TIMEOUT,
         passwords,
     )?;
+    if spec.basic_physics && !spec.ferroan {
+        live::require_basic_physics(&log, cwd, region.name)?;
+    }
     live::require_listen(proc.listen_pid, region.http_bind, region.http_port)?;
     live::require_udp(proc.listen_pid, region.udp_bind, region.http_port)?;
     Ok(proc)

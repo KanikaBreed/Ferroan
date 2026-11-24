@@ -249,11 +249,15 @@ pub enum SceneCall {
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. One inbound slot.
     Teleport(TeleportRequest),
-    /// Hop completion. The return pose replaces position and heading. One inbound slot.
+    /// Hop completion. Position and heading change, and the actor returns to rest.
+    /// One inbound slot.
     Complete {
         position: [f32; 3],
         look_at: [f32; 3],
     },
+    /// A later arrival that reuses the record. The position stays. The command
+    /// and the physics velocity return to rest. A miss is an error. One inbound slot.
+    Reuse,
     /// `AgentUpdate`. One inbound slot. A full queue drops the packet.
     AgentUpdate(AgentMotionUpdate),
     /// `SetAlwaysRun`. One inbound slot.
@@ -1002,13 +1006,13 @@ impl State {
     }
 
     /// Use the pose the frame already stored. The first arrival posts the login
-    /// pose. A later arrival, after a teleport or a hop, reads that pose and
-    /// does not replace its heading or velocity.
+    /// pose. A later arrival, after a teleport or a hop, resets the command and
+    /// the physics velocity to rest and keeps the stored position.
     fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
         let Some(scene) = &self.login_scene else {
             return Ok(self.arrival.position);
         };
-        if let Ok(SceneReply::Pose(stored)) = scene(agent, SceneCall::Read) {
+        if let Ok(SceneReply::Pose(stored)) = scene(agent, SceneCall::Reuse) {
             return Ok(stored.position);
         }
         let pose = LoginPose {
@@ -2513,7 +2517,7 @@ mod tests {
                     }))
                 }
                 SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
-                SceneCall::Read => match poses.get(&agent).copied() {
+                SceneCall::Read | SceneCall::Reuse => match poses.get(&agent).copied() {
                     Some(position) => Ok(SceneReply::Pose(LoginPose {
                         position,
                         rotation: LOGIN_ROTATION,

@@ -22,7 +22,9 @@
 //! selects the run speed (`SetAlwaysRun` at `LLClientView.cs` line 9451 and
 //! `ScenePresence.cs` lines 1141–1143 and 3953–3955). The vector is rotated
 //! by the body, flattened to yaw when not flying, scaled, and multiplied by
-//! four while flying (`AddNewMovement`, lines 3987–4048). Releasing the keys
+//! four while flying. Flying into the ground (the last step was colliding and
+//! the command's Z is negative) zeros the whole command instead; the animator
+//! lands in a later row (`AddNewMovement`, lines 3987–4048). Releasing the keys
 //! on the ground or in the air leaves that command for 250 ms. Stop replaces
 //! it immediately, at 0.2 times 4.096.
 //!
@@ -209,8 +211,12 @@ pub(crate) struct Body {
     /// presence velocity is not. A command copies the target here. The tick
     /// writes the result back and does not copy the target again.
     physics_velocity: [f32; 3],
+    /// Ground contact from the last kinematic step. A fresh actor is not colliding.
+    colliding: bool,
     /// No physics actor: sitting on the ground. Later updates skip the command.
     seated: bool,
+    /// Away in another region. The record stays. The tick does not move it.
+    child: bool,
 }
 
 impl Body {
@@ -260,8 +266,14 @@ impl Body {
             },
             last_finite: pose.position,
             physics_velocity: [0.0, 0.0, 0.0],
+            colliding: false,
             seated: false,
+            child: false,
         }
+    }
+
+    pub(crate) fn set_child(&mut self, child: bool) {
+        self.child = child;
     }
 
     pub(crate) fn view(&self) -> Motion {
@@ -483,11 +495,15 @@ impl Body {
             direc[2] = 0.0;
         }
         direc = scale3(direc, speed);
-        // Flying is not on the ground, so the landing zero does not apply and
-        // the command is scaled by four. On the ground an up or a downward
-        // result contributes no Z: the jump itself is the animator's.
+        // Flying into the ground zeros the whole command. The animator lands
+        // in a later row. Otherwise flying is scaled by four. On the ground an
+        // up or a downward result contributes no Z: the jump itself is the animator's.
         if self.motion.flying {
-            direc = scale3(direc, FLY_SPEED_SCALE);
+            if self.colliding && direc[2] < 0.0 {
+                direc = [0.0, 0.0, 0.0];
+            } else {
+                direc = scale3(direc, FLY_SPEED_SCALE);
+            }
         } else if self.motion.control_flags & CONTROL_UP_POS != 0 || direc[2] < 0.0 {
             direc[2] = 0.0;
         }
@@ -506,7 +522,7 @@ impl Body {
         dt: f32,
         now_ms: u64,
     ) {
-        if self.seated {
+        if self.seated || self.child {
             return;
         }
         let step = crate::walk::integrate(
@@ -518,10 +534,17 @@ impl Body {
             terrain,
             dt,
         );
-        pose.position = step.position;
-        pose.velocity = step.velocity;
-        self.physics_velocity = step.velocity;
-        self.last_finite = step.position;
+        let (position, velocity) =
+            crate::walk::fail_border(step.position, step.velocity, extent_x, extent_y, dt);
+        if position != step.position || velocity != step.velocity {
+            self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.motion.angular_velocity = [0.0, 0.0, 0.0];
+        }
+        pose.position = position;
+        pose.velocity = velocity;
+        self.physics_velocity = velocity;
+        self.colliding = step.colliding;
+        self.last_finite = position;
         let deadline = self.motion.delayed_stop_ms;
         if deadline > 0 && now_ms as i64 > deadline {
             self.motion.delayed_stop_ms = -1;
@@ -1073,5 +1096,90 @@ mod tests {
         );
         assert_eq!(pose.position, seated);
         assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_border_crossing_stops_the_body() {
+        let mut pose = login_pose();
+        pose.position = [255.6, 128.0, 25.0];
+        let mut body = Body::new(&pose);
+        body.physics_velocity = [2.4576, 0.0, 0.0];
+        body.motion.target_velocity = [2.4576, 0.0, 0.0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert!(pose.position[0] < 256.0);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+        let stopped = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_200,
+        );
+        assert_eq!(pose.position[0], stopped[0]);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn flying_into_the_ground_zeros_the_command() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        let down = CONTROL_FLY | CONTROL_AT_POS | CONTROL_UP_NEG;
+        body.apply(&update(1_000, 1, down), &mut pose);
+        assert!(body.view().target_velocity[0] != 0.0);
+        assert!(body.view().target_velocity[2] < 0.0);
+
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_100,
+        );
+        // Drop onto the ground so this step is colliding. The next command
+        // is still flying, and a downward result zeros the whole command.
+        pose.position[2] = 23.0;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_150,
+        );
+        assert!(body.colliding);
+        body.apply(&update(1_200, 2, down), &mut pose);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_child_is_not_integrated() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        body.physics_velocity = [2.0, 0.0, 0.0];
+        body.set_child(true);
+        let stayed = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert_eq!(pose.position, stayed);
+        assert_eq!(body.physics_velocity, [2.0, 0.0, 0.0]);
     }
 }

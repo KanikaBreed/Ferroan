@@ -21,3 +21,5 @@ tools/config-oracle/bin/
 tools/config-oracle/obj/
 tools/shard-oracle/bin/
 tools/shard-oracle/obj/
+tools/walk-oracle/bin/
+tools/walk-oracle/obj/
