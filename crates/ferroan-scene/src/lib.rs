@@ -54,7 +54,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Read-only region terrain, the prim load and the frame thread.
-//! The frame ticks at the shipped `FrameTime` and stores the login presence.
+//! The frame ticks at the shipped `FrameTime`, stores the login presence, and
+//! answers a forwarded chat with those positions. A landing updates the position.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
