@@ -47,7 +47,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
     return 2;
 }
 
@@ -85,8 +85,14 @@ try
         case "serialize" when args.Length == 4:
             Serialize(args[1], args[2], args[3]);
             return 0;
+        case "read" when args.Length == 3:
+            ReadXml(args[1], args[2]);
+            return 0;
+        case "probe" when args.Length == 3:
+            ProbeXml(args[1], args[2]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
             return 2;
     }
 }
@@ -764,6 +770,163 @@ static void Serialize(string path, string regionText, string pin)
     Console.Out.Write('\n');
 }
 
+static void ReadXml(string dumpPath, string pin)
+{
+    JsonNode root = JsonNode.Parse(File.ReadAllText(dumpPath))
+        ?? throw new InvalidOperationException("empty xml dump");
+    string region = root["region"]?.GetValue<string>()
+        ?? throw new InvalidOperationException("xml dump has no region");
+    JsonArray groups = root["groups"]?.AsArray()
+        ?? throw new InvalidOperationException("xml dump has no groups");
+    ReadDump dump = new ReadDump
+    {
+        pin = pin,
+        region = region,
+        groups = new List<SerializeGroup>()
+    };
+    string firstId = null;
+    string firstXml2 = null;
+    string firstOriginal = null;
+    foreach (JsonNode node in groups)
+    {
+        if (node is null)
+            continue;
+        string id = node["id"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("group has no id");
+        string xml2 = node["xml2"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("group has no xml2");
+        string original = node["original"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("group has no original");
+        SceneObjectGroup read2 = SceneObjectSerializer.FromXml2Format(xml2)
+            ?? throw new InvalidOperationException("xml2 read failed for " + id);
+        SceneObjectGroup readOriginal = SceneObjectSerializer.FromOriginalXmlFormat(original)
+            ?? throw new InvalidOperationException("original read failed for " + id);
+        dump.groups.Add(new SerializeGroup
+        {
+            id = id,
+            xml2 = SceneObjectSerializer.ToXml2Format(read2),
+            original = SceneObjectSerializer.ToOriginalXmlFormat(readOriginal)
+        });
+        if (firstId is null)
+        {
+            firstId = id;
+            firstXml2 = xml2;
+            firstOriginal = original;
+        }
+    }
+    if (firstId is null || firstXml2 is null || firstOriginal is null)
+        throw new InvalidOperationException("xml dump has no groups");
+
+    string dirty2 = InsertUnknown(firstXml2);
+    string dirtyOriginal = InsertUnknown(firstOriginal);
+    SceneObjectGroup unknown2 = SceneObjectSerializer.FromXml2Format(dirty2)
+        ?? throw new InvalidOperationException("unknown xml2 read failed");
+    SceneObjectGroup unknownOriginal = SceneObjectSerializer.FromOriginalXmlFormat(dirtyOriginal)
+        ?? throw new InvalidOperationException("unknown original read failed");
+    string unknownXml2 = SceneObjectSerializer.ToXml2Format(unknown2);
+    string unknownOriginalXml = SceneObjectSerializer.ToOriginalXmlFormat(unknownOriginal);
+    if (unknownXml2 != dump.groups[0].xml2 || unknownOriginalXml != dump.groups[0].original)
+        throw new InvalidOperationException("unknown element changed the fields that were read");
+    if (unknownXml2.Contains("NotAField") || unknownXml2.Contains("SculptData")
+        || unknownOriginalXml.Contains("NotAField") || unknownOriginalXml.Contains("SculptData"))
+        throw new InvalidOperationException("unknown element was kept");
+    dump.unknown = new ReadUnknown
+    {
+        id = firstId,
+        element = "NotAField",
+        shape_element = "SculptData",
+        xml2 = unknownXml2,
+        original = unknownOriginalXml
+    };
+
+    JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+    Console.Out.Write(JsonSerializer.Serialize(dump, options));
+    Console.Out.Write('\n');
+}
+
+static void ProbeXml(string dumpPath, string pin)
+{
+    JsonNode root = JsonNode.Parse(File.ReadAllText(dumpPath))
+        ?? throw new InvalidOperationException("empty probe dump");
+    JsonArray cases = root["cases"]?.AsArray()
+        ?? throw new InvalidOperationException("probe dump has no cases");
+    JsonArray rows = new();
+    foreach (JsonNode node in cases)
+    {
+        if (node is null)
+            continue;
+        JsonObject row = new()
+        {
+            ["name"] = node["name"]?.GetValue<string>() ?? "case",
+            ["xml2_in"] = node["xml2"]?.DeepClone(),
+            ["original_in"] = node["original"]?.DeepClone()
+        };
+        if (node["xml2_expect"] is JsonNode xml2Expect)
+            row["xml2_expect"] = xml2Expect.DeepClone();
+        if (node["original_expect"] is JsonNode originalExpect)
+            row["original_expect"] = originalExpect.DeepClone();
+        ProbeOne(row, node["xml2"], true);
+        ProbeOne(row, node["original"], false);
+        rows.Add(row);
+    }
+    JsonObject dump = new()
+    {
+        ["pin"] = pin,
+        ["cases"] = rows
+    };
+    JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+    Console.Out.Write(JsonSerializer.Serialize(dump, options));
+    Console.Out.Write('\n');
+}
+
+static void ProbeOne(JsonObject row, JsonNode xmlNode, bool xml2)
+{
+    string field = xml2 ? "xml2" : "original";
+    if (xmlNode is null)
+    {
+        row[field] = null;
+        row[field + "_error"] = null;
+        return;
+    }
+    string xml = xmlNode.GetValue<string>();
+    try
+    {
+        SceneObjectGroup group = xml2
+            ? SceneObjectSerializer.FromXml2Format(xml)
+            : SceneObjectSerializer.FromOriginalXmlFormat(xml);
+        if (group is null)
+        {
+            row[field] = null;
+            row[field + "_error"] = "null";
+            return;
+        }
+        row[field] = xml2
+            ? SceneObjectSerializer.ToXml2Format(group)
+            : SceneObjectSerializer.ToOriginalXmlFormat(group);
+        row[field + "_error"] = null;
+    }
+    catch (Exception error)
+    {
+        row[field] = null;
+        row[field + "_error"] = error.GetType().Name + ": " + error.Message;
+    }
+}
+
+static string InsertUnknown(string xml)
+{
+    int at = xml.IndexOf("<SceneObjectPart", StringComparison.Ordinal);
+    if (at < 0)
+        throw new InvalidOperationException("no SceneObjectPart");
+    int end = xml.IndexOf('>', at);
+    if (end < 0)
+        throw new InvalidOperationException("SceneObjectPart is not closed");
+    string withPart = xml.Insert(end + 1, "<NotAField>skip</NotAField>");
+    int shape = withPart.IndexOf("<Shape>", StringComparison.Ordinal);
+    if (shape < 0)
+        throw new InvalidOperationException("no Shape");
+    return withPart.Insert(shape + "<Shape>".Length, "<SculptData>nope</SculptData>");
+}
+
 static void LoadMysql(string ado, string regionText, string pin)
 {
     UUID region = new UUID(regionText);
@@ -1285,6 +1448,23 @@ sealed class SerializeDump
 sealed class SerializeGroup
 {
     public string id { get; set; }
+    public string xml2 { get; set; }
+    public string original { get; set; }
+}
+
+sealed class ReadDump
+{
+    public string pin { get; set; }
+    public string region { get; set; }
+    public List<SerializeGroup> groups { get; set; }
+    public ReadUnknown unknown { get; set; }
+}
+
+sealed class ReadUnknown
+{
+    public string id { get; set; }
+    public string element { get; set; }
+    public string shape_element { get; set; }
     public string xml2 { get; set; }
     public string original { get; set; }
 }
