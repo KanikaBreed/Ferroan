@@ -152,7 +152,7 @@ impl RegionMeters {
             .unwrap_or_else(|poison| poison.into_inner()) = prefix.to_owned();
     }
 
-    /// Root agents, child agents (always 0; Ferroan has no child sessions), circuits.
+    /// Root agents, child agents kept after a source hop, and circuits.
     pub fn set_agents(&self, root: u64, child: u64, circuits: u64) {
         self.root_agents.store(root, Ordering::Relaxed);
         self.child_agents.store(child, Ordering::Relaxed);
@@ -538,7 +538,7 @@ fn prometheus(meters: &RegionMeters) -> String {
     gauge(
         &mut text,
         "ferroan_region_child_agents",
-        "Child agents. Ferroan has no child-agent path, so this stays 0.",
+        "Child agents. A source hop demotes its root into one and keeps the circuit.",
         child,
     );
     gauge(

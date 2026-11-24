@@ -111,7 +111,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
-| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | READY after Q18b2 |
+| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (this PR) |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
@@ -538,6 +538,8 @@ Q10ah and Q10ai (manager, 23 November 2026, at the maintainer's request): the sl
 Q10ag closed by the manager (24 November 2026): the cause was found and fixed in Pin8 (#190). In Ferroan-region Ferrobot runs the region and the Ferrobot relay both wrote `capture-udp.cap`, so their records overwrote each other; each damaged datagram held its own record's `time_ms`. With the relay the region now writes `capture-udp-region.cap` (`xtask/src/grid.rs`), and #190's live jobs passed on `d031cd9`. If `does not re-encode` comes back, reopen it as a new item with that capture as a fixture.
 
 ## Found while working
+
+- 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
 
 - 2026-11-24, Q18b2: A second `TeleportLocationRequest` while a hop runs is answered by `Teleport()` with `Previous teleport process incomplete.  Please retry shortly.` (two spaces). `DoTeleport` sends `Agent is already in transit.` Paragraph (2b) names the `DoTeleport` sentence. The viewer packet takes the `Teleport()` path, so this hop sends that sentence. No TB.
 
