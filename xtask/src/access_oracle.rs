@@ -100,21 +100,17 @@ fn git(directory: &Path, args: &[&str]) -> Result<String, String> {
 
 /// `NBGV_SetCloudBuildVersionVars=false` skips the target that appends to
 /// `GITHUB_ENV`. Removing the variable is not enough while `GITHUB_ACTIONS` is set.
-fn build_properties() -> &'static [&'static str] {
-    &[
+fn build_properties() -> [&'static str; 4] {
+    [
         "-p:UseArtifactsOutput=true",
         "-p:GeneratePackageOnBuild=false",
         "-p:ContinuousIntegrationBuild=true",
-        "-p:NBGV_SetCloudBuildVersionVars=false",
+        crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF,
     ]
 }
 
 fn configure_dotnet(command: &mut Command) {
-    command
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("NUGET_XMLDOC_MODE", "skip")
-        .env_remove("GITHUB_ENV");
+    crate::dotnet_ci::shield(command);
 }
 
 fn dotnet(
@@ -126,7 +122,7 @@ fn dotnet(
     no_build: bool,
     program_args: &[String],
 ) -> bool {
-    let mut command = Command::new("dotnet");
+    let mut command = crate::dotnet_ci::command("dotnet");
     command.current_dir(root).arg(action);
     configure_dotnet(&mut command);
     if action == "run" {
@@ -180,7 +176,7 @@ mod tests {
     #[test]
     fn cloud_build_version_vars_are_off_and_github_env_is_removed() {
         assert!(build_properties().contains(&"-p:NBGV_SetCloudBuildVersionVars=false"));
-        let mut command = Command::new("dotnet");
+        let mut command = Command::new("true");
         command.env("GITHUB_ENV", "/runner/set_env");
         configure_dotnet(&mut command);
         assert!(
