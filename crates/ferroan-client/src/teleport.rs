@@ -83,6 +83,8 @@ pub const FAIL_FROZEN: &str = "You are frozen";
 /// `SetInTransit` refused a second teleport. Also used when the task queue
 /// cannot take another packet without passing `udp.unacked`.
 pub const FAIL_INCOMPLETE: &str = "Previous teleport process incomplete.  Please retry shortly.";
+/// A child agent is only a copy. The avatar is in its root region.
+pub const FAIL_CHILD: &str = "You are not in this region. Please try again in a moment.";
 
 /// Height at one metre. The region supplies the heightmap, or flat 21 m.
 pub type GroundSample = Arc<dyn Fn(f32, f32) -> f32 + Send + Sync>;

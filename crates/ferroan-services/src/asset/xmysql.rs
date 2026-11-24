@@ -33,11 +33,13 @@
 //! `MySQLXAssetData` at the pin.
 //!
 //! `StoreAsset` is `REPLACE INTO XAssetsMeta`, so a second store of an id
-//! rewrites `CreateTime` and `AccessTime`, then inserts `XAssetsData` only
-//! when that hash is absent. The metadata replace, the data insert and the
-//! exists-hash read enlist the connection's transaction (TB27, #475). A failed
-//! statement rolls back and the method returns. `GetAsset` joins the tables
-//! and masks flags. It calls `UpdateAccessTime` only when the stored access
+//! rewrites `CreateTime` and `AccessTime`, then inserts `XAssetsData` with
+//! `INSERT IGNORE` so a hash another store just wrote does not roll this one
+//! back (TB58, D43). The metadata replace, the data insert and the exists-hash
+//! read enlist the connection's transaction (TB27, #475). A failed metadata or
+//! data statement rolls back and the method returns. A hash-lookup error is
+//! returned. `GetAsset` joins the tables and masks flags. It calls
+//! `UpdateAccessTime` only when the stored access
 //! time is greater than 0. `AssetsExist` selects `XAssetsMeta` (TB28, #476).
 //! `Delete` removes the meta row, leaves the data row, and returns true
 //! whenever the statement runs.
@@ -133,11 +135,12 @@ pub(super) async fn store(pool: &MySqlPool, asset: &Asset) -> Result<(), StoreEr
                 error = %error,
                 "xasset mysql hash lookup failed"
             );
-            false
+            tx.rollback().await?;
+            return Err(error.into());
         }
     };
     if !present {
-        let inserted = sqlx::query("INSERT INTO XAssetsData(Hash, Data) VALUES (?, ?)")
+        let inserted = sqlx::query("INSERT IGNORE INTO XAssetsData(Hash, Data) VALUES (?, ?)")
             .bind(hash.as_slice())
             .bind(&asset.data)
             .execute(&mut *tx)

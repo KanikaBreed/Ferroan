@@ -46,7 +46,9 @@
 //! chain is set.
 //!
 //! MySQL `AssetsExist` reads `XAssetsMeta` (TB28, #476), so a chained migrate
-//! stores the asset and then deletes the chain row (TB33). PostgreSQL
+//! stores the asset and then deletes the chain row (TB33). A store that
+//! rolls back still returns success. The migrate reads the asset back and
+//! leaves the chain row when that read misses (TB59, D43). PostgreSQL
 //! metadata returns the page (TB29, #479). PostgreSQL `Delete` binds `uuid`
 //! and removes only the meta row (TB30, #480). The data row stays.
 
@@ -117,11 +119,16 @@ impl XAssetService {
             Ok(asset) => asset?,
             Err(_) => return None,
         };
-        // Store then chain.Delete. A store error is the outer Get catch:
-        // the chain row stays. Exists reads XAssetsMeta (TB28), so the write
-        // lands and the chain row is then removed.
+        // Store then chain delete. A store error leaves the chain row and
+        // this get misses, which is the outer get catch. A rolled-back write
+        // still returns success, so read the asset back before deleting the
+        // only copy. A miss leaves the chain row and returns the chained asset.
         if self.store(&asset).await.is_err() {
             return None;
+        }
+        match self.store.get(asset.id).await {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return Some(asset),
         }
         if chain.delete_data(&asset.id.to_string()).await.is_err() {
             return None;
@@ -155,6 +162,7 @@ mod tests {
             let _x = XASSET_MYSQL.lock().await;
             let _assets = super::super::store::ASSET_MYSQL.lock().await;
             check_service(pair, "FERROAN_MYSQL_URL", "MySQL", Backend::Mysql).await;
+            check_durability("FERROAN_MYSQL_URL", "MySQL").await;
         }
         if let Some(pair) = connect_both("FERROAN_POSTGRES_URL", "PostgreSQL").await {
             let _x = XASSET_POSTGRES.lock().await;
@@ -166,7 +174,69 @@ mod tests {
                 Backend::Postgres,
             )
             .await;
+            check_durability("FERROAN_POSTGRES_URL", "PostgreSQL").await;
         }
+    }
+
+    async fn check_durability(var: &str, label: &str) {
+        let (store, same_db_chain) = connect_both(var, label).await.expect(label);
+        store.wipe().await.expect("wipe");
+        same_db_chain.close().await;
+        // The chained table accepts a value the XAsset table rejects: SQLite
+        // keeps a four-byte name and a 129-character creator. MySQL `utf8mb3`
+        // rejects the name. PostgreSQL rejects the creator.
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-qr2-chain-{}-{}",
+            label,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp");
+        let path = dir.join("AssetStore.db");
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/db/sqlite/AssetStore.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
+        let pool = ferroan_db::open_sqlite_file(&path, &["AssetStore"])
+            .await
+            .expect("sqlite chain");
+        let chain = AssetStore::new(pool).expect("chain");
+        let id = xid(40);
+        chain.delete(id).await.expect("forget");
+        let mut asset = sample(id, "kept", 0);
+        match store.backend() {
+            Backend::Mysql => asset.name = "😀".to_string(),
+            Backend::Postgres => asset.creator_id = "c".repeat(129),
+            Backend::Sqlite => panic!("sqlite"),
+        }
+        chain.store_data(&asset).await.expect("seed");
+        let service = XAssetService::new(store, Some(chain));
+        let got = service.get(&id.to_string()).await.expect("still readable");
+        assert_eq!(got.name, asset.name, "{label} returns the chained asset");
+        assert_eq!(got.data, b"q22b");
+        let (look_x, _) = connect_both(var, label).await.expect(label);
+        let look_a = service.chain.as_ref().expect("chain");
+        assert!(
+            look_a.get(id).await.expect("chain").is_some(),
+            "{label} keeps the chain row after a rolled-back write"
+        );
+        assert!(
+            look_x.get(id).await.expect("x").is_none(),
+            "{label} does not keep a rolled-back XAsset row"
+        );
+        let again = service.get(&id.to_string()).await.expect("second");
+        assert_eq!(again.data, b"q22b");
+        assert!(
+            look_a.get(id).await.expect("chain").is_some(),
+            "{label} still keeps the chain row"
+        );
+        look_x.wipe().await.expect("wipe");
+        look_x.close().await;
+        service.store.wipe().await.expect("wipe");
+        service.store.close().await;
+        if let Some(chain) = service.chain {
+            chain.delete(id).await.expect("forget");
+            chain.close().await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     async fn check_service(

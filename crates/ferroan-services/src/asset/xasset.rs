@@ -100,7 +100,9 @@ impl XAssetStore {
     }
 
     /// Plugin `StoreAsset`. A failed metadata or data statement rolls back and
-    /// returns `Ok`, which is the void method returning.
+    /// returns `Ok`, which is the void method returning. A hash-lookup error
+    /// is returned. The data insert does not fail when that hash is already
+    /// stored.
     pub async fn store(&self, asset: &Asset) -> Result<(), StoreError> {
         match self.backend() {
             Backend::Mysql => super::xmysql::store(self.mysql()?, asset).await,

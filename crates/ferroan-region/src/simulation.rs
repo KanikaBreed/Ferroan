@@ -70,8 +70,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The simulation service calls made by C# Robust during a local grid login.
-//! The source hop's release DELETE is implemented. Other PUT and DELETE agent
-//! calls stay unimplemented.
+//! The source hop's release DELETE is implemented. A child `CreateAgent` that
+//! is not a login, and `UpdateAgent`, are the destination half of a teleport.
+//! Other agent DELETE calls stay unimplemented.
 
 use std::{
     collections::HashMap,
@@ -87,6 +88,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
+use crate::simulation_client::RegionEnd;
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -97,7 +99,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use ferroan_client::{CapsRegistry, CircuitExpect};
+use ferroan_client::{CapsError, CapsRegistry, CircuitExpect, ROOT_WAIT, ReturnPose, ReturnSlot};
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
@@ -156,6 +158,8 @@ pub struct SimulationState {
     releases: Arc<Mutex<HashMap<Uuid, ReleaseSlot>>>,
     /// Prim groups loaded at startup. Shared by every clone. Not sent on the circuit.
     objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
+    /// In-view child this root opened on a neighbour. Logout closes it.
+    open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
 }
 
 struct ActiveSession {
@@ -171,6 +175,8 @@ struct ActiveSession {
     /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
     /// completes it after logout notification.
     logout_done: Option<oneshot::Receiver<()>>,
+    /// Child update and the promotion back to root. Shared with the circuit.
+    slot: ReturnSlot,
 }
 
 /// Keeps the accepted seed and circuit reserved until logout, timeout or failure.
@@ -187,6 +193,8 @@ pub struct AcceptedAgent {
     pub start_pos: [f32; 3],
     pub first_name: String,
     pub last_name: String,
+    /// Same gate the session stores. The circuit waits on it for a return.
+    pub return_slot: ReturnSlot,
     cancelled: oneshot::Receiver<()>,
     _lease: SessionLease,
 }
@@ -235,6 +243,7 @@ impl AcceptedAgent {
         {
             session.root = true;
             session.child = false;
+            session.slot.note_rooted();
             publish_agents(&sessions, &self._lease.meters);
         }
     }
@@ -297,7 +306,9 @@ impl Drop for SessionLease {
             .is_some_and(|session| session.generation == self.generation)
         {
             self.caps.clear_agent(self.agent_id);
-            sessions.remove(&self.agent_id);
+            if let Some(session) = sessions.remove(&self.agent_id) {
+                session.slot.close();
+            }
             publish_agents(&sessions, &self.meters);
         }
     }
@@ -336,6 +347,7 @@ impl SimulationState {
             meters,
             releases: Arc::new(Mutex::new(HashMap::new())),
             objects: Arc::new(Vec::new()),
+            open_children: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -379,8 +391,16 @@ impl SimulationState {
     }
 
     fn admission_refusal(&self, agent: Uuid, level: Option<i32>) -> Option<&'static str> {
+        self.admission_for(agent, level, false)
+    }
+
+    /// A child does not take a root slot. A closed region still refuses it.
+    fn admission_for(&self, agent: Uuid, level: Option<i32>, child: bool) -> Option<&'static str> {
         if !self.admission_open.load(Ordering::Acquire) {
             return Some("Logins to this region are disabled");
+        }
+        if child {
+            return None;
         }
         let sessions = self
             .sessions
@@ -447,7 +467,10 @@ impl SimulationState {
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(reason) = self.refusal_locked(&sessions, fields.agent_id, level) {
+        // A child does not take a root slot. A login still does.
+        if !fields.child
+            && let Some(reason) = self.refusal_locked(&sessions, fields.agent_id, level)
+        {
             return Err(reason);
         }
         // Reserve before replacing anything: backpressure or a stopped
@@ -482,16 +505,18 @@ impl SimulationState {
         let departed = Arc::new(AtomicBool::new(false));
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
+        let slot = ReturnSlot::new(fields.child);
         sessions.insert(
             fields.agent_id,
             ActiveSession {
                 session_id: fields.session_id,
                 generation,
                 root: false,
-                child: false,
+                child: fields.child,
                 departed: Arc::clone(&departed),
                 cancel: Some(cancel),
                 logout_done: Some(logout_wait),
+                slot: slot.clone(),
             },
         );
         publish_agents(&sessions, &self.meters);
@@ -519,6 +544,7 @@ impl SimulationState {
             start_pos: fields.start_pos,
             first_name: fields.first_name,
             last_name: fields.last_name,
+            return_slot: slot,
             cancelled,
             _lease: lease,
         };
@@ -570,6 +596,7 @@ impl SimulationState {
         }
         session.root = false;
         session.child = true;
+        session.slot.arm_child();
         publish_agents(&sessions, &self.meters);
     }
 
@@ -587,7 +614,45 @@ impl SimulationState {
         }
         session.child = false;
         session.root = true;
+        session.slot.disarm();
         publish_agents(&sessions, &self.meters);
+    }
+
+    /// Same session, not a login. Keep the circuit and the caps. A stale root
+    /// becomes a child instead of being logged out.
+    fn reuse_child(&self, fields: &AgentFields) -> Result<(), &'static str> {
+        if !self.admission_open.load(Ordering::Acquire) {
+            return Err("Logins to this region are disabled");
+        }
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(session) = sessions.get_mut(&fields.agent_id) else {
+                return Err("Child agent is not in this region");
+            };
+            if session.session_id != fields.session_id || session.departed.load(Ordering::Acquire) {
+                return Err("Child agent is not in this region");
+            }
+            session.root = false;
+            session.child = true;
+            session.slot.arm_child();
+            publish_agents(&sessions, &self.meters);
+        }
+        let path = format!("/CAPS/{}0000/", fields.caps_path);
+        match self.caps.register_agent(&path, fields.agent_id) {
+            Ok(()) | Err(CapsError::Occupied) => Ok(()),
+            Err(_) => Err("Could not create seed capability"),
+        }
+    }
+
+    fn same_session(&self, agent: Uuid, session: Uuid) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&agent)
+            .is_some_and(|row| row.session_id == session && !row.departed.load(Ordering::Acquire))
     }
 
     /// Arm the release wait before `UpdateAgent`, so a callback during that
@@ -664,9 +729,28 @@ impl SimulationState {
             return;
         };
         session.departed.store(true, Ordering::Release);
+        let slot = session.slot.clone();
         self.caps.clear_agent(agent);
         sessions.remove(&agent);
         publish_agents(&sessions, &self.meters);
+        drop(sessions);
+        slot.close();
+    }
+
+    /// Remember a neighbour child that stays in view. A later hop replaces it.
+    pub fn note_open_child(&self, agent: Uuid, end: RegionEnd) {
+        self.open_children
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(agent, end);
+    }
+
+    /// The neighbour logout should close, once.
+    pub fn take_open_child(&self, agent: Uuid) -> Option<RegionEnd> {
+        self.open_children
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
     }
 }
 
@@ -696,6 +780,9 @@ async fn handle(
             format!("OpenSim agent {agent}"),
         )
             .into_response();
+    }
+    if method == "PUT" {
+        return update_agent(&state, agent, request).await;
     }
     if method != "POST" && method != "QUERYACCESS" {
         return bare(StatusCode::METHOD_NOT_ALLOWED);
@@ -749,9 +836,30 @@ async fn handle(
     // Scene.NewUserConnection checks LoginsEnabled before VerifyUserPresence.
     // The root-agent bound uses that same early point. A god level looked up
     // here is the level accept uses, including when the level cache is full.
+    // A child does not take a root slot. A closed region still refuses it.
     let level = state.lookup_level(agent).await;
-    if let Some(reason) = state.admission_refusal(agent, level) {
+    if let Some(reason) = state.admission_for(agent, level, fields.child) {
         return create_refused(reason, peer);
+    }
+    // Same session, not a login: keep the circuit and the caps. A failed
+    // presence check must not log this avatar out.
+    if fields.child && !fields.via_login && state.same_session(agent, fields.session_id) {
+        let busy = "Region is busy completing a login or logout";
+        let deadline = tokio::time::Instant::now() + state.create_agent_budget;
+        let lock_wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if lock_wait.is_zero() {
+            return create_refused(busy, peer);
+        }
+        let Ok(_lifecycle) = tokio::time::timeout(lock_wait, state.lifecycle.lock()).await else {
+            return create_refused(busy, peer);
+        };
+        let answer = match state.reuse_child(&fields) {
+            Ok(()) => {
+                json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()})
+            }
+            Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
+        };
+        return json_reply(answer, false);
     }
     // SimulationServiceConnector.CreateAgent posts with a 30 s timeout. The
     // lock wait and the Presence verify share one shorter budget so Robust
@@ -796,12 +904,183 @@ async fn handle(
         );
     }
     let _lifecycle = lifecycle;
+    // A child keeps the connection open. A login still closes it.
+    let child_create = fields.child;
     let answer = match state.accept_with_level(fields, level) {
         Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
     };
-    json_reply(answer, true)
+    json_reply(answer, !child_create)
+}
+
+async fn update_agent(state: &SimulationState, agent: Uuid, request: Request) -> Response {
+    if agent.is_nil() {
+        return bare(StatusCode::BAD_REQUEST);
+    }
+    let gzip = is_gzip(request.headers());
+    let Ok(body) = to_bytes(request.into_body(), MAX_BODY).await else {
+        return bare(StatusCode::PAYLOAD_TOO_LARGE);
+    };
+    let args = match decode_body(&body, gzip) {
+        Ok(args) => args,
+        Err(SimulationError::BodyLimit) => return bare(StatusCode::PAYLOAD_TOO_LARGE),
+        Err(_) => return bare(StatusCode::BAD_REQUEST),
+    };
+    let allowed = match args.get("message_type").and_then(Value::as_str) {
+        Some("AgentData") => apply_agent_data(state, agent, &args).await,
+        Some("AgentPosition") => apply_agent_position(state, agent, &args),
+        _ => false,
+    };
+    plain_flag(allowed)
+}
+
+async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<String, Value>) -> bool {
+    if json_uuid(args.get("agent_uuid")) != Some(agent) {
+        return false;
+    }
+    let Some(session) = json_uuid(args.get("session_uuid")) else {
+        return false;
+    };
+    let ChildGate::Child(slot) = child_gate(state, agent, session) else {
+        return false;
+    };
+    let Some(position) = json_vec3(args.get("position")) else {
+        return false;
+    };
+    let look_at = json_vec3(args.get("at_axis"))
+        .map(look_axis)
+        .unwrap_or([1.0, 0.0, 0.0]);
+    let origin = json_uuid(args.get("region_id")).unwrap_or_else(Uuid::nil);
+    let callback = args
+        .get("cb_uri")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if !slot.store_update(
+        ReturnPose {
+            position,
+            look_at,
+            origin,
+        },
+        callback,
+    ) {
+        return false;
+    }
+    if args.get("wait_for_root").and_then(Value::as_bool) == Some(true) {
+        slot.wait_root(ROOT_WAIT).await
+    } else {
+        true
+    }
+}
+
+fn apply_agent_position(state: &SimulationState, agent: Uuid, args: &Map<String, Value>) -> bool {
+    if json_uuid(args.get("agent_uuid")) != Some(agent) {
+        return false;
+    }
+    let Some(session) = json_uuid(args.get("session_uuid")) else {
+        return false;
+    };
+    match child_gate(state, agent, session) {
+        ChildGate::Root => true,
+        ChildGate::Child(slot) => {
+            let Some(position) = json_vec3(args.get("position")) else {
+                return false;
+            };
+            slot.store_position(position)
+        }
+        ChildGate::Missing | ChildGate::Mismatch => false,
+    }
+}
+
+enum ChildGate {
+    Missing,
+    Mismatch,
+    Root,
+    Child(ReturnSlot),
+}
+
+fn child_gate(state: &SimulationState, agent: Uuid, session: Uuid) -> ChildGate {
+    let sessions = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let Some(row) = sessions.get(&agent) else {
+        return ChildGate::Missing;
+    };
+    if row.session_id != session || row.departed.load(Ordering::Acquire) {
+        return ChildGate::Mismatch;
+    }
+    if !row.child {
+        return ChildGate::Root;
+    }
+    ChildGate::Child(row.slot.clone())
+}
+
+fn json_uuid(value: Option<&Value>) -> Option<Uuid> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|text| Uuid::parse_str(text).ok())
+}
+
+fn json_vec3(value: Option<&Value>) -> Option<[f32; 3]> {
+    let text = value?.as_str()?.trim();
+    let inner = text.strip_prefix('<')?.strip_suffix('>')?;
+    let mut out = [0.0; 3];
+    let mut parts = inner.split(',');
+    for slot in &mut out {
+        *slot = parts
+            .next()?
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|number| number.is_finite())?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Flatten Z. A missing or near-zero heading stays the arrival default.
+fn look_axis(at_axis: [f32; 3]) -> [f32; 3] {
+    if at_axis[0].is_finite()
+        && at_axis[1].is_finite()
+        && at_axis[0].abs() + at_axis[1].abs() > 1.0e-6
+    {
+        [at_axis[0], at_axis[1], 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    }
+}
+
+fn plain_flag(value: bool) -> Response {
+    let text = if value { "True" } else { "False" };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/plain"),
+            (header::CONNECTION, "close"),
+        ],
+        text,
+    )
+        .into_response()
+}
+
+/// DELETE the source callback after this child becomes root. The URI is not logged.
+pub async fn release_callback(uri: String) {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    else {
+        tracing::debug!("destination release failed");
+        return;
+    };
+    match client.delete(uri).send().await {
+        Ok(response) if response.status().is_success() => {
+            tracing::debug!("destination release");
+        }
+        _ => tracing::debug!("destination release failed"),
+    }
 }
 
 fn forbidden() -> Response {
@@ -1011,6 +1290,7 @@ fn osd_boolean(value: &Value) -> bool {
     }
 }
 
+#[derive(Clone)]
 struct AgentFields {
     agent_id: Uuid,
     session_id: Uuid,
@@ -1020,6 +1300,10 @@ struct AgentFields {
     start_pos: [f32; 3],
     first_name: String,
     last_name: String,
+    /// The teleport child. It does not take a root slot.
+    child: bool,
+    /// `ViaLogin`. A child login stays refused.
+    via_login: bool,
 }
 
 impl AgentFields {
@@ -1058,12 +1342,16 @@ impl AgentFields {
         let flags: u32 = required_str(args, "teleport_flags")?
             .parse()
             .map_err(|_| SimulationError::Field("teleport_flags"))?;
-        if args.get("child").and_then(Value::as_bool) == Some(true) {
+        let child = args.get("child").and_then(Value::as_bool) == Some(true);
+        let via_login = flags & VIA_LOGIN != 0;
+        // A child login stays refused. A non-child without ViaLogin stays refused.
+        // The hop is a child whose flags do not include ViaLogin.
+        if child && via_login {
             return Err(SimulationError::Refused(
                 "Child agent connections are not implemented".to_owned(),
             ));
         }
-        if flags & VIA_LOGIN == 0 {
+        if !child && !via_login {
             return Err(SimulationError::Refused(
                 "Only login agent connections are supported".to_owned(),
             ));
@@ -1102,6 +1390,8 @@ impl AgentFields {
             start_pos,
             first_name: required_str(args, "first_name")?.to_owned(),
             last_name: required_str(args, "last_name")?.to_owned(),
+            child,
+            via_login,
         })
     }
 
@@ -1689,6 +1979,8 @@ mod tests {
             start_pos: [128.0, 128.0, 25.0],
             first_name: "Synthetic".into(),
             last_name: "Test".into(),
+            child: false,
+            via_login: true,
         }
     }
 
@@ -2436,5 +2728,294 @@ mod tests {
             let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
             assert_eq!(body.len(), case["body_length"].as_u64().unwrap() as usize);
         }
+    }
+
+    #[tokio::test]
+    async fn a_child_create_does_not_take_a_root_slot() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:8003", Uuid::from_u128(5)),
+            caps.clone(),
+            sender,
+        );
+        state.root_limit = 1;
+        state.accept(synthetic_agent()).unwrap();
+        let mut root = receiver.recv().await.unwrap();
+        root.mark_root();
+        let mut child = other_agent(6, 43);
+        child.child = true;
+        child.via_login = false;
+        state.accept(child).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        assert!(accepted.return_slot.is_child());
+        assert!(!accepted.still_root());
+        assert!(state.meters().diag_lines().contains("root_agents: 1\n"));
+        assert!(state.meters().diag_lines().contains("child_agents: 1\n"));
+        assert_eq!(state.accept(other_agent(7, 44)), Err("The region is full"));
+        let mut again = synthetic_agent();
+        again.child = true;
+        again.via_login = false;
+        again.caps_path = Uuid::from_u128(99).to_string();
+        state.reuse_child(&again).unwrap();
+        assert!(matches!(
+            root.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(!root.still_root());
+        assert!(
+            caps.register(&format!("/CAPS/{}0000/", synthetic_agent().caps_path))
+                .is_err()
+        );
+        assert!(
+            caps.register(&format!("/CAPS/{}0000/", Uuid::from_u128(99)))
+                .is_err()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_return_create_keeps_the_circuit_and_update_waits_for_root() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", region),
+            caps.clone(),
+            sender,
+        );
+        state.root_limit = 0;
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        let login = synthetic_agent();
+        let agent = login.agent_id;
+        let session = login.session_id;
+        // A closed region refuses the child before presence.
+        state.stop_accepting();
+        let closed = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            child_request(&login, region, "closed-seed"),
+        )
+        .await;
+        let closed_body = to_bytes(closed.into_body(), MAX_BODY).await.unwrap();
+        let closed_value: Value = serde_json::from_slice(&closed_body).unwrap();
+        assert_eq!(closed_value["reason"], "Logins to this region are disabled");
+        state.admission_open.store(true, Ordering::Release);
+        // A full region still reaches presence for a new child, and still
+        // refuses a login before that.
+        let full_login = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/agent/{agent}/"))
+                .body(axum::body::Body::from(create_body_for(
+                    login.clone(),
+                    region,
+                )))
+                .unwrap(),
+        )
+        .await;
+        let full_body = to_bytes(full_login.into_body(), MAX_BODY).await.unwrap();
+        let full_value: Value = serde_json::from_slice(&full_body).unwrap();
+        assert_eq!(full_value["reason"], "The region is full");
+        state.root_limit = 1;
+        state.accept(login.clone()).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        let response = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            child_request(&login, region, "return-seed"),
+        )
+        .await;
+        assert!(response.headers().get("connection").is_none());
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert!(!accepted.still_root());
+        assert!(
+            caps.register(&format!("/CAPS/{}0000/", login.caps_path))
+                .is_err()
+        );
+        assert!(caps.register("/CAPS/return-seed0000/").is_err());
+
+        let wrong = put_agent(
+            &state,
+            peer,
+            &json!({
+                "message_type": "AgentData",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": Uuid::from_u128(8).to_string(),
+                "region_id": region.to_string(),
+                "position": "<40, 40, 40>",
+                "at_axis": "<0, 1, 0>",
+                "wait_for_root": false,
+            }),
+        )
+        .await;
+        assert_eq!(wrong, "False");
+        assert_eq!(accepted.return_slot.position(), [128.0, 128.0, 30.0]);
+
+        let moved = put_agent(
+            &state,
+            peer,
+            &json!({
+                "message_type": "AgentPosition",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": session.to_string(),
+                "position": "<40, 40, 40>",
+            }),
+        )
+        .await;
+        assert_eq!(moved, "True");
+        assert_eq!(accepted.return_slot.position(), [40.0, 40.0, 40.0]);
+
+        let nil_origin = put_agent(
+            &state,
+            peer,
+            &json!({
+                "message_type": "AgentData",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": session.to_string(),
+                "region_id": Uuid::nil().to_string(),
+                "position": "<1, 2, 3>",
+                "at_axis": "<0, 1, 0>",
+                "wait_for_root": true,
+            }),
+        )
+        .await;
+        assert_eq!(nil_origin, "False");
+        assert_eq!(accepted.return_slot.position(), [40.0, 40.0, 40.0]);
+
+        state.restore_root(agent);
+        let rooted = put_agent(
+            &state,
+            peer,
+            &json!({
+                "message_type": "AgentData",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": session.to_string(),
+                "region_id": region.to_string(),
+                "position": "<9, 9, 9>",
+                "wait_for_root": true,
+            }),
+        )
+        .await;
+        assert_eq!(rooted, "False");
+        assert_eq!(accepted.return_slot.position(), [40.0, 40.0, 40.0]);
+        let rooted_position = put_agent(
+            &state,
+            peer,
+            &json!({
+                "message_type": "AgentPosition",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": session.to_string(),
+                "position": "<8, 8, 8>",
+            }),
+        )
+        .await;
+        assert_eq!(rooted_position, "True");
+        assert_eq!(accepted.return_slot.position(), [40.0, 40.0, 40.0]);
+
+        state.demote_child(agent);
+        let state_wait = state.clone();
+        let waiting = tokio::spawn(async move {
+            put_agent(
+                &state_wait,
+                peer,
+                &json!({
+                    "message_type": "AgentData",
+                    "agent_uuid": agent.to_string(),
+                    "session_uuid": session.to_string(),
+                    "region_id": Uuid::from_u128(70).to_string(),
+                    "position": "<64, 64, 12>",
+                    "at_axis": "<1, 0, 0>",
+                    "wait_for_root": true,
+                    "cb_uri": "http://127.0.0.1:9/agent/release/",
+                }),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if accepted.return_slot.position() == [64.0, 64.0, 12.0] {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the child update was not stored");
+        accepted.mark_root();
+        let flag = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(flag, "True");
+        assert_eq!(
+            accepted.return_slot.take_callback().as_deref(),
+            Some("http://127.0.0.1:9/agent/release/")
+        );
+        let garbage = put_agent(&state, peer, &json!({"message_type": "nope"})).await;
+        assert_eq!(garbage, "False");
+        let not_object = Request::builder()
+            .method("PUT")
+            .uri(format!("/agent/{agent}/"))
+            .body(axum::body::Body::from("[1]"))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), not_object).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn child_request(fields: &AgentFields, region: Uuid, caps_path: &str) -> Request {
+        let body = json!({
+            "agent_id": fields.agent_id.to_string(),
+            "session_id": fields.session_id.to_string(),
+            "secure_session_id": fields.secure_session_id.to_string(),
+            "circuit_code": fields.circuit_code.to_string(),
+            "caps_path": caps_path,
+            "start_pos": "<128, 128, 30>",
+            "first_name": fields.first_name,
+            "last_name": fields.last_name,
+            "destination_uuid": region.to_string(),
+            "destination_name": "Fixture Region",
+            "teleport_flags": "16",
+            "child": true,
+        });
+        Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{}/", fields.agent_id))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn put_agent(state: &SimulationState, peer: SocketAddr, body: &Value) -> String {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/agent/{}/", state_agent(body)))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(
+            to_bytes(response.into_body(), MAX_BODY)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn state_agent(body: &Value) -> Uuid {
+        body.get("agent_uuid")
+            .and_then(Value::as_str)
+            .and_then(|text| Uuid::parse_str(text).ok())
+            .unwrap_or_else(|| Uuid::from_u128(1))
     }
 }

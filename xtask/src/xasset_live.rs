@@ -10,8 +10,10 @@
 //!
 //! The success line is `assets: match`. Pin6 carries the C# fixes for TB27,
 //! TB28, TB29, TB30 and TB33, so that compare no longer names them. TB30
-//! deletes only the meta row and leaves the data row, on both sides. Any
-//! other HTTP difference fails the command.
+//! deletes only the meta row and leaves the data row, on both sides. A
+//! rolled-back migrate and two concurrent stores of the same bytes are not
+//! in this compare (TB58, TB59, D43). Any other HTTP difference fails the
+//! command.
 
 use std::process::ExitCode;
 
