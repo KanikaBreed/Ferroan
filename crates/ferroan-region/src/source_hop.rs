@@ -732,6 +732,8 @@ fn departure_look(look_at: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// The position and look are the destination the viewer asked for. The source
+/// frame keeps the pose the avatar had in this region. The hop does not write it.
 fn agent_update(
     session: &HopSession,
     destination: &HopDestination,
