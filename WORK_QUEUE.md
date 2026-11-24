@@ -78,7 +78,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (this PR) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
-| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | READY after Q10ab |
+| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (this PR) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
@@ -537,9 +537,13 @@ Q10ah and Q10ai (manager, 23 November 2026, at the maintainer's request): the sl
 
 Q10ag closed by the manager (24 November 2026): the cause was found and fixed in Pin8 (#190). In Ferroan-region Ferrobot runs the region and the Ferrobot relay both wrote `capture-udp.cap`, so their records overwrote each other; each damaged datagram held its own record's `time_ms`. With the relay the region now writes `capture-udp-region.cap` (`xtask/src/grid.rs`), and #190's live jobs passed on `d031cd9`. If `does not re-encode` comes back, reopen it as a new item with that capture as a fixture.
 
+QR1 (24 November 2026, `feat/shard-header`): `POST /auth` (plain, crypt, the bare path and `/auth/`) and `POST /griduser` answer 403 `text/plain` with an empty body when the request carries `X-SecondLife-Shard`, before the body is read, unless `AllowllHTTPRequestIn` is true. The default is false. `[Network]` is read first and the service section overwrites it. The Pin8 capture is `fixtures/shard/shard-header.json` (25 cases, pin `c401bceecd`), outside `fixtures/http` so the ServerUtils oracle does not treat it as one of its cases. A served plain failure reads 11 bytes and handles the request once; crypt with no header reads 3 bytes; the bare path with no header reads nothing. Every 403 case handles nothing and reads nothing, including a body of 1,048,577 bytes. Accounts, user alias, and asset get, post and delete already refused the header. Authorization and asset exists stay served: those C# handlers are built without the check. Not ported, and the C# connectors apply the same check: presence, grid, inventory, friends, agent preferences, avatar, mute list, appearance, map add, map remove, estate, experience, baked textures, offline IM, groups, voice, and the region bakes module. `shard_header_matches_the_pin_capture`, `http_plain_methods_and_authorization_match_the_captured_documents` and `post_answers_xml_and_a_huge_body_is_413` passed. Local `cargo xtask check` passed. No new TB or D. P1.2 is unchanged. R1 is this item.
+
 ## Found while working
 
 - 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
+
+- 2026-11-24, QR1: A present empty `AllowllHTTPRequestIn` makes connector startup fail in C#: the ini reader rejects a value that is not a boolean. Ferroan keeps the running value, the same rule accounts, aliases and assets already use. The default stays false, so the header is still refused. The capture has no empty key. No TB.
 
 - 2026-11-24, Q18b2: A second `TeleportLocationRequest` while a hop runs is answered by `Teleport()` with `Previous teleport process incomplete.  Please retry shortly.` (two spaces). `DoTeleport` sends `Agent is already in transit.` Paragraph (2b) names the `DoTeleport` sentence. The viewer packet takes the `Teleport()` path, so this hop sends that sentence. No TB.
 

@@ -20,6 +20,9 @@ pub mod auth;
 pub mod avatar;
 pub mod griduser;
 
+#[cfg(test)]
+mod shard_header;
+
 pub use account::AccountHttp;
 pub use alias::AliasHttp;
 pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};

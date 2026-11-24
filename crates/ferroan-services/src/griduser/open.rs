@@ -10,7 +10,9 @@
 //! `GridUser`. `AuthType = BasicHttpAuthentication` and `https_main = true`
 //! refuse to start. `TrustedGridAuthentication` does not reject callers when
 //! no trust context is set, which is this process, so it is accepted and does
-//! not add a check.
+//! not add a check. `AllowllHTTPRequestIn` is read from `[Network]` and then
+//! this section (later wins, an empty value keeps the running value). It
+//! defaults to false, and then `POST /griduser` refuses `X-SecondLife-Shard`.
 
 use ferroan_config::Config;
 use ferroan_db::{Backend, Pool};
@@ -59,7 +61,8 @@ impl GridUserHttp {
         let pool = Pool::open(backend, connection, &["GridUserStore"]).await?;
         let store = GridUserStore::new(pool, realm)?;
         let service = GridUserService::new(store, SystemClock);
-        Ok(Self::new(service))
+        let reject_shard_header = !config_bool_either(config, "AllowllHTTPRequestIn", false)?;
+        Ok(Self::new(service, reject_shard_header))
     }
 }
 
@@ -100,6 +103,16 @@ fn auth_type(config: &Config) -> &str {
         }
     }
     found
+}
+
+fn config_bool_either(config: &Config, key: &str, default: bool) -> Result<bool, GridUserError> {
+    let mut value = default;
+    for section in ["Network", SECTION] {
+        if config.get(section, key).is_some() {
+            value = config_bool(config, section, key, value)?;
+        }
+    }
+    Ok(value)
 }
 
 fn config_bool(
