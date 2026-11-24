@@ -58,7 +58,7 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## Region store objects
 
-`cargo xtask regionstore generate` builds [tools/regionstore-oracle](../tools/regionstore-oracle/README.md) against a task-owned clone of the pin and writes [fixtures/regionstore/objects.db](../fixtures/regionstore/objects.db) and [objects.json](../fixtures/regionstore/objects.json). `cargo xtask regionstore verify` reloads that file through the pin and checks the committed dump. `ferroan-scene` replays the dump on every platform. The commands do not run in CI and do not start a server or the live harness. Inventory items, MySQL and PostgreSQL are later rows. A stored pseudo-CRC of 0 is absent from the dump: the part's clock value is not compared.
+`cargo xtask regionstore generate` builds [tools/regionstore-oracle](../tools/regionstore-oracle/README.md) against a task-owned clone of the pin and writes [fixtures/regionstore/objects.db](../fixtures/regionstore/objects.db) and [objects.json](../fixtures/regionstore/objects.json). `cargo xtask regionstore verify` reloads that file through the pin and checks the committed dump. `ferroan-scene` replays the dump on every platform. The commands do not run in CI and do not start a server or the live harness. Inventory items, MySQL and PostgreSQL are later rows. A stored pseudo-CRC of 0 is absent from the dump: the part's clock value is not compared. An animation sequence number is a clock and is absent the same way.
 
 ## Known differences
 
