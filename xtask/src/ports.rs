@@ -6,7 +6,8 @@
 //! `FERROAN_LIVE_PORT_BASE` or `--port-base` selects the base. Every harness
 //! listener, C# Robust and region port, Ferroan service, capture proxy and
 //! Docker smoke port is `base + offset`, and the run's files live under
-//! `.scratch/live/runs/<base>-<pid>/`. With no setting, ephemeral listeners
+//! `.scratch/live/runs/<base>-<pid>/`. A later command with the same base
+//! finds that directory. With no setting, ephemeral listeners
 //! stay ephemeral and Docker smoke stays on 3100, 9095, 4317 and 4318.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]

@@ -175,6 +175,41 @@ fn state_path() -> PathBuf {
     run_dir().join("state")
 }
 
+/// A port-base directory name is `<base>-<pid>`. `2860` does not match `28608-1`.
+fn based_run_name(name: &str, base: u16) -> bool {
+    let Some(rest) = name.strip_prefix(&format!("{base}-")) else {
+        return false;
+    };
+    !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Standalone directories under `runs/` that belong to `base` and have a state file.
+fn based_standalone_runs(runs: &Path, base: u16) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    let entries = match fs::read_dir(runs) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+        Err(error) => {
+            return Err(format!("could not read {}: {error}", runs.display()));
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("could not read {}: {error}", runs.display()))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !based_run_name(&name, base) {
+            continue;
+        }
+        let standalone = entry.path().join("standalone");
+        if standalone.join("state").is_file() {
+            found.push(standalone);
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 struct RunState {
     pid: u32,
     public_port: u16,
@@ -1069,20 +1104,23 @@ fn run_scenarios(started: &mut Started, scenario: &str) -> Result<ScenarioOutcom
 
 #[cfg(target_os = "linux")]
 fn run_running_assets_linux() -> Result<String, String> {
-    let state =
-        read_state(&state_path())?.ok_or("run cargo xtask live up --assets ferroan first")?;
+    let (run, state) = running_asset_setup()?;
     let assets = state
         .assets
         .as_ref()
         .ok_or("this region was not started with --assets ferroan")?;
-    if !region_pid_live(state.pid)
-        || !crate::assets::persistent_pid_live(assets.pid, assets.start_time)
+    if !region_pid_live_at(state.pid, &run)
+        || !crate::assets::persistent_pid_live_at(
+            assets.pid,
+            assets.start_time,
+            &run.join("robust.ini"),
+        )
     {
         return Err("the saved region or asset service is no longer running; run cargo xtask live down first".to_string());
     }
     require_http_loopback(state.pid, state.public_port)?;
     require_http_loopback(assets.pid, assets.port)?;
-    let path = run_dir().join("password");
+    let path = run.join("password");
     let text = read_bounded_text(&path, PASSWORD_BYTES * 2)
         .map_err(|error| format!("could not read the saved harness password: {error}"))?;
     let password = saved_password(text.into_bytes())?;
@@ -1092,7 +1130,7 @@ fn run_running_assets_linux() -> Result<String, String> {
         state.public_port,
         &password,
         "",
-        &run_dir().join("region.log"),
+        &run.join("region.log"),
         "assets",
     )?;
     Ok(format!(
@@ -1436,6 +1474,8 @@ fn down_linux() -> Result<String, String> {
     // bypass its refusal through the older standalone state below. A grid-state
     // error must still run standalone cleanup, and both errors are reported.
     // A port-base run keeps its state under `.scratch/live/runs/<base>-<pid>/`.
+    // `live down` is a new process, so it stops every recorded directory, not
+    // only the one named with this process id.
     report_shutdown(down_every_grid(), down_every_standalone())
 }
 
@@ -1516,9 +1556,9 @@ fn down_standalone_at(state_file: &Path, run: &Path) -> Result<(), String> {
     let Some(state) = read_state(state_file)? else {
         return Ok(());
     };
-    let region_result = stop_pid(state.pid);
+    let region_result = stop_pid_at(state.pid, run);
     let asset_result = state.assets.as_ref().map_or(Ok(()), |asset| {
-        crate::assets::stop_persistent(asset.pid, asset.start_time)
+        crate::assets::stop_persistent_at(asset.pid, asset.start_time, &run.join("robust.ini"))
     });
     let cleanup = match (region_result, asset_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -1751,17 +1791,88 @@ pub(crate) fn standalone_is_up() -> Result<Option<u32>, String> {
     if let Some(pid) = crate::grid_state::survivor()? {
         return Ok(Some(pid));
     }
-    if let Some(state) = read_state(&state_path())? {
-        if region_pid_live(state.pid) {
-            return Ok(Some(state.pid));
-        }
-        if let Some(asset) = state.assets
-            && crate::assets::persistent_pid_live(asset.pid, asset.start_time)
-        {
-            return Ok(Some(asset.pid));
+    if let Some(pid) = live_standalone_pid(&run_dir())? {
+        return Ok(Some(pid));
+    }
+    if let Some(base) = crate::ports::current().base {
+        for dir in based_standalone_runs(&live_root().join("runs"), base)? {
+            if dir == run_dir() {
+                continue;
+            }
+            if let Some(pid) = live_standalone_pid(&dir)? {
+                return Ok(Some(pid));
+            }
         }
     }
     Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+fn live_standalone_pid(run: &Path) -> Result<Option<u32>, String> {
+    let Some(state) = read_state(&run.join("state"))? else {
+        return Ok(None);
+    };
+    if region_pid_live_at(state.pid, run) {
+        return Ok(Some(state.pid));
+    }
+    if let Some(asset) = state.assets
+        && crate::assets::persistent_pid_live_at(
+            asset.pid,
+            asset.start_time,
+            &run.join("robust.ini"),
+        )
+    {
+        return Ok(Some(asset.pid));
+    }
+    Ok(None)
+}
+
+/// The server `live up` started, including one started by an earlier process
+/// with the same port base. The directory name carries that process id.
+#[cfg(target_os = "linux")]
+fn running_asset_setup() -> Result<(PathBuf, RunState), String> {
+    if let Some(state) = read_state(&state_path())? {
+        return Ok((run_dir(), state));
+    }
+    let Some(base) = crate::ports::current().base else {
+        return Err("run cargo xtask live up --assets ferroan first".to_string());
+    };
+    let runs = live_root().join("runs");
+    let dirs = based_standalone_runs(&runs, base)?;
+    let mut chosen: Option<(PathBuf, RunState)> = None;
+    for dir in &dirs {
+        let Some(state) = read_state(&dir.join("state"))? else {
+            continue;
+        };
+        let Some(assets) = state.assets.as_ref() else {
+            continue;
+        };
+        if region_pid_live_at(state.pid, dir)
+            && crate::assets::persistent_pid_live_at(
+                assets.pid,
+                assets.start_time,
+                &dir.join("robust.ini"),
+            )
+        {
+            if chosen.is_some() {
+                return Err(
+                    "more than one running asset setup is recorded for this port base".to_string(),
+                );
+            }
+            chosen = Some((dir.clone(), state));
+        }
+    }
+    if let Some(found) = chosen {
+        return Ok(found);
+    }
+    if dirs.is_empty() {
+        Err("run cargo xtask live up --assets ferroan first".to_string())
+    } else {
+        Err(
+            "the saved region or asset service is no longer running; run cargo xtask live down first"
+                .to_string(),
+        )
+    }
 }
 
 fn copy_examples(publish: &Path) -> Result<(), String> {
@@ -1991,6 +2102,12 @@ fn socket_inodes(pid: u32) -> Result<std::collections::HashSet<u64>, String> {
 
 #[cfg(target_os = "linux")]
 fn region_pid_live(pid: u32) -> bool {
+    region_pid_live_at(pid, &run_dir())
+}
+
+/// `run` is the directory of the process that started the region. A later
+/// command has a different process id in its directory name.
+fn region_pid_live_at(pid: u32, run: &Path) -> bool {
     if process_start_time(pid).is_none() {
         return false;
     }
@@ -1998,7 +2115,7 @@ fn region_pid_live(pid: u32) -> bool {
         return false;
     };
     let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
-    let config = run_dir().join("config");
+    let config = run.join("config");
     args.first().is_some_and(|arg| {
         arg.rsplit(|byte| *byte == b'/').next() == Some(b"OpenSim.Server.RegionServer".as_slice())
     }) && args.windows(2).any(|pair| {
@@ -2063,27 +2180,27 @@ fn stop_child(child: &mut std::process::Child) {
 }
 
 #[cfg(target_os = "linux")]
-fn stop_pid(pid: u32) -> Result<(), String> {
-    if !region_pid_live(pid) {
+fn stop_pid_at(pid: u32, run: &Path) -> Result<(), String> {
+    if !region_pid_live_at(pid, run) {
         return Ok(());
     }
     let _ = Command::new("kill")
         .args(["-TERM", &format!("-{pid}")])
         .status();
     let started = Instant::now();
-    while region_pid_live(pid) && started.elapsed() < STOP_TIMEOUT {
+    while region_pid_live_at(pid, run) && started.elapsed() < STOP_TIMEOUT {
         thread::sleep(Duration::from_millis(200));
     }
-    if region_pid_live(pid) {
+    if region_pid_live_at(pid, run) {
         let _ = Command::new("kill")
             .args(["-KILL", &format!("-{pid}")])
             .status();
     }
     let started = Instant::now();
-    while region_pid_live(pid) && started.elapsed() < Duration::from_secs(5) {
+    while region_pid_live_at(pid, run) && started.elapsed() < Duration::from_secs(5) {
         thread::sleep(Duration::from_millis(200));
     }
-    if region_pid_live(pid) {
+    if region_pid_live_at(pid, run) {
         Err(format!("pid {pid} did not exit"))
     } else {
         Ok(())
@@ -2483,6 +2600,51 @@ mod tests {
             pinned_tranquillity(markdown).unwrap(),
             "713857f10b8e91a639a967d4354a4682b080793c"
         );
+    }
+
+    #[test]
+    fn a_port_base_finds_another_process_directory_and_not_a_longer_base() {
+        let root = std::env::temp_dir().join(format!("ferroan-based-runs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let runs = root.join("runs");
+        for name in ["28608-11", "28608-22", "2860-9", "286080-1", "other"] {
+            let state = runs.join(name).join("standalone").join("state");
+            fs::create_dir_all(state.parent().unwrap()).unwrap();
+            fs::write(&state, b"pid=2\n").unwrap();
+        }
+        let names: Vec<_> = based_standalone_runs(&runs, 28608)
+            .unwrap()
+            .iter()
+            .map(|path| {
+                path.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["28608-11".to_string(), "28608-22".to_string()]);
+        let shorter: Vec<_> = based_standalone_runs(&runs, 2860)
+            .unwrap()
+            .iter()
+            .map(|path| {
+                path.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(shorter, vec!["2860-9".to_string()]);
+        assert!(
+            based_standalone_runs(&runs.join("missing"), 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!based_run_name("28608-", 28608));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

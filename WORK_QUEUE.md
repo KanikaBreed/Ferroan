@@ -539,6 +539,8 @@ Q10ag closed by the manager (24 November 2026): the cause was found and fixed in
 
 ## Found while working
 
+- 2026-11-24, Q10ai: `live services` on `fada980` failed in `cargo xtask live run assets --running` ([run 45360736959](https://github.com/KanikaBreed/Ferroan/actions/runs/45360736959), job `138330379541` on Home1, 09:06:04Z–09:19:42Z). `live up --assets ferroan` printed `live: up`, and the next process printed `run cargo xtask live up --assets ferroan first`. The port-base directory is `runs/<base>-<pid>/`, so the second process did not see the first process's state, and `live down` from a later process did not recognise that region or asset service. Fixed in this pull request. Scenarios (7m44s), Ferrobot (8m25s) and images (6m54s) passed on that run.
+
 - 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
 
 - 2026-11-24, Q18b2: A second `TeleportLocationRequest` while a hop runs is answered by `Teleport()` with `Previous teleport process incomplete.  Please retry shortly.` (two spaces). `DoTeleport` sends `Agent is already in transit.` Paragraph (2b) names the `DoTeleport` sentence. The viewer packet takes the `Teleport()` path, so this hop sends that sentence. No TB.

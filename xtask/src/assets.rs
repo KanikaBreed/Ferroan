@@ -220,6 +220,12 @@ pub(crate) fn wait_service(
 /// Only the recorded process from this worktree may be stopped by `live down`.
 #[cfg(target_os = "linux")]
 pub(crate) fn persistent_pid_live(pid: u32, start_time: u64) -> bool {
+    persistent_pid_live_at(pid, start_time, &live::scratch_run().join("robust.ini"))
+}
+
+/// `ini` is the `robust.ini` of the process that started the service. A later
+/// command has its own run directory, so the check cannot use that directory.
+pub(crate) fn persistent_pid_live_at(pid: u32, start_time: u64, ini: &Path) -> bool {
     if live::process_start_time(pid) != Some(start_time) {
         return false;
     }
@@ -227,7 +233,6 @@ pub(crate) fn persistent_pid_live(pid: u32, start_time: u64) -> bool {
         return false;
     };
     let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
-    let ini = live::scratch_run().join("robust.ini");
     args.first().is_some_and(|arg| {
         arg.rsplit(|byte| *byte == b'/').next() == Some(b"ferroan-robust".as_slice())
     }) && args
@@ -236,27 +241,27 @@ pub(crate) fn persistent_pid_live(pid: u32, start_time: u64) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn stop_persistent(pid: u32, start_time: u64) -> Result<(), String> {
-    if !persistent_pid_live(pid, start_time) {
+pub(crate) fn stop_persistent_at(pid: u32, start_time: u64, ini: &Path) -> Result<(), String> {
+    if !persistent_pid_live_at(pid, start_time, ini) {
         return Ok(());
     }
     let _ = Command::new("kill")
         .args(["-TERM", &format!("-{pid}")])
         .status();
     let deadline = Instant::now() + Duration::from_secs(20);
-    while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
+    while persistent_pid_live_at(pid, start_time, ini) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(100));
     }
-    if persistent_pid_live(pid, start_time) {
+    if persistent_pid_live_at(pid, start_time, ini) {
         let _ = Command::new("kill")
             .args(["-KILL", &format!("-{pid}")])
             .status();
     }
     let deadline = Instant::now() + Duration::from_secs(5);
-    while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
+    while persistent_pid_live_at(pid, start_time, ini) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(100));
     }
-    if persistent_pid_live(pid, start_time) {
+    if persistent_pid_live_at(pid, start_time, ini) {
         Err(format!("asset service pid {pid} did not exit"))
     } else {
         Ok(())
@@ -934,8 +939,9 @@ mod tests {
         .unwrap();
         let pid = owned.pid();
         let start = live::process_start_time(pid).unwrap();
-        stop_persistent(pid, start).unwrap();
-        stop_persistent(pid, start + 1).unwrap();
+        let ini = dir.join("robust.ini");
+        stop_persistent_at(pid, start, &ini).unwrap();
+        stop_persistent_at(pid, start + 1, &ini).unwrap();
         assert!(owned.child.try_wait().unwrap().is_none());
         drop(owned);
         fs::remove_dir_all(dir).unwrap();
