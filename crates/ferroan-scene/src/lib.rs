@@ -56,7 +56,7 @@
 //! Read-only region terrain, the prim load and the frame thread.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
-//! The region startup hook is a later row.
+//! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 

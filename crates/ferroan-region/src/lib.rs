@@ -13,6 +13,7 @@ pub mod fetch_caps;
 pub mod grid;
 pub mod inventory;
 pub mod library;
+pub mod objects;
 pub mod remote_asset;
 pub mod simulation;
 pub mod simulation_client;
