@@ -24,6 +24,7 @@ pub(crate) enum Database {
 enum AssetBackend {
     Stock,
     Xasset,
+    Fsassets,
 }
 
 impl Database {
@@ -213,6 +214,20 @@ fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCo
             Database::Sqlite => live::finish(Err("XAssetService has no SQLite plugin".to_string())),
             Database::Mysql => crate::xasset_live::compare(crate::xasset_live::XassetDb::Mysql),
             Database::Pgsql => crate::xasset_live::compare(crate::xasset_live::XassetDb::Pgsql),
+        };
+    }
+    if backend == AssetBackend::Fsassets {
+        if service != "assets" {
+            return live::finish(Err(
+                "--backend fsassets is used with live assets".to_string()
+            ));
+        }
+        return match db {
+            Database::Sqlite => {
+                live::finish(Err("FSAssetService has no SQLite plugin".to_string()))
+            }
+            Database::Mysql => crate::fsasset_live::compare(crate::fsasset_live::FsassetDb::Mysql),
+            Database::Pgsql => crate::fsasset_live::compare(crate::fsasset_live::FsassetDb::Pgsql),
         };
     }
     if let Err(error) = db.require_ready() {
@@ -482,8 +497,9 @@ fn services(value: &str) -> Result<Vec<String>, ParseFail> {
 fn asset_backend(value: &str) -> Result<AssetBackend, ParseFail> {
     match value {
         "xasset" => Ok(AssetBackend::Xasset),
+        "fsassets" => Ok(AssetBackend::Fsassets),
         _ => Err(ParseFail::Message(format!(
-            "--backend expects xasset; {value} is not served by this harness yet"
+            "--backend expects xasset or fsassets; {value} is not served by this harness yet"
         ))),
     }
 }
@@ -723,7 +739,21 @@ mod tests {
             }
             other => panic!("expected compare, got {other:?}"),
         }
-        let refused = parse(&["assets", "--backend", "fsassets"]).unwrap_err();
+        match parse(&["assets", "--backend", "fsassets", "--db", "mysql"]).unwrap() {
+            Command::Compare { db, backend, .. } => {
+                assert_eq!(db, Database::Mysql);
+                assert_eq!(backend, AssetBackend::Fsassets);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        match parse(&["assets", "--backend", "fsassets", "--db", "pgsql"]).unwrap() {
+            Command::Compare { db, backend, .. } => {
+                assert_eq!(db, Database::Pgsql);
+                assert_eq!(backend, AssetBackend::Fsassets);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        let refused = parse(&["assets", "--backend", "legacy"]).unwrap_err();
         assert!(matches!(refused, ParseFail::Message(text) if text.contains("fsassets")));
         assert!(matches!(
             parse(&["accounts", "--backend", "xasset"]),

@@ -23,16 +23,6 @@ Status values: `READY`, `IN PROGRESS`, `BLOCKED`, `DONE`, and `EXTERNAL` (an out
 
 Items that name a GitHub issue are open to outside contributors too, but the coder does not wait for them. When such an item comes up, check its issue first (`gh issue view <n> --json labels`). If it is labelled `claimed`, a contributor has it: skip the item and go on. If not, it is the coder's: add the `claimed` label, post one comment on the issue ("The project's queue coder is taking this, on branch `<branch>`."), and work it as usual, with `Closes #<n>` in the PR. An item that names several issues is taken one issue at a time, in the order listed. This is the only issue comment the coder posts.
 
-## Paused for handoff (22 November 2026)
-
-The Grok queue coders' shared weekly usage ran out on 22 November 2026 around 01:30 EST (`402 Payment Required`). It resets on Monday 23 November at 21:08 EST. Any coder that resumes first finishes what is in flight, in this order, before taking a new item (#172, #173 and #174 have merged):
-
-1. **Q23e** (live FSAssets compare) has uncommitted work in `/home/cinder/Git/work/ferroan/q23e-fsasset-live` on `feat/fsasset-live` (a new `xtask/src/fsasset_live.rs` and harness, workflow and docs edits). Read it, finish it or start again from `origin/main`; it is not pushed.
-2. Then the region track resumes with Q18b.
-3. When the queue restarts on 23 November 2026 the manager runs four coders (rule 10), one named item each: Q18b (region), Q23e (FSAssets, the handoff worktree), Q10ac (harness), Q53 (objects, with the startup hook below).
-
-Remove this section once the queue runs again.
-
 ## Queue
 
 | # | Item | Status |
@@ -169,7 +159,7 @@ Remove this section once the queue runs again.
 | Q23p | Pin6: move the Tranquillity pin to `dev-build` `1d7abb8` (upstream `develop` `e28703a`, the Pin5 roll-up and #473 to #487); TB10 to TB30 and TB33 to TB36 fixed | DONE (#150) |
 | Q23c | P1.A3c: `FSAssetService` on the asset HTTP routes: fallback, access-time interval, secondary instance, default loader (TB25 fixed) | DONE (#156) |
 | Q23d | P1.A3d: FSAssets console commands: `show assets`, `show digest`, `delete asset`, `import`, `force import` | DONE (#170) |
-| Q23e | P1.A3e: `cargo xtask live assets --backend fsassets --db mysql\|pgsql` prints `assets: match`, with the 10,000-asset timing | READY after Q23d |
+| Q23e | P1.A3e: `cargo xtask live assets --backend fsassets --db mysql\|pgsql` prints `assets: match`, with the 10,000-asset timing | IN PROGRESS |
 | Q24 | P1.1: user accounts | DONE (#83) |
 | Q24a | P1.1a: `grid --rust <service>` for services C# Robust also uses in-process, starting with accounts | DONE (#87) |
 | Q25 | P1.2: authentication and authorization | DONE (#160) |
