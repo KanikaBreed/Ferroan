@@ -786,7 +786,7 @@ fn quat_of(el: &Element) -> Option<[f32; 4]> {
             "z" => value[2] = need_f32(child)?,
             "w" => value[3] = need_f32(child)?,
             // An unknown child is skipped. The pin's reader never advances on
-            // one, so this is the fixed behaviour (TB72).
+            // one, so this is the fixed behaviour (TB73).
             _ => {}
         }
     }
