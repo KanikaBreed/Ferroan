@@ -43,32 +43,46 @@
 //! skips another person's HUD before offering; this queue does not see
 //! attachment privacy.
 //!
-//! Priorities 0 and 1 drain completely before the others. The prioritizer (the
-//! next row) uses 0 for this viewer's avatar and 1 for other avatars. The
-//! other eleven queues then take turns, 8, 8, 5, 4, 3, 2, then 1 pull each.
+//! Priorities 0 and 1 drain completely before the others.
+//! [`best_avatar_responsiveness`](crate::best_avatar_responsiveness) uses 0 for
+//! this viewer's avatar and 1 for other avatars. The other eleven queues then
+//! take turns, 8, 8, 5, 4, 3, 2, then 1 pull each.
 //! Inside one queue the oldest entry order leaves first.
 //!
-//! A dequeued word with `Kill` set is a kill. Otherwise `UpdateProbe` is a
-//! probe and not also a field packet. Remaining field bits that fit the terse
-//! mask are a terse update; any other field bit is a full update. `Animations`
-//! is reported beside that field packet. Packet bytes, distance culling and
-//! deleted-object kills are later rows.
+//! A dequeued word with `Kill` set is a kill. Otherwise, for a prim,
+//! `UpdateProbe` is a probe and not also a field packet. Remaining field bits
+//! that fit the terse mask are a terse update; any other field bit is a full
+//! update. `Animations` is reported beside that field packet, for a prim.
+//! Probe and animations apply to prims only. `material_override` is set only
+//! for a full prim update that still carries `MaterialOvr`. A tree, PBR
+//! support and a present render-materials list stay with the packet row.
+//! Packet bytes, distance culling and deleted-object kills are later rows.
 //!
-//! C# grows this queue without a bound. Ferroan refuses a new local id when
-//! [`MAX_ENTITY_UPDATES`] distinct updates are already waiting on this viewer.
-//! A merge into an id that is already waiting still applies.
+//! C# grows this queue without a bound. The bound is `region.objects` plus
+//! 4,096. A new local id past that is refused when it is not a kill and its
+//! priority is above 1 (D56). A kill and priorities 0 and 1 displace the newest
+//! lowest-priority ordinary entry, or are kept past the bound when every
+//! waiting update is one of those. A merge into an id that is already waiting
+//! still applies.
 
 use std::collections::HashMap;
 
 use ferroan_diag::{Kind, REGION_ENTITY_UPDATES, refuse};
 
+/// Extra waiting updates past `region.objects` so agents still fit on a full region.
+const AGENT_UPDATE_HEADROOM: usize = 4_096;
+
 /// Waiting updates on one viewer. One slot per local id.
-pub const MAX_ENTITY_UPDATES: usize = 100_000;
+///
+/// A full region is one update per prim (`region.objects`). A kill and the
+/// avatar queues need room past that (D56).
+pub const MAX_ENTITY_UPDATES: usize =
+    crate::objects::MAX_REGION_OBJECTS as usize + AGENT_UPDATE_HEADROOM;
 
 /// Queues, including the two that drain before the fair rotation.
 pub const QUEUE_COUNT: usize = 13;
 
-const IMMEDIATE_QUEUES: usize = 2;
+pub(crate) const IMMEDIATE_QUEUES: usize = 2;
 
 /// Pulls from each queue per turn. The first two are immediate, so the count is unused.
 const QUEUE_PULLS: [i32; QUEUE_COUNT] = [0, 0, 8, 8, 5, 4, 3, 2, 1, 1, 1, 1, 1];
@@ -125,34 +139,43 @@ pub enum FieldPacket {
     Full,
 }
 
-/// Kill and probe replace a field packet. Animations can ride with one.
+/// Kill and probe replace a field packet. Animations can ride with a prim's field packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassifiedUpdate {
     pub kill: bool,
     pub probe: bool,
     pub animations: bool,
+    /// Set only for a full prim update that still carries `MaterialOvr`.
+    pub material_override: bool,
     pub field: Option<FieldPacket>,
 }
 
 /// Classify `flags` the way a dequeue does before any packet is built.
-pub fn classify(flags: u32) -> ClassifiedUpdate {
+///
+/// `prim` is false for an avatar. Probe and animations apply to prims only.
+/// `material_override` is set only when a prim's field packet is full and the
+/// word still carries `MaterialOvr`. Whether that prim is a tree, and whether
+/// render materials are present, stays with the packet row.
+pub fn classify(flags: u32, prim: bool) -> ClassifiedUpdate {
     if flags & KILL != 0 {
         return ClassifiedUpdate {
             kill: true,
             probe: false,
             animations: false,
+            material_override: false,
             field: None,
         };
     }
-    if flags & UPDATE_PROBE != 0 {
+    if prim && flags & UPDATE_PROBE != 0 {
         return ClassifiedUpdate {
             kill: false,
             probe: true,
             animations: false,
+            material_override: false,
             field: None,
         };
     }
-    let animations = flags & ANIMATIONS != 0;
+    let animations = prim && flags & ANIMATIONS != 0;
     let field_bits = flags & FULL_UPDATE;
     let field = if field_bits == 0 {
         None
@@ -165,6 +188,7 @@ pub fn classify(flags: u32) -> ClassifiedUpdate {
         kill: false,
         probe: false,
         animations,
+        material_override: prim && field == Some(FieldPacket::Full) && flags & MATERIAL_OVR != 0,
         field,
     }
 }
@@ -359,8 +383,10 @@ impl EntityUpdateQueue {
 
     /// Queue `flags` for `local_id`, or merge them into the waiting entry.
     ///
-    /// A flag word that is only `SendInTransit` removes that id. A new id is
-    /// refused when the viewer already holds [`MAX_ENTITY_UPDATES`] entries.
+    /// A flag word that is only `SendInTransit` removes that id. A new id past
+    /// [`MAX_ENTITY_UPDATES`] is refused when it is not a kill and its priority
+    /// is above 1. A kill and priorities 0 and 1 take the place of the newest
+    /// lowest-priority ordinary entry, or are kept past the bound.
     pub fn enqueue(&mut self, priority: u8, local_id: u32, flags: u32) -> bool {
         if priority as usize >= QUEUE_COUNT {
             return false;
@@ -390,15 +416,20 @@ impl EntityUpdateQueue {
             }
             return true;
         }
-        if self.slots.len() >= MAX_ENTITY_UPDATES {
+        // Judge the incoming word before `CancelKill` rewrites it.
+        let protected = priority <= 1 || flags & KILL != 0;
+        if self.slots.len() >= MAX_ENTITY_UPDATES && !protected {
             refuse(
                 REGION_ENTITY_UPDATES,
                 Kind::Hard,
                 MAX_ENTITY_UPDATES as u64,
-                MAX_ENTITY_UPDATES as u64 + 1,
+                self.slots.len() as u64 + 1,
                 "entity-updates",
             );
             return false;
+        }
+        if self.slots.len() >= MAX_ENTITY_UPDATES {
+            self.displace_ordinary();
         }
         let entry_order = self.next_request;
         self.next_request = self.next_request.wrapping_add(1);
@@ -413,6 +444,23 @@ impl EntityUpdateQueue {
         );
         self.heaps[priority as usize].add(&mut self.slots, local_id);
         true
+    }
+
+    /// Drop the newest entry on the least urgent queue that is not a kill or an avatar.
+    fn displace_ordinary(&mut self) {
+        let victim = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.priority > 1 && slot.flags & KILL == 0)
+            .max_by(|(_, left), (_, right)| {
+                left.priority
+                    .cmp(&right.priority)
+                    .then(left.entry_order.cmp(&right.entry_order))
+            })
+            .map(|(&local_id, _)| local_id);
+        if let Some(local_id) = victim {
+            self.remove(&[local_id]);
+        }
     }
 
     pub fn remove(&mut self, local_ids: &[u32]) {
@@ -567,11 +615,12 @@ mod tests {
         let update = queue.dequeue().unwrap();
         assert_eq!(update.flags, TERSE_UPDATE | KILL);
         assert_eq!(
-            classify(update.flags),
+            classify(update.flags, true),
             ClassifiedUpdate {
                 kill: true,
                 probe: false,
                 animations: false,
+                material_override: false,
                 field: None,
             }
         );
@@ -586,17 +635,18 @@ mod tests {
         let update = queue.get(1).unwrap();
         assert_eq!(update.flags, FULL_UPDATE);
         assert_eq!(
-            classify(update.flags),
+            classify(update.flags, true),
             ClassifiedUpdate {
                 kill: false,
                 probe: false,
                 animations: false,
+                material_override: false,
                 field: Some(FieldPacket::Full),
             }
         );
-        assert_eq!(classify(TERSE_UPDATE).field, Some(FieldPacket::Terse));
+        assert_eq!(classify(TERSE_UPDATE, true).field, Some(FieldPacket::Terse));
         assert_eq!(
-            classify(POSITION | ROTATION).field,
+            classify(POSITION | ROTATION, true).field,
             Some(FieldPacket::Terse)
         );
     }
@@ -654,17 +704,18 @@ mod tests {
         let mut queue = EntityUpdateQueue::new();
         assert!(queue.enqueue(2, 1, KILL | POSITION));
         assert!(queue.enqueue(2, 1, FULL_UPDATE));
-        assert!(classify(queue.get(1).unwrap().flags).kill);
+        assert!(classify(queue.get(1).unwrap().flags, true).kill);
 
         assert!(queue.enqueue(2, 1, CANCEL_KILL));
         let replaced = queue.get(1).unwrap();
         assert_eq!(replaced.flags, FULL_UPDATE_WITH_ANIM);
         assert_eq!(
-            classify(replaced.flags),
+            classify(replaced.flags, true),
             ClassifiedUpdate {
                 kill: false,
                 probe: false,
                 animations: true,
+                material_override: false,
                 field: Some(FieldPacket::Full),
             }
         );
@@ -672,7 +723,13 @@ mod tests {
         let mut fresh = EntityUpdateQueue::new();
         assert!(fresh.enqueue(2, 4, CANCEL_KILL | UPDATE_PROBE));
         assert_eq!(fresh.get(4).unwrap().flags, UPDATE_PROBE);
-        assert!(classify(UPDATE_PROBE).probe);
+        assert!(classify(UPDATE_PROBE, true).probe);
+
+        let mut waiting = EntityUpdateQueue::new();
+        assert!(waiting.enqueue(3, 8, POSITION | KILL));
+        assert!(waiting.enqueue(3, 8, CANCEL_KILL | UPDATE_PROBE));
+        assert_eq!(waiting.get(8).unwrap().flags, UPDATE_PROBE);
+        assert!(classify(waiting.get(8).unwrap().flags, true).probe);
     }
 
     #[test]
@@ -682,7 +739,7 @@ mod tests {
         assert!(first.enqueue(2, 1, POSITION));
         assert!(second.enqueue(2, 1, KILL));
         assert_eq!(first.get(1).unwrap().flags, POSITION);
-        assert!(classify(second.get(1).unwrap().flags).kill);
+        assert!(classify(second.get(1).unwrap().flags, true).kill);
     }
 
     #[test]
@@ -701,10 +758,86 @@ mod tests {
             assert!(queue.enqueue(2, id, POSITION));
         }
         assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
-        assert!(!queue.enqueue(2, MAX_ENTITY_UPDATES as u32, POSITION));
+        let refused = MAX_ENTITY_UPDATES as u32;
+        assert!(!queue.enqueue(2, refused, POSITION));
+        assert!(queue.get(refused).is_none());
         assert!(queue.enqueue(2, 0, ROTATION));
         assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
         assert_eq!(queue.get(0).unwrap().flags, POSITION | ROTATION);
         assert!(ferroan_diag::metrics().contains("region.entity-updates"));
+    }
+
+    #[test]
+    fn a_merge_that_changes_priority_keeps_its_entry_order() {
+        let mut queue = EntityUpdateQueue::new();
+        assert!(queue.enqueue(5, 1, POSITION));
+        assert!(queue.enqueue(2, 2, POSITION));
+        assert!(queue.enqueue(2, 3, POSITION));
+        assert!(queue.enqueue(2, 1, ROTATION));
+        let moved = queue.get(1).unwrap();
+        assert_eq!(moved.priority, 2);
+        assert_eq!(moved.entry_order, 0);
+        assert_eq!(moved.flags, POSITION | ROTATION);
+        assert_eq!(ids(&mut queue), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn material_override_is_only_a_full_prim_update() {
+        let full = classify(FULL_UPDATE | MATERIAL_OVR, true);
+        assert_eq!(full.field, Some(FieldPacket::Full));
+        assert!(full.material_override);
+        assert!(!classify(TERSE_UPDATE | MATERIAL_OVR, true).material_override);
+        assert!(!classify(FULL_UPDATE | MATERIAL_OVR, false).material_override);
+        assert!(!classify(MATERIAL_OVR, true).material_override);
+
+        let prim_probe = classify(UPDATE_PROBE | ANIMATIONS, true);
+        assert!(prim_probe.probe);
+        assert!(!prim_probe.animations);
+
+        let avatar = classify(UPDATE_PROBE | ANIMATIONS | POSITION, false);
+        assert!(!avatar.probe);
+        assert!(!avatar.animations);
+        assert_eq!(avatar.field, Some(FieldPacket::Terse));
+        assert!(classify(ANIMATIONS | POSITION, true).animations);
+        assert!(!classify(ANIMATIONS | POSITION, false).animations);
+    }
+
+    #[test]
+    fn a_kill_and_a_priority_zero_update_are_accepted_on_a_full_queue() {
+        let mut queue = EntityUpdateQueue::new();
+        for id in 0..MAX_ENTITY_UPDATES as u32 {
+            assert!(queue.enqueue(4, id, POSITION));
+        }
+        let newest = MAX_ENTITY_UPDATES as u32 - 1;
+        let kill_id = MAX_ENTITY_UPDATES as u32;
+        assert!(queue.enqueue(6, kill_id, KILL));
+        assert!(queue.get(kill_id).is_some());
+        assert!(queue.get(newest).is_none());
+        assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
+
+        let avatar = kill_id + 1;
+        assert!(queue.enqueue(0, avatar, POSITION));
+        assert_eq!(queue.get(avatar).map(|update| update.priority), Some(0));
+        assert!(queue.get(newest - 1).is_none());
+        assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
+
+        let other = avatar + 1;
+        assert!(queue.enqueue(1, other, POSITION));
+        assert_eq!(queue.get(other).map(|update| update.priority), Some(1));
+        assert!(queue.get(newest - 2).is_none());
+        assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
+    }
+
+    #[test]
+    fn a_kill_is_kept_when_nothing_ordinary_can_be_displaced() {
+        let mut queue = EntityUpdateQueue::new();
+        for id in 0..MAX_ENTITY_UPDATES as u32 {
+            assert!(queue.enqueue(0, id, POSITION));
+        }
+        let kill_id = MAX_ENTITY_UPDATES as u32;
+        assert!(queue.enqueue(4, kill_id, KILL));
+        assert_eq!(queue.len(), MAX_ENTITY_UPDATES + 1);
+        assert!(queue.get(kill_id).is_some());
+        assert!(queue.get(0).is_some());
     }
 }
