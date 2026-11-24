@@ -34,7 +34,7 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Grid mode: `cargo xtask live run <scenario>|all|neighbour grid`.
+//! Grid mode: `cargo xtask live run <scenario>|all|neighbour|report grid`.
 //!
 //! Standalone stays `cargo xtask live run`. This starts Tranquillity's
 //! GridServer and two neighbouring regions. Each region uses the shipped
@@ -659,10 +659,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "hop"
                 | "uploads"
                 | "neighbour"
+                | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads and neighbour scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, neighbour and report scenarios"
                 .to_string(),
         );
     }
@@ -671,7 +672,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     }
     if !matches!(
         scenario,
-        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop" | "uploads"
+        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop" | "uploads" | "report"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -1150,7 +1151,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "ferrobot" {
+    if scenario == "report" {
+        // The capture still has to pass check, redact and replay. Its packet
+        // counts are not report lines: the two regions do not send the same
+        // number of datagrams, and the compare is the lines below.
+        live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(report.lines)
+    } else if scenario == "ferrobot" {
         let http = ferrobot_capture::http_records(&[
             captures.robust_public.clone(),
             captures.home.clone(),
