@@ -116,6 +116,7 @@ static void Seed(string path)
     using SQLiteTransaction tx = db.BeginTransaction();
     InsertPrims(db);
     InsertShapes(db);
+    InsertItems(db);
     tx.Commit();
 }
 
@@ -218,6 +219,97 @@ static void InsertPrims(SQLiteConnection db)
 
     BasePrim("not-a-uuid", Region, "not-a-uuid", "unbuildable").Insert(db, "prims");
     BasePrim(PrimF, OtherRegion, PrimF, "other-region").Insert(db, "prims");
+}
+
+static void InsertItems(SQLiteConnection db)
+{
+    // Stored order is not item-id order. A null description, a creator id, a
+    // creator endpoint with no name, and an unparsable experience id all load.
+    TaskItem(PrimA, "c0000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-0000000000c3", "00000000-0000-0000-0000-0000000000d3", "note", 7, 7)
+        .Set("creationDate", 1700000103)
+        .Set("creatorID", Creator)
+        .Set("nextPermissions", 11)
+        .Set("currentPermissions", 22)
+        .Set("basePermissions", 33)
+        .Set("everyonePermissions", 44)
+        .Set("groupPermissions", 55)
+        .Set("flags", 66)
+        .Set("experienceID", "nope")
+        .Insert(db, "primitems");
+    TaskItem(PrimA, "c0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000d1", "script", 10, 10)
+        .Set("description", "runs")
+        .Set("creationDate", 1700000101)
+        .Set("creatorID", Creator + ";https://profile.example/agent")
+        .Set("nextPermissions", 2147483647)
+        .Set("currentPermissions", 2147483647)
+        .Set("basePermissions", 2147483647)
+        .Set("everyonePermissions", 2147483647)
+        .Set("groupPermissions", 2147483647)
+        .Set("flags", 0)
+        .Set("experienceID", "00000000-0000-0000-0000-000000000000")
+        .Insert(db, "primitems");
+    TaskItem(PrimA, "c0000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-0000000000c2", "00000000-0000-0000-0000-0000000000d2", "box", 6, 6)
+        .Set("description", "worn")
+        .Set("creationDate", 1700000102)
+        .Set("creatorID", Creator + ";https://profile.example/agent;Ada Lovelace")
+        .Set("nextPermissions", 8)
+        .Set("currentPermissions", 16)
+        .Set("basePermissions", 32)
+        .Set("everyonePermissions", 0)
+        .Set("groupPermissions", 1)
+        .Set("flags", 0)
+        .Set("experienceID", "abcdefab-cdef-abcd-efab-cdefabcdefab")
+        .Insert(db, "primitems");
+    TaskItem(ChildB2, "b2222222-2222-2222-2222-222222222222", "00000000-0000-0000-0000-0000000000b2", "00000000-0000-0000-0000-0000000000e2", "mark", 3, 3)
+        .Set("description", "child")
+        .Set("creationDate", 1700000104)
+        .Set("creatorID", Creator + ";")
+        .Set("nextPermissions", 7)
+        .Set("currentPermissions", 7)
+        .Set("basePermissions", 7)
+        .Set("everyonePermissions", 0)
+        .Set("groupPermissions", 0)
+        .Set("flags", 1)
+        .Set("experienceID", "00000000-0000-0000-0000-000000000000")
+        .Insert(db, "primitems");
+    TaskItem(PrimD, "d0000000-0000-0000-0000-000000000009", "00000000-0000-0000-0000-0000000000d9", "00000000-0000-0000-0000-0000000000e9", "blank", 7, 7)
+        .Set("description", "")
+        .Set("creationDate", 1700000105)
+        .Set("creatorID", "")
+        .Set("nextPermissions", 0)
+        .Set("currentPermissions", 0)
+        .Set("basePermissions", 0)
+        .Set("everyonePermissions", 0)
+        .Set("groupPermissions", 0)
+        .Set("flags", 0)
+        .Insert(db, "primitems");
+    TaskItem("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1", "e0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000e1", "00000000-0000-0000-0000-0000000000f1", "gone", 7, 7)
+        .Set("description", "unbuilt prim")
+        .Set("creationDate", 1700000106)
+        .Set("creatorID", Creator)
+        .Set("experienceID", "00000000-0000-0000-0000-000000000000")
+        .Insert(db, "primitems");
+    TaskItem(PrimF, "f0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000f2", "00000000-0000-0000-0000-0000000000f3", "elsewhere", 7, 7)
+        .Set("description", "other region")
+        .Set("creationDate", 1700000107)
+        .Set("creatorID", Creator)
+        .Set("experienceID", "00000000-0000-0000-0000-000000000000")
+        .Insert(db, "primitems");
+}
+
+static Row TaskItem(string prim, string item, string asset, string folder, string name, int inv, int assetType)
+{
+    return new Row()
+        .Set("itemID", item)
+        .Set("primID", prim)
+        .Set("assetID", asset)
+        .Set("parentFolderID", folder)
+        .Set("invType", inv)
+        .Set("assetType", assetType)
+        .Set("name", name)
+        .Set("ownerID", Owner)
+        .Set("lastOwnerID", LastOwner)
+        .Set("groupID", GroupOwner);
 }
 
 static void InsertShapes(SQLiteConnection db)
@@ -647,6 +739,7 @@ sealed class DumpPart
     public DumpInertia phys_inertia { get; set; }
     public List<DumpAnimation> animations { get; set; }
     public DumpLinkset linkset { get; set; }
+    public List<DumpItem> items { get; set; }
     public DumpRaw raw { get; set; }
 
     public static DumpPart From(SceneObjectPart part, RawPrim raw, RawShape storedShape)
@@ -754,6 +847,7 @@ sealed class DumpPart
             phys_inertia = InertiaOf(part.PhysicsInertia),
             animations = AnimsOf(part),
             linkset = LinksetOf(part.LinksetData),
+            items = DumpItems(part),
             raw = new DumpRaw
             {
                 media = storedShape == null ? null : storedShape.Media,
@@ -766,6 +860,14 @@ sealed class DumpPart
                 linkset_data = raw == null ? null : raw.Linkset
             }
         };
+    }
+
+    static List<DumpItem> DumpItems(SceneObjectPart part)
+    {
+        List<DumpItem> items = new List<DumpItem>();
+        foreach (TaskInventoryItem item in part.TaskInventory.Values)
+            items.Add(DumpItem.From(item));
+        return items;
     }
 
     public static string Hex(byte[] bytes)
@@ -1031,6 +1133,57 @@ sealed class DumpPart
                 overrides.Add(new DumpMaterialOverride { te_index = entry.te_index, data = entry.data });
         }
         return new DumpMaterials { overrides = overrides };
+    }
+}
+
+sealed class DumpItem
+{
+    public string item_id { get; set; }
+    public string parent_part_id { get; set; }
+    public string asset_id { get; set; }
+    public string parent_id { get; set; }
+    public int inv_type { get; set; }
+    public int asset_type { get; set; }
+    public string name { get; set; }
+    public string description { get; set; }
+    public uint creation_date { get; set; }
+    public string creator_id { get; set; }
+    public string owner_id { get; set; }
+    public string last_owner_id { get; set; }
+    public string group_id { get; set; }
+    public uint next_permissions { get; set; }
+    public uint current_permissions { get; set; }
+    public uint base_permissions { get; set; }
+    public uint everyone_permissions { get; set; }
+    public uint group_permissions { get; set; }
+    public uint flags { get; set; }
+    public string experience_id { get; set; }
+
+    public static DumpItem From(TaskInventoryItem item)
+    {
+        return new DumpItem
+        {
+            item_id = item.ItemID.ToString(),
+            parent_part_id = item.ParentPartID.ToString(),
+            asset_id = item.AssetID.ToString(),
+            parent_id = item.ParentID.ToString(),
+            inv_type = item.InvType,
+            asset_type = item.Type,
+            name = item.Name,
+            description = item.Description,
+            creation_date = item.CreationDate,
+            creator_id = item.CreatorIdentification,
+            owner_id = item.OwnerID.ToString(),
+            last_owner_id = item.LastOwnerID.ToString(),
+            group_id = item.GroupID.ToString(),
+            next_permissions = item.NextPermissions,
+            current_permissions = item.CurrentPermissions,
+            base_permissions = item.BasePermissions,
+            everyone_permissions = item.EveryonePermissions,
+            group_permissions = item.GroupPermissions,
+            flags = item.Flags,
+            experience_id = item.ExperienceID.ToString()
+        };
     }
 }
 
