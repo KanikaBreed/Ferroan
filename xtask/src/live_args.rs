@@ -48,6 +48,9 @@ pub(crate) struct RunSpec {
     pub ferroan_region: bool,
     pub rust_services: Vec<String>,
     pub db: Database,
+    /// When set, each C# region ini selects BasicPhysics. The default omits
+    /// the key, so the shipped default stays ubODE. Ferroan has no switch.
+    pub basic_physics: bool,
 }
 
 impl RunSpec {
@@ -238,7 +241,7 @@ fn run_spec(spec: RunSpec) -> ExitCode {
         if !spec.rust_services.is_empty() {
             return live::finish(Err("--rust is used with grid mode".to_string()));
         }
-        return live::run(&spec.scenario);
+        return live::run(&spec.scenario, spec.basic_physics);
     }
     if let Err(error) = require_known_services(&spec.rust_services) {
         return live::finish(Err(error));
@@ -315,6 +318,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.rust_services.is_some()
                 || flags.db_set
                 || flags.backend.is_some()
+                || flags.basic_physics
             {
                 return Err(ParseFail::Usage);
             }
@@ -339,6 +343,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.region_ferroan
                 || flags.bind.is_some()
                 || flags.rust_services.is_some()
+                || flags.basic_physics
             {
                 return Err(ParseFail::Usage);
             }
@@ -362,6 +367,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.region_ferroan
                 || flags.bind.is_some()
                 || flags.rust_services.is_some()
+                || flags.basic_physics
             {
                 return Err(ParseFail::Usage);
             }
@@ -378,6 +384,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.bind.is_some()
                 || flags.rust_services.is_some()
                 || flags.backend.is_some()
+                || flags.basic_physics
             {
                 return Err(if flags.backend.is_some() {
                     ParseFail::Message("--backend is used with live assets".to_string())
@@ -398,6 +405,7 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 || flags.bind.is_some()
                 || flags.rust_services.is_some()
                 || flags.backend.is_some()
+                || flags.basic_physics
             {
                 return Err(if flags.backend.is_some() {
                     ParseFail::Message("--backend is used with live assets".to_string())
@@ -443,7 +451,12 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         });
     }
     if flags.running {
-        if *scenario != "assets" || grid || flags.region_ferroan || flags.rust_services.is_some() {
+        if *scenario != "assets"
+            || grid
+            || flags.region_ferroan
+            || flags.rust_services.is_some()
+            || flags.basic_physics
+        {
             return Err(ParseFail::Usage);
         }
         return Ok(Command::RunningAssets { db: flags.db });
@@ -454,6 +467,7 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         ferroan_region: flags.region_ferroan,
         rust_services: flags.rust_services.unwrap_or_default(),
         db: flags.db,
+        basic_physics: flags.basic_physics,
     }))
 }
 
@@ -465,6 +479,7 @@ struct Flags {
     db_set: bool,
     running: bool,
     backend: Option<AssetBackend>,
+    basic_physics: bool,
 }
 
 fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
@@ -476,6 +491,7 @@ fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
         db_set: false,
         running: false,
         backend: None,
+        basic_physics: false,
     };
     let mut index = 0;
     while index < args.len() {
@@ -512,6 +528,16 @@ fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
             "--backend" => {
                 let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
                 parsed.backend = Some(asset_backend(value)?);
+                index += 1;
+            }
+            "--physics" => {
+                let value = args.get(index + 1).ok_or(ParseFail::Usage)?;
+                if *value != "basicphysics" {
+                    return Err(ParseFail::Message(
+                        "--physics expects basicphysics".to_string(),
+                    ));
+                }
+                parsed.basic_physics = true;
                 index += 1;
             }
             _ => return Err(ParseFail::Usage),
@@ -673,6 +699,38 @@ mod tests {
             other => panic!("expected compare, got {other:?}"),
         }
         assert!(require_known_services(&["accounts".into()]).is_ok());
+    }
+
+    #[test]
+    fn basicphysics_is_opt_in_on_a_run() {
+        let spec = run(&["run", "walk", "--physics", "basicphysics"]);
+        assert!(spec.basic_physics);
+        assert!(!spec.grid);
+        let grid = run(&[
+            "run",
+            "walk",
+            "grid",
+            "--region",
+            "ferroan",
+            "--physics",
+            "basicphysics",
+        ]);
+        assert!(grid.basic_physics);
+        assert!(grid.ferroan_region);
+        assert!(!run(&["run", "login", "grid"]).basic_physics);
+        assert!(parse(&["run", "walk", "--physics", "ubode"]).is_err());
+        assert!(parse(&["compare", "region", "--physics", "basicphysics"]).is_err());
+        assert!(
+            parse(&[
+                "up",
+                "grid",
+                "--region",
+                "ferroan",
+                "--physics",
+                "basicphysics"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
