@@ -131,7 +131,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | DONE (#193) |
 | Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (#201) |
 | Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | DONE (this PR) |
-| Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53c |
+| Q54 | P2.4a2: prim inventory items from the SQLite store | DONE (this PR) |
 | Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
 | Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | READY after Q18a |
@@ -539,7 +539,13 @@ Q10ag closed by the manager (24 November 2026): the cause was found and fixed in
 
 QR1 (24 November 2026, `feat/shard-header`): `POST /auth` (plain, crypt, the bare path and `/auth/`) and `POST /griduser` answer 403 `text/plain` with an empty body when the request carries `X-SecondLife-Shard`, before the body is read, unless `AllowllHTTPRequestIn` is true. The default is false. `[Network]` is read first and the service section overwrites it. The Pin8 capture is `fixtures/shard/shard-header.json` (25 cases, pin `c401bceecd`), outside `fixtures/http` so the ServerUtils oracle does not treat it as one of its cases. A served plain failure reads 11 bytes and handles the request once; crypt with no header reads 3 bytes; the bare path with no header reads nothing. Every 403 case handles nothing and reads nothing, including a body of 1,048,577 bytes. Accounts, user alias, and asset get, post and delete already refused the header. Authorization and asset exists stay served: those C# handlers are built without the check. Not ported, and the C# connectors apply the same check: presence, grid, inventory, friends, agent preferences, avatar, mute list, appearance, map add, map remove, estate, experience, baked textures, offline IM, groups, voice, and the region bakes module. `shard_header_matches_the_pin_capture`, `http_plain_methods_and_authorization_match_the_captured_documents` and `post_answers_xml_and_a_huge_body_is_413` passed. Local `cargo xtask check` passed. No new TB or D. P1.2 is unchanged. R1 is this item.
 
+Q54 (24 November 2026, `feat/prim-inventory`): each loaded prim keeps the `primitems` rows for its id, in stored order, as data. `showcase` has `note` (null description, unparsable experience id), `script` (creator endpoint, name `Unknown User`) and `box` (creator endpoint and name, a real experience id). `child-two` has `mark` (creator id ending in a semicolon). `no-shape` has `blank` (empty creator id). The regionstore dump matches those fields. A row that cannot be built is left out (TB60, D44). Pin8 `c401bceecd`. No new limit.
+
 ## Found while working
+
+- 2026-11-24, Q54: At pin `c401bceecd`, a task-inventory row that cannot be built leaves the prim in the region and drops every item that prim held, including items already read (TB60). Ferroan leaves that row out and keeps the others (D44). No viewer depends on the other items being absent.
+
+- 2026-11-24, Q54: The 40,000-prim startup high-water (about 745 MB) sits well above the idle RSS (about 101 MB) because `load_objects_limited` holds the full fetched prim and shape rows while it builds the groups, and each part then keeps the stored cells beside the parsed values. The fetched rows are dropped when the load returns. Not remeasured. The load was not changed.
 
 - 2026-11-24, Q18b3: `MSBUILDDISABLENODEREUSE=1` does not stop the Roslyn compiler server from inheriting the shared live lock. After this item's local hop the compiler was reparented to the user service manager and still held the write lock, so the next live run would wait. The hop itself passed (`teleport hop: pass (1001,1000)`). Stopping that compiler released the lock. No product change.
 
