@@ -82,7 +82,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
 | QR3 | R3: asset uploads work with two or more avatars in the region | DONE (#209) |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | DONE (this PR) |
-| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | READY after Q23e |
+| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | DONE (this PR) |
 | QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | READY after Q26b |
 | QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | READY after QR4 |
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | READY after QR5 |
@@ -577,6 +577,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 Q40 split (manager, 24 November 2026): the block in #214 is right, and its three parts are taken as Q40a to Q40c, each scoped by its numbered paragraph under Q40; if Q40c is still too big, split the local teleport from the neighbour hop. P2.1a stays `TODO` until all three are `DONE`. Q41, Q43 and Q44 wait for Q40c.
 
 Q40a DONE (24 November 2026, `feat/scene-frame`): the frame thread ticks at the shipped FrameTime 0.0909 and stores the login presence (position, rotation, velocity, control flags, draw distance). `region.scene-inbound` refuses the 257th waiting post. Login is the only consumer: `AgentMovementComplete` and the avatar position read the stored pose. Chat seats, local teleport and both neighbour directions keep today's arrival fields and `ChatSeat.position`. P2.1a stays TODO until Q40b and Q40c are DONE. Evidence is on the P2.1a row.
+
+QR5 (24 November 2026, `feat/fsassets-async`): FSAssets file reads and spool writes run on a blocking thread. Import reads one legacy row, stores it, and drops it before the next read. A `data` value over `asset.fsassets-import-row` (50,000,000 bytes) is refused and that import stops. Existence is one hash query plus a file check and does not update `access_time`. MySQL answers all false when the database will not open. PostgreSQL returns that failure. `Get` still updates `access_time`. `cargo xtask live assets --backend fsassets --db mysql` printed `assets: match (12 http records)` and `10000-asset read: csharp 4076 ms, ferroan 3144 ms`. `--db pgsql` printed `assets: match (12 http records)` and `10000-asset read: csharp 15387 ms, ferroan 2942 ms`. No new TB or D. Evidence is on the R5 row.
 
 ## Found while working
 
