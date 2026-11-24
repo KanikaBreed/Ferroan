@@ -43,9 +43,10 @@
 //! skips another person's HUD before offering; this queue does not see
 //! attachment privacy.
 //!
-//! Priorities 0 and 1 drain completely before the others. The prioritizer (the
-//! next row) uses 0 for this viewer's avatar and 1 for other avatars. The
-//! other eleven queues then take turns, 8, 8, 5, 4, 3, 2, then 1 pull each.
+//! Priorities 0 and 1 drain completely before the others.
+//! [`best_avatar_responsiveness`](crate::best_avatar_responsiveness) uses 0 for
+//! this viewer's avatar and 1 for other avatars. The other eleven queues then
+//! take turns, 8, 8, 5, 4, 3, 2, then 1 pull each.
 //! Inside one queue the oldest entry order leaves first.
 //!
 //! A dequeued word with `Kill` set is a kill. Otherwise `UpdateProbe` is a
@@ -68,7 +69,7 @@ pub const MAX_ENTITY_UPDATES: usize = 100_000;
 /// Queues, including the two that drain before the fair rotation.
 pub const QUEUE_COUNT: usize = 13;
 
-const IMMEDIATE_QUEUES: usize = 2;
+pub(crate) const IMMEDIATE_QUEUES: usize = 2;
 
 /// Pulls from each queue per turn. The first two are immediate, so the count is unused.
 const QUEUE_PULLS: [i32; QUEUE_COUNT] = [0, 0, 8, 8, 5, 4, 3, 2, 1, 1, 1, 1, 1];
