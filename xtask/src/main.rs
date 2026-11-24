@@ -75,6 +75,7 @@ mod console_client;
 mod console_forms;
 mod diag_fetch;
 mod docker;
+mod dotnet_ci;
 mod ferrobot;
 mod ferrobot_build;
 mod fsasset_live;
@@ -511,7 +512,7 @@ mod tests {
         assert_eq!(ci.matches("name: checks (ubuntu-latest)").count(), 1);
         assert!(ci.contains("os: [windows-latest, macos-latest]"));
         assert!(!ci.contains("ubuntu-latest, windows-latest, macos-latest"));
-        assert_eq!(live.matches("cargo xtask docker smoke").count(), 1);
+        assert_eq!(live.matches("cargo xtask docker smoke").count(), 2);
         assert_eq!(
             live.matches("name: Build images and smoke the example grid")
                 .count(),
@@ -545,8 +546,13 @@ mod tests {
         );
         assert!(images.contains("fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"ferroan\"]')"));
         assert!(images.contains("|| 'ubuntu-latest'"));
-        assert!(images.contains("ferroan-live-images"));
-        assert!(images.contains("cancel-in-progress: false"));
+        assert!(!images.contains("concurrency:"));
+        assert!(!images.contains("cancel-in-progress"));
+        assert!(images.contains("flock /tmp/ferroan-live-images.lock"));
+        assert!(images.contains("RUNNER_ENVIRONMENT"));
+        assert!(images.contains("runner.environment == 'self-hosted'"));
+        assert!(images.contains("runner.name"));
+        assert!(images.contains("rust-live-self-hosted-"));
         let gate = live.split("name: live (ubuntu-latest)").nth(1).unwrap();
         assert!(gate.contains("runs-on: ubuntu-latest"));
         assert!(!gate.contains("self-hosted"));

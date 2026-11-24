@@ -48,9 +48,10 @@ runs:
           local url="$1" dest="$2" rev="$3"
           rm -rf "$dest"
           mkdir -p "$(dirname "$dest")"
-          # Full history. Nerdbank.GitVersioning, which libopenmetaverse
-          # uses, refuses a shallow clone when it computes version height.
-          git clone "$url" "$dest"
+          # Full commit history, blobs on demand. Nerdbank.GitVersioning,
+          # which libopenmetaverse uses, refuses a shallow clone when it
+          # computes version height. A blobless clone still has every commit.
+          git clone --filter=blob:none "$url" "$dest"
           git -C "$dest" checkout --detach "$rev"
         }
         repository() {

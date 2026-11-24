@@ -86,7 +86,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | DONE (#211) |
 | QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | DONE (#218) |
 | QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | DONE (#222) |
-| QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | READY after QR4 |
+| QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | DONE (this PR) |
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |

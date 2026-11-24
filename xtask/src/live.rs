@@ -1687,7 +1687,7 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
 fn tranquillity_publish_properties() -> &'static [&'static str] {
     &[
         "-p:AllowMissingPrunePackageData=true",
-        "-p:NBGV_SetCloudBuildVersionVars=false",
+        crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF,
     ]
 }
 
@@ -1702,11 +1702,7 @@ fn tranquillity_publish_properties() -> &'static [&'static str] {
 /// after this process exits.
 #[cfg(any(target_os = "linux", test))]
 fn configure_dotnet_publish(command: &mut Command) {
-    command
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("DOTNET_NOLOGO", "1")
-        .env("MSBUILDDISABLENODEREUSE", "1")
-        .env_remove("GITHUB_ENV");
+    crate::dotnet_ci::shield(command);
 }
 
 #[cfg(target_os = "linux")]
@@ -1729,7 +1725,7 @@ fn publish(src: &Path, project: &str, binary: &Path, self_contained: bool) -> Re
         args.push("--self-contained");
         args.push("true");
     }
-    let mut command = Command::new("dotnet");
+    let mut command = crate::dotnet_ci::command("dotnet");
     configure_dotnet_publish(&mut command);
     let output = command
         .args(&args)
@@ -2267,7 +2263,7 @@ mod tests {
 
     #[test]
     fn tranquillity_publish_environment_has_no_github_env() {
-        let mut command = Command::new("dotnet");
+        let mut command = Command::new("true");
         command.env("GITHUB_ENV", "/runner/set_env");
         configure_dotnet_publish(&mut command);
         let mut saw_github_env = false;

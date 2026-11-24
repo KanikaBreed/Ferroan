@@ -437,13 +437,8 @@ fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
 
 fn run_oracle(dll: &Path, label: &str, args: &[&str]) -> Option<String> {
     println!("$ dotnet {} {label}", dll.display());
-    let mut command = Command::new("dotnet");
-    command
-        .arg(dll)
-        .args(args)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("MSBUILDDISABLENODEREUSE", "1");
+    let mut command = crate::dotnet_ci::command("dotnet");
+    command.arg(dll).args(args);
     match command.output() {
         Ok(output) if output.status.success() => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -662,13 +657,8 @@ fn oracle(dll: &Path, args: &[&str]) -> bool {
 }
 
 fn oracle_stdout(dll: &Path, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("dotnet");
-    command
-        .arg(dll)
-        .args(args)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("MSBUILDDISABLENODEREUSE", "1");
+    let mut command = crate::dotnet_ci::command("dotnet");
+    command.arg(dll).args(args);
     println!("$ dotnet {} {}", dll.display(), args.join(" "));
     match command.output() {
         Ok(output) if output.status.success() => {
