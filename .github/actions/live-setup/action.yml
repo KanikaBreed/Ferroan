@@ -23,6 +23,33 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install rustup on a runner that has none
+      shell: bash
+      run: |
+        # GitHub-hosted images ship rustup; a newly added self-hosted runner
+        # may not. Install it for the runner user, checksum-verified, and let
+        # rust-toolchain.toml pick the toolchain in the next step.
+        if command -v rustup >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/rustup" ]; then
+          echo "rustup present"
+        else
+          set -euo pipefail
+          target=x86_64-unknown-linux-gnu
+          tmp="$(mktemp -d)"
+          curl --proto '=https' --tlsv1.2 -sSf -o "$tmp/rustup-init" "https://static.rust-lang.org/rustup/dist/$target/rustup-init"
+          curl --proto '=https' --tlsv1.2 -sSf -o "$tmp/rustup-init.sha256" "https://static.rust-lang.org/rustup/dist/$target/rustup-init.sha256"
+          expected="$(cut -d' ' -f1 "$tmp/rustup-init.sha256")"
+          actual="$(sha256sum "$tmp/rustup-init" | cut -d' ' -f1)"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::rustup-init checksum mismatch"
+            exit 1
+          fi
+          chmod +x "$tmp/rustup-init"
+          "$tmp/rustup-init" -y --no-modify-path --profile minimal --default-toolchain none
+          rm -rf "$tmp"
+        fi
+        if [ -d "$HOME/.cargo/bin" ]; then
+          printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        fi
     - name: Set up Rust
       shell: bash
       run: |
