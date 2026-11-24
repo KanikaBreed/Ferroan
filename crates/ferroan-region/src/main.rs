@@ -385,18 +385,23 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let Some(connection) = config.terrain_store.as_deref() else {
-        return Ok(None);
+    let map = match config.terrain_store.as_deref() {
+        Some(connection) => {
+            let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
+            let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
+            ferroan_scene::open_terrain(connection, config.id, width, height)
+                .await
+                .map_err(|error| RunError::Terrain(error.to_string()))?
+        }
+        None => None,
     };
-    let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
-    let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
-    let Some(map) = ferroan_scene::open_terrain(connection, config.id, width, height)
-        .await
-        .map_err(|error| RunError::Terrain(error.to_string()))?
-    else {
-        return Ok(None);
+    let frame = match map {
+        Some(map) => {
+            TerrainFrame::start(map).map_err(|error| RunError::Terrain(error.to_string()))?
+        }
+        None => TerrainFrame::start_without_map()
+            .map_err(|error| RunError::Terrain(error.to_string()))?,
     };
-    let frame = TerrainFrame::start(map).map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -405,6 +410,9 @@ fn terrain_login(frame: Option<&TerrainFrame>, start: [f32; 3]) -> ([f32; 3], Ve
     let Some(frame) = frame else {
         return (start, Vec::new());
     };
+    if !frame.has_map() {
+        return (start, Vec::new());
+    }
     let mut position = start;
     match frame.ground(position[0], position[1]) {
         Ok(height) => position[2] = ferroan_scene::movement_z(position[2], height),
@@ -528,6 +536,30 @@ async fn dispatch_circuits(
     hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
+    if let Some(frame) = terrain.as_ref() {
+        let frame = Arc::clone(frame);
+        circuit.set_login_scene(Arc::new(move |agent, pose| {
+            let stored = frame
+                .post_login(
+                    agent,
+                    ferroan_scene::Presence {
+                        position: pose.position,
+                        rotation: pose.rotation,
+                        velocity: pose.velocity,
+                        control_flags: pose.control_flags,
+                        draw_distance: pose.draw_distance,
+                    },
+                )
+                .map_err(|_| ())?;
+            Ok(ferroan_client::LoginPose {
+                position: stored.position,
+                rotation: stored.rotation,
+                velocity: stored.velocity,
+                control_flags: stored.control_flags,
+                draw_distance: stored.draw_distance,
+            })
+        }));
+    }
     let mut ctx = DispatchCtx {
         circuit,
         clients: LifecycleClients {
@@ -629,8 +661,8 @@ async fn serve_agent(
             godlike: false,
             flying: false,
             ground: Arc::new(move |x, y| match ground_terrain.as_ref() {
-                Some(frame) => frame.ground(x, y).unwrap_or(21.0),
-                None => 21.0,
+                Some(frame) if frame.has_map() => frame.ground(x, y).unwrap_or(21.0),
+                _ => 21.0,
             }),
             position: Arc::clone(&landed),
         });
