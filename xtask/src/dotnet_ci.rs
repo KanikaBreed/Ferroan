@@ -126,6 +126,9 @@ mod tests {
         let setup =
             std::fs::read_to_string(workflows.join("actions/live-setup/action.yml")).unwrap();
         assert!(setup.contains("git clone --filter=blob:none"));
+        assert!(setup.contains("rev-list --objects HEAD"));
+        assert!(setup.contains("version\\.json"));
+        assert!(setup.contains("cat-file --batch"));
         assert!(!setup.contains("git clone \"$url\""));
     }
 }
