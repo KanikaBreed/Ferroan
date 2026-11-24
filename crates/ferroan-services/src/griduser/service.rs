@@ -32,15 +32,20 @@
 //! Grid-user service.
 //!
 //! The C# cache is static. This process holds one service, and the cache
-//! lives on that service. An entry, including a miss, lasts 300 seconds. A
-//! lookup uses the first 36 characters when the id is longer. A new row keeps
-//! the id the caller sent. `loggedin` answers the row even when the store
-//! does not. The other writes answer false when the store does not, and
+//! lives on that service. An entry, including a miss, lasts 300 seconds. The
+//! next cache use drops every expired entry. Past `griduser.cache-entries`
+//! a new key drops the soonest entry, and the next read of that key comes
+//! from the store. A lookup uses the first 36 characters when the id is
+//! longer. A new row keeps the id the caller sent. `loggedin` returns the
+//! store error, and still answers the row when the store declines it without
+//! an error. The other writes answer false when the store does not, and
 //! `loggedoutregion` still updates the other rows.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use ferroan_diag::{GRIDUSER_CACHE_ENTRIES, Kind, drop_bound};
 
 use super::model::{GridUser, ONLINE_TRUE};
 use super::store::{GridUserStore, StoreError};
@@ -48,6 +53,9 @@ use super::wire::{self, GridUserInfo, Vec3};
 
 /// Lifetime of one cache entry, in milliseconds.
 pub const CACHE_MS: u64 = 300_000;
+
+/// Entries kept in this process. There is no entry cap on the other side.
+pub const CACHE_CAP: usize = 4096;
 
 const ID_CHARS: usize = 36;
 
@@ -141,7 +149,7 @@ where
         row.data
             .insert("Online".to_string(), ONLINE_TRUE.to_string());
         row.data.insert("Login".to_string(), now);
-        let _ = self.data.store(&row).await;
+        self.data.store(&row).await?;
         self.remember(user_id, &row);
         Ok(wire::to_info(&row))
     }
@@ -277,21 +285,49 @@ where
 
     /// `Some(None)` is a cached miss. `None` is not cached or has expired.
     fn cache_get(&self, key: &str) -> Option<Option<GridUser>> {
-        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        let now = self.clock.mono_millis();
-        let expired = cache.get(key).is_some_and(|slot| now >= slot.expires_at);
-        if expired {
-            cache.remove(key);
-            return None;
-        }
+        let cache = self.swept_cache();
         cache.get(key).map(|slot| slot.row.clone())
     }
 
     fn cache_put(&self, key: &str, row: Option<GridUser>) {
-        let expires_at = self.clock.mono_millis().saturating_add(CACHE_MS);
+        let now = self.clock.mono_millis();
+        let expires_at = now.saturating_add(CACHE_MS);
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        cache.retain(|_, slot| now < slot.expires_at);
+        if !cache.contains_key(key)
+            && cache.len() >= CACHE_CAP
+            && let Some(victim) = soonest_key(&cache)
+        {
+            cache.remove(&victim);
+            let configured = u64::try_from(CACHE_CAP).unwrap_or(u64::MAX);
+            drop_bound(
+                GRIDUSER_CACHE_ENTRIES,
+                Kind::Hard,
+                configured,
+                configured.saturating_add(1),
+                "griduser",
+            );
+        }
         cache.insert(key.to_string(), Slot { row, expires_at });
     }
+
+    fn swept_cache(&self) -> MutexGuard<'_, HashMap<String, Slot>> {
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        let now = self.clock.mono_millis();
+        cache.retain(|_, slot| now < slot.expires_at);
+        cache
+    }
+}
+
+fn soonest_key(cache: &HashMap<String, Slot>) -> Option<String> {
+    cache
+        .iter()
+        .min_by(|(left_key, left), (right_key, right)| {
+            left.expires_at
+                .cmp(&right.expires_at)
+                .then_with(|| left_key.cmp(right_key))
+        })
+        .map(|(key, _)| key.clone())
 }
 
 impl GridUserService<GridUserStore, SystemClock> {

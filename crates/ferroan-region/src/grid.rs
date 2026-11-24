@@ -288,14 +288,14 @@ fn position_fields(
     position: [f32; 3],
     look: [f32; 3],
 ) -> Result<FieldMap, GridError> {
-    if !position
-        .iter()
-        .chain(&look)
-        .all(|coordinate| coordinate.is_finite())
-    {
-        return Err(GridError::InvalidPosition);
-    }
-    let vector = |v: [f32; 3]| format!("<{}, {}, {}>", v[0], v[1], v[2]);
+    let vector = |value: [f32; 3]| {
+        format!(
+            "<{}, {}, {}>",
+            ferroan_services::griduser::format_f32(value[0]),
+            ferroan_services::griduser::format_f32(value[1]),
+            ferroan_services::griduser::format_f32(value[2])
+        )
+    };
     let mut fields = service_fields(method);
     for (key, value) in [
         ("UserID", agent.to_string()),
@@ -740,6 +740,10 @@ mod tests {
             .logout_region(region_logout)
             .await
             .unwrap();
+        GridUserClient::new(&format!("{base}/"))
+            .logged_out(agent, region, [f32::NAN, 128., 25.], [0.99, 0.042, 0.])
+            .await
+            .unwrap();
         serving.abort();
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].0, "/griduser");
@@ -774,7 +778,26 @@ mod tests {
         ] {
             assert!(service_result(&ferroan_http::parse_xml_response(xml).unwrap()).is_err());
         }
-        assert!(position_fields("loggedout", agent, region, [f32::NAN, 0., 0.], [0.; 3]).is_err());
+        let nan = position_fields("loggedout", agent, region, [f32::NAN, 0., 0.], [0.; 3])
+            .expect("nan logout");
+        assert_eq!(
+            nan.get("Position"),
+            Some(&Field::Str("<NaN, 0, 0>".to_string()))
+        );
+        let infinite = position_fields(
+            "loggedout",
+            agent,
+            region,
+            [f32::INFINITY, f32::NEG_INFINITY, 128.3],
+            [0.; 3],
+        )
+        .expect("infinite logout");
+        assert_eq!(
+            infinite.get("Position"),
+            Some(&Field::Str("<∞, -∞, 128.3>".to_string()))
+        );
+        assert!(requests[3].1.contains("Position=%3cNaN%2c+128%2c+25%3e"));
+        assert_eq!(requests[3].0, "/griduser");
     }
 
     #[tokio::test]
