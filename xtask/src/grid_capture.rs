@@ -353,8 +353,9 @@ fn arrival_position(records: &[Record]) -> Result<[f32; 3], String> {
 /// `fixtures/captures/session.cap` is a redacted `live run all`, so the name and
 /// owner id in that file are placeholders and the position is after the walk.
 /// The message bytes, source type, chat type, audible level and header flags
-/// are the comparison. The live name, both ids and this run's arrival position
-/// are checked separately.
+/// are the comparison. The live name, both ids and this run's arrival X and Y
+/// are checked separately. Chat is read after later ticks, so Z is the arrival
+/// or the integer terrain cell under that arrival plus the avatar box.
 pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
     let live = records(&directory.join("capture-udp.cap"))?;
     let fixture = records(&crate::repo_root().join("fixtures/captures/session.cap"))?;
@@ -394,16 +395,53 @@ pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
         }
     }
     let arrival = arrival_position(&live)?;
-    if ferroan.iter().any(|say| say.position != arrival) {
+    let position = ferroan[0].position;
+    if ferroan.iter().any(|say| say.position != position) {
+        return Err("harness says do not share one position".into());
+    }
+    let cell = home_terrain_cell(directory, arrival)?;
+    if !say_keeps_arrival_xy(position, arrival, cell) {
         return Err(
-            "harness say position differs from this run's arrival; terrain Z was not wildcarded"
-                .into(),
+            "harness say position differs from this run's arrival or the standing snap".into(),
         );
     }
     Ok(format!(
-        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; position matches this run's arrival",
-        ferroan.len()
+        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z is that arrival or the terrain cell plus {}",
+        ferroan.len(),
+        ferroan_scene::AVATAR_SIZE_Z
     ))
+}
+
+/// X and Y stay on the arrival. Z is that arrival, or the integer cell under
+/// it plus the default avatar box.
+fn say_keeps_arrival_xy(say: [f32; 3], arrival: [f32; 3], cell: f32) -> bool {
+    say[0] == arrival[0]
+        && say[1] == arrival[1]
+        && (say[2] == arrival[2] || say[2] == cell + ferroan_scene::AVATAR_SIZE_Z)
+}
+
+/// The home region store's integer cell under the arrival. A missing file or
+/// a missing terrain row is height 0. A store that will not open is an error.
+fn home_terrain_cell(directory: &Path, arrival: [f32; 3]) -> Result<f32, String> {
+    let db = directory.join("home/OpenSim.db");
+    if !db.is_file() {
+        return Ok(0.0);
+    }
+    let path = db
+        .canonicalize()
+        .map_err(|error| format!("could not read {}: {error}", db.display()))?;
+    let connection = format!("Data Source={};Version=3", path.display());
+    let region = uuid::Uuid::parse_str(crate::live::REGION_UUID)
+        .map_err(|_| "region uuid is not a uuid".to_string())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not read the home terrain: {error}"))?;
+    match runtime.block_on(ferroan_scene::open_terrain(&connection, region, 256, 256)) {
+        Ok(Some(map)) => Ok(map.standing_cell(arrival[0] as i32, arrival[1] as i32)),
+        Ok(None) => Ok(0.0),
+        Err(error) => Err(format!("could not read the home terrain: {error}")),
+    }
 }
 
 /// `TeleportStart` then `TeleportLocal` against the committed C# session.
@@ -1718,6 +1756,21 @@ mod tests {
             assert_eq!(say.message, b"ferroan harness chat\0");
             assert_eq!(say.source_id, owner);
         }
+    }
+
+    #[test]
+    fn a_standing_snap_keeps_the_chat_on_the_arrival_xy() {
+        let arrival = [128.0, 128.0, 26.0];
+        assert!(say_keeps_arrival_xy(arrival, arrival, 21.0));
+        assert!(say_keeps_arrival_xy([128.0, 128.0, 23.1], arrival, 21.0));
+        assert!(!say_keeps_arrival_xy([128.0, 128.0, 23.1], arrival, 20.0));
+        assert!(!say_keeps_arrival_xy([128.1, 128.0, 23.1], arrival, 21.0));
+        assert!(!say_keeps_arrival_xy([128.0, 127.0, 23.1], arrival, 21.0));
+        assert!(!say_keeps_arrival_xy(
+            [128.0, 128.0, f32::NAN],
+            arrival,
+            21.0
+        ));
     }
 
     #[test]

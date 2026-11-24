@@ -222,6 +222,9 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.keep_objects(objects);
+    if let Some(frame) = &terrain {
+        simulation.keep_scene(Arc::clone(frame));
+    }
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
             Ok(Some(access)) => simulation.apply_estate(access),
@@ -653,6 +656,12 @@ async fn dispatch_circuits(
                     Some(stored) => Ok(pose_of(stored)),
                     None => Err(()),
                 },
+                ferroan_client::SceneCall::Reuse => {
+                    match frame.reuse_arrival(agent).map_err(|_| ())? {
+                        Some(stored) => Ok(pose_of(stored)),
+                        None => Err(()),
+                    }
+                }
                 ferroan_client::SceneCall::Places(ids) => {
                     let places = frame.chat_positions(&ids).map_err(|_| ())?;
                     Ok(ferroan_client::SceneReply::Places(places))

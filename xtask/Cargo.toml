@@ -15,6 +15,7 @@ ferroan-diag = { path = "../crates/ferroan-diag" }
 ferroan-http = { path = "../crates/ferroan-http" }
 ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }
+ferroan-scene = { path = "../crates/ferroan-scene" }
 serde_json = { version = "1", features = ["preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 sha1 = "0.10.6"

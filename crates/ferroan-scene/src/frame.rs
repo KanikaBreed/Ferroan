@@ -3,14 +3,16 @@
 
 //! The region frame thread. [D6](../../../docs/DECISIONS.md) keeps it off the
 //! async runtime. It ticks at the shipped `FrameTime` and still answers height
-//! and layer queries. This row has no physics step. Login, chat, a local
-//! teleport and a hop completion store the pose. An `AgentUpdate` stores
-//! movement intent. Teleport packets stay on the circuit.
+//! and layer queries. Each tick steps every avatar that is not sitting on the
+//! ground. Login, chat, a local teleport and a hop completion store the pose.
+//! An `AgentUpdate` stores movement intent. The reply from those calls is the
+//! pose written in that call, before the next tick. Teleport packets stay on
+//! the circuit.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
 use uuid::Uuid;
@@ -19,6 +21,7 @@ use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Applied, Body, Motion, MotionUpdate};
+use crate::walk;
 
 /// `Constants.MinSimulationHeight`.
 const MIN_HEIGHT: f32 = -100.0;
@@ -132,6 +135,17 @@ struct AlwaysRunPost {
     reply: Sender<bool>,
 }
 
+struct ChildPost {
+    agent: Uuid,
+    child: bool,
+    reply: Sender<()>,
+}
+
+struct ReusePost {
+    agent: Uuid,
+    reply: Sender<Option<Presence>>,
+}
+
 struct Avatar {
     pose: Presence,
     body: Body,
@@ -143,6 +157,10 @@ enum Inbound {
     Places(PlacesPost),
     Teleport(TeleportPost),
     Complete(CompletePost),
+    /// A later arrival that reuses the record. The command returns to rest.
+    Reuse(ReusePost),
+    /// The avatar is away, or has come back, for the physics tick.
+    Child(ChildPost),
     Agent(AgentPost),
     AlwaysRun(AlwaysRunPost),
 }
@@ -240,7 +258,8 @@ impl TerrainFrame {
         rx.recv().map_err(|_| TerrainError::Stopped)
     }
 
-    /// A hop completion. Position and heading change. The other fields stay.
+    /// A hop completion. Position and heading change. Velocity and the command
+    /// return to rest. Control flags and draw distance stay.
     pub fn complete_hop(
         &self,
         agent: Uuid,
@@ -252,6 +271,26 @@ impl TerrainFrame {
             agent,
             position,
             look_at,
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// A later arrival that already has a record. The position stays. The
+    /// command and the physics velocity return to rest. A miss is `None`.
+    pub fn reuse_arrival(&self, agent: Uuid) -> Result<Option<Presence>, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Reuse(ReusePost { agent, reply }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// Skip the physics tick while the avatar is a child. A missing avatar
+    /// is left alone. One inbound slot.
+    pub fn set_child(&self, agent: Uuid, child: bool) -> Result<(), TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Child(ChildPost {
+            agent,
+            child,
             reply,
         }))?;
         rx.recv().map_err(|_| TerrainError::Stopped)
@@ -360,7 +399,11 @@ fn drain_inbound(
     while let Ok(post) = rx.try_recv() {
         match post {
             Inbound::Pose(post) => {
-                let avatar = Avatar::new(post.pose);
+                let mut avatar = Avatar::new(post.pose);
+                // Chat can read this pose immediately. The actor waits until
+                // the arrival packet samples it, or a tick would change the
+                // position that packet and GridUser still report.
+                avatar.body.set_actor(false);
                 let pose = avatar.pose;
                 presences.insert(post.agent, avatar);
                 let _ = post.reply.send(pose);
@@ -403,7 +446,21 @@ fn drain_inbound(
                     .or_insert_with(|| Avatar::new(fresh(post.position)));
                 avatar.pose.position = post.position;
                 avatar.pose.rotation = look_rotation(post.look_at);
+                arrive_at_rest(avatar);
                 let _ = post.reply.send(avatar.pose);
+            }
+            Inbound::Reuse(post) => {
+                let pose = presences.get_mut(&post.agent).map(|avatar| {
+                    arrive_at_rest(avatar);
+                    avatar.pose
+                });
+                let _ = post.reply.send(pose);
+            }
+            Inbound::Child(post) => {
+                if let Some(avatar) = presences.get_mut(&post.agent) {
+                    avatar.body.set_child(post.child);
+                }
+                let _ = post.reply.send(());
             }
             Inbound::Agent(post) => {
                 let applied = if let Some(avatar) = presences.get_mut(&post.agent) {
@@ -437,6 +494,15 @@ impl Avatar {
             pose,
         }
     }
+}
+
+/// A new physics actor on arrival or return. The record stays; the command
+/// does not. The tick may run after this returns.
+fn arrive_at_rest(avatar: &mut Avatar) {
+    avatar.pose.velocity = [0.0, 0.0, 0.0];
+    avatar.body.halt_command();
+    avatar.body.set_child(false);
+    avatar.body.set_actor(true);
 }
 
 fn fresh(position: [f32; 3]) -> Presence {
@@ -517,6 +583,7 @@ fn run(
         drain_inbound(&inbound, &mut presences, map.as_ref());
         let wait = next.saturating_duration_since(Instant::now());
         if wait.is_zero() {
+            step_avatars(&mut presences, map.as_ref());
             frames = frames.saturating_add(1);
             next = Instant::now() + frame_wait();
             continue;
@@ -541,6 +608,7 @@ fn run(
             Ok(Request::Wake) => {}
             Ok(Request::Stop) => break,
             Err(RecvTimeoutError::Timeout) => {
+                step_avatars(&mut presences, map.as_ref());
                 frames = frames.saturating_add(1);
                 next = Instant::now() + frame_wait();
             }
@@ -554,13 +622,49 @@ pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
 }
 
+fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) {
+    let now = unix_ms();
+    let (extent_x, extent_y) = match map {
+        Some(map) => (map.width() as f32, map.height() as f32),
+        None => (walk::DEFAULT_EXTENT, walk::DEFAULT_EXTENT),
+    };
+    for avatar in presences.values_mut() {
+        let terrain = walk::terrain_height(map, avatar.pose.position, extent_x, extent_y);
+        avatar.body.step_physics(
+            &mut avatar.pose,
+            terrain,
+            extent_x,
+            extent_y,
+            FRAME_TIME,
+            now,
+        );
+    }
+}
+
+/// Wall clock. The delayed stop compares this with the packet's `now_ms`.
+/// The frame tick itself is monotonic. Both clocks change together later.
+fn unix_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
     use crate::height::Heightmap;
+    use crate::walk::AVATAR_SIZE_Z;
     use uuid::Uuid;
+
+    fn z_is_written_or_snapped(z: f32, written: f32) -> bool {
+        z == written || z == AVATAR_SIZE_Z
+    }
 
     #[test]
     fn the_frame_thread_returns_the_height() {
@@ -592,12 +696,23 @@ mod tests {
             draw_distance: 255.0,
         };
         assert_eq!(frame.post_login(agent, pose).unwrap(), pose);
-        assert_eq!(frame.presence(agent).unwrap(), Some(pose));
+        let immediate = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(immediate.position, [4.0, 5.0, 26.0]);
+        let before = frame.frames().unwrap();
         std::thread::sleep(Duration::from_millis(400));
         let frames = frame.frames().unwrap();
-        assert!(frames >= 2, "frames {frames}");
+        assert!(frames > before, "frames {before} -> {frames}");
         assert!(frames < 10, "frames {frames}");
         assert_eq!(FRAME_TIME, 0.0909);
+        let held = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(held.position, [4.0, 5.0, 26.0]);
+        let released = frame.reuse_arrival(agent).unwrap().unwrap();
+        assert_eq!(released.position, [4.0, 5.0, 26.0]);
+        std::thread::sleep(Duration::from_millis(400));
+        let snapped = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(snapped.position, [4.0, 5.0, AVATAR_SIZE_Z]);
+        assert_eq!(snapped.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(snapped.rotation, pose.rotation);
     }
 
     #[test]
@@ -665,8 +780,14 @@ mod tests {
         assert_eq!(landed.control_flags, pose.control_flags);
         assert_eq!(landed.draw_distance, pose.draw_distance);
         let places = frame.chat_positions(&[speaker, listener]).unwrap();
-        assert_eq!(places.get(&speaker).copied(), Some([40.0, 200.0, 30.0]));
-        assert_eq!(places.get(&listener).copied(), Some([130.0, 128.0, 25.0]));
+        let speaker_at = places.get(&speaker).copied().unwrap();
+        let listener_at = places.get(&listener).copied().unwrap();
+        assert_eq!(speaker_at[0], 40.0);
+        assert_eq!(speaker_at[1], 200.0);
+        assert!(z_is_written_or_snapped(speaker_at[2], 30.0));
+        assert_eq!(listener_at[0], 130.0);
+        assert_eq!(listener_at[1], 128.0);
+        assert!(z_is_written_or_snapped(listener_at[2], 25.0));
         assert!(
             frame
                 .chat_positions(&[Uuid::from_u128(9)])
@@ -797,7 +918,7 @@ mod tests {
             .complete_hop(traveller, [128.0, 128.0, 30.0], [1.0, 0.0, 0.0])
             .unwrap();
         assert_eq!(completed.position, [128.0, 128.0, 30.0]);
-        assert_eq!(completed.velocity, [2.0, 0.0, 0.0]);
+        assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
         assert_eq!(completed.control_flags, 7);
         assert_eq!(completed.draw_distance, 80.0);
         let completed = frame
@@ -807,10 +928,15 @@ mod tests {
         assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
         assert_eq!(completed.control_flags, 4);
         assert_eq!(completed.draw_distance, 64.0);
-        assert_eq!(
-            frame.chat_positions(&[agent]).unwrap().get(&agent).copied(),
-            Some([128.0, 128.0, 30.0])
-        );
+        let chat = frame
+            .chat_positions(&[agent])
+            .unwrap()
+            .get(&agent)
+            .copied()
+            .unwrap();
+        assert_eq!(chat[0], 128.0);
+        assert_eq!(chat[1], 128.0);
+        assert!(z_is_written_or_snapped(chat[2], 30.0));
     }
 
     #[test]
@@ -901,5 +1027,90 @@ mod tests {
             frame.presence(agent).unwrap().unwrap().velocity,
             [0.0, 0.0, 0.0]
         );
+    }
+
+    fn walking_update(now_ms: u64, sequence: u32) -> crate::motion::MotionUpdate {
+        crate::motion::MotionUpdate {
+            now_ms,
+            sequence,
+            child: false,
+            in_transit: false,
+            body_rotation: [0.0, 0.0, 0.0, 1.0],
+            head_rotation: [0.0, 0.0, 0.0, 1.0],
+            state: 0,
+            camera_center: [128.0, 128.0, 26.0],
+            camera_at: [1.0, 0.0, 0.0],
+            camera_left: [0.0, 1.0, 0.0],
+            camera_up: [0.0, 0.0, 1.0],
+            far: 96.0,
+            control_flags: crate::motion::CONTROL_AT_POS,
+            flags: 0,
+        }
+    }
+
+    fn wait_frames(frame: &TerrainFrame, extra: u64) {
+        let start = frame.frames().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while frame.frames().unwrap() < start.saturating_add(extra) {
+            assert!(std::time::Instant::now() < deadline, "frame did not tick");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_return_rests_and_a_child_is_not_stepped() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(21);
+        frame
+            .post_login(
+                agent,
+                Presence {
+                    position: [8.0, 8.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [2.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 64.0,
+                },
+            )
+            .unwrap();
+        assert!(frame.reuse_arrival(Uuid::from_u128(99)).unwrap().is_none());
+        frame.set_child(Uuid::from_u128(99), true).unwrap();
+        let applied = frame.agent_update(agent, walking_update(1_000, 1)).unwrap();
+        assert!(applied.movement);
+        assert!(frame.motion(agent).unwrap().unwrap().target_velocity[0] > 0.0);
+        let completed = frame
+            .complete_hop(agent, [128.0, 128.0, 30.0], [1.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(completed.position, [128.0, 128.0, 30.0]);
+        assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(
+            frame.motion(agent).unwrap().unwrap().target_velocity,
+            [0.0, 0.0, 0.0]
+        );
+        wait_frames(&frame, 2);
+        let later = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(later.position[0], 128.0);
+        assert_eq!(later.position[1], 128.0);
+        assert_eq!(later.velocity, [0.0, 0.0, 0.0]);
+        assert!(z_is_written_or_snapped(later.position[2], 30.0));
+        frame.agent_update(agent, walking_update(2_000, 2)).unwrap();
+        assert!(frame.motion(agent).unwrap().unwrap().target_velocity[0] > 0.0);
+        frame.set_child(agent, true).unwrap();
+        let parked = frame.presence(agent).unwrap().unwrap().position;
+        wait_frames(&frame, 2);
+        assert_eq!(frame.presence(agent).unwrap().unwrap().position, parked);
+        let reused = frame.reuse_arrival(agent).unwrap().unwrap();
+        assert_eq!(reused.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(reused.position[0], parked[0]);
+        assert_eq!(reused.position[1], parked[1]);
+        assert_eq!(
+            frame.motion(agent).unwrap().unwrap().target_velocity,
+            [0.0, 0.0, 0.0]
+        );
+        wait_frames(&frame, 2);
+        let home = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(home.position[0], parked[0]);
+        assert_eq!(home.position[1], parked[1]);
+        assert_eq!(home.velocity, [0.0, 0.0, 0.0]);
     }
 }
