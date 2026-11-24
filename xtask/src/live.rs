@@ -51,8 +51,8 @@ pub fn down() -> ExitCode {
     finish(down_inner())
 }
 
-pub fn run(scenario: &str) -> ExitCode {
-    finish(run_inner(scenario))
+pub fn run(scenario: &str, basic_physics: bool) -> ExitCode {
+    finish(run_inner(scenario, basic_physics))
 }
 
 pub fn record_twice() -> ExitCode {
@@ -108,14 +108,14 @@ fn down_inner() -> Result<String, String> {
     }
 }
 
-fn run_inner(scenario: &str) -> Result<String, String> {
+fn run_inner(scenario: &str, basic_physics: bool) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(scenario)
+        run_linux(scenario, basic_physics)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = scenario;
+        let _ = (scenario, basic_physics);
         Err("cargo xtask live runs on Linux".to_string())
     }
 }
@@ -294,15 +294,26 @@ fn read_bounded_text(path: &Path, limit: usize) -> std::io::Result<String> {
     Ok(text)
 }
 
-fn region_server_ini(
-    regions_dir: &Path,
-    capture_file: Option<&Path>,
+struct StandaloneIni<'a> {
+    regions_dir: &'a Path,
+    capture_file: Option<&'a Path>,
     public_port: u16,
     private_port: u16,
-    password: &str,
-    asset_include: Option<&Path>,
+    password: &'a str,
+    asset_include: Option<&'a Path>,
     http_bind: Ipv4Addr,
-) -> Result<String, String> {
+    basic_physics: bool,
+}
+
+fn region_server_ini(region: &StandaloneIni<'_>) -> Result<String, String> {
+    let regions_dir = region.regions_dir;
+    let capture_file = region.capture_file;
+    let public_port = region.public_port;
+    let private_port = region.private_port;
+    let password = region.password;
+    let asset_include = region.asset_include;
+    let http_bind = region.http_bind;
+    let basic_physics = region.basic_physics;
     let dir = regions_dir
         .to_str()
         .ok_or("regions directory is not utf-8")?;
@@ -331,6 +342,11 @@ fn region_server_ini(
         }
         None => String::new(),
     };
+    let physics_line = if basic_physics {
+        "\n    physics = basicphysics"
+    } else {
+        ""
+    };
     let mut ini = format!(
         r#"[Const]
     BaseHostname = "127.0.0.1"
@@ -340,7 +356,7 @@ fn region_server_ini(
     PrivatePort = "{private_port}"
 
 [Startup]
-    regionload_regionsdir = "{dir}"
+    regionload_regionsdir = "{dir}"{physics_line}
 
 [Network]
     http_listener_port = {public_port}
@@ -635,7 +651,7 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
     let uri = assets
         .as_ref()
         .map(|(_, port)| format!("http://127.0.0.1:{port}"));
-    let mut started = start_region(false, uri.as_deref(), false)?;
+    let mut started = start_region(false, uri.as_deref(), false, false)?;
     let saved = (|| {
         let mut report = up_report(started.public_port, &started.log);
         if let Some((server, port)) = &assets {
@@ -677,9 +693,9 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(scenario: &str) -> Result<String, String> {
+fn run_linux(scenario: &str, basic_physics: bool) -> Result<String, String> {
     if scenario == "ferrobot" {
-        return run_ferrobot();
+        return run_ferrobot(basic_physics);
     }
     if scenario != "uploads" && ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!(
@@ -694,7 +710,7 @@ fn run_linux(scenario: &str) -> Result<String, String> {
         ));
     }
     let _state = crate::grid_state::claim()?;
-    let mut started = start_region(true, None, true)?;
+    let mut started = start_region(true, None, true, basic_physics)?;
     let outcome = run_scenarios(&mut started, scenario);
     let _ = stop_started(&mut started);
     let outcome = outcome?;
@@ -719,7 +735,7 @@ fn record_twice_linux() -> Result<String, String> {
     ensure_region_built()?;
     let started_at = Instant::now();
     let _state = crate::grid_state::claim()?;
-    let mut started = start_region(true, None, true)?;
+    let mut started = start_region(true, None, true, false)?;
     let mut secrets = vec![started.password.clone()];
     let outcome: Result<(String, String, Vec<u8>), String> = (|| {
         let chat_password = generate_password()?;
@@ -771,7 +787,7 @@ fn record_twice_linux() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_ferrobot() -> Result<String, String> {
+fn run_ferrobot(basic_physics: bool) -> Result<String, String> {
     let executable = crate::ferrobot_build::build()?;
     if let Some(pid) = standalone_is_up()? {
         return Err(format!(
@@ -779,7 +795,7 @@ fn run_ferrobot() -> Result<String, String> {
         ));
     }
     let _state = crate::grid_state::claim()?;
-    let mut started = start_region_with_proxy(true, None, true, true)?;
+    let mut started = start_region_with_proxy(true, None, true, true, basic_physics)?;
     let outcome = (|| {
         // Region and Ferrobot share the claim taken before either child starts.
         let chat_password = generate_password()?;
@@ -827,7 +843,7 @@ pub(crate) fn run_against_assets(asset_uri: &str, scenario: &str) -> Result<Stri
         return Err(format!("unknown scenario {scenario}"));
     }
     // The asset comparison owns the shared process-state claim already.
-    let mut started = start_region(true, Some(asset_uri), true)?;
+    let mut started = start_region(true, Some(asset_uri), true, false)?;
     let outcome = run_scenarios(&mut started, scenario);
     let _ = stop_started(&mut started);
     let outcome = outcome?;
@@ -1263,8 +1279,13 @@ fn stop_started(started: &mut Started) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_region(console: bool, asset_uri: Option<&str>, record: bool) -> Result<Started, String> {
-    start_region_with_proxy(console, asset_uri, record, false)
+fn start_region(
+    console: bool,
+    asset_uri: Option<&str>,
+    record: bool,
+    basic_physics: bool,
+) -> Result<Started, String> {
+    start_region_with_proxy(console, asset_uri, record, false, basic_physics)
 }
 
 #[cfg(target_os = "linux")]
@@ -1273,6 +1294,7 @@ fn start_region_with_proxy(
     asset_uri: Option<&str>,
     record: bool,
     proxy_http: bool,
+    basic_physics: bool,
 ) -> Result<Started, String> {
     let binary = region_binary();
     if !binary.is_file() {
@@ -1317,19 +1339,20 @@ fn start_region_with_proxy(
         let _ = fs::remove_file(&asset_override);
         None
     };
-    let server_ini = region_server_ini(
-        &regions,
-        record.then_some(capture.as_path()),
+    let server_ini = region_server_ini(&StandaloneIni {
+        regions_dir: &regions,
+        capture_file: record.then_some(capture.as_path()),
         public_port,
         private_port,
-        &password,
+        password: &password,
         asset_include,
-        if proxy_http {
+        http_bind: if proxy_http {
             Ipv4Addr::new(127, 0, 0, 2)
         } else {
             Ipv4Addr::LOCALHOST
         },
-    )?;
+        basic_physics,
+    })?;
     write_secret(&config.join("RegionServer.ini"), &server_ini)?;
     fs::write(regions.join("Regions.ini"), regions_ini(public_port))
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
@@ -2329,41 +2352,39 @@ mod tests {
 
     #[test]
     fn the_region_ini_has_the_const_keys_and_the_report_omits_the_password() {
-        let ini = region_server_ini(
-            Path::new("/tmp/regions"),
+        let standalone = |capture, public_port, private_port, asset_include, basic_physics| {
+            region_server_ini(&StandaloneIni {
+                regions_dir: Path::new("/tmp/regions"),
+                capture_file: capture,
+                public_port,
+                private_port,
+                password: "0123456789abcdef",
+                asset_include,
+                http_bind: Ipv4Addr::LOCALHOST,
+                basic_physics,
+            })
+            .unwrap()
+        };
+        let ini = standalone(
             Some(Path::new("/tmp/regions/capture-udp.cap")),
             9100,
             9103,
-            "0123456789abcdef",
             None,
-            Ipv4Addr::LOCALHOST,
-        )
-        .unwrap();
+            false,
+        );
         assert!(ini.contains("BaseURL = http://${Const|BaseHostname}"));
         assert!(ini.contains("CaptureFile = \"/tmp/regions/capture-udp.cap\""));
         assert!(ini.contains("ServiceProbe = true"));
-        let quiet = region_server_ini(
-            Path::new("/tmp/regions"),
-            None,
-            9100,
-            9103,
-            "0123456789abcdef",
-            None,
-            Ipv4Addr::LOCALHOST,
-        )
-        .unwrap();
+        let quiet = standalone(None, 9100, 9103, None, false);
         assert!(!quiet.contains("CaptureFile"));
         assert!(quiet.contains("ServiceProbe = true"));
-        let pointed = region_server_ini(
-            Path::new("/tmp/regions"),
+        let pointed = standalone(
             None,
             9100,
             9103,
-            "0123456789abcdef",
             Some(Path::new("/tmp/regions/AssetOverride.ini")),
-            Ipv4Addr::LOCALHOST,
-        )
-        .unwrap();
+            false,
+        );
         assert!(pointed.contains("Include-Asset = \"/tmp/regions/AssetOverride.ini\""));
         assert!(
             pointed.find("Include-Architecture").unwrap() < pointed.find("Include-Asset").unwrap()
@@ -2374,18 +2395,14 @@ mod tests {
         assert!(ini.contains(ESTATE_OWNER));
         assert!(ini.contains("DefaultEstateOwnerPassword = \"0123456789abcdef\""));
         assert!(ini.contains("regionload_regionsdir = \"/tmp/regions\""));
+        assert!(!ini.contains("physics ="));
+        let basic = standalone(None, 9100, 9103, None, true);
+        assert!(basic.contains("physics = basicphysics"));
+        assert!(basic.find("physics = basicphysics").unwrap() < basic.find("[Network]").unwrap());
+        assert!(basic.find("[Startup]").unwrap() < basic.find("physics = basicphysics").unwrap());
         let home = 25_000 + crate::ports::Slot::Home as u16;
         let private = 25_000 + crate::ports::Slot::StandalonePrivate as u16;
-        let moved = region_server_ini(
-            Path::new("/tmp/regions"),
-            None,
-            home,
-            private,
-            "0123456789abcdef",
-            None,
-            Ipv4Addr::LOCALHOST,
-        )
-        .unwrap();
+        let moved = standalone(None, home, private, None, false);
         let regions = regions_ini(home);
         let rendered = format!("{moved}{regions}");
         assert!(

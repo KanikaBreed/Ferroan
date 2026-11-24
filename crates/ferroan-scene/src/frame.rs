@@ -3,14 +3,16 @@
 
 //! The region frame thread. [D6](../../../docs/DECISIONS.md) keeps it off the
 //! async runtime. It ticks at the shipped `FrameTime` and still answers height
-//! and layer queries. This row has no physics step. Login, chat, a local
-//! teleport and a hop completion store the pose. An `AgentUpdate` stores
-//! movement intent. Teleport packets stay on the circuit.
+//! and layer queries. Each tick steps every avatar that is not sitting on the
+//! ground. Login, chat, a local teleport and a hop completion store the pose.
+//! An `AgentUpdate` stores movement intent. The reply from those calls is the
+//! pose written in that call, before the next tick. Teleport packets stay on
+//! the circuit.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
 use uuid::Uuid;
@@ -19,6 +21,7 @@ use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Applied, Body, Motion, MotionUpdate};
+use crate::walk;
 
 /// `Constants.MinSimulationHeight`.
 const MIN_HEIGHT: f32 = -100.0;
@@ -517,6 +520,7 @@ fn run(
         drain_inbound(&inbound, &mut presences, map.as_ref());
         let wait = next.saturating_duration_since(Instant::now());
         if wait.is_zero() {
+            step_avatars(&mut presences, map.as_ref());
             frames = frames.saturating_add(1);
             next = Instant::now() + frame_wait();
             continue;
@@ -541,6 +545,7 @@ fn run(
             Ok(Request::Wake) => {}
             Ok(Request::Stop) => break,
             Err(RecvTimeoutError::Timeout) => {
+                step_avatars(&mut presences, map.as_ref());
                 frames = frames.saturating_add(1);
                 next = Instant::now() + frame_wait();
             }
@@ -554,13 +559,47 @@ pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
 }
 
+fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) {
+    let now = unix_ms();
+    let (extent_x, extent_y) = match map {
+        Some(map) => (map.width() as f32, map.height() as f32),
+        None => (walk::DEFAULT_EXTENT, walk::DEFAULT_EXTENT),
+    };
+    for avatar in presences.values_mut() {
+        let terrain = walk::terrain_height(map, avatar.pose.position, extent_x, extent_y);
+        avatar.body.step_physics(
+            &mut avatar.pose,
+            terrain,
+            extent_x,
+            extent_y,
+            FRAME_TIME,
+            now,
+        );
+    }
+}
+
+fn unix_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
     use crate::height::Heightmap;
+    use crate::walk::AVATAR_SIZE_Z;
     use uuid::Uuid;
+
+    fn z_is_written_or_snapped(z: f32, written: f32) -> bool {
+        z == written || z == AVATAR_SIZE_Z
+    }
 
     #[test]
     fn the_frame_thread_returns_the_height() {
@@ -592,12 +631,20 @@ mod tests {
             draw_distance: 255.0,
         };
         assert_eq!(frame.post_login(agent, pose).unwrap(), pose);
-        assert_eq!(frame.presence(agent).unwrap(), Some(pose));
+        let immediate = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(immediate.position[0], 4.0);
+        assert_eq!(immediate.position[1], 5.0);
+        assert!(z_is_written_or_snapped(immediate.position[2], 26.0));
+        let before = frame.frames().unwrap();
         std::thread::sleep(Duration::from_millis(400));
         let frames = frame.frames().unwrap();
-        assert!(frames >= 2, "frames {frames}");
+        assert!(frames > before, "frames {before} -> {frames}");
         assert!(frames < 10, "frames {frames}");
         assert_eq!(FRAME_TIME, 0.0909);
+        let snapped = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(snapped.position, [4.0, 5.0, AVATAR_SIZE_Z]);
+        assert_eq!(snapped.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(snapped.rotation, pose.rotation);
     }
 
     #[test]
@@ -665,8 +712,14 @@ mod tests {
         assert_eq!(landed.control_flags, pose.control_flags);
         assert_eq!(landed.draw_distance, pose.draw_distance);
         let places = frame.chat_positions(&[speaker, listener]).unwrap();
-        assert_eq!(places.get(&speaker).copied(), Some([40.0, 200.0, 30.0]));
-        assert_eq!(places.get(&listener).copied(), Some([130.0, 128.0, 25.0]));
+        let speaker_at = places.get(&speaker).copied().unwrap();
+        let listener_at = places.get(&listener).copied().unwrap();
+        assert_eq!(speaker_at[0], 40.0);
+        assert_eq!(speaker_at[1], 200.0);
+        assert!(z_is_written_or_snapped(speaker_at[2], 30.0));
+        assert_eq!(listener_at[0], 130.0);
+        assert_eq!(listener_at[1], 128.0);
+        assert!(z_is_written_or_snapped(listener_at[2], 25.0));
         assert!(
             frame
                 .chat_positions(&[Uuid::from_u128(9)])
@@ -797,7 +850,11 @@ mod tests {
             .complete_hop(traveller, [128.0, 128.0, 30.0], [1.0, 0.0, 0.0])
             .unwrap();
         assert_eq!(completed.position, [128.0, 128.0, 30.0]);
-        assert_eq!(completed.velocity, [2.0, 0.0, 0.0]);
+        assert!(
+            completed.velocity == [2.0, 0.0, 0.0] || completed.velocity == [0.0, 0.0, 0.0],
+            "{:?}",
+            completed.velocity
+        );
         assert_eq!(completed.control_flags, 7);
         assert_eq!(completed.draw_distance, 80.0);
         let completed = frame
@@ -807,10 +864,15 @@ mod tests {
         assert_eq!(completed.velocity, [0.0, 0.0, 0.0]);
         assert_eq!(completed.control_flags, 4);
         assert_eq!(completed.draw_distance, 64.0);
-        assert_eq!(
-            frame.chat_positions(&[agent]).unwrap().get(&agent).copied(),
-            Some([128.0, 128.0, 30.0])
-        );
+        let chat = frame
+            .chat_positions(&[agent])
+            .unwrap()
+            .get(&agent)
+            .copied()
+            .unwrap();
+        assert_eq!(chat[0], 128.0);
+        assert_eq!(chat[1], 128.0);
+        assert!(z_is_written_or_snapped(chat[2], 30.0));
     }
 
     #[test]

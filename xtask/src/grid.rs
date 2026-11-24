@@ -144,6 +144,7 @@ struct RegionIni<'a> {
     private_proxy: u16,
     password: &'a str,
     capture: Option<&'a str>,
+    basic_physics: bool,
 }
 
 fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
@@ -155,6 +156,11 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
     if region.http_port == 0 || region.public_proxy == 0 || region.private_proxy == 0 {
         return Err("grid mode needs a region port and two Robust proxy ports".to_string());
     }
+    let physics_line = if region.basic_physics {
+        "\n    physics = basicphysics"
+    } else {
+        ""
+    };
     let mut ini = format!(
         r#"[Const]
     BaseHostname = "{advertised}"
@@ -164,7 +170,7 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
     PrivatePort = "{private_proxy}"
 
 [Startup]
-    regionload_regionsdir = "{dir}"
+    regionload_regionsdir = "{dir}"{physics_line}
     ConsoleHistoryFileEnabled = false
 
 [Network]
@@ -935,6 +941,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
+            basic_physics: spec.basic_physics && !ferroan,
         },
         &grid.passwords,
         docker,
@@ -965,6 +972,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
+            basic_physics: spec.basic_physics,
         },
         &grid.passwords,
         docker,
@@ -1871,6 +1879,7 @@ struct RegionStart {
     account_uri: Option<String>,
     auth_uri: Option<String>,
     metrics_port: Option<u16>,
+    basic_physics: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1942,6 +1951,7 @@ fn start_region(
         private_proxy: spec.private_proxy,
         password,
         capture: capture_text.as_deref(),
+        basic_physics: spec.basic_physics,
     };
     let mut ini = region_server_ini(&region)?;
     if spec.login_only {
@@ -2604,6 +2614,7 @@ mod tests {
             private_proxy: 8003,
             password: "generated-password",
             capture,
+            basic_physics: false,
         }
     }
 
@@ -2616,7 +2627,20 @@ mod tests {
         assert!(ini.contains("PublicPort = \"8002\""));
         assert!(ini.contains("PrivatePort = \"8003\""));
         assert!(ini.contains("CaptureFile = \"/tmp/ferroan-capture.cap\""));
+        assert!(!ini.contains("physics ="));
         assert!(!ini.contains("ServiceProbe"));
+        let mut basic = sample_region(None);
+        basic.basic_physics = true;
+        let basic_ini = region_server_ini(&basic).unwrap();
+        assert!(basic_ini.contains("physics = basicphysics"));
+        assert!(
+            basic_ini.find("[Startup]").unwrap()
+                < basic_ini.find("physics = basicphysics").unwrap()
+        );
+        assert!(
+            basic_ini.find("physics = basicphysics").unwrap()
+                < basic_ini.find("ConsoleHistoryFileEnabled").unwrap()
+        );
         assert!(ini.contains("DefaultEstateOwnerPassword = \"generated-password\""));
         assert!(!ini.contains("127.0.0.4"));
         let regions = regions_ini(&sample_region(None));

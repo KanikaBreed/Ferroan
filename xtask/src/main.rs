@@ -148,7 +148,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
-       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--rust <service>,…] [--db sqlite|mysql|pgsql]
+       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
        cargo xtask live run caps grid [--region ferroan]

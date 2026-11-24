@@ -56,9 +56,10 @@
 //! Read-only region terrain, the prim load, region settings and the frame thread.
 //! The frame ticks at the shipped `FrameTime`, stores the login presence, and
 //! answers a forwarded chat with those positions. A landing updates the position.
-//! An `AgentUpdate` stores movement intent on that presence.
+//! An `AgentUpdate` stores movement intent on that presence. Each tick integrates
+//! that intent with the walking stand-in.
 //!
-//! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
+//! Estate edits, terrain upload and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -74,6 +75,7 @@ mod objects;
 mod payloads;
 mod settings;
 mod store;
+mod walk;
 
 pub use compress::TerrainLayer;
 pub use error::{ObjectError, TerrainError};

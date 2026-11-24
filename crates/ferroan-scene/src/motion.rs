@@ -26,9 +26,9 @@
 //! on the ground or in the air leaves that command for 250 ms. Stop replaces
 //! it immediately, at 0.2 times 4.096.
 //!
-//! Not in this row: the position step (the walking integrator), terse
-//! updates, the camera ray, scripted control grabs, the hide-title broadcast,
-//! and the animation machine. The animator starts on the surface, so a key
+//! The frame tick integrates this command (`walk`). Terse updates, the camera
+//! ray, scripted control grabs, the hide-title broadcast, and the animation
+//! machine stay later rows. The animator starts on the surface, so a key
 //! release takes the 250 ms path. The avatar counts as on the ground when it
 //! is not flying. Move-to-target stays off: neither of these packets starts it.
 
@@ -205,6 +205,10 @@ pub(crate) struct Body {
     motion: Motion,
     filter: Filter,
     last_finite: [f32; 3],
+    /// Velocity the tick integrates. A new actor starts at rest even when the
+    /// presence velocity is not. A command copies the target here. The tick
+    /// writes the result back and does not copy the target again.
+    physics_velocity: [f32; 3],
     /// No physics actor: sitting on the ground. Later updates skip the command.
     seated: bool,
 }
@@ -255,6 +259,7 @@ impl Body {
                 camera_up: [0.0, 0.0, 0.0],
             },
             last_finite: pose.position,
+            physics_velocity: [0.0, 0.0, 0.0],
             seated: false,
         }
     }
@@ -272,6 +277,7 @@ impl Body {
         self.motion.target_velocity = [0.0, 0.0, 0.0];
         self.motion.angular_velocity = [0.0, 0.0, 0.0];
         self.motion.delayed_stop_ms = -1;
+        self.physics_velocity = [0.0, 0.0, 0.0];
     }
 
     pub(crate) fn apply(&mut self, update: &MotionUpdate, pose: &mut Presence) -> Applied {
@@ -353,6 +359,7 @@ impl Body {
             self.seated = true;
             self.motion.angular_velocity = [0.0, 0.0, 0.0];
             self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.physics_velocity = [0.0, 0.0, 0.0];
             pose.velocity = [0.0, 0.0, 0.0];
         }
 
@@ -485,6 +492,43 @@ impl Body {
             direc[2] = 0.0;
         }
         self.motion.target_velocity = direc;
+        self.physics_velocity = direc;
+    }
+
+    /// One tick. A seated avatar is skipped. The delayed stop is applied after
+    /// the move, so the deadline's frame still travels and the next one rests.
+    pub(crate) fn step_physics(
+        &mut self,
+        pose: &mut Presence,
+        terrain: f32,
+        extent_x: f32,
+        extent_y: f32,
+        dt: f32,
+        now_ms: u64,
+    ) {
+        if self.seated {
+            return;
+        }
+        let step = crate::walk::integrate(
+            pose.position,
+            self.physics_velocity,
+            self.motion.flying,
+            extent_x,
+            extent_y,
+            terrain,
+            dt,
+        );
+        pose.position = step.position;
+        pose.velocity = step.velocity;
+        self.physics_velocity = step.velocity;
+        self.last_finite = step.position;
+        let deadline = self.motion.delayed_stop_ms;
+        if deadline > 0 && now_ms as i64 > deadline {
+            self.motion.delayed_stop_ms = -1;
+            self.motion.target_velocity = [0.0, 0.0, 0.0];
+            self.physics_velocity = [0.0, 0.0, 0.0];
+            pose.velocity = [0.0, 0.0, 0.0];
+        }
     }
 }
 
@@ -943,5 +987,91 @@ mod tests {
         body.apply(&update(1_030, 2, CONTROL_FLY), &mut pose);
         assert!(body.view().angular_velocity[2] < FLY_ROLL_STEP);
         assert!(body.view().angular_velocity[2] > 0.0);
+    }
+
+    #[test]
+    fn a_tick_uses_the_physics_velocity_and_the_stop_lands_after_that_move() {
+        let mut pose = login_pose();
+        pose.velocity = [9.0, 0.0, 0.0];
+        let mut body = Body::new(&pose);
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_000,
+        );
+        assert_eq!(pose.position[0], 128.0);
+        assert_eq!(pose.position[2], 21.0 + crate::walk::AVATAR_SIZE_Z);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+
+        body.apply(&update(1_000, 1, CONTROL_AT_POS), &mut pose);
+        let speed = body.view().target_velocity[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            1_050,
+        );
+        assert!((pose.position[0] - (128.0 + speed * crate::frame::FRAME_TIME)).abs() < 1.0e-5);
+        assert_eq!(pose.velocity[0], speed);
+        assert_eq!(pose.velocity[2], 0.0);
+
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        let deadline = body.view().delayed_stop_ms;
+        assert!(deadline > 1_100);
+        let before = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64,
+        );
+        assert!(pose.position[0] > before);
+        assert_ne!(pose.velocity[0], 0.0);
+        let moved = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64 + 1,
+        );
+        assert!(pose.position[0] > moved);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        let stopped = pose.position[0];
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            deadline as u64 + 200,
+        );
+        assert_eq!(pose.position[0], stopped);
+
+        body.apply(&update(2_000, 3, CONTROL_AT_POS), &mut pose);
+        body.apply(
+            &update(2_030, 4, CONTROL_AT_POS | CONTROL_SIT_ON_GROUND),
+            &mut pose,
+        );
+        let seated = pose.position;
+        body.step_physics(
+            &mut pose,
+            21.0,
+            256.0,
+            256.0,
+            crate::frame::FRAME_TIME,
+            2_100,
+        );
+        assert_eq!(pose.position, seated);
+        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
     }
 }

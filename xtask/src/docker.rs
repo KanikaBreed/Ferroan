@@ -242,6 +242,7 @@ fn smoke_linux() -> Result<String, String> {
         ferroan_region: true,
         rust_services: vec!["assets".to_string()],
         db: crate::live_args::Database::Sqlite,
+        basic_physics: false,
     })?;
     let ferrobot = crate::grid::run_docker(&crate::live_args::RunSpec {
         scenario: "ferrobot".to_string(),
@@ -249,6 +250,7 @@ fn smoke_linux() -> Result<String, String> {
         ferroan_region: true,
         rust_services: vec!["assets".to_string()],
         db: crate::live_args::Database::Sqlite,
+        basic_physics: false,
     })?;
     let elapsed = started.elapsed().as_secs();
     remove_built_images();
