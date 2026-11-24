@@ -40,7 +40,8 @@
 //! A whisper, say or shout is limited to 10 m, 20 m or 100 m. Typing and any
 //! other channel-0 type have no distance cap, as `TrySendChatMessage` does
 //! when `maxDistSQ` stays negative. Other channels, including the debug
-//! channel, are not delivered. The production freeze set stays empty.
+//! channel, are not delivered. The production freeze set stays empty. Seats
+//! do not store a position: the caller passes the poses the scene returned.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,7 +78,6 @@ pub(crate) enum ViewerBound {
 struct Seat {
     generation: u64,
     name: String,
-    position: [f32; 3],
     frozen: bool,
     tx: mpsc::Sender<ViewerBound>,
 }
@@ -134,7 +134,7 @@ impl RegionChat {
         }
     }
 
-    pub(crate) fn seat(&self, id: Uuid, name: String, position: [f32; 3]) -> ChatSeat {
+    pub(crate) fn seat(&self, id: Uuid, name: String) -> ChatSeat {
         let (tx, rx) = mpsc::channel(OUTBOUND_QUEUE);
         let generation = self.hub.next_generation.fetch_add(1, Ordering::Relaxed);
         self.hub
@@ -146,7 +146,6 @@ impl RegionChat {
                 Seat {
                     generation,
                     name,
-                    position,
                     frozen: false,
                     tx,
                 },
@@ -176,21 +175,27 @@ impl RegionChat {
         }
     }
 
-    /// A local teleport moves the seat. Later chat uses the landed position.
-    pub(crate) fn set_position(&self, id: Uuid, position: [f32; 3]) {
-        if let Some(seat) = self
-            .hub
+    /// Agents currently seated. Chat asks the scene for these poses.
+    pub(crate) fn seated_ids(&self) -> Vec<Uuid> {
+        self.hub
             .seats
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .get_mut(&id)
-        {
-            seat.position = position;
-        }
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// Deliver one viewer chat line. The caller has already checked the circuit identity.
-    pub(crate) fn publish(&self, from: Uuid, chat_type: u8, channel: i32, message: &str) {
+    /// `places` are the scene poses. An agent with no pose is not in the scene.
+    pub(crate) fn publish(
+        &self,
+        from: Uuid,
+        chat_type: u8,
+        channel: i32,
+        message: &str,
+        places: &HashMap<Uuid, [f32; 3]>,
+    ) {
         if channel != 0 {
             return;
         }
@@ -202,7 +207,9 @@ impl RegionChat {
         let Some(speaker) = seats.get(&from) else {
             return;
         };
-        let from_pos = speaker.position;
+        let Some(&from_pos) = places.get(&from) else {
+            return;
+        };
         let name = speaker.name.clone();
         let frozen = speaker.frozen;
         let speaker_tx = speaker.tx.clone();
@@ -219,9 +226,10 @@ impl RegionChat {
         let packet = chat_packet(from, &name, from_pos, chat_type, text);
         let limit = range_limit(chat_type);
         let targets: Vec<mpsc::Sender<ViewerBound>> = seats
-            .values()
-            .filter_map(|seat| {
-                if limit.is_some_and(|max_sq| distance_squared(from_pos, seat.position) > max_sq) {
+            .iter()
+            .filter_map(|(id, seat)| {
+                let &to = places.get(id)?;
+                if limit.is_some_and(|max_sq| distance_squared(from_pos, to) > max_sq) {
                     return None;
                 }
                 Some(seat.tx.clone())
@@ -335,15 +343,23 @@ mod tests {
         let hub = RegionChat::new();
         let speaker = Uuid::from_u128(1);
         let listener = Uuid::from_u128(2);
-        let left = hub.seat(speaker, "Test User".to_string(), [0.0, 0.0, 0.0]);
-        let right = hub.seat(listener, "Chat Bot".to_string(), [0.0, 0.0, 0.0]);
+        let left = hub.seat(speaker, "Test User".to_string());
+        let right = hub.seat(listener, "Chat Bot".to_string());
         (hub, left, right, speaker, listener)
+    }
+
+    fn places(at: &[(Uuid, [f32; 3])]) -> HashMap<Uuid, [f32; 3]> {
+        at.iter().copied().collect()
     }
 
     #[test]
     fn a_say_in_range_reaches_both_avatars_with_the_speaker_fields() {
-        let (hub, mut speaker, mut listener, speaker_id, _) = seat_pair();
-        hub.publish(speaker_id, SAY, 0, "ferroan harness chat");
+        let (hub, mut speaker, mut listener, speaker_id, listener_id) = seat_pair();
+        let here = places(&[
+            (speaker_id, [0.0, 0.0, 0.0]),
+            (listener_id, [0.0, 0.0, 0.0]),
+        ]);
+        hub.publish(speaker_id, SAY, 0, "ferroan harness chat", &here);
         for items in [take(&mut speaker.rx), take(&mut listener.rx)] {
             let heard = chat_of(&items);
             assert_eq!(heard.len(), 1);
@@ -373,12 +389,12 @@ mod tests {
             (SHOUT, [100.0, 0.0, 0.0], [100.0, 1.0, 0.0]),
         ];
         for (chat_type, inside, outside) in cases {
-            hub.set_position(listener_id, inside);
-            hub.publish(speaker_id, chat_type, 0, "near");
+            let near = places(&[(speaker_id, [0.0, 0.0, 0.0]), (listener_id, inside)]);
+            hub.publish(speaker_id, chat_type, 0, "near", &near);
             assert_eq!(chat_of(&take(&mut listener.rx)).len(), 1, "{chat_type}");
             assert_eq!(chat_of(&take(&mut speaker.rx)).len(), 1, "{chat_type}");
-            hub.set_position(listener_id, outside);
-            hub.publish(speaker_id, chat_type, 0, "far");
+            let far = places(&[(speaker_id, [0.0, 0.0, 0.0]), (listener_id, outside)]);
+            hub.publish(speaker_id, chat_type, 0, "far", &far);
             assert!(chat_of(&take(&mut listener.rx)).is_empty(), "{chat_type}");
             let own_items = take(&mut speaker.rx);
             let own = chat_of(&own_items);
@@ -390,30 +406,37 @@ mod tests {
     #[test]
     fn typing_has_no_distance_cap_and_other_channels_are_dropped() {
         let (hub, mut speaker, mut listener, speaker_id, listener_id) = seat_pair();
-        hub.set_position(listener_id, [500.0, 0.0, 0.0]);
-        hub.publish(speaker_id, START_TYPING, 0, "");
-        hub.publish(speaker_id, STOP_TYPING, 0, "");
+        let far = places(&[
+            (speaker_id, [0.0, 0.0, 0.0]),
+            (listener_id, [500.0, 0.0, 0.0]),
+        ]);
+        hub.publish(speaker_id, START_TYPING, 0, "", &far);
+        hub.publish(speaker_id, STOP_TYPING, 0, "", &far);
         assert_eq!(chat_of(&take(&mut listener.rx)).len(), 2);
         assert_eq!(chat_of(&take(&mut speaker.rx)).len(), 2);
-        hub.publish(speaker_id, SAY, 1, "private");
-        hub.publish(speaker_id, SAY, 2_147_483_647, "debug");
+        hub.publish(speaker_id, SAY, 1, "private", &far);
+        hub.publish(speaker_id, SAY, 2_147_483_647, "debug", &far);
         assert!(take(&mut listener.rx).is_empty());
         assert!(take(&mut speaker.rx).is_empty());
-        hub.publish(Uuid::from_u128(9), SAY, 0, "missing");
+        hub.publish(Uuid::from_u128(9), SAY, 0, "missing", &far);
         assert!(take(&mut listener.rx).is_empty());
     }
 
     #[test]
     fn a_message_longer_than_1100_utf16_units_is_cut_to_1000() {
-        let (hub, mut speaker, mut listener, speaker_id, _) = seat_pair();
+        let (hub, mut speaker, mut listener, speaker_id, listener_id) = seat_pair();
+        let here = places(&[
+            (speaker_id, [0.0, 0.0, 0.0]),
+            (listener_id, [0.0, 0.0, 0.0]),
+        ]);
         let kept = "a".repeat(1100);
-        hub.publish(speaker_id, SAY, 0, &kept);
+        hub.publish(speaker_id, SAY, 0, &kept, &here);
         let kept_items = take(&mut listener.rx);
         let heard = chat_of(&kept_items);
         assert_eq!(field_str(&heard[0].chat_data.message), kept);
         let _ = take(&mut speaker.rx);
         let long = "b".repeat(1101);
-        hub.publish(speaker_id, SAY, 0, &long);
+        hub.publish(speaker_id, SAY, 0, &long, &here);
         let cut_items = take(&mut listener.rx);
         let heard = chat_of(&cut_items);
         assert_eq!(field_str(&heard[0].chat_data.message), "b".repeat(1000));
@@ -421,9 +444,13 @@ mod tests {
 
     #[test]
     fn a_frozen_sender_is_alerted_only_for_real_chat() {
-        let (hub, mut speaker, mut listener, speaker_id, _) = seat_pair();
+        let (hub, mut speaker, mut listener, speaker_id, listener_id) = seat_pair();
+        let here = places(&[
+            (speaker_id, [0.0, 0.0, 0.0]),
+            (listener_id, [0.0, 0.0, 0.0]),
+        ]);
         hub.freeze(speaker_id, true);
-        hub.publish(speaker_id, SAY, 0, "hello");
+        hub.publish(speaker_id, SAY, 0, "hello", &here);
         let own = take(&mut speaker.rx);
         assert!(chat_of(&own).is_empty());
         let alerts = alerts_of(&own);
@@ -435,12 +462,12 @@ mod tests {
             "/You may not talk as you are frozen."
         );
         assert!(take(&mut listener.rx).is_empty());
-        hub.publish(speaker_id, START_TYPING, 0, "");
-        hub.publish(speaker_id, STOP_TYPING, 0, "");
+        hub.publish(speaker_id, START_TYPING, 0, "", &here);
+        hub.publish(speaker_id, STOP_TYPING, 0, "", &here);
         assert!(take(&mut speaker.rx).is_empty());
         assert!(take(&mut listener.rx).is_empty());
         hub.freeze(speaker_id, false);
-        hub.publish(speaker_id, SAY, 0, "after");
+        hub.publish(speaker_id, SAY, 0, "after", &here);
         assert_eq!(chat_of(&take(&mut listener.rx)).len(), 1);
         assert!(alerts_of(&take(&mut speaker.rx)).is_empty());
     }

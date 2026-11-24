@@ -143,6 +143,9 @@ pub struct CircuitExpect {
 /// The token carries no credentials and is emitted at most once per circuit.
 pub struct RootArrival {
     completed: oneshot::Sender<()>,
+    /// The pose the frame stored for this transition. Login uses the arrival
+    /// position. A return uses the hop completion.
+    pub position: [f32; 3],
 }
 
 impl RootArrival {
@@ -193,7 +196,56 @@ pub const LOGIN_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// `DefaultDrawDistance` when the viewer has not sent a far plane above 32.
 pub const LOGIN_DRAW_DISTANCE: f32 = 255.0;
 
-pub type LoginScene = Arc<dyn Fn(Uuid, LoginPose) -> Result<LoginPose, ()> + Send + Sync>;
+/// A same-region `TeleportLocationRequest` after the circuit accepted it.
+/// The frame applies the landing. This post is one inbound slot.
+#[derive(Clone, Copy, Debug)]
+pub struct TeleportRequest {
+    pub position: [f32; 3],
+    pub look_at: [f32; 3],
+    pub half_height: f32,
+    pub default_landing: [f32; 3],
+    pub size_x: f32,
+    pub size_y: f32,
+    pub flags: u32,
+}
+
+/// Position, look and flags the local-teleport packets use.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneMove {
+    pub position: [f32; 3],
+    pub look_at: [f32; 3],
+    pub flags: u32,
+}
+
+/// What the circuit asks the frame thread to do.
+#[derive(Clone, Debug)]
+pub enum SceneCall {
+    /// Store a full login pose. One inbound slot.
+    Pose(LoginPose),
+    /// A position write that keeps the other pose fields. One inbound slot.
+    Land([f32; 3]),
+    /// `ChatFromViewer` forwarded so distance uses the stored poses. One inbound slot.
+    Places(Vec<Uuid>),
+    /// `TeleportLocationRequest` for this region. One inbound slot.
+    Teleport(TeleportRequest),
+    /// Hop completion. The return pose replaces position and heading. One inbound slot.
+    Complete {
+        position: [f32; 3],
+        look_at: [f32; 3],
+    },
+    /// The stored pose. A miss is an error. This does not take an inbound slot.
+    Read,
+}
+
+/// The frame's answer. A landing or a hop completion comes back as [`SceneReply::Pose`].
+#[derive(Clone, Debug)]
+pub enum SceneReply {
+    Pose(LoginPose),
+    Places(HashMap<Uuid, [f32; 3]>),
+    Moved(SceneMove),
+}
+
+pub type LoginScene = Arc<dyn Fn(Uuid, SceneCall) -> Result<SceneReply, ()> + Send + Sync>;
 
 /// Why the region stopped a live circuit. Ordinary logout is not one of these:
 /// `LogoutHandler` closes with `sendStop` false and does not send either packet.
@@ -818,7 +870,10 @@ impl State {
                     self.arrived = true;
                     if let Some(notify) = self.root_arrival.take() {
                         let (completed, completion) = oneshot::channel();
-                        let _ = notify.send(RootArrival { completed });
+                        let _ = notify.send(RootArrival {
+                            completed,
+                            position: self.arrival.position,
+                        });
                         self.arrival_completion = Some(completion);
                     } else {
                         self.send_arrival(sock, from, expect).await?;
@@ -856,11 +911,13 @@ impl State {
                 && let Ok(incoming) = packet.decode::<ChatFromViewer>()
             {
                 let text = ferroan_protocol::field_str(&incoming.chat_data.message);
+                let places = self.chat_places(expect.agent_id);
                 chat.publish(
                     expect.agent_id,
                     incoming.chat_data.type_,
                     incoming.chat_data.channel,
                     &text,
+                    &places,
                 );
             }
         } else if packet.id == TeleportLocationRequest::ID {
@@ -909,13 +966,16 @@ impl State {
         Ok(())
     }
 
-    /// Post the landed pose and use the frame's record. Without a scene, the
-    /// arrival position is the one the region already computed. Chat and
-    /// teleport keep that field either way.
+    /// Use the pose the frame already stored. The first arrival posts the login
+    /// pose. A later arrival, after a teleport or a hop, reads that pose and
+    /// does not replace its heading or velocity.
     fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
         let Some(scene) = &self.login_scene else {
             return Ok(self.arrival.position);
         };
+        if let Ok(SceneReply::Pose(stored)) = scene(agent, SceneCall::Read) {
+            return Ok(stored.position);
+        }
         let pose = LoginPose {
             position: self.arrival.position,
             rotation: LOGIN_ROTATION,
@@ -923,9 +983,76 @@ impl State {
             control_flags: 0,
             draw_distance: LOGIN_DRAW_DISTANCE,
         };
-        scene(agent, pose)
-            .map(|stored| stored.position)
-            .map_err(|_| CircuitError::SceneInbound)
+        match scene(agent, SceneCall::Pose(pose)) {
+            Ok(SceneReply::Pose(stored)) => Ok(stored.position),
+            _ => Err(CircuitError::SceneInbound),
+        }
+    }
+
+    /// Forward one same-region teleport. No scene is not an error: the caller
+    /// then uses the landing it already computed. A full inbound queue fails
+    /// the teleport before its packets.
+    fn teleport_scene(
+        &self,
+        agent: Uuid,
+        region: &crate::teleport::TeleportRegion,
+        position: [f32; 3],
+        look_at: [f32; 3],
+        flags: u32,
+    ) -> Result<SceneMove, CircuitError> {
+        let Some(scene) = &self.login_scene else {
+            return Ok(SceneMove {
+                position,
+                look_at,
+                flags,
+            });
+        };
+        match scene(
+            agent,
+            SceneCall::Teleport(TeleportRequest {
+                position,
+                look_at,
+                half_height: region.half_height,
+                default_landing: region.default_landing,
+                size_x: region.size_x,
+                size_y: region.size_y,
+                flags,
+            }),
+        ) {
+            Ok(SceneReply::Moved(moved)) => Ok(moved),
+            _ => Err(CircuitError::SceneInbound),
+        }
+    }
+
+    /// Forward a hop completion. No scene is not an error. A full queue is
+    /// ignored by the caller: the return packets still go out.
+    fn complete_scene(
+        &self,
+        agent: Uuid,
+        position: [f32; 3],
+        look_at: [f32; 3],
+    ) -> Result<[f32; 3], CircuitError> {
+        let Some(scene) = &self.login_scene else {
+            return Ok(position);
+        };
+        match scene(agent, SceneCall::Complete { position, look_at }) {
+            Ok(SceneReply::Pose(stored)) => Ok(stored.position),
+            _ => Err(CircuitError::SceneInbound),
+        }
+    }
+
+    /// Forward the seated ids. The frame answers with the poses it has.
+    fn chat_places(&self, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
+        let Some(chat) = &self.chat else {
+            return HashMap::new();
+        };
+        let Some(scene) = &self.login_scene else {
+            return HashMap::new();
+        };
+        match scene(speaker, SceneCall::Places(chat.seated_ids())) {
+            Ok(SceneReply::Places(places)) => places,
+            _ => HashMap::new(),
+        }
     }
 
     /// `TeleportLocationRequest` for this region. `TeleportStart` and
@@ -958,6 +1085,50 @@ impl State {
         }
         let position = request.info.position.to_array();
         let look_at = request.info.look_at.to_array();
+        // A scene owns the landing. The circuit only decides whether this
+        // request stays here, and then forwards it. The source hop does not
+        // write the local pose: the destination coordinates stay on the request.
+        if self.login_scene.is_some() {
+            let Some(offset) =
+                teleport::region_offset(request.info.region_handle, position, &region)
+            else {
+                if self.source_hop.is_some() {
+                    self.begin_hop(expect, request, to, &region);
+                } else {
+                    let failed = teleport::failed_packet(expect.agent_id, FAIL_PROCESS);
+                    self.send_message(sock, to, &failed, true).await?;
+                }
+                return Ok(());
+            };
+            if !region.allow_movement {
+                let failed = teleport::failed_packet(expect.agent_id, teleport::FAIL_FROZEN);
+                self.send_message(sock, to, &failed, true).await?;
+                return Ok(());
+            }
+            if self.pending_task.len() + self.unacked.len() >= MAX_UNACKED {
+                let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
+                self.send_message(sock, to, &failed, true).await?;
+                return Ok(());
+            }
+            let mut flags = VIA_LOCATION;
+            if region.godlike {
+                flags |= GODLIKE;
+            }
+            if region.flying {
+                flags |= IS_FLYING;
+            }
+            let moved = match self.teleport_scene(expect.agent_id, &region, offset, look_at, flags)
+            {
+                Ok(moved) => moved,
+                Err(_) => {
+                    let failed = teleport::failed_packet(expect.agent_id, FAIL_PROCESS);
+                    self.send_message(sock, to, &failed, true).await?;
+                    return Ok(());
+                }
+            };
+            self.send_local(sock, to, expect, &region, &moved).await?;
+            return Ok(());
+        }
         match teleport::answer(&region, request.info.region_handle, position, look_at) {
             TeleportAnswer::Failed(reason)
                 if reason == FAIL_PROCESS && self.source_hop.is_some() =>
@@ -974,25 +1145,36 @@ impl State {
                     self.send_message(sock, to, &failed, true).await?;
                     return Ok(());
                 }
-                let start = teleport::start_packet(landing.flags);
-                self.send_message(sock, to, &start, true).await?;
-                let local = teleport::local_packet(
-                    expect.agent_id,
-                    landing.position,
-                    landing.look_at,
-                    landing.flags,
-                );
-                self.enqueue_task(&local)?;
-                self.arrival.position = landing.position;
-                *region
-                    .position
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner()) = landing.position;
-                if let Some(chat) = &self.chat {
-                    chat.set_position(expect.agent_id, landing.position);
-                }
+                let moved = SceneMove {
+                    position: landing.position,
+                    look_at: landing.look_at,
+                    flags: landing.flags,
+                };
+                self.send_local(sock, to, expect, &region, &moved).await?;
             }
         }
+        Ok(())
+    }
+
+    async fn send_local(
+        &mut self,
+        sock: &impl DatagramIo,
+        to: SocketAddr,
+        expect: &CircuitExpect,
+        region: &crate::teleport::TeleportRegion,
+        moved: &SceneMove,
+    ) -> Result<(), CircuitError> {
+        let start = teleport::start_packet(moved.flags);
+        self.send_message(sock, to, &start, true).await?;
+        let local =
+            teleport::local_packet(expect.agent_id, moved.position, moved.look_at, moved.flags);
+        self.enqueue_task(&local)?;
+        self.arrival.position = moved.position;
+        self.arrival.look_at = moved.look_at;
+        *region
+            .position
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = moved.position;
         Ok(())
     }
 
@@ -1085,20 +1267,33 @@ impl State {
     /// the arrival at the update's position.
     async fn finish_return(
         &mut self,
+        agent: Uuid,
         pose: crate::return_hop::ReturnPose,
     ) -> Result<(), CircuitError> {
         if pose.origin.is_nil() {
             self.return_started = false;
             return Ok(());
         }
-        self.arrival.position = pose.position;
         self.arrival.look_at = pose.look_at;
+        // A full inbound queue does not stop the return. The arrival packet
+        // reads the frame. This token carries the position the frame stored,
+        // or the mailbox position when the frame did not accept the post.
+        let position = self
+            .complete_scene(agent, pose.position, pose.look_at)
+            .unwrap_or(pose.position);
+        self.arrival.position = position;
         let Some(slot) = self.return_slot.clone() else {
             self.return_started = false;
             return Ok(());
         };
         let (completed, completion) = oneshot::channel();
-        if slot.promote(RootArrival { completed }).await {
+        if slot
+            .promote(RootArrival {
+                completed,
+                position,
+            })
+            .await
+        {
             self.arrival_completion = Some(completion);
         } else {
             self.return_started = false;
@@ -1502,7 +1697,23 @@ impl CircuitServer {
         let Some(chat) = chat else {
             return;
         };
-        let seat = chat.seat(agent, name, position);
+        let scene = self
+            .inner
+            .login_scene
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        if let Some(scene) = scene {
+            let pose = LoginPose {
+                position,
+                rotation: LOGIN_ROTATION,
+                velocity: [0.0, 0.0, 0.0],
+                control_flags: 0,
+                draw_distance: LOGIN_DRAW_DISTANCE,
+            };
+            let _ = scene(agent, SceneCall::Pose(pose));
+        }
+        let seat = chat.seat(agent, name);
         self.inner
             .waiting_seats
             .lock()
@@ -1889,7 +2100,7 @@ async fn serve_socket_reporting(
             } => {
                 state.return_wait = false;
                 if let Some(pose) = pose {
-                    state.finish_return(pose).await?;
+                    state.finish_return(expect.agent_id, pose).await?;
                 } else {
                     // The update did not arrive. A later movement can try again.
                     state.return_started = false;
@@ -1964,7 +2175,9 @@ mod regression_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use ferroan_protocol::msgs::{
@@ -1975,7 +2188,10 @@ mod tests {
     use tokio::net::UdpSocket;
     use uuid::Uuid;
 
-    use super::{CircuitExpect, CircuitServer};
+    use super::{
+        CircuitExpect, CircuitServer, LOGIN_DRAW_DISTANCE, LOGIN_ROTATION, LoginPose, SceneCall,
+        SceneMove, SceneReply,
+    };
 
     fn expect_agent() -> CircuitExpect {
         CircuitExpect {
@@ -2186,6 +2402,52 @@ mod tests {
     async fn a_channel_zero_say_is_reliable_and_heard_by_both_viewers() {
         let server = CircuitServer::bind().await.unwrap();
         server.enable_chat();
+        let poses = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
+        let store = Arc::clone(&poses);
+        server.set_login_scene(Arc::new(move |agent, call| {
+            let mut poses = store.lock().unwrap_or_else(|poison| poison.into_inner());
+            match call {
+                SceneCall::Pose(pose) => {
+                    poses.insert(agent, pose.position);
+                    Ok(SceneReply::Pose(pose))
+                }
+                SceneCall::Land(position) | SceneCall::Complete { position, .. } => {
+                    poses.insert(agent, position);
+                    Ok(SceneReply::Pose(LoginPose {
+                        position,
+                        rotation: LOGIN_ROTATION,
+                        velocity: [0.0, 0.0, 0.0],
+                        control_flags: 0,
+                        draw_distance: LOGIN_DRAW_DISTANCE,
+                    }))
+                }
+                SceneCall::Teleport(request) => {
+                    poses.insert(agent, request.position);
+                    Ok(SceneReply::Moved(SceneMove {
+                        position: request.position,
+                        look_at: request.look_at,
+                        flags: request.flags,
+                    }))
+                }
+                SceneCall::Read => match poses.get(&agent).copied() {
+                    Some(position) => Ok(SceneReply::Pose(LoginPose {
+                        position,
+                        rotation: LOGIN_ROTATION,
+                        velocity: [0.0, 0.0, 0.0],
+                        control_flags: 0,
+                        draw_distance: LOGIN_DRAW_DISTANCE,
+                    })),
+                    None => Err(()),
+                },
+                SceneCall::Places(ids) => {
+                    let places = ids
+                        .into_iter()
+                        .filter_map(|id| poses.get(&id).copied().map(|position| (id, position)))
+                        .collect();
+                    Ok(SceneReply::Places(places))
+                }
+            }
+        }));
         let addr = server.local_addr().unwrap();
         let speaker = expect_agent();
         let listener = CircuitExpect {
@@ -2243,6 +2505,7 @@ mod tests {
             assert_eq!(decoded.chat_data.chat_type, 1);
             assert_eq!(decoded.chat_data.audible, 1);
             assert_eq!(decoded.chat_data.message, b"ferroan harness chat\0");
+            assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
         }
         let mut request = LogoutRequest::default();
         request.agent_data.agent_id = speaker.agent_id;

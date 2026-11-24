@@ -4,6 +4,7 @@
 //! Circuit send-path regressions against the pinned C# socket capture.
 
 use super::*;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -103,6 +104,52 @@ async fn handle_teleport(state: &mut State, io: &FakeIo, expect: &CircuitExpect,
         .unwrap();
 }
 
+fn stored_pose(position: [f32; 3]) -> LoginPose {
+    LoginPose {
+        position,
+        rotation: LOGIN_ROTATION,
+        velocity: [0.0, 0.0, 0.0],
+        control_flags: 0,
+        draw_distance: LOGIN_DRAW_DISTANCE,
+    }
+}
+
+fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
+    Arc::new(move |agent, call| {
+        let mut poses = store.lock().unwrap_or_else(|poison| poison.into_inner());
+        match call {
+            SceneCall::Pose(pose) => {
+                poses.insert(agent, pose.position);
+                Ok(SceneReply::Pose(pose))
+            }
+            SceneCall::Land(position) | SceneCall::Complete { position, .. } => {
+                poses.insert(agent, position);
+                Ok(SceneReply::Pose(stored_pose(position)))
+            }
+            SceneCall::Teleport(request) => {
+                poses.insert(agent, request.position);
+                Ok(SceneReply::Moved(SceneMove {
+                    position: request.position,
+                    look_at: request.look_at,
+                    flags: request.flags,
+                }))
+            }
+            SceneCall::Read => poses
+                .get(&agent)
+                .copied()
+                .map(|position| SceneReply::Pose(stored_pose(position)))
+                .ok_or(()),
+            SceneCall::Places(ids) => {
+                let places = ids
+                    .into_iter()
+                    .filter_map(|id| poses.get(&id).copied().map(|position| (id, position)))
+                    .collect();
+                Ok(SceneReply::Places(places))
+            }
+        }
+    })
+}
+
 fn message_ids(io: &FakeIo) -> Vec<ferroan_protocol::MsgId> {
     io.sent
         .lock()
@@ -140,8 +187,10 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     let shared = region.position.clone();
     let (mut state, expect, io) = seated_teleport(region);
     let chat = RegionChat::new();
-    let mut seat = chat.seat(expect.agent_id, "Test User".into(), [128.0, 128.0, 25.0]);
+    let mut seat = chat.seat(expect.agent_id, "Test User".into());
     state.chat = Some(chat);
+    let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
+    state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     state.maintain(&io).await.unwrap();
@@ -166,15 +215,47 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     assert_eq!(local.info.teleport_flags, crate::teleport::VIA_LOCATION);
     assert_eq!(state.arrival.position, [40.0, 200.0, 30.0]);
     assert_eq!(*shared.lock().unwrap(), [40.0, 200.0, 30.0]);
+    let heard = places
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    assert_eq!(
+        heard.get(&expect.agent_id).copied(),
+        Some([40.0, 200.0, 30.0])
+    );
     state
         .chat
         .as_ref()
         .unwrap()
-        .publish(expect.agent_id, 1, 0, "after");
+        .publish(expect.agent_id, 1, 0, "after", &heard);
     let crate::chat::ViewerBound::Chat(said) = seat.rx.try_recv().unwrap() else {
         panic!("expected chat from the moved seat");
     };
     assert_eq!(said.chat_data.position.to_array(), [40.0, 200.0, 30.0]);
+}
+
+#[tokio::test]
+async fn a_return_landing_writes_the_scene_pose() {
+    let expect = identity(Uuid::from_u128(4));
+    let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.login_scene = Some(recording_scene(Arc::clone(&places)));
+    let pose = crate::return_hop::ReturnPose {
+        position: [128.0, 128.0, 30.0],
+        look_at: [1.0, 0.0, 0.0],
+        origin: Uuid::from_u128(8),
+    };
+    state.finish_return(expect.agent_id, pose).await.unwrap();
+    assert_eq!(state.arrival.position, [128.0, 128.0, 30.0]);
+    assert_eq!(state.arrival.look_at, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        places
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&expect.agent_id)
+            .copied(),
+        Some([128.0, 128.0, 30.0])
+    );
 }
 
 #[tokio::test]
@@ -295,6 +376,48 @@ async fn a_second_teleport_during_a_source_hop_is_refused() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     gate.notify_one();
+}
+
+#[tokio::test]
+async fn a_source_hop_does_not_write_the_scene_pose() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let hop = crate::source_hop::SourceHop::new(move |_request, _out| {
+        let seen = Arc::clone(&seen);
+        Box::pin(async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
+    let position = Arc::clone(&region.position);
+    let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
+    let expect = identity(Uuid::from_u128(1));
+    let config = ArrivalConfig {
+        teleport: Some(region),
+        source_hop: Some(hop),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    state.login_scene = Some(recording_scene(Arc::clone(&places)));
+    let io = FakeIo::default();
+    let foreign = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
+    handle_teleport(&mut state, &io, &expect, &foreign).await;
+    for _ in 0..50 {
+        if calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        places
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_empty()
+    );
+    assert_eq!(*position.lock().unwrap(), [128.0, 128.0, 25.0]);
+    assert_eq!(state.arrival.position, [128.0, 128.0, 25.0]);
 }
 
 #[tokio::test]
@@ -905,7 +1028,10 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     };
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
-    state.login_scene = Some(Arc::new(move |agent, pose| {
+    state.login_scene = Some(Arc::new(move |agent, call| {
+        let SceneCall::Pose(pose) = call else {
+            return Err(());
+        };
         assert_eq!(agent, expect.agent_id);
         assert_eq!(pose.position, [10.0, 20.0, 30.0]);
         assert_eq!(pose.rotation, LOGIN_ROTATION);
@@ -914,7 +1040,7 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
         assert_eq!(pose.draw_distance, LOGIN_DRAW_DISTANCE);
         let mut stored = pose;
         stored.position[2] = 41.5;
-        Ok(stored)
+        Ok(SceneReply::Pose(stored))
     }));
     let io = FakeIo::default();
     state.send_arrival(&io, peer(), &expect).await.unwrap();

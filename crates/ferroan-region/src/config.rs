@@ -781,8 +781,7 @@ fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str>
 }
 
 /// `[SimulationDataStore]` replaces `[DatabaseService]` for a key that is present.
-/// A SQLite provider, a MySQL provider, or a SQLite connection with no provider, is the object store.
-/// PostgreSQL stays empty until its load is in place.
+/// A SQLite provider, a MySQL provider, a PostgreSQL provider, or a SQLite connection with no provider, is the object store.
 fn object_store(config: &Config) -> Option<String> {
     let mut provider = nonempty(config, "DatabaseService", "StorageProvider").map(str::to_owned);
     let mut connection = nonempty(config, "DatabaseService", "ConnectionString").map(str::to_owned);
@@ -803,6 +802,12 @@ fn object_store(config: &Config) -> Option<String> {
         Some(provider) if provider.to_ascii_lowercase().contains("null") => None,
         Some(provider) if provider.to_ascii_lowercase().contains("sqlite") => Some(connection),
         Some(provider) if provider.to_ascii_lowercase().contains("mysql") => Some(connection),
+        Some(provider)
+            if provider.to_ascii_lowercase().contains("pgsql")
+                || provider.to_ascii_lowercase().contains("postgres") =>
+        {
+            Some(connection)
+        }
         Some(_) => None,
         None if sqlite_connection(&connection) => Some(connection),
         None => None,
@@ -1156,11 +1161,19 @@ mod tests {
             "StorageProvider",
             "OpenSim.Data.PGSQL.dll",
         );
-        assert!(
+        server.set(
+            "SimulationDataStore",
+            "ConnectionString",
+            "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable",
+        );
+        assert_eq!(
             RegionConfig::from_configs(&server, &regions())
                 .unwrap()
                 .object_store
-                .is_none()
+                .as_deref(),
+            Some(
+                "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
+            )
         );
     }
 

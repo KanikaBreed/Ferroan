@@ -417,7 +417,10 @@ async fn a_parked_circuit_returns_with_one_handshake_and_the_update_pose() {
         .await
         .unwrap();
     state.return_wait = false;
-    state.finish_return(pose).await.unwrap();
+    state
+        .finish_return(identity().agent_id, pose)
+        .await
+        .unwrap();
     let mut promotions = slot.take_promotions().unwrap();
     let promoted = promotions.try_recv().unwrap();
     assert_eq!(io.arrivals(), 0);

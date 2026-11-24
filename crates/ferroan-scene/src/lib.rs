@@ -53,8 +53,9 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the prim load and the frame thread.
-//! The frame ticks at the shipped `FrameTime` and stores the login presence.
+//! Read-only region terrain, the prim load, region settings and the frame thread.
+//! The frame ticks at the shipped `FrameTime`, stores the login presence, and
+//! answers a forwarded chat with those positions. A landing updates the position.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -69,12 +70,13 @@ mod frame;
 mod height;
 mod objects;
 mod payloads;
+mod settings;
 mod store;
 
 pub use compress::TerrainLayer;
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
-pub use frame::{Presence, TerrainFrame, landed_z};
+pub use frame::{LocalTeleport, Presence, TeleportStored, TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
@@ -84,4 +86,5 @@ pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
+pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;

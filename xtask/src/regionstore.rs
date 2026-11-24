@@ -3,8 +3,8 @@
 
 //! Build `tools/regionstore-oracle` against a task-owned clone of the pin and
 //! compare its object dump with the committed fixture. SQLite is a file.
-//! MySQL is a throwaway container this command removes. The shared reference
-//! checkout is only read. PostgreSQL is a later row.
+//! MySQL and PostgreSQL are throwaway containers this command removes. The
+//! shared reference checkout is only read.
 
 use std::fs;
 use std::path::Path;
@@ -24,10 +24,15 @@ const PROJECT: &str = "tools/regionstore-oracle/RegionStoreOracle.csproj";
 const DLL: &str = "bin/RegionStoreOracle/release/RegionStoreOracle.dll";
 const FIXTURE: &str = "fixtures/regionstore/objects.db";
 const DUMP: &str = "fixtures/regionstore/objects.json";
+const SETTINGS_FIXTURE: &str = "fixtures/regionstore/settings.db";
+const SETTINGS_DUMP: &str = "fixtures/regionstore/settings.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
+const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
 const MYSQL_NAME: &str = "ferroan-regionstore-mysql";
 const MYSQL_PORT: &str = "13317";
+const POSTGRES_NAME: &str = "ferroan-regionstore-postgres";
+const POSTGRES_PORT: &str = "15433";
 
 pub fn generate() -> ExitCode {
     dispatch(true)
@@ -35,6 +40,53 @@ pub fn generate() -> ExitCode {
 
 pub fn verify() -> ExitCode {
     dispatch(false)
+}
+
+/// Seed a SQLite region store and write the settings dump for one region.
+pub fn settings() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let db = root.join(SETTINGS_FIXTURE);
+    let dump = root.join(SETTINGS_DUMP);
+    if let Some(parent) = db.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        eprintln!("{LABEL}: could not create {}: {error}", parent.display());
+        return ExitCode::FAILURE;
+    }
+    if db.exists()
+        && let Err(error) = fs::remove_file(&db)
+    {
+        eprintln!("{LABEL}: could not replace {}: {error}", db.display());
+        return ExitCode::FAILURE;
+    }
+    let db_arg = db.display().to_string();
+    if !oracle(&dll, &["settings-seed", &db_arg]) {
+        return ExitCode::FAILURE;
+    }
+    let json = match oracle_stdout(&dll, &["settings-load", &db_arg, REGION, &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    if let Err(error) = fs::write(&dump, json) {
+        eprintln!("{LABEL}: could not write {}: {error}", dump.display());
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: wrote {SETTINGS_FIXTURE} and {SETTINGS_DUMP}");
+    ExitCode::SUCCESS
 }
 
 pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
@@ -50,8 +102,8 @@ pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
     }
 }
 
-/// SQLite fixture compare, then the same groups from a throwaway MySQL
-/// container. The container is removed when this returns. PostgreSQL waits.
+/// SQLite fixture compare, then the same groups from throwaway MySQL and
+/// PostgreSQL containers. Both containers are removed when this returns.
 pub fn cross() -> ExitCode {
     let root = crate::repo_root();
     let dll = match build_oracle() {
@@ -71,15 +123,27 @@ pub fn cross() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let container = match start_mysql() {
+    let mysql = match start_mysql() {
         Ok(container) => container,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let code = mysql_cross(&root, &dll, &pinned);
-    drop(container);
+    let mysql_code = mysql_cross(&root, &dll, &pinned);
+    drop(mysql);
+    if mysql_code != ExitCode::SUCCESS {
+        return mysql_code;
+    }
+    let postgres = match start_postgres() {
+        Ok(container) => container,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = postgres_cross(&root, &dll, &pinned);
+    drop(postgres);
     code
 }
 
@@ -154,6 +218,151 @@ fn start_mysql() -> Result<MysqlContainer, String> {
         thread::sleep(Duration::from_secs(1));
     }
     Err("MySQL container did not become ready".to_owned())
+}
+
+struct PostgresContainer;
+
+impl Drop for PostgresContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", POSTGRES_NAME])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn start_postgres() -> Result<PostgresContainer, String> {
+    let _ = Command::new("docker")
+        .args(["rm", "-f", POSTGRES_NAME])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    println!("$ docker run --name {POSTGRES_NAME} -p 127.0.0.1:{POSTGRES_PORT}:5432 postgres:16");
+    let status = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--name",
+            POSTGRES_NAME,
+            "-e",
+            "POSTGRES_USER=ferroan",
+            "-e",
+            "POSTGRES_PASSWORD=ferroan",
+            "-e",
+            "POSTGRES_DB=ferroan",
+            "-p",
+            &format!("127.0.0.1:{POSTGRES_PORT}:5432"),
+            "postgres:16",
+        ])
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|error| format!("could not run docker: {error}"))?;
+    if !status.success() {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", POSTGRES_NAME])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        return Err(format!("docker run exited with {status}"));
+    }
+    let container = PostgresContainer;
+    for _ in 0..60 {
+        let ready = Command::new("docker")
+            .args([
+                "exec",
+                POSTGRES_NAME,
+                "pg_isready",
+                "-U",
+                "ferroan",
+                "-d",
+                "ferroan",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(ready, Ok(status) if status.success()) {
+            return Ok(container);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    Err("PostgreSQL container did not become ready".to_owned())
+}
+
+fn postgres_urls() -> (String, String) {
+    let csharp = format!(
+        "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false"
+    );
+    let rust = format!(
+        "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
+    );
+    (csharp, rust)
+}
+
+fn postgres_cross(root: &Path, dll: &Path, pin: &str) -> ExitCode {
+    let (csharp, rust_url) = postgres_urls();
+    if run_oracle(dll, "postgres-seed", &["postgres-seed", &csharp]).is_none() {
+        return ExitCode::FAILURE;
+    }
+    let fresh = match run_oracle(
+        dll,
+        "postgres-load",
+        &["postgres-load", &csharp, REGION, pin],
+    ) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let dump = root.join(POSTGRES_DUMP);
+    let committed = match fs::read_to_string(&dump) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("{LABEL}: could not read {}: {error}", dump.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if fresh != committed {
+        eprintln!(
+            "{LABEL}: PostgreSQL oracle dump differs from {}",
+            POSTGRES_DUMP
+        );
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: PostgreSQL oracle dump matches {POSTGRES_DUMP}");
+    if postgres_tests(root, &rust_url) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn postgres_tests(root: &Path, connection: &str) -> bool {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(root)
+        .env("FERROAN_REGIONSTORE", "1")
+        .env("FERROAN_REGIONSTORE_CROSS", "1")
+        .env("FERROAN_REGIONSTORE_POSTGRES", connection)
+        .args([
+            "test",
+            "-p",
+            "ferroan-scene",
+            "--lib",
+            "regionstore_postgres",
+            "--",
+            "--nocapture",
+        ]);
+    println!("$ cargo test -p ferroan-scene --lib regionstore_postgres");
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("{LABEL}: PostgreSQL fixture tests exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("{LABEL}: could not run cargo: {error}");
+            false
+        }
+    }
 }
 
 fn mysql_urls() -> (String, String) {

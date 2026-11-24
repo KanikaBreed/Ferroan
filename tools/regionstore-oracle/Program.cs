@@ -8,9 +8,11 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MySqlConnector;
+using Npgsql;
 using OpenMetaverse;
 using OpenMetaverse.StructuredData;
 using OpenSim.Data.MySQL;
+using OpenSim.Data.PGSQL;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
@@ -38,10 +40,13 @@ const string PrimF = "ffffffff-ffff-ffff-ffff-fffffffffff1";
 const string NullPrim = "99999999-9999-9999-9999-999999999991";
 const string Orphan = "99999999-9999-9999-9999-999999999992";
 const string MissingParent = "abababab-abab-abab-abab-abababababab";
+const string RewriteGroup = "88888888-8888-8888-8888-888888888880";
+const string RewriteRoot = "88888888-8888-8888-8888-888888888881";
+const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin>");
     return 2;
 }
 
@@ -64,8 +69,20 @@ try
         case "mysql-load" when args.Length == 4:
             LoadMysql(args[1], args[2], args[3]);
             return 0;
+        case "postgres-seed" when args.Length == 2:
+            SeedPostgres(args[1]);
+            return 0;
+        case "postgres-load" when args.Length == 4:
+            LoadPostgres(args[1], args[2], args[3]);
+            return 0;
+        case "settings-seed" when args.Length == 2:
+            SeedSettings(args[1]);
+            return 0;
+        case "settings-load" when args.Length == 4:
+            LoadSettings(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin>");
             return 2;
     }
 }
@@ -159,6 +176,41 @@ static void SeedMysql(string ado)
     InsertItems(db, true);
     InsertNullPrim(db);
     InsertOrphan(db);
+}
+
+static void SeedPostgres(string ado)
+{
+    PGSQLSimulationData store = new PGSQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using (NpgsqlCommand version = db.CreateCommand())
+    {
+        version.CommandText = "SELECT version FROM migrations WHERE name = 'RegionStore'";
+        object found = version.ExecuteScalar();
+        if (found == null || Convert.ToInt32(found) != 62)
+            throw new InvalidOperationException("RegionStore version is " + found);
+    }
+    InsertPrims(db, true);
+    InsertShapes(db, true);
+    InsertItems(db, true);
+    InsertRewriteGroup(db);
+}
+
+static void InsertRewriteGroup(NpgsqlConnection db)
+{
+    BasePrim(RewriteRoot, Region, RewriteGroup, "rewrite-root").Set("LinkNumber", 0).Insert(db, "prims");
+    BasePrim(RewriteChild, Region, RewriteGroup, "rewrite-child").Set("LinkNumber", 4).Insert(db, "prims");
+    PlainShape(RewriteRoot).Set("Shape", 0).Insert(db, "primshapes");
+    PlainShape(RewriteChild).Set("Shape", 0).Insert(db, "primshapes");
 }
 
 static void InsertNullPrim(MySqlConnection db)
@@ -323,7 +375,7 @@ static void InsertItems(DbConnection db, bool mysql)
 {
     // Stored order is not item-id order. A null description, a creator id, a
     // creator endpoint with no name, and an unparsable experience id all load.
-    TaskItem(PrimA, "c0000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-0000000000c3", "00000000-0000-0000-0000-0000000000d3", "note", 7, 7)
+    Row note = TaskItem(PrimA, "c0000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-0000000000c3", "00000000-0000-0000-0000-0000000000d3", "note", 7, 7)
         .Set("creationDate", 1700000103)
         .Set("creatorID", Creator)
         .Set("nextPermissions", 11)
@@ -334,8 +386,11 @@ static void InsertItems(DbConnection db, bool mysql)
         .Set("flags", 66)
         // "nope" is the SQLite cell. A CHAR(36) value that is not a uuid stops
         // the MySQL load, so that seed stores the zero id the load would keep.
-        .Set("experienceID", mysql ? "00000000-0000-0000-0000-000000000000" : "nope")
-        .Insert(db, "primitems");
+        .Set("experienceID", mysql ? "00000000-0000-0000-0000-000000000000" : "nope");
+    // A null description stops the PostgreSQL load. The successful seed stores empty text.
+    if (db is NpgsqlConnection)
+        note.Set("description", "");
+    note.Insert(db, "primitems");
     TaskItem(PrimA, "c0000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000d1", "script", 10, 10)
         .Set("description", "runs")
         .Set("creationDate", 1700000101)
@@ -687,6 +742,25 @@ static void LoadMysql(string ado, string regionText, string pin)
     WriteDump(groups, prims, shapes, region, pin);
 }
 
+static void LoadPostgres(string ado, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    Dictionary<string, RawPrim> prims = ReadPrimRawPostgres(ado);
+    Dictionary<string, RawShape> shapes = ReadShapeRawPostgres(ado);
+    List<SceneObjectGroup> groups;
+    PGSQLSimulationData store = new PGSQLSimulationData();
+    try
+    {
+        store.Initialise(ado);
+        groups = store.LoadObjects(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteDump(groups, prims, shapes, region, pin);
+}
+
 static void WriteDump(
     List<SceneObjectGroup> groups,
     Dictionary<string, RawPrim> prims,
@@ -816,12 +890,316 @@ static Dictionary<string, RawShape> ReadShapeRawMysql(string ado)
     return rows;
 }
 
-static string CellText(MySqlDataReader reader, int index)
+static Dictionary<string, RawPrim> ReadPrimRawPostgres(string ado)
+{
+    Dictionary<string, RawPrim> rows = new Dictionary<string, RawPrim>();
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using NpgsqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT \"UUID\", \"DynAttrs\", \"Vehicle\", \"PhysInertia\", \"pseudocrc\", \"sopanims\", \"linksetdata\" FROM prims";
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawPrim
+        {
+            DynAttrs = reader.IsDBNull(1) ? null : reader.GetString(1),
+            Keyframe = null,
+            Vehicle = reader.IsDBNull(2) ? null : reader.GetString(2),
+            Inertia = reader.IsDBNull(3) ? null : reader.GetString(3),
+            PseudoCrc = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+            Animations = reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5),
+            Linkset = reader.IsDBNull(6) ? null : reader.GetString(6)
+        };
+    }
+    return rows;
+}
+
+static Dictionary<string, RawShape> ReadShapeRawPostgres(string ado)
+{
+    Dictionary<string, RawShape> rows = new Dictionary<string, RawShape>();
+    using NpgsqlConnection db = new NpgsqlConnection(ado);
+    db.Open();
+    using NpgsqlCommand command = db.CreateCommand();
+    command.CommandText = "SELECT \"UUID\", \"Media\", \"MatOvrd\", \"Texture\", \"ExtraParams\" FROM primshapes";
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        string uuid = CellText(reader, 0);
+        rows[uuid] = new RawShape
+        {
+            Media = reader.IsDBNull(1) ? null : reader.GetString(1),
+            MatOvrd = reader.IsDBNull(2) ? null : (byte[])reader.GetValue(2),
+            Texture = reader.IsDBNull(3) ? null : (byte[])reader.GetValue(3),
+            Extra = reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4)
+        };
+    }
+    return rows;
+}
+
+static string CellText(DbDataReader reader, int index)
 {
     object value = reader.GetValue(index);
     if (value is Guid guid)
         return guid.ToString();
     return value.ToString();
+}
+
+static void SeedSettings(string path)
+{
+    string full = Path.GetFullPath(path);
+    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+    if (File.Exists(full))
+        File.Delete(full);
+    string connection = "Data Source=" + full + ";Version=3;";
+    SQLiteSimulationData store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise(connection);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    using SQLiteConnection db = new SQLiteConnection(connection);
+    db.Open();
+    using SQLiteCommand command = db.CreateCommand();
+    command.CommandText =
+        "INSERT INTO regionsettings (" +
+        "regionUUID, block_terraform, block_fly, allow_damage, restrict_pushing, " +
+        "allow_land_resell, allow_land_join_divide, block_show_in_search, " +
+        "agent_limit, object_bonus, maturity, disable_scripts, disable_collisions, " +
+        "disable_physics, terrain_texture_1, terrain_texture_2, terrain_texture_3, " +
+        "terrain_texture_4, elevation_1_nw, elevation_2_nw, elevation_1_ne, " +
+        "elevation_2_ne, elevation_1_se, elevation_2_se, elevation_1_sw, " +
+        "elevation_2_sw, water_height, terrain_raise_limit, terrain_lower_limit, " +
+        "use_estate_sun, fixed_sun, sun_position, covenant, sandbox, " +
+        "sunvectorx, sunvectory, sunvectorz, map_tile_ID, covenant_datetime, " +
+        "TelehubObject, parcel_tile_ID, block_search, casino, cacheID, " +
+        "TerrainPBR1, TerrainPBR2, TerrainPBR3, TerrainPBR4" +
+        ") VALUES (" +
+        "@region, 1, 1, 1, 1, " +
+        "0, 0, 1, " +
+        "15, 1.5, 21, 1, 1, " +
+        "1, @zero, @tex2, @tex3, " +
+        "@tex4, 11.5, 80.5, 13.5, " +
+        "5000, 12.25, 90, -150, " +
+        "70, 42.5, 250, -300, " +
+        "0, 1, 1.25, @covenant, 1, " +
+        "0.25, -0.5, 0.75, @map, 1700000000, " +
+        "@telehub, @parcel, 1, 1, @cache, " +
+        "@zero, @pbr2, @pbr3, @pbr4)";
+    command.Parameters.AddWithValue("@region", Region);
+    command.Parameters.AddWithValue("@zero", UUID.Zero.ToString());
+    command.Parameters.AddWithValue("@tex2", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2");
+    command.Parameters.AddWithValue("@tex3", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3");
+    command.Parameters.AddWithValue("@tex4", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4");
+    command.Parameters.AddWithValue("@pbr2", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2");
+    command.Parameters.AddWithValue("@pbr3", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3");
+    command.Parameters.AddWithValue("@pbr4", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4");
+    command.Parameters.AddWithValue("@covenant", "c0c0c0c0-0000-4000-8000-0000000000c0");
+    command.Parameters.AddWithValue("@map", "0a070a07-0000-4000-8000-0000000000a1");
+    command.Parameters.AddWithValue("@telehub", "7e1e0000-0000-4000-8000-0000000000b1");
+    command.Parameters.AddWithValue("@parcel", "0a0c0000-0000-4000-8000-0000000000c1");
+    command.Parameters.AddWithValue("@cache", "5e77e5c0-0000-4000-8000-000000000056");
+    command.ExecuteNonQuery();
+
+    InsertSpawn(db, 0.5, 0.25, 3.0);
+    InsertSpawn(db, -1.0, 0.125, 8.5);
+}
+
+static void InsertSpawn(SQLiteConnection db, double yaw, double pitch, double distance)
+{
+    using SQLiteCommand command = db.CreateCommand();
+    command.CommandText = "INSERT INTO spawn_points (RegionID, Yaw, Pitch, Distance) VALUES (@region, @yaw, @pitch, @distance)";
+    command.Parameters.AddWithValue("@region", Region);
+    command.Parameters.AddWithValue("@yaw", yaw);
+    command.Parameters.AddWithValue("@pitch", pitch);
+    command.Parameters.AddWithValue("@distance", distance);
+    command.ExecuteNonQuery();
+}
+
+static void LoadSettings(string path, string regionText, string pin)
+{
+    string full = Path.GetFullPath(path);
+    UUID region = new UUID(regionText);
+    (bool fixedColumn, double sunX, double sunY, double sunZ, double sunPosition) = ReadSunColumns(full, regionText);
+    RegionSettings settings;
+    SQLiteSimulationData store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise("Data Source=" + full + ";Version=3;");
+        settings = store.LoadRegionSettings(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    EstateSettings estate = new EstateSettings();
+    List<SpawnPoint> points = settings.SpawnPoints();
+    SettingsDump dump = new SettingsDump
+    {
+        pin = pin,
+        region = region.ToString(),
+        csharp_region_flags = RegionHandshakeFlags(settings, estate),
+        water_height = (float)settings.WaterHeight,
+        cache_id = settings.CacheID.ToString(),
+        terrain_textures = new[]
+        {
+            settings.TerrainTexture1.ToString(),
+            settings.TerrainTexture2.ToString(),
+            settings.TerrainTexture3.ToString(),
+            settings.TerrainTexture4.ToString()
+        },
+        terrain_pbr = new[]
+        {
+            settings.TerrainPBR1.ToString(),
+            settings.TerrainPBR2.ToString(),
+            settings.TerrainPBR3.ToString(),
+            settings.TerrainPBR4.ToString()
+        },
+        terrain_start_heights = new[]
+        {
+            (float)settings.Elevation1SW,
+            (float)settings.Elevation1NW,
+            (float)settings.Elevation1SE,
+            (float)settings.Elevation1NE
+        },
+        terrain_height_ranges = new[]
+        {
+            (float)settings.Elevation2SW,
+            (float)settings.Elevation2NW,
+            (float)settings.Elevation2SE,
+            (float)settings.Elevation2NE
+        },
+        allow_damage = settings.AllowDamage,
+        block_terraform = settings.BlockTerraform,
+        block_fly = settings.BlockFly,
+        restrict_pushing = settings.RestrictPushing,
+        allow_land_resell = settings.AllowLandResell,
+        allow_land_join_divide = settings.AllowLandJoinDivide,
+        block_show_in_search = settings.BlockShowInSearch,
+        sandbox = settings.Sandbox,
+        casino = settings.Casino,
+        god_block_search = settings.GodBlockSearch,
+        disable_scripts = settings.DisableScripts,
+        disable_collisions = settings.DisableCollisions,
+        disable_physics = settings.DisablePhysics,
+        fixed_sun = settings.FixedSun,
+        fixed_sun_column = fixedColumn,
+        sun_vector = new[] { settings.SunVector.X, settings.SunVector.Y, settings.SunVector.Z },
+        sun_vector_column = new[] { sunX, sunY, sunZ },
+        sun_position = settings.SunPosition,
+        sun_position_column = sunPosition,
+        agent_limit = settings.AgentLimit,
+        object_bonus = settings.ObjectBonus,
+        maturity = settings.Maturity,
+        terrain_raise_limit = settings.TerrainRaiseLimit,
+        terrain_lower_limit = settings.TerrainLowerLimit,
+        use_estate_sun = settings.UseEstateSun,
+        covenant = settings.Covenant.ToString(),
+        covenant_datetime = settings.CovenantChangedDateTime,
+        map_tile_id = settings.TerrainImageID.ToString(),
+        telehub_object = settings.TelehubObject.ToString(),
+        parcel_tile_id = settings.ParcelImageID.ToString(),
+        spawn_points = new SettingsSpawn[points.Count]
+    };
+    for (int index = 0; index < points.Count; index++)
+    {
+        dump.spawn_points[index] = new SettingsSpawn
+        {
+            yaw = points[index].Yaw,
+            pitch = points[index].Pitch,
+            distance = points[index].Distance
+        };
+    }
+
+    JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+    Console.Out.Write(JsonSerializer.Serialize(dump, options));
+    Console.Out.Write('\n');
+}
+
+static (bool, double, double, double, double) ReadSunColumns(string path, string region)
+{
+    using SQLiteConnection db = new SQLiteConnection("Data Source=" + path + ";Version=3;");
+    db.Open();
+    using SQLiteCommand command = db.CreateCommand();
+    command.CommandText = "SELECT fixed_sun, sunvectorx, sunvectory, sunvectorz, sun_position FROM regionsettings WHERE regionUUID = @region";
+    command.Parameters.AddWithValue("@region", region);
+    using SQLiteDataReader reader = command.ExecuteReader();
+    if (!reader.Read())
+        throw new InvalidOperationException("region settings row is missing");
+    return (
+        Convert.ToInt32(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture) != 0,
+        Convert.ToDouble(reader.GetValue(1), System.Globalization.CultureInfo.InvariantCulture),
+        Convert.ToDouble(reader.GetValue(2), System.Globalization.CultureInfo.InvariantCulture),
+        Convert.ToDouble(reader.GetValue(3), System.Globalization.CultureInfo.InvariantCulture),
+        Convert.ToDouble(reader.GetValue(4), System.Globalization.CultureInfo.InvariantCulture)
+    );
+}
+
+static uint RegionHandshakeFlags(RegionSettings region, EstateSettings estate)
+{
+    OpenMetaverse.RegionFlags flags = OpenMetaverse.RegionFlags.None;
+    if (region.AllowDamage)
+        flags |= OpenMetaverse.RegionFlags.AllowDamage;
+    if (estate.AllowLandmark)
+        flags |= OpenMetaverse.RegionFlags.AllowLandmark;
+    if (estate.AllowSetHome)
+        flags |= OpenMetaverse.RegionFlags.AllowSetHome;
+    if (estate.ResetHomeOnTeleport)
+        flags |= OpenMetaverse.RegionFlags.ResetHomeOnTeleport;
+    if (region.FixedSun)
+        flags |= OpenMetaverse.RegionFlags.SunFixed;
+    if (!estate.TaxFree)
+        flags |= OpenMetaverse.RegionFlags.AllowParcelAccessOverride;
+    if (region.BlockTerraform)
+        flags |= OpenMetaverse.RegionFlags.BlockTerraform;
+    if (!region.AllowLandResell)
+        flags |= OpenMetaverse.RegionFlags.BlockLandResell;
+    if (region.Sandbox)
+        flags |= OpenMetaverse.RegionFlags.Sandbox;
+    if (region.Casino)
+        flags |= OpenMetaverse.RegionFlags.SkipAgentAction;
+    if (region.GodBlockSearch)
+        flags |= OpenMetaverse.RegionFlags.SkipUpdateInterestList;
+    if (region.DisableCollisions)
+        flags |= OpenMetaverse.RegionFlags.SkipCollisions;
+    if (region.DisableScripts)
+        flags |= OpenMetaverse.RegionFlags.SkipScripts;
+    if (region.DisablePhysics)
+        flags |= OpenMetaverse.RegionFlags.SkipPhysics;
+    if (estate.PublicAccess)
+        flags |= OpenMetaverse.RegionFlags.ExternallyVisible;
+    if (estate.BlockDwell)
+        flags |= OpenMetaverse.RegionFlags.BlockDwell;
+    if (region.BlockFly)
+        flags |= OpenMetaverse.RegionFlags.NoFly;
+    if (estate.AllowDirectTeleport)
+        flags |= OpenMetaverse.RegionFlags.AllowDirectTeleport;
+    if (estate.EstateSkipScripts)
+        flags |= OpenMetaverse.RegionFlags.EstateSkipScripts;
+    if (region.RestrictPushing)
+        flags |= OpenMetaverse.RegionFlags.RestrictPushObject;
+    if (estate.DenyAnonymous)
+        flags |= OpenMetaverse.RegionFlags.DenyAnonymous;
+    if (estate.DenyIdentified)
+        flags |= OpenMetaverse.RegionFlags.DenyIdentified;
+    if (estate.DenyTransacted)
+        flags |= OpenMetaverse.RegionFlags.DenyTransacted;
+    if (region.AllowLandJoinDivide)
+        flags |= OpenMetaverse.RegionFlags.AllowParcelChanges;
+    if (estate.AllowVoice)
+        flags |= OpenMetaverse.RegionFlags.AllowVoice;
+    if (region.BlockShowInSearch)
+        flags |= OpenMetaverse.RegionFlags.BlockParcelSearch;
+    if (estate.DenyMinors)
+        flags |= OpenMetaverse.RegionFlags.DenyAgeUnverified;
+    if (estate.AllowEnvironmentOverride)
+        flags |= OpenMetaverse.RegionFlags.AllowEnvironmentOverride;
+    return (uint)flags;
 }
 
 sealed class RawPrim
@@ -1563,25 +1941,55 @@ sealed class Row
     public void Insert(DbConnection db, string table)
     {
         bool mysql = db is MySqlConnection;
+        bool postgres = db is NpgsqlConnection;
         // A later Set for the same column replaces the earlier value. MySQL rejects
         // two parameters of one name; the stored row is the last value either way.
         List<string> names = new List<string>();
         Dictionary<string, object> values = new Dictionary<string, object>();
         foreach ((string name, object value) in cells)
         {
+            if (postgres && PostgresSkip.Contains(name))
+                continue;
             if (!values.ContainsKey(name))
                 names.Add(name);
             values[name] = value;
         }
-        string columns = string.Join(", ", names);
+        // The boolean conversion drops the old default, so an omitted cell is rejected.
+        // Sit-target numbers have no default. A null one stops the load, so the
+        // successful seed stores zero unless the row already set the cell.
+        if (postgres && table == "prims")
+        {
+            if (!values.ContainsKey("PassCollisions"))
+            {
+                names.Add("PassCollisions");
+                values["PassCollisions"] = false;
+            }
+            foreach (string sit in new[]
+            {
+                "SitTargetOffsetX", "SitTargetOffsetY", "SitTargetOffsetZ",
+                "SitTargetOrientX", "SitTargetOrientY", "SitTargetOrientZ", "SitTargetOrientW"
+            })
+            {
+                if (!values.ContainsKey(sit))
+                {
+                    names.Add(sit);
+                    values[sit] = 0.0;
+                }
+            }
+        }
+        string columns = postgres
+            ? string.Join(", ", names.ConvertAll(name => "\"" + name.Replace("\"", "\"\"") + "\""))
+            : string.Join(", ", names);
         string marks = string.Join(", ", names.ConvertAll(name => "@" + name));
         using DbCommand command = db.CreateCommand();
         command.CommandText = "INSERT INTO " + table + " (" + columns + ") VALUES (" + marks + ")";
         foreach (string name in names)
         {
             object stored = values[name] ?? DBNull.Value;
-            if (mysql && stored is string text && (name == "TextureAnimation" || name == "ParticleSystem"))
+            if ((mysql || postgres) && stored is string text && (name == "TextureAnimation" || name == "ParticleSystem"))
                 stored = Convert.FromBase64String(text);
+            if (postgres)
+                stored = PostgresValue(table, name, stored);
             DbParameter parameter = command.CreateParameter();
             parameter.ParameterName = "@" + name;
             parameter.Value = stored;
@@ -1589,4 +1997,78 @@ sealed class Row
         }
         command.ExecuteNonQuery();
     }
+
+    static readonly HashSet<string> PostgresSkip = new HashSet<string>
+    {
+        "VolumeDetect", "AttachedPosX", "AttachedPosY", "AttachedPosZ", "KeyframeMotion", "LastAttachPoint"
+    };
+
+    static readonly HashSet<string> UuidColumns = new HashSet<string>
+    {
+        "UUID", "RegionUUID", "SceneGroupID", "OwnerID", "GroupID", "LastOwnerID",
+        "LoopedSound", "CollisionSound", "RezzerID",
+        "itemID", "primID", "assetID", "parentFolderID", "ownerID", "lastOwnerID", "groupID", "experienceID"
+    };
+
+    static object PostgresValue(string table, string name, object stored)
+    {
+        if (stored is int number && (name == "PassTouches" || name == "PassCollisions"))
+            return number != 0;
+        if (stored is int date && table == "primitems" && name == "creationDate")
+            return date.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (stored is string text && UuidColumns.Contains(name) && Guid.TryParse(text, out Guid guid))
+            return guid;
+        return stored;
+    }
+}
+
+sealed class SettingsDump
+{
+    public string pin { get; set; }
+    public string region { get; set; }
+    public uint csharp_region_flags { get; set; }
+    public float water_height { get; set; }
+    public string cache_id { get; set; }
+    public string[] terrain_textures { get; set; }
+    public string[] terrain_pbr { get; set; }
+    public float[] terrain_start_heights { get; set; }
+    public float[] terrain_height_ranges { get; set; }
+    public bool allow_damage { get; set; }
+    public bool block_terraform { get; set; }
+    public bool block_fly { get; set; }
+    public bool restrict_pushing { get; set; }
+    public bool allow_land_resell { get; set; }
+    public bool allow_land_join_divide { get; set; }
+    public bool block_show_in_search { get; set; }
+    public bool sandbox { get; set; }
+    public bool casino { get; set; }
+    public bool god_block_search { get; set; }
+    public bool disable_scripts { get; set; }
+    public bool disable_collisions { get; set; }
+    public bool disable_physics { get; set; }
+    public bool fixed_sun { get; set; }
+    public bool fixed_sun_column { get; set; }
+    public float[] sun_vector { get; set; }
+    public double[] sun_vector_column { get; set; }
+    public double sun_position { get; set; }
+    public double sun_position_column { get; set; }
+    public int agent_limit { get; set; }
+    public double object_bonus { get; set; }
+    public int maturity { get; set; }
+    public double terrain_raise_limit { get; set; }
+    public double terrain_lower_limit { get; set; }
+    public bool use_estate_sun { get; set; }
+    public string covenant { get; set; }
+    public int covenant_datetime { get; set; }
+    public string map_tile_id { get; set; }
+    public string telehub_object { get; set; }
+    public string parcel_tile_id { get; set; }
+    public SettingsSpawn[] spawn_points { get; set; }
+}
+
+sealed class SettingsSpawn
+{
+    public float yaw { get; set; }
+    public float pitch { get; set; }
+    public float distance { get; set; }
 }
