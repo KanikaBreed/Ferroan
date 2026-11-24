@@ -27,10 +27,10 @@ pub use caps::{
 };
 pub use circuit::{
     CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, LoginPose, LoginScene,
-    RootArrival, SceneCall, SceneReply, UdpCounters,
+    RootArrival, SceneCall, SceneMove, SceneReply, TeleportRequest, UdpCounters,
 };
 pub use event_queue::EventQueueError;
-pub use handshake::HandshakeConfig;
+pub use handshake::{HandshakeConfig, StoredHandshake};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};
 pub use source_hop::{
     CONNECT_INNER, FinishEvent, HopOut, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED, SourceHop,

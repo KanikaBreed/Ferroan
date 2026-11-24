@@ -96,6 +96,8 @@ enum RunError {
     Terrain(String),
     #[error("objects: {0}")]
     Objects(String),
+    #[error("region settings: {0}")]
+    Settings(String),
 }
 
 fn main() -> ExitCode {
@@ -155,6 +157,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     let terrain = load_terrain(&config).await?;
     let objects = load_stored_objects(&config).await?;
+    let _region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -366,6 +369,18 @@ async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     }
 }
 
+async fn load_stored_settings(
+    config: &mut RegionConfig,
+) -> Result<Option<std::sync::Arc<ferroan_scene::RegionSettings>>, RunError> {
+    ferroan_region::settings::apply_stored_settings(
+        config.object_store.as_deref(),
+        config.id,
+        &mut config.handshake,
+    )
+    .await
+    .map_err(RunError::Settings)
+}
+
 async fn load_stored_objects(
     config: &RegionConfig,
 ) -> Result<Arc<Vec<ferroan_scene::ObjectGroup>>, RunError> {
@@ -568,6 +583,39 @@ async fn dispatch_circuits(
                     let stored = frame.land(agent, position).map_err(|_| ())?;
                     Ok(pose_of(stored))
                 }
+                ferroan_client::SceneCall::Teleport(request) => {
+                    let stored = frame
+                        .teleport_local(
+                            agent,
+                            ferroan_scene::LocalTeleport {
+                                position: request.position,
+                                look_at: request.look_at,
+                                half_height: request.half_height,
+                                default_landing: request.default_landing,
+                                size_x: request.size_x,
+                                size_y: request.size_y,
+                                flags: request.flags,
+                            },
+                        )
+                        .map_err(|_| ())?;
+                    Ok(ferroan_client::SceneReply::Moved(
+                        ferroan_client::SceneMove {
+                            position: stored.pose.position,
+                            look_at: stored.look_at,
+                            flags: stored.flags,
+                        },
+                    ))
+                }
+                ferroan_client::SceneCall::Complete { position, look_at } => {
+                    let stored = frame
+                        .complete_hop(agent, position, look_at)
+                        .map_err(|_| ())?;
+                    Ok(pose_of(stored))
+                }
+                ferroan_client::SceneCall::Read => match frame.presence(agent).map_err(|_| ())? {
+                    Some(stored) => Ok(pose_of(stored)),
+                    None => Err(()),
+                },
                 ferroan_client::SceneCall::Places(ids) => {
                     let places = frame.chat_positions(&ids).map_err(|_| ())?;
                     Ok(ferroan_client::SceneReply::Places(places))
@@ -788,7 +836,7 @@ async fn serve_agent(
                     // This one makes the child root again, then the circuit
                     // sends AgentMovementComplete.
                     root_arrived = true;
-                    let position = agent.return_slot.position();
+                    let position = token.position;
                     *landed.lock().unwrap_or_else(|poison| poison.into_inner()) = position;
                     let reporting = async {
                         let _guard = agent.lock_lifecycle().await;

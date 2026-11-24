@@ -24,6 +24,8 @@ const PROJECT: &str = "tools/regionstore-oracle/RegionStoreOracle.csproj";
 const DLL: &str = "bin/RegionStoreOracle/release/RegionStoreOracle.dll";
 const FIXTURE: &str = "fixtures/regionstore/objects.db";
 const DUMP: &str = "fixtures/regionstore/objects.json";
+const SETTINGS_FIXTURE: &str = "fixtures/regionstore/settings.db";
+const SETTINGS_DUMP: &str = "fixtures/regionstore/settings.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
@@ -38,6 +40,53 @@ pub fn generate() -> ExitCode {
 
 pub fn verify() -> ExitCode {
     dispatch(false)
+}
+
+/// Seed a SQLite region store and write the settings dump for one region.
+pub fn settings() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let db = root.join(SETTINGS_FIXTURE);
+    let dump = root.join(SETTINGS_DUMP);
+    if let Some(parent) = db.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        eprintln!("{LABEL}: could not create {}: {error}", parent.display());
+        return ExitCode::FAILURE;
+    }
+    if db.exists()
+        && let Err(error) = fs::remove_file(&db)
+    {
+        eprintln!("{LABEL}: could not replace {}: {error}", db.display());
+        return ExitCode::FAILURE;
+    }
+    let db_arg = db.display().to_string();
+    if !oracle(&dll, &["settings-seed", &db_arg]) {
+        return ExitCode::FAILURE;
+    }
+    let json = match oracle_stdout(&dll, &["settings-load", &db_arg, REGION, &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    if let Err(error) = fs::write(&dump, json) {
+        eprintln!("{LABEL}: could not write {}: {error}", dump.display());
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: wrote {SETTINGS_FIXTURE} and {SETTINGS_DUMP}");
+    ExitCode::SUCCESS
 }
 
 pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
