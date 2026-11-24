@@ -79,8 +79,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
-| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (this PR) |
-| QR3 | R3: asset uploads work with two or more avatars in the region | DONE (this PR) |
+| QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
+| QR3 | R3: asset uploads work with two or more avatars in the region | DONE (#209) |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
 | QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | READY after Q23e |
 | QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | READY after Q26b |
@@ -112,8 +112,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
 | Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (#202) |
-| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (this PR) |
-| Q19 | P2.0j: grid-mode report comparison and the first-login checklist | DONE (this PR) |
+| Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (#208) |
+| Q19 | P2.0j: grid-mode report comparison and the first-login checklist | DONE (#210) |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |
 | Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
@@ -130,9 +130,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
 | Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | DONE (#193) |
 | Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (#201) |
-| Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | DONE (this PR) |
-| Q54 | P2.4a2: prim inventory items from the SQLite store | DONE (this PR) |
-| Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | BLOCKED |
+| Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | DONE (#204) |
+| Q54 | P2.4a2: prim inventory items from the SQLite store | DONE (#207) |
+| Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | SPLIT into Q55a and Q55b (#212) |
+| Q55a | P2.4b1: MySQL region object load, `regionstore cross` on SQLite and MySQL | READY |
+| Q55b | P2.4b2: PostgreSQL region object load, `regionstore cross` on all three | READY after Q55a |
 | Q56 | P2.4c: region settings and spawn points from the store | READY after Q18a |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | READY after Q18a |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | READY after Q18a |
@@ -552,6 +554,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (1) MySQL. The regionstore oracle migrates a throwaway MySQL container to RegionStore 71, seeds the same store the SQLite fixture represents, and adds one prim whose nullable columns are NULL. The dump is what `LoadObjects` returns at `c401bceecd`: link-number order, the default box when the shape is missing, the #508 defaults for NULL columns, the item parent id equal to the prim id, and an orphan child absent. Rust matches that dump field by field. A row that cannot be built stops the load on this database; apply the bug rule there. `cargo xtask regionstore cross` runs SQLite and MySQL and removes the container. PostgreSQL waits.
 
 (2) PostgreSQL. The same oracle and `regionstore cross` add a throwaway PostgreSQL container at RegionStore 62 and remove it afterwards. The dump follows `LoadObjects` at the pin: the root first within the group, then the children by link number; the first part is the root; a root id that differs from the group id loads as the group id; the item parent id is the prim id. Rust matches that dump field by field. A NULL number or text, and an inventory row that cannot be built, stop the load; apply the bug rule there.
+
+Q55 split (manager, 24 November 2026): the block in #212 is right, and its two parts are taken as Q55a ((1) MySQL) and Q55b ((2) PostgreSQL), each scoped by its paragraph under Q55. P2.4b stays `TODO` until both are `DONE`.
 
 ## Found while working
 
