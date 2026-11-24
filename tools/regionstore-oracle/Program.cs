@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using System.Data.SQLite;
+using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using OpenMetaverse;
+using OpenMetaverse.StructuredData;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
+using OpenSim.Region.PhysicsModules.SharedBase;
 
 const string Region = "11111111-1111-1111-1111-111111111111";
 const string OtherRegion = "22222222-2222-2222-2222-222222222222";
@@ -128,22 +132,22 @@ static void InsertPrims(SQLiteConnection db)
         .Set("VolumeDetect", 1)
         .Set("MediaURL", "http://example.test/media")
         .Set("AttachedPosX", 0.5)
-        .Set("DynAttrs", "<llsd><map></map></llsd>")
+        .Set("DynAttrs", DynXml())
         .Set("PhysicsShapeType", 1)
         .Set("Density", 2.0)
         .Set("GravityModifier", 1.5)
         .Set("Friction", 0.25)
         .Set("Restitution", 0.125)
-        .Set("KeyframeMotion", new byte[] { 0x01, 0x02, 0x03, 0x04 })
+        .Set("KeyframeMotion", KeyframeBlob())
         .Set("PassCollisions", 1)
         .Set("PassTouches", 1)
         .Set("RotationAxisLocks", 5)
-        .Set("Vehicle", "<Vehicle></Vehicle>")
+        .Set("Vehicle", "<Vehicle><TYPE>2</TYPE><LMTIME>1.5</LMTIME></Vehicle>")
         .Set("RezzerID", Rezzer)
-        .Set("PhysInertia", "<PhysicsInertia></PhysicsInertia>")
+        .Set("PhysInertia", "<PhysicsInertia><MASS>2.5</MASS><CM><X>1</X><Y>2</Y><Z>3</Z></CM></PhysicsInertia>")
         .Set("pseudocrc", 42)
-        .Set("sopanims", new byte[] { 0x00 })
-        .Set("linksetdata", "not-json")
+        .Set("sopanims", AnimationBlob())
+        .Set("linksetdata", "{\"a\":{\"Value\":\"w\",\"Password\":\"\"},\"b\":{\"Value\":\"v\",\"Password\":\"secret\"}}")
         .Set("StartStr", "rez-arg")
         .Set("LinkNumber", 7)
         .Set("ColorR", 10)
@@ -157,11 +161,20 @@ static void InsertPrims(SQLiteConnection db)
     BasePrim(ChildB2, Region, RootB, "child-two")
         .Set("LinkNumber", 2)
         .Set("SitTargetActive", 1)
+        .Set("DynAttrs", "<llsd><map></map></llsd>")
+        .Set("KeyframeMotion", new byte[] { 0x01, 0x02, 0x03, 0x04 })
+        .Set("Vehicle", "<Vehicle></Vehicle>")
+        .Set("PhysInertia", "<PhysicsInertia></PhysicsInertia>")
+        .Set("sopanims", new byte[] { 0x00 })
+        .Set("linksetdata", "not-json")
         .Insert(db, "prims");
 
     BasePrim(RootC, Region, RootC, "link-table").Insert(db, "prims");
     BasePrim(ChildC2, Region, RootC, "child-first").Insert(db, "prims");
     BasePrim(ChildC3, Region, RootC, "child-second").Set("LinkNumber", 5).Insert(db, "prims");
+    BasePrim("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1", Region, RootC, "unparsed")
+        .Set("DynAttrs", "<llsd><integer>1</integer></llsd>")
+        .Insert(db, "prims");
 
     BasePrim(PrimD, Region, PrimD, "no-shape")
         .Set("SitTargetOffsetX", 2.0)
@@ -177,7 +190,10 @@ static void InsertShapes(SQLiteConnection db)
     ShowcaseShape(PrimA).Insert(db, "primshapes");
     PlainShape(RootB).Insert(db, "primshapes");
     PlainShape(ChildB3).Insert(db, "primshapes");
-    PlainShape(ChildB2).Insert(db, "primshapes");
+    PlainShape(ChildB2)
+        .Set("Media", "<OSMedia type=\"none\"></OSMedia>")
+        .Set("MatOvrd", new byte[] { 0x00 })
+        .Insert(db, "primshapes");
     PlainShape(RootC).Insert(db, "primshapes");
     PlainShape(ChildC2).Insert(db, "primshapes");
     PlainShape(ChildC3).Insert(db, "primshapes");
@@ -256,9 +272,9 @@ static Row ShowcaseShape(string uuid)
         .Set("Texture", new byte[] { 0x11, 0x22, 0x33, 0x44 })
         .Set("ExtraParams", new byte[] { 0x00, 0xaa })
         .Set("State", 2)
-        .Set("Media", "<OSMedia type=\"none\"></OSMedia>")
+        .Set("Media", MediaXml())
         .Set("LastAttachPoint", 3)
-        .Set("MatOvrd", new byte[] { 0x00 });
+        .Set("MatOvrd", MaterialBlob());
 }
 
 static Row PlainShape(string uuid)
@@ -291,6 +307,111 @@ static Row PlainShape(string uuid)
         .Set("ExtraParams", new byte[] { 0x00 })
         .Set("State", 0)
         .Set("LastAttachPoint", 0);
+}
+
+static string DynXml()
+{
+    return "<llsd><map><key>kept</key><map><key>store</key><map><key>n</key><integer>7</integer></map>"
+        + "<key>dropped</key><integer>1</integer></map><key>badns</key><string>nope</string></map></llsd>";
+}
+
+static string MediaXml()
+{
+    return "<OSMedia type=\"sl\" version=\"0.1\"><OSData><llsd><array><map>"
+        + "<key>alt_image_enable</key><boolean>1</boolean>"
+        + "<key>auto_loop</key><boolean>1</boolean>"
+        + "<key>auto_play</key><boolean>0</boolean>"
+        + "<key>auto_scale</key><boolean>1</boolean>"
+        + "<key>auto_zoom</key><boolean>0</boolean>"
+        + "<key>controls</key><integer>1</integer>"
+        + "<key>current_url</key><string>http://current.test</string>"
+        + "<key>first_click_interact</key><boolean>1</boolean>"
+        + "<key>height_pixels</key><integer>480</integer>"
+        + "<key>home_url</key><string>http://home.test</string>"
+        + "<key>perms_control</key><integer>1</integer>"
+        + "<key>perms_interact</key><integer>4</integer>"
+        + "<key>whitelist</key><array><string>http://ok.test</string></array>"
+        + "<key>whitelist_enable</key><boolean>1</boolean>"
+        + "<key>width_pixels</key><integer>640</integer>"
+        + "</map><integer>0</integer></array></llsd></OSData></OSMedia>";
+}
+
+static byte[] KeyframeBlob()
+{
+    using MemoryStream stream = new MemoryStream();
+    using BinaryWriter writer = new BinaryWriter(stream);
+    writer.Write((byte)'K');
+    writer.Write((byte)'F');
+    writer.Write((byte)'M');
+    writer.Write((byte)'1');
+    writer.Write((uint)1);
+    WriteVec(writer, 1f, 2f, 3f);
+    WriteVec(writer, 4f, 5f, 6f);
+    WriteQuat(writer, 0f, 0f, 0f, 1f);
+    writer.Write(true);
+    WriteVec(writer, 7f, 8f, 9f);
+    writer.Write(false);
+    WriteQuat(writer, 0f, 0f, 0f, 1f);
+    writer.Write(10);
+    writer.Write(20);
+    WriteVec(writer, 0f, 1f, 0f);
+    WriteVec(writer, 1f, 0f, 0f);
+    writer.Write(1);
+    writer.Write(false);
+    writer.Write(true);
+    WriteQuat(writer, 0f, 0f, 0f, 1f);
+    WriteQuat(writer, 0f, 0f, 0f, 1f);
+    writer.Write(5);
+    writer.Write(5);
+    WriteVec(writer, 0f, 0f, 0f);
+    WriteVec(writer, 0f, 0f, 0f);
+    writer.Write(0);
+    writer.Write(2);
+    writer.Write(3);
+    writer.Write(true);
+    writer.Write(4);
+    writer.Write(6);
+    writer.Flush();
+    return stream.ToArray();
+}
+
+static void WriteVec(BinaryWriter writer, float x, float y, float z)
+{
+    writer.Write(x);
+    writer.Write(y);
+    writer.Write(z);
+}
+
+static void WriteQuat(BinaryWriter writer, float x, float y, float z, float w)
+{
+    writer.Write(x);
+    writer.Write(y);
+    writer.Write(z);
+    writer.Write(w);
+}
+
+static byte[] AnimationBlob()
+{
+    UUID id = new UUID("12345678-1234-1234-1234-123456789abc");
+    byte[] name = System.Text.Encoding.UTF8.GetBytes("wave");
+    byte[] blob = new byte[2 + 16 + 1 + name.Length + 16];
+    blob[0] = 2;
+    id.GetBytes().CopyTo(blob, 2);
+    blob[18] = (byte)name.Length;
+    name.CopyTo(blob, 19);
+    return blob;
+}
+
+static byte[] MaterialBlob()
+{
+    byte[] text = System.Text.Encoding.UTF8.GetBytes("face-data");
+    byte[] blob = new byte[4 + text.Length];
+    blob[0] = 1;
+    blob[1] = 1;
+    blob[2] = (byte)text.Length;
+    blob[3] = 0;
+    text.CopyTo(blob, 4);
+    return blob;
 }
 
 static void Load(string path, string regionText, string pin)
@@ -485,6 +606,12 @@ sealed class DumpPart
     public int rotation_axis_locks { get; set; }
     public int? pseudo_crc { get; set; }
     public DumpShape shape { get; set; }
+    public JsonNode dyn_attrs { get; set; }
+    public DumpMotion keyframe { get; set; }
+    public DumpVehicle vehicle { get; set; }
+    public DumpInertia phys_inertia { get; set; }
+    public List<DumpAnimation> animations { get; set; }
+    public DumpLinkset linkset { get; set; }
     public DumpRaw raw { get; set; }
 
     public static DumpPart From(SceneObjectPart part, RawPrim raw, RawShape storedShape)
@@ -582,8 +709,16 @@ sealed class DumpPart
                 state = shape.State,
                 last_attach_point = shape.LastAttachPoint,
                 texture = Hex(defaultBox ? shape.TextureEntry : storedShape.Texture),
-                extra_params = Hex(defaultBox ? shape.ExtraParams : storedShape.Extra)
+                extra_params = Hex(defaultBox ? shape.ExtraParams : storedShape.Extra),
+                media_entries = MediaOf(shape.Media),
+                materials = MaterialsOf(shape.RenderMaterials)
             },
+            dyn_attrs = DynOf(part.DynAttrs),
+            keyframe = MotionOf(part.KeyframeMotion),
+            vehicle = VehicleOf(part.VehicleParams),
+            phys_inertia = InertiaOf(part.PhysicsInertia),
+            animations = AnimsOf(part),
+            linkset = LinksetOf(part.LinksetData),
             raw = new DumpRaw
             {
                 media = storedShape == null ? null : storedShape.Media,
@@ -598,21 +733,269 @@ sealed class DumpPart
         };
     }
 
-    static string Hex(byte[] bytes)
+    public static string Hex(byte[] bytes)
     {
         if (bytes == null)
             return null;
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    static float[] Vec(Vector3 value)
+    public static float[] Vec(Vector3 value)
     {
         return new[] { value.X, value.Y, value.Z };
     }
 
-    static float[] Quat(Quaternion value)
+    public static float[] Quat(Quaternion value)
     {
         return new[] { value.X, value.Y, value.Z, value.W };
+    }
+
+    static JsonNode DynOf(DAMap map)
+    {
+        if (map == null || map.TopLevelMap == null)
+            return null;
+        return OsdJson(map.TopLevelMap);
+    }
+
+    static JsonNode OsdJson(OSD value)
+    {
+        if (value == null)
+            return null;
+        switch (value.Type)
+        {
+            case OSDType.Boolean:
+                return JsonValue.Create(value.AsBoolean());
+            case OSDType.Integer:
+                return JsonValue.Create(value.AsInteger());
+            case OSDType.Real:
+                return JsonValue.Create(value.AsReal());
+            case OSDType.String:
+            case OSDType.UUID:
+            case OSDType.URI:
+            case OSDType.Date:
+            case OSDType.Binary:
+                return JsonValue.Create(value.AsString());
+            case OSDType.Array:
+                JsonArray array = new JsonArray();
+                foreach (OSD child in (OSDArray)value)
+                    array.Add(OsdJson(child));
+                return array;
+            case OSDType.Map:
+                JsonObject obj = new JsonObject();
+                foreach (KeyValuePair<string, OSD> entry in (OSDMap)value)
+                    obj[entry.Key] = OsdJson(entry.Value);
+                return obj;
+            default:
+                return null;
+        }
+    }
+
+    static object Private(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null)
+            throw new InvalidOperationException("missing " + name);
+        return field.GetValue(target);
+    }
+
+    static DumpMotion MotionOf(KeyframeMotion motion)
+    {
+        if (motion == null)
+            return null;
+        return new DumpMotion
+        {
+            serialized_position = Vec((Vector3)Private(motion, "m_serializedPosition")),
+            base_position = Vec((Vector3)Private(motion, "m_basePosition")),
+            base_rotation = Quat((Quaternion)Private(motion, "m_baseRotation")),
+            current_frame = OneFrame((KeyframeMotion.Keyframe)Private(motion, "m_currentFrame")),
+            frames = FrameList(Private(motion, "m_frames")),
+            keyframes = FrameList(Private(motion, "m_keyframes")),
+            mode = Convert.ToInt32(Private(motion, "m_mode")),
+            data = Convert.ToInt32(Private(motion, "m_data")),
+            running = (bool)Private(motion, "m_running"),
+            iterations = (int)Private(motion, "m_iterations"),
+            skip_loops = (int)Private(motion, "m_skipLoops")
+        };
+    }
+
+    static List<DumpKeyframe> FrameList(object value)
+    {
+        if (value == null)
+            return null;
+        List<DumpKeyframe> frames = new List<DumpKeyframe>();
+        if (value is KeyframeMotion.Keyframe[] array)
+        {
+            foreach (KeyframeMotion.Keyframe frame in array)
+                frames.Add(OneFrame(frame));
+            return frames;
+        }
+        foreach (KeyframeMotion.Keyframe frame in (List<KeyframeMotion.Keyframe>)value)
+            frames.Add(OneFrame(frame));
+        return frames;
+    }
+
+    static DumpKeyframe OneFrame(KeyframeMotion.Keyframe frame)
+    {
+        return new DumpKeyframe
+        {
+            position = frame.Position.HasValue ? Vec(frame.Position.Value) : null,
+            rotation = frame.Rotation.HasValue ? Quat(frame.Rotation.Value) : null,
+            start_rotation = Quat(frame.StartRotation),
+            time_ms = frame.TimeMS,
+            time_total = frame.TimeTotal,
+            angular_velocity = Vec(frame.AngularVelocity),
+            start_position = Vec(frame.StartPosition)
+        };
+    }
+
+    static DumpVehicle VehicleOf(SOPVehicle vehicle)
+    {
+        if (vehicle == null)
+            return null;
+        VehicleData data = vehicle.vd;
+        return new DumpVehicle
+        {
+            type = (int)data.m_type,
+            flags = (int)data.m_flags,
+            linear_motor_direction = Vec(data.m_linearMotorDirection),
+            linear_friction_timescale = Vec(data.m_linearFrictionTimescale),
+            linear_motor_decay_timescale = data.m_linearMotorDecayTimescale,
+            linear_motor_timescale = data.m_linearMotorTimescale,
+            linear_motor_offset = Vec(data.m_linearMotorOffset),
+            angular_motor_direction = Vec(data.m_angularMotorDirection),
+            angular_motor_timescale = data.m_angularMotorTimescale,
+            angular_motor_decay_timescale = data.m_angularMotorDecayTimescale,
+            angular_friction_timescale = Vec(data.m_angularFrictionTimescale),
+            angular_deflection_efficiency = data.m_angularDeflectionEfficiency,
+            angular_deflection_timescale = data.m_angularDeflectionTimescale,
+            linear_deflection_efficiency = data.m_linearDeflectionEfficiency,
+            linear_deflection_timescale = data.m_linearDeflectionTimescale,
+            banking_efficiency = data.m_bankingEfficiency,
+            banking_mix = data.m_bankingMix,
+            banking_timescale = data.m_bankingTimescale,
+            hover_height = data.m_VhoverHeight,
+            hover_efficiency = data.m_VhoverEfficiency,
+            hover_timescale = data.m_VhoverTimescale,
+            buoyancy = data.m_VehicleBuoyancy,
+            vertical_attraction_efficiency = data.m_verticalAttractionEfficiency,
+            vertical_attraction_timescale = data.m_verticalAttractionTimescale,
+            reference_frame = Quat(data.m_referenceFrame),
+            linear_motor_timescale_axes = OptVec(data.m_linearMotorTimescaleAxes),
+            linear_motor_decay_timescale_axes = OptVec(data.m_linearMotorDecayTimescaleAxes),
+            angular_motor_timescale_axes = OptVec(data.m_angularMotorTimescaleAxes),
+            angular_motor_decay_timescale_axes = OptVec(data.m_angularMotorDecayTimescaleAxes),
+            mouselook_azimuth = data.m_mouselookAzimuth,
+            mouselook_altitude = data.m_mouselookAltitude,
+            banking_azimuth = data.m_bankingAzimuth,
+            disable_motors_above = data.m_disableMotorsAbove,
+            disable_motors_after = data.m_disableMotorsAfter,
+            inverted_banking_modifier = data.m_invertedBankingModifier,
+            linear_wind_efficiency = OptVec(data.m_linearWindEfficiency),
+            angular_wind_efficiency = OptVec(data.m_angularWindEfficiency),
+            linear_motor_run_age = data.m_linearMotorRunAge,
+            linear_motor_run_direction = OptVec(data.m_linearMotorRunDirection),
+            linear_motor_run_target = OptVec(data.m_linearMotorRunTarget),
+            angular_motor_run_age = data.m_angularMotorRunAge,
+            angular_motor_run_direction = OptVec(data.m_angularMotorRunDirection),
+            angular_motor_run_target = OptVec(data.m_angularMotorRunTarget)
+        };
+    }
+
+    static float[] OptVec(Vector3? value)
+    {
+        return value.HasValue ? Vec(value.Value) : null;
+    }
+
+    static DumpInertia InertiaOf(PhysicsInertiaData data)
+    {
+        if (data == null)
+            return null;
+        return new DumpInertia
+        {
+            mass = data.TotalMass,
+            center = Vec(data.CenterOfMass),
+            inertia = Vec(data.Inertia),
+            rotation = new[] { data.InertiaRotation.X, data.InertiaRotation.Y, data.InertiaRotation.Z, data.InertiaRotation.W }
+        };
+    }
+
+    static List<DumpAnimation> AnimsOf(SceneObjectPart part)
+    {
+        if (part.AnimationsNames == null)
+            return null;
+        List<DumpAnimation> list = new List<DumpAnimation>();
+        foreach (KeyValuePair<UUID, string> entry in part.AnimationsNames)
+            list.Add(new DumpAnimation { id = entry.Key.ToString(), name = entry.Value });
+        return list;
+    }
+
+    static DumpLinkset LinksetOf(LinksetData data)
+    {
+        if (data == null)
+            return null;
+        List<DumpLinksetEntry> entries = null;
+        if (data.Data != null)
+        {
+            entries = new List<DumpLinksetEntry>();
+            foreach (KeyValuePair<string, LinksetDataEntry> entry in data.Data)
+            {
+                entries.Add(new DumpLinksetEntry
+                {
+                    key = entry.Key,
+                    value = entry.Value == null ? null : entry.Value.Value,
+                    password = entry.Value == null ? null : entry.Value.Password
+                });
+            }
+        }
+        return new DumpLinkset
+        {
+            entries = entries,
+            bytes_used = data.BytesUsed,
+            bytes_free = data.BytesFree
+        };
+    }
+
+    static List<DumpMedia> MediaOf(PrimitiveBaseShape.MediaList media)
+    {
+        if (media == null)
+            return null;
+        List<DumpMedia> list = new List<DumpMedia>();
+        foreach (MediaEntry entry in media)
+        {
+            list.Add(new DumpMedia
+            {
+                alt_image_enable = entry.EnableAlterntiveImage,
+                auto_loop = entry.AutoLoop,
+                auto_play = entry.AutoPlay,
+                auto_scale = entry.AutoScale,
+                auto_zoom = entry.AutoZoom,
+                controls = (int)entry.Controls,
+                current_url = entry.CurrentURL,
+                first_click_interact = entry.InteractOnFirstClick,
+                height_pixels = entry.Height,
+                home_url = entry.HomeURL,
+                perms_control = (int)entry.ControlPermissions,
+                perms_interact = (int)entry.InteractPermissions,
+                whitelist = entry.WhiteList,
+                whitelist_enable = entry.EnableWhiteList,
+                width_pixels = entry.Width
+            });
+        }
+        return list;
+    }
+
+    static DumpMaterials MaterialsOf(Primitive.RenderMaterials materials)
+    {
+        if (materials == null)
+            return null;
+        List<DumpMaterialOverride> overrides = null;
+        if (materials.overrides != null)
+        {
+            overrides = new List<DumpMaterialOverride>();
+            foreach (Primitive.RenderMaterials.RenderMaterialOverrideEntry entry in materials.overrides)
+                overrides.Add(new DumpMaterialOverride { te_index = entry.te_index, data = entry.data });
+        }
+        return new DumpMaterials { overrides = overrides };
     }
 }
 
@@ -643,6 +1026,139 @@ sealed class DumpShape
     public int last_attach_point { get; set; }
     public string texture { get; set; }
     public string extra_params { get; set; }
+    public List<DumpMedia> media_entries { get; set; }
+    public DumpMaterials materials { get; set; }
+}
+
+sealed class DumpMotion
+{
+    public float[] serialized_position { get; set; }
+    public float[] base_position { get; set; }
+    public float[] base_rotation { get; set; }
+    public DumpKeyframe current_frame { get; set; }
+    public List<DumpKeyframe> frames { get; set; }
+    public List<DumpKeyframe> keyframes { get; set; }
+    public int mode { get; set; }
+    public int data { get; set; }
+    public bool running { get; set; }
+    public int iterations { get; set; }
+    public int skip_loops { get; set; }
+}
+
+sealed class DumpKeyframe
+{
+    public float[] position { get; set; }
+    public float[] rotation { get; set; }
+    public float[] start_rotation { get; set; }
+    public int time_ms { get; set; }
+    public int time_total { get; set; }
+    public float[] angular_velocity { get; set; }
+    public float[] start_position { get; set; }
+}
+
+sealed class DumpVehicle
+{
+    public int type { get; set; }
+    public int flags { get; set; }
+    public float[] linear_motor_direction { get; set; }
+    public float[] linear_friction_timescale { get; set; }
+    public float linear_motor_decay_timescale { get; set; }
+    public float linear_motor_timescale { get; set; }
+    public float[] linear_motor_offset { get; set; }
+    public float[] angular_motor_direction { get; set; }
+    public float angular_motor_timescale { get; set; }
+    public float angular_motor_decay_timescale { get; set; }
+    public float[] angular_friction_timescale { get; set; }
+    public float angular_deflection_efficiency { get; set; }
+    public float angular_deflection_timescale { get; set; }
+    public float linear_deflection_efficiency { get; set; }
+    public float linear_deflection_timescale { get; set; }
+    public float banking_efficiency { get; set; }
+    public float banking_mix { get; set; }
+    public float banking_timescale { get; set; }
+    public float hover_height { get; set; }
+    public float hover_efficiency { get; set; }
+    public float hover_timescale { get; set; }
+    public float buoyancy { get; set; }
+    public float vertical_attraction_efficiency { get; set; }
+    public float vertical_attraction_timescale { get; set; }
+    public float[] reference_frame { get; set; }
+    public float[] linear_motor_timescale_axes { get; set; }
+    public float[] linear_motor_decay_timescale_axes { get; set; }
+    public float[] angular_motor_timescale_axes { get; set; }
+    public float[] angular_motor_decay_timescale_axes { get; set; }
+    public float mouselook_azimuth { get; set; }
+    public float mouselook_altitude { get; set; }
+    public float banking_azimuth { get; set; }
+    public float disable_motors_above { get; set; }
+    public float disable_motors_after { get; set; }
+    public float inverted_banking_modifier { get; set; }
+    public float[] linear_wind_efficiency { get; set; }
+    public float[] angular_wind_efficiency { get; set; }
+    public float? linear_motor_run_age { get; set; }
+    public float[] linear_motor_run_direction { get; set; }
+    public float[] linear_motor_run_target { get; set; }
+    public float? angular_motor_run_age { get; set; }
+    public float[] angular_motor_run_direction { get; set; }
+    public float[] angular_motor_run_target { get; set; }
+}
+
+sealed class DumpInertia
+{
+    public float mass { get; set; }
+    public float[] center { get; set; }
+    public float[] inertia { get; set; }
+    public float[] rotation { get; set; }
+}
+
+sealed class DumpAnimation
+{
+    public string id { get; set; }
+    public string name { get; set; }
+}
+
+sealed class DumpLinkset
+{
+    public List<DumpLinksetEntry> entries { get; set; }
+    public int bytes_used { get; set; }
+    public int bytes_free { get; set; }
+}
+
+sealed class DumpLinksetEntry
+{
+    public string key { get; set; }
+    public string value { get; set; }
+    public string password { get; set; }
+}
+
+sealed class DumpMedia
+{
+    public bool alt_image_enable { get; set; }
+    public bool auto_loop { get; set; }
+    public bool auto_play { get; set; }
+    public bool auto_scale { get; set; }
+    public bool auto_zoom { get; set; }
+    public int controls { get; set; }
+    public string current_url { get; set; }
+    public bool first_click_interact { get; set; }
+    public int height_pixels { get; set; }
+    public string home_url { get; set; }
+    public int perms_control { get; set; }
+    public int perms_interact { get; set; }
+    public string[] whitelist { get; set; }
+    public bool whitelist_enable { get; set; }
+    public int width_pixels { get; set; }
+}
+
+sealed class DumpMaterials
+{
+    public List<DumpMaterialOverride> overrides { get; set; }
+}
+
+sealed class DumpMaterialOverride
+{
+    public int te_index { get; set; }
+    public string data { get; set; }
 }
 
 sealed class DumpRaw
