@@ -399,7 +399,11 @@ fn drain_inbound(
     while let Ok(post) = rx.try_recv() {
         match post {
             Inbound::Pose(post) => {
-                let avatar = Avatar::new(post.pose);
+                let mut avatar = Avatar::new(post.pose);
+                // Chat can read this pose immediately. The actor waits until
+                // the arrival packet samples it, or a tick would change the
+                // position that packet and GridUser still report.
+                avatar.body.set_actor(false);
                 let pose = avatar.pose;
                 presences.insert(post.agent, avatar);
                 let _ = post.reply.send(pose);
@@ -492,11 +496,13 @@ impl Avatar {
     }
 }
 
-/// A new physics actor on return. The record stays; the command does not.
+/// A new physics actor on arrival or return. The record stays; the command
+/// does not. The tick may run after this returns.
 fn arrive_at_rest(avatar: &mut Avatar) {
     avatar.pose.velocity = [0.0, 0.0, 0.0];
     avatar.body.halt_command();
     avatar.body.set_child(false);
+    avatar.body.set_actor(true);
 }
 
 fn fresh(position: [f32; 3]) -> Presence {
@@ -691,15 +697,18 @@ mod tests {
         };
         assert_eq!(frame.post_login(agent, pose).unwrap(), pose);
         let immediate = frame.presence(agent).unwrap().unwrap();
-        assert_eq!(immediate.position[0], 4.0);
-        assert_eq!(immediate.position[1], 5.0);
-        assert!(z_is_written_or_snapped(immediate.position[2], 26.0));
+        assert_eq!(immediate.position, [4.0, 5.0, 26.0]);
         let before = frame.frames().unwrap();
         std::thread::sleep(Duration::from_millis(400));
         let frames = frame.frames().unwrap();
         assert!(frames > before, "frames {before} -> {frames}");
         assert!(frames < 10, "frames {frames}");
         assert_eq!(FRAME_TIME, 0.0909);
+        let held = frame.presence(agent).unwrap().unwrap();
+        assert_eq!(held.position, [4.0, 5.0, 26.0]);
+        let released = frame.reuse_arrival(agent).unwrap().unwrap();
+        assert_eq!(released.position, [4.0, 5.0, 26.0]);
+        std::thread::sleep(Duration::from_millis(400));
         let snapped = frame.presence(agent).unwrap().unwrap();
         assert_eq!(snapped.position, [4.0, 5.0, AVATAR_SIZE_Z]);
         assert_eq!(snapped.velocity, [0.0, 0.0, 0.0]);

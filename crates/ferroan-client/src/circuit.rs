@@ -1006,8 +1006,10 @@ impl State {
     }
 
     /// Use the pose the frame already stored. The first arrival posts the login
-    /// pose. A later arrival, after a teleport or a hop, resets the command and
-    /// the physics velocity to rest and keeps the stored position.
+    /// pose and holds the actor. This sample releases it. A tick before the
+    /// sample would move the position this packet and GridUser still report.
+    /// A later arrival, after a teleport or a hop, resets the command and the
+    /// physics velocity to rest and keeps the stored position.
     fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
         let Some(scene) = &self.login_scene else {
             return Ok(self.arrival.position);
@@ -1023,7 +1025,10 @@ impl State {
             draw_distance: LOGIN_DRAW_DISTANCE,
         };
         match scene(agent, SceneCall::Pose(pose)) {
-            Ok(SceneReply::Pose(stored)) => Ok(stored.position),
+            Ok(SceneReply::Pose(stored)) => {
+                let _ = scene(agent, SceneCall::Reuse);
+                Ok(stored.position)
+            }
             _ => Err(CircuitError::SceneInbound),
         }
     }

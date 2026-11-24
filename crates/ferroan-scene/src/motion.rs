@@ -217,6 +217,10 @@ pub(crate) struct Body {
     seated: bool,
     /// Away in another region. The record stays. The tick does not move it.
     child: bool,
+    /// False until the arrival packet has sampled the pose. The tick does not
+    /// move a seated record, so that packet and the GridUser report stay the
+    /// position written for the login.
+    actor: bool,
 }
 
 impl Body {
@@ -269,11 +273,17 @@ impl Body {
             colliding: false,
             seated: false,
             child: false,
+            // Direct steps in tests have an actor. A login pose holds it.
+            actor: true,
         }
     }
 
     pub(crate) fn set_child(&mut self, child: bool) {
         self.child = child;
+    }
+
+    pub(crate) fn set_actor(&mut self, actor: bool) {
+        self.actor = actor;
     }
 
     pub(crate) fn view(&self) -> Motion {
@@ -511,8 +521,9 @@ impl Body {
         self.physics_velocity = direc;
     }
 
-    /// One tick. A seated avatar is skipped. The delayed stop is applied after
-    /// the move, so the deadline's frame still travels and the next one rests.
+    /// One tick. A seated avatar, a child, and a pose that the arrival packet
+    /// has not sampled yet are skipped. The delayed stop is applied after the
+    /// move, so the deadline's frame still travels and the next one rests.
     pub(crate) fn step_physics(
         &mut self,
         pose: &mut Presence,
@@ -522,7 +533,7 @@ impl Body {
         dt: f32,
         now_ms: u64,
     ) {
-        if self.seated || self.child {
+        if self.seated || self.child || !self.actor {
             return;
         }
         let step = crate::walk::integrate(
