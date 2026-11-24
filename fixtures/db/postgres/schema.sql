@@ -1486,7 +1486,7 @@ INSERT INTO public.migrations VALUES ('InventoryStore', 11);
 INSERT INTO public.migrations VALUES ('LogStore', 1);
 INSERT INTO public.migrations VALUES ('MuteListStore', 2);
 INSERT INTO public.migrations VALUES ('Presence', 4);
-INSERT INTO public.migrations VALUES ('RegionStore', 61);
+INSERT INTO public.migrations VALUES ('RegionStore', 62);
 INSERT INTO public.migrations VALUES ('UserAccount', 7);
 INSERT INTO public.migrations VALUES ('UserProfiles', 6);
 INSERT INTO public.migrations VALUES ('UserStore', 11);
@@ -2226,6 +2226,20 @@ CREATE INDEX ix_userfriends_ownerid ON public.userfriends USING btree ("ownerID"
 --
 
 CREATE INDEX land_lower_idx ON public.land USING btree (lower(("Name")::text));
+
+
+--
+-- Name: land_regionuuid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX land_regionuuid ON public.land USING btree ("RegionUUID");
+
+
+--
+-- Name: landaccesslist_landuuid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX landaccesslist_landuuid ON public.landaccesslist USING btree ("LandUUID");
 
 
 --

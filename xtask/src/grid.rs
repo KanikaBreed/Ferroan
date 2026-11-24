@@ -925,7 +925,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             http_port: home_port,
             public_proxy,
             private_proxy,
-            capture: Some(root.join("capture-udp.cap")),
+            // With the Ferrobot relay the relay writes `capture-udp.cap`. Two
+            // writers on one path, each at its own offset, overwrote each
+            // other's records (the `live images` re-encode failures on
+            // AgentUpdate), so the region's own capture goes beside it.
+            capture: Some(root.join(if ferroan && scenario == "ferrobot" {
+                "capture-udp-region.cap"
+            } else {
+                "capture-udp.cap"
+            })),
             asset_uri: asset_uri.clone(),
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),

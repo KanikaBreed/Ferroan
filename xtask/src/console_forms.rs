@@ -708,20 +708,21 @@ fn compare_forms(
         "text/plain",
         "",
     )?;
+    // Since Pin8 both unknown-session forms are refused (TB31, Tranquillity #528).
     same_exact(
         &csharp.close_unknown,
         &ferroan.close_unknown,
         "unknown CloseSession",
-        200,
-        "text/xml",
-        OK_BODY,
+        404,
+        "text/plain",
+        "",
     )?;
     same_exact(
         &csharp.read_unknown,
         &ferroan.read_unknown,
         "unknown ReadResponses",
-        200,
-        "text/html",
+        404,
+        "text/plain",
         "",
     )?;
     Ok(())
@@ -1100,8 +1101,8 @@ mod tests {
             version: reply(200, "application/xml", &lines),
             close_known: reply(200, "text/xml", OK_BODY),
             command_unknown: reply(404, "text/plain", ""),
-            close_unknown: reply(200, "text/xml", OK_BODY),
-            read_unknown: reply(200, "text/html", ""),
+            close_unknown: reply(404, "text/plain", ""),
+            read_unknown: reply(404, "text/plain", ""),
         }
     }
 

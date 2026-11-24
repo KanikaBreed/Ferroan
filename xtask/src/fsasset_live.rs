@@ -11,8 +11,10 @@
 //! A read of 10,000 assets is timed on each side with
 //! `DaysBetweenAccessTimeUpdates` 365, so the interval does not also write
 //! `access_time`. The texture run leaves the pin default of 0. The success
-//! line is `assets: match`. TB45 is named only when this run's force probe
-//! shows it. A miss status or an import page that differs fails the command.
+//! line is `assets: match`. The force probe stores an existing id again
+//! through C# HTTP, an ordinary store, which keeps the old hash on every pin;
+//! the force import itself (TB45, fixed at Pin8 by #524) is compared by
+//! `cargo xtask asset fsassets-cross`. A miss status or an import page that differs fails the command.
 //! Any other HTTP difference fails the command.
 
 use std::process::ExitCode;
@@ -182,7 +184,7 @@ fn compare_linux(db: FsassetDb) -> Result<String, String> {
     }
     let timed = time_and_cross(db, &target, base_arg, now)?;
     classify_missing(timed.csharp_miss, timed.ferroan_miss)?;
-    let tb45 = classify_force(timed.csharp_kept_hash, timed.ferroan_wrote_hash)?;
+    classify_force(timed.csharp_kept_hash, timed.ferroan_wrote_hash)?;
     probe_import(db, &target, &run)?;
     Ok(success_report(
         &csharp.report,
@@ -190,7 +192,7 @@ fn compare_linux(db: FsassetDb) -> Result<String, String> {
         left.lines().count(),
         timed.csharp_ms,
         timed.ferroan_ms,
-        &difference_ids(tb45),
+        &[],
     ))
 }
 
@@ -214,11 +216,6 @@ fn success_report(
     text
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn difference_ids(tb45: bool) -> Vec<&'static str> {
-    if tb45 { vec!["TB45"] } else { Vec::new() }
-}
-
 /// A non-uuid get is a miss on both sides at Pin7. A status that differs is
 /// a failure, not a listed difference.
 #[cfg(any(target_os = "linux", test))]
@@ -231,13 +228,16 @@ fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
     ))
 }
 
-/// C# `Store` ignores `force`, so an ordinary store leaves the hash. Ferroan's
-/// force update writes the new hash and `access_time` only.
+/// The C# probe is an ordinary `POST /assets` of an existing id, which keeps
+/// the old hash (as Ferroan's ordinary store does). Ferroan's force update,
+/// applied after it, writes the new hash and `access_time` only. Neither is a
+/// known difference: the force import (TB45) is compared by
+/// `asset fsassets-cross` since Pin8.
 #[cfg(any(target_os = "linux", test))]
-fn classify_force(csharp_kept_hash: bool, ferroan_wrote_hash: bool) -> Result<bool, String> {
+fn classify_force(csharp_kept_hash: bool, ferroan_wrote_hash: bool) -> Result<(), String> {
     match (csharp_kept_hash, ferroan_wrote_hash) {
-        (true, true) => Ok(true),
-        (false, true) => Ok(false),
+        (true, true) => Ok(()),
+        (false, true) => Err("an ordinary C# store overwrote an existing hash".to_string()),
         (true, false) => Err("ferroan force update did not change the hash".to_string()),
         (false, false) => Err("force import changed neither hash".to_string()),
     }
@@ -1541,14 +1541,14 @@ mod tests {
 
     #[test]
     fn fsasset_success_line_names_only_the_ids_this_run_shows() {
-        let mysql = success_report("csharp", "ferroan", 12, 10, 12, &difference_ids(true));
+        let mysql = success_report("csharp", "ferroan", 12, 10, 12, &["TB45"]);
         assert!(mysql.contains("assets: match (12 http records)"));
         assert!(mysql.contains("cross-read ok"));
         assert!(mysql.contains("10000-asset read: csharp 10 ms, ferroan 12 ms"));
         assert!(mysql.contains("known differences: TB45"));
         assert!(!mysql.contains("TB39"));
         assert!(!mysql.contains("TB40"));
-        let clean = success_report("csharp", "ferroan", 1, 1, 1, &difference_ids(false));
+        let clean = success_report("csharp", "ferroan", 1, 1, 1, &[]);
         assert!(!clean.contains("known differences"));
     }
 
@@ -1556,8 +1556,8 @@ mod tests {
     fn fsasset_probes_fail_a_miss_or_a_page_that_differs() {
         assert!(classify_missing(404, 404).is_ok());
         assert!(classify_missing(500, 404).is_err());
-        assert!(classify_force(true, true).expect("shown"));
-        assert!(!classify_force(false, true).expect("pin overwrites"));
+        assert!(classify_force(true, true).is_ok());
+        assert!(classify_force(false, true).is_err());
         assert!(classify_force(true, false).is_err());
         assert!(pages_match(false, "a\nb\n", "b\na\n").is_ok());
         assert!(pages_match(false, "a\n", "a\nb\n").is_err());

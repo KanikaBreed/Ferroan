@@ -51,9 +51,6 @@ pub(crate) struct ConsoleState {
     manual: AtomicBool,
     manual_ms: std::sync::atomic::AtomicU64,
     sweeper: AtomicBool,
-    /// One extra `field:field:text` line after `show version`, for
-    /// `OpenSim.ConsoleClient` (TB32). The region console leaves this off.
-    legacy_client_line: bool,
 }
 
 struct ConsoleSession {
@@ -121,7 +118,6 @@ pub(crate) fn state(
     version: String,
     level: RuntimeLevel,
     prompt: String,
-    legacy_client_line: bool,
 ) -> Result<Arc<ConsoleState>, crate::LogError> {
     let origin = match origin {
         Some(value) => Some(HeaderValue::from_str(&value).map_err(|_| crate::LogError::Origin)?),
@@ -142,7 +138,6 @@ pub(crate) fn state(
         manual: AtomicBool::new(false),
         manual_ms: std::sync::atomic::AtomicU64::new(0),
         sweeper: AtomicBool::new(false),
-        legacy_client_line,
     }))
 }
 
@@ -154,6 +149,8 @@ pub(crate) fn router(state: Arc<ConsoleState>) -> Router {
         .route("/SessionCommand", post(session_command))
         .route("/ReadResponses/{id}/", post(read_responses))
         .route("/ReadResponses/{id}", post(read_responses))
+        .route("/ReadResponses/", post(unknown_session))
+        .route("/ReadResponses", post(unknown_session))
         .route("/CloseSession/", post(close_session))
         .route("/CloseSession", post(close_session))
         .with_state(state)
@@ -236,12 +233,13 @@ async fn read_responses(
     State(state): State<Arc<ConsoleState>>,
     Path(id): Path<String>,
 ) -> Response {
-    // A poll URL is registered only for a live session. Any other id misses
-    // that map. `BaseHttpServer.HandleRequest` then leaves the default
-    // 200 `text/html` empty body (TB31). An id that does not parse takes
-    // the same fall-through: no poll handler was registered for it.
+    // A poll URL is registered only for a live session, and closing or
+    // expiring the session removes it. Any other id reaches the
+    // `/ReadResponses` handler, `HandleHttpUnknownSession`: 404 `text/plain`
+    // with no body (TB31, fixed by Tranquillity #528). An id that does not
+    // parse ends there too.
     let Some(id) = Uuid::parse_str(&id).ok() else {
-        return empty(StatusCode::OK, "text/html", &state);
+        return unknown_session(State(state)).await;
     };
     state.expire_idle();
     let now = state.now_ms();
@@ -250,7 +248,7 @@ async fn read_responses(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let Some(session) = sessions.get_mut(&id) else {
-        return empty(StatusCode::OK, "text/html", &state);
+        return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
     session.last_ms = now;
     let seen = &mut session.seen;
@@ -289,19 +287,27 @@ async fn read_responses(
     xml_response(StatusCode::OK, "application/xml", body, true, &state)
 }
 
+/// `/ReadResponses` with no session id: `HandleHttpUnknownSession`.
+async fn unknown_session(State(state): State<Arc<ConsoleState>>) -> Response {
+    empty(StatusCode::NOT_FOUND, "text/plain", &state)
+}
+
 async fn close_session(State(state): State<Arc<ConsoleState>>, body: String) -> Response {
     state.expire_idle();
     let form = form_pairs(&body);
     let Some(id) = form_get(&form, "ID").and_then(|text| Uuid::parse_str(text).ok()) else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
-    // `HandleHttpCloseSession` removes the row when it is present, then
-    // returns the OK document for every id that parsed (TB31).
-    state
+    // `HandleHttpCloseSession` refuses an id that names no session, as
+    // `SessionCommand` does (TB31, fixed by Tranquillity #528).
+    let removed = state
         .sessions
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .remove(&id);
+    if removed.is_none() {
+        return empty(StatusCode::NOT_FOUND, "text/plain", &state);
+    }
     xml_response(
         StatusCode::OK,
         "text/xml",
@@ -408,39 +414,31 @@ fn run_command(state: &ConsoleState, command: &str) {
             state.push_line("", &state.version, false, false, false);
             let prompt = state.prompt.clone();
             state.push_line("", &prompt, true, true, false);
-            // `OpenSim.ConsoleClient.ReadResponses` (lines 283–293) splits a
-            // line on `:` into three fields and prints the third. The notice
-            // above has no colon, so that client drops it (TB32). The
-            // in-process console adds one old-shaped line after the three C#
-            // lines. The region console does not.
-            if state.legacy_client_line {
-                state.push_plain("", &format!("0:0:{}", state.version));
-            }
         }
         ["diag", "dump"] => match ferroan_diag::write_dump() {
-            Ok(path) => state.push_plain("Info", &format!("0:0:diag dump {}", path.display())),
-            Err(error) => state.push_plain("Info", &format!("0:0:diag dump failed: {error}")),
+            Ok(path) => state.push_plain("Info", &format!("diag dump {}", path.display())),
+            Err(error) => state.push_plain("Info", &format!("diag dump failed: {error}")),
         },
         ["get", "log", "level"] => {
             let name = level::name(state.level.get());
-            state.push_plain("Info", &format!("0:0:Console log level is {name}"));
+            state.push_plain("Info", &format!("Console log level is {name}"));
         }
         ["set", "log", "level", asked] => match level::parse(asked) {
             Some(rank) => {
                 state.level.set(rank);
                 let name = level::name(rank);
-                state.push_plain("Info", &format!("0:0:Console log level is {name}"));
+                state.push_plain("Info", &format!("Console log level is {name}"));
             }
             None => {
                 state.push_plain(
                     "Info",
-                    "0:0:set log level accepts ALL, DEBUG, INFO, WARN, ERROR, FATAL, OFF",
+                    "set log level accepts ALL, DEBUG, INFO, WARN, ERROR, FATAL, OFF",
                 );
                 let name = level::name(state.level.get());
-                state.push_plain("Info", &format!("0:0:Console log level is {name}"));
+                state.push_plain("Info", &format!("Console log level is {name}"));
             }
         },
-        _ => state.push_plain("Info", "0:0:Invalid command"),
+        _ => state.push_plain("Info", "Invalid command"),
     }
 }
 
@@ -579,7 +577,6 @@ mod tests {
             "Ferroan 0.1.0 (ferroan-region)".to_owned(),
             RuntimeLevel::new(level::INFO),
             expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "Ferroan Test"),
-            false,
         )
         .expect("console")
     }
@@ -656,7 +653,7 @@ mod tests {
         ));
         assert!(
             !body.contains("0:0:"),
-            "the region console does not add the ConsoleClient line"
+            "no old-form line: the fixed ConsoleClient shows every line (TB32)"
         );
         assert!(!body.contains("console-test-pass"));
 
@@ -677,29 +674,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_in_process_console_adds_a_line_consoleclient_can_print() {
-        let state = state(
-            "console-test".to_owned(),
-            "console-test-pass".to_owned(),
-            None,
-            "Ferroan 0.1.0 (ferroan-region)".to_owned(),
-            RuntimeLevel::new(level::INFO),
-            expand_console_prompt(DEFAULT_CONSOLE_PROMPT, "root"),
-            true,
-        )
-        .expect("console");
+    async fn the_in_process_console_sends_the_version_once() {
+        let state = console();
         let id = session_id(&state).await;
         let _drained =
             text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
         let _ = command(&state, &id).await;
         let (_, body, _) = text(read_responses(State(Arc::clone(&state)), Path(id)).await).await;
-        let notice = body
-            .find("Input=\"false\">Ferroan 0.1.0 (ferroan-region)</Line>")
-            .expect("notice");
-        let legacy = body
-            .find(">0:0:Ferroan 0.1.0 (ferroan-region)</Line>")
-            .expect("legacy line");
-        assert!(notice < legacy, "the 0:0: line follows the C# notice");
+        // The fixed `OpenSim.ConsoleClient` (Tranquillity #528) shows a line
+        // with a `Number` attribute as it is, so no old `0:0:` copy (TB32).
+        assert_eq!(body.matches("Ferroan 0.1.0").count(), 1, "{body}");
+        assert!(!body.contains("0:0:"));
     }
 
     #[tokio::test]
@@ -749,8 +734,8 @@ mod tests {
         assert_eq!(command(&state, &id).await, HttpStatus::NOT_FOUND);
         let (read_status, read_body, read_kind) =
             text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
-        assert_eq!(read_status, HttpStatus::OK);
-        assert_eq!(read_kind.as_deref(), Some("text/html"));
+        assert_eq!(read_status, HttpStatus::NOT_FOUND);
+        assert_eq!(read_kind.as_deref(), Some("text/plain"));
         assert!(read_body.is_empty());
 
         state.set_now_ms(0);
@@ -824,34 +809,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_parsed_session_matches_the_csharp_fall_through() {
+    async fn an_unknown_session_is_404_on_every_form() {
+        // TB31 fixed by Tranquillity #528: `CloseSession` refuses an id that
+        // names no session, and `/ReadResponses` answers any id without a
+        // live poll handler with `HandleHttpUnknownSession`.
         let state = console();
         let unknown = "00000000-0000-0000-0000-000000000001";
         let (status, body, kind) =
             text(close_session(State(Arc::clone(&state)), format!("ID={unknown}")).await).await;
-        assert_eq!(status, HttpStatus::OK);
-        assert_eq!(kind.as_deref(), Some("text/xml"));
-        assert_eq!(
-            body,
-            "<?xml version=\"1.0\"?><ConsoleSession><Result>OK</Result></ConsoleSession>"
-        );
-        let (status, body, kind) =
-            text(read_responses(State(Arc::clone(&state)), Path(unknown.to_owned())).await).await;
-        assert_eq!(status, HttpStatus::OK);
-        assert_eq!(kind.as_deref(), Some("text/html"));
+        assert_eq!(status, HttpStatus::NOT_FOUND);
+        assert_eq!(kind.as_deref(), Some("text/plain"));
         assert!(body.is_empty());
-        let (status, body, kind) =
-            text(read_responses(State(Arc::clone(&state)), Path("not-a-session".to_owned())).await)
-                .await;
-        assert_eq!(status, HttpStatus::OK);
-        assert_eq!(kind.as_deref(), Some("text/html"));
+        for path in [unknown, "not-a-session"] {
+            let (status, body, kind) =
+                text(read_responses(State(Arc::clone(&state)), Path(path.to_owned())).await).await;
+            assert_eq!(status, HttpStatus::NOT_FOUND, "{path}");
+            assert_eq!(kind.as_deref(), Some("text/plain"), "{path}");
+            assert!(body.is_empty(), "{path}");
+        }
+        let (status, body, kind) = text(unknown_session(State(Arc::clone(&state))).await).await;
+        assert_eq!(status, HttpStatus::NOT_FOUND);
+        assert_eq!(kind.as_deref(), Some("text/plain"));
         assert!(body.is_empty());
         let (status, body, _) = text(
-            session_command(State(state), format!("ID={unknown}&COMMAND=show%20version")).await,
+            session_command(
+                State(Arc::clone(&state)),
+                format!("ID={unknown}&COMMAND=show%20version"),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, HttpStatus::NOT_FOUND);
         assert!(body.is_empty());
+
+        // A closed session's poll is refused the same way.
+        let id = session_id(&state).await;
+        let (status, _, _) =
+            text(close_session(State(Arc::clone(&state)), format!("ID={id}")).await).await;
+        assert_eq!(status, HttpStatus::OK);
+        let (status, _, kind) =
+            text(read_responses(State(Arc::clone(&state)), Path(id.clone())).await).await;
+        assert_eq!(status, HttpStatus::NOT_FOUND);
+        assert_eq!(kind.as_deref(), Some("text/plain"));
+        let (status, _, _) = text(close_session(State(state), format!("ID={id}")).await).await;
+        assert_eq!(status, HttpStatus::NOT_FOUND);
     }
 
     #[test]

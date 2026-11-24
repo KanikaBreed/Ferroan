@@ -1,5 +1,5 @@
 format 1
-revision 1052cbae82ae7dc3b8abfcffe33e316498eeaad9
+revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 AgentPrefs 2 AgentPrefs.db
 AssetStore 6 AssetStore.db
 AuthStore 2 AuthStore.db
@@ -9,7 +9,7 @@ FriendsStore 2 FriendsStore.db
 GridUserStore 1 GridUserStore.db
 HGTravelStore 2 HGTravelStore.db
 MuteListStore 1 MuteListStore.db
-RegionStore 47 RegionStore.db
+RegionStore 48 RegionStore.db
 TrustedGrid 1 TrustedGrid.db
 UserAccount 5 UserAccount.db
 UserProfiles 4 UserProfiles.db

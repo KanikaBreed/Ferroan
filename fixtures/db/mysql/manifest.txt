@@ -1,5 +1,5 @@
 format 1
-revision 1052cbae82ae7dc3b8abfcffe33e316498eeaad9
+revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 backend mysql
 AgentPrefs 1
 AssetStore 10
@@ -17,7 +17,7 @@ InventoryStore 8
 LogStore 1
 MuteListStore 1
 Presence 4
-RegionStore 70
+RegionStore 71
 TrustedGrid 1
 UserAccount 8
 UserAlias 1

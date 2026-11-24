@@ -1,5 +1,5 @@
 format 1
-revision 1052cbae82ae7dc3b8abfcffe33e316498eeaad9
+revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 source actual pinned Scene, LLClientView, ActivityDetector, GridUserServicesConnector, PresenceServicesConnector, ServiceAuth, AgentSimpleHandler and ControlPlaneAccess
 
 lifecycle.json

@@ -65,9 +65,6 @@ pub struct Settings {
     console_pass: String,
     console_origin: Option<String>,
     console_prompt: String,
-    /// Extra `show version` line for `OpenSim.ConsoleClient` (TB32).
-    /// `remote_console` sets it. A region does not.
-    legacy_console_client: bool,
     log_dir: Option<PathBuf>,
 }
 
@@ -118,7 +115,6 @@ impl Settings {
                 .get("Startup", "ConsolePrompt")
                 .map(str::to_owned)
                 .unwrap_or_else(|| console::DEFAULT_CONSOLE_PROMPT.to_owned()),
-            legacy_console_client: false,
             log_dir: None,
         })
     }
@@ -137,7 +133,6 @@ impl Settings {
             console_pass: pass.to_owned(),
             console_origin: None,
             console_prompt: console::DEFAULT_CONSOLE_PROMPT.to_owned(),
-            legacy_console_client: true,
             log_dir: None,
         }
     }
@@ -276,7 +271,6 @@ impl Hub {
                     &settings.console_prompt,
                     settings.region_name.as_deref().unwrap_or("root"),
                 ),
-                settings.legacy_console_client,
             )?),
             None => None,
         };

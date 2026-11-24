@@ -1299,7 +1299,7 @@ mod tests {
     #[tokio::test]
     async fn regionstore_load_matches_the_committed_dump() {
         let dump = committed_dump();
-        assert_eq!(dump["pin"], "1052cbae82ae7dc3b8abfcffe33e316498eeaad9");
+        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
         let groups = open_objects(&copied_store(), Uuid::parse_str(REGION).unwrap())
             .await
