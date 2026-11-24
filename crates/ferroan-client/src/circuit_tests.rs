@@ -310,6 +310,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         avatar: None,
         teleport: None,
         source_hop: None,
+        return_slot: None,
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);

@@ -90,6 +90,9 @@ pub struct ArrivalConfig {
     /// Source hop for a destination outside this region. Absent in tests that
     /// only check a local landing, and on a circuit the region has not armed.
     pub source_hop: Option<crate::source_hop::SourceHop>,
+    /// Child update and the promotion back to root. Absent on a circuit that
+    /// cannot be a teleport destination.
+    pub return_slot: Option<crate::return_hop::ReturnSlot>,
 }
 
 /// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
@@ -114,6 +117,7 @@ impl Default for ArrivalConfig {
             avatar: None,
             teleport: None,
             source_hop: None,
+            return_slot: None,
         }
     }
 }

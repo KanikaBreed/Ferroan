@@ -344,6 +344,13 @@ struct State {
     hop_tx: Option<mpsc::Sender<HopCommand>>,
     /// Taken by the serve loop. Unit tests leave it here and `maintain` drains it.
     hop_rx: Option<mpsc::Receiver<HopCommand>>,
+    /// Child update shared with the simulation service. Absent when this
+    /// circuit cannot accept a return.
+    return_slot: Option<crate::return_hop::ReturnSlot>,
+    /// A child `CompleteAgentMovement` is waiting for `UpdateAgent`.
+    return_wait: bool,
+    /// This demotion already started a promotion. Cleared once the agent is root.
+    return_started: bool,
 }
 impl State {
     #[cfg(test)]
@@ -358,6 +365,7 @@ impl State {
         let now = Instant::now();
         let pending_land = VecDeque::from(std::mem::take(&mut arrival.land));
         let source_hop = arrival.source_hop.clone();
+        let return_slot = arrival.return_slot.clone();
         let (hop_tx, hop_rx) = if source_hop.is_some() {
             let (tx, rx) = mpsc::channel(8);
             (Some(tx), Some(rx))
@@ -399,6 +407,9 @@ impl State {
             source_hop,
             hop_tx,
             hop_rx,
+            return_slot,
+            return_wait: false,
+            return_started: false,
         }
     }
 
@@ -712,6 +723,14 @@ impl State {
         // C# refreshes the mapped endpoint's inactivity clock before ID
         // validation, then validates agent/session IDs before applying ACKs.
         self.last_received = Instant::now();
+        if !self.return_wait
+            && self
+                .return_slot
+                .as_ref()
+                .is_some_and(|slot| !slot.is_child())
+        {
+            self.return_started = false;
+        }
         // Throttle and height callbacks remain planned. Arrival's circuit-code
         // gate is applied in the movement callback after normal ACK handling.
         if !valid_packet_ids(packet, expect) {
@@ -744,22 +763,41 @@ impl State {
         }
         if packet.id == CompleteAgentMovement::ID {
             // LLClientView invokes CompleteMovement only for this circuit.
-            // ScenePresence.MakeRootAgent suppresses a second root arrival.
-            if !self.arrived
-                && let Ok(movement) = packet.decode::<CompleteAgentMovement>()
+            // A root suppresses a second arrival. A child uses that packet to
+            // become root, including on the circuit the source hop parked.
+            if let Ok(movement) = packet.decode::<CompleteAgentMovement>()
                 && movement.agent_data.circuit_code == expect.circuit_code
             {
-                // MakeRootAgent marks the child->root transition and triggers
-                // its detectors before CompleteMovement sends the arrival.
-                // Reserve the transition before starting service reporting so
-                // duplicates cannot produce a second notification or packet.
-                self.arrived = true;
-                if let Some(notify) = self.root_arrival.take() {
-                    let (completed, completion) = oneshot::channel();
-                    let _ = notify.send(RootArrival { completed });
-                    self.arrival_completion = Some(completion);
-                } else {
-                    self.send_arrival(sock, from, expect).await?;
+                let child = self
+                    .return_slot
+                    .as_ref()
+                    .is_some_and(|slot| slot.is_child());
+                if child && !self.return_started {
+                    let parked = self.arrived;
+                    self.return_started = true;
+                    self.arrived = true;
+                    if parked {
+                        // The viewer does not send UseCircuitCode again. It
+                        // still requires a fresh handshake for this arrival.
+                        let handshake = self
+                            .handshake
+                            .build(self.handshake.estate_owner == expect.agent_id, false);
+                        self.send_message(sock, from, &handshake, true).await?;
+                    }
+                    self.return_wait = true;
+                } else if !self.arrived {
+                    // MakeRootAgent marks the child->root transition and triggers
+                    // its detectors before CompleteMovement sends the arrival.
+                    // Reserve the transition before starting service reporting so
+                    // duplicates cannot produce a second notification or packet.
+                    self.arrived = true;
+                    if let Some(notify) = self.root_arrival.take() {
+                        let (completed, completion) = oneshot::channel();
+                        let _ = notify.send(RootArrival { completed });
+                        self.arrival_completion = Some(completion);
+                    } else {
+                        self.send_arrival(sock, from, expect).await?;
+                    }
                 }
             }
         } else if packet.id == AgentPause::ID {
@@ -863,6 +901,14 @@ impl State {
         };
         if self.in_transit {
             let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
+            return self.send_message(sock, to, &failed, true).await;
+        }
+        if self
+            .return_slot
+            .as_ref()
+            .is_some_and(|slot| slot.is_child())
+        {
+            let failed = teleport::failed_packet(expect.agent_id, teleport::FAIL_CHILD);
             return self.send_message(sock, to, &failed, true).await;
         }
         let position = request.info.position.to_array();
@@ -988,6 +1034,65 @@ impl State {
                 Ok(())
             }
         }
+    }
+
+    /// The child update arrived. The region marks root, then this circuit sends
+    /// the arrival at the update's position.
+    async fn finish_return(
+        &mut self,
+        pose: crate::return_hop::ReturnPose,
+    ) -> Result<(), CircuitError> {
+        if pose.origin.is_nil() {
+            self.return_started = false;
+            return Ok(());
+        }
+        self.arrival.position = pose.position;
+        self.arrival.look_at = pose.look_at;
+        let Some(slot) = self.return_slot.clone() else {
+            self.return_started = false;
+            return Ok(());
+        };
+        let (completed, completion) = oneshot::channel();
+        if slot.promote(RootArrival { completed }).await {
+            self.arrival_completion = Some(completion);
+        } else {
+            self.return_started = false;
+        }
+        Ok(())
+    }
+
+    /// A child viewer opened the circuit again from another endpoint.
+    /// The authorised circuit and its caps stay; only the UDP peer moves.
+    async fn retarget_child(
+        &mut self,
+        sock: &impl DatagramIo,
+        from: SocketAddr,
+        expect: &CircuitExpect,
+        packet: &IncomingPacket,
+    ) -> Result<bool, CircuitError> {
+        if !self
+            .return_slot
+            .as_ref()
+            .is_some_and(|slot| slot.is_child())
+        {
+            return Ok(false);
+        }
+        Self::immediate_ack(sock, from, packet.sequence).await;
+        let Ok(code) = packet.decode::<UseCircuitCode>() else {
+            return Ok(true);
+        };
+        if code.circuit_code.code != expect.circuit_code
+            || !same_agent(code.circuit_code.id, code.circuit_code.session_id, expect)
+        {
+            return Ok(true);
+        }
+        self.peer = Some(from);
+        self.last_received = Instant::now();
+        let handshake = self
+            .handshake
+            .build(self.handshake.estate_owner == expect.agent_id, false);
+        self.send_message(sock, from, &handshake, true).await?;
+        Ok(true)
     }
 
     /// A full reliable window answers the hop with false and leaves the circuit up.
@@ -1639,6 +1744,8 @@ async fn serve_socket_reporting(
         if wait.is_zero() {
             continue;
         }
+        let return_wait = state.return_wait;
+        let return_slot = state.return_slot.clone();
         // Reporting belongs to the scene transition, not the UDP transport.
         // Keep ACKs, pings, retries and inactivity alive while services finish.
         // A dropped stop sender is not a shutdown: the branch then stays pending.
@@ -1703,6 +1810,25 @@ async fn serve_socket_reporting(
                 }
                 continue;
             }
+            pose = async {
+                if return_wait {
+                    match &return_slot {
+                        Some(slot) => slot.wait_update(crate::return_hop::UPDATE_WAIT).await,
+                        None => std::future::pending().await,
+                    }
+                } else {
+                    std::future::pending().await
+                }
+            } => {
+                state.return_wait = false;
+                if let Some(pose) = pose {
+                    state.finish_return(pose).await?;
+                } else {
+                    // The update did not arrive. A later movement can try again.
+                    state.return_started = false;
+                }
+                continue;
+            }
             received = tokio::time::timeout(wait, sock.recv_from(&mut buf)) => received,
         };
         let (len, from) = match received {
@@ -1730,6 +1856,9 @@ async fn serve_socket_reporting(
             continue;
         };
         if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
+            if state.retarget_child(sock, from, &expect, &packet).await? {
+                continue;
+            }
             // Store before the ACK so a test that waits for the ACK can already
             // see the datagram queued for the replacement serve.
             if let Some(slot) = extra.pending {
