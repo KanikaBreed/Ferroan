@@ -12,7 +12,7 @@
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
 use std::thread;
@@ -140,7 +140,19 @@ pub(crate) fn source_dir() -> PathBuf {
 }
 
 fn run_dir() -> PathBuf {
-    live_root().join("run")
+    if crate::ports::isolated() {
+        crate::ports::run_root().join("standalone")
+    } else {
+        live_root().join("run")
+    }
+}
+
+pub(crate) fn diag_dir() -> PathBuf {
+    if crate::ports::isolated() {
+        crate::ports::run_root().join("diag")
+    } else {
+        live_root().join("diag")
+    }
 }
 
 pub(crate) fn publish_dir() -> PathBuf {
@@ -527,6 +539,22 @@ fn bound_report(
 
 #[cfg(target_os = "linux")]
 fn build_linux() -> Result<String, String> {
+    let dir = live_root();
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join("build.lock"))
+        .map_err(|error| format!("could not open the live build lock: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("could not lock the live build: {error}"))?;
+    build_linux_locked()
+}
+
+#[cfg(target_os = "linux")]
+fn build_linux_locked() -> Result<String, String> {
     let ferrobot = crate::ferrobot_build::build()?;
     let pin = read_pin()?;
     let reference = tranquillity_reference()?;
@@ -948,7 +976,7 @@ pub(crate) fn scratch_run() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn allocate_port() -> Result<u16, String> {
-    free_port()
+    crate::ports::alloc_dynamic()
 }
 
 #[cfg(target_os = "linux")]
@@ -995,7 +1023,7 @@ pub(crate) fn finish_capture(
     if let Err(error) = check_udp(&records) {
         let mut failure = format!("capture check failed: {error}");
         if let Some(mismatch) = ferroan_capture::udp_mismatch(&records) {
-            match ferroan_capture::write_udp_mismatch(&live_root().join("diag"), &mismatch) {
+            match ferroan_capture::write_udp_mismatch(&diag_dir(), &mismatch) {
                 Ok(path) => failure.push_str(&format!("; wrote {}", path.display())),
                 Err(write_error) => {
                     failure.push_str(&format!("; could not save the record: {write_error}"))
@@ -1255,8 +1283,8 @@ fn start_region_with_proxy(
     require_under_scratch(&publish)?;
     copy_examples(&publish)?;
     delete_databases(&publish)?;
-    let public_port = free_port()?;
-    let private_port = free_port_except(public_port)?;
+    let public_port = crate::ports::alloc(crate::ports::Slot::StandalonePublic)?;
+    let private_port = crate::ports::alloc(crate::ports::Slot::StandalonePrivate)?;
     let password = generate_password()?;
     let run = run_dir();
     let regions = run.join("Regions");
@@ -1265,6 +1293,7 @@ fn start_region_with_proxy(
         .map_err(|error| format!("could not create {}: {error}", regions.display()))?;
     fs::create_dir_all(&config)
         .map_err(|error| format!("could not create {}: {error}", config.display()))?;
+    crate::ports::write_fixture_ports(&run)?;
     let capture = capture_path();
     // The override must sit outside the ini directory. Files in that directory
     // are loaded before Standalone.ini is pulled in by Include-Architecture,
@@ -1406,7 +1435,63 @@ fn down_linux() -> Result<String, String> {
     // An active controller owns standalone and asset children too. Do not
     // bypass its refusal through the older standalone state below. A grid-state
     // error must still run standalone cleanup, and both errors are reported.
-    report_shutdown(crate::grid_state::down(), down_standalone())
+    // A port-base run keeps its state under `.scratch/live/runs/<base>-<pid>/`.
+    report_shutdown(down_every_grid(), down_every_standalone())
+}
+
+#[cfg(target_os = "linux")]
+fn down_every_grid() -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(error) = crate::grid_state::down() {
+        errors.push(error);
+    }
+    let runs = live_root().join("runs");
+    if let Ok(entries) = fs::read_dir(&runs) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path().join("grid-state");
+            if path.is_file()
+                && let Err(error) = crate::grid_state::down_file(&path)
+            {
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn down_every_standalone() -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(error) = down_standalone() {
+        errors.push(error);
+    }
+    let runs = live_root().join("runs");
+    if let Ok(entries) = fs::read_dir(&runs) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let run = entry.path().join("standalone");
+            let state = run.join("state");
+            if state.is_file()
+                && let Err(error) = down_standalone_at(&state, &run)
+            {
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2057,27 +2142,6 @@ pub(crate) fn write_secret(path: &Path, text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("could not bind a local port: {error}"))?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| format!("could not read a local port: {error}"))
-}
-
-#[cfg(target_os = "linux")]
-fn free_port_except(taken: u16) -> Result<u16, String> {
-    for _ in 0..8 {
-        let port = free_port()?;
-        if port != taken {
-            return Ok(port);
-        }
-    }
-    Err("could not allocate two local ports".to_string())
-}
-
-#[cfg(target_os = "linux")]
 fn require_under_scratch(path: &Path) -> Result<(), String> {
     let scratch = live_root();
     fs::create_dir_all(&scratch)
@@ -2310,6 +2374,31 @@ mod tests {
         assert!(ini.contains(ESTATE_OWNER));
         assert!(ini.contains("DefaultEstateOwnerPassword = \"0123456789abcdef\""));
         assert!(ini.contains("regionload_regionsdir = \"/tmp/regions\""));
+        let home = 25_000 + crate::ports::Slot::Home as u16;
+        let private = 25_000 + crate::ports::Slot::StandalonePrivate as u16;
+        let moved = region_server_ini(
+            Path::new("/tmp/regions"),
+            None,
+            home,
+            private,
+            "0123456789abcdef",
+            None,
+            Ipv4Addr::LOCALHOST,
+        )
+        .unwrap();
+        let regions = regions_ini(home);
+        let rendered = format!("{moved}{regions}");
+        assert!(
+            crate::ports::ports_outside(&rendered, &[home, private]).is_empty(),
+            "{rendered}"
+        );
+        let hardcoded = format!("{rendered}\nhttp_listener_port = 9000\n");
+        assert_eq!(
+            crate::ports::ports_outside(&hardcoded, &[home, private]),
+            vec![9000]
+        );
+        assert!(!crate::ports::isolated());
+        assert_eq!(run_dir(), live_root().join("run"));
         let report = up_report(9100, Path::new(".scratch/live/run/region.log"));
         assert!(report.contains("login: http://127.0.0.1:9100/"));
         assert!(!report.contains("0123456789abcdef"));

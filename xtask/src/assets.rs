@@ -490,9 +490,7 @@ pub(crate) fn start_grid_services(
             empty_arg.to_string(),
         ];
         let live_root = live::live_root();
-        let logdata = live_root
-            .join("docker-log")
-            .join(crate::docker::NAME_ASSETS);
+        let logdata = crate::docker::host_log_dir(crate::docker::NAME_ASSETS);
         let mounts = vec![
             crate::docker::Mount {
                 host: live_root.clone(),

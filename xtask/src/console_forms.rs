@@ -69,9 +69,13 @@ fn speak_both(estate: &str, console_pass: &str) -> Result<String, String> {
     }
     prepare_publish(&publish)?;
     let ferroan = crate::live::build_binary("ferroan-region")?;
-    let http_port = crate::live::free_port()?;
-    let private_port = free_port_except(http_port)?;
-    let root = crate::repo_root().join(".scratch/console-forms");
+    let http_port = crate::ports::alloc(crate::ports::Slot::ConsolePublic)?;
+    let private_port = crate::ports::alloc(crate::ports::Slot::ConsolePrivate)?;
+    let root = if crate::ports::isolated() {
+        crate::ports::run_root().join("console-forms")
+    } else {
+        crate::repo_root().join(".scratch/console-forms")
+    };
     let regions = root.join("Regions");
     let config = root.join("config");
     std::fs::create_dir_all(&regions)
@@ -181,17 +185,6 @@ fn finish_and_speak(
         .map_err(|error| format!("{error}\n{}", crate::live::log_tail_secrets(log, secrets)))?;
     speak(port, console_pass)
         .map_err(|error| format!("{error}\n{}", crate::live::log_tail_secrets(log, secrets)))
-}
-
-#[cfg(target_os = "linux")]
-fn free_port_except(taken: u16) -> Result<u16, String> {
-    for _ in 0..8 {
-        let port = crate::live::free_port()?;
-        if port != taken {
-            return Ok(port);
-        }
-    }
-    Err("could not allocate two local ports".to_owned())
 }
 
 #[cfg(target_os = "linux")]

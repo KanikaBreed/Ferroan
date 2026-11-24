@@ -245,7 +245,7 @@ async fn wait_for_readout(log: &Path, metrics: &str) -> Result<String, String> {
             return Err(format!("diag dump missing {id}"));
         }
     }
-    let dir = crate::live::live_root().join("diag");
+    let dir = crate::live::diag_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("diag dir: {error}"))?;
     let path = dir.join("limits.txt");
     std::fs::write(&path, &dump).map_err(|error| format!("diag write: {error}"))?;
