@@ -73,7 +73,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | DONE (#185) |
 | Q10af | Pin8: move the Tranquillity pin to the maintainer's `dev-build` roll-up (`develop` `923a4cd70b` plus their 29 open OpenSim-NGC PRs #499 and #503 to #530) | DONE (#190) |
-| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (this PR) |
+| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (#192) |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | READY |
@@ -110,7 +110,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | DONE (#166) |
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
-| Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (this PR) |
+| Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
 | Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | READY after Q18b2 |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
