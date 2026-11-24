@@ -10,9 +10,12 @@
 //! Ferrobot. The grid uses host networking so the harness loopback binds work.
 //! Smoke creates no Docker network and no named volume. Cleanup removes the
 //! known containers and prunes build cache older than seven days.
-//! Processes run as the invoking user, which is not root on the CI runner or
-//! a normal workstation, so mode-0600 configuration stays private. The image
-//! default user is checked separately and is also not root.
+//! On a rootful daemon the process runs as the invoking user, which is not
+//! root, so mode-0600 configuration stays private. On a rootless daemon that
+//! host uid is a subordinate id and cannot read those files; container uid 0
+//! is the host user, so the process uses that. The image default user is
+//! checked separately and is also not root. Each container's logs are written
+//! under `.scratch/live` before the container is removed.
 
 use std::process::ExitCode;
 
@@ -20,7 +23,7 @@ use std::process::ExitCode;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
@@ -273,6 +276,126 @@ impl Drop for ContainerGuard {
     }
 }
 
+/// Rootful: the host uid, which owns the mode-0600 mounts. Rootless: container
+/// uid 0, which is that same host user. Passing the host uid into a rootless
+/// container selects a subordinate uid that cannot read the mounts.
+#[cfg(any(target_os = "linux", test))]
+fn container_user(host_uid: &str, host_gid: &str, rootless: bool) -> Result<String, String> {
+    if host_uid == "0" {
+        return Err("refusing to run the grid as root".to_string());
+    }
+    if host_uid.is_empty() || host_gid.is_empty() {
+        return Err("the host user id is empty".to_string());
+    }
+    if rootless {
+        Ok("0:0".to_string())
+    } else {
+        Ok(format!("{host_uid}:{host_gid}"))
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn security_options_are_rootless(text: &str) -> bool {
+    text.split(|ch: char| {
+        ch.is_ascii_whitespace() || matches!(ch, ',' | '[' | ']' | '"' | '\'' | '{' | '}')
+    })
+    .any(|part| part == "name=rootless")
+}
+
+#[cfg(any(target_os = "linux", test))]
+struct ContainerSnapshot {
+    status: String,
+    exit_code: String,
+    pid: u32,
+    oom: bool,
+    error: String,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_container_snapshot(text: &str) -> Option<ContainerSnapshot> {
+    let mut lines = text.lines();
+    let status = lines.next()?.trim().to_string();
+    let exit_code = lines.next()?.trim().to_string();
+    let pid = lines.next()?.trim().parse::<u32>().ok()?;
+    let oom = lines.next()?.trim() == "true";
+    let error = lines.collect::<Vec<_>>().join("\n");
+    let error = error.trim().to_string();
+    if status.is_empty() {
+        return None;
+    }
+    Some(ContainerSnapshot {
+        status,
+        exit_code,
+        pid,
+        oom,
+        error,
+    })
+}
+
+/// A running container has a host pid. An exited one will never gain one.
+#[cfg(any(target_os = "linux", test))]
+fn pid_is_ready(snapshot: &ContainerSnapshot) -> bool {
+    snapshot.pid > 0 && !container_has_exited(snapshot)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn container_has_exited(snapshot: &ContainerSnapshot) -> bool {
+    matches!(snapshot.status.as_str(), "exited" | "dead" | "removing")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn last_log_lines(text: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    if lines.len() > 40 {
+        lines = lines.split_off(lines.len() - 40);
+    }
+    let joined = lines.join("\n");
+    let mut start = joined.len().saturating_sub(4000);
+    while !joined.is_char_boundary(start) {
+        start += 1;
+    }
+    joined[start..].to_string()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn missing_pid_report(name: &str, snapshot: Option<&ContainerSnapshot>, logs: &str) -> String {
+    let head = match snapshot {
+        Some(snapshot) => {
+            let mut line = format!(
+                "{name} has no host pid (status {}, exit {})",
+                snapshot.status, snapshot.exit_code
+            );
+            if snapshot.oom {
+                line.push_str(", killed by the out-of-memory killer");
+            }
+            if !snapshot.error.is_empty() {
+                line.push_str(": ");
+                line.push_str(&snapshot.error);
+            }
+            line
+        }
+        None => format!("{name} has no host pid"),
+    };
+    let tail = last_log_lines(logs);
+    if tail.is_empty() {
+        head
+    } else {
+        format!("{head}\n{tail}")
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn docker_log_file(live_root: &Path, name: &str) -> PathBuf {
+    live_root.join("docker-logs").join(format!("{name}.log"))
+}
+
+/// A failed `docker logs` means the container is already gone. Keep the file
+/// from the remove that found it. Do not replace that file with the error.
+#[cfg(any(target_os = "linux", test))]
+fn retained_container_log(status_ok: bool, text: &str) -> Option<&str> {
+    if status_ok { Some(text) } else { None }
+}
+
 /// Unused BuildKit cache older than seven days. Recent cache stays, which is
 /// the warm build on the self-hosted runner. Smoke does not create a Docker
 /// network or a named volume, so this does not prune those.
@@ -513,8 +636,12 @@ fn wait_log_count(name: &str, needle: &str, want: usize, timeout: Duration) -> R
 fn write_example_env() -> Result<String, String> {
     let estate = live::generate_password()?;
     let chat = live::generate_password()?;
-    let uid = command_trim(&["id", "-u"])?;
-    let gid = command_trim(&["id", "-g"])?;
+    // The same user `docker run --user` uses, so a later `docker compose up`
+    // can read the mode-0600 files on a rootless daemon too.
+    let user = run_as()?;
+    let (uid, gid) = user
+        .split_once(':')
+        .ok_or_else(|| "the container user is not uid:gid".to_string())?;
     let body = format!(
         "RUN_UID={uid}\nRUN_GID={gid}\nCONFIG_DIR=\nDATA_DIR=\nLOG_DIR=\nESTATE_PASSWORD={estate}\nCHAT_PASSWORD={chat}\n"
     );
@@ -693,6 +820,7 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
     let listen_pid = match container_pid(&name) {
         Ok(pid) => pid,
         Err(error) => {
+            let error = live::redact_secrets(&error, request.redact);
             remove_container(request.name);
             let _ = child.kill();
             let _ = child.wait();
@@ -715,28 +843,42 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
 fn run_as() -> Result<String, String> {
     let uid = command_trim(&["id", "-u"])?;
     let gid = command_trim(&["id", "-g"])?;
-    if uid == "0" {
-        return Err("refusing to run the grid as root".to_string());
-    }
-    Ok(format!("{uid}:{gid}"))
+    let options = docker_stdout(&["info", "--format", "{{.SecurityOptions}}"])?;
+    container_user(&uid, &gid, security_options_are_rootless(&options))
 }
 
 #[cfg(target_os = "linux")]
 fn container_pid(name: &str) -> Result<u32, String> {
     let name = runtime_name(name);
     let started = Instant::now();
+    let mut latest = None;
     loop {
-        if let Ok(text) = docker_output(&["inspect", "-f", "{{.State.Pid}}", &name])
-            && let Ok(pid) = text.trim().parse::<u32>()
-            && pid > 0
+        if let Ok(text) = docker_stdout(&[
+            "inspect",
+            "-f",
+            "{{.State.Status}}\n{{.State.ExitCode}}\n{{.State.Pid}}\n{{.State.OOMKilled}}\n{{.State.Error}}",
+            &name,
+        ]) && let Some(snapshot) = parse_container_snapshot(&text)
         {
-            return Ok(pid);
+            if container_has_exited(&snapshot) {
+                return Err(pid_failure(&name, Some(&snapshot)));
+            }
+            if pid_is_ready(&snapshot) {
+                return Ok(snapshot.pid);
+            }
+            latest = Some(snapshot);
         }
         if started.elapsed() > Duration::from_secs(30) {
-            return Err(format!("{name} has no host pid"));
+            return Err(pid_failure(&name, latest.as_ref()));
         }
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+#[cfg(target_os = "linux")]
+fn pid_failure(name: &str, snapshot: Option<&ContainerSnapshot>) -> String {
+    save_container_log(name);
+    missing_pid_report(name, snapshot, &container_log_text(name))
 }
 
 #[cfg(target_os = "linux")]
@@ -754,11 +896,63 @@ fn docker_output(args: &[&str]) -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
+fn docker_stdout(args: &[&str]) -> Result<String, String> {
+    let output = Command::new(DOCKER)
+        .args(args)
+        .output()
+        .map_err(|error| format!("could not run docker: {error}"))?;
+    if !output.status.success() {
+        return Err("docker command failed".to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn container_log_text(name: &str) -> String {
+    let Ok(output) = Command::new(DOCKER).args(["logs", name]).output() else {
+        return String::new();
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text
+}
+
+#[cfg(target_os = "linux")]
+fn container_log_root() -> PathBuf {
+    if crate::ports::isolated() {
+        crate::ports::run_root()
+    } else {
+        crate::live::live_root()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn save_container_log(name: &str) {
+    if require_known_name(name).is_err() {
+        return;
+    }
+    let Ok(output) = Command::new(DOCKER).args(["logs", name]).output() else {
+        return;
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let Some(text) = retained_container_log(output.status.success(), &text) else {
+        return;
+    };
+    let path = docker_log_file(&container_log_root(), name);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, text);
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn remove_container(name: &str) {
     let name = runtime_name(name);
     if require_known_name(&name).is_err() {
         return;
     }
+    save_container_log(&name);
     let _ = Command::new(DOCKER).args(["rm", "-f", &name]).output();
 }
 
@@ -1289,6 +1483,8 @@ fn tranquillity_url(markdown: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     const REGION_DOCKERFILE: &str = include_str!("../../deploy/docker/ferroan-region.Dockerfile");
@@ -1385,6 +1581,112 @@ mod tests {
         assert!(REGION_RUNTIME.contains("libfontconfig1"));
         assert!(REGION_RUNTIME.trim_end().ends_with("USER app"));
         assert!(!REGION_RUNTIME.to_ascii_lowercase().contains("password"));
+    }
+
+    #[test]
+    fn rootless_smoke_uses_container_root_and_rootful_keeps_the_host_user() {
+        assert_eq!(container_user("1001", "1001", true).unwrap(), "0:0");
+        assert_eq!(container_user("1000", "1000", false).unwrap(), "1000:1000");
+        for rootless in [false, true] {
+            let error = container_user("0", "0", rootless).unwrap_err();
+            assert!(
+                error.contains("refusing to run the grid as root"),
+                "{error}"
+            );
+        }
+        assert!(container_user("", "1000", false).is_err());
+        assert!(container_user("1000", "", true).is_err());
+    }
+
+    #[test]
+    fn security_options_mark_rootless_only_as_its_own_token() {
+        assert!(!security_options_are_rootless(
+            "[name=seccomp,profile=builtin name=cgroupns]"
+        ));
+        assert!(security_options_are_rootless(
+            "[name=seccomp,profile=builtin name=rootless name=cgroupns]"
+        ));
+        assert!(security_options_are_rootless(
+            r#"["name=seccomp,profile=builtin","name=rootless"]"#
+        ));
+        assert!(!security_options_are_rootless("name=rootlesskit"));
+        assert!(!security_options_are_rootless(""));
+    }
+
+    #[test]
+    fn missing_pid_reports_the_exit_and_the_last_log_lines() {
+        let running = parse_container_snapshot("running\n0\n4242\nfalse\n").unwrap();
+        assert!(pid_is_ready(&running));
+        assert!(!container_has_exited(&running));
+
+        let exited = parse_container_snapshot("exited\n1\n4242\nfalse\npermission denied").unwrap();
+        assert!(!pid_is_ready(&exited));
+        assert!(container_has_exited(&exited));
+        let report = missing_pid_report(
+            "ferroan-p011-persist",
+            Some(&exited),
+            "line-a\nsecret-value\nline-c",
+        );
+        assert!(report.contains("has no host pid"));
+        assert!(report.contains("status exited"));
+        assert!(report.contains("exit 1"));
+        assert!(report.contains("permission denied"));
+        assert!(report.contains("line-c"));
+        let redacted = crate::live::redact_secrets(&report, &["secret-value"]);
+        assert!(!redacted.contains("secret-value"));
+        assert!(redacted.contains("<redacted>"));
+
+        let oom = parse_container_snapshot("exited\n137\n0\ntrue\n").unwrap();
+        let oom_report = missing_pid_report("ferroan-p011-persist", Some(&oom), "");
+        assert!(oom_report.contains("out-of-memory"));
+        assert!(oom_report.contains("exit 137"));
+
+        let removing = parse_container_snapshot("removing\n0\n9\nfalse\n").unwrap();
+        assert!(container_has_exited(&removing));
+        assert!(!pid_is_ready(&removing));
+
+        let bare = missing_pid_report("ferroan-p011-persist", None, "");
+        assert_eq!(bare, "ferroan-p011-persist has no host pid");
+        assert!(parse_container_snapshot("").is_none());
+        assert!(parse_container_snapshot("running\n").is_none());
+    }
+
+    #[test]
+    fn container_logs_match_the_images_artifact() {
+        let path = docker_log_file(Path::new(".scratch/live"), "ferroan-p011-persist");
+        let text = path.to_string_lossy().replace('\\', "/");
+        assert!(text.ends_with(".scratch/live/docker-logs/ferroan-p011-persist.log"));
+        let workflow = include_str!("../../.github/workflows/live.yml");
+        let images = workflow
+            .split("name: live-logs-images")
+            .nth(1)
+            .unwrap()
+            .split("name: live (ubuntu-latest)")
+            .next()
+            .unwrap();
+        assert!(images.contains(".scratch/live/**/*.log"));
+        assert_eq!(
+            retained_container_log(true, "asset service"),
+            Some("asset service")
+        );
+        assert_eq!(retained_container_log(true, ""), Some(""));
+        assert_eq!(retained_container_log(false, "No such container"), None);
+    }
+
+    #[test]
+    fn last_log_lines_keeps_forty_lines_and_four_thousand_chars() {
+        let text = (0..50)
+            .map(|n| format!("line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail = last_log_lines(&text);
+        assert!(tail.starts_with("line-10\n"));
+        assert!(tail.contains("line-49"));
+        assert!(!tail.contains("line-9\n"));
+        let long = "é".repeat(5000);
+        let cut = last_log_lines(&long);
+        assert!(cut.len() <= 4000);
+        assert!(cut.ends_with('é'));
     }
 
     #[test]

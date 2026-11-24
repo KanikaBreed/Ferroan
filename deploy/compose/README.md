@@ -20,8 +20,11 @@ logs are `/app/data` and `/app/logdata`.
 `cargo xtask docker smoke` builds them, checks the default user is not root,
 restarts `ferroan-robust` against a mounted asset database, then logs in with
 `ferroan-bot` and Ferrobot. Smoke runs the processes with `docker run` on the
-same images, as the host user, so the mode-0600 INI files stay unreadable by
-other accounts. It writes generated passwords to `deploy/compose/.env`, which
-git ignores. Local chat, instant messages, and Firestorm are not claimed.
+same images. On a rootful daemon that is the host user. On a rootless daemon
+it is container uid 0, which is that same user; a subordinate uid cannot read
+the mounts. The mode-0600 INI files stay unreadable by other host accounts.
+Smoke writes `RUN_UID` and `RUN_GID` the same way, plus generated passwords,
+to `deploy/compose/.env`, which git ignores. Local chat, instant messages,
+and Firestorm are not claimed.
 
 Publishing to a registry is not part of this layout.

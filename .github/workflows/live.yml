@@ -312,6 +312,8 @@ jobs:
           else
             cargo xtask docker smoke
           fi
+      # Smoke writes each container's logs under .scratch/live/docker-logs/
+      # before it removes the container. The glob below collects them.
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
