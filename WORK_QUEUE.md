@@ -113,7 +113,7 @@ Remove this section once the queue runs again.
 | Q18 | P2.0i: teleport to the C# neighbour and back | SPLIT into Q18a to Q18c (#164) |
 | Q18a | P2.0i1: fixtures from two C# regions teleporting to each other in grid mode, both directions (`QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent`, `CloseAgent`, and the viewer sequence) | DONE (#166) |
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
-| Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | IN PROGRESS |
+| Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | READY after Q18b1 |
 | Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | READY after Q18b2 |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
@@ -532,6 +532,8 @@ Phase 2 slice 2 (manager, 22 November 2026): Q40 to Q81 (TASKS P2.1a to P2.12, a
 Q18b and Q53 splits (manager, 23 November 2026): the blocks in #186 and #187 are right, and their parts are taken as written there: Q18b1 to Q18b3 are (2a) to (2c) under Q18b, and Q53a to Q53c are (1) to (3) under Q53. Each part's scope and acceptance is that numbered paragraph. If a part is still more than about a day, block it again with a split. P2.0i and P2.4a1 stay `TODO` in TASKS.md until all their parts are `DONE`; the evidence goes into the parent row.
 
 ## Found while working
+
+- 2026-11-24, Q18b1: `live images` on `6138054` was cancelled after 29s with no steps and no runner ([run 45318573765](https://github.com/KanikaBreed/Ferroan/actions/runs/45318573765), job `138191698865`). The labels were `self-hosted`, `linux`, `x64`, `ferroan`. The concurrency group is `ferroan-live-images` with `cancel-in-progress: false`, so a pending images job is dropped when a later run takes the slot. Scenarios, ferrobot, services, scope and the three check jobs passed. The required `live (ubuntu-latest)` gate then failed because the images result was cancelled (job `138199883614`). Recorded before the retry. Not a product change. Attempt 1. The rerun job `138201132836` on Home1 passed (2026-11-24T03:44:30Z–2026-11-24T03:50:43Z, 6m13s), and the live gate `138203412663` then passed.
 
 - 2026-11-23, Q18b1: `CloseAgent` (`SimulationServiceConnector.cs` 458) logs a failed DELETE and still returns true. Nothing on the wire depends on that true. Ferroan returns the delivery error (TB56, D40). `QueryAccess` (300) clears the caller's feature list and then reads features from the wrapper around the answer, so a JSON answer's list is dropped. Nothing in the hop reads that list. Ferroan returns the list from the answer body (TB57, D41). No live hop in this item; Q18b3's compare is where a live difference would show.
 
