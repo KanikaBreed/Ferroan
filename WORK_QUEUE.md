@@ -114,11 +114,14 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (#202) |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (#208) |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | DONE (#210) |
-| Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | BLOCKED |
-| Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40 |
+| Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | SPLIT into Q40a to Q40c (#214) |
+| Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | READY |
+| Q40b | P2.1a2: chat reads live positions from the scene | READY after Q40a |
+| Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | READY after Q40b |
+| Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40c |
 | Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
-| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40 |
-| Q44 | P2.2a: `AgentUpdate` into movement intent | READY after Q40 |
+| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40c |
+| Q44 | P2.2a: `AgentUpdate` into movement intent | READY after Q40c |
 | Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | READY after Q44 |
 | Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | READY after Q45 and Q42 |
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46 |
@@ -566,6 +569,8 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 (2) Chat reads live positions from the scene. `ChatFromViewer` is forwarded on the channel. Distance uses the scene pose. Seats stop owning the position. A local or neighbour landing writes the scene pose so chat after a teleport stays correct. The teleport packet path itself stays on the circuit. Evidence: `chat` and `roots` pass unchanged, and login still passes.
 
 (3) Teleport, both ways, moves its pose writes onto the frame. The circuit forwards `TeleportLocationRequest` and the hop completion. The source hop and the return hop stop owning the pose. Evidence: `teleport` and `teleport neighbour` pass, and `cargo xtask live compare region` still prints `region: match` with `login: pass`, `chat: pass`, `teleport: pass`, `teleport neighbour: pass` and `live: run passed`, and an empty known-difference list. If (3) is still more than about a day, split the local teleport from the neighbour hop (`crates/ferroan-region/src/source_hop.rs` is 1867 lines).
+
+Q40 split (manager, 24 November 2026): the block in #214 is right, and its three parts are taken as Q40a to Q40c, each scoped by its numbered paragraph under Q40; if Q40c is still too big, split the local teleport from the neighbour hop. P2.1a stays `TODO` until all three are `DONE`. Q41, Q43 and Q44 wait for Q40c.
 
 ## Found while working
 
