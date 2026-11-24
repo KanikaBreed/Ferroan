@@ -87,6 +87,9 @@ pub struct ArrivalConfig {
     pub avatar: Option<crate::AvatarWire>,
     /// Local teleport. Absent until the region installs its rectangle and ground.
     pub teleport: Option<crate::teleport::TeleportRegion>,
+    /// Source hop for a destination outside this region. Absent in tests that
+    /// only check a local landing, and on a circuit the region has not armed.
+    pub source_hop: Option<crate::source_hop::SourceHop>,
 }
 
 /// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
@@ -110,6 +113,7 @@ impl Default for ArrivalConfig {
             land: Vec::new(),
             avatar: None,
             teleport: None,
+            source_hop: None,
         }
     }
 }

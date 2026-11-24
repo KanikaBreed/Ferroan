@@ -102,6 +102,7 @@ async fn login_through_loss(target: MsgId) {
         land: Vec::new(),
         avatar: None,
         teleport: None,
+        source_hop: None,
     };
     let server = CircuitServer::bind().await.unwrap();
     let server_address = server.local_addr().unwrap();
@@ -300,6 +301,7 @@ async fn login_through_burst(mode: Burst, budget: Duration) -> Vec<Observed> {
         land: Vec::new(),
         avatar: None,
         teleport: None,
+        source_hop: None,
     };
     let server = CircuitServer::bind().await.unwrap();
     let server_address = server.local_addr().unwrap();

@@ -35,7 +35,8 @@
 //   Source/OpenSim.Framework/Constants.cs (MinSimulationHeight, MaxSimulationHeight)
 //   KanikaBreed/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
 // SendLocalTeleport's task-queue ordering is f6cc9597ad. The circuit owns that
-// queue. A destination outside this region is not a crossing: that is P2.0i.
+// queue. A destination outside this region starts the circuit's source hop
+// when one is installed, and otherwise sends `Could not process the teleport`.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -46,6 +47,8 @@
 //! position becomes `(128, 128, 128)`, `(128, 128, 22.5)` becomes the default
 //! landing point, and Z is lifted to ground plus half the avatar height plus
 //! a tenth of a metre, then clamped. `TeleportLocal` uses location id 2.
+//! A destination outside this region is a source hop when the circuit has one
+//! installed. With none installed, the viewer gets `Could not process the teleport`.
 
 use std::sync::{Arc, Mutex};
 
@@ -194,7 +197,7 @@ pub(crate) fn answer(
     look_at: [f32; 3],
 ) -> TeleportAnswer {
     let Some(offset) = region_offset(handle, position, region) else {
-        // Neighbour transfer is P2.0i. A viewer still needs a failure packet.
+        // The circuit turns this into a source hop when one is installed.
         return TeleportAnswer::Failed(FAIL_PROCESS);
     };
     if !region.allow_movement {

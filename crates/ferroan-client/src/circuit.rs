@@ -35,7 +35,7 @@
 //      SendShutdownConnectionNotice, HandleCompleteAgentMovement,
 //      HandleAgentPause, HandleAgentResume, SendChatMessage,
 //      SendAgentAlertMessage, HandleTeleportLocationRequest,
-//      SendTeleportStart, SendLocalTeleport, SendTeleportFailed)
+//      SendTeleportStart, SendLocalTeleport, SendTeleportFailed, SendMapBlock)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/UnackedPacketCollection.cs
 //     (Oldest, GetExpiredPackets)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs
@@ -58,7 +58,10 @@
 
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
-use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, TeleportAnswer};
+use crate::source_hop::{HopCommand, HopOut, HopRequest, SourceHop};
+use crate::teleport::{
+    self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, TeleportAnswer, VIA_LOCATION,
+};
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
@@ -79,7 +82,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -327,6 +330,14 @@ struct State {
     pending_task: VecDeque<Payload>,
     /// Channel 0 chat for this region. Absent when the serve was not seated.
     chat: Option<RegionChat>,
+    /// Set before the source hop is spawned. Cleared when that task settles.
+    in_transit: bool,
+    /// Agent the in-flight hop belongs to. Failure packets use this id.
+    hop_agent: Uuid,
+    source_hop: Option<SourceHop>,
+    hop_tx: Option<mpsc::Sender<HopCommand>>,
+    /// Taken by the serve loop. Unit tests leave it here and `maintain` drains it.
+    hop_rx: Option<mpsc::Receiver<HopCommand>>,
 }
 impl State {
     #[cfg(test)]
@@ -340,6 +351,13 @@ impl State {
     ) -> Self {
         let now = Instant::now();
         let pending_land = VecDeque::from(std::mem::take(&mut arrival.land));
+        let source_hop = arrival.source_hop.clone();
+        let (hop_tx, hop_rx) = if source_hop.is_some() {
+            let (tx, rx) = mpsc::channel(8);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         Self {
             sequence: SequenceCounter::default(),
             peer: None,
@@ -369,6 +387,11 @@ impl State {
             pending_land,
             pending_task: VecDeque::new(),
             chat: None,
+            in_transit: false,
+            hop_agent: Uuid::nil(),
+            source_hop,
+            hop_tx,
+            hop_rx,
         }
     }
 
@@ -407,6 +430,7 @@ impl State {
         wait
     }
     async fn maintain(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
+        self.drain_hop(sock).await?;
         let now = Instant::now();
         if now >= self.resend_at {
             self.resend_at = now + RESEND_INTERVAL;
@@ -814,6 +838,8 @@ impl State {
     /// `TeleportLocationRequest` for this region. `TeleportStart` and
     /// `TeleportFailed` skip the task queue. `TeleportLocal` is appended
     /// behind avatar terse updates already queued (`f6cc9597ad`).
+    /// A second request while a source hop is running is refused here, before
+    /// the same-region check, and the hop itself runs on another task.
     async fn local_teleport(
         &mut self,
         sock: &impl DatagramIo,
@@ -825,9 +851,18 @@ impl State {
             let failed = teleport::failed_packet(expect.agent_id, FAIL_PROCESS);
             return self.send_message(sock, to, &failed, true).await;
         };
+        if self.in_transit {
+            let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
+            return self.send_message(sock, to, &failed, true).await;
+        }
         let position = request.info.position.to_array();
         let look_at = request.info.look_at.to_array();
         match teleport::answer(&region, request.info.region_handle, position, look_at) {
+            TeleportAnswer::Failed(reason)
+                if reason == FAIL_PROCESS && self.source_hop.is_some() =>
+            {
+                self.begin_hop(expect, request, to, &region);
+            }
             TeleportAnswer::Failed(reason) => {
                 let failed = teleport::failed_packet(expect.agent_id, reason);
                 self.send_message(sock, to, &failed, true).await?;
@@ -858,6 +893,111 @@ impl State {
             }
         }
         Ok(())
+    }
+
+    fn begin_hop(
+        &mut self,
+        expect: &CircuitExpect,
+        request: &TeleportLocationRequest,
+        to: SocketAddr,
+        region: &crate::teleport::TeleportRegion,
+    ) {
+        let (Some(hop), Some(tx)) = (self.source_hop.clone(), self.hop_tx.clone()) else {
+            return;
+        };
+        let mut flags = VIA_LOCATION;
+        if region.godlike {
+            flags |= GODLIKE;
+        }
+        if region.flying {
+            flags |= IS_FLYING;
+        }
+        let hop_request = HopRequest {
+            agent_id: expect.agent_id,
+            session_id: expect.session_id,
+            region_handle: request.info.region_handle,
+            position: request.info.position.to_array(),
+            look_at: request.info.look_at.to_array(),
+            flags,
+            client_ip: to.ip().to_string(),
+        };
+        self.in_transit = true;
+        self.hop_agent = expect.agent_id;
+        let out = HopOut::new(tx);
+        tokio::spawn(async move {
+            let _settle = SettleOnDrop(out.clone());
+            hop.start(hop_request, out).await;
+        });
+    }
+
+    async fn drain_hop(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
+        let mut commands = Vec::new();
+        if let Some(rx) = self.hop_rx.as_mut() {
+            while let Ok(command) = rx.try_recv() {
+                commands.push(command);
+            }
+        }
+        for command in commands {
+            self.apply_hop(sock, command).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_hop(
+        &mut self,
+        sock: &impl DatagramIo,
+        command: HopCommand,
+    ) -> Result<(), CircuitError> {
+        match command {
+            HopCommand::Settle => {
+                self.in_transit = false;
+                Ok(())
+            }
+            HopCommand::Start { flags, done } => {
+                let sent = self
+                    .send_reliable(sock, &teleport::start_packet(flags))
+                    .await?;
+                let _ = done.send(sent);
+                Ok(())
+            }
+            HopCommand::Failed { reason, done } => {
+                let sent = self
+                    .send_reliable(sock, &teleport::failed_packet(self.hop_agent, &reason))
+                    .await?;
+                let _ = done.send(sent);
+                Ok(())
+            }
+            HopCommand::Map { message, done } => {
+                let sent = self.send_reliable(sock, &message).await?;
+                let _ = done.send(sent);
+                Ok(())
+            }
+        }
+    }
+
+    /// A full reliable window answers the hop with false and leaves the circuit up.
+    async fn send_reliable<M: Msg>(
+        &mut self,
+        sock: &impl DatagramIo,
+        message: &M,
+    ) -> Result<bool, CircuitError> {
+        let Some(peer) = self.peer else {
+            return Ok(false);
+        };
+        match self.send_message(sock, peer, message, true).await {
+            Ok(()) => Ok(true),
+            Err(CircuitError::TooManyUnacked(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Sends settle if the hop task ends without reaching its own clear.
+struct SettleOnDrop(HopOut);
+
+impl Drop for SettleOnDrop {
+    fn drop(&mut self) {
+        self.0.try_settle();
     }
 }
 
@@ -1446,6 +1586,7 @@ async fn serve_socket_reporting(
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
+    let mut hop_rx = state.hop_rx.take();
     let mut seated = extra.chat;
     state.chat = seated.as_ref().map(|seat| seat.hub.clone());
     // One byte past the cap so Linux `recvfrom` can report an oversize datagram
@@ -1491,6 +1632,18 @@ async fn serve_socket_reporting(
                 extra.stop = None;
                 if let Ok(kind) = stopped {
                     return state.finish_close(sock, &expect, kind).await;
+                }
+                continue;
+            }
+            command = async {
+                match hop_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if hop_rx.is_some() => {
+                match command {
+                    Some(command) => state.apply_hop(sock, command).await?,
+                    None => hop_rx = None,
                 }
                 continue;
             }
