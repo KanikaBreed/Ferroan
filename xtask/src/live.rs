@@ -2107,6 +2107,7 @@ fn region_pid_live(pid: u32) -> bool {
 
 /// `run` is the directory of the process that started the region. A later
 /// command has a different process id in its directory name.
+#[cfg(target_os = "linux")]
 fn region_pid_live_at(pid: u32, run: &Path) -> bool {
     if process_start_time(pid).is_none() {
         return false;

@@ -225,6 +225,7 @@ pub(crate) fn persistent_pid_live(pid: u32, start_time: u64) -> bool {
 
 /// `ini` is the `robust.ini` of the process that started the service. A later
 /// command has its own run directory, so the check cannot use that directory.
+#[cfg(target_os = "linux")]
 pub(crate) fn persistent_pid_live_at(pid: u32, start_time: u64, ini: &Path) -> bool {
     if live::process_start_time(pid) != Some(start_time) {
         return false;

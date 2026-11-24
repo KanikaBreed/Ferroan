@@ -263,28 +263,38 @@ jobs:
             -e POSTGRES_DB=ferroan \
             postgres:16
           ready=0
+          mysql_err="$(mktemp)"
+          postgres_err="$(mktemp)"
           for _ in $(seq 1 40); do
             # The asset commands connect to the published host port. A client
-            # inside the server container is a different path.
-            if docker run --rm --network host mysql:8.4 mysql --protocol=TCP -h 127.0.0.1 -P "$mysql_port" -uferroan -pferroan --ssl-mode=DISABLED -e "SELECT 1" ferroan >/dev/null 2>&1 \
-              && docker exec -e PGPASSWORD=ferroan "$postgres_name" psql -h 127.0.0.1 -U ferroan -d ferroan -c "SELECT 1" >/dev/null 2>&1; then
+            # inside the server container is a different path. A fresh
+            # caching_sha2 account rejects the first TLS-disabled client
+            # unless that client asks for the server public key.
+            if docker run --rm --network host mysql:8.4 mysql --protocol=TCP -h 127.0.0.1 -P "$mysql_port" -uferroan -pferroan --ssl-mode=DISABLED --get-server-public-key -e "SELECT 1" ferroan >"$mysql_err" 2>&1 \
+              && docker exec -e PGPASSWORD=ferroan "$postgres_name" psql -h 127.0.0.1 -U ferroan -d ferroan -c "SELECT 1" >"$postgres_err" 2>&1; then
               ready=1
               break
             fi
             sleep 5
           done
           if [ "$ready" -ne 1 ]; then
+            echo "mysql probe:"
+            tail -n 20 "$mysql_err" || true
+            echo "postgres probe:"
+            tail -n 20 "$postgres_err" || true
             docker logs --tail 40 "$mysql_name" || true
             docker logs --tail 40 "$postgres_name" || true
+            rm -f "$mysql_err" "$postgres_err"
             exit 1
           fi
+          rm -f "$mysql_err" "$postgres_err"
           echo "database ports mysql ${mysql_port} postgres ${postgres_port}"
       - name: Load schemas for the XAsset compare
         if: success()
         run: |
           set -euo pipefail
           docker run --rm -i --network host mysql:8.4 \
-            mysql --protocol=TCP -h 127.0.0.1 -P "${FERROAN_CI_MYSQL_PORT}" -uferroan -pferroan --ssl-mode=DISABLED ferroan \
+            mysql --protocol=TCP -h 127.0.0.1 -P "${FERROAN_CI_MYSQL_PORT}" -uferroan -pferroan --ssl-mode=DISABLED --get-server-public-key ferroan \
             < fixtures/db/mysql/schema.sql
           docker exec -i -e PGPASSWORD=ferroan \
             "ferroan-ci-postgres-${FERROAN_CI_POSTGRES_PORT}" \
