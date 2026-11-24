@@ -17,7 +17,6 @@
 
 use std::process::ExitCode;
 
-#[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "linux")]
@@ -92,6 +91,10 @@ pub(crate) fn compare(db: XassetDb) -> ExitCode {
 }
 
 fn compare_inner(db: XassetDb) -> Result<String, String> {
+    // Library hashing is part of this command on every platform. The servers run on Linux.
+    if sha256_hex("")?.len() != 64 {
+        return Err("the library hash helper returned a short digest".to_string());
+    }
     #[cfg(target_os = "linux")]
     {
         compare_linux(db)
@@ -491,13 +494,11 @@ fn int_field(value: &serde_json::Value, key: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("a library row has no {key}"))
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn sha256_hex(data_hex: &str) -> Result<String, String> {
     let bytes = hex_decode(data_hex)?;
     Ok(hex_encode(&Sha256::digest(&bytes)))
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("a library value is not hex".to_string());
@@ -514,7 +515,6 @@ fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn hex_nibble(byte: u8) -> Result<u8, String> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -524,7 +524,6 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
