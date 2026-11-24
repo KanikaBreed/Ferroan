@@ -76,9 +76,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (#192) |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
-| Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (this PR) |
+| Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
-| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (this PR) |
+| QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | READY after QR1 |
 | QR3 | R3: asset uploads work with two or more avatars in the region | READY after QR2 |
 | QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | READY after QR3 |
@@ -111,7 +111,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18b | P2.0i2: Ferroan as the source: one hop onto the C# neighbour, the child kept when the neighbour is in view | SPLIT into Q18b1 to Q18b3 (#186) |
 | Q18b1 | P2.0i2a: the outbound simulation connector only (version negotiation, `QueryAccess`, `CreateAgent`, `UpdateAgent`, `CloseAgent` after a failed create), request fields matching the Q18a checks; no viewer packets, no live hop | DONE (#191) |
 | Q18b2 | P2.0i2b: the viewer half of the source hop (`TeleportStart`, event-queue `TeleportFinish`, in-transit refusal, `TeleportFailed` and the failure reasons) | DONE (#197) |
-| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (this PR) |
+| Q18b3 | P2.0i2c: demote the root to a child that keeps its caps and circuit, `NeedsClosing` outside view; live evidence: the bot lands on the C# neighbour | DONE (#202) |
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | READY after Q18b3 |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | READY after Q18c |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | READY after Q19 |
@@ -129,7 +129,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
 | Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | DONE (#193) |
-| Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (this PR) |
+| Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | DONE (#201) |
 | Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | READY after Q53b |
 | Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53c |
 | Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | READY after Q54 |
