@@ -43,6 +43,7 @@
 //! not run migrations.
 
 mod commands;
+mod float_text;
 mod http;
 mod model;
 mod open;
@@ -54,6 +55,7 @@ pub use http::GridUserHttp;
 pub use model::{BATCH_SIZE, DATA_COLUMNS, DEFAULT_REALM, GridUser, ONLINE_TRUE};
 pub use open::GridUserError;
 pub use store::{GridUserStore, StoreError};
+pub use wire::format_f32;
 
 #[cfg(test)]
 mod service_tests;
