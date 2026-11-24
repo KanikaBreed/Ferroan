@@ -4,7 +4,10 @@
 //! Circuit send-path regressions against the pinned C# socket capture.
 
 use super::*;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::Notify;
 
 use ferroan_protocol::{build_packet, parse_packet};
 
@@ -61,14 +64,19 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
     assert!(state.pending_land.is_empty());
 }
 
-fn teleport_request(expect: CircuitExpect, handle: u64, position: [f32; 3]) -> Vec<u8> {
+fn teleport_request(
+    expect: CircuitExpect,
+    handle: u64,
+    position: [f32; 3],
+    sequence: u32,
+) -> Vec<u8> {
     let mut message = ferroan_protocol::msgs::TeleportLocationRequest::default();
     message.agent_data.agent_id = expect.agent_id;
     message.agent_data.session_id = expect.session_id;
     message.info.region_handle = handle;
     message.info.position = position.into();
     message.info.look_at = [1.0, 0.0, 0.0].into();
-    wire(&message, 2, &[])
+    wire(&message, sequence, &[])
 }
 
 fn seated_teleport(region: crate::teleport::TeleportRegion) -> (State, CircuitExpect, FakeIo) {
@@ -111,7 +119,7 @@ async fn local_teleport_stays_behind_a_queued_terse_update() {
     state
         .enqueue_task(&ferroan_protocol::msgs::ImprovedTerseObjectUpdate::default())
         .unwrap();
-    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0]);
+    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     // Start is immediate. The terse was already queued, so it leaves before TeleportLocal.
     state.maintain(&io).await.unwrap();
@@ -134,7 +142,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     let chat = RegionChat::new();
     let mut seat = chat.seat(expect.agent_id, "Test User".into(), [128.0, 128.0, 25.0]);
     state.chat = Some(chat);
-    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0]);
+    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     state.maintain(&io).await.unwrap();
     assert_eq!(
@@ -173,7 +181,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
 async fn a_teleport_outside_the_region_or_while_frozen_fails() {
     let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
     let (mut state, expect, io) = seated_teleport(region);
-    let request = teleport_request(expect, 256, [10.0, 10.0, 30.0]);
+    let request = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     let failed = parse_packet(&io.sent.lock().unwrap()[0])
         .unwrap()
@@ -192,7 +200,7 @@ async fn a_teleport_outside_the_region_or_while_frozen_fails() {
     let mut frozen = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
     frozen.allow_movement = false;
     let (mut state, expect, io) = seated_teleport(frozen);
-    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0]);
+    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     let failed = parse_packet(&io.sent.lock().unwrap()[0])
         .unwrap()
@@ -202,6 +210,91 @@ async fn a_teleport_outside_the_region_or_while_frozen_fails() {
         ferroan_protocol::field_str(&failed.info.reason),
         crate::teleport::FAIL_FROZEN
     );
+}
+
+#[tokio::test]
+async fn a_second_teleport_during_a_source_hop_is_refused() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(Notify::new());
+    let seen = Arc::clone(&calls);
+    let wait = Arc::clone(&gate);
+    let hop = crate::source_hop::SourceHop::new(move |_request, _out| {
+        let seen = Arc::clone(&seen);
+        let wait = Arc::clone(&wait);
+        Box::pin(async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            wait.notified().await;
+        })
+    });
+    let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
+    let position = Arc::clone(&region.position);
+    let expect = identity(Uuid::from_u128(1));
+    let config = ArrivalConfig {
+        teleport: Some(region),
+        source_hop: Some(hop),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let foreign = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
+    handle_teleport(&mut state, &io, &expect, &foreign).await;
+    for _ in 0..50 {
+        if calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(state.in_transit);
+    io.sent.lock().unwrap().clear();
+    let again = teleport_request(expect, 256, [10.0, 10.0, 30.0], 3);
+    handle_teleport(&mut state, &io, &expect, &again).await;
+    let local = teleport_request(expect, 0, [40.0, 200.0, 30.0], 4);
+    handle_teleport(&mut state, &io, &expect, &local).await;
+    {
+        let sent = io.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        for bytes in sent.iter() {
+            let packet = parse_packet(bytes).unwrap();
+            let failed = packet
+                .decode::<ferroan_protocol::msgs::TeleportFailed>()
+                .unwrap();
+            assert_eq!(
+                ferroan_protocol::field_str(&failed.info.reason),
+                crate::teleport::FAIL_INCOMPLETE
+            );
+            assert!(packet.reliable());
+            assert_eq!(packet.flags & ferroan_protocol::PacketFlags::ZEROCODED, 0);
+        }
+    }
+    assert!(
+        message_ids(&io)
+            .iter()
+            .all(|id| *id != ferroan_protocol::msgs::TeleportLocal::ID)
+    );
+    assert_eq!(*position.lock().unwrap(), [128.0, 128.0, 25.0]);
+    assert_eq!(state.arrival.position, [128.0, 128.0, 25.0]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    gate.notify_one();
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+        state.maintain(&io).await.unwrap();
+        if !state.in_transit {
+            break;
+        }
+    }
+    assert!(!state.in_transit);
+    let after = teleport_request(expect, 256, [10.0, 10.0, 30.0], 5);
+    handle_teleport(&mut state, &io, &expect, &after).await;
+    for _ in 0..50 {
+        if calls.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    gate.notify_one();
 }
 
 #[tokio::test]
@@ -216,6 +309,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         land: Vec::new(),
         avatar: None,
         teleport: None,
+        source_hop: None,
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);

@@ -325,6 +325,27 @@ impl CapsRegistry {
         active[0].state.queue.enqueue(event)
     }
 
+    /// Queue an event on one agent's event queue.
+    ///
+    /// A missing agent is [`EventQueueError::Closed`]. The queue is cloned out
+    /// of the registry lock before the event is stored.
+    pub fn enqueue_for(&self, agent_id: Uuid, event: Llsd) -> Result<(), EventQueueError> {
+        let queue = {
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(registered) = active
+                .iter()
+                .find(|registered| registered.state.agent_id == agent_id)
+            else {
+                return Err(EventQueueError::Closed);
+            };
+            registered.state.queue.clone()
+        };
+        queue.enqueue(event)
+    }
+
     /// Merge this fallback with the region's more specific simulation routes.
     pub fn router(&self) -> Router {
         Router::new()
@@ -833,6 +854,11 @@ mod tests {
         ));
         assert!(matches!(
             registry.enqueue_event(Llsd::new_map()),
+            Err(EventQueueError::Closed)
+        ));
+        assert!(registry.enqueue_for(first_agent, Llsd::new_map()).is_ok());
+        assert!(matches!(
+            registry.enqueue_for(Uuid::from_u128(99), Llsd::new_map()),
             Err(EventQueueError::Closed)
         ));
         let upload = format!("/{}", Uuid::new_v4());

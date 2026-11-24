@@ -58,6 +58,7 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{ADMISSION_QUEUE, AcceptedAgent, SimulationState};
+use ferroan_region::source_hop::{HopEnv, HopLogin};
 use ferroan_region::status::{
     RegionMeters, StatusState, metrics_router, region_router, with_request_counts,
 };
@@ -270,6 +271,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let region_name = &config.name;
     tracing::info!("INITIALIZATION COMPLETE FOR {region_name} - LOGINS ENABLED");
     let (stop_circuits, stopped_circuits) = watch::channel(false);
+    let hop = HopEnv::from_region(&config, caps.clone());
     let mut circuits = tokio::spawn(dispatch_circuits(
         circuit,
         config.clone(),
@@ -277,6 +279,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         agents,
         stopped_circuits,
         Arc::new(AtomicUsize::new(0)),
+        hop,
     ));
     let mut circuits_consumed = false;
     let mut outcome: Result<(), RunError> = tokio::select! {
@@ -440,6 +443,7 @@ struct DispatchCtx {
     /// Tests wait until a dequeued agent has passed same-agent cleanup.
     started: Arc<AtomicUsize>,
     running: HashMap<Uuid, AbortOnDrop>,
+    hop: HopEnv,
 }
 
 impl DispatchCtx {
@@ -469,9 +473,10 @@ impl DispatchCtx {
         let terrain = self.terrain.clone();
         let clients = self.clients.clone();
         let stop = self.stop.clone();
+        let hop = self.hop.clone();
         let handle = tokio::spawn(async move {
             started.fetch_add(1, Ordering::Release);
-            serve_agent(circuit, config, terrain, agent, stop, clients).await;
+            serve_agent(circuit, config, terrain, agent, stop, clients, hop).await;
         });
         self.running.insert(agent_id, AbortOnDrop(handle));
     }
@@ -495,6 +500,7 @@ async fn dispatch_circuits(
     mut agents: mpsc::Receiver<AcceptedAgent>,
     stop: watch::Receiver<bool>,
     started: Arc<AtomicUsize>,
+    hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
     let mut ctx = DispatchCtx {
@@ -508,6 +514,7 @@ async fn dispatch_circuits(
         stop,
         started,
         running: HashMap::new(),
+        hop,
     };
     loop {
         let next = tokio::select! {
@@ -552,6 +559,7 @@ async fn serve_agent(
     mut agent: AcceptedAgent,
     mut stop: watch::Receiver<bool>,
     clients: LifecycleClients,
+    hop: HopEnv,
 ) {
     let LifecycleClients {
         grid_user,
@@ -580,8 +588,9 @@ async fn serve_agent(
         arrival.land = land;
         arrival.avatar = Some(avatar);
         // TeleportAgentWithinRegion. Godlike needs a cached user level and
-        // IsFlying is not tracked, so both stay off. Another region fails here;
-        // the crossing is P2.0i. SendLocalTeleport's queue is the circuit's.
+        // IsFlying is not tracked, so both stay off. A handle this grid does
+        // not know gets the not-found packet and one offline map block.
+        // Child demotion is Q18b3. SendLocalTeleport's queue is the circuit's.
         let ground_terrain = terrain.clone();
         arrival.teleport = Some(ferroan_client::TeleportRegion {
             world_x: config.location[0].wrapping_mul(256),
@@ -599,6 +608,14 @@ async fn serve_agent(
             }),
             position: Arc::clone(&landed),
         });
+        arrival.source_hop = Some(hop.install(HopLogin {
+            agent_id: expect.agent_id,
+            session_id: expect.session_id,
+            secure_session_id: agent.secure_session_id,
+            circuit_code: expect.circuit_code,
+            first_name: agent.first_name.clone(),
+            last_name: agent.last_name.clone(),
+        }));
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
@@ -993,6 +1010,7 @@ mod tests {
                 .unwrap();
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
+            let hop = HopEnv::from_region(&config, caps.clone());
             let running = tokio::spawn(dispatch_circuits(
                 circuit,
                 config,
@@ -1000,6 +1018,7 @@ mod tests {
                 agents,
                 stopped,
                 Arc::clone(&started),
+                hop,
             ));
             let tasks = vec![
                 mock.abort_handle(),

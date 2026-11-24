@@ -401,6 +401,7 @@ impl RegionConfig {
             land: Vec::new(),
             avatar: None,
             teleport: None,
+            source_hop: None,
         }
     }
 }

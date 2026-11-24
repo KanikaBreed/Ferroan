@@ -592,7 +592,7 @@ fn prometheus(meters: &RegionMeters) -> String {
     counter(
         &mut text,
         "ferroan_region_event_queue_events_total",
-        "Event-queue events enqueued. Nothing enqueues yet, so this stays 0.",
+        "Event-queue events enqueued. The source hop enqueues TeleportFinish on the agent queue. This counter stays 0.",
         events,
     );
     gauge(
