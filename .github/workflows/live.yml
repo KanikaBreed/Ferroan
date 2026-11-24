@@ -87,6 +87,7 @@ jobs:
           cargo xtask live run all
           cargo xtask live run all grid
           cargo xtask live run neighbour grid
+          cargo xtask live run uploads
       - name: Check seed and held event polls against C# and Ferroan
         run: |
           set -euo pipefail
@@ -192,6 +193,8 @@ jobs:
         run: cargo xtask live run login grid --region ferroan
       - name: Admit two root agents on the Ferroan region
         run: cargo xtask live run roots grid --region ferroan
+      - name: Upload from both avatars on the Ferroan region
+        run: cargo xtask live run uploads grid --region ferroan
       - name: Hear channel 0 chat on the Ferroan region
         run: cargo xtask live run chat grid --region ferroan
       - name: Teleport inside the Ferroan region

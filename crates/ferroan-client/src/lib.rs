@@ -21,7 +21,8 @@ mod teleport;
 pub use appearance::{AvatarWire, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{
-    CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry, CapsServer,
+    CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,
+    CapsServer, UploaderRoutes,
 };
 pub use circuit::{
     CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming, RootArrival,
