@@ -252,13 +252,20 @@ fn api_port(log: &[u8]) -> Option<u16> {
 
 fn start(config: &Config, harness: &Harness, secret: &str) -> Result<Process, String> {
     fs::create_dir_all(&config.root).map_err(|_| "could not create Ferrobot run directory")?;
+    // Unset keeps port 0 so Ferrobot picks its own listener. A port base
+    // assigns the Ferrobot slot, which keeps two runs from sharing it.
+    let http_port = if crate::ports::isolated() {
+        crate::ports::alloc(crate::ports::Slot::FerrobotHttp)?.to_string()
+    } else {
+        "0".to_string()
+    };
     let environment = json!({
         "FERRO_USERNAME": format!("{} {}", harness.owner.first_name, harness.owner.last_name),
         "FERRO_PASSWORD": harness.owner.password,
         "FERRO_LOGIN_URI": harness.login_uri,
         "FERRO_START": format!("{}/128/128/25", config.region_name),
         "FERRO_SHARED_SECRET": secret,
-        "FERRO_HTTP": "true", "FERRO_HTTP_BIND": "127.0.0.1", "FERRO_HTTP_PORT": "0",
+        "FERRO_HTTP": "true", "FERRO_HTTP_BIND": "127.0.0.1", "FERRO_HTTP_PORT": http_port,
         "FERRO_RELOG": "false", "FERRO_IM_COMMANDS": "false",
         "FERRO_HEALTH_FILE": config.root.join("health"),
         "RUST_LOG": "info",

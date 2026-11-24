@@ -15,7 +15,7 @@ pub(crate) fn run(urls: &[String]) -> ExitCode {
     } else {
         urls.to_vec()
     };
-    let dir = live::live_root().join("diag");
+    let dir = live::diag_dir();
     if let Err(error) = fs::create_dir_all(&dir) {
         eprintln!("diag: could not create {}: {error}", dir.display());
         return ExitCode::from(1);

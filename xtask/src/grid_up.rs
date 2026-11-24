@@ -43,16 +43,12 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
     }
     let state = crate::grid_state::claim()?;
     live::ensure_region_built()?;
-    let mut ports = Vec::new();
-    for _ in 0..32 {
-        let port = live::free_port()?;
-        if !ports.contains(&port) {
-            ports.push(port);
-        }
-        if ports.len() == 4 {
-            break;
-        }
-    }
+    let ports = crate::ports::alloc_slots(&[
+        crate::ports::Slot::RobustPublic,
+        crate::ports::Slot::RobustPrivate,
+        crate::ports::Slot::Home,
+        crate::ports::Slot::Neighbour,
+    ])?;
     let [public_port, private_port, home_port, neighbour_port]: [u16; 4] = ports
         .try_into()
         .map_err(|_| "could not allocate four local grid ports")?;
@@ -65,6 +61,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("could not protect grid directory: {error}"))?;
+    crate::ports::write_fixture_ports(&root)?;
     let password = live::generate_password()?;
     let chat = live::generate_password()?;
     let password_file = root.join("password");

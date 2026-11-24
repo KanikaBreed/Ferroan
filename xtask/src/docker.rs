@@ -232,7 +232,9 @@ fn smoke_linux() -> Result<String, String> {
     let restart = prove_volume_restart()?;
     let env_note = write_example_env()?;
     let collectors = start_collectors()?;
-    set_smoke(Some("http://127.0.0.1:4318".to_string()), true);
+    let otel_http = crate::ports::assigned(crate::ports::Slot::OtelHttp)
+        .ok_or_else(|| "the collector HTTP port was not allocated".to_string())?;
+    set_smoke(Some(format!("http://127.0.0.1:{otel_http}")), true);
     let started = Instant::now();
     let login = crate::grid::run_docker(&crate::live_args::RunSpec {
         scenario: "login".to_string(),
@@ -383,7 +385,11 @@ fn prove_volume_restart() -> Result<String, String> {
         let _claim = crate::grid_state::claim()?;
         crate::assets::seed_library_database()?
     };
-    let root = crate::repo_root().join(".scratch/docker/persist");
+    let root = if crate::ports::isolated() {
+        crate::ports::run_root().join("docker-persist")
+    } else {
+        crate::repo_root().join(".scratch/docker/persist")
+    };
     fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
     let database = root.join("assets.db");
@@ -446,8 +452,9 @@ fn prove_volume_restart() -> Result<String, String> {
             "the mounted asset database lost the library texture before restart".to_string(),
         );
     }
+    let persist = runtime_name(NAME_PERSIST);
     let status = Command::new(DOCKER)
-        .args(["restart", NAME_PERSIST])
+        .args(["restart", &persist])
         .status()
         .map_err(|error| format!("could not restart the asset container: {error}"))?;
     if !status.success() {
@@ -481,9 +488,10 @@ fn texture_visible(database: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn wait_log_count(name: &str, needle: &str, want: usize, timeout: Duration) -> Result<(), String> {
+    let name = runtime_name(name);
     let started = Instant::now();
     loop {
-        let text = docker_output(&["logs", name]).unwrap_or_default();
+        let text = docker_output(&["logs", &name]).unwrap_or_default();
         if text.matches(needle).count() >= want {
             return Ok(());
         }
@@ -510,9 +518,17 @@ fn write_example_env() -> Result<String, String> {
     let body = format!(
         "RUN_UID={uid}\nRUN_GID={gid}\nCONFIG_DIR=\nDATA_DIR=\nLOG_DIR=\nESTATE_PASSWORD={estate}\nCHAT_PASSWORD={chat}\n"
     );
-    let path = crate::repo_root().join("deploy/compose/.env");
+    let path = if crate::ports::isolated() {
+        crate::ports::run_root().join("compose.env")
+    } else {
+        crate::repo_root().join("deploy/compose/.env")
+    };
     live::write_secret(&path, &body)?;
-    Ok("wrote deploy/compose/.env (gitignored)".to_string())
+    if crate::ports::isolated() {
+        Ok(format!("wrote {} (gitignored)", path.display()))
+    } else {
+        Ok("wrote deploy/compose/.env (gitignored)".to_string())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -530,8 +546,9 @@ fn command_trim(args: &[&str]) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
-    require_known_name(request.name)?;
-    remove_container(request.name);
+    let name = runtime_name(request.name);
+    require_known_name(&name)?;
+    remove_container(&name);
     if let Some(parent) = request.log.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
@@ -544,7 +561,7 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
     let mut args = vec![
         "run".to_string(),
         "--name".to_string(),
-        request.name.to_string(),
+        name.clone(),
         "--network".to_string(),
         "host".to_string(),
         "--user".to_string(),
@@ -588,7 +605,10 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
         // `docker compose logs` lists containers that have the project label
         // and the config-hash label. The hash value is not compared.
         let labels = [
-            ("com.docker.compose.project", "ferroan-grid".to_string()),
+            (
+                "com.docker.compose.project",
+                crate::ports::compose_project(crate::ports::current()),
+            ),
             ("com.docker.compose.service", "ferroan-region".to_string()),
             ("com.docker.compose.container-number", "1".to_string()),
             ("com.docker.compose.oneoff", "False".to_string()),
@@ -663,15 +683,14 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
             .wait()
             .map_err(|error| format!("could not wait for docker: {error}"))?;
         if !status.success() {
-            remove_container(request.name);
+            remove_container(&name);
             return Err(format!(
-                "docker run failed for {}\n{}",
-                request.name,
+                "docker run failed for {name}\n{}",
                 live::log_tail_secrets(request.log, request.redact)
             ));
         }
     }
-    let listen_pid = match container_pid(request.name) {
+    let listen_pid = match container_pid(&name) {
         Ok(pid) => pid,
         Err(error) => {
             remove_container(request.name);
@@ -686,7 +705,7 @@ pub(crate) fn launch(request: LaunchRequest<'_>) -> Result<Attached, String> {
     Ok(Attached {
         child,
         stdin,
-        name: request.name.to_string(),
+        name,
         listen_pid,
         tracked,
     })
@@ -704,9 +723,10 @@ fn run_as() -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn container_pid(name: &str) -> Result<u32, String> {
+    let name = runtime_name(name);
     let started = Instant::now();
     loop {
-        if let Ok(text) = docker_output(&["inspect", "-f", "{{.State.Pid}}", name])
+        if let Ok(text) = docker_output(&["inspect", "-f", "{{.State.Pid}}", &name])
             && let Ok(pid) = text.trim().parse::<u32>()
             && pid > 0
         {
@@ -735,23 +755,25 @@ fn docker_output(args: &[&str]) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn remove_container(name: &str) {
-    if require_known_name(name).is_err() {
+    let name = runtime_name(name);
+    if require_known_name(&name).is_err() {
         return;
     }
-    let _ = Command::new(DOCKER).args(["rm", "-f", name]).output();
+    let _ = Command::new(DOCKER).args(["rm", "-f", &name]).output();
 }
 
 /// SIGTERM and wait, as the host harness does, so `ferroan-region` can
 /// deregister before the proxy capture is read. `docker rm -f` would kill it first.
 #[cfg(target_os = "linux")]
 pub(crate) fn stop_container(name: &str) {
-    if require_known_name(name).is_err() {
+    let name = runtime_name(name);
+    if require_known_name(&name).is_err() {
         return;
     }
     let _ = Command::new(DOCKER)
-        .args(["stop", "--time", "30", name])
+        .args(["stop", "--time", "30", &name])
         .output();
-    remove_container(name);
+    remove_container(&name);
 }
 
 #[cfg(target_os = "linux")]
@@ -783,17 +805,53 @@ fn remove_built_images() {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn host_log_dir(name: &str) -> PathBuf {
+    let root = if crate::ports::isolated() {
+        crate::ports::run_root()
+    } else {
+        crate::live::live_root()
+    };
+    root.join("docker-log").join(name)
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_name(name: &str) -> String {
+    const NAMES: &[&str] = &[
+        NAME_HOME,
+        NAME_NEIGHBOUR,
+        NAME_ROBUST,
+        NAME_ASSETS,
+        NAME_PERSIST,
+        NAME_LOKI,
+        NAME_OTELCOL,
+    ];
+    if NAMES.contains(&name) {
+        crate::ports::scoped_name(name, crate::ports::current())
+    } else {
+        name.to_string()
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn require_known_name(name: &str) -> Result<(), String> {
-    if matches!(
-        name,
-        NAME_HOME
-            | NAME_NEIGHBOUR
-            | NAME_ROBUST
-            | NAME_ASSETS
-            | NAME_PERSIST
-            | NAME_LOKI
-            | NAME_OTELCOL
-    ) {
+    const NAMES: &[&str] = &[
+        NAME_HOME,
+        NAME_NEIGHBOUR,
+        NAME_ROBUST,
+        NAME_ASSETS,
+        NAME_PERSIST,
+        NAME_LOKI,
+        NAME_OTELCOL,
+    ];
+    let known = NAMES.iter().any(|canonical| {
+        name == *canonical
+            || name.strip_prefix(*canonical).is_some_and(|rest| {
+                rest.strip_prefix('-').is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+                })
+            })
+    });
+    if known {
         Ok(())
     } else {
         Err(format!("refusing to touch unexpected container {name}"))
@@ -802,13 +860,17 @@ fn require_known_name(name: &str) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn start_collectors() -> Result<String, String> {
-    require_port_free(3100)?;
-    require_port_free(4317)?;
-    require_port_free(4318)?;
-    start_detached(NAME_LOKI, &[LOKI_IMAGE])?;
-    wait_http("http://127.0.0.1:3100/ready", "loki")?;
-    let config = crate::repo_root().join("deploy/monitoring/collector/loki.yaml");
-    let stdout_dir = crate::repo_root().join(".scratch/otel-stdout");
+    let loki = crate::ports::alloc(crate::ports::Slot::Loki)?;
+    let _grpc = crate::ports::alloc(crate::ports::Slot::LokiGrpc)?;
+    let _otel_grpc = crate::ports::alloc(crate::ports::Slot::OtelGrpc)?;
+    let otel_http = crate::ports::alloc(crate::ports::Slot::OtelHttp)?;
+    let mut loki_args = vec![LOKI_IMAGE.to_string()];
+    loki_args.extend(crate::ports::loki_server_args(crate::ports::current()));
+    let loki_refs: Vec<&str> = loki_args.iter().map(String::as_str).collect();
+    start_detached(NAME_LOKI, &loki_refs)?;
+    wait_http(&format!("http://127.0.0.1:{loki}/ready"), "loki")?;
+    let config = collector_config()?;
+    let stdout_dir = otel_stdout_dir();
     fs::create_dir_all(&stdout_dir)
         .map_err(|error| format!("could not create {}: {error}", stdout_dir.display()))?;
     let config_mount = format!("{}:/etc/otelcol-contrib/config.yaml:ro", config.display());
@@ -825,14 +887,45 @@ fn start_collectors() -> Result<String, String> {
         ],
     )?;
     let validated = validate_exporters()?;
-    Ok(format!("loki and otel-collector started; {validated}"))
+    if crate::ports::isolated() {
+        Ok(format!(
+            "loki and otel-collector started on {loki} and {otel_http}; {validated}"
+        ))
+    } else {
+        Ok(format!("loki and otel-collector started; {validated}"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collector_config() -> Result<PathBuf, String> {
+    let committed = crate::repo_root().join("deploy/monitoring/collector/loki.yaml");
+    if !crate::ports::isolated() {
+        return Ok(committed);
+    }
+    let text = fs::read_to_string(&committed)
+        .map_err(|error| format!("could not read {}: {error}", committed.display()))?;
+    let rewritten = crate::ports::rewrite_collector(&text, crate::ports::current());
+    let path = crate::ports::run_root().join("loki.yaml");
+    fs::write(&path, rewritten)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+fn otel_stdout_dir() -> PathBuf {
+    if crate::ports::isolated() {
+        crate::ports::run_root().join("otel-stdout")
+    } else {
+        crate::repo_root().join(".scratch/otel-stdout")
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn start_detached(name: &str, extra: &[&str]) -> Result<(), String> {
-    require_known_name(name)?;
-    remove_container(name);
-    let mut args = vec!["run", "-d", "--name", name, "--network", "host"];
+    let name = runtime_name(name);
+    require_known_name(&name)?;
+    remove_container(&name);
+    let mut args = vec!["run", "-d", "--name", name.as_str(), "--network", "host"];
     args.extend(extra);
     let output = Command::new(DOCKER)
         .args(&args)
@@ -887,17 +980,6 @@ fn validate_exporters() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn require_port_free(port: u16) -> Result<(), String> {
-    match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
-        Ok(listener) => {
-            drop(listener);
-            Ok(())
-        }
-        Err(_) => Err(format!("127.0.0.1:{port} is already in use")),
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn wait_http(url: &str, name: &str) -> Result<(), String> {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(40) {
@@ -940,9 +1022,10 @@ fn http_text(url: &str) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn container_logs(name: &str) -> Result<String, String> {
-    require_known_name(name)?;
+    let name = runtime_name(name);
+    require_known_name(&name)?;
     let output = Command::new(DOCKER)
-        .args(["logs", name])
+        .args(["logs", &name])
         .output()
         .map_err(|error| format!("could not read docker logs: {error}"))?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -956,8 +1039,11 @@ pub(crate) fn container_logs(name: &str) -> Result<String, String> {
 #[cfg(target_os = "linux")]
 pub(crate) fn compose_region_logs() -> Result<String, String> {
     let file = crate::repo_root().join("deploy/compose/compose.yaml");
+    let project = crate::ports::compose_project(crate::ports::current());
     let output = Command::new(DOCKER)
-        .args(["compose", "-p", "ferroan-grid", "-f"])
+        .args(["compose", "-p"])
+        .arg(&project)
+        .arg("-f")
         .arg(&file)
         .args(["logs", "--no-color", "ferroan-region"])
         .output()
@@ -987,8 +1073,11 @@ pub(crate) fn wait_loki_login() -> Result<String, String> {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let start_ns = end_ns.saturating_sub(5 * 60 * 1_000_000_000);
+    let loki = crate::ports::assigned(crate::ports::Slot::Loki)
+        .or_else(|| crate::ports::current().today_or_base(crate::ports::Slot::Loki))
+        .unwrap_or(3100);
     let url = format!(
-        "http://127.0.0.1:3100/loki/api/v1/query_range?query={encoded}&start={start_ns}&end={end_ns}&limit=50"
+        "http://127.0.0.1:{loki}/loki/api/v1/query_range?query={encoded}&start={start_ns}&end={end_ns}&limit=50"
     );
     let started = Instant::now();
     let mut last = String::from("no response");
@@ -1005,7 +1094,7 @@ pub(crate) fn wait_loki_login() -> Result<String, String> {
             }
             Err(error) => last = error.chars().take(180).collect(),
         }
-        if let Ok(text) = http_text("http://127.0.0.1:3100/loki/api/v1/labels") {
+        if let Ok(text) = http_text(&format!("http://127.0.0.1:{loki}/loki/api/v1/labels")) {
             labels = text.chars().filter(|c| c.is_ascii()).take(180).collect();
         }
         thread::sleep(Duration::from_secs(1));
@@ -1023,7 +1112,11 @@ fn pin_context() -> Result<PathBuf, String> {
     {
         return Ok(checkout);
     }
-    let dest = crate::repo_root().join(".scratch/docker/OpenSim-Tranquillity");
+    let dest = if crate::ports::isolated() {
+        crate::ports::run_root().join("docker/OpenSim-Tranquillity")
+    } else {
+        crate::repo_root().join(".scratch/docker/OpenSim-Tranquillity")
+    };
     require_scratch(&dest)?;
     if dest.join(".git").exists() && clean_at(&dest, &pin).is_ok() {
         return Ok(dest);
