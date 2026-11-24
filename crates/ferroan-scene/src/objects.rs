@@ -84,6 +84,20 @@
 //! experience id that is null, unparsable or shorter than 16 bytes is the zero
 //! id. A row that cannot be built is left out; the prim and its other items
 //! stay (TB60, D44). Items stay data: nothing is sent and no script is started.
+//!
+//! PostgreSQL returns each group by group id, the root first and then the
+//! children by stored link number. Those stored numbers are not applied: the
+//! first part is the root, a single prim stays 0, and each child takes the
+//! next count. A root whose id differs from the group id loads as the group
+//! id. The shape bytes stay. The raw cells for that part are empty and its
+//! default-box flag is set, because those cells are stored under the original
+//! id. The item parent id is the loaded prim id. An item stored under the
+//! original id of a rewritten root still loads (TB68, D51). A null required
+//! number or text leaves that prim out (TB65, D49). An inventory row that
+//! cannot be built is left out (TB66, D50). A dynamic-attribute document whose
+//! top value is an integer leaves that prim out (TB67, D48). Keyframe motion,
+//! the attached position, a volume-detect column and the last attach point are
+//! not stored, so those fields stay at the part defaults.
 
 use std::collections::{HashMap, HashSet};
 
@@ -91,6 +105,7 @@ use ferroan_db::{Backend, Pool};
 use ferroan_diag::{Kind, REGION_LINKSET_PRIMS, REGION_OBJECTS, refuse};
 use sqlx::Row;
 use sqlx::mysql::MySqlRow;
+use sqlx::postgres::PgRow;
 use sqlx::sqlite::SqliteRow;
 use uuid::Uuid;
 
@@ -285,8 +300,14 @@ struct PrimRow {
 }
 
 /// Open the region store and load one region's prims. A missing SQLite file is an empty list.
-/// A MySQL connection loads that region. PostgreSQL is left to a later row.
+/// A MySQL connection loads that region. A PostgreSQL connection loads that region.
 pub async fn open_objects(connection: &str, region: Uuid) -> Result<Vec<ObjectGroup>, ObjectError> {
+    if postgres_connection(connection) {
+        let pool = Pool::open(Backend::Postgres, connection, &["RegionStore"])
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        return load_objects(&pool, region).await;
+    }
     if mysql_connection(connection) {
         let pool = Pool::open(Backend::Mysql, connection, &["RegionStore"])
             .await
@@ -302,6 +323,19 @@ pub async fn open_objects(connection: &str, region: Uuid) -> Result<Vec<ObjectGr
         .await
         .map_err(|error| ObjectError::Store(error.to_string()))?;
     load_objects(&pool, region).await
+}
+
+fn postgres_connection(connection: &str) -> bool {
+    let lower = connection.trim().to_ascii_lowercase();
+    if lower.starts_with("postgres:") || lower.starts_with("postgresql:") {
+        return true;
+    }
+    if mysql_connection(connection) {
+        return false;
+    }
+    let host = lower.contains("host=") || lower.contains("server=");
+    let database = lower.contains("database=") || lower.contains("db=");
+    host && database
 }
 
 fn mysql_connection(connection: &str) -> bool {
@@ -327,12 +361,15 @@ pub async fn load_objects_limited(
     max_objects: u64,
     max_linkset: u64,
 ) -> Result<Vec<ObjectGroup>, ObjectError> {
+    if pool.postgres().is_some() {
+        return load_postgres(pool, region, max_objects, max_linkset).await;
+    }
     if pool.mysql().is_some() {
         return load_mysql(pool, region, max_objects, max_linkset).await;
     }
     let Some(sqlite) = pool.sqlite() else {
         return Err(ObjectError::Store(
-            "connection is not SQLite or MySQL".to_owned(),
+            "connection is not SQLite, MySQL or PostgreSQL".to_owned(),
         ));
     };
     let prims = sqlx::query(PRIM_SQL)
@@ -1774,6 +1811,574 @@ fn mysql_blob(row: &MySqlRow, name: &str) -> Result<Option<Vec<u8>>, ()> {
             Err(_) => Err(()),
         },
     }
+}
+
+const PG_PRIM_SQL: &str = "SELECT \"UUID\", \"SceneGroupID\", \"CreationDate\", \"Name\", \"Text\", \
+\"Description\", \"SitName\", \"TouchName\", \"ColorR\", \"ColorG\", \"ColorB\", \"ColorA\", \
+\"ObjectFlags\", \"CreatorID\", \"OwnerID\", \"GroupID\", \"LastOwnerID\", \"RezzerID\", \
+\"OwnerMask\", \"NextOwnerMask\", \"GroupMask\", \"EveryoneMask\", \"BaseMask\", \"PositionX\", \
+\"PositionY\", \"PositionZ\", \"GroupPositionX\", \"GroupPositionY\", \"GroupPositionZ\", \
+\"VelocityX\", \"VelocityY\", \"VelocityZ\", \"AngularVelocityX\", \"AngularVelocityY\", \
+\"AngularVelocityZ\", \"AccelerationX\", \"AccelerationY\", \"AccelerationZ\", \"RotationX\", \
+\"RotationY\", \"RotationZ\", \"RotationW\", \"SitTargetOffsetX\", \"SitTargetOffsetY\", \
+\"SitTargetOffsetZ\", \"SitTargetOrientX\", \"SitTargetOrientY\", \"SitTargetOrientZ\", \
+\"SitTargetOrientW\", \"SitTargetActive\", \"standtargetx\", \"standtargety\", \"standtargetz\", \
+\"sitactrange\", \"ClickAction\", \"PayPrice\", \"PayButton1\", \"PayButton2\", \"PayButton3\", \
+\"PayButton4\", \"LoopedSound\", \"LoopedSoundGain\", \"TextureAnimation\", \"ParticleSystem\", \
+\"CameraEyeOffsetX\", \"CameraEyeOffsetY\", \"CameraEyeOffsetZ\", \"CameraAtOffsetX\", \
+\"CameraAtOffsetY\", \"CameraAtOffsetZ\", \"ForceMouselook\", \"ScriptAccessPin\", \"AllowedDrop\", \
+\"DieAtEdge\", \"SalePrice\", \"SaleType\", \"Material\", \"CollisionSound\", \
+\"CollisionSoundVolume\", \"MediaURL\", \"DynAttrs\", \"PhysicsShapeType\", \"Density\", \
+\"GravityModifier\", \"Friction\", \"Restitution\", \"PassCollisions\", \"PassTouches\", \
+\"RotationAxisLocks\", \"Vehicle\", \"PhysInertia\", \"pseudocrc\", \"sopanims\", \"linksetdata\", \
+\"StartStr\" FROM prims WHERE \"RegionUUID\" = $1 ORDER BY \"SceneGroupID\" ASC, \
+CASE WHEN \"UUID\" = \"SceneGroupID\" THEN 0 ELSE 1 END ASC, \"LinkNumber\" ASC";
+
+const PG_SHAPE_SQL: &str = "SELECT \"UUID\", \"Shape\", \"ScaleX\", \"ScaleY\", \"ScaleZ\", \"PCode\", \
+\"PathBegin\", \"PathEnd\", \"PathScaleX\", \"PathScaleY\", \"PathShearX\", \"PathShearY\", \
+\"PathSkew\", \"PathCurve\", \"PathRadiusOffset\", \"PathRevolutions\", \"PathTaperX\", \
+\"PathTaperY\", \"PathTwist\", \"PathTwistBegin\", \"ProfileBegin\", \"ProfileEnd\", \
+\"ProfileCurve\", \"ProfileHollow\", \"Texture\", \"ExtraParams\", \"State\", \"Media\", \"MatOvrd\" \
+FROM primshapes";
+
+const PG_ITEM_IDS_SQL: &str = "SELECT DISTINCT \"primID\" FROM primitems";
+
+const PG_ITEM_SQL: &str = "SELECT \"itemID\", \"primID\", \"assetID\", \"parentFolderID\", \
+\"invType\", \"assetType\", \"name\", \"description\", \"creationDate\", \"creatorID\", \"ownerID\", \
+\"lastOwnerID\", \"groupID\", \"nextPermissions\", \"currentPermissions\", \"basePermissions\", \
+\"everyonePermissions\", \"groupPermissions\", \"flags\", \"experienceID\" FROM primitems \
+WHERE \"primID\" = $1";
+
+struct PgBuilt {
+    original: Uuid,
+    group_id: Uuid,
+    start: Option<String>,
+    part: ObjectPart,
+}
+
+async fn load_postgres(
+    pool: &Pool,
+    region: Uuid,
+    max_objects: u64,
+    max_linkset: u64,
+) -> Result<Vec<ObjectGroup>, ObjectError> {
+    let Some(postgres) = pool.postgres() else {
+        return Err(ObjectError::Store(
+            "connection is not PostgreSQL".to_owned(),
+        ));
+    };
+    let prims = sqlx::query(PG_PRIM_SQL)
+        .bind(region)
+        .fetch_all(postgres)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let shape_rows = sqlx::query(PG_SHAPE_SQL)
+        .fetch_all(postgres)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let mut shapes = HashMap::new();
+    for row in &shape_rows {
+        if let Some(id) = pg_uuid(row, "UUID") {
+            shapes.insert(id, row);
+        }
+    }
+    let mut built = Vec::new();
+    for row in &prims {
+        match pg_part(row, &shapes) {
+            Ok(prim) => built.push(prim),
+            Err(()) => {
+                let label = pg_uuid(row, "UUID")
+                    .map(|id| id.hyphenated().to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                log::warn!("prim {label} could not be built and was skipped");
+            }
+        }
+    }
+    let (mut groups, originals) = assemble_postgres(built);
+    let item_ids = sqlx::query(PG_ITEM_IDS_SQL)
+        .fetch_all(postgres)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    for id_row in &item_ids {
+        let Some(original) = pg_uuid(id_row, "primID") else {
+            continue;
+        };
+        let Some(&(slot, index)) = originals.get(&original) else {
+            continue;
+        };
+        let current = groups[slot].parts[index].uuid;
+        // Items are stored under the original prim id. The query uses that id.
+        // The item's parent id is the loaded prim id, which is the group id
+        // when this root was rewritten (TB68, D51).
+        let rows = sqlx::query(PG_ITEM_SQL)
+            .bind(original)
+            .fetch_all(postgres)
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        let mut items = Vec::new();
+        for row in &rows {
+            match pg_item(row, current) {
+                Some(item) => items.push(item),
+                None => {
+                    let label = pg_uuid(row, "itemID")
+                        .map(|id| id.hyphenated().to_string())
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    log::warn!("inventory item {label} could not be built and was left out");
+                }
+            }
+        }
+        groups[slot].parts[index].items = items;
+    }
+    enforce(groups, max_objects, max_linkset)
+}
+
+fn assemble_postgres(rows: Vec<PgBuilt>) -> (Vec<ObjectGroup>, HashMap<Uuid, (usize, usize)>) {
+    let mut groups = Vec::new();
+    let mut originals = HashMap::new();
+    let mut last = Uuid::nil();
+    let mut started = false;
+    for mut row in rows {
+        let new_group = !started || row.group_id != last;
+        if new_group {
+            started = true;
+            last = row.group_id;
+            if !row.group_id.is_nil() && row.part.uuid != row.group_id {
+                row.part.uuid = row.group_id;
+                // The raw row stays under the original id, so the dump's raw cells are empty
+                // and its default-box flag is set. The loaded shape bytes stay.
+                row.part.shape.default_box = true;
+                row.part.raw = empty_raw();
+            }
+            row.part.link_num = 0;
+            row.part.parent_id = 0;
+            originals.insert(row.original, (groups.len(), 0));
+            groups.push(ObjectGroup {
+                rez_parameter: row.start,
+                parts: vec![row.part],
+            });
+            continue;
+        }
+        let slot = groups.len().saturating_sub(1);
+        let count = groups[slot].parts.len().saturating_add(1);
+        let Ok(link_num) = i32::try_from(count) else {
+            log::warn!("prim {} could not be built and was skipped", row.original);
+            continue;
+        };
+        row.part.link_num = link_num;
+        row.part.parent_id = 0;
+        if link_num == 2 {
+            groups[slot].parts[0].link_num = 1;
+        }
+        let index = groups[slot].parts.len();
+        originals.insert(row.original, (slot, index));
+        groups[slot].parts.push(row.part);
+    }
+    (groups, originals)
+}
+
+fn empty_raw() -> ObjectRaw {
+    ObjectRaw {
+        media: None,
+        mat_ovrd: None,
+        dyn_attrs: None,
+        keyframe_motion: None,
+        vehicle: None,
+        phys_inertia: None,
+        sopanims: None,
+        linkset_data: None,
+    }
+}
+
+fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
+    let uuid = pg_uuid_required(row, "UUID")?;
+    let group_id = pg_uuid_required(row, "SceneGroupID")?;
+    let shape_row = shapes.get(&uuid).copied();
+    let shape_missing = match shape_row {
+        None => true,
+        Some(shape) => pg_i64(shape, "Shape").is_none(),
+    };
+    let (mut shape, media, mat_ovrd) = if shape_missing {
+        (default_box(), None, None)
+    } else {
+        let shape = shape_row.ok_or(())?;
+        let built = pg_shape(shape)?;
+        let media = pg_text(shape, "Media");
+        let mat_ovrd = pg_blob(shape, "MatOvrd")?;
+        (built, media, mat_ovrd)
+    };
+    if !shape_missing {
+        shape.media_entries = match &media {
+            Some(text) => parse_media(text),
+            None => None,
+        };
+        shape.materials = match &mat_ovrd {
+            Some(bytes) => parse_materials(bytes),
+            None => None,
+        };
+    }
+    let stored_media = shape_row.and_then(|shape| pg_text(shape, "Media"));
+    let stored_mat = match shape_row {
+        Some(shape) => pg_blob(shape, "MatOvrd")?,
+        None => None,
+    };
+    let dyn_text = pg_text(row, "DynAttrs").filter(|text| !text.is_empty());
+    let dyn_attrs = match &dyn_text {
+        Some(text) => Some(parse_dyn_attrs(text)?),
+        None => None,
+    };
+    let vehicle_text = pg_text(row, "Vehicle").filter(|text| !text.is_empty());
+    let vehicle = match &vehicle_text {
+        Some(text) => parse_vehicle(text)?,
+        None => None,
+    };
+    let inertia_text = pg_text(row, "PhysInertia").filter(|text| !text.is_empty());
+    let phys_inertia = match &inertia_text {
+        Some(text) => parse_inertia(text)?,
+        None => None,
+    };
+    let sopanims = pg_blob(row, "sopanims")?;
+    let animations = match &sopanims {
+        Some(data) if !data.is_empty() => parse_animations(data),
+        _ => None,
+    };
+    let linkset_text = pg_text(row, "linksetdata");
+    let linkset = linkset_text.as_deref().and_then(parse_linkset);
+    let sound = pg_uuid_required(row, "LoopedSound")?;
+    let explicit_sit = pg_i64(row, "SitTargetActive").and_then(|value| i32::try_from(value).ok());
+    let offset = pg_vec3_req(row, "PositionX", "PositionY", "PositionZ")?;
+    let sit_target_position = pg_vec3_req(
+        row,
+        "SitTargetOffsetX",
+        "SitTargetOffsetY",
+        "SitTargetOffsetZ",
+    )?;
+    let sit_target_rotation = pg_quat_req(
+        row,
+        "SitTargetOrientX",
+        "SitTargetOrientY",
+        "SitTargetOrientZ",
+        "SitTargetOrientW",
+    )?;
+    let pseudo = pg_i32_req(row, "pseudocrc")?;
+    let pseudo = (pseudo != 0).then_some(pseudo);
+    let flags = pg_u32_req(row, "ObjectFlags")? & !(FLAG_TOUCH | FLAG_MONEY | FLAG_ALLOW_DROP);
+    let creator = pg_text_req(row, "CreatorID")?;
+    let part = ObjectPart {
+        uuid,
+        link_num: 0,
+        local_id: 0,
+        parent_id: 0,
+        creation_date: pg_i32_req(row, "CreationDate")?,
+        name: pg_text_req(row, "Name")?,
+        text: pg_text_req(row, "Text")?,
+        color: pg_color(row)?,
+        description: pg_text_req(row, "Description")?,
+        sit_name: pg_text_req(row, "SitName")?,
+        touch_name: pg_text_req(row, "TouchName")?,
+        flags,
+        creator_id: creator_identification(&creator),
+        owner_id: pg_uuid_required(row, "OwnerID")?,
+        group_id: pg_uuid_required(row, "GroupID")?,
+        last_owner_id: pg_uuid_required(row, "LastOwnerID")?,
+        rezzer_id: pg_uuid(row, "RezzerID").unwrap_or(Uuid::nil()),
+        owner_mask: pg_u32_req(row, "OwnerMask")?,
+        next_owner_mask: pg_u32_req(row, "NextOwnerMask")?,
+        group_mask: pg_u32_req(row, "GroupMask")?,
+        everyone_mask: pg_u32_req(row, "EveryoneMask")?,
+        base_mask: pg_u32_req(row, "BaseMask")?,
+        offset,
+        group_position: pg_vec3_req(row, "GroupPositionX", "GroupPositionY", "GroupPositionZ")?,
+        velocity: pg_vec3_req(row, "VelocityX", "VelocityY", "VelocityZ")?,
+        angular_velocity: pg_vec3_req(
+            row,
+            "AngularVelocityX",
+            "AngularVelocityY",
+            "AngularVelocityZ",
+        )?,
+        acceleration: pg_vec3_req(row, "AccelerationX", "AccelerationY", "AccelerationZ")?,
+        rotation: loaded_rotation(pg_quat_req(
+            row,
+            "RotationX",
+            "RotationY",
+            "RotationZ",
+            "RotationW",
+        )?),
+        sit_target_position,
+        sit_target_rotation,
+        sit_target_active: sit_active(explicit_sit, sit_target_position, sit_target_rotation),
+        stand_offset: pg_vec3_req(row, "standtargetx", "standtargety", "standtargetz")?,
+        sit_active_range: pg_f32_req(row, "sitactrange")?,
+        click_action: match pg_i64(row, "ClickAction") {
+            Some(value) => u8::try_from(value).map_err(|_| ())?,
+            None => 0,
+        },
+        pay_price: [
+            pg_i32_req(row, "PayPrice")?,
+            pg_i32_req(row, "PayButton1")?,
+            pg_i32_req(row, "PayButton2")?,
+            pg_i32_req(row, "PayButton3")?,
+            pg_i32_req(row, "PayButton4")?,
+        ],
+        sound,
+        sound_gain: pg_f32_req(row, "LoopedSoundGain")?,
+        sound_flags: u8::from(!sound.is_nil()),
+        texture_animation: pg_blob(row, "TextureAnimation")?.unwrap_or_default(),
+        particles: pg_blob(row, "ParticleSystem")?.unwrap_or_default(),
+        camera_eye: pg_vec3_req(
+            row,
+            "CameraEyeOffsetX",
+            "CameraEyeOffsetY",
+            "CameraEyeOffsetZ",
+        )?,
+        camera_at: pg_vec3_req(row, "CameraAtOffsetX", "CameraAtOffsetY", "CameraAtOffsetZ")?,
+        force_mouselook: pg_bool_or_int(row, "ForceMouselook")?,
+        script_access_pin: pg_i32_req(row, "ScriptAccessPin")?,
+        allowed_drop: pg_bool_or_int(row, "AllowedDrop")?,
+        die_at_edge: pg_bool_or_int(row, "DieAtEdge")?,
+        sale_price: pg_i32_req(row, "SalePrice")?,
+        sale_type: pg_u8_req(row, "SaleType")?,
+        material: pg_u8_req(row, "Material")?,
+        collision_sound: pg_uuid_required(row, "CollisionSound")?,
+        collision_sound_volume: pg_f32_req(row, "CollisionSoundVolume")?,
+        volume_detect: (flags & FLAG_VOLUME_DETECT) != 0,
+        media_url: pg_text(row, "MediaURL").unwrap_or_default(),
+        attached_pos: [0.0, 0.0, 0.0],
+        physics_shape_type: pg_u8_req(row, "PhysicsShapeType")?,
+        density: pg_f32_req(row, "Density")?,
+        gravity_modifier: pg_f32_req(row, "GravityModifier")?,
+        friction: pg_f32_req(row, "Friction")?,
+        restitution: pg_f32_req(row, "Restitution")?,
+        pass_collisions: pg_bool(row, "PassCollisions")?,
+        pass_touches: pg_bool(row, "PassTouches")?,
+        rotation_axis_locks: pg_u8_req(row, "RotationAxisLocks")?,
+        pseudo_crc: pseudo,
+        shape,
+        raw: ObjectRaw {
+            media: stored_media,
+            mat_ovrd: stored_mat,
+            dyn_attrs: dyn_text,
+            keyframe_motion: None,
+            vehicle: pg_text(row, "Vehicle"),
+            phys_inertia: pg_text(row, "PhysInertia"),
+            sopanims,
+            linkset_data: linkset_text,
+        },
+        dyn_attrs,
+        keyframe: None,
+        vehicle,
+        phys_inertia,
+        animations,
+        linkset,
+        items: Vec::new(),
+    };
+    Ok(PgBuilt {
+        original: uuid,
+        group_id,
+        start: pg_text(row, "StartStr"),
+        part,
+    })
+}
+
+fn pg_shape(row: &PgRow) -> Result<ObjectShape, ()> {
+    let texture = pg_blob(row, "Texture")?.ok_or(())?;
+    let extra = pg_blob(row, "ExtraParams")?.ok_or(())?;
+    Ok(ObjectShape {
+        default_box: false,
+        scale: pg_vec3_req(row, "ScaleX", "ScaleY", "ScaleZ")?,
+        pcode: pg_u8_req(row, "PCode")?,
+        path_begin: pg_u16_req(row, "PathBegin")?,
+        path_end: pg_u16_req(row, "PathEnd")?,
+        path_scale_x: pg_u8_req(row, "PathScaleX")?,
+        path_scale_y: pg_u8_req(row, "PathScaleY")?,
+        path_shear_x: pg_u8_req(row, "PathShearX")?,
+        path_shear_y: pg_u8_req(row, "PathShearY")?,
+        path_skew: pg_i8_req(row, "PathSkew")?,
+        path_curve: pg_u8_req(row, "PathCurve")?,
+        path_radius_offset: pg_i8_req(row, "PathRadiusOffset")?,
+        path_revolutions: pg_u8_req(row, "PathRevolutions")?,
+        path_taper_x: pg_i8_req(row, "PathTaperX")?,
+        path_taper_y: pg_i8_req(row, "PathTaperY")?,
+        path_twist: pg_i8_req(row, "PathTwist")?,
+        path_twist_begin: pg_i8_req(row, "PathTwistBegin")?,
+        profile_begin: pg_u16_req(row, "ProfileBegin")?,
+        profile_end: pg_u16_req(row, "ProfileEnd")?,
+        profile_curve: profile_curve(pg_u8_req(row, "ProfileCurve")?),
+        profile_hollow: pg_u16_req(row, "ProfileHollow")?,
+        state: match pg_i64(row, "State") {
+            Some(value) => u8::try_from(value).map_err(|_| ())?,
+            None => 0,
+        },
+        last_attach_point: 0,
+        texture,
+        extra_params: extra,
+        media_entries: None,
+        materials: None,
+    })
+}
+
+fn pg_item(row: &PgRow, prim: Uuid) -> Option<InventoryItem> {
+    let creator = pg_text_req(row, "creatorID").ok()?;
+    let flags = pg_u32_req(row, "flags").ok()?;
+    Some(InventoryItem {
+        item_id: pg_uuid_required(row, "itemID").ok()?,
+        parent_part_id: pg_uuid_required(row, "primID").ok()?,
+        asset_id: pg_uuid_required(row, "assetID").ok()?,
+        parent_id: prim,
+        inv_type: pg_i32_req(row, "invType").ok()?,
+        asset_type: pg_i32_req(row, "assetType").ok()?,
+        name: pg_text_req(row, "name").ok()?,
+        description: pg_text_req(row, "description").ok()?,
+        creation_date: pg_u32_req(row, "creationDate").ok()?,
+        creator_id: creator_identification(&creator),
+        owner_id: pg_uuid_required(row, "ownerID").ok()?,
+        last_owner_id: pg_uuid_required(row, "lastOwnerID").ok()?,
+        group_id: pg_uuid_required(row, "groupID").ok()?,
+        next_permissions: pg_u32_req(row, "nextPermissions").ok()?,
+        current_permissions: pg_u32_req(row, "currentPermissions").ok()?,
+        base_permissions: pg_u32_req(row, "basePermissions").ok()?,
+        everyone_permissions: pg_u32_req(row, "everyonePermissions").ok()?,
+        group_permissions: pg_u32_req(row, "groupPermissions").ok()?,
+        flags,
+        experience_id: pg_uuid(row, "experienceID").unwrap_or(Uuid::nil()),
+    })
+}
+
+fn pg_text(row: &PgRow, name: &str) -> Option<String> {
+    row.try_get::<Option<String>, _>(name).ok().flatten()
+}
+
+fn pg_text_req(row: &PgRow, name: &str) -> Result<String, ()> {
+    pg_text(row, name).ok_or(())
+}
+
+fn pg_uuid(row: &PgRow, name: &str) -> Option<Uuid> {
+    if let Ok(value) = row.try_get::<Option<Uuid>, _>(name) {
+        return value;
+    }
+    pg_text(row, name).and_then(|text| parse_uuid(&text))
+}
+
+fn pg_uuid_required(row: &PgRow, name: &str) -> Result<Uuid, ()> {
+    match row.try_get::<Option<Uuid>, _>(name) {
+        Ok(Some(id)) => Ok(id),
+        Ok(None) => Err(()),
+        Err(_) => match pg_text(row, name) {
+            Some(text) => parse_uuid(&text).ok_or(()),
+            None => Err(()),
+        },
+    }
+}
+
+fn pg_i64(row: &PgRow, name: &str) -> Option<i64> {
+    if let Ok(value) = row.try_get::<Option<i16>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<i32>, _>(name) {
+        return value.map(i64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<i64>, _>(name) {
+        return value;
+    }
+    if let Ok(value) = row.try_get::<Option<f32>, _>(name) {
+        return value.and_then(|number| whole_i64(f64::from(number)));
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(name) {
+        return value.and_then(whole_i64);
+    }
+    if let Ok(Some(text)) = row.try_get::<Option<String>, _>(name) {
+        return text.trim().parse().ok();
+    }
+    None
+}
+
+fn pg_f64(row: &PgRow, name: &str) -> Option<f64> {
+    if let Ok(value) = row.try_get::<Option<f32>, _>(name) {
+        return value.map(f64::from);
+    }
+    if let Ok(value) = row.try_get::<Option<f64>, _>(name) {
+        return value;
+    }
+    pg_i64(row, name).map(|number| number as f64)
+}
+
+fn pg_f32_req(row: &PgRow, name: &str) -> Result<f32, ()> {
+    let value = pg_f64(row, name).ok_or(())?;
+    let narrow = value as f32;
+    if narrow.is_finite() {
+        Ok(narrow)
+    } else {
+        Err(())
+    }
+}
+
+fn pg_i32_req(row: &PgRow, name: &str) -> Result<i32, ()> {
+    i32::try_from(pg_i64(row, name).ok_or(())?).map_err(|_| ())
+}
+
+fn pg_u32_req(row: &PgRow, name: &str) -> Result<u32, ()> {
+    u32::try_from(pg_i64(row, name).ok_or(())?).map_err(|_| ())
+}
+
+fn pg_u16_req(row: &PgRow, name: &str) -> Result<u16, ()> {
+    u16::try_from(pg_i64(row, name).ok_or(())?).map_err(|_| ())
+}
+
+fn pg_u8_req(row: &PgRow, name: &str) -> Result<u8, ()> {
+    u8::try_from(pg_i64(row, name).ok_or(())?).map_err(|_| ())
+}
+
+fn pg_i8_req(row: &PgRow, name: &str) -> Result<i8, ()> {
+    i8::try_from(pg_i64(row, name).ok_or(())?).map_err(|_| ())
+}
+
+fn pg_bool(row: &PgRow, name: &str) -> Result<bool, ()> {
+    match row.try_get::<Option<bool>, _>(name) {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(()),
+        Err(_) => Ok(pg_i64(row, name).ok_or(())? != 0),
+    }
+}
+
+fn pg_bool_or_int(row: &PgRow, name: &str) -> Result<bool, ()> {
+    if let Ok(value) = row.try_get::<Option<bool>, _>(name) {
+        return value.ok_or(());
+    }
+    Ok(pg_i64(row, name).ok_or(())? != 0)
+}
+
+fn pg_blob(row: &PgRow, name: &str) -> Result<Option<Vec<u8>>, ()> {
+    match row.try_get::<Option<Vec<u8>>, _>(name) {
+        Ok(value) => Ok(value),
+        Err(_) => match row.try_get::<Option<String>, _>(name) {
+            Ok(value) => Ok(value.map(String::into_bytes)),
+            Err(_) => Err(()),
+        },
+    }
+}
+
+fn pg_color(row: &PgRow) -> Result<u32, ()> {
+    let alpha = pg_i32_req(row, "ColorA")? as u32;
+    let red = pg_i32_req(row, "ColorR")? as u32;
+    let green = pg_i32_req(row, "ColorG")? as u32;
+    let blue = pg_i32_req(row, "ColorB")? as u32;
+    Ok((alpha << 24) | (red << 16) | (green << 8) | blue)
+}
+
+fn pg_vec3_req(row: &PgRow, x: &str, y: &str, z: &str) -> Result<[f32; 3], ()> {
+    Ok([
+        pg_f32_req(row, x)?,
+        pg_f32_req(row, y)?,
+        pg_f32_req(row, z)?,
+    ])
+}
+
+fn pg_quat_req(row: &PgRow, x: &str, y: &str, z: &str, w: &str) -> Result<[f32; 4], ()> {
+    Ok([
+        pg_f32_req(row, x)?,
+        pg_f32_req(row, y)?,
+        pg_f32_req(row, z)?,
+        pg_f32_req(row, w)?,
+    ])
 }
 
 #[cfg(test)]
@@ -3250,6 +3855,232 @@ mod tests {
              WHERE itemID = 'c0000000-0000-0000-0000-000000000003'",
         )
         .execute(mysql)
+        .await
+        .unwrap();
+    }
+
+    fn postgres_cross_connection() -> Option<String> {
+        if std::env::var("FERROAN_REGIONSTORE_CROSS").ok().as_deref() != Some("1") {
+            return None;
+        }
+        std::env::var("FERROAN_REGIONSTORE_POSTGRES").ok()
+    }
+
+    fn postgres_test_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        &LOCK
+    }
+
+    fn postgres_dump() -> Value {
+        let text = std::fs::read_to_string(fixture_dir().join("objects-postgres.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn regionstore_postgres_load_matches_the_committed_dump() {
+        let Some(connection) = postgres_cross_connection() else {
+            eprintln!("regionstore postgres load skipped");
+            return;
+        };
+        let _guard = postgres_test_lock().lock().unwrap();
+        let dump = postgres_dump();
+        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["region"], REGION);
+        let groups = open_objects(&connection, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        expect_groups(&groups, &dump);
+        let rewrite = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "rewrite-root")
+            .unwrap();
+        assert_eq!(
+            rewrite.uuid,
+            Uuid::parse_str("88888888-8888-8888-8888-888888888880").unwrap()
+        );
+        assert_eq!(rewrite.link_num, 1);
+        assert!(rewrite.shape.default_box);
+        assert_eq!(rewrite.shape.texture, vec![0x01, 0x02, 0x03]);
+        assert!(rewrite.raw.dyn_attrs.is_none());
+        let child = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "rewrite-child")
+            .unwrap();
+        assert_eq!(child.link_num, 2);
+        assert_eq!(
+            child.uuid,
+            Uuid::parse_str("88888888-8888-8888-8888-888888888882").unwrap()
+        );
+        let showcase = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "showcase")
+            .unwrap();
+        assert_eq!(showcase.flags, 0x401);
+        assert!(!showcase.volume_detect);
+        assert!(showcase.keyframe.is_none());
+        assert_eq!(showcase.shape.last_attach_point, 0);
+        assert_eq!(
+            showcase
+                .items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note", "script", "box"]
+        );
+        assert!(
+            showcase
+                .items
+                .iter()
+                .all(|item| item.parent_id == showcase.uuid)
+        );
+        let second = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "child-second")
+            .unwrap();
+        assert_eq!(second.link_num, 3);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn regionstore_postgres_unreadable_rows_are_left_out() {
+        let Some(connection) = postgres_cross_connection() else {
+            eprintln!("regionstore postgres unreadable rows skipped");
+            return;
+        };
+        let _guard = postgres_test_lock().lock().unwrap();
+        let pool = Pool::open(Backend::Postgres, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let postgres = pool.postgres().unwrap();
+        let region = Uuid::parse_str(REGION).unwrap();
+        reset_postgres_extras(postgres).await;
+        sqlx::query(
+            "INSERT INTO prims SELECT r.* FROM prims p \
+             CROSS JOIN LATERAL jsonb_populate_record(NULL::prims, \
+             to_jsonb(p) || jsonb_build_object( \
+             'UUID', '77777777-7777-7777-7777-777777777771'::uuid, \
+             'SceneGroupID', '77777777-7777-7777-7777-777777777771'::uuid, \
+             'Name', NULL)) AS r \
+             WHERE p.\"UUID\" = 'dddddddd-dddd-dddd-dddd-ddddddddddd1'::uuid",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO prims SELECT r.* FROM prims p \
+             CROSS JOIN LATERAL jsonb_populate_record(NULL::prims, \
+             to_jsonb(p) || jsonb_build_object( \
+             'UUID', '77777777-7777-7777-7777-777777777772'::uuid, \
+             'SceneGroupID', '77777777-7777-7777-7777-777777777772'::uuid, \
+             'CreationDate', NULL)) AS r \
+             WHERE p.\"UUID\" = 'dddddddd-dddd-dddd-dddd-ddddddddddd1'::uuid",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO prims SELECT r.* FROM prims p \
+             CROSS JOIN LATERAL jsonb_populate_record(NULL::prims, \
+             to_jsonb(p) || jsonb_build_object( \
+             'UUID', 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1'::uuid, \
+             'SceneGroupID', 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1'::uuid, \
+             'DynAttrs', '<llsd><integer>1</integer></llsd>')) AS r \
+             WHERE p.\"UUID\" = 'dddddddd-dddd-dddd-dddd-ddddddddddd1'::uuid",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO primitems (\"itemID\", \"primID\", \"assetID\", \"parentFolderID\", \
+             \"invType\", \"assetType\", \"name\", \"description\", \"creationDate\", \"creatorID\", \
+             \"ownerID\", \"lastOwnerID\", \"groupID\", \"nextPermissions\", \"currentPermissions\", \
+             \"basePermissions\", \"everyonePermissions\", \"groupPermissions\", \"flags\") VALUES \
+             ('d1000000-0000-0000-0000-000000000001', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'kept', '', '1700000200', '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 0), \
+             ('d1000000-0000-0000-0000-000000000002', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'dropped', NULL, '1700000201', '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 0), \
+             ('d1000000-0000-0000-0000-000000000003', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'negative', '', '1700000202', '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, -1), \
+             ('d1000000-0000-0000-0000-000000000004', '88888888-8888-8888-8888-888888888881', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'rewrite-note', '', '1700000203', '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 0)",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        let loaded = load_objects(&pool, region).await;
+        reset_postgres_extras(postgres).await;
+        let groups = loaded.unwrap();
+        assert!(groups.iter().all(|group| {
+            group.parts.iter().all(|part| {
+                part.name != "unparsed"
+                    && part.uuid != Uuid::parse_str("77777777-7777-7777-7777-777777777771").unwrap()
+                    && part.uuid != Uuid::parse_str("77777777-7777-7777-7777-777777777772").unwrap()
+                    && part.uuid != Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1").unwrap()
+            })
+        }));
+        let no_shape = groups
+            .iter()
+            .find_map(|group| group.parts.iter().find(|part| part.name == "no-shape"))
+            .unwrap();
+        assert!(no_shape.items.iter().any(|item| item.name == "kept"));
+        assert!(no_shape.items.iter().all(|item| item.name != "dropped"));
+        assert!(no_shape.items.iter().all(|item| item.name != "negative"));
+        let rewrite = groups
+            .iter()
+            .find_map(|group| group.parts.iter().find(|part| part.name == "rewrite-root"))
+            .unwrap();
+        let note = rewrite
+            .items
+            .iter()
+            .find(|item| item.name == "rewrite-note")
+            .unwrap();
+        assert_eq!(
+            rewrite.uuid,
+            Uuid::parse_str("88888888-8888-8888-8888-888888888880").unwrap()
+        );
+        assert_eq!(note.parent_id, rewrite.uuid);
+        assert_eq!(
+            note.parent_part_id,
+            Uuid::parse_str("88888888-8888-8888-8888-888888888881").unwrap()
+        );
+        assert!(groups.len() >= 5);
+    }
+
+    async fn reset_postgres_extras(postgres: &sqlx::PgPool) {
+        sqlx::query(
+            "DELETE FROM primitems WHERE \"itemID\" IN \
+             ('d1000000-0000-0000-0000-000000000001', \
+              'd1000000-0000-0000-0000-000000000002', \
+              'd1000000-0000-0000-0000-000000000003', \
+              'd1000000-0000-0000-0000-000000000004')",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query(
+            "DELETE FROM prims WHERE \"UUID\" IN \
+             ('77777777-7777-7777-7777-777777777771', \
+              '77777777-7777-7777-7777-777777777772', \
+              'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1')",
+        )
+        .execute(postgres)
         .await
         .unwrap();
     }

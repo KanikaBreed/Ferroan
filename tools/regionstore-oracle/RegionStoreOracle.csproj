@@ -22,6 +22,9 @@
     <Error
       Text="Set FerroanRef or FERROAN_REF to the reference checkout. Missing $(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj"
       Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj')" />
+    <Error
+      Text="Set FerroanRef or FERROAN_REF to the reference checkout. Missing $(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj"
+      Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj')" />
   </Target>
 
   <ItemGroup>
@@ -29,6 +32,9 @@
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj">
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.Framework/OpenSim.Region.Framework.csproj">
