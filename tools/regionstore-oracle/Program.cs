@@ -16,6 +16,7 @@ using OpenSim.Data.PGSQL;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
+using OpenSim.Region.Framework.Scenes.Serialization;
 using OpenSim.Region.PhysicsModules.SharedBase;
 
 const string Region = "11111111-1111-1111-1111-111111111111";
@@ -46,7 +47,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin>");
     return 2;
 }
 
@@ -81,8 +82,11 @@ try
         case "settings-load" when args.Length == 4:
             LoadSettings(args[1], args[2], args[3]);
             return 0;
+        case "serialize" when args.Length == 4:
+            Serialize(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin>");
             return 2;
     }
 }
@@ -723,6 +727,43 @@ static void Load(string path, string regionText, string pin)
     WriteDump(groups, prims, shapes, region, pin);
 }
 
+static void Serialize(string path, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    string full = Path.GetFullPath(path);
+    List<SceneObjectGroup> groups;
+    SQLiteSimulationData store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise("Data Source=" + full + ";Version=3;");
+        groups = store.LoadObjects(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    SerializeDump root = new SerializeDump
+    {
+        pin = pin,
+        region = region.ToString(),
+        groups = new List<SerializeGroup>()
+    };
+    foreach (SceneObjectGroup group in groups)
+    {
+        root.groups.Add(new SerializeGroup
+        {
+            id = group.RootPart.UUID.ToString(),
+            xml2 = SceneObjectSerializer.ToXml2Format(group),
+            original = SceneObjectSerializer.ToOriginalXmlFormat(group)
+        });
+    }
+
+    JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+    Console.Out.Write(JsonSerializer.Serialize(root, options));
+    Console.Out.Write('\n');
+}
+
 static void LoadMysql(string ado, string regionText, string pin)
 {
     UUID region = new UUID(regionText);
@@ -1232,6 +1273,20 @@ sealed class DumpGroup
 {
     public string rez_parameter { get; set; }
     public List<DumpPart> parts { get; set; }
+}
+
+sealed class SerializeDump
+{
+    public string pin { get; set; }
+    public string region { get; set; }
+    public List<SerializeGroup> groups { get; set; }
+}
+
+sealed class SerializeGroup
+{
+    public string id { get; set; }
+    public string xml2 { get; set; }
+    public string original { get; set; }
 }
 
 sealed class DumpPart

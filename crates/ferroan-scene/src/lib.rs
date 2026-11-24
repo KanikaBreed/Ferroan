@@ -53,9 +53,10 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Read-only region terrain, the prim load, region settings and the frame thread.
-//! The frame ticks at the shipped `FrameTime`, stores the login presence, and
-//! answers a forwarded chat with those positions. A landing updates the position.
+//! Read-only region terrain, the prim load, region settings, the object XML
+//! writer and the frame thread. The frame ticks at the shipped `FrameTime`,
+//! stores the login presence, and answers a forwarded chat with those positions.
+//! A landing updates the position.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -72,6 +73,7 @@ mod objects;
 mod payloads;
 mod settings;
 mod store;
+mod xml;
 
 pub use compress::TerrainLayer;
 pub use error::{ObjectError, TerrainError};
@@ -88,3 +90,4 @@ pub use payloads::{
 };
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::open_terrain;
+pub use xml::{to_original_xml, to_xml2};

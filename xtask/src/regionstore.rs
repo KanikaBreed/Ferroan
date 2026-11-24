@@ -26,6 +26,7 @@ const FIXTURE: &str = "fixtures/regionstore/objects.db";
 const DUMP: &str = "fixtures/regionstore/objects.json";
 const SETTINGS_FIXTURE: &str = "fixtures/regionstore/settings.db";
 const SETTINGS_DUMP: &str = "fixtures/regionstore/settings.json";
+const XML_DUMP: &str = "fixtures/regionstore/objects-xml.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
@@ -86,6 +87,43 @@ pub fn settings() -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: wrote {SETTINGS_FIXTURE} and {SETTINGS_DUMP}");
+    ExitCode::SUCCESS
+}
+
+/// Load the committed SQLite object fixture and write each group's XML2 and
+/// original XML from the pin's serializer.
+pub fn serialize() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let db = root.join(FIXTURE);
+    if !db.is_file() {
+        eprintln!("{LABEL}: missing {FIXTURE}");
+        return ExitCode::FAILURE;
+    }
+    let db_arg = db.display().to_string();
+    let json = match oracle_stdout(&dll, &["serialize", &db_arg, REGION, &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let dump = root.join(XML_DUMP);
+    if let Err(error) = fs::write(&dump, json) {
+        eprintln!("{LABEL}: could not write {}: {error}", dump.display());
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: wrote {XML_DUMP}");
     ExitCode::SUCCESS
 }
 
