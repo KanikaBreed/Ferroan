@@ -9,6 +9,13 @@
 //! Each connection carries one exchange. Forwarded messages explicitly say
 //! `Connection: close`; captures retain the original received headers and body.
 //! The configurable reply deadline includes held polls and their complete body.
+//! The request is queued as soon as it is in hand, and a side thread writes
+//! the file. A held poll is therefore in the capture before its response,
+//! and a stalled disk does not sit on the path that owes the client a reply.
+//! The response is queued before that reply is written, so the next poll
+//! cannot land between them. This task waits for the disk only after the
+//! client has the bytes. A reset does not fail the proxy. A client that
+//! shuts down only its write side still receives the response.
 //!
 //! Timeout reference (no C# code copied): EventQueueGetModule.cs, KEEPALIVE,
 //! VIEWERKEEPALIVE and OnRegisterCaps, under
@@ -204,9 +211,7 @@ async fn serve_inner(
         .write(true)
         .open(path)?;
     file.write_all(crate::format::MAGIC)?;
-    let capture = Arc::new(Capture {
-        file: Mutex::new(file),
-    });
+    let capture = Arc::new(Capture::start(file));
     let mut exchanges = JoinSet::new();
     loop {
         if status.0.stopping.load(Ordering::Acquire) {
@@ -268,25 +273,107 @@ fn validate_timeout(wait: Duration) -> io::Result<()> {
     Ok(())
 }
 
+enum Job {
+    Write(Vec<Record>),
+    Flush(std::sync::mpsc::Sender<io::Result<()>>),
+}
+
+/// One writer thread, in submission order. Callers enqueue without waiting,
+/// so a full pipe cannot hold the next POST. `flushed` waits until that
+/// thread has applied every record submitted so far.
 struct Capture {
-    file: Mutex<std::fs::File>,
+    tx: Mutex<Option<std::sync::mpsc::Sender<Job>>>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Capture {
-    fn push(&self, kind: Kind, bytes: &[u8]) -> io::Result<()> {
-        let record = Record {
-            kind,
-            time_ms: unix_ms(),
-            bytes: bytes.to_vec(),
-        };
-        let encoded = write_capture(&[record]).map_err(io::Error::other)?;
-        let mut file = self
-            .file
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        file.write_all(&encoded[crate::format::MAGIC.len()..])?;
-        file.flush()
+    fn start(file: std::fs::File) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || writer_loop(file, rx));
+        Self {
+            tx: Mutex::new(Some(tx)),
+            writer: Mutex::new(Some(writer)),
+        }
     }
+
+    fn submit(&self, records: Vec<Record>) -> io::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("capture writer stopped"))?;
+        tx.send(Job::Write(records))
+            .map_err(|_| io::Error::other("capture writer stopped"))
+    }
+
+    async fn flushed(&self) -> io::Result<()> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        {
+            let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
+            let tx = guard
+                .as_ref()
+                .ok_or_else(|| io::Error::other("capture writer stopped"))?;
+            tx.send(Job::Flush(ack_tx))
+                .map_err(|_| io::Error::other("capture writer stopped"))?;
+        }
+        tokio::task::spawn_blocking(move || {
+            ack_rx
+                .recv()
+                .unwrap_or_else(|_| Err(io::Error::other("capture writer stopped")))
+        })
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.tx
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        if let Some(writer) = self
+            .writer
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            let _ = writer.join();
+        }
+    }
+}
+
+fn writer_loop(mut file: std::fs::File, rx: std::sync::mpsc::Receiver<Job>) {
+    let mut error: Option<String> = None;
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Write(records) => {
+                if error.is_none()
+                    && let Err(err) = append_records(&mut file, &records)
+                {
+                    error = Some(err.to_string());
+                }
+            }
+            Job::Flush(ack) => {
+                let result = match &error {
+                    Some(message) => Err(io::Error::other(message.clone())),
+                    None => Ok(()),
+                };
+                let _ = ack.send(result);
+            }
+        }
+    }
+}
+
+fn append_records(file: &mut std::fs::File, records: &[Record]) -> io::Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let encoded = write_capture(records).map_err(io::Error::other)?;
+    file.write_all(&encoded[crate::format::MAGIC.len()..])?;
+    file.flush()
 }
 
 async fn forward(
@@ -302,19 +389,97 @@ async fn forward(
     };
     // Record the bytes the upstream server reads. C# copies the request's
     // Connection onto the response, so the fixture has to show this rewrite.
+    // The stamp is this moment, before the upstream wait, so a held poll still
+    // shows its wait in the capture times. The write itself is the side
+    // thread: waiting for it here is what made getgriduserinfo miss its second.
+    let request_ms = unix_ms();
     let forwarded = close_connection(&request)?;
-    capture.push(Kind::HttpRequest, &forwarded)?;
+    capture.submit(vec![Record {
+        kind: Kind::HttpRequest,
+        time_ms: request_ms,
+        bytes: forwarded.clone(),
+    }])?;
+    let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
+        Ok(Some(response)) => response,
+        Ok(None) => {
+            // The client reset after the request was queued. Leave that
+            // request in the capture and keep the listener up.
+            capture.flushed().await?;
+            return Ok(());
+        }
+        Err(error) => {
+            // The client was still waiting. The request is already queued,
+            // with no response, as the failed-exchange tests require.
+            let _ = capture.flushed().await;
+            return Err(error);
+        }
+    };
+    let response_ms = unix_ms();
+    let to_client = close_connection(&response)?;
+    // Queue the response before the client can send the next poll. Ferrobot
+    // polls again as soon as it has this reply; a later append let that poll
+    // land between this request and this response.
+    capture.submit(vec![Record {
+        kind: Kind::HttpResponse,
+        time_ms: response_ms,
+        bytes: response,
+    }])?;
+    if let Err(error) = write_message(&mut client, &to_client).await {
+        capture.flushed().await?;
+        if client_went_away(&error) {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    // The client has the response. Waiting for the disk is after that.
+    capture.flushed().await?;
+    Ok(())
+}
+
+async fn exchange(
+    client: &mut TcpStream,
+    upstream: SocketAddr,
+    forwarded: &[u8],
+    reply_timeout: Duration,
+) -> io::Result<Option<Vec<u8>>> {
     let mut server = timeout(IO_WAIT, TcpStream::connect(upstream))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"))??;
     // The socket exists only after connect. C# sets NoDelay before ConnectAsync;
     // the following writes see the same option.
     set_tcp_nodelay(&server)?;
-    write_message(&mut server, &forwarded).await?;
-    let response = read_message(&mut server, false, reply_timeout).await?;
-    capture.push(Kind::HttpResponse, &response)?;
-    write_message(&mut client, &close_connection(&response)?).await?;
-    Ok(())
+    write_message(&mut server, forwarded).await?;
+    tokio::select! {
+        biased;
+        response = read_message(&mut server, false, reply_timeout) => response.map(Some),
+        _ = client_left(client) => Ok(None),
+    }
+}
+
+/// The request is already consumed. A reset drops the upstream socket with
+/// this task. A clean end of the request (the client shut down its write
+/// side and is still reading) must not: that is how an event-queue poll ends
+/// its request, and treating it as a departure recorded no reply.
+async fn client_left(client: &mut TcpStream) {
+    let mut buf = [0u8; 1];
+    loop {
+        match client.read(&mut buf).await {
+            Err(_) => return,
+            Ok(0) => std::future::pending::<()>().await,
+            Ok(_) => continue,
+        }
+    }
+}
+
+fn client_went_away(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::NotConnected
+    )
 }
 
 async fn write_message(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
@@ -576,12 +741,7 @@ mod tests {
         let path = dir.join(format!("{}.cap", uuid::Uuid::new_v4()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(crate::format::MAGIC).unwrap();
-        (
-            Arc::new(Capture {
-                file: Mutex::new(file),
-            }),
-            path,
-        )
+        (Arc::new(Capture::start(file)), path)
     }
 
     #[tokio::test]
@@ -1086,9 +1246,12 @@ mod tests {
             .write_all(b"POST /assets HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\n\r\nping")
             .await
             .unwrap();
-        let mut response = vec![0u8; 128];
-        let n = client.read(&mut response).await.unwrap();
-        assert!(response[..n].windows(4).any(|window| window == b"pong"));
+        let mut response = Vec::new();
+        timeout(IO_WAIT, client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.windows(4).any(|window| window == b"pong"));
 
         let stored = std::fs::read(&path).unwrap();
         let records = read_capture(&stored).unwrap();
@@ -1101,6 +1264,338 @@ mod tests {
         assert!(records[1].time_ms > 0);
         serving.abort();
         let _ = serving.await;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// The logout probe names `griduser` when every attempt through this proxy
+    /// stays open for a full second. A capture write that blocks in the kernel
+    /// (the failing run's disk did not finish a terrain store for about ten
+    /// seconds) used to run before the response was sent, so none of those
+    /// attempts reached the client.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_blocked_capture_write_does_not_hold_the_next_response() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.scratch/proxy-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("block-{}.fifo", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = path.clone();
+        let (file_tx, file_rx) = std::sync::mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            let file = std::fs::File::open(fifo).unwrap();
+            file_tx.send(file).unwrap();
+        });
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let body = vec![b'x'; 96 * 1024];
+        let response =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                read_message(&mut socket, true, IO_WAIT).await.unwrap();
+                socket.write_all(&response).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture_path = path.clone();
+        let forwarding = tokio::spawn(async move {
+            let _ = serve_on(listener, upstream_addr, &capture_path).await;
+        });
+        let reader = tokio::task::spawn_blocking(move || {
+            file_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("capture fifo reader")
+        })
+        .await
+        .unwrap();
+        let request = b"POST /griduser HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+        let started = tokio::time::Instant::now();
+        read_bounded_response(address, request).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the first response waited on the capture write ({:?})",
+            started.elapsed()
+        );
+        // The first exchange is now blocked in the capture write. The next
+        // POST has to return while that write still holds the pipe.
+        let started = tokio::time::Instant::now();
+        read_bounded_response(address, request).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the second response waited on the capture write ({:?})",
+            started.elapsed()
+        );
+        drop(reader);
+        opener.join().unwrap();
+        forwarding.abort();
+        let _ = forwarding.await;
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Ferrobot polls again as soon as it has the reply. Recording the request
+    /// and the response as two later appends let the next poll land between
+    /// them, and the event-queue check then saw a poll with no reply.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn an_overlapping_post_cannot_split_a_captured_exchange() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.scratch/proxy-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("pair-{}.fifo", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = path.clone();
+        let (file_tx, file_rx) = std::sync::mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            let file = std::fs::File::open(fifo).unwrap();
+            file_tx.send(file).unwrap();
+        });
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let body = vec![b'y'; 96 * 1024];
+        let response =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                read_message(&mut socket, true, IO_WAIT).await.unwrap();
+                socket.write_all(&response).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = ProxyStatus::default();
+        let child_status = status.clone();
+        let capture_path = path.clone();
+        let forwarding = tokio::spawn(async move {
+            serve_on_with_status(
+                listener,
+                upstream_addr,
+                &capture_path,
+                DEFAULT_REPLY_TIMEOUT,
+                child_status,
+            )
+            .await
+        });
+        let reader = tokio::task::spawn_blocking(move || {
+            file_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("capture fifo reader")
+        })
+        .await
+        .unwrap();
+        read_bounded_response(
+            address,
+            b"POST /poll-a HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        read_bounded_response(
+            address,
+            b"POST /poll-b HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        let drained = tokio::task::spawn_blocking(move || {
+            let mut reader = reader;
+            let mut got = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = std::io::Read::read(&mut reader, &mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            got
+        });
+        status.finish(Duration::from_secs(5)).await.unwrap();
+        forwarding.await.unwrap().unwrap();
+        server.abort();
+        let _ = server.await;
+        opener.join().unwrap();
+        let bytes = drained.await.unwrap();
+        let _ = std::fs::remove_file(&path);
+        let records = read_capture(&bytes).unwrap();
+        assert_eq!(
+            records.len(),
+            4,
+            "each exchange is one request and one response"
+        );
+        assert!(
+            records.chunks(2).all(|pair| {
+                pair[0].kind == Kind::HttpRequest
+                    && pair[1].kind == Kind::HttpResponse
+                    && pair[1].time_ms >= pair[0].time_ms
+            }),
+            "a later poll was written between a request and its response"
+        );
+        let first = std::str::from_utf8(&records[0].bytes).unwrap();
+        let second = std::str::from_utf8(&records[2].bytes).unwrap();
+        assert!(first.contains("POST /poll-a "), "{first}");
+        assert!(second.contains("POST /poll-b "), "{second}");
+    }
+
+    #[cfg(unix)]
+    async fn read_bounded_response(address: SocketAddr, request: &[u8]) {
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(request).await.unwrap();
+        let mut buf = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let head_end = loop {
+            if tokio::time::Instant::now() > deadline {
+                panic!("response headers did not arrive within one second");
+            }
+            if let Some(at) = find_bytes(&buf, b"\r\n\r\n") {
+                break at + 4;
+            }
+            let mut tmp = [0u8; 4096];
+            let n = timeout(Duration::from_secs(1), client.read(&mut tmp))
+                .await
+                .expect("response timed out")
+                .unwrap();
+            assert!(n > 0, "proxy closed before the response");
+            buf.extend_from_slice(&tmp[..n]);
+        };
+        let len = content_length(&buf[..head_end]).expect("content-length");
+        while buf.len() < head_end + len {
+            if tokio::time::Instant::now() > deadline {
+                panic!(
+                    "response body stalled at {} of {len} bytes",
+                    buf.len() - head_end
+                );
+            }
+            let mut tmp = [0u8; 8192];
+            let n = timeout(Duration::from_secs(1), client.read(&mut tmp))
+                .await
+                .expect("body timed out")
+                .unwrap();
+            assert!(n > 0, "proxy closed before the body");
+            buf.extend_from_slice(&tmp[..n]);
+        }
+    }
+
+    /// A quiet event queue holds a poll for about 58 seconds, so a 120-second
+    /// session finishes two polls and is still inside the third. The capture
+    /// check counts requests. That third request has to be in the file before
+    /// its response, or the check reports too few polls.
+    #[tokio::test]
+    async fn a_held_poll_is_captured_before_its_response() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            seen_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: 4\r\n\r\npong")
+                .await
+                .unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+        let client = tokio::spawn(async move {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket
+                .write_all(
+                    b"POST /CE/held HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            timeout(Duration::from_secs(2), socket.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            response
+        });
+        seen_rx.await.unwrap();
+        let path_wait = path.clone();
+        let recorded = timeout(Duration::from_secs(2), async move {
+            loop {
+                if let Ok(bytes) = std::fs::read(&path_wait)
+                    && let Ok(records) = read_capture(&bytes)
+                    && records.len() == 1
+                    && records[0].kind == Kind::HttpRequest
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            recorded.is_ok(),
+            "held poll request was not captured before the response"
+        );
+        release_tx.send(()).unwrap();
+        let response = client.await.unwrap();
+        assert!(response.windows(4).any(|window| window == b"pong"));
+        status.finish(IO_WAIT).await.unwrap();
+        task.await.unwrap().unwrap();
+        server.await.unwrap();
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].kind, Kind::HttpResponse);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An event-queue client shuts down its write side after the poll and
+    /// keeps reading. Treating that end as a departure dropped the upstream
+    /// socket, so the capture kept too few polls.
+    #[tokio::test]
+    async fn a_half_closed_request_still_receives_the_response() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: 4\r\n\r\npong")
+                .await
+                .unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, DEFAULT_REPLY_TIMEOUT).await;
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"POST /CE/poll HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.windows(4).any(|window| window == b"pong"));
+        status.finish(IO_WAIT).await.unwrap();
+        task.await.unwrap().unwrap();
+        server.await.unwrap();
+        assert_eq!(status.failures(), 0);
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind, Kind::HttpRequest);
+        assert_eq!(records[1].kind, Kind::HttpResponse);
+        assert!(records[1].time_ms >= records[0].time_ms);
         std::fs::remove_file(path).unwrap();
     }
 

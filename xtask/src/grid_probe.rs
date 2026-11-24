@@ -1137,6 +1137,84 @@ mod tests {
         service.await.unwrap();
     }
 
+    /// Run 44992751146: every `getgriduserinfo` attempt through the private
+    /// capture proxy used its one-second budget, and Robust logged no handler.
+    /// The capture write was still on the path in front of the response.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_blocked_capture_write_does_not_stop_the_griduser_probe() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+        use tokio::io::AsyncWriteExt;
+
+        let dir = crate::repo_root().join(".scratch/proxy-tests");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("probe-block-{}.fifo", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = path.clone();
+        let (file_tx, file_rx) = mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            let file = fs::File::open(fifo).unwrap();
+            file_tx.send(file).unwrap();
+        });
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let body = vec![b'x'; 96 * 1024];
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            let _ = read_http(&mut socket).await;
+            socket.write_all(header.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture_path = path.clone();
+        let forwarding = tokio::spawn(async move {
+            let _ = ferroan_capture::serve_on(listener, upstream_addr, &capture_path).await;
+        });
+        let reader = tokio::task::spawn_blocking(move || {
+            file_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("capture fifo reader")
+        })
+        .await
+        .unwrap();
+        let started = Instant::now();
+        let result = post_before(
+            tokio::time::Instant::now() + Duration::from_secs(3),
+            &format!("http://{address}/griduser"),
+            &fields("getgriduserinfo"),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        drop(reader);
+        opener.join().unwrap();
+        forwarding.abort();
+        let _ = forwarding.await;
+        server.abort();
+        let _ = server.await;
+        let _ = fs::remove_file(&path);
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "griduser probe waited {elapsed:?} ({result:?})"
+        );
+        let timed_out = result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.contains("deadline"));
+        assert!(!timed_out, "{result:?}");
+    }
+
     async fn read_http(socket: &mut tokio::net::TcpStream) -> String {
         use tokio::io::AsyncReadExt;
         let mut request = Vec::new();

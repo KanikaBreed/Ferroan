@@ -72,7 +72,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10aa | P0.10n8: the logout service-state probe in `login grid --rust assets,accounts` stops timing out (four failures on 21 November) | DONE (#171) |
 | Q10ab | P0.10n9: a captured UDP packet always re-encodes (`does not re-encode`, twice on 21 November) | DONE (#173) |
 | Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | DONE (#185) |
-| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | READY after Q10ab |
+| Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (this PR) |
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | READY |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | READY |
