@@ -51,13 +51,20 @@ runs:
           # Full commit history. Nerdbank.GitVersioning refuses a shallow
           # clone when it computes version height. A blobless clone keeps
           # every commit. Checkout fetches the files at the pinned revision.
-          # The version-height walk reads older version.json blobs through
-          # Nerdbank's own git reader, which does not ask Git to fetch a
-          # missing blob, so those blobs are fetched here.
+          # The height walk reads older version.json blobs through Nerdbank's
+          # own git reader, which does not ask Git to fetch a missing blob.
+          # Listing every object does ask, and that downloads every blob, so
+          # the ids come from `git log --raw` (trees only) and only those
+          # version files are fetched.
           git clone --filter=blob:none "$url" "$dest"
           git -C "$dest" checkout --detach "$rev"
-          git -C "$dest" rev-list --objects HEAD \
-            | awk 'NF >= 2 && $2 ~ /(^|\/)version\.json$/ { print $1 }' \
+          git -C "$dest" log --raw --no-abbrev --pretty=format: HEAD \
+            | awk -F'\t' 'NF >= 2 && $2 ~ /(^|\/)version\.json$/ {
+                split($1, a, " ")
+                if (a[3] !~ /^0+$/) print a[3]
+                if (a[4] !~ /^0+$/) print a[4]
+              }' \
+            | sort -u \
             | git -C "$dest" cat-file --batch >/dev/null
         }
         repository() {
