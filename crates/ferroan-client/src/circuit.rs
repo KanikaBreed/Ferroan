@@ -193,7 +193,25 @@ pub const LOGIN_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// `DefaultDrawDistance` when the viewer has not sent a far plane above 32.
 pub const LOGIN_DRAW_DISTANCE: f32 = 255.0;
 
-pub type LoginScene = Arc<dyn Fn(Uuid, LoginPose) -> Result<LoginPose, ()> + Send + Sync>;
+/// What the circuit asks the frame thread to do. Each call is one inbound post.
+#[derive(Clone, Debug)]
+pub enum SceneCall {
+    /// Store a full login pose.
+    Pose(LoginPose),
+    /// A local or neighbour landing. The frame keeps the other pose fields.
+    Land([f32; 3]),
+    /// `ChatFromViewer` forwarded so distance uses the stored poses.
+    Places(Vec<Uuid>),
+}
+
+/// The frame's answer. A landing comes back as the stored [`SceneReply::Pose`].
+#[derive(Clone, Debug)]
+pub enum SceneReply {
+    Pose(LoginPose),
+    Places(HashMap<Uuid, [f32; 3]>),
+}
+
+pub type LoginScene = Arc<dyn Fn(Uuid, SceneCall) -> Result<SceneReply, ()> + Send + Sync>;
 
 /// Why the region stopped a live circuit. Ordinary logout is not one of these:
 /// `LogoutHandler` closes with `sendStop` false and does not send either packet.
@@ -856,11 +874,13 @@ impl State {
                 && let Ok(incoming) = packet.decode::<ChatFromViewer>()
             {
                 let text = ferroan_protocol::field_str(&incoming.chat_data.message);
+                let places = self.chat_places(expect.agent_id);
                 chat.publish(
                     expect.agent_id,
                     incoming.chat_data.type_,
                     incoming.chat_data.channel,
                     &text,
+                    &places,
                 );
             }
         } else if packet.id == TeleportLocationRequest::ID {
@@ -910,8 +930,7 @@ impl State {
     }
 
     /// Post the landed pose and use the frame's record. Without a scene, the
-    /// arrival position is the one the region already computed. Chat and
-    /// teleport keep that field either way.
+    /// arrival position is the one the region already computed.
     fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
         let Some(scene) = &self.login_scene else {
             return Ok(self.arrival.position);
@@ -923,9 +942,37 @@ impl State {
             control_flags: 0,
             draw_distance: LOGIN_DRAW_DISTANCE,
         };
-        scene(agent, pose)
-            .map(|stored| stored.position)
-            .map_err(|_| CircuitError::SceneInbound)
+        match scene(agent, SceneCall::Pose(pose)) {
+            Ok(SceneReply::Pose(stored)) => Ok(stored.position),
+            _ => Err(CircuitError::SceneInbound),
+        }
+    }
+
+    /// Write a landing position. No scene is not an error: tests teleport
+    /// without a frame. A full inbound queue fails the local teleport before
+    /// its packets, and is ignored on a neighbour return that must still complete.
+    fn land_scene(&self, agent: Uuid, position: [f32; 3]) -> Result<(), CircuitError> {
+        let Some(scene) = &self.login_scene else {
+            return Ok(());
+        };
+        match scene(agent, SceneCall::Land(position)) {
+            Ok(SceneReply::Pose(_)) => Ok(()),
+            _ => Err(CircuitError::SceneInbound),
+        }
+    }
+
+    /// Forward the seated ids. The frame answers with the poses it has.
+    fn chat_places(&self, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
+        let Some(chat) = &self.chat else {
+            return HashMap::new();
+        };
+        let Some(scene) = &self.login_scene else {
+            return HashMap::new();
+        };
+        match scene(speaker, SceneCall::Places(chat.seated_ids())) {
+            Ok(SceneReply::Places(places)) => places,
+            _ => HashMap::new(),
+        }
     }
 
     /// `TeleportLocationRequest` for this region. `TeleportStart` and
@@ -974,6 +1021,11 @@ impl State {
                     self.send_message(sock, to, &failed, true).await?;
                     return Ok(());
                 }
+                if self.land_scene(expect.agent_id, landing.position).is_err() {
+                    let failed = teleport::failed_packet(expect.agent_id, FAIL_PROCESS);
+                    self.send_message(sock, to, &failed, true).await?;
+                    return Ok(());
+                }
                 let start = teleport::start_packet(landing.flags);
                 self.send_message(sock, to, &start, true).await?;
                 let local = teleport::local_packet(
@@ -988,9 +1040,6 @@ impl State {
                     .position
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner()) = landing.position;
-                if let Some(chat) = &self.chat {
-                    chat.set_position(expect.agent_id, landing.position);
-                }
             }
         }
         Ok(())
@@ -1085,6 +1134,7 @@ impl State {
     /// the arrival at the update's position.
     async fn finish_return(
         &mut self,
+        agent: Uuid,
         pose: crate::return_hop::ReturnPose,
     ) -> Result<(), CircuitError> {
         if pose.origin.is_nil() {
@@ -1093,6 +1143,8 @@ impl State {
         }
         self.arrival.position = pose.position;
         self.arrival.look_at = pose.look_at;
+        // The return packets still go out when the inbound queue is full.
+        let _ = self.land_scene(agent, pose.position);
         let Some(slot) = self.return_slot.clone() else {
             self.return_started = false;
             return Ok(());
@@ -1502,7 +1554,23 @@ impl CircuitServer {
         let Some(chat) = chat else {
             return;
         };
-        let seat = chat.seat(agent, name, position);
+        let scene = self
+            .inner
+            .login_scene
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        if let Some(scene) = scene {
+            let pose = LoginPose {
+                position,
+                rotation: LOGIN_ROTATION,
+                velocity: [0.0, 0.0, 0.0],
+                control_flags: 0,
+                draw_distance: LOGIN_DRAW_DISTANCE,
+            };
+            let _ = scene(agent, SceneCall::Pose(pose));
+        }
+        let seat = chat.seat(agent, name);
         self.inner
             .waiting_seats
             .lock()
@@ -1889,7 +1957,7 @@ async fn serve_socket_reporting(
             } => {
                 state.return_wait = false;
                 if let Some(pose) = pose {
-                    state.finish_return(pose).await?;
+                    state.finish_return(expect.agent_id, pose).await?;
                 } else {
                     // The update did not arrive. A later movement can try again.
                     state.return_started = false;
@@ -1964,7 +2032,9 @@ mod regression_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use ferroan_protocol::msgs::{
@@ -1975,7 +2045,10 @@ mod tests {
     use tokio::net::UdpSocket;
     use uuid::Uuid;
 
-    use super::{CircuitExpect, CircuitServer};
+    use super::{
+        CircuitExpect, CircuitServer, LOGIN_DRAW_DISTANCE, LOGIN_ROTATION, LoginPose, SceneCall,
+        SceneReply,
+    };
 
     fn expect_agent() -> CircuitExpect {
         CircuitExpect {
@@ -2186,6 +2259,34 @@ mod tests {
     async fn a_channel_zero_say_is_reliable_and_heard_by_both_viewers() {
         let server = CircuitServer::bind().await.unwrap();
         server.enable_chat();
+        let poses = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
+        let store = Arc::clone(&poses);
+        server.set_login_scene(Arc::new(move |agent, call| {
+            let mut poses = store.lock().unwrap_or_else(|poison| poison.into_inner());
+            match call {
+                SceneCall::Pose(pose) => {
+                    poses.insert(agent, pose.position);
+                    Ok(SceneReply::Pose(pose))
+                }
+                SceneCall::Land(position) => {
+                    poses.insert(agent, position);
+                    Ok(SceneReply::Pose(LoginPose {
+                        position,
+                        rotation: LOGIN_ROTATION,
+                        velocity: [0.0, 0.0, 0.0],
+                        control_flags: 0,
+                        draw_distance: LOGIN_DRAW_DISTANCE,
+                    }))
+                }
+                SceneCall::Places(ids) => {
+                    let places = ids
+                        .into_iter()
+                        .filter_map(|id| poses.get(&id).copied().map(|position| (id, position)))
+                        .collect();
+                    Ok(SceneReply::Places(places))
+                }
+            }
+        }));
         let addr = server.local_addr().unwrap();
         let speaker = expect_agent();
         let listener = CircuitExpect {
@@ -2243,6 +2344,7 @@ mod tests {
             assert_eq!(decoded.chat_data.chat_type, 1);
             assert_eq!(decoded.chat_data.audible, 1);
             assert_eq!(decoded.chat_data.message, b"ferroan harness chat\0");
+            assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
         }
         let mut request = LogoutRequest::default();
         request.agent_data.agent_id = speaker.agent_id;

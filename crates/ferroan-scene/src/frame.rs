@@ -3,8 +3,9 @@
 
 //! The region frame thread. [D6](../../../docs/DECISIONS.md) keeps it off the
 //! async runtime. It ticks at the shipped `FrameTime` and still answers height
-//! and layer queries. This row has no physics. The only pose it stores is the
-//! login arrival. Chat and teleport keep their own positions.
+//! and layer queries. This row has no physics. Login and a later landing store
+//! the pose. Chat forwards onto the same inbound channel and reads those
+//! positions back. Teleport packets stay on the circuit.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -62,10 +63,27 @@ struct PresencePost {
     reply: Sender<Presence>,
 }
 
+struct LandPost {
+    agent: Uuid,
+    position: [f32; 3],
+    reply: Sender<Presence>,
+}
+
+struct PlacesPost {
+    agents: Vec<Uuid>,
+    reply: Sender<HashMap<Uuid, [f32; 3]>>,
+}
+
+enum Inbound {
+    Pose(PresencePost),
+    Land(LandPost),
+    Places(PlacesPost),
+}
+
 /// Owns the heightmap and the login presences on `ferroan-scene`.
 pub struct TerrainFrame {
     tx: Sender<Request>,
-    inbound: SyncSender<PresencePost>,
+    inbound: SyncSender<Inbound>,
     thread: Option<JoinHandle<()>>,
     has_map: bool,
 }
@@ -125,10 +143,36 @@ impl TerrainFrame {
     /// Store one login pose and return the record the frame thread kept.
     pub fn post_login(&self, agent: Uuid, pose: Presence) -> Result<Presence, TerrainError> {
         let (reply, rx) = mpsc::channel();
-        push_inbound(&self.inbound, PresencePost { agent, pose, reply })?;
-        // Wake the tick wait so the pose is stored before the next frame.
-        let _ = self.tx.send(Request::Wake);
+        self.push(Inbound::Pose(PresencePost { agent, pose, reply }))?;
         rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// A local or neighbour landing. An existing record keeps its other fields.
+    pub fn land(&self, agent: Uuid, position: [f32; 3]) -> Result<Presence, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Land(LandPost {
+            agent,
+            position,
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    /// Positions for one forwarded `ChatFromViewer`. Missing agents are omitted.
+    pub fn chat_positions(&self, agents: &[Uuid]) -> Result<HashMap<Uuid, [f32; 3]>, TerrainError> {
+        let (reply, rx) = mpsc::channel();
+        self.push(Inbound::Places(PlacesPost {
+            agents: agents.to_vec(),
+            reply,
+        }))?;
+        rx.recv().map_err(|_| TerrainError::Stopped)
+    }
+
+    fn push(&self, post: Inbound) -> Result<(), TerrainError> {
+        push_inbound(&self.inbound, post)?;
+        // Wake the tick wait so the post is applied before the next frame.
+        let _ = self.tx.send(Request::Wake);
+        Ok(())
     }
 
     pub fn presence(&self, agent: Uuid) -> Result<Option<Presence>, TerrainError> {
@@ -157,7 +201,7 @@ impl Drop for TerrainFrame {
     }
 }
 
-fn push_inbound(tx: &SyncSender<PresencePost>, post: PresencePost) -> Result<(), TerrainError> {
+fn push_inbound(tx: &SyncSender<Inbound>, post: Inbound) -> Result<(), TerrainError> {
     match tx.try_send(post) {
         Ok(()) => Ok(()),
         Err(TrySendError::Full(_)) => {
@@ -178,17 +222,41 @@ fn frame_wait() -> Duration {
     Duration::from_secs_f32(FRAME_TIME)
 }
 
-fn drain_inbound(rx: &Receiver<PresencePost>, presences: &mut HashMap<Uuid, Presence>) {
+fn drain_inbound(rx: &Receiver<Inbound>, presences: &mut HashMap<Uuid, Presence>) {
     while let Ok(post) = rx.try_recv() {
-        presences.insert(post.agent, post.pose);
-        let _ = post.reply.send(post.pose);
+        match post {
+            Inbound::Pose(post) => {
+                presences.insert(post.agent, post.pose);
+                let _ = post.reply.send(post.pose);
+            }
+            Inbound::Land(post) => {
+                let pose = presences.entry(post.agent).or_insert(Presence {
+                    position: post.position,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 255.0,
+                });
+                pose.position = post.position;
+                let _ = post.reply.send(*pose);
+            }
+            Inbound::Places(post) => {
+                let mut found = HashMap::new();
+                for agent in post.agents {
+                    if let Some(pose) = presences.get(&agent) {
+                        found.insert(agent, pose.position);
+                    }
+                }
+                let _ = post.reply.send(found);
+            }
+        }
     }
 }
 
 fn run(
     map: Option<Heightmap>,
     rx: Receiver<Request>,
-    inbound: Receiver<PresencePost>,
+    inbound: Receiver<Inbound>,
     ready: Sender<()>,
 ) {
     let layers = map.as_ref().map(compress::land_layers).unwrap_or_default();
@@ -296,25 +364,64 @@ mod tests {
             let (reply, _wait) = mpsc::channel();
             push_inbound(
                 &tx,
-                PresencePost {
+                Inbound::Pose(PresencePost {
                     agent: Uuid::from_u128(index as u128),
                     pose,
                     reply,
-                },
+                }),
             )
             .unwrap();
         }
         let (reply, _wait) = mpsc::channel();
         let error = push_inbound(
             &tx,
-            PresencePost {
+            Inbound::Pose(PresencePost {
                 agent: Uuid::from_u128(999),
                 pose,
                 reply,
-            },
+            }),
         )
         .unwrap_err();
         assert!(matches!(error, TerrainError::InboundFull));
         assert!(ferroan_diag::metrics().contains("region.scene-inbound"));
+    }
+
+    #[test]
+    fn a_landing_is_the_position_chat_reads() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let speaker = Uuid::from_u128(1);
+        let listener = Uuid::from_u128(2);
+        let pose = Presence {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [1.0, 0.0, 0.0],
+            control_flags: 4,
+            draw_distance: 255.0,
+        };
+        frame.post_login(speaker, pose).unwrap();
+        frame
+            .post_login(
+                listener,
+                Presence {
+                    position: [130.0, 128.0, 25.0],
+                    ..pose
+                },
+            )
+            .unwrap();
+        let landed = frame.land(speaker, [40.0, 200.0, 30.0]).unwrap();
+        assert_eq!(landed.position, [40.0, 200.0, 30.0]);
+        assert_eq!(landed.rotation, pose.rotation);
+        assert_eq!(landed.velocity, pose.velocity);
+        assert_eq!(landed.control_flags, pose.control_flags);
+        assert_eq!(landed.draw_distance, pose.draw_distance);
+        let places = frame.chat_positions(&[speaker, listener]).unwrap();
+        assert_eq!(places.get(&speaker).copied(), Some([40.0, 200.0, 30.0]));
+        assert_eq!(places.get(&listener).copied(), Some([130.0, 128.0, 25.0]));
+        assert!(
+            frame
+                .chat_positions(&[Uuid::from_u128(9)])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

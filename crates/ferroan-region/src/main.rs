@@ -538,26 +538,41 @@ async fn dispatch_circuits(
     circuit.enable_chat();
     if let Some(frame) = terrain.as_ref() {
         let frame = Arc::clone(frame);
-        circuit.set_login_scene(Arc::new(move |agent, pose| {
-            let stored = frame
-                .post_login(
-                    agent,
-                    ferroan_scene::Presence {
-                        position: pose.position,
-                        rotation: pose.rotation,
-                        velocity: pose.velocity,
-                        control_flags: pose.control_flags,
-                        draw_distance: pose.draw_distance,
-                    },
-                )
-                .map_err(|_| ())?;
-            Ok(ferroan_client::LoginPose {
-                position: stored.position,
-                rotation: stored.rotation,
-                velocity: stored.velocity,
-                control_flags: stored.control_flags,
-                draw_distance: stored.draw_distance,
-            })
+        circuit.set_login_scene(Arc::new(move |agent, call| {
+            let pose_of = |stored: ferroan_scene::Presence| {
+                ferroan_client::SceneReply::Pose(ferroan_client::LoginPose {
+                    position: stored.position,
+                    rotation: stored.rotation,
+                    velocity: stored.velocity,
+                    control_flags: stored.control_flags,
+                    draw_distance: stored.draw_distance,
+                })
+            };
+            match call {
+                ferroan_client::SceneCall::Pose(pose) => {
+                    let stored = frame
+                        .post_login(
+                            agent,
+                            ferroan_scene::Presence {
+                                position: pose.position,
+                                rotation: pose.rotation,
+                                velocity: pose.velocity,
+                                control_flags: pose.control_flags,
+                                draw_distance: pose.draw_distance,
+                            },
+                        )
+                        .map_err(|_| ())?;
+                    Ok(pose_of(stored))
+                }
+                ferroan_client::SceneCall::Land(position) => {
+                    let stored = frame.land(agent, position).map_err(|_| ())?;
+                    Ok(pose_of(stored))
+                }
+                ferroan_client::SceneCall::Places(ids) => {
+                    let places = frame.chat_positions(&ids).map_err(|_| ())?;
+                    Ok(ferroan_client::SceneReply::Places(places))
+                }
+            }
         }));
     }
     let mut ctx = DispatchCtx {
