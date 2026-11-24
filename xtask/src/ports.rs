@@ -9,6 +9,11 @@
 //! `.scratch/live/runs/<base>-<pid>/`. A later command with the same base
 //! finds that directory. With no setting, ephemeral listeners
 //! stay ephemeral and Docker smoke stays on 3100, 9095, 4317 and 4318.
+//!
+//! A set base reserves its 32 ports for this process. Those ports sit inside
+//! the kernel's ephemeral range, so a client connection (the asset service's
+//! database session, a capture proxy) can otherwise occupy a slot before the
+//! server binds it. The reservation is released when that slot is allocated.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
@@ -173,10 +178,83 @@ static ASSIGNED: Mutex<Vec<(u8, u16)>> = Mutex::new(Vec::new());
 static DYNAMIC_NEXT: Mutex<u8> = Mutex::new(DYNAMIC);
 static RUN_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
+struct ReservedBlock {
+    base: u16,
+    listeners: Vec<Option<TcpListener>>,
+}
+
+static RESERVED: Mutex<Option<ReservedBlock>> = Mutex::new(None);
+
 pub(crate) fn install(flag: Option<u16>) -> Result<(), String> {
+    if PLAN.get().is_some() {
+        return Err("the live port base is already set".to_string());
+    }
     let plan = Plan::resolve(flag)?;
+    if let Some(base) = plan.base {
+        reserve_block(base)?;
+    }
     PLAN.set(plan)
-        .map_err(|_| "the live port base is already set".to_string())
+        .map_err(|_| "the live port base is already set".to_string())?;
+    Ok(())
+}
+
+fn slot_port(base: u16, offset: usize) -> Result<u16, String> {
+    let offset = u16::try_from(offset).map_err(|_| format!("port offset {offset} does not fit"))?;
+    base.checked_add(offset)
+        .ok_or_else(|| format!("port base {base} has no room at offset {offset}"))
+}
+
+/// Bind every port in the block so the kernel will not hand one out as an
+/// ephemeral client port. A busy port is retried briefly; a listener left by
+/// another process still fails the command.
+fn reserve_block(base: u16) -> Result<(), String> {
+    let mut listeners = std::iter::repeat_with(|| None)
+        .take(usize::from(SPAN))
+        .collect::<Vec<Option<TcpListener>>>();
+    let mut pending: Vec<usize> = (0..usize::from(SPAN)).collect();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let mut still = Vec::new();
+        for offset in pending {
+            let port = slot_port(base, offset)?;
+            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                Ok(listener) => listeners[offset] = Some(listener),
+                Err(error) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!("127.0.0.1:{port} is already in use ({error})"));
+                    }
+                    still.push(offset);
+                }
+            }
+        }
+        if still.is_empty() {
+            break;
+        }
+        pending = still;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    *RESERVED.lock().unwrap_or_else(|poison| poison.into_inner()) =
+        Some(ReservedBlock { base, listeners });
+    Ok(())
+}
+
+/// Drop the reservation for `port` when this process holds it.
+fn release_reservation(port: u16) -> bool {
+    let mut reserved = RESERVED.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(block) = reserved.as_mut() else {
+        return false;
+    };
+    let Some(offset) = port.checked_sub(block.base) else {
+        return false;
+    };
+    if offset >= SPAN {
+        return false;
+    }
+    block
+        .listeners
+        .get_mut(usize::from(offset))
+        .and_then(Option::take)
+        .is_some()
 }
 
 pub(crate) fn current() -> Plan {
@@ -318,6 +396,11 @@ fn ephemeral(assigned: &[(u8, u16)]) -> Result<u16, String> {
 }
 
 fn ensure_free(port: u16) -> Result<(), String> {
+    // Releasing the reservation is the check: nobody else could bind it while
+    // this process held the listener. A port outside the block still probes.
+    if release_reservation(port) {
+        return Ok(());
+    }
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(listener) => {
             drop(listener);
@@ -692,6 +775,38 @@ mod tests {
                 "-server.grpc-listen-port=25015".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn a_reserved_slot_stays_unavailable_until_it_is_allocated() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                *RESERVED.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+            }
+        }
+        let _clear = Clear;
+        let base = (0..40u16)
+            .map(|step| 20_000 + step * SPAN)
+            .find(|candidate| {
+                (0..SPAN).all(|offset| {
+                    let port = slot_port(*candidate, usize::from(offset)).expect("offset fits");
+                    TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                        .map(drop)
+                        .is_ok()
+                })
+            })
+            .expect("a free 32-port block");
+        reserve_block(base).expect("the free block reserves");
+        let port = base + u16::from(Slot::StandalonePrivate as u8);
+        assert!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err(),
+            "a client must not bind a reserved slot"
+        );
+        assert!(ensure_free(port).is_ok());
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the allocated slot is free");
+        drop(listener);
     }
 
     #[test]

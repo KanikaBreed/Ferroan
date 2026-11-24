@@ -10,7 +10,9 @@
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Output, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
