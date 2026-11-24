@@ -77,17 +77,17 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
-| Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | READY after Q10ah |
-| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY after Q10ai |
-| Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | READY after Q10aj |
+| Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
+| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY |
+| Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | BLOCKED (waits for the maintainer's new CI servers) |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
 | QR3 | R3: asset uploads work with two or more avatars in the region | DONE (#209) |
-| QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | DONE (this PR) |
-| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | DONE (this PR) |
-| QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | DONE (this PR) |
+| QR4 | R4: the quaternion encoder matches OpenMetaverse again; client packets are checked another way | DONE (#211) |
+| QR5 | R5: FSAssets does no blocking I/O on async tasks, streams import, and checks existence without touching access time | DONE (#218) |
+| QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | DONE (#222) |
 | QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | READY after QR4 |
-| QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (this PR) |
+| QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
@@ -96,7 +96,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker (published loopback ports, no host networking) | READY after QR7 |
-| QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | READY |
+| QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |
 | QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | READY |
 | QR19 | R19: the region store follows the batch-5 upstream choices (dynamic attributes, forced root id) at the next pin move | READY after the pin move that carries the batch-5 PRs |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -120,13 +120,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q18c | P2.0i3: Ferroan as the destination and the return hop: `teleport neighbour: pass` both ways | DONE (#208) |
 | Q19 | P2.0j: grid-mode report comparison and the first-login checklist | DONE (#210) |
 | Q40 | P2.1a: the scene owns presences on the frame thread; circuits do I/O only (D39) | SPLIT into Q40a to Q40c (#214) |
-| Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | DONE (this PR) |
-| Q40b | P2.1a2: chat reads live positions from the scene | DONE (this PR) |
-| Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | DONE (this PR) |
+| Q40a | P2.1a1: the frame tick at `FrameTime` 0.0909 and the presence record, login the only consumer, `region.scene-inbound` | DONE (#216) |
+| Q40b | P2.1a2: chat reads live positions from the scene | DONE (#219) |
+| Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | DONE (#223) |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | READY after Q40c |
 | Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | READY after Q41 |
 | Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40c |
-| Q44 | P2.2a: `AgentUpdate` into movement intent | DONE (this PR) |
+| Q44 | P2.2a: `AgentUpdate` into movement intent | DONE (#228) |
 | Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | READY after Q44 |
 | Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | READY after Q45 and Q42 |
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46 |
@@ -141,9 +141,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | DONE (#204) |
 | Q54 | P2.4a2: prim inventory items from the SQLite store | DONE (#207) |
 | Q55 | P2.4b: region object loads on MySQL and PostgreSQL, `regionstore cross` | SPLIT into Q55a and Q55b (#212) |
-| Q55a | P2.4b1: MySQL region object load, `regionstore cross` on SQLite and MySQL | DONE (this PR) |
-| Q55b | P2.4b2: PostgreSQL region object load, `regionstore cross` on all three | DONE (this PR) |
-| Q56 | P2.4c: region settings and spawn points from the store | DONE (this PR) |
+| Q55a | P2.4b1: MySQL region object load, `regionstore cross` on SQLite and MySQL | DONE (#217) |
+| Q55b | P2.4b2: PostgreSQL region object load, `regionstore cross` on all three | DONE (#220) |
+| Q56 | P2.4c: region settings and spawn points from the store | DONE (#224) |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | READY after Q18a |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
@@ -605,8 +605,13 @@ QR8 (24 November 2026, `fix/debug-excerpt`): The debug hex excerpt masks a Creat
 
 QR17 to QR19 (manager, 24 November 2026, from the review of the fifth upstream batch). QR17: D45 (#209, QR3) removes an agent's waiting uploader path when the next NewFileAgentInventory arrives. That breaks the two-step mesh upload: Firestorm and the Linden viewer keep the `uploader` URL from the fee request (`requestWholeModelFee`) and POST to it later in `doWholeModelUpload` without asking again, so any texture, sound or snapshot upload in between kills the mesh upload. C#'s behaviour (each uploader path stays until it is used or its 120 second timer fires) is right, so TB61 is not a bug: move it to a 'not a bug' note in TRANQUILLITY_BUGS.md, mark D45 withdrawn in DECISIONS.md with the reason, and keep every offered path registered per agent until used or timed out, within the `region.pending-uploads` bound. Evidence: a live or fixture test where a mesh fee request, then a texture upload, then the mesh POST to the first URL all succeed, matching C#. QR18: the upstream review showed that on MariaDB 11.6.2 and later (`innodb_snapshot_isolation` on by default) a lookup followed by an insert inside one REPEATABLE READ transaction fails with error 1020 when another store of the same bytes commits in between, and that `INSERT ... ON DUPLICATE KEY UPDATE` needs the UPDATE privilege. Check Ferroan's MySQL XAsset store (D43, `INSERT IGNORE`) against MariaDB 11.8 with default settings and against a SELECT+INSERT-only login, and fix it the way the upstream fix does (the lookup outside the transaction; a duplicate key on the data insert treated as the same bytes; no `INSERT IGNORE`). Evidence: the deterministic two-store race passing on MySQL 8.4 and MariaDB 11.8. QR19: when a pin move brings in the fifth upstream batch, Ferroan follows it: a dynamic-attribute document that is not a map loads the prim without attributes (D48 changes), and the PostgreSQL forced-root-id case is recorded as a TB row (the next save leaves the original root row, so the next load returns an extra child) with Ferroan's choice.
 
+QR17 (24 November 2026, `fix/pending-uploader`): Each offered uploader path stays until that upload is posted or its 120 second timer fires, and a new offer does not remove an earlier path. Past 128 waiting uploads the offer is `uploader limit reached`. While that agent's bytes are being stored, a new offer is `Uploader busy processing previous request`. D45 is withdrawn. TB61 is a not-a-bug note. No new TB or D. Evidence is on the R17 row.
+
+Home1 stopped (maintainer, 24 November 2026): "Lets stop the home thing, it has been taking 12 hours for pointless." Q10ai's PR #203 is closed unmerged; each CI round on Home1 found a new environment difference (port blocks inside the kernel's ephemeral range, missing database clients, nested port reservations). The live jobs stay on GitHub-hosted runners; `live images` keeps its current switch. Q10aj (split `live services` into parallel GitHub jobs) no longer waits for Q10ai and is the way to shorten CI now. Q10ak waits until the maintainer's dedicated servers exist; when it runs, build on the CI image so the job environment does not depend on the machine.
+
 ## Found while working
 
+- 2026-11-24, QR17: A mesh fee request returns an uploader, and the later POST stores the posted body as an object asset and answers complete. The region does not build the linkset the pin builds from that body. The two-step URL is what this item keeps.
 - 2026-11-24, Q56: At pin `c401bceecd`, `FixedSun`, `SunVector` and `SunPosition` discard the stored columns, so the handshake never sets `SunFixed` (TB69). Ferroan sets that bit from `fixed_sun` (D52). The sun vector and position are not handshake fields. A null covenant, or another cell the settings load casts with no null check, stops scene startup (TB70). Ferroan keeps the fresh default and the region still loads (D53). MySQL and PostgreSQL region settings are not read; those connections keep the fresh handshake. D38 names P2.4b and P2.9b for all three databases, not this row. There is no live handshake compare for this load.
 - 2026-11-24, Q55b: At pin `c401bceecd`, a null required number or text stops the PostgreSQL region's object load (TB65). Ferroan leaves that prim out and keeps the others (D49). An inventory row that cannot be built stops that same load (TB66). Ferroan leaves that row out and keeps the prim, the other items and the other groups (D50). A dynamic-attribute document whose top value is an integer stops the load (TB67). Ferroan leaves that prim out and keeps the others (D48). An item stored on a root whose id was rewritten to the group id is not loaded, because the inventory query uses the rewritten id (TB68). Ferroan reads the original id and sets the parent id to the loaded prim id (D51). No viewer needs the region to come back empty, or that item to be missing. There is no live compare for this load.
 
