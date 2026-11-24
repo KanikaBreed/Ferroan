@@ -247,6 +247,9 @@ fn run_spec(spec: RunSpec) -> ExitCode {
 }
 
 fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCode {
+    if service == "region" {
+        return crate::region_report::compare();
+    }
     if backend == AssetBackend::Xasset {
         if service != "assets" {
             return live::finish(Err("--backend xasset is used with live assets".to_string()));
@@ -343,6 +346,9 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
                 return Err(ParseFail::Message(
                     "--backend is used with live assets".to_string(),
                 ));
+            }
+            if *service == "region" && (flags.db_set || flags.backend.is_some()) {
+                return Err(ParseFail::Usage);
             }
             Ok(Command::Compare {
                 service: (*service).to_string(),
@@ -667,6 +673,24 @@ mod tests {
             other => panic!("expected compare, got {other:?}"),
         }
         assert!(require_known_services(&["accounts".into()]).is_ok());
+    }
+
+    #[test]
+    fn compare_region_takes_no_database() {
+        match parse(&["compare", "region"]).unwrap() {
+            Command::Compare {
+                service,
+                db,
+                backend,
+            } => {
+                assert_eq!(service, "region");
+                assert_eq!(db, Database::Sqlite);
+                assert_eq!(backend, AssetBackend::Stock);
+            }
+            other => panic!("expected compare, got {other:?}"),
+        }
+        assert!(parse(&["compare", "region", "--db", "mysql"]).is_err());
+        assert!(parse(&["compare", "region", "--backend", "xasset"]).is_err());
     }
 
     #[test]

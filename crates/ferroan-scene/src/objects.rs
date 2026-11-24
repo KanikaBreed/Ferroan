@@ -48,7 +48,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 // Ported to Rust for Ferroan from SQLiteSimulationData, SceneObjectGroup,
-// SceneObjectPart and PrimitiveBaseShape at
+// SceneObjectPart, PrimitiveBaseShape, TaskInventoryItem and DBGuid at
 // OpenSim-Tranquillity `dev-build` @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -75,6 +75,15 @@
 //! A null media URL loads as an empty string. A stored pseudo-CRC of 0 is
 //! absent: the part's clock value is not kept. An animation sequence number is
 //! a clock and is absent too. Q65 sends both.
+//!
+//! Each loaded prim keeps the task-inventory rows stored for its id, in the
+//! order they were stored. A repeated item id keeps the first. A null
+//! description is an empty string. A creator id with no semicolon is that id,
+//! or the zero id when it does not parse. A creator id with a semicolon is the
+//! id, the endpoint and the name, and a missing name is `Unknown User`. An
+//! experience id that is null, unparsable or shorter than 16 bytes is the zero
+//! id. A row that cannot be built is left out; the prim and its other items
+//! stay (TB60, D44). Items stay data: nothing is sent and no script is started.
 
 use std::collections::{HashMap, HashSet};
 
@@ -192,6 +201,33 @@ pub struct ObjectPart {
     pub phys_inertia: Option<PhysicsInertia>,
     pub animations: Option<Vec<ObjectAnimation>>,
     pub linkset: Option<LinksetData>,
+    /// Task inventory for this prim, in stored order. Empty when the prim has none.
+    pub items: Vec<InventoryItem>,
+}
+
+/// One task-inventory row as the load leaves it. Nothing here is sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InventoryItem {
+    pub item_id: Uuid,
+    pub parent_part_id: Uuid,
+    pub asset_id: Uuid,
+    pub parent_id: Uuid,
+    pub inv_type: i32,
+    pub asset_type: i32,
+    pub name: String,
+    pub description: String,
+    pub creation_date: u32,
+    pub creator_id: String,
+    pub owner_id: Uuid,
+    pub last_owner_id: Uuid,
+    pub group_id: Uuid,
+    pub next_permissions: u32,
+    pub current_permissions: u32,
+    pub base_permissions: u32,
+    pub everyone_permissions: u32,
+    pub group_permissions: u32,
+    pub flags: u32,
+    pub experience_id: Uuid,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -290,9 +326,14 @@ pub async fn load_objects_limited(
             .map_err(|error| ObjectError::Store(error.to_string()))?;
         shapes.insert(id, row);
     }
+    let item_rows = sqlx::query(ITEM_SQL)
+        .fetch_all(sqlite)
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let items = load_items(&item_rows);
     let mut rows = Vec::new();
     for row in &prims {
-        rows.push(read_prim(row, &shapes));
+        rows.push(read_prim(row, &shapes, &items));
     }
     let wanted = region.as_hyphenated().to_string();
     let rows: Vec<PrimRow> = rows
@@ -444,13 +485,20 @@ fn enforce(
     Ok(groups)
 }
 
-fn read_prim(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> PrimRow {
+fn read_prim(
+    row: &SqliteRow,
+    shapes: &HashMap<String, &SqliteRow>,
+    items: &HashMap<Uuid, Vec<InventoryItem>>,
+) -> PrimRow {
     let uuid_text = text_or_empty(row, "UUID");
     let group_text = text_or_empty(row, "SceneGroupID");
     let region_text = text_or_empty(row, "RegionUUID");
     let link = optional_i32(row, "LinkNumber");
     let start = optional_text(row, "StartStr");
-    let part = build_part(row, shapes);
+    let part = build_part(row, shapes).map(|mut part| {
+        part.items = items.get(&part.uuid).cloned().unwrap_or_default();
+        part
+    });
     PrimRow {
         uuid_text,
         group_text,
@@ -655,6 +703,7 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         phys_inertia,
         animations,
         linkset,
+        items: Vec::new(),
     })
 }
 
@@ -950,6 +999,97 @@ PathScaleY, PathShearX, PathShearY, PathSkew, PathCurve, PathRadiusOffset, PathR
 PathTaperX, PathTaperY, PathTwist, PathTwistBegin, ProfileBegin, ProfileEnd, ProfileCurve, \
 ProfileHollow, Texture, ExtraParams, State, Media, LastAttachPoint, MatOvrd FROM primshapes \
 ORDER BY rowid";
+
+const ITEM_SQL: &str = "SELECT itemID, primID, assetID, parentFolderID, invType, assetType, name, \
+description, creationDate, creatorID, ownerID, lastOwnerID, groupID, nextPermissions, \
+currentPermissions, basePermissions, everyonePermissions, groupPermissions, flags, experienceID \
+FROM primitems ORDER BY rowid";
+
+/// Rows in stored order. A repeated item id keeps the first. A row that cannot
+/// be built is left out.
+fn load_items(rows: &[SqliteRow]) -> HashMap<Uuid, Vec<InventoryItem>> {
+    let mut by_prim: HashMap<Uuid, Vec<InventoryItem>> = HashMap::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        let Some(item) = build_item(row) else {
+            let label = optional_text(row, "itemID").unwrap_or_else(|| "unknown".to_owned());
+            log::warn!("inventory item {label} could not be built and was left out");
+            continue;
+        };
+        if !seen.insert(item.item_id) {
+            continue;
+        }
+        by_prim.entry(item.parent_part_id).or_default().push(item);
+    }
+    by_prim
+}
+
+fn build_item(row: &SqliteRow) -> Option<InventoryItem> {
+    let creator = required_text(row, "creatorID").ok()?;
+    Some(InventoryItem {
+        item_id: required_uuid(row, "itemID").ok()?,
+        parent_part_id: required_uuid(row, "primID").ok()?,
+        asset_id: required_uuid(row, "assetID").ok()?,
+        parent_id: required_uuid(row, "parentFolderID").ok()?,
+        inv_type: required_i32(row, "invType").ok()?,
+        asset_type: required_i32(row, "assetType").ok()?,
+        name: required_text(row, "name").ok()?,
+        description: optional_text(row, "description").unwrap_or_default(),
+        creation_date: required_u32(row, "creationDate").ok()?,
+        creator_id: creator_identification(&creator),
+        owner_id: required_uuid(row, "ownerID").ok()?,
+        last_owner_id: required_uuid(row, "lastOwnerID").ok()?,
+        group_id: required_uuid(row, "groupID").ok()?,
+        next_permissions: required_u32(row, "nextPermissions").ok()?,
+        current_permissions: required_u32(row, "currentPermissions").ok()?,
+        base_permissions: required_u32(row, "basePermissions").ok()?,
+        everyone_permissions: required_u32(row, "everyonePermissions").ok()?,
+        group_permissions: required_u32(row, "groupPermissions").ok()?,
+        flags: required_u32(row, "flags").ok()?,
+        experience_id: experience_id(row)?,
+    })
+}
+
+/// The creator string the load stores: a bare id, or `id;endpoint;name`.
+fn creator_identification(stored: &str) -> String {
+    let zero = Uuid::nil().hyphenated().to_string();
+    if stored.is_empty() {
+        return zero;
+    }
+    if !stored.contains(';') {
+        return parse_uuid(stored)
+            .unwrap_or(Uuid::nil())
+            .hyphenated()
+            .to_string();
+    }
+    let mut parts = stored.split(';');
+    let id = parts
+        .next()
+        .and_then(parse_uuid)
+        .unwrap_or(Uuid::nil())
+        .hyphenated();
+    let endpoint = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("Unknown User");
+    format!("{id};{endpoint};{name}")
+}
+
+/// A null, unparsable or short experience id is the zero id. Any other stored
+/// form is unreadable.
+fn experience_id(row: &SqliteRow) -> Option<Uuid> {
+    match row.try_get::<Option<String>, _>("experienceID") {
+        Ok(None) => Some(Uuid::nil()),
+        Ok(Some(text)) => Some(parse_uuid(&text).unwrap_or(Uuid::nil())),
+        Err(_) => match row.try_get::<Option<Vec<u8>>, _>("experienceID") {
+            Ok(Some(bytes)) if bytes.len() >= 16 => {
+                let mut id = [0u8; 16];
+                id.copy_from_slice(&bytes[..16]);
+                Some(Uuid::from_bytes(id))
+            }
+            Ok(_) => Some(Uuid::nil()),
+            Err(_) => None,
+        },
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1828,11 +1968,82 @@ mod tests {
         expect_inertia(&part.phys_inertia, &take(&mut obj, "phys_inertia"));
         expect_animations(&part.animations, &take(&mut obj, "animations"));
         expect_linkset(&part.linkset, &take(&mut obj, "linkset"));
+        expect_items(&part.items, &take(&mut obj, "items"));
         assert!(
             obj.is_empty(),
             "{label} uncompared {:?}",
             obj.keys().collect::<Vec<_>>()
         );
+    }
+
+    fn expect_items(items: &[InventoryItem], value: &Value) {
+        let dumped = value.as_array().unwrap_or_else(|| panic!("items"));
+        assert_eq!(dumped.len(), items.len(), "items");
+        for (index, (item, dumped_item)) in items.iter().zip(dumped).enumerate() {
+            let mut obj = dumped_item.as_object().unwrap().clone();
+            let path = format!("items[{index}]");
+            expect_uuid(&path, item.item_id, &take(&mut obj, "item_id"));
+            expect_uuid(
+                &path,
+                item.parent_part_id,
+                &take(&mut obj, "parent_part_id"),
+            );
+            expect_uuid(&path, item.asset_id, &take(&mut obj, "asset_id"));
+            expect_uuid(&path, item.parent_id, &take(&mut obj, "parent_id"));
+            assert_eq!(
+                i64::from(item.inv_type),
+                json_i64(&take(&mut obj, "inv_type"), "inv_type"),
+                "{path}"
+            );
+            assert_eq!(
+                i64::from(item.asset_type),
+                json_i64(&take(&mut obj, "asset_type"), "asset_type"),
+                "{path}"
+            );
+            assert_eq!(
+                item.name,
+                take(&mut obj, "name").as_str().unwrap(),
+                "{path}"
+            );
+            assert_eq!(
+                item.description,
+                take(&mut obj, "description").as_str().unwrap(),
+                "{path}"
+            );
+            assert_eq!(
+                u64::from(item.creation_date),
+                json_i64(&take(&mut obj, "creation_date"), "creation_date") as u64,
+                "{path}"
+            );
+            assert_eq!(
+                item.creator_id,
+                take(&mut obj, "creator_id").as_str().unwrap(),
+                "{path}"
+            );
+            expect_uuid(&path, item.owner_id, &take(&mut obj, "owner_id"));
+            expect_uuid(&path, item.last_owner_id, &take(&mut obj, "last_owner_id"));
+            expect_uuid(&path, item.group_id, &take(&mut obj, "group_id"));
+            for (got, key) in [
+                (item.next_permissions, "next_permissions"),
+                (item.current_permissions, "current_permissions"),
+                (item.base_permissions, "base_permissions"),
+                (item.everyone_permissions, "everyone_permissions"),
+                (item.group_permissions, "group_permissions"),
+                (item.flags, "flags"),
+            ] {
+                assert_eq!(
+                    u64::from(got),
+                    json_i64(&take(&mut obj, key), key) as u64,
+                    "{path}.{key}"
+                );
+            }
+            expect_uuid(&path, item.experience_id, &take(&mut obj, "experience_id"));
+            assert!(
+                obj.is_empty(),
+                "{path} uncompared {:?}",
+                obj.keys().collect::<Vec<_>>()
+            );
+        }
     }
 
     fn expect_shape(shape: &ObjectShape, value: &Value) {
@@ -2011,6 +2222,88 @@ mod tests {
         assert!(child.linkset.is_none());
         assert!(child.shape.media_entries.is_none());
         assert!(child.shape.materials.as_ref().unwrap().overrides.is_none());
+        assert_eq!(
+            showcase
+                .items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note", "script", "box"]
+        );
+        assert_eq!(showcase.items[0].description, "");
+        assert_eq!(showcase.items[0].experience_id, Uuid::nil());
+        assert_eq!(
+            showcase.items[1].creator_id,
+            "00000000-0000-0000-0000-000000000004;https://profile.example/agent;Unknown User"
+        );
+        assert_eq!(
+            showcase.items[2].creator_id,
+            "00000000-0000-0000-0000-000000000004;https://profile.example/agent;Ada Lovelace"
+        );
+        assert_ne!(showcase.items[2].experience_id, Uuid::nil());
+        assert!(groups[1].parts[0].items.is_empty());
+        assert_eq!(child.items.len(), 1);
+        assert_eq!(
+            child.items[0].creator_id,
+            "00000000-0000-0000-0000-000000000004;;Unknown User"
+        );
+        assert!(groups[1].parts[2].items.is_empty());
+        assert_eq!(groups[3].parts[0].items.len(), 1);
+        assert_eq!(
+            groups[3].parts[0].items[0].creator_id,
+            "00000000-0000-0000-0000-000000000000"
+        );
+        let loaded: Vec<Uuid> = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .flat_map(|part| part.items.iter().map(|item| item.item_id))
+            .collect();
+        assert!(
+            !loaded.contains(&Uuid::parse_str("f0000000-0000-0000-0000-000000000001").unwrap())
+        );
+        assert!(
+            !loaded.contains(&Uuid::parse_str("e0000000-0000-0000-0000-000000000001").unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn regionstore_unreadable_inventory_row_is_left_out() {
+        let connection = copied_store();
+        let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        sqlx::query(
+            "INSERT INTO primitems (itemID, primID, assetID, parentFolderID, invType, assetType, \
+             name, description, creationDate, creatorID, ownerID, lastOwnerID, groupID, \
+             nextPermissions, currentPermissions, basePermissions, everyonePermissions, \
+             groupPermissions, flags, experienceID) VALUES \
+             ('d1000000-0000-0000-0000-000000000001', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'kept', '', 1700000200, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 0, \
+             '00000000-0000-0000-0000-000000000000'), \
+             ('d1000000-0000-0000-0000-000000000002', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, NULL, '', 1700000201, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 0, \
+             '00000000-0000-0000-0000-000000000000')",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        let groups = load_objects(&pool, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        let items = &groups[3].parts[0].items;
+        assert!(items.iter().any(|item| item.name == "kept"));
+        assert!(
+            items.iter().all(|item| item.item_id
+                != Uuid::parse_str("d1000000-0000-0000-0000-000000000002").unwrap())
+        );
+        assert_eq!(groups[3].parts[0].name, "no-shape");
     }
 
     #[tokio::test]
