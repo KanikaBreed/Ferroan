@@ -75,6 +75,7 @@ mod diag_fetch;
 mod docker;
 mod ferrobot;
 mod ferrobot_build;
+mod fsasset_live;
 mod grid;
 mod grid_smoke;
 mod grid_state;
