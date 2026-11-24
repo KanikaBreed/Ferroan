@@ -25,6 +25,10 @@
 //! need the .NET SDK and the reference checkouts. The Linux live workflow
 //! runs `verify` and `status-verify`.
 //!
+//! `regionstore generate` builds the region-store oracle and writes the SQLite
+//! object fixture. `regionstore verify` reloads that fixture. Neither starts a
+//! server or the live harness.
+//!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
 //! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
@@ -86,6 +90,7 @@ mod nodelay;
 mod oracle;
 mod oracle_reference;
 mod pin3_oracle;
+mod regionstore;
 mod schema;
 mod trailing_fixtures;
 mod twice;
@@ -123,6 +128,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask griduser cross
        cargo xtask griduser service
        cargo xtask avatar cross
+       cargo xtask regionstore generate
+       cargo xtask regionstore verify
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask live build
@@ -220,6 +227,8 @@ fn main() -> ExitCode {
         ["griduser", "cross"] => asset_oracle::griduser_cross(),
         ["griduser", "service"] => asset_oracle::griduser_service(),
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
+        ["regionstore", "generate"] => regionstore::generate(),
+        ["regionstore", "verify"] => regionstore::verify(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),

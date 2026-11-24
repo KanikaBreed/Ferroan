@@ -521,6 +521,8 @@ dependencies = [
  "ferroan-db",
  "ferroan-diag",
  "flate2",
+ "log",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

@@ -132,7 +132,7 @@ Remove this section once the queue runs again.
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
-| Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | READY |
+| Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | IN PROGRESS |
 | Q53b | P2.4a1b: the structured payloads (`KeyframeMotion` and `SOPVehicle` split off first if still more than a day) | READY after Q53a |
 | Q53c | P2.4a1c: `ferroan-region` loads and keeps every stored object at startup, with counts, load time and RSS at 500 to 40,000 prims | READY after Q53b |
 | Q54 | P2.4a2: prim inventory items from the SQLite store | READY after Q53c |

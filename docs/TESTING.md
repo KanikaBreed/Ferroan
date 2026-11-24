@@ -56,6 +56,10 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 `cargo xtask avatar cross` builds [tools/avatar-oracle](../tools/avatar-oracle/README.md) and calls the pinned `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData`. Rust and C# read each other's rows on SQLite, MySQL and PostgreSQL. SQLite uses a copy of `fixtures/db/sqlite/Avatar.db`. MySQL and PostgreSQL use the schema-server containers. The Rust plugin tests run in ordinary CI when `FERROAN_MYSQL_URL` and `FERROAN_POSTGRES_URL` are set, and skip with a printed reason otherwise. The cross-read does not run in CI and does not start a server or the live harness. Get is by `PrincipalID`. Upsert is on `(PrincipalID, Name)`. Delete is by principal, and by principal and name. The store writes the value it is given. Height parsing and the preserve-and-replace rules are the avatar service. PostgreSQL binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed.
 
+## Region store objects
+
+`cargo xtask regionstore generate` builds [tools/regionstore-oracle](../tools/regionstore-oracle/README.md) against a task-owned clone of the pin and writes [fixtures/regionstore/objects.db](../fixtures/regionstore/objects.db) and [objects.json](../fixtures/regionstore/objects.json). `cargo xtask regionstore verify` reloads that file through the pin and checks the committed dump. `ferroan-scene` replays the dump on every platform. The commands do not run in CI and do not start a server or the live harness. Inventory items, MySQL and PostgreSQL are later rows. A stored pseudo-CRC of 0 is absent from the dump: the part's clock value is not compared.
+
 ## Known differences
 
 Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. Those rows have been Fixed since Pin6.
