@@ -9,6 +9,8 @@
 //! `.scratch/live/runs/<base>-<pid>/`. With no setting, ephemeral listeners
 //! stay ephemeral and Docker smoke stays on 3100, 9095, 4317 and 4318.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
