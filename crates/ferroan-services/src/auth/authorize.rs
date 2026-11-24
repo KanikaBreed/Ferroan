@@ -33,8 +33,9 @@
 
 //! `POST /authorization`.
 //!
-//! `IsAuthorizedForRegion` always returns true. The handler ignores that
-//! message and writes `{ID} has been authorized`. `SerializeResult` uses
+//! The connector constructs this handler with no service authenticator, so
+//! `X-SecondLife-Shard` is not refused. `IsAuthorizedForRegion` always returns
+//! true. The handler ignores that message and writes `{ID} has been authorized`. `SerializeResult` uses
 //! `XmlTextWriter` with `Util.UTF8`, which is UTF-8 with a BOM, LF and a
 //! two-space indent. A document this parser cannot read is the same 500 the
 //! uncaught `XmlSerializer` exception becomes. A missing `ID` is null, and

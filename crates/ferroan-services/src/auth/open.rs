@@ -8,7 +8,9 @@
 //! `[DatabaseService]`. SQLite, MySQL and PostgreSQL are opened against a
 //! database already at AuthStore version 2, 4 or 3. The realm defaults to
 //! `auth`. `AuthType = BasicHttpAuthentication` and `https_main = true`
-//! refuse to start.
+//! refuse to start. `AllowllHTTPRequestIn` is read from `[Network]` and then
+//! this section (later wins, an empty value keeps the running value). It
+//! defaults to false, and then `POST /auth` refuses `X-SecondLife-Shard`.
 //!
 //! `AuthorizationServiceBase` loads an `IAssetDataPlugin` and refuses a
 //! provider that is not one. The handler never reads that plugin (TB42).
@@ -72,6 +74,7 @@ impl AuthHttp {
             config_bool(config, SECTION, "AllowGetAuthInfo", false)?,
             config_bool(config, SECTION, "AllowSetAuthInfo", false)?,
             config_bool(config, SECTION, "AllowSetPassword", false)?,
+            !config_bool_either(config, "AllowllHTTPRequestIn", false)?,
         ))
     }
 }
@@ -128,6 +131,16 @@ fn auth_type<'a>(config: &'a Config, section: &str) -> &'a str {
 
 fn https_main(config: &Config) -> Result<bool, AuthError> {
     config_bool(config, "Network", "https_main", false)
+}
+
+fn config_bool_either(config: &Config, key: &str, default: bool) -> Result<bool, AuthError> {
+    let mut value = default;
+    for section in ["Network", SECTION] {
+        if config.get(section, key).is_some() {
+            value = config_bool(config, section, key, value)?;
+        }
+    }
+    Ok(value)
 }
 
 fn config_bool(

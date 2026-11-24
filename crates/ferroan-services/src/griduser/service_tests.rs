@@ -566,14 +566,39 @@ async fn open_reads_the_grid_user_section_and_refuses_a_bad_one() {
 async fn post_answers_xml_and_a_huge_body_is_413() {
     let (store, _path) = open_sqlite().await;
     store.wipe().await.expect("wipe");
-    let http = GridUserHttp::new(GridUserService::new(store, SystemClock));
+    let http = GridUserHttp::new(GridUserService::new(store, SystemClock), true);
     let app = http.into_router();
-    let response = tower::ServiceExt::oneshot(
+    let refused = tower::ServiceExt::oneshot(
         app.clone(),
         axum::http::Request::builder()
             .method("POST")
             .uri("/griduser")
             .header("X-SecondLife-Shard", "OpenSim")
+            .body(axum::body::Body::from(format!(
+                "METHOD=loggedin&UserID={USER}"
+            )))
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+    assert_eq!(refused.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(
+        refused
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain")
+    );
+    let refused_body = axum::body::to_bytes(refused.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    assert!(refused_body.is_empty());
+
+    let response = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/griduser")
             .body(axum::body::Body::from(format!(
                 "METHOD=loggedin&UserID={USER}"
             )))
@@ -596,16 +621,29 @@ async fn post_answers_xml_and_a_huge_body_is_413() {
 
     let huge = "x".repeat(ferroan_http::MAX_QUERY_BYTES + 1);
     let too_big = tower::ServiceExt::oneshot(
-        app,
+        app.clone(),
         axum::http::Request::builder()
             .method("POST")
             .uri("/griduser")
-            .body(axum::body::Body::from(huge))
+            .body(axum::body::Body::from(huge.clone()))
             .expect("request"),
     )
     .await
     .expect("response");
     assert_eq!(too_big.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+
+    let refused_huge = tower::ServiceExt::oneshot(
+        app,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/griduser")
+            .header("X-SecondLife-Shard", "OpenSim")
+            .body(axum::body::Body::from(huge))
+            .expect("request"),
+    )
+    .await
+    .expect("response");
+    assert_eq!(refused_huge.status(), axum::http::StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

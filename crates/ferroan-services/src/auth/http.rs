@@ -35,16 +35,18 @@
 //! attribute, two-space indent. `getauthinfo` is `ServerUtils.BuildXmlResponse`.
 //! `/auth/crypt` reads at most 16384 bytes and returns an empty body. A body
 //! over [`ferroan_http::MAX_QUERY_BYTES`] is 413, which Tranquillity does not
-//! do. `X-SecondLife-Shard` is not checked on this handler. A bad `LIFETIME`
-//! is the uncaught `Convert.ToInt32` failure: HTTP 500, `application/xml`,
-//! empty body. `Convert.ToInt32` accepts surrounding spaces and one leading `+`.
+//! do. A request that carries `X-SecondLife-Shard` is 403 `text/plain` with an
+//! empty body before the body is read, unless `AllowllHTTPRequestIn` is true.
+//! A bad `LIFETIME` is the uncaught `Convert.ToInt32` failure: HTTP 500,
+//! `application/xml`, empty body. `Convert.ToInt32` accepts surrounding spaces
+//! and one leading `+`.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use ferroan_http::{Field, FieldMap, MAX_QUERY_BYTES, build_xml_response, parse_query_string};
@@ -68,6 +70,7 @@ struct Inner {
     allow_get_auth_info: bool,
     allow_set_auth_info: bool,
     allow_set_password: bool,
+    reject_shard_header: bool,
 }
 
 impl AuthHttp {
@@ -80,6 +83,7 @@ impl AuthHttp {
         allow_get_auth_info: bool,
         allow_set_auth_info: bool,
         allow_set_password: bool,
+        reject_shard_header: bool,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -87,6 +91,7 @@ impl AuthHttp {
                 allow_get_auth_info,
                 allow_set_auth_info,
                 allow_set_password,
+                reject_shard_header,
             }),
         }
     }
@@ -100,16 +105,31 @@ impl AuthHttp {
     }
 }
 
-async fn post_auth(State(inner): State<Arc<Inner>>, body: Body) -> Response {
+async fn post_auth(State(inner): State<Arc<Inner>>, headers: HeaderMap, body: Body) -> Response {
+    if let Some(response) = refused(&inner, &headers) {
+        return response;
+    }
     dispatch(inner, "", body).await
 }
 
 async fn post_auth_rest(
     State(inner): State<Arc<Inner>>,
     Path(rest): Path<String>,
+    headers: HeaderMap,
     body: Body,
 ) -> Response {
+    if let Some(response) = refused(&inner, &headers) {
+        return response;
+    }
     dispatch(inner, &rest, body).await
+}
+
+fn refused(inner: &Inner, headers: &HeaderMap) -> Option<Response> {
+    if inner.reject_shard_header && headers.get("X-SecondLife-Shard").is_some() {
+        Some(plain(StatusCode::FORBIDDEN))
+    } else {
+        None
+    }
 }
 
 async fn dispatch(inner: Arc<Inner>, rest: &str, body: Body) -> Response {
