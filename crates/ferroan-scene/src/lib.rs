@@ -56,6 +56,7 @@
 //! Read-only region terrain, the prim load, region settings and the frame thread.
 //! The frame ticks at the shipped `FrameTime`, stores the login presence, and
 //! answers a forwarded chat with those positions. A landing updates the position.
+//! An `AgentUpdate` stores movement intent on that presence.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
@@ -68,6 +69,7 @@ mod error;
 mod estate;
 mod frame;
 mod height;
+mod motion;
 mod objects;
 mod payloads;
 mod settings;
@@ -78,6 +80,7 @@ pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{LocalTeleport, Presence, TeleportStored, TerrainFrame, landed_z};
 pub use height::{Heightmap, movement_z};
+pub use motion::{Applied, Motion, MotionUpdate};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
     ObjectShape, load_objects, load_objects_limited, open_objects,
