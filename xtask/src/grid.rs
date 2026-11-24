@@ -657,11 +657,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "chat"
                 | "teleport"
                 | "hop"
+                | "uploads"
                 | "neighbour"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop and neighbour scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads and neighbour scenarios"
                 .to_string(),
         );
     }
@@ -670,7 +671,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     }
     if !matches!(
         scenario,
-        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop"
+        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop" | "uploads"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -1159,7 +1160,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
     } else if ferroan && scenario == "limits" {
         Ok(format!("{}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "roots" {
+    } else if ferroan && (scenario == "roots" || scenario == "uploads") {
         let comparison = login_capture::compare_two_roots(&root)?;
         Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
     } else if ferroan && scenario == "chat" {

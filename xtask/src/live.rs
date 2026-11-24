@@ -716,9 +716,9 @@ fn run_linux(scenario: &str) -> Result<String, String> {
     if scenario == "ferrobot" {
         return run_ferrobot();
     }
-    if ferroan_bot::scenario::selection(scenario).is_none() {
+    if scenario != "uploads" && ferroan_bot::scenario::selection(scenario).is_none() {
         return Err(format!(
-            "unknown scenario {scenario}; expected all or {}",
+            "unknown scenario {scenario}; expected all, uploads or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }

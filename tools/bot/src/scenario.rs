@@ -146,6 +146,10 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = roots_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
+    if name == "uploads" {
+        let line = uploads_scenario(&http, harness).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
     let Some(names) = selection(name) else {
         return Err(format!(
             "unknown scenario {name}; expected all or {}",
@@ -483,6 +487,85 @@ async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
         await_root_agents(http, metrics, 0, &mut []).await?;
     }
     Ok("roots: pass".to_string())
+}
+
+/// Both harness accounts upload one texture while they are in the region together.
+async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let (mut owner, owner_login) = enter(http, harness, &harness.owner).await?;
+    let Some(owner_folder) = textures_folder(&owner_login) else {
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err("the owner login reply has no Textures folder".to_string());
+    };
+    let chat_login = enter(http, harness, &harness.chat);
+    tokio::pin!(chat_login);
+    let chat_result = loop {
+        tokio::select! {
+            result = &mut chat_login => break result,
+            step = owner.drive(STEP) => {
+                step.map_err(|error| error.to_string())?;
+            }
+        }
+    };
+    let (mut chat, chat_login) = match chat_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(error);
+        }
+    };
+    let Some(chat_folder) = textures_folder(&chat_login) else {
+        let _ = leave(harness, &mut chat, &harness.chat).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err("the second login reply has no Textures folder".to_string());
+    };
+    let owner_upload = upload_texture(http, &owner, owner_folder, &harness.texture).await;
+    if let Err(error) = owner.drive(STEP).await {
+        let _ = leave(harness, &mut chat, &harness.chat).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err(error.to_string());
+    }
+    let chat_upload = upload_texture(http, &chat, chat_folder, &harness.texture).await;
+    let owner_asset = match owner_upload {
+        Ok(asset) => asset,
+        Err(error) => {
+            let _ = leave(harness, &mut chat, &harness.chat).await;
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(format!("owner upload: {error}"));
+        }
+    };
+    let chat_asset = match chat_upload {
+        Ok(asset) => asset,
+        Err(error) => {
+            let _ = leave(harness, &mut chat, &harness.chat).await;
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(format!("second upload: {error}"));
+        }
+    };
+    if owner_asset == chat_asset {
+        let _ = leave(harness, &mut chat, &harness.chat).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err("both uploads returned the same asset".to_string());
+    }
+    let owner_bytes = fetch_texture(http, &owner, owner_asset).await;
+    let chat_bytes = fetch_texture(http, &chat, chat_asset).await;
+    let chat_out = leave(harness, &mut chat, &harness.chat).await;
+    let owner_out = leave(harness, &mut owner, &harness.owner).await;
+    let owner_bytes = owner_bytes?;
+    let chat_bytes = chat_bytes?;
+    chat_out?;
+    owner_out?;
+    if owner_bytes != harness.texture || chat_bytes != harness.texture {
+        return Err(format!(
+            "uploaded bytes came back as {} and {}, sent {}",
+            owner_bytes.len(),
+            chat_bytes.len(),
+            harness.texture.len()
+        ));
+    }
+    Ok(format!(
+        "uploads: pass ({} bytes, two avatars)",
+        harness.texture.len()
+    ))
 }
 
 fn refuse_chat(session: &mut Session) -> Result<(), String> {
