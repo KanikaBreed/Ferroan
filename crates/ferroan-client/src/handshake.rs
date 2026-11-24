@@ -92,6 +92,49 @@ pub struct HandshakeConfig {
     pub server_side_baking: bool,
 }
 
+/// Region-settings fields the handshake sends. Estate bits already on the
+/// config stay. `fixed_sun` is the stored column: the C# property ignores it,
+/// so a viewer that reads `SunFixed` never sees that column (TB69, D52).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredHandshake {
+    pub water_height: f32,
+    pub cache_id: Option<Uuid>,
+    pub terrain_textures: [Uuid; 4],
+    pub terrain_pbr: [Uuid; 4],
+    pub terrain_start_heights: [f32; 4],
+    pub terrain_height_ranges: [f32; 4],
+    pub allow_damage: bool,
+    pub fixed_sun: bool,
+    pub block_terraform: bool,
+    pub allow_land_resell: bool,
+    pub sandbox: bool,
+    pub casino: bool,
+    pub god_block_search: bool,
+    pub disable_collisions: bool,
+    pub disable_scripts: bool,
+    pub disable_physics: bool,
+    pub block_fly: bool,
+    pub restrict_pushing: bool,
+    pub allow_land_join_divide: bool,
+    pub block_show_in_search: bool,
+}
+
+/// Bits `GetRegionFlags` takes from region settings. Estate bits are outside this mask.
+const SETTINGS_FLAG_MASK: u32 = (1 << 0)
+    | (1 << 4)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 10)
+    | (1 << 11)
+    | (1 << 12)
+    | (1 << 13)
+    | (1 << 14)
+    | (1 << 19)
+    | (1 << 22)
+    | (1 << 26)
+    | (1 << 29);
+
 impl HandshakeConfig {
     /// Defaults of fresh RegionSettings/EstateSettings after scene creation.
     /// Persisted settings and negotiated viewer features are supplied by callers.
@@ -126,6 +169,63 @@ impl HandshakeConfig {
             terrain_height_ranges: [60.0; 4],
             server_side_baking: false,
         }
+    }
+
+    /// Overlay one stored region-settings row. A missing cache id keeps the id
+    /// already on this config. Terrain base ids stay zero.
+    pub fn apply_stored_settings(&mut self, stored: &StoredHandshake) {
+        self.water_height = stored.water_height;
+        if let Some(cache_id) = stored.cache_id {
+            self.cache_id = cache_id;
+        }
+        self.terrain_textures = stored.terrain_textures;
+        self.terrain_pbr = stored.terrain_pbr;
+        self.terrain_start_heights = stored.terrain_start_heights;
+        self.terrain_height_ranges = stored.terrain_height_ranges;
+        let mut flags = self.region_flags & !SETTINGS_FLAG_MASK;
+        if stored.allow_damage {
+            flags |= 1 << 0;
+        }
+        if stored.fixed_sun {
+            flags |= 1 << 4;
+        }
+        if stored.block_terraform {
+            flags |= 1 << 6;
+        }
+        if !stored.allow_land_resell {
+            flags |= 1 << 7;
+        }
+        if stored.sandbox {
+            flags |= 1 << 8;
+        }
+        if stored.casino {
+            flags |= 1 << 10;
+        }
+        if stored.god_block_search {
+            flags |= 1 << 11;
+        }
+        if stored.disable_collisions {
+            flags |= 1 << 12;
+        }
+        if stored.disable_scripts {
+            flags |= 1 << 13;
+        }
+        if stored.disable_physics {
+            flags |= 1 << 14;
+        }
+        if stored.block_fly {
+            flags |= 1 << 19;
+        }
+        if stored.restrict_pushing {
+            flags |= 1 << 22;
+        }
+        if stored.allow_land_join_divide {
+            flags |= 1 << 26;
+        }
+        if stored.block_show_in_search {
+            flags |= 1 << 29;
+        }
+        self.region_flags = flags;
     }
 
     pub fn build(&self, is_estate_manager: bool, supports_terrain_pbr: bool) -> RegionHandshake {
@@ -252,5 +352,55 @@ mod tests {
             packet.region_info.cache_id,
             config.build(false, false).region_info.cache_id
         );
+    }
+
+    #[test]
+    fn stored_settings_replace_region_bits_and_keep_estate_bits() {
+        let mut config = HandshakeConfig::for_region(Uuid::from_u128(1));
+        let cache = config.cache_id;
+        let estate = config.region_flags;
+        config.region_flags |= (1 << 3) | (1 << 9);
+        config.apply_stored_settings(&StoredHandshake {
+            water_height: 42.5,
+            cache_id: None,
+            terrain_textures: [Uuid::from_u128(7); 4],
+            terrain_pbr: [Uuid::nil(), Uuid::from_u128(8), Uuid::nil(), Uuid::nil()],
+            terrain_start_heights: [-100.0, 11.5, 12.25, 13.5],
+            terrain_height_ranges: [70.0, 80.5, 90.0, 4000.0],
+            allow_damage: true,
+            fixed_sun: true,
+            block_terraform: true,
+            allow_land_resell: false,
+            sandbox: true,
+            casino: true,
+            god_block_search: true,
+            disable_collisions: true,
+            disable_scripts: true,
+            disable_physics: true,
+            block_fly: true,
+            restrict_pushing: true,
+            allow_land_join_divide: false,
+            block_show_in_search: true,
+        });
+        assert_eq!(config.cache_id, cache);
+        assert_eq!(config.water_height, 42.5);
+        assert_eq!(config.region_flags & (1 << 3), 1 << 3);
+        assert_eq!(config.region_flags & (1 << 9), 1 << 9);
+        assert_eq!(
+            config.region_flags & estate & !(1 << 26),
+            estate & !(1 << 26)
+        );
+        assert_eq!(config.region_flags & (1 << 26), 0);
+        assert_eq!(config.region_flags & (1 << 4), 1 << 4);
+        let classic = config.build(false, false);
+        let pbr = config.build(false, true);
+        assert_eq!(classic.region_info.water_height, 42.5);
+        assert_eq!(classic.region_info.terrain_detail0, Uuid::from_u128(7));
+        assert_eq!(classic.region_info.terrain_start_height00, -100.0);
+        assert_eq!(classic.region_info.terrain_height_range11, 4000.0);
+        assert!(pbr.region_info.terrain_detail0.is_nil());
+        assert_eq!(pbr.region_info.terrain_detail1, Uuid::from_u128(8));
+        assert_eq!(classic.region_info.sim_access, 13);
+        assert_eq!(classic.region_info.billable_factor, 0.0);
     }
 }

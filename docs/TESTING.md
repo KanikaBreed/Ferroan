@@ -64,6 +64,12 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 Release `ferroan-region`, idle `VmRSS` two seconds after initialization completed, one process per size: 500 prims 15244 kB, 1,000 prims 16564 kB, 5,000 prims 24344 kB, 10,000 prims 35804 kB, 40,000 prims 101472 kB. The startup high-water marks were 21176 kB, 30256 kB, 105184 kB, 195604 kB and 744532 kB. The load log for those sizes was 10 ms, 27 ms, 132 ms, 245 ms and 899 ms, and each log matched the prim count. The stores were the `bulk` files above. Terrain and estate were not opened for that measurement.
 
+## Region settings
+
+`cargo xtask regionstore settings` builds the same oracle and writes [fixtures/regionstore/settings.db](../fixtures/regionstore/settings.db) and [settings.json](../fixtures/regionstore/settings.json). The file is RegionStore 48. The dump is one region's settings and spawn points. Ordinary tests replay it and do not start the oracle. `cargo xtask regionstore verify` also reloads that file when it runs the `regionstore_` tests. The command does not start a server or the live harness. MySQL and PostgreSQL settings stay on the fresh handshake defaults.
+
+`ferroan-region` reads the SQLite region store at startup, overlays water height, cache id, terrain textures, terrain PBR, elevations and the region-settings flags on the handshake, and keeps the spawn points for the process. A missing file or a missing row leaves the fresh handshake in place and does not insert a row. A store that cannot be read stops startup before the sockets bind. The harness copies `fixtures/regionstore/objects.db`, which has no settings row, so the live handshake is unchanged. The stored `fixed_sun` column sets `SunFixed` (TB69, D52). The committed C# flags do not include that bit. A null covenant keeps the region (TB70, D53).
+
 ## Known differences
 
 Three tests assert that the committed C# fixtures show the Pin5 fixes for [TB1, TB10 and TB11](TRANQUILLITY_BUGS.md). Each names the fixture and the Rust code that follows the fix. Those rows have been Fixed since Pin6.

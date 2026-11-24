@@ -96,6 +96,8 @@ enum RunError {
     Terrain(String),
     #[error("objects: {0}")]
     Objects(String),
+    #[error("region settings: {0}")]
+    Settings(String),
 }
 
 fn main() -> ExitCode {
@@ -155,6 +157,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     let terrain = load_terrain(&config).await?;
     let objects = load_stored_objects(&config).await?;
+    let _region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -364,6 +367,18 @@ async fn notify_startup(grid_user: &GridUserClient, region: uuid::Uuid) {
     if let Err(error) = grid_user.logged_out_region(region).await {
         tracing::error!("ferroan-region: startup GridUser cleanup failed: {error}");
     }
+}
+
+async fn load_stored_settings(
+    config: &mut RegionConfig,
+) -> Result<Option<std::sync::Arc<ferroan_scene::RegionSettings>>, RunError> {
+    ferroan_region::settings::apply_stored_settings(
+        config.object_store.as_deref(),
+        config.id,
+        &mut config.handshake,
+    )
+    .await
+    .map_err(RunError::Settings)
 }
 
 async fn load_stored_objects(

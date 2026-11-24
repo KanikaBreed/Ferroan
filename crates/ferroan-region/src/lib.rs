@@ -15,6 +15,7 @@ pub mod inventory;
 pub mod library;
 pub mod objects;
 pub mod remote_asset;
+pub mod settings;
 pub mod simulation;
 pub mod simulation_client;
 pub mod source_hop;
