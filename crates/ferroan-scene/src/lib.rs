@@ -82,6 +82,8 @@ pub mod prioritizer;
 mod settings;
 mod store;
 mod walk;
+#[cfg(test)]
+mod walk_capture;
 mod xml;
 
 pub use compress::TerrainLayer;
