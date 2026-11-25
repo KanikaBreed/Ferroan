@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{
-    FsFiles, WRITER_INTERVAL_MS, WRITER_MAX_RETRY_MS, hash_to_file, hash_to_path,
+    FsFiles, WRITER_INTERVAL_MS, WRITER_MAX_RETRY_MS, WriterPass, hash_to_file, hash_to_path,
     next_writer_interval, sha256_hex,
 };
 
@@ -56,13 +56,13 @@ fn empty_content_needs_no_file() {
 fn writer_interval_backs_off_and_resets() {
     assert_eq!(WRITER_INTERVAL_MS, 1000);
     assert_eq!(WRITER_MAX_RETRY_MS, 60_000);
-    assert_eq!(next_writer_interval(1000, true), 1000);
-    assert_eq!(next_writer_interval(30_000, true), 1000);
-    assert_eq!(next_writer_interval(0, false), 2000);
-    assert_eq!(next_writer_interval(1000, false), 2000);
-    assert_eq!(next_writer_interval(30_000, false), 60_000);
-    assert_eq!(next_writer_interval(40_000, false), 60_000);
-    assert_eq!(next_writer_interval(60_000, false), 60_000);
+    assert_eq!(next_writer_interval(1000, WriterPass::Drained), 1000);
+    assert_eq!(next_writer_interval(30_000, WriterPass::Drained), 1000);
+    assert_eq!(next_writer_interval(0, WriterPass::Retry), 2000);
+    assert_eq!(next_writer_interval(1000, WriterPass::Retry), 2000);
+    assert_eq!(next_writer_interval(30_000, WriterPass::Retry), 60_000);
+    assert_eq!(next_writer_interval(40_000, WriterPass::Retry), 60_000);
+    assert_eq!(next_writer_interval(60_000, WriterPass::Retry), 60_000);
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn a_store_reads_from_the_spool_then_from_the_writer_gzip() {
     files.write_spool(&hash, data).unwrap();
     assert!(!files.gzip_path(&hash).exists());
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
     assert!(files.gzip_path(&hash).is_file());
     assert!(!dir.spool().join(format!("{hash}.asset")).exists());
@@ -208,19 +208,27 @@ fn a_failed_spool_write_leaves_no_partial_file() {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Sync {
+    File,
+    Directory(PathBuf),
+}
+
+#[cfg(unix)]
 thread_local! {
-    static SYNCS: std::cell::RefCell<Option<Vec<PathBuf>>> = const { std::cell::RefCell::new(None) };
+    static SYNCS: std::cell::RefCell<Option<Vec<Sync>>> = const { std::cell::RefCell::new(None) };
     static FAIL_SYNC: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(unix)]
-pub(super) fn record_sync(dir: &Path) -> std::io::Result<()> {
+pub(super) fn record_sync(event: Sync) -> std::io::Result<()> {
+    let fail = matches!(&event, Sync::Directory(dir) if FAIL_SYNC.with_borrow(|path| path.as_ref() == Some(dir)));
     SYNCS.with_borrow_mut(|syncs| {
         if let Some(syncs) = syncs {
-            syncs.push(dir.to_owned());
+            syncs.push(event);
         }
     });
-    if FAIL_SYNC.with_borrow(|fail| fail.as_deref() == Some(dir)) {
+    if fail {
         return Err(std::io::Error::other("injected directory sync failure"));
     }
     Ok(())
@@ -233,39 +241,47 @@ fn new_directory_entries_are_synced_and_the_spool_outlives_gzip_publication() {
     let files = FsFiles::new(dir.base(), dir.spool(), false);
     let hash = sha256_hex(b"durable");
     SYNCS.set(Some(Vec::new()));
+    let temp_dir = dir.spool().join("spool");
+    FAIL_SYNC.set(Some(temp_dir.clone()));
     files.write_spool(&hash, b"durable").unwrap();
+    FAIL_SYNC.set(None);
     assert_eq!(
         SYNCS.replace(Some(Vec::new())).unwrap(),
         [
-            dir.root.clone(),
-            dir.spool(),
-            dir.spool(),
-            dir.spool().join("spool")
+            Sync::Directory(dir.root.clone()),
+            Sync::Directory(dir.spool()),
+            Sync::File,
+            Sync::Directory(dir.spool()),
+            Sync::Directory(temp_dir)
         ]
     );
 
     let gzip = files.gzip_path(&hash);
     let leaf = gzip.parent().unwrap();
     FAIL_SYNC.set(Some(leaf.to_owned()));
-    assert!(!files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Retry);
     FAIL_SYNC.set(None);
     assert!(gzip.is_file());
     assert!(dir.spool().join(format!("{hash}.asset")).is_file());
-    let created: Vec<_> = leaf
+    let mut expected: Vec<_> = leaf
         .ancestors()
+        .skip(1)
         .take_while(|path| *path != dir.root)
         .chain([dir.root.as_path()])
+        .map(|dir| Sync::Directory(dir.to_owned()))
         .collect();
-    assert!(
-        SYNCS
-            .replace(Some(Vec::new()))
-            .unwrap()
-            .iter()
-            .map(PathBuf::as_path)
-            .eq(created.into_iter().rev())
+    expected.reverse();
+    expected.extend([Sync::File, Sync::Directory(leaf.to_owned())]);
+    assert_eq!(SYNCS.replace(Some(Vec::new())).unwrap(), expected);
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
+    assert_eq!(
+        SYNCS.take().unwrap(),
+        [
+            Sync::File,
+            Sync::Directory(leaf.to_owned()),
+            Sync::Directory(dir.spool())
+        ]
     );
-    assert!(files.writer_pass());
-    assert_eq!(SYNCS.take().unwrap(), [leaf.to_owned(), dir.spool()]);
     assert!(!dir.spool().join(format!("{hash}.asset")).exists());
 }
 
@@ -276,7 +292,7 @@ fn either_writer_may_have_already_removed_the_spool_copy() {
     let hash = sha256_hex(b"taken");
     let spool = files.spool().join(format!("{hash}.asset"));
     let dest = files.gzip_path(&hash);
-    super::write_store_file(&spool, &dest, &hash).unwrap();
+    assert!(!super::write_store_file(&spool, &dest, &hash).unwrap());
     assert!(!dest.exists());
     super::remove_spool(&spool).unwrap();
 }
@@ -311,12 +327,12 @@ fn writer_leaves_another_temp_file_and_a_good_gzip_intact() {
     let foreign_temp = gzip.with_extension(format!("gz.{}.tmp", std::process::id()));
     fs::write(&foreign_temp, b"other writer").unwrap();
     files.write_spool(&hash, data).unwrap();
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     assert_eq!(fs::read(&foreign_temp).unwrap(), b"other writer");
     let good = fs::read(&gzip).unwrap();
     fs::write(files.spool().join(format!("{hash}.asset")), b"damage").unwrap();
     assert_eq!(files.read_checked(&hash, 0).unwrap().unwrap(), data);
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     assert_eq!(fs::read(&gzip).unwrap(), good);
 }
 
@@ -363,12 +379,28 @@ fn bounded_passes_make_progress_past_ignored_and_failing_entries() {
     fs::write(files.spool().join(format!("{good}.asset")), b"good").unwrap();
     let first = files.writer_pass();
     assert!(files.scan.lock().unwrap().is_some());
-    assert!(ferroan_diag::render().contains("fsassets.spool-pass"));
+    assert!(ferroan_diag::render().contains("asset.fsassets-spool-pass"));
     let second = files.writer_pass();
-    assert!(!first || !second);
+    assert!(first == WriterPass::Retry || second == WriterPass::Retry);
     assert!(files.scan.lock().unwrap().is_none());
     assert!(files.gzip_path(&good).is_file());
     assert!(files.spool().join(format!("{hash}.asset")).is_file());
+}
+
+#[test]
+fn successful_spool_batches_continue_immediately_until_the_cursor_is_drained() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    fs::create_dir_all(files.spool()).unwrap();
+    for i in 0..=super::SPOOL_ENTRIES_PER_PASS {
+        fs::write(files.spool().join(format!("{i}.other")), []).unwrap();
+    }
+    let first = files.writer_pass();
+    assert_eq!(first, WriterPass::More);
+    assert_eq!(next_writer_interval(WRITER_MAX_RETRY_MS, first), 0);
+    let last = files.writer_pass();
+    assert_eq!(last, WriterPass::Drained);
+    assert_eq!(next_writer_interval(0, last), WRITER_INTERVAL_MS);
 }
 
 #[test]
@@ -386,7 +418,7 @@ fn the_writer_retries_and_leaves_other_files_alone() {
     let gzip = files.gzip_path(&hash);
     fs::create_dir_all(gzip.parent().unwrap()).unwrap();
     fs::create_dir(&gzip).unwrap();
-    assert!(!files.write_once().unwrap());
+    assert_eq!(files.write_once().unwrap(), WriterPass::Retry);
     assert!(dir.spool().join(format!("{hash}.asset")).is_file());
     assert!(gzip.is_dir());
     assert_eq!(fs::read(dir.spool().join("notes.txt")).unwrap(), b"keep");
@@ -397,11 +429,11 @@ fn the_writer_retries_and_leaves_other_files_alone() {
     assert!(dir.spool().join("folder.asset").is_dir());
 
     fs::remove_dir(&gzip).unwrap();
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     assert!(!dir.spool().join(format!("{hash}.asset")).exists());
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
     assert_eq!(fs::read(dir.spool().join("notes.txt")).unwrap(), b"keep");
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
 }
 
 #[test]
@@ -410,7 +442,7 @@ fn a_writer_pass_on_a_blocked_spool_does_not_end_the_process() {
     fs::create_dir_all(dir.base()).unwrap();
     fs::write(dir.spool(), b"not a directory").unwrap();
     let files = FsFiles::new(dir.base(), dir.spool(), false);
-    assert!(!files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Retry);
     assert!(ferroan_diag::render().contains("writer pass over"));
 }
 
@@ -430,7 +462,21 @@ fn a_blocking_file_is_renamed_aside_and_kept() {
     fs::create_dir_all(dir.base()).unwrap();
     let bone = dir.base().join(&first);
     fs::write(&bone, b"sr-as-bone").unwrap();
+    #[cfg(unix)]
+    SYNCS.set(Some(Vec::new()));
     assert!(files.store_bytes(&hash, 1, data).unwrap());
+    #[cfg(unix)]
+    {
+        // Renaming the obstacle and creating its replacement each sync BaseDirectory.
+        let base = Sync::Directory(dir.base());
+        assert!(
+            SYNCS
+                .take()
+                .unwrap()
+                .windows(2)
+                .any(|events| events == [base.clone(), base.clone()])
+        );
+    }
     assert!(bone.is_dir());
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
     let renamed = fs::read_dir(dir.base())
@@ -534,7 +580,7 @@ fn fsassets_files_cross_read() {
     println!(
         "known difference TB91: damaged spool masks good gzip on Pin8; Ferroan reads the gzip"
     );
-    assert!(rust_files.writer_pass());
+    assert_eq!(rust_files.writer_pass(), WriterPass::Drained);
     assert_eq!(rust_files.read_checked(&hash, 1).unwrap().unwrap(), data);
     let damaged = rust_files.gzip_path(&hash);
     let full = fs::read(&damaged).unwrap();
@@ -606,7 +652,7 @@ impl FsFiles {
         if self.needs_spool(hash, type_code, |stored| stored == data)? {
             self.write_spool(hash, data)?;
         }
-        self.write_once()
+        Ok(self.write_once()? != WriterPass::Retry)
     }
 }
 

@@ -80,7 +80,8 @@ use super::fscommands::{
     without_ado_pool_keys,
 };
 use super::fsfiles::{
-    FsFiles, OBJECT_TYPE, WRITER_INTERVAL_MS, log_fsassets, next_writer_interval, sha256_hex,
+    FsFiles, OBJECT_TYPE, WRITER_INTERVAL_MS, WriterPass, log_fsassets, next_writer_interval,
+    sha256_hex,
 };
 use super::loader::LoadedAsset;
 use super::model::{Asset, parse_id};
@@ -152,11 +153,13 @@ impl FsAssetService {
             let mut interval = WRITER_INTERVAL_MS;
             loop {
                 let files = files.clone();
-                let wrote = tokio::task::spawn_blocking(move || files.writer_pass())
+                let pass = tokio::task::spawn_blocking(move || files.writer_pass())
                     .await
-                    .unwrap_or(false);
-                interval = next_writer_interval(interval, wrote);
-                tokio::time::sleep(Duration::from_millis(interval)).await;
+                    .unwrap_or(WriterPass::Retry);
+                interval = next_writer_interval(interval, pass);
+                if interval > 0 {
+                    tokio::time::sleep(Duration::from_millis(interval)).await;
+                }
             }
         }));
     }
@@ -859,7 +862,7 @@ mod tests {
             .unwrap();
         assert!(matches!(repaired, super::SpoolHandoff::Stored { .. }));
         assert_eq!(std::fs::read(&spool).unwrap(), bytes);
-        assert!(files.writer_pass());
+        assert_eq!(files.writer_pass(), WriterPass::Drained);
         // A bad spool also needs replacement when reads can use the good gzip.
         std::fs::write(&spool, b"damaged again").unwrap();
         assert_eq!(files.read_checked(&hash, 0).unwrap().unwrap(), bytes);
@@ -1098,7 +1101,7 @@ mod tests {
             exist_call(app, &[&id.to_string()]).await.body,
             super::super::xml::encode_bools(&[true])
         );
-        assert!(files.writer_pass());
+        assert_eq!(files.writer_pass(), WriterPass::Drained);
         assert!(files.gzip_path(&hash).is_file());
         assert!(!spool_file.exists());
         let reread = call(app, "GET", &format!("/assets/{id}/data"), &[]).await;

@@ -99,7 +99,15 @@ fn publication_lock(hash: &str) -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// The writer's pause between passes, in milliseconds.
+/// Outcome of one bounded directory scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriterPass {
+    Drained,
+    More,
+    Retry,
+}
+
+/// The writer's idle pause, in milliseconds.
 pub const WRITER_INTERVAL_MS: u64 = 1000;
 
 /// The longest pause after a pass that left files in the spool.
@@ -156,7 +164,7 @@ impl FsFiles {
         gzip_path(&self.base, &self.relative_file(hash))
     }
 
-    /// Publish complete spool bytes. A Unix directory sync error is returned
+    /// Publish complete spool bytes. A Unix destination directory sync error is returned
     /// even if the rename already made the complete file visible.
     pub fn write_spool(&self, hash: &str, data: &[u8]) -> Result<(), StoreError> {
         let folder = self.spool.join("spool");
@@ -166,7 +174,7 @@ impl FsFiles {
             .and_then(|()| {
                 publish_file(&folder, &dest, |mut file| {
                     file.write_all(data)?;
-                    file.sync_all()
+                    sync_file(&file)
                 })
             })
             .inspect_err(|error| {
@@ -182,20 +190,23 @@ impl FsFiles {
     }
 
     /// Process one bounded batch. Only I/O failures increase the retry interval.
-    pub fn write_once(&self) -> Result<bool, StoreError> {
+    pub fn write_once(&self) -> Result<WriterPass, StoreError> {
         let mut cursor = self.scan.lock().unwrap_or_else(|e| e.into_inner());
         if cursor.is_none() {
             match fs::read_dir(&self.spool) {
                 Ok(entries) => *cursor = Some(entries.peekable()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(WriterPass::Drained);
+                }
                 Err(error) => return Err(error.into()),
             }
         }
         let Some(entries) = cursor.as_mut() else {
-            return Ok(true);
+            return Ok(WriterPass::Drained);
         };
         let succeeded = self.flush_batch(entries.by_ref().take(SPOOL_ENTRIES_PER_PASS));
-        if entries.peek().is_some() {
+        let more = entries.peek().is_some();
+        if more {
             ferroan_diag::hit(&ferroan_diag::Hit {
                 id: ferroan_diag::ASSET_FSASSETS_SPOOL_PASS,
                 kind: ferroan_diag::Kind::Soft,
@@ -208,7 +219,11 @@ impl FsFiles {
         } else {
             *cursor = None;
         }
-        Ok(succeeded)
+        Ok(match (succeeded, more) {
+            (false, _) => WriterPass::Retry,
+            (true, true) => WriterPass::More,
+            (true, false) => WriterPass::Drained,
+        })
     }
 
     fn flush_batch(&self, entries: impl Iterator<Item = io::Result<fs::DirEntry>>) -> bool {
@@ -271,15 +286,13 @@ impl FsFiles {
             return Ok(false);
         }
         let _publish = publication_lock(hash);
-        write_store_file(&file, &gzip_path(&self.base, &relative), hash)
-            .map(|()| true)
-            .map_err(|error| {
-                io::Error::other(format!("could not flush {}: {error}", file.display()))
-            })
+        write_store_file(&file, &gzip_path(&self.base, &relative), hash).map_err(|error| {
+            io::Error::other(format!("could not flush {}: {error}", file.display()))
+        })
     }
 
-    /// One writer pass that cannot end the process. `false` means try again.
-    pub fn writer_pass(&self) -> bool {
+    /// Log a scan failure and schedule it for retry.
+    pub fn writer_pass(&self) -> WriterPass {
         match self.write_once() {
             Ok(written) => written,
             Err(error) => {
@@ -287,7 +300,7 @@ impl FsFiles {
                     "ERROR",
                     &format!("writer pass over {} failed: {error}", self.spool.display()),
                 );
-                false
+                WriterPass::Retry
             }
         }
     }
@@ -375,17 +388,17 @@ impl FsFiles {
     }
 }
 
-/// The next pause. A pass that wrote every file returns to 1000 ms. A pass
-/// that left files behind doubles the pause, up to 60000 ms. `current_ms` of
-/// 0 is the starting pause.
-pub fn next_writer_interval(current_ms: u64, wrote_all: bool) -> u64 {
-    if wrote_all {
-        return WRITER_INTERVAL_MS;
+/// Continue a successful unfinished scan immediately. Idle scans sleep normally,
+/// and failures back off from at least the normal interval.
+pub fn next_writer_interval(current_ms: u64, pass: WriterPass) -> u64 {
+    match pass {
+        WriterPass::More => 0,
+        WriterPass::Drained => WRITER_INTERVAL_MS,
+        WriterPass::Retry => current_ms
+            .max(WRITER_INTERVAL_MS)
+            .saturating_mul(2)
+            .min(WRITER_MAX_RETRY_MS),
     }
-    current_ms
-        .max(WRITER_INTERVAL_MS)
-        .saturating_mul(2)
-        .min(WRITER_MAX_RETRY_MS)
 }
 
 /// SHA-256 hex, lowercase, as `Util.SHA256Hash` writes it.
@@ -452,6 +465,13 @@ fn hash_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
+fn sync_file(file: &fs::File) -> io::Result<()> {
+    file.sync_all()?;
+    #[cfg(all(test, unix))]
+    tests::record_sync(tests::Sync::File)?;
+    Ok(())
+}
+
 /// Directory entries need their own flush on Unix. Rust's standard library
 /// has no portable directory flush on Windows; file contents are still synced.
 fn sync_directory(dir: &Path) -> io::Result<()> {
@@ -464,7 +484,7 @@ fn sync_directory(dir: &Path) -> io::Result<()> {
         };
         fs::File::open(dir)?.sync_all()?;
         #[cfg(test)]
-        tests::record_sync(dir)?;
+        tests::record_sync(tests::Sync::Directory(dir.to_owned()))?;
     }
     #[cfg(not(unix))]
     let _ = dir;
@@ -501,10 +521,10 @@ fn warn_mismatch(file: &Path, hash: &str, bytes: usize) {
     ));
 }
 
-fn write_store_file(spool_file: &Path, store_file: &Path, hash: &str) -> io::Result<()> {
+fn write_store_file(spool_file: &Path, store_file: &Path, hash: &str) -> io::Result<bool> {
     let data = match fs::read(spool_file) {
         Ok(data) => data,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
     // A writer has no type metadata. Rewritten objects may legitimately have a
@@ -526,7 +546,8 @@ fn write_store_file(spool_file: &Path, store_file: &Path, hash: &str) -> io::Res
         make_directory_for(store_file)?;
         publish_file(parent, store_file, |file| gzip_to(file, &data))?;
     }
-    remove_spool(spool_file)
+    remove_spool(spool_file)?;
+    Ok(!keep_base)
 }
 
 /// The callback writes and syncs the contents. Only the creator cleans up the
@@ -552,7 +573,8 @@ fn publish_file(
     }
     sync_directory(parent)?;
     if temp_dir != parent {
-        sync_directory(temp_dir)?;
+        // Losing the temporary name's removal can only leave a stale .tmp.
+        let _ = sync_directory(temp_dir);
     }
     Ok(())
 }
@@ -576,8 +598,7 @@ fn gzip_to(file: fs::File, data: &[u8]) -> io::Result<()> {
     let mut gzip = GzEncoder::new(file, Compression::default());
     gzip.write_all(data)?;
     let file = gzip.finish()?;
-    file.sync_all()?;
-    Ok(())
+    sync_file(&file)
 }
 
 fn read_gzip(path: &Path) -> Option<(Vec<u8>, bool)> {
