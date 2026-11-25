@@ -415,12 +415,15 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let map = match (config.terrain_store.as_deref(), config.terrain_kind) {
-        (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
+    // `SimulationDataService` keeps terrain in the same store as prims and
+    // settings: `[SimulationDataStore]` over `[DatabaseService]`.
+    let map = match config.object_store.as_ref() {
+        Some(store) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
             let loaded = ferroan_scene::load_world_map(
-                connection,
+                &store.connection,
+                store.kind,
                 config.id,
                 width,
                 height,
@@ -431,19 +434,7 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
             log_world_map(&loaded, config.initial_terrain);
             Some(loaded.map)
         }
-        (Some(_), Some(_)) => {
-            tracing::info!(
-                "ferroan-region: MySQL and PostgreSQL stores have no saved heightmap yet"
-            );
-            None
-        }
-        (Some(_), None) => {
-            tracing::info!(
-                "ferroan-region: the database service is not a SQLite terrain store; no saved heightmap"
-            );
-            None
-        }
-        (None, _) => None,
+        None => None,
     };
     let frame = match map {
         Some(map) => {
@@ -1394,7 +1385,7 @@ mod tests {
              [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
              [Map]\nGenerateMaptiles=false\n\
              [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
-             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+             ConnectionString=\"Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\"\n",
         )
         .unwrap();
         let regions = ferroan_config::Config::parse(
@@ -1408,21 +1399,20 @@ mod tests {
             config.object_store.as_ref().map(|store| store.kind),
             Some(ferroan_scene::ObjectStoreKind::Mysql)
         );
-        assert_eq!(
-            config.terrain_kind,
-            Some(ferroan_scene::ObjectStoreKind::Mysql)
-        );
-        assert!(
-            config
-                .terrain_store
-                .as_deref()
-                .unwrap()
-                .contains("Data Source=")
-        );
         let settings = load_stored_settings(&mut config).await.unwrap();
         assert!(settings.is_none());
-        let terrain = load_terrain(&config).await.unwrap().unwrap();
-        assert!(!terrain.has_map());
+        // Terrain is read from the MySQL store, which is not running: startup
+        // stops on the MySQL connect, not on a SQLite file named by the string.
+        match load_terrain(&config).await {
+            Err(RunError::Terrain(text)) => {
+                assert!(
+                    text.starts_with("terrain store: could not connect to mysql"),
+                    "{text}"
+                );
+            }
+            Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("an unreachable MySQL store loaded terrain"),
+        }
 
         let bare = ferroan_config::Config::parse(
             "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
@@ -1436,11 +1426,63 @@ mod tests {
         .unwrap();
         let bare_config = RegionConfig::from_configs(&bare, &regions).unwrap();
         assert!(bare_config.object_store.is_none());
-        assert!(bare_config.terrain_kind.is_none());
-        assert!(bare_config.terrain_store.is_some());
         let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
         assert!(!bare_terrain.has_map());
     }
+    #[tokio::test]
+    async fn terrain_is_stored_in_the_simulation_data_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-terrain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("RegionStore.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/db/sqlite/RegionStore.db"),
+            &path,
+        )
+        .unwrap();
+        // `[DatabaseService]` names MySQL; `[SimulationDataStore]` replaces it.
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
+             ConnectionString=Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\n\
+             [SimulationDataStore]\nStorageProvider=OpenSim.Data.SQLite.dll\n\
+             ConnectionString=URI=file:{};UseUTF16Encoding=True\n",
+            path.display()
+        ))
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\n",
+        )
+        .unwrap();
+        let config = RegionConfig::from_configs(&server, &regions).unwrap();
+        let terrain = load_terrain(&config).await.unwrap().unwrap();
+        assert!(terrain.has_map());
+        let stored = ferroan_scene::open_terrain(
+            &format!("URI=file:{};UseUTF16Encoding=True", path.display()),
+            config.id,
+            256,
+            256,
+            ferroan_scene::ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
+        assert!(stored.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use ferroan_client::CircuitExpect;
     use ferroan_client::EntityUpdates;
     use ferroan_http::{Field, FieldMap};
