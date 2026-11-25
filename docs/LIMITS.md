@@ -43,6 +43,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `asset.loader-files` | 10,000 assets | `crates/ferroan-services/src/asset/loader.rs` | hard | no | `AssetLoaderFileSystem` does not cap the asset count. The library set at the pin is 455 files. |
 | `asset.loader-file-bytes` | 2 MiB | `crates/ferroan-services/src/asset/loader.rs` | hard | no | One library file is not capped. The largest file at the pin is under 400 KiB. |
 | `asset.loader-total-bytes` | 32 MiB | `crates/ferroan-services/src/asset/loader.rs` | hard | no | The library total is not capped. The set at the pin is about 13 MiB. |
+| `fsassets.spool-pass` | 256 entries processed per pass | `crates/ferroan-services/src/asset/fsfiles.rs` | soft | no | Pin8 enumerates the whole spool. Ferroan resumes at the next entry on the ordinary writer interval. Unrelated filenames count against the scan budget. The cursor buffers one further entry to detect remaining work. |
 | `asset.fsassets-import-row` | 50,000,000 bytes | `crates/ferroan-services/src/asset/fsasset.rs` | hard | no | One legacy import `data` value. Import reads that column with no cap. A larger value is refused and that import stops. |
 | `otlp.queue` | 256 records | `crates/ferroan-log/src/otlp.rs` | soft | no | There is no OTLP export in C#. A full queue drops the record. |
 | `llsd.parsed-bytes` | 128 MiB | `crates/ferroan-llsd/src/lib.rs` | hard | no | OpenMetaverse does not cap the parsed tree. The observed value is the allocation that did not fit. |

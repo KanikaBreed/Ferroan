@@ -95,7 +95,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
-| QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
+| QR14 | R14: the FSAssets file store's remaining durability and test gaps | DONE (this PR) |
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker, host networking kept where it is the host network | DONE (this PR) |
 | QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |

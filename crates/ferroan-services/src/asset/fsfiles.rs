@@ -30,6 +30,8 @@
 //   fix/fsassets-damaged-file, fix/fsassets-writer-errors and
 //   fix/fsassets-store-spool-errors, except that a file blocking a directory
 //   is renamed aside (D31) and is not deleted.
+// QR14 follows FSAssetService.cs (ReadFsFile, Store, WriteSpoolFile, WriteStoreFile)
+// at c401bceecd1684832ae8ba86a31b5ee01a4ded7b, with spool repair per D76.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -47,21 +49,25 @@
 //! a temporary file beside the destination, forces it to disk and renames it
 //! onto the `.gz` (TB24). A pass that cannot write keeps the spool file and
 //! returns, so the caller can try again. It does not end the process. The
-//! pause starts at 1000 ms and doubles up to 60000 ms while files remain.
+//! pause starts at 1000 ms and doubles up to 60000 ms after I/O failures.
+//! Large spools resume on the ordinary interval.
 //!
 //! A missing, empty (unless the hash is of no bytes), unreadable or
 //! mismatching file is missing. Storing the same bytes writes the file again
 //! (TB23). An object also matches the hash of its bytes without a trailing
-//! NUL, and a whole object file is kept, as the C# fix does.
+//! NUL. Fetch accepts a whole object as Pin8 does. Store can also compare
+//! a spooled object with the caller's sanitized XML (TB91).
 //!
 //! A file that occupies a directory component is renamed aside in the same
 //! directory with a `.blocked-<time>` suffix and a warning through
 //! `ferroan_diag` (D31). It is not deleted, and the new name is not an asset.
-//! A missing or damaged file is missing on this path and on the pin (TB23, #483).
+//! A damaged spool falls back to the base copy. A repeat store replaces it
+//! (D76). Unix syncs directory entries as well as file contents.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flate2::Compression;
@@ -77,6 +83,21 @@ pub(super) const OBJECT_TYPE: i8 = 6;
 
 /// How many directory obstacles one write will move aside.
 const BLOCK_RENAMES: u32 = 16;
+const SPOOL_ENTRIES_PER_PASS: usize = 256;
+
+// Coordinate a repair with a writer of that hash, including other FsFiles
+// instances in this process. Different hash prefixes can publish concurrently.
+fn publication_lock(hash: &str) -> std::sync::MutexGuard<'static, ()> {
+    static LOCKS: [Mutex<()>; 16] = [const { Mutex::new(()) }; 16];
+    let index = hash
+        .chars()
+        .next()
+        .and_then(|c| c.to_digit(16))
+        .unwrap_or(0);
+    LOCKS[index as usize]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 /// The writer's pause between passes, in milliseconds.
 pub const WRITER_INTERVAL_MS: u64 = 1000;
@@ -90,6 +111,13 @@ pub struct FsFiles {
     base: PathBuf,
     spool: PathBuf,
     osgrid: bool,
+    scan: Arc<Mutex<Option<std::iter::Peekable<fs::ReadDir>>>>,
+}
+
+#[derive(Clone, Copy)]
+enum FileUse<'a> {
+    Fetch,
+    Store(&'a dyn Fn(&[u8]) -> bool),
 }
 
 impl FsFiles {
@@ -100,6 +128,7 @@ impl FsFiles {
             base: base.into(),
             spool: spool.into(),
             osgrid,
+            scan: Arc::default(),
         };
         warn_if_spool_is_temporary(&files.spool);
         files
@@ -127,103 +156,126 @@ impl FsFiles {
         gzip_path(&self.base, &self.relative_file(hash))
     }
 
-    /// Writes the spool file. An error leaves no partial file (TB36).
+    /// Publish complete spool bytes. A Unix directory sync error is returned
+    /// even if the rename already made the complete file visible.
     pub fn write_spool(&self, hash: &str, data: &[u8]) -> Result<(), StoreError> {
         let folder = self.spool.join("spool");
-        fs::create_dir_all(&folder)?;
-        let final_file = self.spool.join(format!("{hash}.asset"));
-        let part = folder.join(format!("{hash}.asset.{}.tmp", Uuid::new_v4().simple()));
-        if let Err(error) = write_synced(&part, data) {
-            let _ = fs::remove_file(&part);
-            report_fsassets(
-                "ERROR",
-                &format!(
-                    "could not write {} to the spool, the asset is not stored: {error}",
-                    final_file.display()
-                ),
-            );
-            return Err(error.into());
-        }
-        if let Err(error) = rename_over(&part, &final_file) {
-            let _ = fs::remove_file(&part);
-            report_fsassets(
-                "ERROR",
-                &format!(
-                    "could not write {} to the spool, the asset is not stored: {error}",
-                    final_file.display()
-                ),
-            );
-            return Err(error.into());
-        }
-        Ok(())
+        let dest = self.spool.join(format!("{hash}.asset"));
+        let _publish = publication_lock(hash);
+        create_directories(&folder)
+            .and_then(|()| {
+                publish_file(&folder, &dest, |mut file| {
+                    file.write_all(data)?;
+                    file.sync_all()
+                })
+            })
+            .inspect_err(|error| {
+                report_fsassets(
+                    "ERROR",
+                    &format!(
+                        "could not write {} to the spool, the asset is not stored: {error}",
+                        dest.display()
+                    ),
+                )
+            })
+            .map_err(Into::into)
     }
 
-    /// One writer pass. `Ok(true)` means every `*.asset` file was written.
-    /// `Ok(false)` means at least one stayed in the spool (TB24).
+    /// Process one bounded batch. Only I/O failures increase the retry interval.
     pub fn write_once(&self) -> Result<bool, StoreError> {
-        let entries = match fs::read_dir(&self.spool) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
-            Err(error) => return Err(error.into()),
-        };
-        let mut files = Vec::new();
-        for entry in entries {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.ends_with(".asset") {
-                continue;
-            }
-            if entry.file_type()?.is_file() {
-                files.push(entry.path());
+        let mut cursor = self.scan.lock().unwrap_or_else(|e| e.into_inner());
+        if cursor.is_none() {
+            match fs::read_dir(&self.spool) {
+                Ok(entries) => *cursor = Some(entries.peekable()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(error) => return Err(error.into()),
             }
         }
-        if files.is_empty() {
+        let Some(entries) = cursor.as_mut() else {
             return Ok(true);
+        };
+        let succeeded = self.flush_batch(entries.by_ref().take(SPOOL_ENTRIES_PER_PASS));
+        if entries.peek().is_some() {
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: ferroan_diag::ASSET_FSASSETS_SPOOL_PASS,
+                kind: ferroan_diag::Kind::Soft,
+                configured: SPOOL_ENTRIES_PER_PASS as u64,
+                observed: SPOOL_ENTRIES_PER_PASS as u64 + 1,
+                action: ferroan_diag::Action::Delay,
+                route: "spool writer",
+                agent_id: None,
+            });
+        } else {
+            *cursor = None;
         }
+        Ok(succeeded)
+    }
+
+    fn flush_batch(&self, entries: impl Iterator<Item = io::Result<fs::DirEntry>>) -> bool {
         let started = std::time::Instant::now();
-        let mut failed = 0usize;
-        for file in &files {
-            let hash = file
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let store = gzip_path(&self.base, &hash_to_file(&hash, self.osgrid));
-            if let Err(error) = write_store_file(file, &store) {
-                if failed == 0 {
-                    report_fsassets(
-                        "ERROR",
-                        &format!(
-                            "could not write {} to {}, it stays in the spool to be written again: {error}",
-                            file.display(),
-                            store.display()
-                        ),
-                    );
+        let mut written = 0;
+        let mut failed = 0;
+        for entry in entries {
+            match entry.and_then(|entry| self.flush_entry(entry)) {
+                Ok(true) => written += 1,
+                Ok(false) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => {
+                    if failed == 0 {
+                        report_fsassets(
+                            "ERROR",
+                            &format!("spool entry in {}: {error}", self.spool.display()),
+                        );
+                    }
+                    failed += 1;
                 }
-                failed = failed.saturating_add(1);
             }
         }
-        let elapsed = started.elapsed().as_millis();
         if failed > 0 {
             report_fsassets(
                 "ERROR",
                 &format!(
-                    "write cycle wrote {} of {} files; the others stay in the spool to be written again",
-                    files.len() - failed,
-                    files.len()
+                    "write cycle wrote {written} files; {failed} entries failed and will be retried"
                 ),
             );
-        } else if elapsed > 0 {
-            let average = elapsed as f64 / files.len() as f64;
+        } else if written > 0 {
+            let elapsed = started.elapsed().as_millis();
             report_fsassets(
                 "INFO",
-                &format!(
-                    "write cycle complete, {} files, {elapsed} ticks, avg {average:.2}",
-                    files.len()
-                ),
+                &format!("write cycle complete, {written} files, {elapsed} ms"),
             );
         }
-        Ok(failed == 0)
+        failed == 0
+    }
+
+    fn flush_entry(&self, entry: fs::DirEntry) -> io::Result<bool> {
+        let file = entry.path();
+        if file.extension().and_then(|s| s.to_str()) != Some("asset") {
+            return Ok(false);
+        }
+        if !entry.file_type()?.is_file() {
+            return Ok(false);
+        }
+        let Some(hash) = file.file_stem().and_then(|s| s.to_str()) else {
+            return Ok(false);
+        };
+        let relative = self.relative_file(hash);
+        if !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            warn_fsassets(&format!(
+                "skipping invalid spool filename {}",
+                file.display()
+            ));
+            return Ok(false);
+        }
+        let _publish = publication_lock(hash);
+        write_store_file(&file, &gzip_path(&self.base, &relative), hash)
+            .map(|()| true)
+            .map_err(|error| {
+                io::Error::other(format!("could not flush {}: {error}", file.display()))
+            })
     }
 
     /// One writer pass that cannot end the process. `false` means try again.
@@ -240,49 +292,79 @@ impl FsFiles {
         }
     }
 
-    /// Writes the file when the stored bytes are missing or do not match.
-    /// A spool write that fails is an error and leaves no partial file.
-    /// `Ok(false)` means the spool file is still waiting for another pass.
-    pub fn store_bytes(&self, hash: &str, type_code: i8, data: &[u8]) -> Result<bool, StoreError> {
-        if self.read_checked(hash, type_code)?.is_some() {
-            return Ok(true);
-        }
-        self.write_spool(hash, data)?;
-        self.write_once()
+    /// A store must replace a damaged spool even if a good gzip can serve reads.
+    pub(super) fn needs_spool(
+        &self,
+        hash: &str,
+        type_code: i8,
+        matches_rewritten_object: impl Fn(&[u8]) -> bool,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .checked_content(hash, type_code, FileUse::Store(&matches_rewritten_object))?
+            .is_none())
     }
 
-    /// The file bytes when they are the content for `hash`, or `None` when
-    /// the file is missing, empty, unreadable or mismatching (TB23).
+    /// Return verified spool or base bytes. A genuine empty asset needs no file.
     pub fn read_checked(&self, hash: &str, type_code: i8) -> Result<Option<Vec<u8>>, StoreError> {
+        self.checked_content(hash, type_code, FileUse::Fetch)
+    }
+
+    fn checked_content(
+        &self,
+        hash: &str,
+        type_code: i8,
+        purpose: FileUse<'_>,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
         if hash.is_empty() {
             return Ok(None);
         }
         if hash_eq(hash, &sha256_hex(&[])) {
             return Ok(Some(Vec::new()));
         }
-        let Some((data, file, whole)) = self.read_file(hash)? else {
+        let spool = self.spool.join(format!("{hash}.asset"));
+        match fs::read(&spool) {
+            Ok(data) => {
+                // For a fetch, keep Pin8's whole-object exception. A store also
+                // has the original bytes and can verify the sanitized object.
+                let matches = content_matches(&data, hash, type_code, || match purpose {
+                    FileUse::Fetch => true,
+                    FileUse::Store(matches_rewritten) => matches_rewritten(&data),
+                });
+                if matches {
+                    if matches!(purpose, FileUse::Store(_)) {
+                        // A previous rename may have succeeded but its directory sync failed.
+                        sync_directory(&self.spool)?;
+                    }
+                    return Ok(Some(data));
+                }
+                warn_mismatch(&spool, hash, data.len());
+                if matches!(purpose, FileUse::Store(_)) {
+                    return Ok(None);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => {
+                warn_fsassets(&format!("could not read {}: {error}", spool.display()));
+                if matches!(purpose, FileUse::Store(_)) {
+                    return Ok(None);
+                }
+            }
+        }
+        let Some((data, file, whole)) = self.read_base(hash)? else {
             return Ok(None);
         };
-        if content_matches(&data, hash, type_code, whole) {
+        if content_matches(&data, hash, type_code, || whole) {
             return Ok(Some(data));
         }
-        warn_fsassets(&format!(
-            "{} holds {} bytes that do not match hash {hash}; assets with that hash are answered as missing until their content is stored again",
-            file.display(),
-            data.len()
-        ));
+        warn_mismatch(&file, hash, data.len());
         Ok(None)
     }
 
-    fn read_file(&self, hash: &str) -> Result<Option<(Vec<u8>, PathBuf, bool)>, StoreError> {
-        let spool_file = self.spool.join(format!("{hash}.asset"));
-        if let Some(data) = read_optional(&spool_file)? {
-            return Ok(Some((data, spool_file, true)));
-        }
+    fn read_base(&self, hash: &str) -> Result<Option<(Vec<u8>, PathBuf, bool)>, StoreError> {
         let disk = self.base.join(hash_to_file(hash, self.osgrid));
         let gzip = gzip_path_of(&disk);
         if gzip.is_file() {
-            return Ok(read_gzip(&gzip)?.map(|(data, whole)| (data, gzip, whole)));
+            return Ok(read_gzip(&gzip).map(|(data, whole)| (data, gzip, whole)));
         }
         if disk.is_file()
             && let Some(data) = read_optional(&disk)?
@@ -348,7 +430,12 @@ fn gzip_path_of(disk: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn content_matches(data: &[u8], hash: &str, type_code: i8, whole: bool) -> bool {
+fn content_matches(
+    data: &[u8],
+    hash: &str,
+    type_code: i8,
+    accept_rewritten: impl FnOnce() -> bool,
+) -> bool {
     if hash_eq(&sha256_hex(data), hash) {
         return true;
     }
@@ -358,60 +445,134 @@ fn content_matches(data: &[u8], hash: &str, type_code: i8, whole: bool) -> bool 
     if data[data.len() - 1] == 0 && hash_eq(&sha256_hex(&data[..data.len() - 1]), hash) {
         return true;
     }
-    whole
+    accept_rewritten()
 }
 
 fn hash_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
-fn write_synced(path: &Path, data: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(data)?;
-    file.sync_all()?;
+/// Directory entries need their own flush on Unix. Rust's standard library
+/// has no portable directory flush on Windows; file contents are still synced.
+fn sync_directory(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        fs::File::open(dir)?.sync_all()?;
+        #[cfg(test)]
+        tests::record_sync(dir)?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
     Ok(())
 }
 
-fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
-    match fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            fs::remove_file(to)?;
-            fs::rename(from, to)
+fn create_directories(dir: &Path) -> io::Result<()> {
+    if dir.as_os_str().is_empty() || dir.is_dir() {
+        return Ok(());
+    }
+    let parent = dir
+        .parent()
+        .ok_or_else(|| io::Error::other("directory has no parent"))?;
+    create_directories(parent)?;
+    match fs::create_dir(dir) {
+        Ok(()) => (),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => {
+            return sync_directory(parent);
         }
+        Err(e) => return Err(e),
+    }
+    if let Err(error) = sync_directory(parent) {
+        // An empty unpublished directory must be created and synced on retry.
+        let _ = fs::remove_dir(dir);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn warn_mismatch(file: &Path, hash: &str, bytes: usize) {
+    warn_fsassets(&format!(
+        "{} holds {bytes} bytes that do not match hash {hash}",
+        file.display()
+    ));
+}
+
+fn write_store_file(spool_file: &Path, store_file: &Path, hash: &str) -> io::Result<()> {
+    let data = match fs::read(spool_file) {
+        Ok(data) => data,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    // A writer has no type metadata. Rewritten objects may legitimately have a
+    // different hash. Preserve a verifiably good gzip over mismatching spool bytes.
+    let plain = store_file.with_extension("");
+    let keep_base = if !store_file.is_file() && !plain.is_file() || hash_matches(&data, hash) {
+        false
+    } else if store_file.is_file() {
+        read_gzip(store_file).is_some_and(|(old, _)| hash_matches(&old, hash))
+    } else {
+        fs::read(plain).is_ok_and(|old| hash_matches(&old, hash))
+    };
+    let parent = store_file
+        .parent()
+        .ok_or_else(|| io::Error::other("missing gzip parent"))?;
+    if keep_base {
+        sync_directory(parent)?;
+    } else {
+        make_directory_for(store_file)?;
+        publish_file(parent, store_file, |file| gzip_to(file, &data))?;
+    }
+    remove_spool(spool_file)
+}
+
+/// The callback writes and syncs the contents. Only the creator cleans up the
+/// temporary file. A successful rename is durable on Unix before we return.
+fn publish_file(
+    temp_dir: &Path,
+    dest: &Path,
+    write: impl FnOnce(fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| io::Error::other("missing destination parent"))?;
+    let mut name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::other("missing destination name"))?
+        .to_os_string();
+    name.push(format!(".{}.tmp", Uuid::new_v4().simple()));
+    let temp = temp_dir.join(name);
+    let file = fs::File::create_new(&temp)?;
+    if let Err(error) = write(file).and_then(|()| fs::rename(&temp, dest)) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    sync_directory(parent)?;
+    if temp_dir != parent {
+        sync_directory(temp_dir)?;
+    }
+    Ok(())
+}
+
+fn remove_spool(file: &Path) -> io::Result<()> {
+    match fs::remove_file(file) {
+        Ok(()) => sync_directory(
+            file.parent()
+                .ok_or_else(|| io::Error::other("missing spool parent"))?,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-fn write_store_file(spool_file: &Path, store_file: &Path) -> io::Result<()> {
-    if !make_directory_for(store_file)? {
-        return Err(io::Error::other(
-            "could not create the directory for the asset file",
-        ));
-    }
-    let data = fs::read(spool_file)?;
-    let mut temp_name = store_file.as_os_str().to_os_string();
-    temp_name.push(format!(".{}.tmp", std::process::id()));
-    let temp = PathBuf::from(temp_name);
-    let written = gzip_to(&temp, &data);
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
-    }
-    if let Err(error) = rename_over(&temp, store_file) {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
-    }
-    fs::remove_file(spool_file)?;
-    Ok(())
+fn hash_matches(data: &[u8], hash: &str) -> bool {
+    hash_eq(&sha256_hex(data), hash)
 }
 
-fn gzip_to(path: &Path, data: &[u8]) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
+fn gzip_to(file: fs::File, data: &[u8]) -> io::Result<()> {
     let mut gzip = GzEncoder::new(file, Compression::default());
     gzip.write_all(data)?;
     let file = gzip.finish()?;
@@ -419,22 +580,22 @@ fn gzip_to(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn read_gzip(path: &Path) -> Result<Option<(Vec<u8>, bool)>, StoreError> {
+fn read_gzip(path: &Path) -> Option<(Vec<u8>, bool)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             warn_fsassets(&format!("could not read {}: {error}", path.display()));
-            return Ok(None);
+            return None;
         }
     };
     let mut decoder = GzDecoder::new(bytes.as_slice());
     let mut data = Vec::new();
     if let Err(error) = io::Read::read_to_end(&mut decoder, &mut data) {
         warn_fsassets(&format!("could not read {}: {error}", path.display()));
-        return Ok(None);
+        return None;
     }
     let whole = gzip_trailer_matches(&bytes, data.len());
-    Ok(Some((data, whole)))
+    Some((data, whole))
 }
 
 fn gzip_trailer_matches(bytes: &[u8], length: usize) -> bool {
@@ -462,58 +623,25 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     }
 }
 
-/// Makes the directory that holds `disk_file`. A file in the way is renamed
-/// aside (D31). `Ok(false)` means the directory could not be made.
-fn make_directory_for(disk_file: &Path) -> io::Result<bool> {
+/// Make the hash path, preserving a file that obstructs it (D31).
+fn make_directory_for(disk_file: &Path) -> io::Result<()> {
+    let dir = disk_file
+        .parent()
+        .ok_or_else(|| io::Error::other("missing gzip parent"))?;
     for _ in 0..BLOCK_RENAMES {
-        let Some(dir) = disk_file.parent() else {
-            return Ok(false);
-        };
-        if fs::create_dir_all(dir).is_ok() {
-            return Ok(true);
+        match create_directories(dir) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let Some(obstacle) = dir.ancestors().find(|path| path.is_file()) else {
+                    return Err(error);
+                };
+                rename_aside(obstacle)?;
+            }
         }
-        let Some(bone) = blocking_component(dir) else {
-            warn_fsassets(&format!(
-                "could not resolve path creation error for {}",
-                disk_file.display()
-            ));
-            return Ok(false);
-        };
-        let Ok(meta) = fs::metadata(&bone) else {
-            warn_fsassets(&format!(
-                "could not resolve path creation error for {}",
-                disk_file.display()
-            ));
-            return Ok(false);
-        };
-        if !meta.is_file() {
-            warn_fsassets(&format!(
-                "could not resolve path creation error for {}",
-                disk_file.display()
-            ));
-            return Ok(false);
-        }
-        rename_aside(&bone)?;
     }
-    warn_fsassets(&format!(
-        "could not resolve path creation error for {}",
-        disk_file.display()
-    ));
-    Ok(false)
-}
-
-fn blocking_component(dir: &Path) -> Option<PathBuf> {
-    let mut current = dir.to_path_buf();
-    loop {
-        let parent = current.parent()?;
-        if parent.as_os_str().is_empty() {
-            return None;
-        }
-        if fs::create_dir_all(parent).is_ok() {
-            return Some(current);
-        }
-        current = parent.to_path_buf();
-    }
+    Err(io::Error::other(
+        "too many blocking files in the asset directory",
+    ))
 }
 
 fn rename_aside(path: &Path) -> io::Result<()> {
@@ -539,6 +667,7 @@ fn rename_aside(path: &Path) -> io::Result<()> {
             continue;
         }
         fs::rename(path, &dest)?;
+        sync_directory(parent)?;
         warn_fsassets(&format!(
             "renamed blocking file {} aside to {}; it is not an asset",
             path.display(),

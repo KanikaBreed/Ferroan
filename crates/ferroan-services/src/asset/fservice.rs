@@ -28,6 +28,8 @@
 //   Source/OpenSim.Framework.Serialization/External/ExternalRepresentationUtils.cs
 //     SanitizeXml
 //   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+// Spool repair follows D76, compared with FSAssetService.cs at
+// c401bceecd1684832ae8ba86a31b5ee01a4ded7b (TB91).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -293,29 +295,15 @@ impl FsAssetService {
         let hash = sha256_hex(&original);
         truncate_name(asset);
         truncate_description(asset);
-        let mut stored = original;
-        if read_checked_off(&self.files, &hash, asset.type_code)
-            .await
-            .ok()
-            .and_then(|done| done.value)
-            .is_none()
+        match store_content_off(self.files.clone(), hash.clone(), asset.type_code, original).await?
         {
-            let final_file = self.files.spool().join(format!("{hash}.asset"));
-            if !final_file.is_file() {
-                if asset.type_code == OBJECT_TYPE && rewrite_object(&mut stored).is_err() {
-                    return Err(());
-                }
-                match write_spool_off(self.files.clone(), hash.clone(), stored).await {
-                    SpoolHandoff::Stored { data, .. } => stored = data,
-                    SpoolHandoff::Failed(data) => {
-                        asset.data = data;
-                        return Ok(NIL_ID.to_string());
-                    }
-                    SpoolHandoff::Stopped => return Ok(NIL_ID.to_string()),
-                }
+            SpoolHandoff::Stored { data, .. } => asset.data = data,
+            SpoolHandoff::Failed(data) => {
+                asset.data = data;
+                return Ok(NIL_ID.to_string());
             }
+            SpoolHandoff::Stopped => return Ok(NIL_ID.to_string()),
         }
-        asset.data = stored;
         let Some((id, id_text)) = resolve_id(asset.id, id_text) else {
             return Ok(NIL_ID.to_string());
         };
@@ -606,22 +594,35 @@ enum SpoolHandoff {
     Stopped,
 }
 
-async fn write_spool_off(
-    files: super::fsfiles::FsFiles,
+async fn store_content_off(
+    files: FsFiles,
     hash: String,
-    data: Vec<u8>,
-) -> SpoolHandoff {
-    let written = tokio::task::spawn_blocking(move || {
-        let thread = std::thread::current().id();
-        let result = files.write_spool(&hash, &data);
-        (result, data, thread)
+    type_code: i8,
+    mut data: Vec<u8>,
+) -> Result<SpoolHandoff, ()> {
+    tokio::task::spawn_blocking(move || {
+        let matches_rewritten = |spooled: &[u8]| {
+            let mut normalized = data.clone();
+            rewrite_object(&mut normalized).is_ok() && normalized == spooled
+        };
+        if files
+            .needs_spool(&hash, type_code, matches_rewritten)
+            .unwrap_or(true)
+        {
+            if type_code == OBJECT_TYPE {
+                rewrite_object(&mut data)?;
+            }
+            if files.write_spool(&hash, &data).is_err() {
+                return Ok(SpoolHandoff::Failed(data));
+            }
+        }
+        Ok(SpoolHandoff::Stored {
+            data,
+            thread: std::thread::current().id(),
+        })
     })
-    .await;
-    match written {
-        Ok((Ok(()), data, thread)) => SpoolHandoff::Stored { data, thread },
-        Ok((Err(_), data, _)) => SpoolHandoff::Failed(data),
-        Err(_) => SpoolHandoff::Stopped,
-    }
+    .await
+    .unwrap_or(Ok(SpoolHandoff::Stopped))
 }
 
 fn log_import_failure(backend: Backend) {
@@ -806,6 +807,26 @@ mod tests {
     use super::*;
     use tower::ServiceExt;
 
+    #[tokio::test]
+    async fn a_repeat_store_repairs_a_damaged_rewritten_object_in_the_spool() {
+        let dir = std::env::temp_dir().join(format!("ferroan-qr14-object-{}", Uuid::new_v4()));
+        let files = FsFiles::new(dir.join("base"), dir.join("spool"), false);
+        let original = b"zz xmlns:xmlns:os=\"u\"".to_vec();
+        let hash = sha256_hex(&original);
+        let spool = files.spool().join(format!("{hash}.asset"));
+        files.write_spool(&hash, b"wrong nonempty object").unwrap();
+        store_content_off(files.clone(), hash.clone(), OBJECT_TYPE, original.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&spool).unwrap(), b"zz xmlns:os=\"u\"\0");
+        // Already valid: keep the original caller data, as Pin8 Store does.
+        let result = store_content_off(files, hash, OBJECT_TYPE, original.clone())
+            .await
+            .unwrap();
+        assert!(matches!(result, SpoolHandoff::Stored { data, .. } if data == original));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn file_reads_and_spool_writes_run_off_the_async_task() {
         let dir = std::env::temp_dir().join(format!(
@@ -820,7 +841,9 @@ mod tests {
         let bytes = b"blocking-bytes".to_vec();
         let hash = super::sha256_hex(&bytes);
         let here = std::thread::current().id();
-        let stored = super::write_spool_off(files.clone(), hash.clone(), bytes.clone()).await;
+        let stored = super::store_content_off(files.clone(), hash.clone(), 0, bytes.clone())
+            .await
+            .unwrap();
         let super::SpoolHandoff::Stored {
             thread: wrote_on, ..
         } = stored
@@ -828,6 +851,22 @@ mod tests {
             panic!("spool");
         };
         assert_ne!(wrote_on, here, "spool write stayed on the async task");
+        let spool = files.spool().join(format!("{hash}.asset"));
+        std::fs::write(&spool, b"damaged").unwrap();
+        assert!(files.read_checked(&hash, 0).unwrap().is_none());
+        let repaired = super::store_content_off(files.clone(), hash.clone(), 0, bytes.clone())
+            .await
+            .unwrap();
+        assert!(matches!(repaired, super::SpoolHandoff::Stored { .. }));
+        assert_eq!(std::fs::read(&spool).unwrap(), bytes);
+        assert!(files.writer_pass());
+        // A bad spool also needs replacement when reads can use the good gzip.
+        std::fs::write(&spool, b"damaged again").unwrap();
+        assert_eq!(files.read_checked(&hash, 0).unwrap().unwrap(), bytes);
+        super::store_content_off(files.clone(), hash.clone(), 0, bytes.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(spool).unwrap(), bytes);
         let read = super::read_checked_off(&files, &hash, 0)
             .await
             .expect("read");
@@ -952,6 +991,12 @@ mod tests {
             true,
         );
         assert!(service.main, "{label} direct service is the main instance");
+        // TB49 and TB50: Get misses and Delete reports its own backend's answer.
+        assert!(service.get("not-a-uuid").await.unwrap().is_none());
+        assert_eq!(
+            service.delete("not-a-uuid").await.unwrap(),
+            backend == Backend::Mysql
+        );
         let app = super::super::http::AssetHttp::from_fsasset(
             service,
             super::super::http::AssetOptions {

@@ -98,12 +98,15 @@ fn a_path_beside_tmp_is_not_the_temporary_directory() {
 }
 
 #[test]
-fn store_writes_gzip_and_reads_it_back() {
+fn a_store_reads_from_the_spool_then_from_the_writer_gzip() {
     let dir = Scratch::new();
     let files = FsFiles::new(dir.base(), dir.spool(), false);
     let data = b"ferroan fsassets file";
     let hash = sha256_hex(data);
-    assert!(files.store_bytes(&hash, 1, data).unwrap());
+    files.write_spool(&hash, data).unwrap();
+    assert!(!files.gzip_path(&hash).exists());
+    assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
+    assert!(files.writer_pass());
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
     assert!(files.gzip_path(&hash).is_file());
     assert!(!dir.spool().join(format!("{hash}.asset")).exists());
@@ -204,6 +207,170 @@ fn a_failed_spool_write_leaves_no_partial_file() {
     assert!(ferroan_diag::render().contains("the asset is not stored"));
 }
 
+#[cfg(unix)]
+thread_local! {
+    static SYNCS: std::cell::RefCell<Option<Vec<PathBuf>>> = const { std::cell::RefCell::new(None) };
+    static FAIL_SYNC: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(unix)]
+pub(super) fn record_sync(dir: &Path) -> std::io::Result<()> {
+    SYNCS.with_borrow_mut(|syncs| {
+        if let Some(syncs) = syncs {
+            syncs.push(dir.to_owned());
+        }
+    });
+    if FAIL_SYNC.with_borrow(|fail| fail.as_deref() == Some(dir)) {
+        return Err(std::io::Error::other("injected directory sync failure"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn new_directory_entries_are_synced_and_the_spool_outlives_gzip_publication() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    let hash = sha256_hex(b"durable");
+    SYNCS.set(Some(Vec::new()));
+    files.write_spool(&hash, b"durable").unwrap();
+    assert_eq!(
+        SYNCS.replace(Some(Vec::new())).unwrap(),
+        [
+            dir.root.clone(),
+            dir.spool(),
+            dir.spool(),
+            dir.spool().join("spool")
+        ]
+    );
+
+    let gzip = files.gzip_path(&hash);
+    let leaf = gzip.parent().unwrap();
+    FAIL_SYNC.set(Some(leaf.to_owned()));
+    assert!(!files.writer_pass());
+    FAIL_SYNC.set(None);
+    assert!(gzip.is_file());
+    assert!(dir.spool().join(format!("{hash}.asset")).is_file());
+    let created: Vec<_> = leaf
+        .ancestors()
+        .take_while(|path| *path != dir.root)
+        .chain([dir.root.as_path()])
+        .collect();
+    assert!(
+        SYNCS
+            .replace(Some(Vec::new()))
+            .unwrap()
+            .iter()
+            .map(PathBuf::as_path)
+            .eq(created.into_iter().rev())
+    );
+    assert!(files.writer_pass());
+    assert_eq!(SYNCS.take().unwrap(), [leaf.to_owned(), dir.spool()]);
+    assert!(!dir.spool().join(format!("{hash}.asset")).exists());
+}
+
+#[test]
+fn either_writer_may_have_already_removed_the_spool_copy() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    let hash = sha256_hex(b"taken");
+    let spool = files.spool().join(format!("{hash}.asset"));
+    let dest = files.gzip_path(&hash);
+    super::write_store_file(&spool, &dest, &hash).unwrap();
+    assert!(!dest.exists());
+    super::remove_spool(&spool).unwrap();
+}
+
+#[test]
+fn overlapping_publications_have_independent_temporary_files() {
+    use std::io::Write;
+    let dir = Scratch::new();
+    let dest = dir.root.join("same.gz");
+    super::publish_file(&dir.root, &dest, |mut first| {
+        first.write_all(b"first")?;
+        super::publish_file(&dir.root, &dest, |mut second| {
+            second.write_all(b"second")?;
+            second.sync_all()
+        })?;
+        assert_eq!(fs::read(&dest)?, b"second");
+        first.sync_all()
+    })
+    .unwrap();
+    assert_eq!(fs::read(dest).unwrap(), b"first");
+    assert_eq!(fs::read_dir(dir.root.as_path()).unwrap().count(), 1);
+}
+
+#[test]
+fn writer_leaves_another_temp_file_and_a_good_gzip_intact() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    let data = b"good gzip";
+    let hash = sha256_hex(data);
+    let gzip = files.gzip_path(&hash);
+    fs::create_dir_all(gzip.parent().unwrap()).unwrap();
+    let foreign_temp = gzip.with_extension(format!("gz.{}.tmp", std::process::id()));
+    fs::write(&foreign_temp, b"other writer").unwrap();
+    files.write_spool(&hash, data).unwrap();
+    assert!(files.writer_pass());
+    assert_eq!(fs::read(&foreign_temp).unwrap(), b"other writer");
+    let good = fs::read(&gzip).unwrap();
+    fs::write(files.spool().join(format!("{hash}.asset")), b"damage").unwrap();
+    assert_eq!(files.read_checked(&hash, 0).unwrap().unwrap(), data);
+    assert!(files.writer_pass());
+    assert_eq!(fs::read(&gzip).unwrap(), good);
+}
+
+#[test]
+fn an_unreadable_entry_does_not_abort_the_batch() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    let hash = sha256_hex(b"later");
+    files.write_spool(&hash, b"later").unwrap();
+    let missing = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+    assert!(files.flush_batch(std::iter::once(missing)));
+    let denied = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(!files.flush_batch(std::iter::once(denied).chain(fs::read_dir(dir.spool()).unwrap())));
+    assert!(files.gzip_path(&hash).is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_spool_directory_sync_must_succeed_on_retry() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    fs::create_dir_all(dir.spool().join("spool")).unwrap();
+    let hash = sha256_hex(b"retry");
+    FAIL_SYNC.set(Some(dir.spool()));
+    assert!(files.write_spool(&hash, b"retry").is_err());
+    assert!(files.needs_spool(&hash, 0, |_| false).is_err());
+    FAIL_SYNC.set(None);
+    assert!(!files.needs_spool(&hash, 0, |_| false).unwrap());
+}
+
+#[test]
+fn bounded_passes_make_progress_past_ignored_and_failing_entries() {
+    let dir = Scratch::new();
+    let files = FsFiles::new(dir.base(), dir.spool(), false);
+    fs::create_dir_all(files.spool()).unwrap();
+    let hash = sha256_hex(b"blocked");
+    fs::write(files.spool().join(format!("{hash}.asset")), b"blocked").unwrap();
+    fs::create_dir_all(files.gzip_path(&hash)).unwrap();
+    // More ignored entries than the budget cannot starve later work.
+    for i in 0..super::SPOOL_ENTRIES_PER_PASS {
+        fs::write(files.spool().join(format!("{i}.other")), []).unwrap();
+    }
+    let good = sha256_hex(b"good");
+    fs::write(files.spool().join(format!("{good}.asset")), b"good").unwrap();
+    let first = files.writer_pass();
+    assert!(files.scan.lock().unwrap().is_some());
+    assert!(ferroan_diag::render().contains("fsassets.spool-pass"));
+    let second = files.writer_pass();
+    assert!(!first || !second);
+    assert!(files.scan.lock().unwrap().is_none());
+    assert!(files.gzip_path(&good).is_file());
+    assert!(files.spool().join(format!("{hash}.asset")).is_file());
+}
+
 #[test]
 fn the_writer_retries_and_leaves_other_files_alone() {
     let dir = Scratch::new();
@@ -218,11 +385,10 @@ fn the_writer_retries_and_leaves_other_files_alone() {
 
     let gzip = files.gzip_path(&hash);
     fs::create_dir_all(gzip.parent().unwrap()).unwrap();
-    let temp = gzip_temp(&gzip);
-    fs::create_dir(&temp).unwrap();
+    fs::create_dir(&gzip).unwrap();
     assert!(!files.write_once().unwrap());
     assert!(dir.spool().join(format!("{hash}.asset")).is_file());
-    assert!(!gzip.exists());
+    assert!(gzip.is_dir());
     assert_eq!(fs::read(dir.spool().join("notes.txt")).unwrap(), b"keep");
     assert_eq!(
         fs::read(dir.spool().join("spool").join("nested.asset")).unwrap(),
@@ -230,7 +396,7 @@ fn the_writer_retries_and_leaves_other_files_alone() {
     );
     assert!(dir.spool().join("folder.asset").is_dir());
 
-    fs::remove_dir(&temp).unwrap();
+    fs::remove_dir(&gzip).unwrap();
     assert!(files.writer_pass());
     assert!(!dir.spool().join(format!("{hash}.asset")).exists());
     assert_eq!(files.read_checked(&hash, 1).unwrap().unwrap(), data);
@@ -360,6 +526,16 @@ fn fsassets_files_cross_read() {
         plain
     );
 
+    let shadow = dir.spool().join(format!("{hash}.asset"));
+    fs::write(&shadow, b"damaged spool").unwrap();
+    let pin = csharp(&oracle, "checked", &[&base, &spool, "0", &hash, "1"]);
+    assert!(pin["data"].is_null(), "Pin8 damaged-spool result changed");
+    assert_eq!(rust_files.read_checked(&hash, 1).unwrap().unwrap(), data);
+    println!(
+        "known difference TB91: damaged spool masks good gzip on Pin8; Ferroan reads the gzip"
+    );
+    assert!(rust_files.writer_pass());
+    assert_eq!(rust_files.read_checked(&hash, 1).unwrap().unwrap(), data);
     let damaged = rust_files.gzip_path(&hash);
     let full = fs::read(&damaged).unwrap();
     fs::write(&damaged, &full[..full.len().min(12)]).unwrap();
@@ -420,10 +596,18 @@ fn slash_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn gzip_temp(gzip: &Path) -> PathBuf {
-    let mut name = gzip.as_os_str().to_os_string();
-    name.push(format!(".{}.tmp", std::process::id()));
-    PathBuf::from(name)
+impl FsFiles {
+    fn store_bytes(
+        &self,
+        hash: &str,
+        type_code: i8,
+        data: &[u8],
+    ) -> Result<bool, super::StoreError> {
+        if self.needs_spool(hash, type_code, |stored| stored == data)? {
+            self.write_spool(hash, data)?;
+        }
+        self.write_once()
+    }
 }
 
 fn unique() -> String {
