@@ -1463,6 +1463,7 @@ fn escape(text: &str, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::{to_original_xml, to_xml2};
+    use crate::objects::ObjectStoreKind;
     use crate::open_objects;
     use uuid::Uuid;
 
@@ -1515,9 +1516,13 @@ mod tests {
         let dump: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(dump["pin"], PIN);
         assert_eq!(dump["region"], REGION);
-        let groups = open_objects(&copied_store(), Uuid::parse_str(REGION).unwrap())
-            .await
-            .unwrap();
+        let groups = open_objects(
+            &copied_store(),
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
         let rows = dump["groups"].as_array().unwrap();
         assert_eq!(groups.len(), rows.len());
         assert_eq!(groups.len(), 4);

@@ -14,20 +14,22 @@ use ferroan_client::{HandshakeConfig, StoredHandshake};
 use ferroan_scene::{RegionSettings, SettingsSource};
 use uuid::Uuid;
 
+use crate::config::ObjectStore;
+
 /// Load settings for `region` and overlay them on `handshake`.
 ///
 /// `Ok(None)` keeps the handshake as the caller built it. `Ok(Some)` is the
 /// loaded row, including its spawn points. A store that cannot be read is an error.
 pub async fn apply_stored_settings(
-    connection: Option<&str>,
+    store: Option<&ObjectStore>,
     region: Uuid,
     handshake: &mut HandshakeConfig,
 ) -> Result<Option<Arc<RegionSettings>>, String> {
-    let Some(connection) = connection else {
+    let Some(store) = store else {
         tracing::info!("ferroan-region: no region store; handshake keeps fresh defaults");
         return Ok(None);
     };
-    match ferroan_scene::open_region_settings(connection, region)
+    match ferroan_scene::open_region_settings(&store.connection, region, store.kind)
         .await
         .map_err(|error| error.to_string())?
     {
@@ -86,7 +88,10 @@ fn narrow(value: f64) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use ferroan_scene::ObjectStoreKind;
+
     use super::*;
+    use crate::config::ObjectStore;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
 
@@ -127,10 +132,17 @@ mod tests {
         let owner = handshake.estate_owner;
         let access = handshake.sim_access;
         let billable = handshake.billable_factor;
-        let held = apply_stored_settings(Some(&connection), region, &mut handshake)
-            .await
-            .unwrap()
-            .unwrap();
+        let held = apply_stored_settings(
+            Some(&ObjectStore {
+                connection: connection.clone(),
+                kind: ObjectStoreKind::Sqlite,
+            }),
+            region,
+            &mut handshake,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(held.spawn_points.len(), 2);
         assert_eq!(handshake.sim_name, "Named");
         assert_eq!(handshake.estate_owner, owner);
@@ -201,9 +213,16 @@ mod tests {
         let mut untouched = HandshakeConfig::for_region(region);
         let before = untouched.region_flags;
         let cache = untouched.cache_id;
-        let missing = apply_stored_settings(Some(&connection), Uuid::nil(), &mut untouched)
-            .await
-            .unwrap();
+        let missing = apply_stored_settings(
+            Some(&ObjectStore {
+                connection,
+                kind: ObjectStoreKind::Sqlite,
+            }),
+            Uuid::nil(),
+            &mut untouched,
+        )
+        .await
+        .unwrap();
         assert!(missing.is_none());
         assert_eq!(untouched.region_flags, before);
         assert_eq!(untouched.cache_id, cache);

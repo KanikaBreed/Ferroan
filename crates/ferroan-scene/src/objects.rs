@@ -102,7 +102,8 @@
 use std::collections::{HashMap, HashSet};
 
 use ferroan_db::{Backend, Pool};
-use ferroan_diag::{Kind, REGION_LINKSET_PRIMS, REGION_OBJECTS, refuse};
+use ferroan_diag::{Kind, OBJECT_TASK_ITEMS, REGION_LINKSET_PRIMS, REGION_OBJECTS, refuse};
+use futures_util::TryStreamExt;
 use sqlx::Row;
 use sqlx::mysql::MySqlRow;
 use sqlx::postgres::PgRow;
@@ -231,6 +232,10 @@ pub struct ObjectPart {
     /// any. A read records the serial after the inventory is assigned and, when
     /// that inventory is not empty, after the part id is copied onto each item.
     pub inventory_serial: Option<u32>,
+    /// Stored sit flag. True when the column is absent or null.
+    pub allow_unsit: bool,
+    /// Stored sit flag. False when the column is absent or null.
+    pub scripted_sit_only: bool,
 }
 
 /// One task-inventory row as the load leaves it. Nothing here is sent.
@@ -307,60 +312,43 @@ pub struct ObjectRaw {
 struct PrimRow {
     uuid_text: String,
     group_text: String,
-    region_text: String,
     link: Option<i32>,
     start: Option<String>,
-    part: Result<ObjectPart, ()>,
+    part: Option<ObjectPart>,
+}
+
+/// Which region-store driver `StorageProvider` names. The connection string is
+/// not enough: a MySQL string can be `Data Source=…;Database=…`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectStoreKind {
+    Sqlite,
+    Mysql,
+    Postgres,
 }
 
 /// Open the region store and load one region's prims. A missing SQLite file is an empty list.
-/// A MySQL connection loads that region. A PostgreSQL connection loads that region.
-pub async fn open_objects(connection: &str, region: Uuid) -> Result<Vec<ObjectGroup>, ObjectError> {
-    if postgres_connection(connection) {
-        let pool = Pool::open(Backend::Postgres, connection, &["RegionStore"])
-            .await
+/// `kind` is the configured `StorageProvider`, not a guess from the connection string.
+pub async fn open_objects(
+    connection: &str,
+    region: Uuid,
+    kind: ObjectStoreKind,
+) -> Result<Vec<ObjectGroup>, ObjectError> {
+    let backend = match kind {
+        ObjectStoreKind::Sqlite => Backend::Sqlite,
+        ObjectStoreKind::Mysql => Backend::Mysql,
+        ObjectStoreKind::Postgres => Backend::Postgres,
+    };
+    if kind == ObjectStoreKind::Sqlite {
+        let path = ferroan_db::sqlite_filename(connection)
             .map_err(|error| ObjectError::Store(error.to_string()))?;
-        return load_objects(&pool, region).await;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
     }
-    if mysql_connection(connection) {
-        let pool = Pool::open(Backend::Mysql, connection, &["RegionStore"])
-            .await
-            .map_err(|error| ObjectError::Store(error.to_string()))?;
-        return load_objects(&pool, region).await;
-    }
-    let path = ferroan_db::sqlite_filename(connection)
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"])
+    let pool = Pool::open(backend, connection, &["RegionStore"])
         .await
         .map_err(|error| ObjectError::Store(error.to_string()))?;
     load_objects(&pool, region).await
-}
-
-fn postgres_connection(connection: &str) -> bool {
-    let lower = connection.trim().to_ascii_lowercase();
-    if lower.starts_with("postgres:") || lower.starts_with("postgresql:") {
-        return true;
-    }
-    if mysql_connection(connection) {
-        return false;
-    }
-    let host = lower.contains("host=") || lower.contains("server=");
-    let database = lower.contains("database=") || lower.contains("db=");
-    host && database
-}
-
-fn mysql_connection(connection: &str) -> bool {
-    let lower = connection.trim().to_ascii_lowercase();
-    if lower.starts_with("mysql:") {
-        return true;
-    }
-    if lower.contains("version=3") || lower.contains("uri=file:") || lower.contains("ssl mode=") {
-        return false;
-    }
-    lower.contains("server=") && lower.contains("database=")
 }
 
 /// Load with [`MAX_REGION_OBJECTS`] and [`MAX_LINKSET_PRIMS`].
@@ -386,47 +374,144 @@ pub async fn load_objects_limited(
             "connection is not SQLite, MySQL or PostgreSQL".to_owned(),
         ));
     };
-    let prims = sqlx::query(PRIM_SQL)
-        .fetch_all(sqlite)
-        .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let shape_rows = sqlx::query(SHAPE_SQL)
-        .fetch_all(sqlite)
-        .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let mut shapes = HashMap::new();
-    for row in &shape_rows {
-        let id: String = row
-            .try_get("UUID")
-            .map_err(|error| ObjectError::Store(error.to_string()))?;
-        shapes.insert(id, row);
-    }
-    let item_rows = sqlx::query(ITEM_SQL)
-        .fetch_all(sqlite)
-        .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let items = load_items(&item_rows);
+    let region_text = region.as_hyphenated().to_string();
+    let mut items = stream_items(sqlite, &region_text, max_objects).await?;
     let mut rows = Vec::new();
-    for row in &prims {
-        rows.push(read_prim(row, &shapes, &items));
+    let mut kept = 0u64;
+    let mut prims = sqlx::query(PRIM_SQL).bind(&region_text).fetch(sqlite);
+    while let Some(row) = prims
+        .try_next()
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        let Some(prim) = read_prim(&row, &mut items) else {
+            continue;
+        };
+        // A row that fails to build still occupies a link number. Only a built part counts.
+        if prim.part.is_some() {
+            kept += 1;
+            if kept > max_objects {
+                refuse(
+                    REGION_OBJECTS,
+                    Kind::Hard,
+                    max_objects,
+                    kept,
+                    "region-store",
+                );
+                return Err(ObjectError::Objects {
+                    configured: max_objects,
+                    observed: kept,
+                });
+            }
+        }
+        rows.push(prim);
     }
-    let wanted = region.as_hyphenated().to_string();
-    let rows: Vec<PrimRow> = rows
-        .into_iter()
-        .filter(|row| row.region_text.eq_ignore_ascii_case(&wanted))
-        .collect();
-    let groups = assemble(&rows);
+    drop(prims);
+    let groups = assemble(rows);
     enforce(groups, max_objects, max_linkset)
 }
 
-fn assemble(rows: &[PrimRow]) -> Vec<ObjectGroup> {
+async fn stream_items(
+    sqlite: &sqlx::SqlitePool,
+    region_text: &str,
+    max_objects: u64,
+) -> Result<HashMap<Uuid, Vec<InventoryItem>>, ObjectError> {
+    let mut by_prim: HashMap<Uuid, Vec<InventoryItem>> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut counts: HashMap<Uuid, u64> = HashMap::new();
+    let mut region_items = 0u64;
+    let mut rows = sqlx::query(ITEM_SQL).bind(region_text).fetch(sqlite);
+    while let Some(row) = rows
+        .try_next()
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        let Some(item) = build_item(&row) else {
+            let label = optional_text(&row, "itemID").unwrap_or_else(|| "unknown".to_owned());
+            log::warn!("inventory item {label} could not be built and was left out");
+            continue;
+        };
+        if !seen.insert(item.item_id) {
+            continue;
+        }
+        note_region_items(&mut region_items, max_objects)?;
+        note_task_item(&mut counts, item.parent_part_id)?;
+        by_prim.entry(item.parent_part_id).or_default().push(item);
+    }
+    Ok(by_prim)
+}
+
+fn note_task_item(counts: &mut HashMap<Uuid, u64>, prim: Uuid) -> Result<(), ObjectError> {
+    let count = counts.entry(prim).or_insert(0);
+    *count += 1;
+    if *count > MAX_TASK_ITEMS {
+        refuse(
+            OBJECT_TASK_ITEMS,
+            Kind::Hard,
+            MAX_TASK_ITEMS,
+            *count,
+            "region-store",
+        );
+        return Err(ObjectError::TaskItems {
+            configured: MAX_TASK_ITEMS,
+            observed: *count,
+        });
+    }
+    Ok(())
+}
+
+/// Kept item rows for the whole region. The product is `region.objects` times the per-part cap.
+fn note_region_items(count: &mut u64, max_objects: u64) -> Result<(), ObjectError> {
+    *count += 1;
+    let configured = max_objects.saturating_mul(MAX_TASK_ITEMS);
+    if *count > configured {
+        refuse(
+            OBJECT_TASK_ITEMS,
+            Kind::Hard,
+            configured,
+            *count,
+            "region-store",
+        );
+        return Err(ObjectError::TaskItems {
+            configured,
+            observed: *count,
+        });
+    }
+    Ok(())
+}
+
+fn note_streamed_item(
+    region_items: &mut u64,
+    part_items: &mut u64,
+    max_objects: u64,
+) -> Result<(), ObjectError> {
+    note_region_items(region_items, max_objects)?;
+    *part_items += 1;
+    if *part_items > MAX_TASK_ITEMS {
+        refuse(
+            OBJECT_TASK_ITEMS,
+            Kind::Hard,
+            MAX_TASK_ITEMS,
+            *part_items,
+            "region-store",
+        );
+        return Err(ObjectError::TaskItems {
+            configured: MAX_TASK_ITEMS,
+            observed: *part_items,
+        });
+    }
+    Ok(())
+}
+
+fn assemble(mut rows: Vec<PrimRow>) -> Vec<ObjectGroup> {
+    let (order, restore) = child_order(&rows);
     let mut groups = Vec::new();
     let mut index: HashMap<Uuid, usize> = HashMap::new();
-    for row in rows {
+    for row in &mut rows {
         if row.uuid_text != row.group_text {
             continue;
         }
-        let Ok(part) = &row.part else {
+        let Some(part) = row.part.take() else {
             log::warn!("prim {} could not be built and was skipped", row.uuid_text);
             continue;
         };
@@ -437,14 +522,13 @@ fn assemble(rows: &[PrimRow]) -> Vec<ObjectGroup> {
         index.insert(part.uuid, groups.len());
         groups.push(ObjectGroup {
             rez_parameter: row.start.clone(),
-            parts: vec![part.clone()],
+            parts: vec![part],
         });
     }
 
-    let (order, restore) = child_order(rows);
     for index_in_rows in order {
-        let row = &rows[index_in_rows];
-        let Ok(mut part) = row.part.clone() else {
+        let row = &mut rows[index_in_rows];
+        let Some(mut part) = row.part.take() else {
             log::warn!("prim {} could not be built and was skipped", row.uuid_text);
             continue;
         };
@@ -452,6 +536,10 @@ fn assemble(rows: &[PrimRow]) -> Vec<ObjectGroup> {
             log::warn!("prim {} has no root and was skipped", row.uuid_text);
             continue;
         };
+        if group_id.is_nil() {
+            log::warn!("prim {} has no scene group and was left out", row.uuid_text);
+            continue;
+        }
         let Some(&slot) = index.get(&group_id) else {
             log::warn!("prim {} has no root and was skipped", row.uuid_text);
             continue;
@@ -560,28 +648,82 @@ fn enforce(
     Ok(groups)
 }
 
-fn read_prim(
-    row: &SqliteRow,
-    shapes: &HashMap<String, &SqliteRow>,
-    items: &HashMap<Uuid, Vec<InventoryItem>>,
-) -> PrimRow {
+fn read_prim(row: &SqliteRow, items: &mut HashMap<Uuid, Vec<InventoryItem>>) -> Option<PrimRow> {
+    // Root and link order compare the stored text, the same way the SQLite load does.
     let uuid_text = text_or_empty(row, "UUID");
+    if uuid_text.is_empty() {
+        log::warn!("prim could not be built and was skipped");
+        return None;
+    }
     let group_text = text_or_empty(row, "SceneGroupID");
-    let region_text = text_or_empty(row, "RegionUUID");
+    let group = parse_uuid(&group_text).unwrap_or(Uuid::nil());
+    if group.is_nil() {
+        log::warn!("prim {uuid_text} has no scene group and was left out");
+        return None;
+    }
     let link = optional_i32(row, "LinkNumber");
     let start = optional_text(row, "StartStr");
-    let part = build_part(row, shapes).map(|mut part| {
-        part.items = items.get(&part.uuid).cloned().unwrap_or_default();
-        part
-    });
-    PrimRow {
+    if sqlite_is_null(row, "pseudocrc") {
+        log::warn!("prim {uuid_text} has a null pseudo-CRC and was skipped");
+        return Some(PrimRow {
+            uuid_text,
+            group_text,
+            link,
+            start,
+            part: None,
+        });
+    }
+    if parse_uuid(&uuid_text).is_none() {
+        log::warn!("prim {uuid_text} could not be built and was skipped");
+        return Some(PrimRow {
+            uuid_text,
+            group_text,
+            link,
+            start,
+            part: None,
+        });
+    }
+    let mut part = match build_part(row) {
+        Ok(part) => part,
+        Err(()) => {
+            log::warn!("prim {uuid_text} could not be built and was skipped");
+            return Some(PrimRow {
+                uuid_text,
+                group_text,
+                link,
+                start,
+                part: None,
+            });
+        }
+    };
+    part.items = items.remove(&part.uuid).unwrap_or_default();
+    Some(PrimRow {
         uuid_text,
         group_text,
-        region_text,
         link,
         start,
-        part,
+        part: Some(part),
+    })
+}
+
+/// True when the cell is SQL NULL. A missing column is not null.
+fn sqlite_is_null(row: &SqliteRow, name: &str) -> bool {
+    match row.try_get::<Option<i64>, _>(name) {
+        Ok(Some(_)) => return false,
+        Ok(None) => return true,
+        Err(_) => {}
     }
+    match row.try_get::<Option<f64>, _>(name) {
+        Ok(Some(_)) => return false,
+        Ok(None) => return true,
+        Err(_) => {}
+    }
+    match row.try_get::<Option<String>, _>(name) {
+        Ok(Some(_)) => return false,
+        Ok(None) => return true,
+        Err(_) => {}
+    }
+    matches!(row.try_get::<Option<Vec<u8>>, _>(name), Ok(None))
 }
 
 fn text_or_empty(row: &SqliteRow, name: &str) -> String {
@@ -600,17 +742,15 @@ fn optional_i32(row: &SqliteRow, name: &str) -> Option<i32> {
     i32::try_from(value).ok()
 }
 
-fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<ObjectPart, ()> {
+fn build_part(row: &SqliteRow) -> Result<ObjectPart, ()> {
     let uuid = required_uuid(row, "UUID")?;
-    let shape_row = shapes.get(&uuid.as_hyphenated().to_string()).copied();
-    let (mut shape, media, mat_ovrd) = match shape_row {
-        Some(shape) => {
-            let built = build_shape(shape)?;
-            let media = optional_text(shape, "Media");
-            let mat_ovrd = optional_blob(shape, "MatOvrd")?;
-            (built, media, mat_ovrd)
-        }
-        None => (default_box(), None, None),
+    let (mut shape, media, mat_ovrd) = if sqlite_is_null(row, "ShapeUUID") {
+        (default_box(), None, None)
+    } else {
+        let built = build_shape(row)?;
+        let media = optional_text(row, "Media");
+        let mat_ovrd = optional_blob(row, "MatOvrd")?;
+        (built, media, mat_ovrd)
     };
     shape.media_entries = match &media {
         Some(text) => parse_media(text),
@@ -685,7 +825,7 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         sit_name: required_text(row, "SitName")?,
         touch_name: required_text(row, "TouchName")?,
         flags,
-        creator_id: required_text(row, "CreatorID")?,
+        creator_id: part_creator_identification(&required_text(row, "CreatorID")?),
         xml_creator_data: None,
         owner_id: required_uuid(row, "OwnerID")?,
         group_id: required_uuid(row, "GroupID")?,
@@ -781,6 +921,8 @@ fn build_part(row: &SqliteRow, shapes: &HashMap<String, &SqliteRow>) -> Result<O
         linkset,
         items: Vec::new(),
         inventory_serial: None,
+        allow_unsit: true,
+        scripted_sit_only: false,
     })
 }
 
@@ -1055,51 +1197,36 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-const PRIM_SQL: &str = "SELECT UUID, RegionUUID, SceneGroupID, CreationDate, Name, Text, Description, \
-SitName, TouchName, ColorR, ColorG, ColorB, ColorA, ObjectFlags, CreatorID, OwnerID, GroupID, \
-LastOwnerID, RezzerID, OwnerMask, NextOwnerMask, GroupMask, EveryoneMask, BaseMask, PositionX, \
-PositionY, PositionZ, GroupPositionX, GroupPositionY, GroupPositionZ, VelocityX, VelocityY, \
-VelocityZ, AngularVelocityX, AngularVelocityY, AngularVelocityZ, AccelerationX, AccelerationY, \
-AccelerationZ, RotationX, RotationY, RotationZ, RotationW, SitTargetOffsetX, SitTargetOffsetY, \
-SitTargetOffsetZ, SitTargetOrientX, SitTargetOrientY, SitTargetOrientZ, SitTargetOrientW, \
-SitTargetActive, standtargetx, standtargety, standtargetz, sitactrange, ClickAction, PayPrice, \
-PayButton1, PayButton2, PayButton3, PayButton4, LoopedSound, LoopedSoundGain, TextureAnimation, \
-ParticleSystem, CameraEyeOffsetX, CameraEyeOffsetY, CameraEyeOffsetZ, CameraAtOffsetX, \
-CameraAtOffsetY, CameraAtOffsetZ, ForceMouselook, ScriptAccessPin, AllowedDrop, DieAtEdge, \
-SalePrice, SaleType, Material, CollisionSound, CollisionSoundVolume, VolumeDetect, MediaURL, \
-AttachedPosX, AttachedPosY, AttachedPosZ, DynAttrs, PhysicsShapeType, Density, GravityModifier, \
-Friction, Restitution, KeyframeMotion, PassCollisions, PassTouches, RotationAxisLocks, Vehicle, \
-PhysInertia, pseudocrc, sopanims, linksetdata, StartStr, LinkNumber FROM prims ORDER BY rowid";
-
-const SHAPE_SQL: &str = "SELECT UUID, ScaleX, ScaleY, ScaleZ, PCode, PathBegin, PathEnd, PathScaleX, \
-PathScaleY, PathShearX, PathShearY, PathSkew, PathCurve, PathRadiusOffset, PathRevolutions, \
-PathTaperX, PathTaperY, PathTwist, PathTwistBegin, ProfileBegin, ProfileEnd, ProfileCurve, \
-ProfileHollow, Texture, ExtraParams, State, Media, LastAttachPoint, MatOvrd FROM primshapes \
-ORDER BY rowid";
+const PRIM_SQL: &str = "SELECT p.UUID, p.RegionUUID, p.SceneGroupID, p.CreationDate, p.Name, p.Text, \
+p.Description, p.SitName, p.TouchName, p.ColorR, p.ColorG, p.ColorB, p.ColorA, p.ObjectFlags, \
+p.CreatorID, p.OwnerID, p.GroupID, p.LastOwnerID, p.RezzerID, p.OwnerMask, p.NextOwnerMask, \
+p.GroupMask, p.EveryoneMask, p.BaseMask, p.PositionX, p.PositionY, p.PositionZ, p.GroupPositionX, \
+p.GroupPositionY, p.GroupPositionZ, p.VelocityX, p.VelocityY, p.VelocityZ, p.AngularVelocityX, \
+p.AngularVelocityY, p.AngularVelocityZ, p.AccelerationX, p.AccelerationY, p.AccelerationZ, \
+p.RotationX, p.RotationY, p.RotationZ, p.RotationW, p.SitTargetOffsetX, p.SitTargetOffsetY, \
+p.SitTargetOffsetZ, p.SitTargetOrientX, p.SitTargetOrientY, p.SitTargetOrientZ, p.SitTargetOrientW, \
+p.SitTargetActive, p.standtargetx, p.standtargety, p.standtargetz, p.sitactrange, p.ClickAction, \
+p.PayPrice, p.PayButton1, p.PayButton2, p.PayButton3, p.PayButton4, p.LoopedSound, \
+p.LoopedSoundGain, p.TextureAnimation, p.ParticleSystem, p.CameraEyeOffsetX, p.CameraEyeOffsetY, \
+p.CameraEyeOffsetZ, p.CameraAtOffsetX, p.CameraAtOffsetY, p.CameraAtOffsetZ, p.ForceMouselook, \
+p.ScriptAccessPin, p.AllowedDrop, p.DieAtEdge, p.SalePrice, p.SaleType, p.Material, \
+p.CollisionSound, p.CollisionSoundVolume, p.VolumeDetect, p.MediaURL, p.AttachedPosX, \
+p.AttachedPosY, p.AttachedPosZ, p.DynAttrs, p.PhysicsShapeType, p.Density, p.GravityModifier, \
+p.Friction, p.Restitution, p.KeyframeMotion, p.PassCollisions, p.PassTouches, p.RotationAxisLocks, \
+p.Vehicle, p.PhysInertia, p.pseudocrc, p.sopanims, p.linksetdata, p.StartStr, p.LinkNumber, \
+s.UUID AS ShapeUUID, s.ScaleX, s.ScaleY, s.ScaleZ, s.PCode, s.PathBegin, s.PathEnd, s.PathScaleX, \
+s.PathScaleY, s.PathShearX, s.PathShearY, s.PathSkew, s.PathCurve, s.PathRadiusOffset, \
+s.PathRevolutions, s.PathTaperX, s.PathTaperY, s.PathTwist, s.PathTwistBegin, s.ProfileBegin, \
+s.ProfileEnd, s.ProfileCurve, s.ProfileHollow, s.Texture, s.ExtraParams, s.State, s.Media, \
+s.LastAttachPoint, s.MatOvrd \
+FROM prims p LEFT JOIN primshapes s ON p.UUID = s.UUID COLLATE NOCASE \
+WHERE p.RegionUUID = ? COLLATE NOCASE ORDER BY p.rowid";
 
 const ITEM_SQL: &str = "SELECT itemID, primID, assetID, parentFolderID, invType, assetType, name, \
 description, creationDate, creatorID, ownerID, lastOwnerID, groupID, nextPermissions, \
 currentPermissions, basePermissions, everyonePermissions, groupPermissions, flags, experienceID \
-FROM primitems ORDER BY rowid";
-
-/// Rows in stored order. A repeated item id keeps the first. A row that cannot
-/// be built is left out.
-fn load_items(rows: &[SqliteRow]) -> HashMap<Uuid, Vec<InventoryItem>> {
-    let mut by_prim: HashMap<Uuid, Vec<InventoryItem>> = HashMap::new();
-    let mut seen = HashSet::new();
-    for row in rows {
-        let Some(item) = build_item(row) else {
-            let label = optional_text(row, "itemID").unwrap_or_else(|| "unknown".to_owned());
-            log::warn!("inventory item {label} could not be built and was left out");
-            continue;
-        };
-        if !seen.insert(item.item_id) {
-            continue;
-        }
-        by_prim.entry(item.parent_part_id).or_default().push(item);
-    }
-    by_prim
-}
+FROM primitems WHERE lower(primID) IN (SELECT lower(UUID) FROM prims WHERE RegionUUID = ? COLLATE NOCASE) \
+ORDER BY primitems.rowid";
 
 fn build_item(row: &SqliteRow) -> Option<InventoryItem> {
     let creator = required_text(row, "creatorID").ok()?;
@@ -1128,7 +1255,7 @@ fn build_item(row: &SqliteRow) -> Option<InventoryItem> {
     })
 }
 
-/// The creator string the load stores: a bare id, or `id;endpoint;name`.
+/// Task-item creator string: a bare id, or `id;endpoint;name`, with no trailing slash.
 fn creator_identification(stored: &str) -> String {
     let zero = Uuid::nil().hyphenated().to_string();
     if stored.is_empty() {
@@ -1149,6 +1276,35 @@ fn creator_identification(stored: &str) -> String {
     let endpoint = parts.next().unwrap_or("");
     let name = parts.next().unwrap_or("Unknown User");
     format!("{id};{endpoint};{name}")
+}
+
+/// Part creator string. An endpoint gains a trailing `/` and, with no name, `Unknown User`.
+/// Segments after the name are dropped. Empty or unparsable text is the zero id.
+fn part_creator_identification(stored: &str) -> String {
+    let zero = Uuid::nil().hyphenated().to_string();
+    if stored.is_empty() {
+        return zero;
+    }
+    let mut parts = stored.split(';');
+    let id = parts
+        .next()
+        .and_then(parse_uuid)
+        .unwrap_or(Uuid::nil())
+        .hyphenated()
+        .to_string();
+    let Some(endpoint) = parts.next() else {
+        return id;
+    };
+    let mut data = endpoint.to_owned();
+    if !data.ends_with('/') {
+        data.push('/');
+    }
+    data.push(';');
+    match parts.next() {
+        Some(name) => data.push_str(name),
+        None => data.push_str("Unknown User"),
+    }
+    format!("{id};{data}")
 }
 
 /// A null, unparsable or short experience id is the zero id. Any other stored
@@ -1183,16 +1339,21 @@ CameraAtOffsetY, CameraAtOffsetZ, ForceMouselook, ScriptAccessPin, AllowedDrop, 
 SalePrice, SaleType, Material, CollisionSound, CollisionSoundVolume, MediaURL, AttachedPosX, \
 AttachedPosY, AttachedPosZ, DynAttrs, PhysicsShapeType, Density, GravityModifier, Friction, \
 Restitution, KeyframeMotion, PassCollisions, PassTouches, RotationAxisLocks, Vehicle, PhysInertia, \
-pseudocrc, sopanims, linksetdata, StartStr, LinkNumber FROM prims WHERE RegionUUID = ? \
-ORDER BY LinkNumber";
+pseudocrc, sopanims, linksetdata, StartStr, LinkNumber, AllowUnsit, ScriptedSitOnly \
+FROM prims WHERE RegionUUID = ? ORDER BY LinkNumber";
 
-const MYSQL_SHAPE_SQL: &str = "SELECT UUID, Shape, ScaleX, ScaleY, ScaleZ, PCode, PathBegin, PathEnd, \
-PathScaleX, PathScaleY, PathShearX, PathShearY, PathSkew, PathCurve, PathRadiusOffset, \
-PathRevolutions, PathTaperX, PathTaperY, PathTwist, PathTwistBegin, ProfileBegin, ProfileEnd, \
-ProfileCurve, ProfileHollow, Texture, ExtraParams, State, Media, LastAttachPoint, MatOvrd \
-FROM primshapes";
+const MYSQL_SHAPE_SQL: &str = "SELECT primshapes.UUID, primshapes.Shape, primshapes.ScaleX, primshapes.ScaleY, \
+primshapes.ScaleZ, primshapes.PCode, primshapes.PathBegin, primshapes.PathEnd, primshapes.PathScaleX, \
+primshapes.PathScaleY, primshapes.PathShearX, primshapes.PathShearY, primshapes.PathSkew, \
+primshapes.PathCurve, primshapes.PathRadiusOffset, primshapes.PathRevolutions, primshapes.PathTaperX, \
+primshapes.PathTaperY, primshapes.PathTwist, primshapes.PathTwistBegin, primshapes.ProfileBegin, \
+primshapes.ProfileEnd, primshapes.ProfileCurve, primshapes.ProfileHollow, primshapes.Texture, \
+primshapes.ExtraParams, primshapes.State, primshapes.Media, primshapes.LastAttachPoint, primshapes.MatOvrd \
+FROM prims LEFT JOIN primshapes ON prims.UUID = primshapes.UUID \
+WHERE prims.RegionUUID = ? AND primshapes.UUID IS NOT NULL";
 
-const MYSQL_ITEM_IDS_SQL: &str = "SELECT DISTINCT primID FROM primitems";
+const MYSQL_ITEM_IDS_SQL: &str = "SELECT DISTINCT primitems.primID FROM prims \
+INNER JOIN primitems ON prims.UUID = primitems.primID WHERE prims.RegionUUID = ?";
 
 const MYSQL_ITEM_SQL: &str = "SELECT itemID, primID, assetID, parentFolderID, invType, assetType, \
 name, description, creationDate, creatorID, ownerID, lastOwnerID, groupID, nextPermissions, \
@@ -1216,125 +1377,173 @@ async fn load_mysql(
         return Err(ObjectError::Store("connection is not MySQL".to_owned()));
     };
     let region_text = region.as_hyphenated().to_string();
-    let prims = sqlx::query(MYSQL_PRIM_SQL)
-        .bind(&region_text)
-        .fetch_all(mysql)
+    let mut shapes: HashMap<String, MySqlRow> = HashMap::new();
+    let mut shape_rows = sqlx::query(MYSQL_SHAPE_SQL).bind(&region_text).fetch(mysql);
+    while let Some(row) = shape_rows
+        .try_next()
         .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let shape_rows = sqlx::query(MYSQL_SHAPE_SQL)
-        .fetch_all(mysql)
-        .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let mut shapes = HashMap::new();
-    for row in &shape_rows {
-        let id = mysql_text(row, "UUID").unwrap_or_default();
-        shapes.insert(id, row);
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        let id = mysql_text(&row, "UUID").unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        shapes.insert(id.to_ascii_lowercase(), row);
     }
+    drop(shape_rows);
     let mut built = Vec::new();
-    for row in &prims {
-        match mysql_part(row, &shapes) {
-            Ok(prim) => built.push(prim),
-            Err(()) => {
-                let label = mysql_text(row, "UUID").unwrap_or_else(|| "unknown".to_owned());
-                log::warn!("prim {label} could not be built and was skipped");
+    let mut kept = 0u64;
+    let mut prims = sqlx::query(MYSQL_PRIM_SQL).bind(&region_text).fetch(mysql);
+    while let Some(row) = prims
+        .try_next()
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        let label = mysql_text(&row, "UUID").unwrap_or_else(|| "unknown".to_owned());
+        let group = parse_uuid(&mysql_text(&row, "SceneGroupID").unwrap_or_default())
+            .unwrap_or(Uuid::nil());
+        if group.is_nil() {
+            log::warn!("prim {label} has no scene group and was left out");
+            continue;
+        }
+        match mysql_part(&row, &shapes) {
+            Ok(prim) => {
+                kept += 1;
+                if kept > max_objects {
+                    refuse(
+                        REGION_OBJECTS,
+                        Kind::Hard,
+                        max_objects,
+                        kept,
+                        "region-store",
+                    );
+                    return Err(ObjectError::Objects {
+                        configured: max_objects,
+                        observed: kept,
+                    });
+                }
+                built.push(prim);
             }
+            Err(()) => log::warn!("prim {label} could not be built and was skipped"),
         }
     }
-    let mut groups = assemble_mysql(&built);
-    let item_ids = sqlx::query(MYSQL_ITEM_IDS_SQL)
-        .fetch_all(mysql)
+    drop(prims);
+    let mut groups = assemble_mysql(built);
+    let mut located: HashMap<Uuid, (usize, usize)> = HashMap::new();
+    for (slot, group) in groups.iter().enumerate() {
+        for (index, part) in group.parts.iter().enumerate() {
+            located.insert(part.uuid, (slot, index));
+        }
+    }
+    let mut wanted = Vec::new();
+    let mut id_rows = sqlx::query(MYSQL_ITEM_IDS_SQL)
+        .bind(&region_text)
+        .fetch(mysql);
+    while let Some(id_row) = id_rows
+        .try_next()
         .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    for id_row in &item_ids {
-        let Some(prim_text) = mysql_text(id_row, "primID") else {
-            continue;
-        };
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        if let Some(prim_text) = mysql_text(&id_row, "primID") {
+            wanted.push(prim_text);
+        }
+    }
+    drop(id_rows);
+    let mut region_items = 0u64;
+    for prim_text in wanted {
         let Some(prim_id) = parse_uuid(&prim_text) else {
             continue;
         };
-        if !groups
-            .iter()
-            .any(|group| group.parts.iter().any(|part| part.uuid == prim_id))
-        {
+        let Some(&(slot, index)) = located.get(&prim_id) else {
             continue;
-        }
-        let rows = sqlx::query(MYSQL_ITEM_SQL)
-            .bind(&prim_text)
-            .fetch_all(mysql)
-            .await
-            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        };
+        let mut part_items = 0u64;
         let mut items = Vec::new();
-        for row in &rows {
-            match mysql_item(row, prim_id) {
-                Some(item) => items.push(item),
+        let mut rows = sqlx::query(MYSQL_ITEM_SQL).bind(&prim_text).fetch(mysql);
+        while let Some(row) = rows
+            .try_next()
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?
+        {
+            match mysql_item(&row, prim_id) {
+                Some(item) => {
+                    note_streamed_item(&mut region_items, &mut part_items, max_objects)?;
+                    items.push(item);
+                }
                 None => {
-                    let label = mysql_text(row, "itemID").unwrap_or_else(|| "unknown".to_owned());
+                    let label = mysql_text(&row, "itemID").unwrap_or_else(|| "unknown".to_owned());
                     log::warn!("inventory item {label} could not be built and was left out");
                 }
             }
         }
-        for group in &mut groups {
-            if let Some(part) = group.parts.iter_mut().find(|part| part.uuid == prim_id) {
-                part.items = items;
-                break;
-            }
-        }
+        drop(rows);
+        groups[slot].parts[index].items = items;
     }
     enforce(groups, max_objects, max_linkset)
 }
 
-fn assemble_mysql(rows: &[MysqlBuilt]) -> Vec<ObjectGroup> {
+fn assemble_mysql(rows: Vec<MysqlBuilt>) -> Vec<ObjectGroup> {
     let mut groups = Vec::new();
     let mut index: HashMap<Uuid, usize> = HashMap::new();
-    for row in rows {
+    let mut rows: Vec<Option<MysqlBuilt>> = rows.into_iter().map(Some).collect();
+    for slot in &mut rows {
+        let Some(row) = slot.as_ref() else {
+            continue;
+        };
         if row.uuid != row.group {
             continue;
         }
+        let Some(row) = slot.take() else {
+            continue;
+        };
         if index.contains_key(&row.uuid) {
             log::warn!("prim {} could not be built and was skipped", row.uuid);
             continue;
         }
         index.insert(row.uuid, groups.len());
-        let mut part = row.part.clone();
+        let mut part = row.part;
         part.link_num = 0;
         groups.push(ObjectGroup {
-            rez_parameter: row.start.clone(),
+            rez_parameter: row.start,
             parts: vec![part],
         });
     }
-    for row in rows {
+    for slot in &mut rows {
+        let Some(row) = slot.take() else {
+            continue;
+        };
         if row.uuid == row.group {
             continue;
         }
-        let Some(&slot) = index.get(&row.group) else {
-            log::warn!("prim {} has no root and was skipped", row.part.uuid);
+        let Some(&group_slot) = index.get(&row.group) else {
+            log::warn!("prim {} has no root and was skipped", row.uuid);
             continue;
         };
-        let mut part = row.part.clone();
+        let mut part = row.part;
         let original = part.link_num;
-        let count = groups[slot].parts.len().saturating_add(1);
+        let count = groups[group_slot].parts.len().saturating_add(1);
         let Ok(link_num) = i32::try_from(count) else {
             log::warn!("prim {} could not be built and was skipped", row.uuid);
             continue;
         };
         part.link_num = link_num;
         if link_num == 2 {
-            groups[slot].parts[0].link_num = 1;
+            groups[group_slot].parts[0].link_num = 1;
         }
         if original != 0 {
             part.link_num = original;
         }
-        groups[slot].parts.push(part);
+        groups[group_slot].parts.push(part);
     }
     groups
 }
 
-fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<MysqlBuilt, ()> {
+fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, MySqlRow>) -> Result<MysqlBuilt, ()> {
     let uuid_text = mysql_text(row, "UUID").ok_or(())?;
     let uuid = parse_uuid(&uuid_text).ok_or(())?;
     let group =
         parse_uuid(&mysql_text(row, "SceneGroupID").unwrap_or_default()).unwrap_or(Uuid::nil());
-    let shape_row = shapes.get(&uuid.as_hyphenated().to_string()).copied();
+    let shape_row = shapes.get(&uuid.as_hyphenated().to_string().to_ascii_lowercase());
     let shape_missing = match shape_row {
         None => true,
         Some(shape) => mysql_i64(shape, "Shape").is_none(),
@@ -1430,7 +1639,7 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<Mys
         sit_name: mysql_text(row, "SitName").unwrap_or_default(),
         touch_name: mysql_text(row, "TouchName").unwrap_or_default(),
         flags,
-        creator_id: creator_identification(&creator),
+        creator_id: part_creator_identification(&creator),
         xml_creator_data: None,
         owner_id: mysql_uuid(row, "OwnerID").unwrap_or(Uuid::nil()),
         group_id: mysql_uuid(row, "GroupID").unwrap_or(Uuid::nil()),
@@ -1544,6 +1753,8 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, &MySqlRow>) -> Result<Mys
         linkset,
         items: Vec::new(),
         inventory_serial: None,
+        allow_unsit: mysql_bool_default(row, "AllowUnsit", true),
+        scripted_sit_only: mysql_bool_default(row, "ScriptedSitOnly", false),
     };
     Ok(MysqlBuilt {
         uuid,
@@ -1609,17 +1820,17 @@ fn mysql_item(row: &MySqlRow, prim: Uuid) -> Option<InventoryItem> {
         asset_type: mysql_i32_default(row, "assetType", -1).ok()?,
         name: mysql_text(row, "name").unwrap_or_default(),
         description: mysql_text(row, "description").unwrap_or_default(),
-        creation_date: mysql_u32(row, "creationDate", 0).ok()?,
+        creation_date: mysql_u32_column(row, "creationDate", 0)?,
         creator_id: creator_identification(&creator),
         xml_creator_data: None,
         owner_id: mysql_uuid(row, "ownerID").unwrap_or(Uuid::nil()),
         last_owner_id: mysql_uuid(row, "lastOwnerID").unwrap_or(Uuid::nil()),
         group_id: mysql_uuid(row, "groupID").unwrap_or(Uuid::nil()),
-        next_permissions: mysql_u32(row, "nextPermissions", 0).ok()?,
-        current_permissions: mysql_u32(row, "currentPermissions", 0).ok()?,
-        base_permissions: mysql_u32(row, "basePermissions", 0).ok()?,
-        everyone_permissions: mysql_u32(row, "everyonePermissions", 0).ok()?,
-        group_permissions: mysql_u32(row, "groupPermissions", 0).ok()?,
+        next_permissions: mysql_u32_column(row, "nextPermissions", 0)?,
+        current_permissions: mysql_u32_column(row, "currentPermissions", 0)?,
+        base_permissions: mysql_u32_column(row, "basePermissions", 0)?,
+        everyone_permissions: mysql_u32_column(row, "everyonePermissions", 0)?,
+        group_permissions: mysql_u32_column(row, "groupPermissions", 0)?,
         flags,
         experience_id: mysql_uuid(row, "experienceID").unwrap_or(Uuid::nil()),
     })
@@ -1791,6 +2002,21 @@ fn mysql_u32_strict(row: &MySqlRow, name: &str) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
+/// A null cell keeps the column default. A value that is not a `u32` leaves the row out.
+fn mysql_u32_column(row: &MySqlRow, name: &str, fallback: u32) -> Option<u32> {
+    match mysql_i64(row, name) {
+        Some(value) => u32::try_from(value).ok(),
+        None => Some(fallback),
+    }
+}
+
+fn mysql_bool_default(row: &MySqlRow, name: &str, fallback: bool) -> bool {
+    match mysql_i64(row, name) {
+        Some(value) => value != 0,
+        None => fallback,
+    }
+}
+
 fn mysql_u16(row: &MySqlRow, name: &str, fallback: u16) -> Result<u16, ()> {
     match mysql_i64(row, name) {
         Some(value) => Ok(value as u16),
@@ -1859,9 +2085,10 @@ const PG_SHAPE_SQL: &str = "SELECT \"UUID\", \"Shape\", \"ScaleX\", \"ScaleY\", 
 \"PathSkew\", \"PathCurve\", \"PathRadiusOffset\", \"PathRevolutions\", \"PathTaperX\", \
 \"PathTaperY\", \"PathTwist\", \"PathTwistBegin\", \"ProfileBegin\", \"ProfileEnd\", \
 \"ProfileCurve\", \"ProfileHollow\", \"Texture\", \"ExtraParams\", \"State\", \"Media\", \"MatOvrd\" \
-FROM primshapes";
+FROM primshapes WHERE \"UUID\" IN (SELECT \"UUID\" FROM prims WHERE \"RegionUUID\" = $1)";
 
-const PG_ITEM_IDS_SQL: &str = "SELECT DISTINCT \"primID\" FROM primitems";
+const PG_ITEM_IDS_SQL: &str = "SELECT DISTINCT \"primID\" FROM primitems WHERE \"primID\" IN \
+(SELECT \"UUID\" FROM prims WHERE \"RegionUUID\" = $1)";
 
 const PG_ITEM_SQL: &str = "SELECT \"itemID\", \"primID\", \"assetID\", \"parentFolderID\", \
 \"invType\", \"assetType\", \"name\", \"description\", \"creationDate\", \"creatorID\", \"ownerID\", \
@@ -1887,66 +2114,97 @@ async fn load_postgres(
             "connection is not PostgreSQL".to_owned(),
         ));
     };
-    let prims = sqlx::query(PG_PRIM_SQL)
-        .bind(region)
-        .fetch_all(postgres)
+    let mut shapes: HashMap<Uuid, PgRow> = HashMap::new();
+    let mut shape_rows = sqlx::query(PG_SHAPE_SQL).bind(region).fetch(postgres);
+    while let Some(row) = shape_rows
+        .try_next()
         .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let shape_rows = sqlx::query(PG_SHAPE_SQL)
-        .fetch_all(postgres)
-        .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    let mut shapes = HashMap::new();
-    for row in &shape_rows {
-        if let Some(id) = pg_uuid(row, "UUID") {
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        if let Some(id) = pg_uuid(&row, "UUID") {
             shapes.insert(id, row);
         }
     }
+    drop(shape_rows);
     let mut built = Vec::new();
-    for row in &prims {
-        match pg_part(row, &shapes) {
-            Ok(prim) => built.push(prim),
-            Err(()) => {
-                let label = pg_uuid(row, "UUID")
-                    .map(|id| id.hyphenated().to_string())
-                    .unwrap_or_else(|| "unknown".to_owned());
-                log::warn!("prim {label} could not be built and was skipped");
+    let mut kept = 0u64;
+    let mut prims = sqlx::query(PG_PRIM_SQL).bind(region).fetch(postgres);
+    while let Some(row) = prims
+        .try_next()
+        .await
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        let label = pg_uuid(&row, "UUID")
+            .map(|id| id.hyphenated().to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        if !pg_scene_group_present(&row) {
+            log::warn!("prim {label} has no scene group and was left out");
+            continue;
+        }
+        match pg_part(&row, &shapes) {
+            Ok(prim) => {
+                kept += 1;
+                if kept > max_objects {
+                    refuse(
+                        REGION_OBJECTS,
+                        Kind::Hard,
+                        max_objects,
+                        kept,
+                        "region-store",
+                    );
+                    return Err(ObjectError::Objects {
+                        configured: max_objects,
+                        observed: kept,
+                    });
+                }
+                built.push(prim);
             }
+            Err(()) => log::warn!("prim {label} could not be built and was skipped"),
         }
     }
+    drop(prims);
     let (mut groups, originals) = assemble_postgres(built);
-    let item_ids = sqlx::query(PG_ITEM_IDS_SQL)
-        .fetch_all(postgres)
+    let mut wanted = Vec::new();
+    let mut id_rows = sqlx::query(PG_ITEM_IDS_SQL).bind(region).fetch(postgres);
+    while let Some(id_row) = id_rows
+        .try_next()
         .await
-        .map_err(|error| ObjectError::Store(error.to_string()))?;
-    for id_row in &item_ids {
-        let Some(original) = pg_uuid(id_row, "primID") else {
-            continue;
-        };
+        .map_err(|error| ObjectError::Store(error.to_string()))?
+    {
+        if let Some(original) = pg_uuid(&id_row, "primID") {
+            wanted.push(original);
+        }
+    }
+    drop(id_rows);
+    let mut region_items = 0u64;
+    for original in wanted {
         let Some(&(slot, index)) = originals.get(&original) else {
             continue;
         };
         let current = groups[slot].parts[index].uuid;
-        // Items are stored under the original prim id. The query uses that id.
-        // The item's parent id is the loaded prim id, which is the group id
-        // when this root was rewritten (TB68, D51).
-        let rows = sqlx::query(PG_ITEM_SQL)
-            .bind(original)
-            .fetch_all(postgres)
-            .await
-            .map_err(|error| ObjectError::Store(error.to_string()))?;
+        // Items are stored under the original prim id. The parent id is the loaded prim id.
+        let mut part_items = 0u64;
         let mut items = Vec::new();
-        for row in &rows {
-            match pg_item(row, current) {
-                Some(item) => items.push(item),
+        let mut rows = sqlx::query(PG_ITEM_SQL).bind(original).fetch(postgres);
+        while let Some(row) = rows
+            .try_next()
+            .await
+            .map_err(|error| ObjectError::Store(error.to_string()))?
+        {
+            match pg_item(&row, current) {
+                Some(item) => {
+                    note_streamed_item(&mut region_items, &mut part_items, max_objects)?;
+                    items.push(item);
+                }
                 None => {
-                    let label = pg_uuid(row, "itemID")
+                    let label = pg_uuid(&row, "itemID")
                         .map(|id| id.hyphenated().to_string())
                         .unwrap_or_else(|| "unknown".to_owned());
                     log::warn!("inventory item {label} could not be built and was left out");
                 }
             }
         }
+        drop(rows);
         groups[slot].parts[index].items = items;
     }
     enforce(groups, max_objects, max_linkset)
@@ -1955,64 +2213,74 @@ async fn load_postgres(
 fn assemble_postgres(rows: Vec<PgBuilt>) -> (Vec<ObjectGroup>, HashMap<Uuid, (usize, usize)>) {
     let mut groups = Vec::new();
     let mut originals = HashMap::new();
-    let mut last = Uuid::nil();
-    let mut started = false;
-    for mut row in rows {
-        let new_group = !started || row.group_id != last;
-        if new_group {
-            started = true;
-            last = row.group_id;
-            if !row.group_id.is_nil() && row.part.uuid != row.group_id {
-                row.part.uuid = row.group_id;
-                // The raw row stays under the original id, so the dump's raw cells are empty
-                // and its default-box flag is set. The loaded shape bytes stay.
-                row.part.shape.default_box = true;
-                row.part.raw = empty_raw();
-            }
-            row.part.link_num = 0;
-            row.part.parent_id = 0;
-            originals.insert(row.original, (groups.len(), 0));
-            groups.push(ObjectGroup {
-                rez_parameter: row.start,
-                parts: vec![row.part],
-            });
-            continue;
+    let mut batch = Vec::new();
+    let mut current: Option<Uuid> = None;
+    for row in rows {
+        if current != Some(row.group_id) {
+            flush_pg_batch(&mut batch, &mut groups, &mut originals);
+            current = Some(row.group_id);
         }
-        let slot = groups.len().saturating_sub(1);
-        let count = groups[slot].parts.len().saturating_add(1);
+        batch.push(row);
+    }
+    flush_pg_batch(&mut batch, &mut groups, &mut originals);
+    (groups, originals)
+}
+
+/// A group whose stored root row is missing stays out. Children are not promoted.
+fn flush_pg_batch(
+    batch: &mut Vec<PgBuilt>,
+    groups: &mut Vec<ObjectGroup>,
+    originals: &mut HashMap<Uuid, (usize, usize)>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let group_id = batch[0].group_id;
+    if group_id.is_nil() {
+        for row in batch.drain(..) {
+            log::warn!("prim {} has no scene group and was left out", row.original);
+        }
+        return;
+    }
+    let Some(root_at) = batch.iter().position(|row| row.part.uuid == group_id) else {
+        for row in batch.drain(..) {
+            log::warn!("prim {} has no root and was skipped", row.original);
+        }
+        return;
+    };
+    let mut root = batch.remove(root_at);
+    root.part.link_num = 0;
+    root.part.parent_id = 0;
+    let slot = groups.len();
+    originals.insert(root.original, (slot, 0));
+    let start = root.start;
+    let mut parts = vec![root.part];
+    for row in batch.drain(..) {
+        let count = parts.len().saturating_add(1);
         let Ok(link_num) = i32::try_from(count) else {
             log::warn!("prim {} could not be built and was skipped", row.original);
             continue;
         };
-        row.part.link_num = link_num;
-        row.part.parent_id = 0;
+        let mut part = row.part;
+        part.link_num = link_num;
+        part.parent_id = 0;
         if link_num == 2 {
-            groups[slot].parts[0].link_num = 1;
+            parts[0].link_num = 1;
         }
-        let index = groups[slot].parts.len();
+        let index = parts.len();
         originals.insert(row.original, (slot, index));
-        groups[slot].parts.push(row.part);
+        parts.push(part);
     }
-    (groups, originals)
+    groups.push(ObjectGroup {
+        rez_parameter: start,
+        parts,
+    });
 }
 
-fn empty_raw() -> ObjectRaw {
-    ObjectRaw {
-        media: None,
-        mat_ovrd: None,
-        dyn_attrs: None,
-        keyframe_motion: None,
-        vehicle: None,
-        phys_inertia: None,
-        sopanims: None,
-        linkset_data: None,
-    }
-}
-
-fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
+fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, PgRow>) -> Result<PgBuilt, ()> {
     let uuid = pg_uuid_required(row, "UUID")?;
     let group_id = pg_uuid_required(row, "SceneGroupID")?;
-    let shape_row = shapes.get(&uuid).copied();
+    let shape_row = shapes.get(&uuid);
     let shape_missing = match shape_row {
         None => true,
         Some(shape) => pg_i64(shape, "Shape").is_none(),
@@ -2096,7 +2364,7 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
         sit_name: pg_text_req(row, "SitName")?,
         touch_name: pg_text_req(row, "TouchName")?,
         flags,
-        creator_id: creator_identification(&creator),
+        creator_id: part_creator_identification(&creator),
         xml_creator_data: None,
         owner_id: pg_uuid_required(row, "OwnerID")?,
         group_id: pg_uuid_required(row, "GroupID")?,
@@ -2192,6 +2460,8 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, &PgRow>) -> Result<PgBuilt, ()> {
         linkset,
         items: Vec::new(),
         inventory_serial: None,
+        allow_unsit: true,
+        scripted_sit_only: false,
     };
     Ok(PgBuilt {
         original: uuid,
@@ -2272,6 +2542,17 @@ fn pg_text(row: &PgRow, name: &str) -> Option<String> {
 
 fn pg_text_req(row: &PgRow, name: &str) -> Result<String, ()> {
     pg_text(row, name).ok_or(())
+}
+
+fn pg_scene_group_present(row: &PgRow) -> bool {
+    match row.try_get::<Option<Uuid>, _>("SceneGroupID") {
+        Ok(Some(id)) => !id.is_nil(),
+        Ok(None) => false,
+        Err(_) => match pg_text(row, "SceneGroupID") {
+            Some(text) => parse_uuid(&text).is_some_and(|id| !id.is_nil()),
+            None => false,
+        },
+    }
 }
 
 fn pg_uuid(row: &PgRow, name: &str) -> Option<Uuid> {
@@ -3093,6 +3374,16 @@ mod tests {
             part.creator_id,
             take(&mut obj, "creator_id").as_str().unwrap()
         );
+        assert_eq!(
+            part.allow_unsit,
+            take(&mut obj, "allow_unsit").as_bool().unwrap(),
+            "{label} allow_unsit"
+        );
+        assert_eq!(
+            part.scripted_sit_only,
+            take(&mut obj, "scripted_sit_only").as_bool().unwrap(),
+            "{label} scripted_sit_only"
+        );
         expect_uuid("owner_id", part.owner_id, &take(&mut obj, "owner_id"));
         expect_uuid("group_id", part.group_id, &take(&mut obj, "group_id"));
         expect_uuid(
@@ -3454,9 +3745,13 @@ mod tests {
         let dump = committed_dump();
         assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
-        let groups = open_objects(&copied_store(), Uuid::parse_str(REGION).unwrap())
-            .await
-            .unwrap();
+        let groups = open_objects(
+            &copied_store(),
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
         let dumped = dump["groups"].as_array().unwrap();
         assert_eq!(groups.len(), dumped.len());
         assert_eq!(groups.len(), 4);
@@ -3477,6 +3772,9 @@ mod tests {
         assert!(!ids.contains(&Uuid::parse_str("ffffffff-ffff-ffff-ffff-fffffffffff1").unwrap()));
         assert!(!ids.contains(&Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1").unwrap()));
         assert_eq!(groups[0].parts[0].name, "showcase");
+        assert!(groups[0].parts[0].allow_unsit);
+        assert!(!groups[0].parts[0].scripted_sit_only);
+        assert!(groups[0].parts[0].xml_creator_data.is_none());
         assert_eq!(groups[0].parts[0].link_num, 0);
         assert_eq!(groups[0].parts[0].flags, 0x4401);
         assert_eq!(groups[0].parts[0].pay_price, [10, 20, 30, 40, 50]);
@@ -3484,15 +3782,22 @@ mod tests {
         assert_eq!(groups[0].parts[0].shape.extra_params, vec![0x00, 0xaa]);
         assert_eq!(groups[0].rez_parameter.as_deref(), Some("rez-arg"));
         assert_eq!(
+            groups[0].parts[0].creator_id,
+            "00000000-0000-0000-0000-000000000004;https://host/agent/;Unknown User"
+        );
+        assert_eq!(
             groups[1]
                 .parts
                 .iter()
                 .map(|part| (part.name.as_str(), part.link_num))
                 .collect::<Vec<_>>(),
-            vec![("link-restore", 1), ("child-two", 2), ("child-three", 3)]
+            vec![("link-restore", 1), ("child-three", 3)]
         );
-        assert!(groups[1].parts[1].sit_target_active);
-        assert_eq!(groups[1].parts[1].sit_target_position, [0.0, 0.0, 0.0]);
+        assert_eq!(
+            groups[1].parts[0].creator_id,
+            "00000000-0000-0000-0000-000000000004;https://host/;Name"
+        );
+        assert!(!ids.contains(&Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2").unwrap()));
         assert_eq!(
             groups[2]
                 .parts
@@ -3536,15 +3841,8 @@ mod tests {
                 .overrides
                 .is_some()
         );
-        let child = &groups[1].parts[1];
-        assert!(child.dyn_attrs.as_ref().unwrap().namespaces.is_empty());
-        assert!(child.keyframe.is_none());
-        assert!(child.vehicle.is_some());
-        assert!(child.phys_inertia.is_some());
-        assert!(child.animations.as_ref().unwrap().is_empty());
-        assert!(child.linkset.is_none());
-        assert!(child.shape.media_entries.is_none());
-        assert!(child.shape.materials.as_ref().unwrap().overrides.is_none());
+        let sibling = &groups[1].parts[1];
+        assert!(sibling.items.is_empty());
         assert_eq!(
             showcase
                 .items
@@ -3565,12 +3863,6 @@ mod tests {
         );
         assert_ne!(showcase.items[2].experience_id, Uuid::nil());
         assert!(groups[1].parts[0].items.is_empty());
-        assert_eq!(child.items.len(), 1);
-        assert_eq!(
-            child.items[0].creator_id,
-            "00000000-0000-0000-0000-000000000004;;Unknown User"
-        );
-        assert!(groups[1].parts[2].items.is_empty());
         assert_eq!(groups[3].parts[0].items.len(), 1);
         assert_eq!(
             groups[3].parts[0].items[0].creator_id,
@@ -3586,6 +3878,9 @@ mod tests {
         );
         assert!(
             !loaded.contains(&Uuid::parse_str("e0000000-0000-0000-0000-000000000001").unwrap())
+        );
+        assert!(
+            !loaded.contains(&Uuid::parse_str("b2222222-2222-2222-2222-222222222222").unwrap())
         );
     }
 
@@ -3629,6 +3924,169 @@ mod tests {
         assert_eq!(groups[3].parts[0].name, "no-shape");
     }
 
+    #[test]
+    fn part_creator_identification_follows_the_part_rule() {
+        let zero = "00000000-0000-0000-0000-000000000000";
+        let id = "00000000-0000-0000-0000-000000000004";
+        assert_eq!(part_creator_identification(""), zero);
+        assert_eq!(part_creator_identification(id), id);
+        assert_eq!(
+            part_creator_identification(&format!("{id};https://profile.example/agent")),
+            format!("{id};https://profile.example/agent/;Unknown User")
+        );
+        assert_eq!(
+            part_creator_identification(&format!("{id};https://profile.example/agent/;Ada")),
+            format!("{id};https://profile.example/agent/;Ada")
+        );
+        assert_eq!(
+            part_creator_identification(&format!("{id};https://example.com;Ada;extra")),
+            format!("{id};https://example.com/;Ada")
+        );
+        assert_eq!(
+            part_creator_identification(&format!("{id};")),
+            format!("{id};/;Unknown User")
+        );
+        assert_eq!(part_creator_identification("not-a-uuid"), zero);
+        assert_eq!(
+            part_creator_identification("not-a-uuid;http://x"),
+            format!("{zero};http://x/;Unknown User")
+        );
+        assert_eq!(
+            creator_identification(&format!("{id};https://profile.example/agent")),
+            format!("{id};https://profile.example/agent;Unknown User")
+        );
+        assert_eq!(
+            creator_identification(&format!("{id};")),
+            format!("{id};;Unknown User")
+        );
+    }
+
+    #[test]
+    fn the_task_item_cap_refuses_the_next_row() {
+        let mut counts = HashMap::new();
+        let prim = Uuid::nil();
+        for _ in 0..MAX_TASK_ITEMS {
+            note_task_item(&mut counts, prim).unwrap();
+        }
+        match note_task_item(&mut counts, prim) {
+            Err(ObjectError::TaskItems {
+                configured,
+                observed,
+            }) => {
+                assert_eq!(configured, MAX_TASK_ITEMS);
+                assert_eq!(observed, MAX_TASK_ITEMS + 1);
+            }
+            other => panic!("task items: {other:?}"),
+        }
+        let mut region_items = 0u64;
+        match note_region_items(&mut region_items, 0) {
+            Err(ObjectError::TaskItems {
+                configured,
+                observed,
+            }) => {
+                assert_eq!(configured, 0);
+                assert_eq!(observed, 1);
+            }
+            other => panic!("region items: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn regionstore_streams_this_region_only() {
+        let connection = copied_store();
+        let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        let creator = "00000000-0000-0000-0000-000000000004;https://profile.example/agent";
+        sqlx::query("UPDATE prims SET CreatorID = ? WHERE Name = 'showcase'")
+            .bind(creator)
+            .execute(sqlite)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE prims SET RegionUUID = '11111111-1111-1111-1111-111111111111' \
+             WHERE Name = 'showcase'",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE prims SET RegionUUID = upper(RegionUUID) WHERE Name = 'link-restore'")
+            .execute(sqlite)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE primshapes SET UUID = upper(UUID) \
+             WHERE UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1'",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE prims SET pseudocrc = NULL WHERE Name = 'no-shape'")
+            .execute(sqlite)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE prims SET SceneGroupID = '00000000-0000-0000-0000-000000000000' \
+             WHERE Name = 'child-two'",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        let groups = load_objects(&pool, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        let showcase = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == "showcase")
+            .unwrap();
+        assert_eq!(
+            showcase.creator_id,
+            "00000000-0000-0000-0000-000000000004;https://profile.example/agent/;Unknown User"
+        );
+        assert!(!showcase.shape.default_box);
+        assert!(groups.iter().all(|group| {
+            group
+                .parts
+                .iter()
+                .all(|part| part.name != "no-shape" && part.name != "child-two")
+        }));
+        assert!(
+            groups
+                .iter()
+                .any(|group| { group.parts.iter().any(|part| part.name == "link-restore") })
+        );
+    }
+
+    #[tokio::test]
+    async fn regionstore_root_test_compares_the_stored_text() {
+        let connection = copied_store();
+        let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        sqlx::query("UPDATE prims SET UUID = upper(UUID) WHERE Name = 'link-restore'")
+            .execute(sqlite)
+            .await
+            .unwrap();
+        let groups = load_objects(&pool, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        assert!(groups.iter().all(|group| {
+            group.parts.iter().all(|part| {
+                part.name != "link-restore"
+                    && part.name != "child-three"
+                    && part.name != "child-two"
+            })
+        }));
+        assert!(
+            groups
+                .iter()
+                .any(|group| group.parts.iter().any(|part| part.name == "showcase"))
+        );
+    }
+
     #[tokio::test]
     async fn regionstore_limits_refuse_a_smaller_cap() {
         let connection = copied_store();
@@ -3640,7 +4098,7 @@ mod tests {
         match objects {
             Err(ObjectError::Objects {
                 configured: 1,
-                observed: 8,
+                observed: 2,
             }) => {}
             other => panic!("object cap: {other:?}"),
         }
@@ -3665,9 +4123,13 @@ mod tests {
                 .as_nanos()
         ));
         let connection = format!("Data Source={};Version=3", path.display());
-        let groups = open_objects(&connection, Uuid::parse_str(REGION).unwrap())
-            .await
-            .unwrap();
+        let groups = open_objects(
+            &connection,
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
         assert!(groups.is_empty());
     }
 
@@ -3742,9 +4204,13 @@ mod tests {
         let dump = mysql_dump();
         assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
-        let groups = open_objects(&connection, Uuid::parse_str(REGION).unwrap())
-            .await
-            .unwrap();
+        let groups = open_objects(
+            &connection,
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Mysql,
+        )
+        .await
+        .unwrap();
         expect_groups(&groups, &dump);
         let mut ids = BTreeSet::new();
         for group in &groups {
@@ -3761,6 +4227,12 @@ mod tests {
             .unwrap();
         assert_eq!(showcase.flags, 0x401);
         assert!(!showcase.volume_detect);
+        assert!(!showcase.allow_unsit);
+        assert!(showcase.scripted_sit_only);
+        assert_eq!(
+            showcase.creator_id,
+            "00000000-0000-0000-0000-000000000004;https://host/agent/;Unknown User"
+        );
         assert_eq!(
             showcase
                 .items
@@ -3815,6 +4287,18 @@ mod tests {
              7, 7, 'dropped', '', 1700000201, '00000000-0000-0000-0000-000000000004', \
              '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
              '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, -1, \
+             '00000000-0000-0000-0000-000000000000'), \
+             ('d1000000-0000-0000-0000-000000000003', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'wrapped', '', 1700000202, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', -1, 1, 1, 0, 0, 1, \
+             '00000000-0000-0000-0000-000000000000'), \
+             ('d1000000-0000-0000-0000-000000000004', 'dddddddd-dddd-dddd-dddd-ddddddddddd1', \
+             '00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000011', \
+             7, 7, 'dated', '', NULL, '00000000-0000-0000-0000-000000000004', \
+             '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', \
+             '00000000-0000-0000-0000-000000000003', 1, 1, 1, 0, 0, 1, \
              '00000000-0000-0000-0000-000000000000')",
         )
         .execute(mysql)
@@ -3845,7 +4329,14 @@ mod tests {
         assert!(no_shape.items.iter().any(|item| item.name == "kept"));
         assert!(no_shape.items.iter().all(|item| {
             item.item_id != Uuid::parse_str("d1000000-0000-0000-0000-000000000002").unwrap()
+                && item.name != "wrapped"
         }));
+        let dated = no_shape
+            .items
+            .iter()
+            .find(|item| item.name == "dated")
+            .unwrap();
+        assert_eq!(dated.creation_date, 0);
         let note = groups
             .iter()
             .find_map(|group| {
@@ -3868,7 +4359,8 @@ mod tests {
     async fn reset_mysql_extras(mysql: &sqlx::MySqlPool) {
         sqlx::query(
             "DELETE FROM primitems WHERE itemID IN \
-             ('d1000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000002')",
+             ('d1000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000002', \
+              'd1000000-0000-0000-0000-000000000003', 'd1000000-0000-0000-0000-000000000004')",
         )
         .execute(mysql)
         .await
@@ -3898,6 +4390,26 @@ mod tests {
         &LOCK
     }
 
+    fn without_dropped_root(dump: &Value) -> Value {
+        let mut comparable = dump.clone();
+        let kept = comparable["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|group| {
+                group["parts"].as_array().unwrap().iter().all(|part| {
+                    !matches!(
+                        part["name"].as_str(),
+                        Some("rewrite-root" | "rewrite-child" | "zero-group")
+                    )
+                })
+            })
+            .cloned()
+            .collect();
+        comparable["groups"] = Value::Array(kept);
+        comparable
+    }
+
     fn postgres_dump() -> Value {
         let text = std::fs::read_to_string(fixture_dir().join("objects-postgres.json")).unwrap();
         serde_json::from_str(&text).unwrap()
@@ -3914,33 +4426,21 @@ mod tests {
         let dump = postgres_dump();
         assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
-        let groups = open_objects(&connection, Uuid::parse_str(REGION).unwrap())
-            .await
-            .unwrap();
-        expect_groups(&groups, &dump);
-        let rewrite = groups
-            .iter()
-            .flat_map(|group| group.parts.iter())
-            .find(|part| part.name == "rewrite-root")
-            .unwrap();
-        assert_eq!(
-            rewrite.uuid,
-            Uuid::parse_str("88888888-8888-8888-8888-888888888880").unwrap()
-        );
-        assert_eq!(rewrite.link_num, 1);
-        assert!(rewrite.shape.default_box);
-        assert_eq!(rewrite.shape.texture, vec![0x01, 0x02, 0x03]);
-        assert!(rewrite.raw.dyn_attrs.is_none());
-        let child = groups
-            .iter()
-            .flat_map(|group| group.parts.iter())
-            .find(|part| part.name == "rewrite-child")
-            .unwrap();
-        assert_eq!(child.link_num, 2);
-        assert_eq!(
-            child.uuid,
-            Uuid::parse_str("88888888-8888-8888-8888-888888888882").unwrap()
-        );
+        let groups = open_objects(
+            &connection,
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Postgres,
+        )
+        .await
+        .unwrap();
+        expect_groups(&groups, &without_dropped_root(&dump));
+        assert!(groups.iter().all(|group| {
+            group.parts.iter().all(|part| {
+                part.name != "rewrite-root"
+                    && part.name != "rewrite-child"
+                    && part.name != "zero-group"
+            })
+        }));
         let showcase = groups
             .iter()
             .flat_map(|group| group.parts.iter())
@@ -3970,6 +4470,65 @@ mod tests {
             .find(|part| part.name == "child-second")
             .unwrap();
         assert_eq!(second.link_num, 3);
+        assert_eq!(
+            showcase.creator_id,
+            "00000000-0000-0000-0000-000000000004;https://host/agent/;Unknown User"
+        );
+        // A zero scene-group id makes the pin throw, so the oracle seed leaves
+        // the row out. Insert it here and keep every other group.
+        let pool = Pool::open(Backend::Postgres, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let postgres = pool.postgres().unwrap();
+        let inserted = sqlx::query(
+            "INSERT INTO prims SELECT r.* FROM prims p \
+             CROSS JOIN LATERAL jsonb_populate_record(NULL::prims, \
+             to_jsonb(p) || jsonb_build_object( \
+             'UUID', '66666666-6666-6666-6666-666666666661'::uuid, \
+             'SceneGroupID', '00000000-0000-0000-0000-000000000000'::uuid, \
+             'Name', 'zero-group')) AS r \
+             WHERE p.\"UUID\" = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1'::uuid",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        assert_eq!(inserted.rows_affected(), 1u64);
+        let shaped = sqlx::query(
+            "INSERT INTO primshapes SELECT r.* FROM primshapes p \
+             CROSS JOIN LATERAL jsonb_populate_record(NULL::primshapes, \
+             to_jsonb(p) || jsonb_build_object( \
+             'UUID', '66666666-6666-6666-6666-666666666661'::uuid)) AS r \
+             WHERE p.\"UUID\" = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1'::uuid",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        assert_eq!(shaped.rows_affected(), 1u64);
+        let again = open_objects(
+            &connection,
+            Uuid::parse_str(REGION).unwrap(),
+            ObjectStoreKind::Postgres,
+        )
+        .await
+        .unwrap();
+        let zero_group = Uuid::parse_str("66666666-6666-6666-6666-666666666661").unwrap();
+        assert_eq!(again.len(), groups.len());
+        assert!(again.iter().all(|group| {
+            group
+                .parts
+                .iter()
+                .all(|part| part.name != "zero-group" && part.uuid != zero_group)
+        }));
+        sqlx::query(
+            "DELETE FROM primshapes WHERE \"UUID\" = '66666666-6666-6666-6666-666666666661'",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM prims WHERE \"UUID\" = '66666666-6666-6666-6666-666666666661'")
+            .execute(postgres)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4069,25 +4628,19 @@ mod tests {
         assert!(no_shape.items.iter().any(|item| item.name == "kept"));
         assert!(no_shape.items.iter().all(|item| item.name != "dropped"));
         assert!(no_shape.items.iter().all(|item| item.name != "negative"));
-        let rewrite = groups
-            .iter()
-            .find_map(|group| group.parts.iter().find(|part| part.name == "rewrite-root"))
-            .unwrap();
-        let note = rewrite
-            .items
-            .iter()
-            .find(|item| item.name == "rewrite-note")
-            .unwrap();
+        assert!(groups.iter().all(|group| {
+            group.parts.iter().all(|part| {
+                part.name != "rewrite-root"
+                    && part.name != "rewrite-child"
+                    && part.items.iter().all(|item| item.name != "rewrite-note")
+            })
+        }));
+        let kept = without_dropped_root(&postgres_dump());
         assert_eq!(
-            rewrite.uuid,
-            Uuid::parse_str("88888888-8888-8888-8888-888888888880").unwrap()
+            groups.len(),
+            kept["groups"].as_array().unwrap().len(),
+            "the rewrite group and the zero group are left out"
         );
-        assert_eq!(note.parent_id, rewrite.uuid);
-        assert_eq!(
-            note.parent_part_id,
-            Uuid::parse_str("88888888-8888-8888-8888-888888888881").unwrap()
-        );
-        assert!(groups.len() >= 5);
     }
 
     async fn reset_postgres_extras(postgres: &sqlx::PgPool) {
@@ -4102,9 +4655,16 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            "DELETE FROM primshapes WHERE \"UUID\" = '66666666-6666-6666-6666-666666666661'",
+        )
+        .execute(postgres)
+        .await
+        .unwrap();
+        sqlx::query(
             "DELETE FROM prims WHERE \"UUID\" IN \
              ('77777777-7777-7777-7777-777777777771', \
               '77777777-7777-7777-7777-777777777772', \
+              '66666666-6666-6666-6666-666666666661', \
               'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1')",
         )
         .execute(postgres)
