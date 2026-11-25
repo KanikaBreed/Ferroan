@@ -109,6 +109,9 @@ pub struct RegionConfig {
     pub region_manager_is_god: bool,
     /// `[UserAccountService] UserAccountServerURI`. Empty skips the level lookup.
     pub user_account_server_uri: String,
+    /// This grid's gatekeeper, which tells a GridUser visitor's name from a
+    /// resident's for `UUIDNameRequest`.
+    pub grid_home: crate::names::GridHome,
     /// SQLite estate connection, resolved like `EstateDataService`: DatabaseService
     /// `ConnectionString`, then `EstateConnectionString`, then
     /// `[EstateDataStore] ConnectionString`. Absent means no estate tables.
@@ -139,16 +142,11 @@ pub struct RegionConfig {
     pub monitoring: MonitoringSettings,
     /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
     pub logs: ferroan_log::Settings,
-    /// `[DatabaseService] ConnectionString` when it is present and not empty.
-    /// Absent means no saved heightmap. [`Self::terrain_kind`] says whether the
-    /// string is SQLite. MySQL and PostgreSQL have no saved heightmap yet.
-    pub terrain_store: Option<String>,
-    /// Driver for [`Self::terrain_store`], from `[DatabaseService]` only.
-    /// `[SimulationDataStore]` does not change this.
-    pub terrain_kind: Option<ferroan_scene::ObjectStoreKind>,
     /// `[Terrain] InitialTerrain` (`pinhead-island` when absent): the map a
-    /// SQLite store with no `terrain` and no `bakedterrain` row gets. A SQLite
-    /// file that is not on disk runs it without storing it.
+    /// region store with no `terrain` and no `bakedterrain` row gets. The
+    /// terrain rows live in [`Self::object_store`], as C#'s
+    /// `SimulationDataService` keeps prims, settings and terrain in one store.
+    /// A SQLite file that is not on disk runs it without storing it.
     pub initial_terrain: ferroan_scene::InitialTerrain,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
@@ -361,6 +359,7 @@ impl RegionConfig {
             };
         let user_account_server_uri =
             optional_uri(server, "UserAccountService", "UserAccountServerURI")?;
+        let grid_home = crate::names::GridHome::from_config(server, &server_uri);
         let mut handshake = HandshakeConfig::for_region(id);
         handshake.sim_name = name.to_owned();
         handshake.product_name = product_name.to_owned();
@@ -385,6 +384,7 @@ impl RegionConfig {
             region_owner_is_god,
             region_manager_is_god,
             user_account_server_uri,
+            grid_home,
             estate_store: estate_connection(server),
             handshake,
             circuit_timing: circuit_timing(server)?,
@@ -407,12 +407,6 @@ impl RegionConfig {
                 Some(id),
             )
             .map_err(log_config_error)?,
-            terrain_store: server
-                .get("DatabaseService", "ConnectionString")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
-            terrain_kind: database_service_kind(server),
             initial_terrain: ferroan_scene::InitialTerrain::from_name(
                 server
                     .get("Terrain", "InitialTerrain")
@@ -946,15 +940,6 @@ fn object_store(config: &Config) -> Option<ObjectStore> {
     let connection = connection?;
     let kind = provider_kind(provider.as_deref(), &connection)?;
     Some(ObjectStore { connection, kind })
-}
-
-/// Terrain uses `[DatabaseService]` even when `[SimulationDataStore]` replaces the object store.
-fn database_service_kind(config: &Config) -> Option<ferroan_scene::ObjectStoreKind> {
-    let connection = nonempty(config, "DatabaseService", "ConnectionString")?;
-    provider_kind(
-        nonempty(config, "DatabaseService", "StorageProvider"),
-        connection,
-    )
 }
 
 fn provider_kind(
@@ -1657,46 +1642,6 @@ mod tests {
             "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
         );
         assert_eq!(postgres.kind, ferroan_scene::ObjectStoreKind::Postgres);
-    }
-
-    #[test]
-    fn terrain_kind_follows_database_service_only() {
-        let mut server = server();
-        server.set(
-            "DatabaseService",
-            "StorageProvider",
-            "OpenSim.Data.SQLite.dll",
-        );
-        server.set(
-            "DatabaseService",
-            "ConnectionString",
-            "URI=file:OpenSim.db;UseUTF16Encoding=True",
-        );
-        server.set(
-            "SimulationDataStore",
-            "StorageProvider",
-            "OpenSim.Data.MySQL.dll",
-        );
-        server.set(
-            "SimulationDataStore",
-            "ConnectionString",
-            "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused",
-        );
-        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
-        assert_eq!(
-            config.object_store.unwrap().kind,
-            ferroan_scene::ObjectStoreKind::Mysql
-        );
-        assert_eq!(
-            config.terrain_kind,
-            Some(ferroan_scene::ObjectStoreKind::Sqlite)
-        );
-        assert!(
-            config
-                .terrain_store
-                .unwrap()
-                .contains("URI=file:OpenSim.db")
-        );
     }
 
     #[test]

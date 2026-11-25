@@ -33,6 +33,9 @@
 //   Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs
 //     (TeleportAgentWithinRegion)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// QR9 reference: Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+// (HandleUseCircuitCode) and Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs
+// (AllocateLocalId and avatar creation) at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: async lifecycle, generation-safe cleanup and process orchestration.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -41,15 +44,12 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ferroan_client::{
@@ -61,7 +61,7 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{
-    ADMISSION_QUEUE, AcceptedAgent, SimulationState, release_callback,
+    AcceptedAgent, DISPATCH_CAPACITY, SimulationState, release_callback,
 };
 use ferroan_region::source_hop::{HopEnv, HopLogin, HopPresence};
 use ferroan_region::status::{
@@ -70,7 +70,7 @@ use ferroan_region::status::{
 use ferroan_scene::TerrainFrame;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -219,10 +219,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         Some(fetch.service()),
     )?;
     fetch.bind_uploader_routes(caps.uploader_routes());
-    // One queued accept per admitted root, including the staff and god bypass.
-    // The dispatcher spawns the circuit, so a same-agent replacement still fits
-    // while the old task is running.
-    let (accepted, agents) = mpsc::channel(ADMISSION_QUEUE);
+    // A full child share must leave room for queued roots as well as running ones.
+    let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.keep_objects(objects);
@@ -326,12 +324,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     simulation.stop_accepting();
     let _ = stop_circuits.send(true);
     if !circuits_consumed {
-        // One active generation and one queued replacement: two arrival writes,
-        // up to six failed-login cleanup requests and one admission, each
-        // bounded at 30s. Concurrent roots take the same budget. HTTP cleanup
-        // holds one lifecycle lock, so a region at the ordinary root limit plus
-        // the staff bypass can still outrun it. Shutdown never cancels a write
-        // ahead of its cleanup.
+        // Allow time for in-flight detector writes, replacement cleanup and a final
+        // admission. Each agent drains independently within the shutdown deadline.
         let drained = tokio::time::timeout(Duration::from_secs(275), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
@@ -415,12 +409,15 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let map = match (config.terrain_store.as_deref(), config.terrain_kind) {
-        (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
+    // `SimulationDataService` keeps terrain in the same store as prims and
+    // settings: `[SimulationDataStore]` over `[DatabaseService]`.
+    let map = match config.object_store.as_ref() {
+        Some(store) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
             let loaded = ferroan_scene::load_world_map(
-                connection,
+                &store.connection,
+                store.kind,
                 config.id,
                 width,
                 height,
@@ -431,19 +428,7 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
             log_world_map(&loaded, config.initial_terrain);
             Some(loaded.map)
         }
-        (Some(_), Some(_)) => {
-            tracing::info!(
-                "ferroan-region: MySQL and PostgreSQL stores have no saved heightmap yet"
-            );
-            None
-        }
-        (Some(_), None) => {
-            tracing::info!(
-                "ferroan-region: the database service is not a SQLite terrain store; no saved heightmap"
-            );
-            None
-        }
-        (None, _) => None,
+        None => None,
     };
     let frame = match map {
         Some(map) => {
@@ -528,33 +513,13 @@ async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     }
 }
 
-/// Aborts the circuit task when the dispatcher future is dropped. `JoinHandle`
-/// on drop detaches, and the region tests abort the dispatcher.
-struct AbortOnDrop(JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl AbortOnDrop {
-    fn join(mut self) -> impl Future<Output = ()> + Send {
-        std::future::poll_fn(
-            move |cx: &mut Context<'_>| match Pin::new(&mut self.0).poll(cx) {
-                Poll::Ready(_) => Poll::Ready(()),
-                Poll::Pending => Poll::Pending,
-            },
-        )
-    }
-}
-
 #[derive(Clone)]
 struct LifecycleClients {
     grid_user: GridUserClient,
     presence: PresenceClient,
 }
 
+#[derive(Clone)]
 struct DispatchCtx {
     circuit: CircuitServer,
     config: RegionConfig,
@@ -563,56 +528,7 @@ struct DispatchCtx {
     stop: watch::Receiver<bool>,
     /// Tests wait until a dequeued agent has passed same-agent cleanup.
     started: Arc<AtomicUsize>,
-    running: HashMap<Uuid, AbortOnDrop>,
     hop: HopEnv,
-}
-
-impl DispatchCtx {
-    /// Join a same-agent predecessor before its replacement circuit starts.
-    async fn launch(&mut self, agent: AcceptedAgent) {
-        let agent_id = agent.expect.agent_id;
-        if let Some(previous) = self.running.remove(&agent_id) {
-            previous.join().await;
-        }
-        if *self.stop.borrow() {
-            self.note_started();
-            let position = agent.start_pos;
-            settle(
-                &self.clients.grid_user,
-                &self.clients.presence,
-                &self.config,
-                agent,
-                false,
-                position,
-                [0.0; 3],
-            )
-            .await;
-            return;
-        }
-        let started = Arc::clone(&self.started);
-        let circuit = self.circuit.clone();
-        let config = self.config.clone();
-        let terrain = self.terrain.clone();
-        let clients = self.clients.clone();
-        let stop = self.stop.clone();
-        let hop = self.hop.clone();
-        let handle = tokio::spawn(async move {
-            started.fetch_add(1, Ordering::Release);
-            serve_agent(circuit, config, terrain, agent, stop, clients, hop).await;
-        });
-        self.running.insert(agent_id, AbortOnDrop(handle));
-    }
-
-    fn note_started(&self) {
-        self.started.fetch_add(1, Ordering::Release);
-    }
-
-    async fn join_running(&mut self) {
-        let pending: Vec<AbortOnDrop> = self.running.drain().map(|(_, task)| task).collect();
-        for task in pending {
-            task.join().await;
-        }
-    }
 }
 
 fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::MotionUpdate {
@@ -772,17 +688,24 @@ async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
     terrain: Option<Arc<TerrainFrame>>,
-    mut agents: mpsc::Receiver<AcceptedAgent>,
+    agents: mpsc::Receiver<AcceptedAgent>,
     stop: watch::Receiver<bool>,
     started: Arc<AtomicUsize>,
     hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
+    // UserManagementModule: names from the account service, then GridUser.
+    circuit.enable_names(ferroan_region::names::GridNames::new(
+        &config.user_account_server_uri,
+        config.scope_id,
+        &config.grid_user_server_uri,
+        config.grid_home.clone(),
+    ));
     if let Some(frame) = terrain.as_ref() {
         let frame = Arc::clone(frame);
         circuit.set_login_scene(Arc::new(move |agent, call| scene_call(&frame, agent, call)));
     }
-    let mut ctx = DispatchCtx {
+    let ctx = DispatchCtx {
         circuit,
         clients: LifecycleClients {
             grid_user: GridUserClient::new(&config.grid_user_server_uri),
@@ -790,57 +713,91 @@ async fn dispatch_circuits(
         },
         config,
         terrain,
-        stop,
+        stop: stop.clone(),
         started,
-        running: HashMap::new(),
         hop,
     };
-    loop {
-        let next = tokio::select! {
-            biased;
-            result = ctx.stop.changed() => {
-                if result.is_err() || *ctx.stop.borrow() {
-                    agents.close();
-                    break;
-                }
-                continue;
+    dispatch(agents, stop, DISPATCH_CAPACITY, |mut agent, stopping| {
+        let ctx = ctx.clone();
+        async move {
+            agent.wait_for_predecessor().await;
+            ctx.started.fetch_add(1, Ordering::Release);
+            if stopping
+                || *ctx.stop.borrow()
+                || ctx.stop.has_changed().is_err()
+                || !agent.is_current()
+            {
+                let position = agent.start_pos;
+                settle(
+                    &ctx.clients.grid_user,
+                    &ctx.clients.presence,
+                    &ctx.config,
+                    agent,
+                    false,
+                    position,
+                    [0.0; 3],
+                )
+                .await;
+            } else {
+                serve_agent(ctx, agent).await;
             }
-            next = agents.recv() => next,
-        };
-        let Some(agent) = next else { break };
-        ctx.launch(agent).await;
-    }
-    while let Some(agent) = agents.recv().await {
-        let agent_id = agent.expect.agent_id;
-        if let Some(previous) = ctx.running.remove(&agent_id) {
-            previous.join().await;
         }
-        ctx.note_started();
-        let position = agent.start_pos;
-        settle(
-            &ctx.clients.grid_user,
-            &ctx.clients.presence,
-            &ctx.config,
-            agent,
-            false,
-            position,
-            [0.0; 3],
-        )
-        .await;
-    }
-    ctx.join_running().await;
+    })
+    .await;
     Ok(())
 }
 
-async fn serve_agent(
-    circuit: CircuitServer,
-    config: RegionConfig,
-    terrain: Option<Arc<TerrainFrame>>,
-    mut agent: AcceptedAgent,
+/// Reap completions even when admission is idle. Dropping the set aborts its tasks.
+/// Closing admission drains every reserved generation before shutdown returns.
+async fn dispatch<T, F, R>(
+    mut agents: mpsc::Receiver<T>,
     mut stop: watch::Receiver<bool>,
-    clients: LifecycleClients,
-    hop: HopEnv,
-) {
+    capacity: usize,
+    serve: impl Fn(T, bool) -> F,
+) where
+    F: Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    let mut running = JoinSet::new();
+    let mut stopping = *stop.borrow();
+    if stopping {
+        agents.close();
+    }
+    loop {
+        tokio::select! {
+            biased;
+            changed = stop.changed(), if !stopping => {
+                if changed.is_err() || *stop.borrow() {
+                    stopping = true;
+                    agents.close();
+                }
+            }
+            Some(result) = running.join_next(), if !running.is_empty() => {
+                if let Err(error) = result { tracing::error!("circuit task ended: {error}"); }
+            }
+            next = agents.recv(), if running.len() < capacity => {
+                let Some(agent) = next else { break };
+                running.spawn(serve(agent, stopping));
+            }
+        }
+    }
+    while let Some(result) = running.join_next().await {
+        if let Err(error) = result {
+            tracing::error!("circuit task ended: {error}");
+        }
+    }
+}
+
+async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
+    let DispatchCtx {
+        circuit,
+        config,
+        terrain,
+        mut stop,
+        clients,
+        hop,
+        ..
+    } = ctx;
     let LifecycleClients {
         grid_user,
         presence,
@@ -871,9 +828,8 @@ async fn serve_agent(
         let half_height = avatar.height / 2.0;
         let mut arrival = config.arrival(position);
         arrival.land = land;
-        // The frame gives the avatar its local id and fills this viewer's
-        // entity updates. Without a frame the avatar keeps id 1 and gets none.
-        if let Some(frame) = terrain.as_deref() {
+        // The owner and the frame use the same region id space, even if attach fails.
+        let attached = if let Some(frame) = terrain.as_deref() {
             let feed = frame.new_feed();
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
@@ -893,8 +849,7 @@ async fn serve_agent(
                 Ok(pending) => pending.wait().await.ok(),
                 Err(_) => None,
             };
-            if let Some(local_id) = attached {
-                avatar.local_id = local_id;
+            if attached.is_some() {
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
                     updates: Arc::new(SceneFeed {
@@ -903,7 +858,16 @@ async fn serve_agent(
                     }),
                 });
             }
-        }
+            attached
+        } else {
+            None
+        };
+        avatar.local_id = attached.unwrap_or_else(|| {
+            // The production region always has a frame. Isolated circuit tests can omit it.
+            terrain
+                .as_deref()
+                .map_or(1, TerrainFrame::allocate_local_id)
+        });
         arrival.avatar = Some(avatar);
         // TeleportAgentWithinRegion. Godlike needs a cached user level, so it
         // stays off. The frame owns the landing and IsFlying. A handle this
@@ -941,6 +905,9 @@ async fn serve_agent(
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
+        // Scene.CacheUserName. CreateAgent's service URLs are not kept, so
+        // every arrival is a resident of this grid, as an empty HomeURI is.
+        circuit.cache_arrival_name(expect.agent_id, &agent.first_name, &agent.last_name);
         circuit.attach_chat(
             expect.agent_id,
             format!("{} {}", agent.first_name, agent.last_name),
@@ -1098,8 +1065,8 @@ async fn serve_agent(
     }
     // The serve is over: the presence leaves the frame, so nothing reads a
     // ghost and a later login of this agent posts a fresh pose and filter.
-    // A same-agent replacement joins this task first, so this runs before
-    // the new serve posts.
+    // A same-agent replacement waits for this generation to finish cleanup
+    // before it posts to the frame.
     let leaving = forget.finish().await;
     // The reply is already out. Close the neighbour child before the harness
     // stops the proxy, the same moment a root logout closes known children.
@@ -1153,8 +1120,7 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         for packet in self.feed.take_avatar_packets(max) {
             match packet {
                 ferroan_scene::AvatarPacket::Full(full) => {
-                    let mut wire = avatar_wire(full.agent, &full.look);
-                    wire.local_id = full.local_id;
+                    let wire = avatar_wire(full.agent, full.local_id, &full.look);
                     let live = ferroan_client::LiveAvatar {
                         collision_plane: full.collision_plane,
                         position: full.position,
@@ -1167,7 +1133,7 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 }
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
-                        avatar_wire(agent, &look).appearance(),
+                        avatar_wire(agent, 0, &look).appearance(),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -1194,8 +1160,13 @@ impl ferroan_client::EntityUpdates for SceneFeed {
 }
 
 /// The wire form of another avatar, from what its own viewer attached with.
-fn avatar_wire(agent: Uuid, look: &ferroan_scene::AvatarLook) -> ferroan_client::AvatarWire {
-    let mut wire = ferroan_client::AvatarWire::standing(agent, &look.first_name, &look.last_name);
+fn avatar_wire(
+    agent: Uuid,
+    local_id: u32,
+    look: &ferroan_scene::AvatarLook,
+) -> ferroan_client::AvatarWire {
+    let mut wire =
+        ferroan_client::AvatarWire::standing(agent, local_id, &look.first_name, &look.last_name);
     wire.title.clone_from(&look.title);
     wire.visual_params.clone_from(&look.visual_params);
     wire.texture.clone_from(&look.texture);
@@ -1394,7 +1365,7 @@ mod tests {
              [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
              [Map]\nGenerateMaptiles=false\n\
              [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
-             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+             ConnectionString=\"Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\"\n",
         )
         .unwrap();
         let regions = ferroan_config::Config::parse(
@@ -1408,21 +1379,20 @@ mod tests {
             config.object_store.as_ref().map(|store| store.kind),
             Some(ferroan_scene::ObjectStoreKind::Mysql)
         );
-        assert_eq!(
-            config.terrain_kind,
-            Some(ferroan_scene::ObjectStoreKind::Mysql)
-        );
-        assert!(
-            config
-                .terrain_store
-                .as_deref()
-                .unwrap()
-                .contains("Data Source=")
-        );
         let settings = load_stored_settings(&mut config).await.unwrap();
         assert!(settings.is_none());
-        let terrain = load_terrain(&config).await.unwrap().unwrap();
-        assert!(!terrain.has_map());
+        // Terrain is read from the MySQL store, which is not running: startup
+        // stops on the MySQL connect, not on a SQLite file named by the string.
+        match load_terrain(&config).await {
+            Err(RunError::Terrain(text)) => {
+                assert!(
+                    text.starts_with("terrain store: could not connect to mysql"),
+                    "{text}"
+                );
+            }
+            Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("an unreachable MySQL store loaded terrain"),
+        }
 
         let bare = ferroan_config::Config::parse(
             "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
@@ -1436,11 +1406,63 @@ mod tests {
         .unwrap();
         let bare_config = RegionConfig::from_configs(&bare, &regions).unwrap();
         assert!(bare_config.object_store.is_none());
-        assert!(bare_config.terrain_kind.is_none());
-        assert!(bare_config.terrain_store.is_some());
         let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
         assert!(!bare_terrain.has_map());
     }
+    #[tokio::test]
+    async fn terrain_is_stored_in_the_simulation_data_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-terrain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("RegionStore.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/db/sqlite/RegionStore.db"),
+            &path,
+        )
+        .unwrap();
+        // `[DatabaseService]` names MySQL; `[SimulationDataStore]` replaces it.
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
+             ConnectionString=Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\n\
+             [SimulationDataStore]\nStorageProvider=OpenSim.Data.SQLite.dll\n\
+             ConnectionString=URI=file:{};UseUTF16Encoding=True\n",
+            path.display()
+        ))
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\n",
+        )
+        .unwrap();
+        let config = RegionConfig::from_configs(&server, &regions).unwrap();
+        let terrain = load_terrain(&config).await.unwrap().unwrap();
+        assert!(terrain.has_map());
+        let stored = ferroan_scene::open_terrain(
+            &format!("URI=file:{};UseUTF16Encoding=True", path.display()),
+            config.id,
+            256,
+            256,
+            ferroan_scene::ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
+        assert!(stored.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use ferroan_client::CircuitExpect;
     use ferroan_client::EntityUpdates;
     use ferroan_http::{Field, FieldMap};
@@ -1471,6 +1493,7 @@ mod tests {
         requests: Arc<Mutex<Vec<FieldMap>>>,
         presence_missing: Arc<std::sync::atomic::AtomicBool>,
         fail_presence_logout: Arc<std::sync::atomic::AtomicBool>,
+        hold_next_logout: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
         sessions: Arc<Mutex<std::collections::HashSet<String>>>,
         online: Arc<std::sync::atomic::AtomicBool>,
         stop: Option<watch::Sender<bool>>,
@@ -1543,6 +1566,8 @@ mod tests {
             let service_online = online.clone();
             let fail_presence_logout = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let fail_logout = fail_presence_logout.clone();
+            let hold_next_logout = Arc::new(Mutex::new(None::<oneshot::Receiver<()>>));
+            let logout_gate = Arc::clone(&hold_next_logout);
             let users = Arc::new(Mutex::new(std::collections::HashMap::new()));
             let service_users = users.clone();
             let app = axum::Router::new().fallback(move |body: String| {
@@ -1551,12 +1576,14 @@ mod tests {
                 let session = match fields.get("SessionID") { Some(Field::Str(s)) => s.clone(), _ => String::new() };
                 seen.lock().unwrap().push(fields);
                 let report_gate = report_gate.clone();
+                let hold = if method == "logout" { logout_gate.lock().unwrap().take() } else { None };
                 let missing = missing.clone();
                 let sessions = service_sessions.clone();
                 let online = service_online.clone();
                 let fail_logout = fail_logout.clone();
                 let users = service_users.clone();
                 async move {
+                    if let Some(release) = hold { let _ = release.await; }
                     if method == "report" && let Some(gate) = report_gate {
                         gate.acquire_owned().await.unwrap().forget();
                     }
@@ -1639,6 +1666,7 @@ mod tests {
                 requests,
                 presence_missing,
                 fail_presence_logout,
+                hold_next_logout,
                 sessions,
                 online,
                 stop: Some(stop),
@@ -1650,6 +1678,19 @@ mod tests {
         }
 
         async fn admit(&self, replacement: bool, same_session: bool) -> CircuitExpect {
+            let started = self.started.load(Ordering::Acquire);
+            let expect = self.submit_login(replacement, same_session).await;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.started.load(Ordering::Acquire) == started {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            expect
+        }
+
+        async fn submit_login(&self, replacement: bool, same_session: bool) -> CircuitExpect {
             let mut body: Value = serde_json::from_str(include_str!(
                 "../../../fixtures/region-login/create-agent.request.json"
             ))
@@ -1667,7 +1708,6 @@ mod tests {
             self.users.lock().unwrap().insert(session_id, agent_id);
             self.online
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            let started = self.started.load(Ordering::Acquire);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -1685,13 +1725,6 @@ mod tests {
             assert!(response.status().is_success());
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true);
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while self.started.load(Ordering::Acquire) == started {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
             CircuitExpect {
                 agent_id: body["agent_id"].as_str().unwrap().parse().unwrap(),
                 session_id: body["session_id"].as_str().unwrap().parse().unwrap(),
@@ -1942,6 +1975,112 @@ mod tests {
             assert_eq!(harness.count("setposition"), 2);
             harness.finish().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn a_replacement_waiting_for_logout_allows_another_root_to_arrive() {
+        let mut harness = Harness::new(false, false).await;
+        let first = harness.admit(false, false).await;
+        let socket = open(&harness, first).await;
+        movement(&socket, first, 2).await;
+        wait_arrival(&socket).await;
+
+        let (release, hold) = oneshot::channel();
+        *harness.hold_next_logout.lock().unwrap() = Some(hold);
+        let next = harness.submit_login(true, false).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(harness.started.load(Ordering::Acquire), 1);
+        let other = harness.admit_other().await;
+        let other_socket = open(&harness, other).await;
+        movement(&other_socket, other, 2).await;
+        wait_arrival(&other_socket).await;
+        assert_eq!(harness.started.load(Ordering::Acquire), 2);
+
+        release.send(()).unwrap();
+        let next_socket = open(&harness, next).await;
+        wait_packet(&next_socket, RegionHandshake::ID).await;
+        movement(&next_socket, next, 2).await;
+        wait_arrival(&next_socket).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_reaps_finished_tasks_while_admission_is_idle() {
+        let (submit, queue) = mpsc::channel(1);
+        let (_stop, stopping) = watch::channel(false);
+        let dispatcher = tokio::spawn(dispatch(
+            queue,
+            stopping,
+            1,
+            |result, _| async move { result },
+        ));
+        for _ in 0..3 {
+            let (result, reaped) = oneshot::channel::<()>();
+            submit.send(result).await.unwrap();
+            // The sender is the task output. It is dropped only when the JoinSet is reaped.
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), reaped)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        drop(submit);
+        dispatcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_arrivals_with_the_region_frame_receive_distinct_object_local_ids() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(frame.clone()),
+        )
+        .await;
+        let previous_id = frame.allocate_local_id();
+        let first = harness.admit(false, false).await;
+        let second = harness.admit_other().await;
+        let mut ids = Vec::new();
+        for expect in [first, second] {
+            let socket = open(&harness, expect).await;
+            movement(&socket, expect, 2).await;
+            let id = tokio::time::timeout(Duration::from_secs(2), async {
+                let mut buf = [0; 4096];
+                loop {
+                    let len = socket.recv(&mut buf).await.unwrap();
+                    let packet = parse_packet(&buf[..len]).unwrap();
+                    if packet.id == ferroan_protocol::msgs::ObjectUpdate::ID {
+                        let update = packet
+                            .decode::<ferroan_protocol::msgs::ObjectUpdate>()
+                            .unwrap();
+                        let block = &update.object_data[0];
+                        if block.full_id == expect.agent_id {
+                            break block.id;
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert_ne!(id, 0);
+            ids.push(id);
+        }
+        assert_ne!(ids[0], ids[1]);
+        // A serve that cannot attach draws its fallback from this same counter.
+        let fallback = frame.allocate_local_id();
+        assert_eq!(ids, [previous_id + 1, previous_id + 2]);
+        assert_eq!(fallback, previous_id + 3);
+        harness.finish().await.unwrap();
     }
 
     #[tokio::test]
@@ -2609,7 +2748,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         drop(socket);
         tokio::time::timeout(Duration::from_secs(2), async {
             while harness.seed_status().await != reqwest::StatusCode::NOT_FOUND {
@@ -2677,7 +2816,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         harness.admit(true, false).await;
         let deadline = std::time::Instant::now() + Duration::from_millis(300);
         while std::time::Instant::now() < deadline {

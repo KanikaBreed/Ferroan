@@ -370,8 +370,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     let shared = region.position.clone();
     let (mut state, expect, io) = seated_teleport(region);
     let chat = RegionChat::new();
-    let mut seat = chat.seat(expect.agent_id, "Test User".into());
-    state.chat = Some(chat);
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
     let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
     state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
@@ -406,12 +405,10 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
         heard.get(&expect.agent_id).copied(),
         Some([40.0, 200.0, 30.0])
     );
-    state
-        .chat
-        .as_ref()
-        .unwrap()
+    chat.audience()
         .publish(expect.agent_id, 1, 0, "after", &heard);
-    let crate::chat::ViewerBound::Chat(said) = seat.rx.try_recv().unwrap() else {
+    let crate::chat::ViewerBound::Chat(said) = state.chat.as_mut().unwrap().rx.try_recv().unwrap()
+    else {
         panic!("expected chat from the moved seat");
     };
     assert_eq!(said.chat_data.position.to_array(), [40.0, 200.0, 30.0]);
@@ -754,7 +751,12 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
 async fn arrival_sends_the_avatar_update_and_unbaked_appearance() {
     let expect = identity(Uuid::from_u128(7));
     let config = ArrivalConfig {
-        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        avatar: Some(crate::AvatarWire::standing(
+            expect.agent_id,
+            1,
+            "Test",
+            "User",
+        )),
         ..ArrivalConfig::default()
     };
     let mut state = State::new(captured_config(), config);
@@ -987,6 +989,59 @@ fn use_circuit(expect: CircuitExpect) -> Vec<u8> {
     message.circuit_code.session_id = expect.session_id;
     message.circuit_code.code = expect.circuit_code;
     wire(&message, 1, &[])
+}
+
+fn limit_hits(id: &str, action: &str) -> u64 {
+    let prefix = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"{action}\"}} ");
+    ferroan_diag::metrics()
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_full_circuit_inbox_reports_and_keeps_the_first_128_datagrams() {
+    let inbox = Inbox::new();
+    let before = limit_hits(UDP_CIRCUIT_INBOX, "refuse");
+    for n in 0..=128 {
+        inbox.push(Datagram {
+            from: peer(),
+            bytes: vec![n],
+        });
+    }
+    assert_eq!(limit_hits(UDP_CIRCUIT_INBOX, "refuse"), before + 1);
+    for n in 0..128 {
+        assert_eq!(inbox.pop().unwrap().bytes, [n]);
+    }
+    assert!(inbox.pop().is_none());
+}
+
+#[tokio::test]
+async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
+    let server = CircuitServer::bind().await.unwrap();
+    let shared = &server.inner.shared;
+    let before = limit_hits(UDP_PENDING_LOGINS, "drop");
+    let submit = |port: u16| {
+        let from = SocketAddr::from(([127, 0, 0, 1], port));
+        assert_eq!(
+            route(
+                shared,
+                from,
+                use_circuit(identity(Uuid::from_u128(u128::from(port))))
+            ),
+            Some((from, 1))
+        );
+    };
+    for port in 1..=61 {
+        submit(port);
+    }
+    submit(1); // An existing endpoint moves to the back without displacing another.
+    assert_eq!(limit_hits(UDP_PENDING_LOGINS, "drop"), before);
+    submit(62);
+    assert_eq!(limit_hits(UDP_PENDING_LOGINS, "drop"), before + 1);
+    let pending = &shared.fan.lock().unwrap().pending;
+    let ports: Vec<_> = pending.iter().map(|d| d.from.port()).collect();
+    assert_eq!(ports, (3..=61).chain([1, 62]).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -1322,8 +1377,7 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
     let mut state = State::new(captured_config(), ArrivalConfig::default());
     state.peer = Some(peer());
     let chat = RegionChat::new();
-    let _seat = chat.seat(expect.agent_id, "Test User".into());
-    state.chat = Some(chat);
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&calls);
     state.login_scene = Some(Arc::new(move |_agent, _call| {
@@ -1331,7 +1385,7 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
         Ok(SceneReply::Places(HashMap::new())).into()
     }));
     let io = FakeIo::default();
-    for (channel, sequence) in [(5, 4), (0, 5)] {
+    for (channel, sequence, expected_calls) in [(5, 4, 0), (0, 5, 1), (i32::MAX, 6, 2)] {
         let mut message = ChatFromViewer::default();
         message.agent_data.agent_id = expect.agent_id;
         message.agent_data.session_id = expect.session_id;
@@ -1349,8 +1403,52 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
             )
             .await
             .unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            expected_calls
+        );
     }
-    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_viewer_connecting_during_the_pose_lookup_does_not_hear_the_line() {
+    let expect = identity(Uuid::from_u128(1));
+    let late_id = Uuid::from_u128(2);
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let chat = RegionChat::new();
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
+    let late = Arc::new(Mutex::new(None));
+    let (hub, slot) = (chat.clone(), Arc::clone(&late));
+    state.login_scene = Some(Arc::new(move |_agent, _call| {
+        *slot.lock().unwrap() = Some(hub.seat(late_id, "Chat Bot".into()));
+        Ok(SceneReply::Places(HashMap::from([
+            (expect.agent_id, [0.0; 3]),
+            (late_id, [0.0; 3]),
+        ])))
+        .into()
+    }));
+    let mut message = ChatFromViewer::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.chat_data.type_ = 1;
+    message.chat_data.message = ferroan_protocol::str_field("before connect");
+    let bytes = wire(&message, 4, &[]);
+    state
+        .handle(
+            &FakeIo::default(),
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let mut seat = late.lock().unwrap().take().unwrap();
+    assert!(matches!(
+        seat.rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 fn logout(expect: CircuitExpect, acks: &[u32]) -> Vec<u8> {
@@ -1659,7 +1757,12 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     let expect = identity(Uuid::from_u128(7));
     let config = ArrivalConfig {
         position: [10.0, 20.0, 30.0],
-        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        avatar: Some(crate::AvatarWire::standing(
+            expect.agent_id,
+            1,
+            "Test",
+            "User",
+        )),
         ..ArrivalConfig::default()
     };
     let mut state = State::new(captured_config(), config);
@@ -1806,7 +1909,7 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
     let mut state = State::new(captured_config(), arrival);
     state.peer = Some(peer());
     let io = FakeIo::default();
-    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), "Chat", "Bot");
+    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), 9, "Chat", "Bot");
     other.local_id = 77;
     let live = crate::LiveAvatar {
         collision_plane: [0.0, 0.0, 0.0, 1.0],

@@ -78,6 +78,8 @@ mod avatars_capture;
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[path = "prim_capture.rs"]
+mod prim_capture;
 
 #[path = "grid_up.rs"]
 mod persistent;
@@ -133,6 +135,7 @@ fn run_inner(spec: &crate::live_args::RunSpec) -> Result<String, String> {
 /// One region process. `http_bind` is where it listens. Viewers and other
 /// regions use `advertised` and `http_port` (the proxy).
 struct RegionIni<'a> {
+    prim_capture: bool,
     name: &'a str,
     uuid: &'a str,
     x: u32,
@@ -203,6 +206,9 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
         ini.push_str(&format!(
             "\n[ClientStack.LindenUDP]\n    CaptureFile = \"{capture}\"\n"
         ));
+        if region.prim_capture {
+            ini.push_str("    SupportViewerObjectsCache = false\n");
+        }
     }
     Ok(ini)
 }
@@ -722,11 +728,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "hop"
             | "uploads"
             | "avatars"
+            | "prim-capture"
             | "report"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour or {}",
+            "unknown scenario {scenario}; expected all, neighbour, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -987,6 +994,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
+            prim_capture: scenario == "prim-capture",
             basic_physics: spec.basic_physics && !ferroan,
         },
         &grid.passwords,
@@ -1018,6 +1026,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
+            prim_capture: false,
             basic_physics: spec.basic_physics,
         },
         &grid.passwords,
@@ -1208,7 +1217,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "report" {
+    if scenario == "prim-capture" {
+        let fixture = prim_capture::extract(&root)?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if scenario == "report" {
         // The capture still has to pass check, redact and replay. Its packet
         // counts are not report lines: the two regions do not send the same
         // number of datagrams, and the compare is the lines below.
@@ -1943,6 +1955,7 @@ struct RegionStart {
     auth_uri: Option<String>,
     metrics_port: Option<u16>,
     basic_physics: bool,
+    prim_capture: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1966,7 +1979,13 @@ fn start_region(
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
-    if spec.ferroan {
+    if spec.prim_capture {
+        fs::copy(
+            crate::repo_root().join("fixtures/prim-updates/scene.db"),
+            cwd.join("OpenSim.db"),
+        )
+        .map_err(|error| format!("install prim capture store: {error}"))?;
+    } else if spec.ferroan {
         install_seeded_region_store(cwd)?;
     }
     let mut rewrites = Vec::new();
@@ -2001,6 +2020,7 @@ fn start_region(
         None => None,
     };
     let region = RegionIni {
+        prim_capture: spec.prim_capture,
         name: spec.name,
         uuid: spec.uuid,
         x: spec.x,
@@ -2744,6 +2764,7 @@ mod tests {
 
     fn sample_region<'a>(capture: Option<&'a str>) -> RegionIni<'a> {
         RegionIni {
+            prim_capture: false,
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
@@ -2759,6 +2780,15 @@ mod tests {
             capture,
             basic_physics: false,
         }
+    }
+
+    #[test]
+    fn prim_capture_disables_the_cache_in_the_capture_file_section() {
+        let mut region = sample_region(Some("capture-udp.cap"));
+        region.prim_capture = true;
+        let ini = region_server_ini(&region).unwrap();
+        assert_eq!(ini.matches("[ClientStack.LindenUDP]").count(), 1);
+        assert!(ini.contains("[ClientStack.LindenUDP]\n    CaptureFile = \"capture-udp.cap\"\n    SupportViewerObjectsCache = false"));
     }
 
     #[test]

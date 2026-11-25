@@ -281,6 +281,7 @@ pub(super) fn compare_root_arrival(directory: &Path) -> Result<String, String> {
 }
 
 const HARNESS_CHAT: &str = "ferroan harness chat";
+const HARNESS_DEBUG: &str = "ferroan harness debug";
 struct HarnessSay {
     reliable: bool,
     zerocoded: bool,
@@ -294,7 +295,7 @@ struct HarnessSay {
     message: Vec<u8>,
 }
 
-fn harness_says(records: &[Record]) -> Result<Vec<HarnessSay>, String> {
+fn harness_says(records: &[Record], message: &str) -> Result<Vec<HarnessSay>, String> {
     use ferroan_protocol::{Msg, PacketFlags, field_str, msgs::ChatFromSimulator, parse_packet};
     let mut says = Vec::new();
     for record in records {
@@ -310,7 +311,7 @@ fn harness_says(records: &[Record]) -> Result<Vec<HarnessSay>, String> {
         let decoded = packet
             .decode::<ChatFromSimulator>()
             .map_err(|_| "captured ChatFromSimulator did not decode".to_string())?;
-        if field_str(&decoded.chat_data.message) != HARNESS_CHAT {
+        if field_str(&decoded.chat_data.message) != message {
             continue;
         }
         says.push(HarnessSay {
@@ -349,67 +350,76 @@ fn arrival_position(records: &[Record]) -> Result<[f32; 3], String> {
     Err("chat capture has no outgoing arrival".into())
 }
 
-/// Channel 0 say from the Ferroan region against the committed C# session.
-/// `fixtures/captures/session.cap` is a redacted `live run all`, so the name and
-/// owner id in that file are placeholders and the position is after the walk.
-/// The message bytes, source type, chat type, audible level and header flags
-/// are the comparison. The live name, both ids and this run's arrival X and Y
-/// are checked separately. Chat is read after later ticks, so Z is the arrival
-/// or the integer terrain cell under that arrival plus the avatar box.
+/// Both C# fixtures redact the name and owner. Check those on the live
+/// packets before comparing their wire fields. Positions belong to this run.
 pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
     let live = records(&directory.join("capture-udp.cap"))?;
-    let fixture = records(&crate::repo_root().join("fixtures/captures/session.cap"))?;
-    let csharp = harness_says(&fixture)?;
-    let ferroan = harness_says(&live)?;
-    let reference = csharp
-        .first()
-        .ok_or("C# session capture has no harness say")?;
-    if ferroan.len() < 2 {
-        return Err(format!(
-            "Ferroan capture has {} harness say(s); the speaker and the listener each need one",
-            ferroan.len()
-        ));
-    }
+    let captures = crate::repo_root().join("fixtures/captures");
+    let arrival = arrival_position(&live)?;
+    let cell = home_terrain_cell(directory, arrival)?;
     let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER)
         .map_err(|_| "estate owner is not a uuid".to_string())?;
-    for say in &ferroan {
-        if !say.reliable || say.zerocoded {
-            return Err("harness say is not reliable and unencoded".into());
+    let mut lines = Vec::new();
+    for (message, fixture, description) in [
+        (
+            HARNESS_CHAT,
+            "session.cap",
+            "says match the C# session capture",
+        ),
+        (
+            HARNESS_DEBUG,
+            "chat-debug.cap",
+            "debug lines match the Pin8 C# DEBUG_CHANNEL capture",
+        ),
+    ] {
+        let csharp = harness_says(&records(&captures.join(fixture))?, message)?;
+        let reference = csharp
+            .first()
+            .ok_or_else(|| format!("{fixture} has no {message}"))?;
+        // The raw C# owner was the harness speaker in both captures.
+        let recorded_owner = if reference.owner_id == uuid::Uuid::from_u128(1) {
+            owner
+        } else {
+            reference.owner_id
+        };
+        let ferroan = harness_says(&live, message)?;
+        if ferroan.len() < 2 {
+            return Err(format!(
+                "expected {message} for both viewers, captured {}",
+                ferroan.len()
+            ));
         }
-        if say.message != reference.message
-            || say.source_type != reference.source_type
-            || say.chat_type != reference.chat_type
-            || say.audible != reference.audible
-            || say.reliable != reference.reliable
-            || say.zerocoded != reference.zerocoded
-        {
-            return Err("harness say fields differ from the C# session capture".into());
+        for say in &ferroan {
+            if say.message != reference.message
+                || say.source_type != reference.source_type
+                || say.chat_type != reference.chat_type
+                || say.audible != reference.audible
+                || say.reliable != reference.reliable
+                || say.zerocoded != reference.zerocoded
+                || say.source_id != reference.source_id
+                || say.owner_id != recorded_owner
+            {
+                return Err(format!("{message} fields differ from {fixture}"));
+            }
+            if say.name != "Test User" || say.source_id != owner {
+                return Err(format!(
+                    "{message} name or source differs from the speaking harness account"
+                ));
+            }
+            if say.position != ferroan[0].position
+                || !say_keeps_arrival_xy(say.position, arrival, cell)
+            {
+                return Err(format!(
+                    "{message} position differs between packets or from this run's arrival or standing snap"
+                ));
+            }
         }
-        if say.name != "Test User" || say.source_id != owner || say.owner_id != owner {
-            return Err(
-                "harness say name, source or owner is not the speaking harness account".into(),
-            );
-        }
-        if say.source_id != reference.source_id {
-            return Err("harness say source id differs from the C# session capture".into());
-        }
+        lines.push(format!(
+            "chat bytes: {} ChatFromSimulator {description} (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z is that arrival or the terrain cell plus {}",
+            ferroan.len(), ferroan_scene::AVATAR_SIZE_Z
+        ));
     }
-    let arrival = arrival_position(&live)?;
-    let position = ferroan[0].position;
-    if ferroan.iter().any(|say| say.position != position) {
-        return Err("harness says do not share one position".into());
-    }
-    let cell = home_terrain_cell(directory, arrival)?;
-    if !say_keeps_arrival_xy(position, arrival, cell) {
-        return Err(
-            "harness say position differs from this run's arrival or the standing snap".into(),
-        );
-    }
-    Ok(format!(
-        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z is that arrival or the terrain cell plus {}",
-        ferroan.len(),
-        ferroan_scene::AVATAR_SIZE_Z
-    ))
+    Ok(lines.join("\n"))
 }
 
 /// X and Y stay on the arrival. Z is that arrival, or the integer cell under
@@ -1412,7 +1422,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
     Ok(Value::Object(output))
 }
 
-fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
@@ -1876,7 +1886,7 @@ mod tests {
     #[test]
     fn the_committed_session_say_matches_channel_zero_chat() {
         let records = records(&crate::repo_root().join("fixtures/captures/session.cap")).unwrap();
-        let says = harness_says(&records).unwrap();
+        let says = harness_says(&records, HARNESS_CHAT).unwrap();
         assert!(says.len() >= 2);
         let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
         for say in &says {
@@ -1887,6 +1897,25 @@ mod tests {
             assert_eq!(say.audible, 1);
             assert_eq!(say.message, b"ferroan harness chat\0");
             assert_eq!(say.source_id, owner);
+        }
+    }
+
+    #[test]
+    fn the_pin8_debug_capture_contains_both_redacted_type_six_deliveries() {
+        let records =
+            records(&crate::repo_root().join("fixtures/captures/chat-debug.cap")).unwrap();
+        let says = harness_says(&records, HARNESS_DEBUG).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(says.len(), 2);
+        let speaker = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
+        for say in says {
+            assert!(say.reliable);
+            assert!(!say.zerocoded);
+            assert_eq!((say.source_type, say.chat_type, say.audible), (1, 6, 1));
+            assert_eq!(say.message, b"ferroan harness debug\0");
+            assert_eq!(say.source_id, speaker);
+            assert_eq!(say.owner_id, uuid::Uuid::from_u128(1));
+            assert_eq!(say.name, "Redacted");
         }
     }
 

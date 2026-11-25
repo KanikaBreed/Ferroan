@@ -93,11 +93,15 @@ Q82's `crates/ferroan-scene/src/initial.rs` is ported from Tranquillity `Source/
 
 Q47's `crates/ferroan-scene/src/coarse.rs` follows Tranquillity `Source/OpenSim.Region.Framework/Scenes/Scene.cs` (`Update`'s `SendCoarseLocations` every `UpdateCoarseLocationsEveryNFrames`), `Source/OpenSim.Region.Framework/Scenes/SceneGraph.cs` (`GetCoarseLocations`) and `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs` (`SendCoarseLocationUpdate`) at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. The packet header in `crates/ferroan-client/src/entity_feed.rs` follows the same `SendCoarseLocationUpdate`. The files keep the BSD notices. The C# sources are not copied.
 
+QR9 follows Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs` (pending endpoints and circuit authorization), `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs` (avatar local ID) and `SceneBase.cs` (local ID allocation) at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
+
 QR26's outbound simulation connector follows Tranquillity `Source/OpenSim.Framework/ChildAgentDataUpdate.cs`, `AgentCircuitData.cs`, `Animation.cs` and `WebUtil.cs`, and `Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs`, `GodController.cs`, `Animation/AnimationSet.cs` and `Animation/ScenePresenceAnimator.cs` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. The binary JSON representation follows `OpenMetaverse.StructuredData/JSON/OSDJson.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`.
 
 Q15's `crates/ferroan-client/src/appearance.rs` follows `LLClientView.SendAppearance` and `CreateAvatarUpdateBlock`, `ScenePresence.RotateToLookAt` and `SendAppearanceToAgentNF`, and `AvatarAppearance` defaults at Tranquillity `1d7abb8337a477842fe1d7dd84beffe389ee52ac`, plus libopenmetaverse `TextureEntry.GetBakesBytes`, `AppearanceManager.DEFAULT_AVATAR_TEXTURE` and `Quaternion.ToBytes` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. `crates/ferroan-region/src/avatar.rs` follows `AvatarServicesConnector.GetAvatar` and `AvatarData.ToAvatarAppearance` at the same Tranquillity pin, and its height parse follows `AvatarData.TryParseHeight` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (Pin8). Both BSD notices are retained. The C# sources are not copied. Baking, attachments and animations are not in this port.
 
 QR10's full-region admission follows `Source/OpenSim.Server.RegionServer/OpenSimBase.cs`, `Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs`, `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs`, `Source/OpenSim.Region.Framework/Scenes/Scene.Permissions.cs`, `Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/UserAccounts/UserAccountCache.cs`, `Source/OpenSim.Services.Interfaces/IUserAccountService.cs` and `Source/OpenSim.Framework/ExpiringCacheOS.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
+
+QR11's local chat follows `Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs`, `Source/OpenSim.Framework/ChatTypeEnum.cs` and `Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause).
 
 ## Names
 

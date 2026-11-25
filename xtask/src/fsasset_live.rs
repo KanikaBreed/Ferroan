@@ -1692,6 +1692,8 @@ fn import_with_ferroan(
     base: &Path,
     force: bool,
 ) -> Result<ImportSnapshot, String> {
+    use ferroan_services::asset::WriterPass;
+
     let label = db.label();
     let spool = run.join(format!("fsasset-import-spool-{label}-ferroan"));
     fs::create_dir_all(&spool)
@@ -1727,10 +1729,15 @@ fn import_with_ferroan(
         {
             return Err("ferroan import did not finish".to_string());
         }
-        if !files.writer_pass() {
-            return Err("ferroan import left a file in the spool".to_string());
+        loop {
+            match files.writer_pass() {
+                WriterPass::Drained => return Ok(()),
+                WriterPass::More => continue,
+                WriterPass::Retry => {
+                    return Err("ferroan import left a file in the spool".to_string());
+                }
+            }
         }
-        Ok(())
     })?;
     let hashes = [
         sha256_bytes(if force { FORCE_NEW } else { IMPORT_BODY_ONE }),
