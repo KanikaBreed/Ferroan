@@ -8,10 +8,18 @@
 //! Docker smoke port is `base + offset`, and the run's files live under
 //! `.scratch/live/runs/<base>-<pid>/`. With no setting, ephemeral listeners
 //! stay ephemeral and Docker smoke stays on 3100, 9095, 4317 and 4318.
+//!
+//! A base is a multiple of [`SPAN`], so two runs on different bases never
+//! share a port, and its block lies outside the kernel's ephemeral range
+//! (`/proc/sys/net/ipv4/ip_local_port_range`), so a socket bound to port 0,
+//! by this run or anything else on the machine, cannot take one of its ports
+//! (limit `live.port-base`). A listener the harness binds to port 0 itself
+//! (the TCP_NODELAY sample, the console-forms grid stub, the Ferrobot UDP
+//! relay's upstream socket) therefore stays ephemeral and cannot collide.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -57,6 +65,14 @@ pub(crate) enum Slot {
 }
 
 impl Slot {
+    /// Region ports carry UDP as well as HTTP (`InternalPort`).
+    fn carries_udp(self) -> bool {
+        matches!(
+            self,
+            Self::Home | Self::Neighbour | Self::StandalonePublic | Self::ConsolePublic
+        )
+    }
+
     fn from_offset(offset: u8) -> Option<Self> {
         Some(match offset {
             0 => Self::RobustPublic,
@@ -127,11 +143,16 @@ impl Plan {
     }
 
     pub(crate) fn from_raw(value: Option<&str>) -> Result<Self, String> {
+        Self::parse(value, ephemeral_range())
+    }
+
+    /// [`Plan::from_raw`] against a given ephemeral range (`None`: unknown).
+    fn parse(value: Option<&str>, ephemeral: Option<(u16, u16)>) -> Result<Self, String> {
         match value {
             None | Some("") => Ok(Self::unset()),
             Some(text) => {
                 let base: u16 = text.parse().map_err(|_| format!("{ENV} needs a port"))?;
-                validate_base(base)?;
+                validate_base(base, ephemeral)?;
                 Ok(Self { base: Some(base) })
             }
         }
@@ -157,12 +178,53 @@ impl Plan {
     }
 }
 
-fn validate_base(base: u16) -> Result<(), String> {
+const EPHEMERAL_RANGE: &str = "/proc/sys/net/ipv4/ip_local_port_range";
+
+/// The kernel's ephemeral port range, or `None` where it cannot be read
+/// (not Linux, or no `/proc`).
+fn ephemeral_range() -> Option<(u16, u16)> {
+    parse_ephemeral(&std::fs::read_to_string(EPHEMERAL_RANGE).ok()?)
+}
+
+fn parse_ephemeral(text: &str) -> Option<(u16, u16)> {
+    let mut fields = text.split_whitespace();
+    let low = fields.next()?.parse().ok()?;
+    let high = fields.next()?.parse().ok()?;
+    (fields.next().is_none() && low <= high).then_some((low, high))
+}
+
+fn validate_base(base: u16, ephemeral: Option<(u16, u16)>) -> Result<(), String> {
     if base < 1024 {
         return Err(format!("{ENV} {base} is below 1024"));
     }
-    if u32::from(base) + u32::from(SPAN) - 1 > u32::from(u16::MAX) {
-        return Err(format!("{ENV} {base} does not leave room for {SPAN} ports"));
+    // A multiple of SPAN is at most 65504, so its block ends by 65535: the
+    // alignment check below is also the room check.
+    let last = u32::from(base) + u32::from(SPAN) - 1;
+    if !base.is_multiple_of(SPAN) {
+        let below = base - base % SPAN;
+        return Err(format!(
+            "{ENV} {base} is not a multiple of {SPAN}, so its block can overlap another \
+             run's; use {below} or {}",
+            u32::from(below) + u32::from(SPAN)
+        ));
+    }
+    if let Some((low, high)) = ephemeral
+        && u32::from(base) <= u32::from(high)
+        && last >= u32::from(low)
+    {
+        ferroan_diag::refuse(
+            ferroan_diag::LIVE_PORT_BASE,
+            ferroan_diag::Kind::Hard,
+            u64::from(low),
+            u64::from(base),
+            "live port base",
+        );
+        return Err(format!(
+            "{ENV} {base} ({base}-{last}) overlaps the ephemeral range {low}-{high} in \
+             {EPHEMERAL_RANGE}, where any socket bound to port 0 can take one of its ports \
+             (limit {}); pick a multiple of {SPAN} outside it",
+            ferroan_diag::LIVE_PORT_BASE
+        ));
     }
     Ok(())
 }
@@ -217,7 +279,11 @@ pub(crate) fn grid_state_file() -> PathBuf {
 }
 
 pub(crate) fn alloc(slot: Slot) -> Result<u16, String> {
-    alloc_key(slot as u8, current().today_or_base(slot))
+    alloc_key(
+        slot as u8,
+        current().today_or_base(slot),
+        slot.carries_udp(),
+    )
 }
 
 pub(crate) fn alloc_dynamic() -> Result<u16, String> {
@@ -234,7 +300,7 @@ pub(crate) fn alloc_dynamic() -> Result<u16, String> {
         *next = key + 1;
         key
     };
-    alloc_key(key, None)
+    alloc_key(key, None, false)
 }
 
 pub(crate) fn alloc_grid(count: usize) -> Result<Vec<u16>, String> {
@@ -278,20 +344,20 @@ pub(crate) fn assigned(slot: Slot) -> Option<u16> {
         .map(|(_, port)| *port)
 }
 
-fn alloc_key(key: u8, today: Option<u16>) -> Result<u16, String> {
+fn alloc_key(key: u8, today: Option<u16>, udp: bool) -> Result<u16, String> {
     let mut assigned = ASSIGNED.lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some((_, port)) = assigned.iter().find(|(have, _)| *have == key) {
         return Ok(*port);
     }
     let port = if let Some(base) = current().base {
         let port = base + u16::from(key);
-        ensure_free(port)?;
+        ensure_free(port, udp)?;
         port
     } else if let Some(port) = today {
-        ensure_free(port)?;
+        ensure_free(port, udp)?;
         port
     } else {
-        ephemeral(&assigned)?
+        ephemeral(&assigned, udp, os_port)?
     };
     if assigned.iter().any(|(_, have)| *have == port) {
         return Err(format!("port {port} was already allocated for this run"));
@@ -300,30 +366,54 @@ fn alloc_key(key: u8, today: Option<u16>) -> Result<u16, String> {
     Ok(port)
 }
 
-fn ephemeral(assigned: &[(u8, u16)]) -> Result<u16, String> {
+/// A TCP port the OS hands out for port 0.
+fn os_port() -> Result<u16, String> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| format!("could not bind a local port: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("could not read a local port: {error}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+/// A port from `probe` that this run has not taken. A region slot (`udp`)
+/// also skips a port whose UDP side is in use, as a based run checks it.
+fn ephemeral(
+    assigned: &[(u8, u16)],
+    udp: bool,
+    mut probe: impl FnMut() -> Result<u16, String>,
+) -> Result<u16, String> {
     for _ in 0..16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("could not bind a local port: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("could not read a local port: {error}"))?
-            .port();
-        drop(listener);
-        if !assigned.iter().any(|(_, have)| *have == port) {
-            return Ok(port);
+        let port = probe()?;
+        if assigned.iter().any(|(_, have)| *have == port) {
+            continue;
         }
+        if udp && ensure_udp_free(port).is_err() {
+            continue;
+        }
+        return Ok(port);
     }
     Err("could not allocate a local port".to_string())
 }
 
-fn ensure_free(port: u16) -> Result<(), String> {
-    match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
-        Ok(listener) => {
-            drop(listener);
-            Ok(())
-        }
-        Err(error) => Err(format!("127.0.0.1:{port} is already in use ({error})")),
+/// TCP is always checked. A region slot also needs the UDP port.
+fn ensure_free(port: u16, udp: bool) -> Result<(), String> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        .map_err(|error| format!("127.0.0.1:{port} is already in use ({error})"))?;
+    if udp {
+        ensure_udp_free(port)?;
     }
+    drop(listener);
+    Ok(())
+}
+
+fn ensure_udp_free(port: u16) -> Result<(), String> {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
+        .map_err(|error| format!("UDP 127.0.0.1:{port} is already in use ({error})"))?;
+    drop(socket);
+    Ok(())
 }
 
 /// Actual listener to the canonical fixture port. Compares stay byte-strict
@@ -606,18 +696,90 @@ mod tests {
         assert_eq!(unset.port_of(Slot::Home), None);
         assert_eq!(unset.today_or_base(Slot::Home), None);
         assert_eq!(unset.today_or_base(Slot::PublicProxy), None);
-        let based = Plan::from_raw(Some("25000")).unwrap();
-        assert_eq!(based.port_of(Slot::Home), Some(25004));
-        assert_eq!(based.port_of(Slot::Neighbour), Some(25005));
-        assert_eq!(based.port_of(Slot::PublicProxy), Some(25002));
-        assert_eq!(based.port_of(Slot::PrivateProxy), Some(25003));
-        assert_eq!(based.port_of(Slot::Loki), Some(25014));
+        let based = Plan::parse(Some("25024"), None).unwrap();
+        assert_eq!(based.port_of(Slot::Home), Some(25028));
+        assert_eq!(based.port_of(Slot::Neighbour), Some(25029));
+        assert_eq!(based.port_of(Slot::PublicProxy), Some(25026));
+        assert_eq!(based.port_of(Slot::PrivateProxy), Some(25027));
+        assert_eq!(based.port_of(Slot::Loki), Some(25038));
         assert_ne!(based.port_of(Slot::Loki), Some(CANONICAL_LOKI));
         assert_ne!(based.port_of(Slot::OtelHttp), Some(CANONICAL_OTEL_HTTP));
         assert!(Plan::from_raw(Some("80")).is_err());
-        assert!(Plan::from_raw(Some("65505")).is_err());
+        // 65505 is refused for alignment; the last aligned base, 65504,
+        // ends its block at 65535.
+        let error = Plan::parse(Some("65505"), None).unwrap_err();
+        assert!(error.contains("not a multiple of 32"), "{error}");
+        assert!(Plan::parse(Some("65504"), None).is_ok());
         assert!(Plan::from_raw(Some("nope")).is_err());
+        assert!(
+            Plan::parse(Some("25000"), None).is_err(),
+            "not a multiple of 32"
+        );
+        assert!(Plan::parse(Some("25024"), None).is_ok());
         assert_eq!(Plan::from_raw(None).unwrap(), Plan::unset());
+    }
+
+    #[test]
+    fn a_base_in_the_ephemeral_range_is_refused() {
+        let linux = Some((32_768, 60_999));
+        assert_eq!(parse_ephemeral("32768\t60999\n"), Some((32_768, 60_999)));
+        assert_eq!(parse_ephemeral("1024 65535"), Some((1_024, 65_535)));
+        assert_eq!(parse_ephemeral("60999 32768"), None);
+        assert_eq!(parse_ephemeral("32768"), None);
+        // The last block below the range and the first above it.
+        assert!(validate_base(32_736, linux).is_ok());
+        assert!(validate_base(61_024, linux).is_ok());
+        for inside in [32_768, 40_000 - 40_000 % SPAN, 60_992] {
+            let error = validate_base(inside, linux).unwrap_err();
+            assert!(error.contains("live.port-base"), "{error}");
+            assert!(error.contains("32768-60999"), "{error}");
+        }
+        // A block that only reaches into the range at its top.
+        let high_start = Some((32_770, 60_999));
+        assert!(validate_base(32_736, high_start).is_ok());
+        assert!(validate_base(32_768, high_start).is_err());
+        let low_end = Some((10_000, 32_740));
+        assert!(validate_base(32_736, low_end).is_err());
+        assert!(validate_base(32_736, None).is_ok());
+        // The live harness and region compare bases stay valid on Linux.
+        for base in [22_016, 22_048, 25_024] {
+            assert!(validate_base(base, linux).is_ok(), "{base}");
+        }
+    }
+
+    #[test]
+    fn a_base_off_the_span_is_refused_with_the_neighbours() {
+        let error = validate_base(25_000, None).unwrap_err();
+        assert!(
+            error.contains("24992") && error.contains("25024"),
+            "{error}"
+        );
+        assert!(validate_base(1_024, None).is_ok());
+    }
+
+    #[test]
+    fn a_region_slot_checks_its_udp_port() {
+        assert!(Slot::Home.carries_udp());
+        assert!(Slot::Neighbour.carries_udp());
+        assert!(Slot::StandalonePublic.carries_udp());
+        assert!(Slot::ConsolePublic.carries_udp());
+        assert!(!Slot::RobustPublic.carries_udp());
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        // The TCP half of `ensure_free` is the same bind with TCP; other
+        // tests may take that number meanwhile, so only the UDP half is held.
+        let error = ensure_udp_free(port).unwrap_err();
+        assert!(error.contains("UDP"), "{error}");
+        // With no base, a region slot skips that port and takes the next.
+        let free = os_port().unwrap();
+        let mut offered = [port, free].into_iter();
+        let chosen = ephemeral(&[], true, || Ok(offered.next().unwrap())).unwrap();
+        assert_eq!(chosen, free);
+        // A TCP-only slot keeps the first port.
+        let mut offered = [port, free].into_iter();
+        let chosen = ephemeral(&[], false, || Ok(offered.next().unwrap())).unwrap();
+        assert_eq!(chosen, port);
+        drop(socket);
     }
 
     #[test]
@@ -674,21 +836,21 @@ mod tests {
         let source = include_str!("../../deploy/monitoring/collector/loki.yaml");
         assert_eq!(rewrite_collector(source, Plan::unset()), source);
         assert!(loki_server_args(Plan::unset()).is_empty());
-        let based = Plan::from_raw(Some("25000")).unwrap();
+        let based = Plan::parse(Some("25024"), None).unwrap();
         let rewritten = rewrite_collector(source, based);
         assert!(!rewritten.contains(":3100"));
         assert!(!rewritten.contains(":4317"));
         assert!(!rewritten.contains(":4318"));
-        assert!(rewritten.contains("127.0.0.1:25014"));
-        assert!(rewritten.contains("127.0.0.1:25016"));
-        assert!(rewritten.contains("127.0.0.1:25017"));
+        assert!(rewritten.contains("127.0.0.1:25038"));
+        assert!(rewritten.contains("127.0.0.1:25040"));
+        assert!(rewritten.contains("127.0.0.1:25041"));
         let args = loki_server_args(based);
         assert_eq!(
             args,
             vec![
                 "-config.file=/etc/loki/local-config.yaml".to_string(),
-                "-server.http-listen-port=25014".to_string(),
-                "-server.grpc-listen-port=25015".to_string(),
+                "-server.http-listen-port=25038".to_string(),
+                "-server.grpc-listen-port=25039".to_string(),
             ]
         );
     }

@@ -235,6 +235,10 @@ async fn check_plugin(store: &XAssetStore) {
     assert!(store.get(xid(8)).await.expect("missing").is_none());
 
     store.wipe().await.expect("wipe");
+    if backend == Backend::Mysql {
+        mysql_racing_stores(store).await;
+        return;
+    }
     let shared = b"same-bytes-qr2".to_vec();
     for n in 0..8 {
         let mut left = sample(xid(30 + n * 2), "left", 1);
@@ -262,6 +266,110 @@ async fn check_plugin(store: &XAssetStore) {
         assert_eq!(right.data, shared);
     }
     assert_eq!(store.data_rows().await.expect("data"), 1);
+}
+
+/// Hold the first store's writes in an outer transaction until the second
+/// store reaches its insert on the uncommitted hash. Both execute the plugin
+/// code. The observer filters by connection id, so an unrelated insert cannot
+/// release the writer. No PROCESS grant is needed to see our own connections.
+async fn mysql_racing_stores(store: &XAssetStore) {
+    use std::time::Duration;
+
+    let pool = store.pool().mysql().expect("mysql");
+    let mut first = sample(Uuid::new_v4(), "first writer", 1);
+    first.data = Uuid::new_v4().as_bytes().to_vec();
+    let mut second = sample(Uuid::new_v4(), "second writer", 1);
+    second.data.clone_from(&first.data);
+
+    let mut held = pool.begin().await.expect("hold first commit");
+    super::super::xmysql::store(&mut held, &first)
+        .await
+        .expect("first store");
+    let mut writer = pool.acquire().await.expect("second connection");
+    let id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+        .fetch_one(&mut *writer)
+        .await
+        .expect("writer id");
+    let release = async {
+        wait_for_data_insert(pool, Some(id)).await;
+        held.commit().await.expect("release first commit");
+    };
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let (result, ()) = tokio::join!(super::super::xmysql::store(&mut writer, &second), release);
+        result.expect("second store");
+    })
+    .await
+    .expect("second writer must reach its insert before the first commit");
+
+    for asset in [&first, &second] {
+        let loaded = store
+            .get(asset.id)
+            .await
+            .expect("read")
+            .expect("racing id survived");
+        assert_eq!(loaded.data, asset.data);
+        assert_eq!(loaded.name, asset.name);
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM XAssetsData WHERE Hash = ?")
+        .bind(super::content_hash(&first.data).as_slice())
+        .fetch_one(pool)
+        .await
+        .expect("data count");
+    assert_eq!(rows, 1);
+}
+
+// Each cross-read owns its scratch database. The external C# writer uses a
+// fresh connection whose id the oracle does not expose.
+async fn wait_for_data_insert(pool: &sqlx::MySqlPool, writer_id: Option<u64>) {
+    loop {
+        let inserting: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = DATABASE() \
+             AND ID = COALESCE(?, ID) AND INFO LIKE 'INSERT%INTO XAssetsData%'",
+        )
+        .bind(writer_id)
+        .fetch_one(pool)
+        .await
+        .expect("observe second insert");
+        if inserting == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_xasset_store_with_select_insert_on_data() {
+    let Some(store) = open_url("FERROAN_XASSET_LIMITED_MYSQL_URL", "restricted MySQL").await else {
+        return;
+    };
+    let _guard = XASSET_MYSQL.lock().await;
+    let pool = store.pool().mysql().expect("mysql");
+    let error = sqlx::query("UPDATE XAssetsData SET Data = Data WHERE 1 = 0")
+        .execute(pool)
+        .await
+        .expect_err("the data table must deny UPDATE");
+    assert_eq!(
+        error
+            .as_database_error()
+            .expect("database error")
+            .downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+            .number(),
+        1142
+    );
+    let mut fresh = sample(Uuid::new_v4(), "limited writer", 1);
+    fresh.data = Uuid::new_v4().as_bytes().to_vec();
+    store.store(&fresh).await.expect("store new bytes");
+    assert_eq!(
+        store
+            .get(fresh.id)
+            .await
+            .expect("read")
+            .expect("fresh row")
+            .data,
+        fresh.data
+    );
+    mysql_racing_stores(&store).await;
+    store.close().await;
 }
 
 async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) {
@@ -386,7 +494,49 @@ async fn cross_one(store: &XAssetStore, oracle: &str, backend: &str, ado: &str) 
     assert!(after.get(id).await.expect("get").is_none());
     assert!(after.get(other).await.expect("get").is_some());
     assert_eq!(after.data_rows().await.expect("data"), 1);
+    if store.backend() == Backend::Mysql {
+        mysql_pin8_race(store, oracle, ado).await;
+    }
     after.close().await;
+}
+
+/// Observe TB58 through the pinned plugin on the same interleaving as the
+/// Rust store test. The oracle's put returns normally even if its id is lost.
+async fn mysql_pin8_race(store: &XAssetStore, oracle: &str, ado: &str) {
+    let pool = store.pool().mysql().expect("mysql");
+    let mut first = sample(Uuid::new_v4(), "first writer", 1);
+    first.data = Uuid::new_v4().as_bytes().to_vec();
+    let second_id = Uuid::new_v4();
+    let mut held = pool.begin().await.expect("hold first commit");
+    super::super::xmysql::store(&mut held, &first)
+        .await
+        .expect("first store");
+    let body = serde_json::json!({
+        "id": second_id.to_string(), "name": "second writer", "description": "",
+        "type": 1, "flags": 0, "local": false, "temporary": false, "creator": "", "data": first.data,
+    });
+    let (dll, connection) = (oracle.to_owned(), ado.to_owned());
+    let put = tokio::task::spawn_blocking(move || csharp(&dll, "mysql", &connection, "put", body));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        wait_for_data_insert(pool, None),
+    )
+    .await
+    .expect("C# writer reached the data insert");
+    held.commit().await.expect("release first commit");
+    assert_eq!(put.await.expect("oracle")["stored"], true);
+    let observed = csharp(
+        oracle,
+        "mysql",
+        ado,
+        "exists",
+        serde_json::json!({ "ids": [first.id.to_string(), second_id.to_string()] }),
+    );
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/asset/pin8-xasset-race.json"
+    ))
+    .expect("Pin8 race fixture");
+    assert_eq!(observed, expected, "TB58: recapture on a pin move");
 }
 
 fn sample(id: Uuid, name: &str, flags: i32) -> Asset {

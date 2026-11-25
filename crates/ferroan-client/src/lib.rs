@@ -34,7 +34,9 @@ pub use circuit::{
     LoginPose, LoginScene, MAX_NAME_REPLIES, RootArrival, SceneAnswer, SceneCall, SceneDeparture,
     SceneMove, SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
-pub use entity_feed::{AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, kill_packets};
+pub use entity_feed::{
+    AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,
+};
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
 pub use names::{

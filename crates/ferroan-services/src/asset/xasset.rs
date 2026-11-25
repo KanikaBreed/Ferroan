@@ -105,7 +105,9 @@ impl XAssetStore {
     /// stored.
     pub async fn store(&self, asset: &Asset) -> Result<(), StoreError> {
         match self.backend() {
-            Backend::Mysql => super::xmysql::store(self.mysql()?, asset).await,
+            Backend::Mysql => {
+                super::xmysql::store(&mut *self.mysql()?.acquire().await?, asset).await
+            }
             Backend::Postgres => super::xpostgres::store(self.postgres()?, asset).await,
             Backend::Sqlite => Err(StoreError::Backend("sqlite")),
         }

@@ -3,12 +3,16 @@
 
 //! Replace identity fields before a capture is committed.
 //!
-//! A packet the server sent is refused when `reencode_datagram` does not
-//! reproduce the stored bytes. A packet the client sent may differ in packed
-//! quaternion components, within the packing tolerance, and nowhere else.
-//! That check has to pass on the raw file, before redaction. The redacted
-//! datagram is then `scrub_datagram` of those bytes, so the committed file
-//! still round-trips and no longer carries the session.
+//! A packet the server sent is refused when `reencode_datagram_keeping_quats`
+//! does not reproduce the stored bytes. That re-encode keeps each packed
+//! quaternion's x, y and z: C# `ToBytes` output read back and packed again is
+//! not always the same bytes, so a valid C# packet cannot fail on its
+//! quaternions. A packet the client sent may differ in packed quaternion
+//! components, within the packing tolerance, and nowhere else, and its
+//! zero-coding must be canonical. That check has to pass on the raw file,
+//! before redaction. The redacted datagram is then `scrub_datagram` of those
+//! bytes, which also keeps quaternion bytes, so the committed file still
+//! round-trips and no longer carries the session.
 //!
 //! One name stays: a `UUIDNameReply` block that names its own id `Unknown`
 //! and the id, which is what C# sends for an id no grid service knows (TB89).
@@ -18,7 +22,7 @@ use ferroan_protocol::msgs::UUIDNameReply;
 use ferroan_protocol::packet::build_raw;
 use ferroan_protocol::{
     Msg, PacketFlags, Writer, client_datagram_within_quat_packing, message_info, parse_packet,
-    reencode_datagram, scrub_datagram, str_field,
+    reencode_datagram, reencode_datagram_keeping_quats, scrub_datagram, str_field,
 };
 use std::path::{Path, PathBuf};
 
@@ -79,7 +83,12 @@ pub fn udp_mismatch(records: &[Record]) -> Option<UdpMismatch> {
         }
         let direction = kind_name(record.kind);
         let message = message_name(&record.bytes);
-        match reencode_datagram(&record.bytes) {
+        let again = if record.kind == Kind::UdpOut {
+            reencode_datagram_keeping_quats(&record.bytes)
+        } else {
+            reencode_datagram(&record.bytes)
+        };
+        match again {
             Ok(again) if again == record.bytes => {}
             Ok(_)
                 if record.kind == Kind::UdpIn
@@ -706,7 +715,7 @@ Content-Type: text/xml\r\n\
     }
 
     #[test]
-    fn a_ferrobot_agent_update_is_field_checked_and_a_server_copy_stays_exact() {
+    fn a_ferrobot_agent_update_is_field_checked_and_a_server_copy_keeps_its_quaternions() {
         let datagram = ferrobot_agent_update();
         assert_ne!(reencode_datagram(&datagram).unwrap(), datagram);
         let client = vec![Record {
@@ -717,29 +726,132 @@ Content-Type: text/xml\r\n\
         check_udp(&client).unwrap();
         let redacted = redact_records(&client).unwrap();
         check_udp(&redacted).unwrap();
+        // Redaction changes identities only: the quaternion bytes stay.
+        let before = parse_packet(&datagram).unwrap().body;
+        let after = parse_packet(&redacted[0].bytes).unwrap().body;
+        assert_eq!(after[32..56], before[32..56]);
+        // The same bytes as a server packet: the rescale that differs is
+        // packing, not layout, so the check keeps x, y, z and passes.
         let server = vec![Record {
             kind: Kind::UdpOut,
             time_ms: 41,
             bytes: datagram.clone(),
         }];
-        let mismatch = udp_mismatch(&server).unwrap();
-        assert_eq!(mismatch.direction, "udp out");
-        assert_eq!(mismatch.message, "AgentUpdate");
-        assert_eq!(mismatch.detail, "the encoded bytes differ");
-        let error = check_udp(&server).unwrap_err().to_string();
-        assert!(error.contains("udp out"), "{error}");
+        assert!(udp_mismatch(&server).is_none());
+        check_udp(&server).unwrap();
+        // Everything outside the quaternions still has to match: a trailing
+        // byte fails in both directions.
         let mut torn = datagram.clone();
         torn.push(0xab);
-        let torn_records = vec![Record {
-            kind: Kind::UdpIn,
+        for kind in [Kind::UdpIn, Kind::UdpOut] {
+            let torn_records = vec![Record {
+                kind,
+                time_ms: 42,
+                bytes: torn.clone(),
+            }];
+            assert!(check_udp(&torn_records).is_err(), "{kind:?}");
+        }
+        let server = vec![Record {
+            kind: Kind::UdpOut,
             time_ms: 42,
             bytes: torn,
         }];
-        assert!(check_udp(&torn_records).is_err());
+        let mismatch = udp_mismatch(&server).unwrap();
+        assert_eq!(mismatch.direction, "udp out");
+        assert_eq!(mismatch.message, "AgentUpdate");
+    }
+
+    #[test]
+    fn every_openmetaverse_tobytes_quaternion_survives_the_server_check() {
+        // ToBytes output from the oracle batch, each in an AgentUpdate's
+        // BodyRotation and HeadRotation, as a server packet.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/oracle/bytes/quaternion-batch.bin");
+        let file = std::fs::read(path).unwrap();
+        let base = ferrobot_agent_update_body();
+        let mut repacked = 0;
+        for record in file.as_chunks::<40>().0 {
+            let mut body = base.clone();
+            body[1 + 32..1 + 44].copy_from_slice(&record[16..28]);
+            body[1 + 44..1 + 56].copy_from_slice(&record[16..28]);
+            let datagram = frame_agent_update(&body);
+            if reencode_datagram(&datagram).unwrap() != datagram {
+                repacked += 1;
+            }
+            let server = vec![Record {
+                kind: Kind::UdpOut,
+                time_ms: 44,
+                bytes: datagram,
+            }];
+            assert!(udp_mismatch(&server).is_none());
+        }
+        assert!(repacked > 0, "packing again changes some C# quaternions");
+    }
+
+    #[test]
+    fn a_client_datagram_with_non_canonical_zero_coding_is_refused() {
+        let datagram = ferrobot_agent_update();
+        assert_ne!(datagram[0] & packet::PacketFlags::ZEROCODED, 0);
+        assert!(ferroan_protocol::client_datagram_within_quat_packing(&datagram).unwrap());
+        // Split the first zero run of two or more into two runs. It decodes
+        // to the same body; C# never writes it.
+        let mut split = datagram[..6].to_vec();
+        let mut index = 6;
+        let mut done = false;
+        while index < datagram.len() {
+            let byte = datagram[index];
+            if byte == 0 && !done && index + 1 < datagram.len() && datagram[index + 1] >= 2 {
+                split.extend_from_slice(&[0, 1, 0, datagram[index + 1] - 1]);
+                index += 2;
+                done = true;
+                continue;
+            }
+            if byte == 0 {
+                split.extend_from_slice(&datagram[index..index + 2]);
+                index += 2;
+                continue;
+            }
+            split.push(byte);
+            index += 1;
+        }
+        assert!(done);
+        assert_eq!(
+            parse_packet(&split).unwrap().body,
+            parse_packet(&datagram).unwrap().body
+        );
+        assert!(!ferroan_protocol::client_datagram_within_quat_packing(&split).unwrap());
+        let records = vec![Record {
+            kind: Kind::UdpIn,
+            time_ms: 43,
+            bytes: split,
+        }];
+        assert!(check_udp(&records).is_err());
     }
 
     /// Ferrobot writes glam's normalize, then the sign-flipped x, y, z.
     fn ferrobot_agent_update() -> Vec<u8> {
+        frame_agent_update(&ferrobot_agent_update_body())
+    }
+
+    fn frame_agent_update(payload: &[u8]) -> Vec<u8> {
+        use ferroan_protocol::Msg;
+        use ferroan_protocol::msgs::AgentUpdate;
+
+        let mut datagram = Vec::new();
+        packet::build_raw(
+            payload,
+            AgentUpdate::ZEROCODED,
+            40,
+            false,
+            false,
+            &[],
+            &mut datagram,
+        );
+        datagram
+    }
+
+    /// Message number and body, before framing.
+    fn ferrobot_agent_update_body() -> Vec<u8> {
         use ferroan_protocol::Msg;
         use ferroan_protocol::msgs::AgentUpdate;
         use glam::Quat;
@@ -772,17 +884,7 @@ Content-Type: text/xml\r\n\
             .collect::<Vec<_>>();
         payload[1 + 32..1 + 44].copy_from_slice(&packed);
         payload[1 + 44..1 + 56].copy_from_slice(&packed);
-        let mut datagram = Vec::new();
-        packet::build_raw(
-            &payload,
-            AgentUpdate::ZEROCODED,
-            40,
-            false,
-            false,
-            &[],
-            &mut datagram,
-        );
-        datagram
+        payload
     }
 
     fn ferrobot_quat(q: glam::Quat) -> [f32; 3] {

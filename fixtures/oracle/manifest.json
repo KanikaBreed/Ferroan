@@ -2419,6 +2419,22 @@
       }
     },
     {
+      "id": "bytes/quaternion-batch",
+      "family": "bytes",
+      "format": "quaternion-batch",
+      "file": "bytes/quaternion-batch.bin",
+      "params": {
+        "seed": "5155415442415443",
+        "record": "x y z w (f32 LE), ToBytes (12), GetBytes (12)",
+        "machine": "x86-64 Sse41.DotProduct"
+      },
+      "round_trip": true,
+      "decoded": {
+        "type": "quaternion-batch",
+        "count": 4096
+      }
+    },
+    {
       "id": "bytes/color4",
       "family": "bytes",
       "format": "color4",

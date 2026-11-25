@@ -14,7 +14,8 @@ use std::time::Duration;
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_protocol::Msg;
 use ferroan_protocol::msgs::{
-    AvatarAppearance, ObjectUpdate, UUIDNameReply, UUIDNameRequest, uuid_name_request,
+    AvatarAppearance, CoarseLocationUpdate, ObjectUpdate, UUIDNameReply, UUIDNameRequest,
+    uuid_name_request,
 };
 use glam::Vec3;
 use uuid::Uuid;
@@ -574,7 +575,7 @@ async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     ))
 }
 
-/// What one bot has seen of the other avatar.
+/// What one bot has seen of the other avatar, of its own, and on its minimap.
 #[derive(Debug, Default)]
 struct OtherAvatar {
     /// The local id of the other avatar's full `ObjectUpdate`.
@@ -584,17 +585,45 @@ struct OtherAvatar {
     killed: Vec<u32>,
     /// Every `UUIDNameReply` block: the id, then the first and last name.
     names: Vec<(Uuid, String, String)>,
+    /// The other avatar's position in its latest full or terse update.
+    position: Option<Vec3>,
+    own_local_id: Option<u32>,
+    /// This bot's own position in its latest full or terse update.
+    own_position: Option<Vec3>,
+    /// The latest `CoarseLocationUpdate`.
+    coarse: Option<CoarseLocationUpdate>,
+    /// The other avatar's minimap cells, X and Y, each change in order.
+    other_cells: Vec<(u8, u8)>,
+    /// This bot's own minimap cells, the same way.
+    own_cells: Vec<(u8, u8)>,
+    /// The first malformed minimap update.
+    coarse_error: Option<String>,
 }
 
 impl OtherAvatar {
     fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
+        let me = session.agent().agent_id;
         while let Some(packet) = session.poll_inbox() {
             if world::chat_heard(&packet).is_some() {
                 return Err("the region sent ChatFromSimulator".to_string());
             }
             for object in world::objects_in(&packet) {
-                if object.full_id == other && object.pcode == world::PCODE_AVATAR {
+                if object.pcode != world::PCODE_AVATAR {
+                    continue;
+                }
+                if object.full_id == other {
                     self.local_id = Some(object.local_id);
+                    self.position = Some(Vec3::from(object.position));
+                } else if object.full_id == me {
+                    self.own_local_id = Some(object.local_id);
+                    self.own_position = Some(Vec3::from(object.position));
+                }
+            }
+            for (local_id, _, position) in world::terse_in(&packet) {
+                if Some(local_id) == self.local_id {
+                    self.position = Some(position);
+                } else if Some(local_id) == self.own_local_id {
+                    self.own_position = Some(position);
                 }
             }
             if packet.id == AvatarAppearance::ID
@@ -621,6 +650,76 @@ impl OtherAvatar {
                 }
             }
         }
+        for coarse in session.take_coarse() {
+            self.note_coarse(me, other, coarse);
+        }
+        Ok(())
+    }
+
+    /// `SendCoarseLocationUpdate`: one location per listed agent, this bot's
+    /// own index in `You` when it is listed, and `Prey` -1.
+    fn note_coarse(&mut self, me: Uuid, other: Uuid, coarse: CoarseLocationUpdate) {
+        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
+        let you = agents
+            .iter()
+            .position(|agent| *agent == me)
+            .map_or(-1, |index| index as i16);
+        if self.coarse_error.is_none() {
+            if coarse.location.len() != agents.len() {
+                self.coarse_error = Some(format!(
+                    "a minimap update lists {} locations for {} agents",
+                    coarse.location.len(),
+                    agents.len()
+                ));
+            } else if coarse.index.you != you || coarse.index.prey != -1 {
+                self.coarse_error = Some(format!(
+                    "a minimap update has You {} and Prey {} for index {you}",
+                    coarse.index.you, coarse.index.prey
+                ));
+            }
+        }
+        for (agent, cells) in [(other, &mut self.other_cells), (me, &mut self.own_cells)] {
+            if let Some(index) = agents.iter().position(|listed| *listed == agent)
+                && let Some(location) = coarse.location.get(index)
+            {
+                let cell = (location.x, location.y);
+                if cells.last() != Some(&cell) {
+                    cells.push(cell);
+                }
+            }
+        }
+        self.coarse = Some(coarse);
+    }
+
+    /// The latest minimap update lists exactly `expected`, each at the cell of
+    /// the position this bot last saw for it.
+    fn dots_match(&self, me: Uuid, other: Uuid, expected: &[Uuid]) -> Result<(), String> {
+        if let Some(error) = &self.coarse_error {
+            return Err(error.clone());
+        }
+        let coarse = self.coarse.as_ref().ok_or("no minimap update")?;
+        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
+        if agents.len() != expected.len() || expected.iter().any(|agent| !agents.contains(agent)) {
+            return Err(format!("the minimap lists {} agent(s)", agents.len()));
+        }
+        for (index, agent) in agents.iter().enumerate() {
+            let seen = if *agent == me {
+                self.own_position
+            } else if *agent == other {
+                self.position
+            } else {
+                None
+            };
+            let seen = seen.ok_or("no position for a listed agent")?;
+            let location = &coarse.location[index];
+            let got = [location.x, location.y, location.z];
+            if !coarse_cell_near(got, seen) {
+                return Err(format!(
+                    "a minimap dot is at {},{},{} for an avatar seen at {:.2},{:.2},{:.2}",
+                    got[0], got[1], got[2], seen.x, seen.y, seen.z
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -644,8 +743,12 @@ impl OtherAvatar {
 
 /// Both harness accounts in the region together. Each bot gets the other's
 /// full avatar `ObjectUpdate` and `AvatarAppearance`: the one already there
-/// when the other arrives, the newcomer once its initial data is sent. When
-/// the second bot leaves, the first gets `KillObject` for the local id it saw.
+/// when the other arrives, the newcomer once its initial data is sent. Then
+/// the second bot walks east and stops: on both minimaps
+/// (`CoarseLocationUpdate`) its dot follows, and each dot ends at the cell of
+/// the position that bot last saw. When the second bot leaves, the first
+/// gets `KillObject` for the local id it saw, and its minimap lists only
+/// itself.
 async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
     let owner_id = harness.owner.principal_id;
     let chat_id = harness.chat.principal_id;
@@ -691,6 +794,26 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
             "the bots did not see each other (owner saw {owner_saw:?}, second bot saw {chat_saw:?})"
         ));
     }
+    let walked = walk_east(&mut chat, &mut chat_saw, &mut owner, &mut owner_saw).await;
+    let dots = walked.and_then(|start| {
+        owner_saw.dots_match(owner_id, chat_id, &[owner_id, chat_id])?;
+        chat_saw.dots_match(chat_id, owner_id, &[owner_id, chat_id])?;
+        let from = (start.x as i32) as u8;
+        let walked_to = |cells: &[(u8, u8)]| cells.last().map(|(x, _)| *x);
+        let far = |cell: Option<u8>| cell.is_some_and(|x| x >= from.saturating_add(2));
+        if !far(walked_to(&owner_saw.other_cells)) || !far(walked_to(&chat_saw.own_cells)) {
+            return Err(format!(
+                "the walking bot's dot did not follow it east of cell {from} (owner saw cells {:?}, second bot saw its own at {:?})",
+                owner_saw.other_cells, chat_saw.own_cells
+            ));
+        }
+        Ok(())
+    });
+    if let Err(error) = dots {
+        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err(format!("minimap: {error}"));
+    }
     let named = exchange_names(
         harness,
         (&mut owner, &mut owner_saw),
@@ -719,12 +842,16 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
         let _ = leave(harness, &mut owner, &harness.owner).await;
         return Err(error);
     }
+    let alone = |seen: &OtherAvatar| seen.dots_match(owner_id, chat_id, &[owner_id]).is_ok();
+    // A list sent before the departure may still arrive after the kill.
+    owner_saw.coarse = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !owner_saw.saw_kill() && std::time::Instant::now() < deadline {
+    while !(owner_saw.saw_kill() && alone(&owner_saw)) && std::time::Instant::now() < deadline {
         owner.drive(STEP).await.map_err(|error| error.to_string())?;
         owner_saw.note(&mut owner, chat_id)?;
     }
     let killed = owner_saw.saw_kill();
+    let dots = owner_saw.dots_match(owner_id, chat_id, &[owner_id]);
     leave(harness, &mut owner, &harness.owner).await?;
     if !killed {
         return Err(format!(
@@ -732,10 +859,107 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
             owner_saw.local_id
         ));
     }
-    Ok(
-        "avatars: pass (each bot saw the other's local id and appearance and got its name; the unknown id was answered only from the cached miss; KillObject on leave)"
-            .to_string(),
-    )
+    if let Err(error) = dots {
+        return Err(format!("minimap after the second bot left: {error}"));
+    }
+    let cells = |cells: &[(u8, u8)]| {
+        cells
+            .iter()
+            .map(|(x, y)| format!("{x},{y}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Ok(format!(
+        "avatars: pass (each bot saw the other's local id, appearance and minimap dot and got its name; the unknown id was answered only from the cached miss; the dot followed a walk; KillObject and no dot on leave)\nminimap: the owner saw the second bot's dot at {}",
+        cells(&owner_saw.other_cells)
+    ))
+}
+
+/// The walking bot goes east under forward control until it is 2.5 m from
+/// where it stood, or eight seconds pass, then stops. After a second at rest
+/// both bots wait for their next minimap update, which the region sends
+/// every 50 frames (about 4.5 s). Both circuits are driven throughout.
+/// Returns where the walk started.
+async fn walk_east(
+    walker: &mut Session,
+    walker_saw: &mut OtherAvatar,
+    watcher: &mut Session,
+    watcher_saw: &mut OtherAvatar,
+) -> Result<Vec3, String> {
+    let walker_id = walker.agent().agent_id;
+    let watcher_id = watcher.agent().agent_id;
+    let start = walker_saw
+        .own_position
+        .ok_or("the walking bot has not seen its own avatar")?;
+    let facing = glam::Quat::IDENTITY;
+    let mut latest = start;
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while std::time::Instant::now() < deadline && latest.x - start.x < 2.5 {
+        let update = world::agent_update(walker.agent(), latest, facing, world::CONTROL_AT_POS);
+        walker
+            .send(&update, false)
+            .await
+            .map_err(|error| error.to_string())?;
+        walker
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        watcher
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        walker_saw.note(walker, watcher_id)?;
+        watcher_saw.note(watcher, walker_id)?;
+        latest = walker_saw.own_position.unwrap_or(latest);
+    }
+    if latest.x - start.x < 2.5 {
+        return Err(format!(
+            "the walking bot stayed near {:.1},{:.1} under forward control",
+            latest.x, latest.y
+        ));
+    }
+    let stopped = std::time::Instant::now();
+    let settle = stopped + Duration::from_secs(1);
+    let deadline = stopped + Duration::from_secs(12);
+    let mut fresh = false;
+    while std::time::Instant::now() < deadline {
+        if !fresh && std::time::Instant::now() >= settle {
+            // Only a list made after the walker stopped counts.
+            walker_saw.coarse = None;
+            watcher_saw.coarse = None;
+            fresh = true;
+        }
+        if fresh && walker_saw.coarse.is_some() && watcher_saw.coarse.is_some() {
+            break;
+        }
+        // `AgentUpdate` is unreliable: repeat the stop as a viewer does.
+        let stop = world::agent_update(walker.agent(), latest, facing, 0);
+        walker
+            .send(&stop, false)
+            .await
+            .map_err(|error| error.to_string())?;
+        walker
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        watcher
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        walker_saw.note(walker, watcher_id)?;
+        watcher_saw.note(watcher, walker_id)?;
+        latest = walker_saw.own_position.unwrap_or(latest);
+    }
+    Ok(start)
+}
+
+/// `SendCoarseLocationUpdate`'s cell for `position`: X and Y as bytes, Z
+/// divided by four. Up to 0.1 m either way is allowed, because an update
+/// below the terse thresholds is not sent.
+fn coarse_cell_near(cell: [u8; 3], position: Vec3) -> bool {
+    let byte = |value: f32| (value as i32) as u8;
+    let near = |got: u8, value: f32| got == byte(value - 0.1) || got == byte(value + 0.1);
+    near(cell[0], position.x) && near(cell[1], position.y) && near(cell[2], position.z * 0.25)
 }
 
 /// An id no harness grid has: `UUIDNameRequest` for it gets no reply.

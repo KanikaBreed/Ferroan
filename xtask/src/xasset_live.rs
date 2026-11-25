@@ -135,6 +135,7 @@ fn compare_linux(db: XassetDb) -> Result<String, String> {
         ));
     }
     Ok(success_report(
+        db,
         &csharp.report,
         &ferroan.report,
         left.lines().count(),
@@ -142,8 +143,12 @@ fn compare_linux(db: XassetDb) -> Result<String, String> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn success_report(csharp: &str, ferroan: &str, records: usize) -> String {
-    format!("{csharp}\n{ferroan}\nassets: match ({records} http records)")
+fn success_report(db: XassetDb, csharp: &str, ferroan: &str, records: usize) -> String {
+    let mut report = format!("{csharp}\n{ferroan}\nassets: match ({records} http records)");
+    if matches!(db, XassetDb::Mysql) {
+        report.push_str("\nknown difference (TB58, D43, separate database race test): Pin8 can lose one asset id when concurrent stores share new bytes; Ferroan keeps both.");
+    }
+    report
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -776,10 +781,10 @@ mod tests {
     }
 
     #[test]
-    fn the_success_line_is_a_match_without_a_known_difference_list() {
-        let text = success_report("csharp", "ferroan", 3);
+    fn mysql_reports_the_separately_tested_store_race() {
+        let text = success_report(XassetDb::Mysql, "csharp", "ferroan", 3);
         assert!(text.contains("assets: match (3 http records)"));
-        assert!(!text.contains("known differences"));
+        assert!(text.contains("known difference (TB58, D43, separate database race test)"));
         for id in ["TB27", "TB28", "TB29", "TB30", "TB33"] {
             assert!(!text.contains(id), "{id}");
         }

@@ -62,7 +62,8 @@
 //! id merges flags. The default prioritizer places that viewer's avatar first,
 //! then other avatars, attachments, and prims by distance. Beside it, each
 //! viewer gets the other avatars' full updates, appearances and kills
-//! ([`avatars`]). This crate does not write those packets.
+//! ([`avatars`]), and every 50th frame the minimap dots ([`coarse`]). This
+//! crate does not write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. A prim `ObjectUpdate` is a
@@ -72,6 +73,7 @@
 
 pub mod avatars;
 mod bits;
+pub mod coarse;
 mod compress;
 pub mod entity_queue;
 mod error;
@@ -91,6 +93,7 @@ mod walk_capture;
 mod xml;
 
 pub use avatars::{AvatarFull, AvatarLook, AvatarPacket, MAX_AVATAR_PACKETS};
+pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;
 pub use entity_queue::{
     ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,

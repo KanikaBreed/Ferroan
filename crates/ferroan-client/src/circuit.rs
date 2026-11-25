@@ -483,6 +483,8 @@ impl DatagramIo for CountingSocket {
 struct Payload {
     bytes: Vec<u8>,
     zerocoded: bool,
+    /// False only for a task packet C# sends unreliable.
+    reliable: bool,
 }
 struct State {
     sequence: SequenceCounter,
@@ -800,6 +802,11 @@ impl State {
                 AvatarPacket::Full(update) => encode_payload(update)?,
                 AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,
                 AvatarPacket::Kill(kill) => encode_payload(kill)?,
+                // `CoarseLocationUpdateHeader` leaves the reliable flag off.
+                AvatarPacket::Coarse(coarse) => Payload {
+                    reliable: false,
+                    ..encode_payload(coarse)?
+                },
             };
             self.pending_task.push_back(payload);
         }
@@ -868,7 +875,8 @@ impl State {
                 self.pending_task.push_front(payload);
                 break;
             }
-            self.send_payload(sock, peer, payload, true).await?;
+            let reliable = payload.reliable;
+            self.send_payload(sock, peer, payload, reliable).await?;
         }
         Ok(())
     }
@@ -1775,6 +1783,7 @@ fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
     Ok(Payload {
         bytes: writer.buf,
         zerocoded: M::ZEROCODED,
+        reliable: true,
     })
 }
 
@@ -3307,6 +3316,7 @@ mod tests {
         let payload = Payload {
             bytes: vec![1],
             zerocoded: false,
+            reliable: true,
         };
         first
             .unacked

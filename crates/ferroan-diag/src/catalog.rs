@@ -74,3 +74,5 @@ pub const REGION_NAME_CACHE: &str = "region.name-cache";
 pub const REGION_NAME_REPLIES: &str = "region.name-replies";
 pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
+pub const LIVE_PORT_BASE: &str = "live.port-base";
+pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";
