@@ -180,8 +180,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
-| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | READY after Q65b and QR9 |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
+| Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
+| Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | READY after Q65c2 |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3 |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -218,14 +221,19 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26 | P1.3: grid user, presence and agent preferences | SPLIT into Q26a to Q26f (#154) |
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | DONE (#172) |
-| Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | READY after Q26b |
-| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c |
+| Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
+| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | READY after Q26b |
+| Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
+| Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
+| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
 | Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
-| Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | READY after Q27a |
-| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b |
+| Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
+| Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | READY after Q27a |
+| Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | READY after Q27b1 |
+| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
 | Q27e | P1.4e: `cargo xtask live compare avatar` and `--rust avatar` | READY after Q27d |
 | Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |
@@ -521,6 +529,20 @@ Q26 split (manager, 21 November 2026): the block in #154 is right, and its six-p
 
 Q26b (22 November 2026, `feat/griduser-service`): [PR #172](https://github.com/KanikaBreed/Ferroan/pull/172). `POST /griduser` serves `loggedin`, `loggedout`, `loggedoutregion`, `sethome`, `setposition`, `getgriduserinfo` and `getgriduserinfos`. A missing, unparsable or zero region is Failure before any row changes. One failed store does not stop the other rows in that region. The cache lasts 300 seconds, including a miss. An id longer than 36 characters is stored whole and read by its first 36 characters. `show grid user <UUID>` and `show grid users online` print the stored text. Login and logout in the XML use the invariant date (D37). `fixtures/griduser/service.json` is the oracle sequence. `cargo xtask griduser service` compared a fresh capture. No `live compare` and no `--rust`. [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44991011358) on `2f1cbd1`: Linux 10m40s, Windows 6m2s, macOS 1m54s. [Live](https://github.com/KanikaBreed/Ferroan/actions/runs/44991011333): scope 1m7s, scenarios 10m59s, ferrobot 10m14s, images 5m43s, services 19m48s, gate 1m5s. P1.3 stays TODO.
 
+Q26c BLOCKED (25 November 2026, `feat/q26c-presence-stores`). Estimate: about two engineering days to port and cross-check all seven `IPresenceData` operations across the three providers. Q26a and Q26b supply a GridUser cross-read harness and service pattern. Presence has a different row model: its session key is distinct from its user ID, several sessions can belong to the same user, and its provider-specific fields live in `PresenceData.Data`. Pin8 has no SQLite Presence table. Both SQL migrations are version 4.
+
+A probe called the three Pin8 plugins (`c401bceecd`) with the same sequence. After a store, Null had no `LastSeen` field, MySQL already had a timestamp, and PostgreSQL returned an empty field. Only Null accepted a zero region for an existing session. Only the SQL plugins verified the matching user and secure session. All three reported the move to a nonzero region and removed that region's session on logout. Storing a reported row read from the plugin exposed two distinct failure paths (TB104, TB105). See [the probe results](docs/found/Q26c.md).
+
+Proposed split, each with its own acceptance:
+
+1. **Shared Presence row and Null store** (after Q26b, about half a day). Cover Store, session and field Get, field Delete, ReportAgent, LogoutRegionAgents and VerifyAgent. Compare the same sequence with Pin8 Null in a single process, including visibility through two instances, replacement by session, arbitrary data fields, missing rows, a zero-region report and the always-false verification result. Bound the in-memory store and result sizes. This part supplies the common API for both SQL stores.
+2. **MySQL Presence v4** (after part 1, about three quarters of a day). Exercise the seven operations against the table created by the Pin8 migration. Cross-read C# writes from Rust and Rust writes from C#, including replacement, two sessions for one user, a region move and logout, and secure-session verification. Check the timestamp default and report update. Record the Pin8 refused re-store next to the Rust re-store that preserves the fetched timestamp (TB104, proposed D84).
+3. **PostgreSQL Presence v4** (after part 1, about three quarters of a day). Use the same two-way check with native UUIDs, the unique session index and the nullable timestamp. Cover a fresh row, partial store, report, region logout and verification. Check preservation of both a null timestamp and a reported timestamp. Record the Pin8 re-store exception alongside the Rust result (TB105, proposed D84). Q26d waits for all three parts.
+
+Validation of this split: `cargo xtask check` passed locally. The probes used Pin8 directly. Rust/C# cross-reads remain acceptance work for parts 2 and 3.
+
+The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
+
 Q25 (21 November 2026, `feat/p1-2-auth`): [PR #160](https://github.com/KanikaBreed/Ferroan/pull/160). `ferroan-robust` serves `POST /auth` and `POST /authorization`. The stored password is `MD5(MD5(password) + ":" + salt)`. `live compare auth` matches the HTTP records and a cross-read. Login stays on `PasswordAuthenticationService` and opens the same `auth.db`: `LLLoginService` loads authentication with `(config, userAccountService)`, and `AuthenticationServicesConnector` has no such constructor. An invalid web login key is a failure and the password is then tried (TB41, D33). Authorization checks the module and opens no database (TB42, D34). [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812393) on `e9f7aa0`: Linux 11m13s, Windows 4m4s, macOS 4m3s. [Live](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812271): scope 1m7s, scenarios 11m9s, ferrobot 10m40s, images 5m43s, services 22m18s, gate 1m3s. `login: pass`. `auth: match (16 http records); cross-read ok`.
 
 Q27 BLOCKED (22 November 2026, `docs/q27-blocked`): the row is more than about a day. No service code is in this change. At pin `1d7abb8337` the Robust side the issue names is 1,574 lines: avatar handler, server connector, service, base, the appearance codec in `IAvatarService.cs`, and the three stores (1,319), plus the baked-texture handler and file store (255). `AppearanceService.cs` (166) sits in that same service directory, and the viewer route is `AppearanceServerConnector.cs` (135), which the issue's handler list does not name. Q22 was 1,441 lines and Q23 was 1,584, and each was blocked before it was split. This row is three databases, five HTTP methods, that codec, a file cache, the viewer route, oracle fixtures, `live compare`, and `--rust`. The Ferroan region already reads appearance from the C# service (Q15, #138); that client stays. `AvatarServicesConnector` is the client and is not ported again. P1.4 stays `TODO`. TASKS.md depends on P1.1, which is DONE. The queue line said `after Q26`; the manager's brief took Q27. This note does not add or reorder queue rows.
@@ -548,6 +570,17 @@ Proposed split, in this order. Each piece is its own item. If one is still more 
 Q27 split (manager, 22 November 2026): the block in #167 is right, and its five parts are taken as Q27a to Q27e. The viewer bake read stays in (Q27d): the pin serves it from the same service. `AvatarHeight` is TB44: Ferroan writes and reads it with a dot decimal in every locale. P1.4 stays TODO until all five are DONE.
 
 Q27a (22 November 2026, `feat/avatar-stores`, [PR #174](https://github.com/KanikaBreed/Ferroan/pull/174)): get by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by principal, and delete by principal and name, on SQLite, MySQL and PostgreSQL. `cargo xtask avatar cross` reads both sides against `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData` at `1d7abb8337`. SQLite and MySQL upserts are `REPLACE`. PostgreSQL updates that pair and inserts when the update matches nothing, and binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed. A value longer than 255 characters round-trips. MySQL `utf8mb3` treats `Name` as case-insensitive, so `Bake` and `bake` are one row there and two rows on SQLite and PostgreSQL, matching the plugins. No service rules, no HTTP and no live run. P1.4 stays TODO.
+
+Q27b BLOCKED (25 November 2026, `feat/q27b-avatar-service`). Estimate at Pin8 `c401bceecd` is roughly two engineer-days. Q27a (#174) supplies the storage operations. The five methods in `AvatarServerPostHandler.cs` exchange raw name/value data. In particular, `setavatar` calls `new AvatarData(request)` and `getavatar` calls `ToKeyValuePairs()`. A successful HTTP replay cannot show whether login restores a wearable or attachment. The typed conversion has separate callers in `AvatarService.cs` (`GetAppearance` and `SetAppearance`, lines 56–66). Q15's `StoredAppearance` holds only height and visual parameters. Each half needs its own implementation and Pin8 observations.
+
+Proposed split for review:
+
+1. **Q27b1 / P1.4b1, raw avatar service and HTTP**, after Q27a. Implement the key/value methods in `AvatarService.cs` over the Q27a stores and expose all five `POST /avatar` forms sent by `AvatarServicesConnector.cs`. Compare response bytes with the Pin8 C# server, including the get reply without a BOM, the BOM-prefixed Success and Failure replies, missing and invalid principals, and malformed item lists. Read back successive writes to prove stale appearance names disappear, omitted `Bake*` names survive, explicit items can be changed or removed, out-of-range heights are rectified, and reset clears the bake index. Exercise failed-store cleanup after a partial save with the service's database seam. Estimate about one day including the fixtures.
+2. **Q27b2 / P1.4b2, typed appearance codec**, after Q27b1. Implement the conversions used by `GetAppearance` and `SetAppearance` in `IAvatarService.cs` (213–460). Record Pin8 input rows and the decoded appearance, and independently record rows written from a constructed appearance. Cover constructor defaults, the four required body parts restored on a nonempty record, legacy item/asset pairs, multiple layers read in index order, types 15 and 16, attachment points with multiple items, visual parameters, locale-independent height (TB44) and malformed input. Compare both directions with these observations; an HTTP echo cannot establish the layer order. Estimate about one day including the fixtures.
+
+Q27b is complete when both pieces pass. The proposed split leaves Q27c–Q27e in their current order and P1.4 open through Q27e.
+
+The manager approved Q27b1 and Q27b2 on 25 November 2026, as proposed above.
 
 Review fixes added (manager, 22 November 2026): a review of #114 to #174 by four review agents, the top findings checked by the manager, became QR1 to QR15 (TASKS R1 to R15), most important first. QR1 is a security fix and goes first; QR2 can lose assets. Each item cites the file and line and the C# where it matters. The FSAssets items (QR5, QR14) follow Q23e and the GridUser item (QR6) follows Q26b. One finding is the maintainer's to decide and is under "Waiting on the maintainer": whether same-repository coder branches may run Docker on Home1.
 
@@ -689,6 +722,7 @@ Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 an
 
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
 
+
 ### Q60 split
 
 **BLOCKED, 25 November 2026** (`feat/q60-parcel-overlay`). Estimated two engineering days for SQLite land loading, a store-backed packet comparison and delivery on the viewer circuit. The existing login capture includes `ParcelOverlay`, but does not associate a multi-parcel seed with the expected bytes for a particular viewer. The circuit already drains terrain through the Land throttle. It still needs the parcel map, the viewer's relationship to each parcel and the Pin8 send conditions. Pin8 `c401bceecd` checks membership in the parcel's owning group even when the viewer has a different active group (`LLClientView.IsGroupMember`, line 421).
@@ -700,6 +734,19 @@ The manager approved Q60a through Q60c. Their dependencies and acceptance checks
 **BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
 
 The manager approved Q65a through Q65d on 25 November. Their dependencies and acceptance checks are in TASKS.md.
+
+### Q65c review and proposed split
+
+**BLOCKED (25 November 2026, `feat/q65c-prim-delivery`).** Estimated two to three days including the two-viewer capture and live comparison. The Q65b fixture stores one decoded block per UUID. In two Pin8 BasicPhysics recordings of that seed, the first two full prim datagrams carried parts 1–6 and 7–8 in fixture numbering. Later datagrams carried 1, 3–6 and then 7–8 again, with the resend flag clear. Sorting distinct blocks loses both the packet boundaries and those later updates. The region capture records direction, time and bytes. It omits the receiving circuit and the server's throttle category. Q46c observes avatars and currently skips prim blocks.
+
+1. **Capture the arrival on two viewer circuits** (about half a day, after Q65b and the Q46c observer). Extend the observer to record ordered prim blocks per datagram, the parent and local IDs, reliability, and intervening avatar terse updates. Keep each circuit's account alias and record first deliveries separately from repeats. Reopen the small Q65b store on Pin8 with the cache disabled. Vary Task independently of the other channels and demonstrate delayed delivery and resumption. Correlate category with a test-only observation at the C# send point if timing alone is ambiguous. Commit redacted evidence and a replay check that detects moving a block across a packet boundary.
+2. **Prepare the stored linksets and feed each arriving viewer** (about one day, after the capture and QR9). The region currently retains groups on `SimulationState`. Allocate every part ID once from the frame, resolve child parents, and apply the stored-object admission scale settings identified in Q65b. At `ScenePresence.SendInitialData` (4337–4385), schedule the root then its children in link order as `SceneObjectGroup.SendFullAnimUpdateToClient` does (3285–3314). Use Q42 priorities and preserve both full and terse entries in the bounded feed. Today `ViewerFeed::take_terse` discards dequeued full entries. Check two arriving feeds against the captured identities and order, including a walking avatar and an unrelated region's stored objects.
+3. **Send and verify the mixed feed on Task** (about one day, after both parts). Port the full-update drain in Pin8 `LLClientView.ProcessEntityUpdates` (4996–5431). It budgets estimated bytes for dequeue, then splits full packets when the incremental zero encoder's position reaches 900, preserving any pending zero run. Q43 currently asks for terse blocks only. Check reliable full sends, the split on either side of the boundary, and that a single unsendable block cannot stall the next update. Include the separate material-override send when required (5731 onward). Replay the captured batches, then run the two viewers on Ferroan to check parent and local IDs, coexistence with terse movement, Task throttling and resumption against Pin8.
+
+The store swap and the 500-prim acceptance remain in Q65d. The proposed parts complete P2.5a3 together.
+
+The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
+
 
 ## Found while working
 
