@@ -150,6 +150,10 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
             "block": file,
         }));
     }
+    let map = json!({
+        "owner": {"store_uuid": owner.to_string(), "capture_uuid": Uuid::from_u128(100).to_string()},
+        "parts": map,
+    });
     let json = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
     fs::write(dir.join("map.json"), format!("{json}\n")).map_err(|e| e.to_string())?;
     Ok(format!(
@@ -162,15 +166,30 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    struct StoreDir(std::path::PathBuf);
+
+    impl Drop for StoreDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[tokio::test]
     async fn pin8_full_blocks_match_the_persisted_prim_identities_and_payloads() {
         let fixture = crate::repo_root().join("fixtures/prim-updates");
-        let temp = std::env::temp_dir().join(format!("prim-updates-{}.db", Uuid::new_v4()));
-        fs::copy(fixture.join("scene.db"), &temp).unwrap();
-        let roots = stored_roots(&temp).await.unwrap();
-        let _ = fs::remove_file(temp);
-        let map: Vec<serde_json::Value> =
+        let temp = StoreDir(std::env::temp_dir().join(format!("prim-updates-{}", Uuid::new_v4())));
+        fs::create_dir(&temp.0).unwrap();
+        let db = temp.0.join("scene.db");
+        fs::copy(fixture.join("scene.db"), &db).unwrap();
+        let roots = stored_roots(&db).await.unwrap();
+        let map: serde_json::Value =
             serde_json::from_slice(&fs::read(fixture.join("map.json")).unwrap()).unwrap();
+        assert_eq!(map["owner"]["store_uuid"], crate::live::ESTATE_OWNER);
+        assert_eq!(
+            map["owner"]["capture_uuid"],
+            Uuid::from_u128(100).to_string()
+        );
+        let map = map["parts"].as_array().unwrap();
         assert_eq!(map.len(), 3);
         let mut parts = BTreeMap::new();
         let mut capture_uuids = BTreeSet::new();

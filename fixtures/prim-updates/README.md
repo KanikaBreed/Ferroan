@@ -10,6 +10,8 @@
 
 Each binary contains one decompressed LLUDP `ObjectUpdate.ObjectData` block. Extraction checks the reliable and zero-coded flags and checks the decoded block against the original C# bytes before replacing any identifiers. It verifies that the captured prim UUIDs match the reopened store, that their local IDs are distinct and nonzero, and that the child's raw parent ID names the correct root. [map.json](map.json) maps each synthetic store UUID and its root to the redacted block. Local IDs and full UUIDs are numbered 1 through 3 in store UUID order. The parent ID follows the same mapping. The test account's nonzero owner UUID becomes UUID 100 (decimal), and a zero owner stays zero. Asset UUIDs, flags, transforms and payloads are preserved. The store has pseudo-CRCs 6501, 6502 and 6503 in that order. The C# blocks carry 6502, 6502 and 6504.
 
+The fixture uses BasicPhysics. The seed sets a sound radius of 12, and the wire carries 0. SQLite RegionStore has no sound-radius column. At Pin8, `SQLiteSimulationData.buildPrim` restores the looped sound UUID and gain and sets flags to 1 for a nonzero sound. The manifest records the synthetic store owner and its capture alias under `owner`.
+
 ## Reproduce
 
 From the repository root on Linux, `cargo xtask regionstore prim-seed` rebuilds the seed at `.scratch/prim-seed/scene.db`. To refresh the store fixture, copy that file to `fixtures/prim-updates/scene.db`. The live run always opens a disposable copy of the fixture. Run the following under the shared live lock using the assigned port base and `UseSharedCompilation=false`:

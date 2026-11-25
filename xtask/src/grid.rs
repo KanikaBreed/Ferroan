@@ -733,7 +733,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour or {}",
+            "unknown scenario {scenario}; expected all, neighbour, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
