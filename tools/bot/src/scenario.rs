@@ -380,13 +380,19 @@ async fn enter_observed_pair(
 ) -> Result<(ObserverSession, ObserverSession), String> {
     let (session, _) = enter(http, harness, first).await?;
     let mut observer = ObserverSession::new(session, second.principal_id);
-    match observer.during(enter(http, harness, second)).await {
-        Ok((session, _)) => Ok((observer, ObserverSession::new(session, first.principal_id))),
-        Err(err) => {
-            let _ = leave(harness, &mut observer.session, first).await;
-            Err(err)
+    let (login, observation) = observer.during(enter(http, harness, second)).await;
+    let error = match (login, observation) {
+        (Ok((session, _)), Ok(())) => {
+            return Ok((observer, ObserverSession::new(session, first.principal_id)));
         }
-    }
+        (Ok((mut session, _)), Err(error)) => {
+            let _ = leave(harness, &mut session, second).await;
+            error
+        }
+        (Err(error), observed) => observed.err().unwrap_or(error),
+    };
+    let _ = leave(harness, &mut observer.session, first).await;
+    Err(error)
 }
 
 /// The staying viewer must witness the walker leaving on the same circuit.
@@ -399,15 +405,34 @@ async fn finish_observed_walk(
     walker_account: &Account,
     check: Result<(), String>,
     check_minimap: bool,
-) -> Result<ObservedAvatar, String> {
-    let early = watcher.seen.saw_kill();
-    let left = watcher
-        .during(leave(harness, &mut walker.session, walker_account))
+) -> Result<(ObservedAvatar, usize), String> {
+    let early = watcher.seen.peer_kills();
+    let walker_id = watcher.seen.local_id;
+    let mut leaving_kills = walker
+        .seen
+        .killed
+        .iter()
+        .filter(|&&id| Some(id) == walker_id)
+        .count();
+    let (left, observation) = watcher
+        .during(leave_recording(
+            harness,
+            &mut walker.session,
+            walker_account,
+            |packet| {
+                leaving_kills += world::killed(packet)
+                    .iter()
+                    .filter(|&&id| Some(id) == walker_id)
+                    .count();
+            },
+        ))
         .await;
+    drop(walker); // The leaving circuit ends at logout (D70).
     let departure = async {
         check?;
+        observation?;
         left?;
-        if early {
+        if early != 0 {
             return Err("observer saw the walker killed before logout".into());
         }
         watcher.seen.coarse = None;
@@ -422,17 +447,23 @@ async fn finish_observed_walk(
                     .is_ok()
         };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !(watcher.seen.saw_kill() && alone(&watcher.seen))
+        while !(watcher.seen.peer_kills() != 0 && alone(&watcher.seen))
             && std::time::Instant::now() < deadline
         {
             watcher.step().await?;
         }
-        if !watcher.seen.saw_kill() {
+        if watcher.seen.peer_kills() == 0 {
             return Err(format!(
                 "no KillObject for the walker's local id {:?}",
                 watcher.seen.local_id
             ));
         }
+        // Observe late duplicate kills on the circuit that stays in the region.
+        let settle = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < settle {
+            watcher.step().await?;
+        }
+        watcher.seen.check_departure(leaving_kills)?;
         if check_minimap {
             watcher.seen.dots_match(
                 watcher_account.principal_id,
@@ -446,14 +477,14 @@ async fn finish_observed_walk(
     let logout = leave(harness, &mut watcher.session, watcher_account).await;
     departure?;
     logout?;
-    Ok(watcher.seen)
+    Ok((watcher.seen, leaving_kills))
 }
 
 async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
     let (mut walker, mut watcher) =
         enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
     let moved = observed_forward(&mut walker, &mut watcher).await;
-    finish_observed_walk(
+    let (seen, leaving_kills) = finish_observed_walk(
         harness,
         watcher,
         &harness.chat,
@@ -463,7 +494,13 @@ async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
         false,
     )
     .await?;
-    Ok("walk: pass (walker moved forward; observer saw its full update, forward terse movement and kill)".into())
+    let ordered = seen
+        .full_before_terse
+        .ok_or("observer missed the walker's terse update")?;
+    Ok(format!(
+        "walk: pass (forward movement, full before first terse={ordered}, observer kills={}, leaving viewer kills={leaving_kills})",
+        seen.peer_kills()
+    ))
 }
 
 async fn observed_forward(
@@ -720,7 +757,7 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     let (mut owner, mut chat) =
         enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
     let checked = check_avatars(harness, &mut owner, &mut chat).await;
-    let owner_saw = finish_observed_walk(
+    let (owner_saw, _) = finish_observed_walk(
         harness,
         owner,
         &harness.owner,
@@ -1718,6 +1755,15 @@ async fn enter(
 }
 
 async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> Result<(), String> {
+    leave_recording(harness, session, account, |_| {}).await
+}
+
+async fn leave_recording(
+    harness: &Harness,
+    session: &mut Session,
+    account: &Account,
+    mut record: impl FnMut(&ferroan_protocol::IncomingPacket),
+) -> Result<(), String> {
     // LogoutReply is queued on the task throttle. The outgoing loop sleeps
     // while that queue is idle, and closing the agent then clears the queue,
     // so the reply is often never sent. HandleLogout logs the request before
@@ -1734,7 +1780,9 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             .drive(Duration::from_millis(200))
             .await
             .map_err(|error| error.to_string())?;
-        while session.poll_inbox().is_some() {}
+        while let Some(packet) = session.poll_inbox() {
+            record(&packet);
+        }
         if session.received() == seen {
             let since = quiet_since.unwrap_or_else(std::time::Instant::now);
             quiet_since = Some(since);
@@ -1745,7 +1793,11 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             quiet_since = None;
         }
     }
-    if session.logout(Duration::from_secs(2)).await.is_ok() {
+    let logout = session.logout(Duration::from_secs(2)).await;
+    while let Some(packet) = session.poll_inbox() {
+        record(&packet);
+    }
+    if logout.is_ok() {
         return Ok(());
     }
     if harness.require_logout_reply {

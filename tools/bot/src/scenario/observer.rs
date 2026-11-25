@@ -37,13 +37,16 @@ impl ObserverSession {
     /// Keep acknowledging traffic and recording the peer while it logs in or out.
     pub(super) async fn during<T>(
         &mut self,
-        action: impl Future<Output = Result<T, String>>,
-    ) -> Result<T, String> {
+        action: impl Future<Output = T>,
+    ) -> (T, Result<(), String>) {
         tokio::pin!(action);
         loop {
             tokio::select! {
-                result = &mut action => return result,
-                step = self.step() => step?,
+                result = &mut action => return (result, Ok(())),
+                step = self.step() => if let Err(error) = step {
+                    // The other circuit must finish its login or logout.
+                    return (action.await, Err(error));
+                },
             }
         }
     }
@@ -72,6 +75,9 @@ pub(super) struct ObservedAvatar {
     /// The local id of the other avatar's full `ObjectUpdate`.
     pub(super) local_id: Option<u32>,
     appearance: bool,
+    // Before the full update, a terse block identifies only a local ID.
+    early_terse_ids: Vec<u32>,
+    pub(super) full_before_terse: Option<bool>,
     /// Local ids in every `KillObject` this bot received.
     pub(super) killed: Vec<u32>,
     /// Every `UUIDNameReply` block: the id, then the first and last name.
@@ -118,7 +124,22 @@ impl ObservedAvatar {
                 continue;
             }
             if object.full_id == other {
-                self.local_id = Some(object.local_id);
+                match self.local_id {
+                    Some(first) if first != object.local_id => {
+                        return Err(format!(
+                            "peer local id changed from {first} to {}",
+                            object.local_id
+                        ));
+                    }
+                    None => {
+                        self.local_id = Some(object.local_id);
+                        if self.early_terse_ids.contains(&object.local_id) {
+                            self.full_before_terse = Some(false);
+                        }
+                        self.early_terse_ids.clear();
+                    }
+                    _ => {}
+                }
                 self.position = Some(Vec3::from(object.position));
             } else if object.full_id == me {
                 self.own_local_id = Some(object.local_id);
@@ -129,7 +150,11 @@ impl ObservedAvatar {
             if !avatar {
                 continue;
             }
+            if self.local_id.is_none() && !self.early_terse_ids.contains(&local_id) {
+                remember(&mut self.early_terse_ids, local_id)?;
+            }
             if Some(local_id) == self.local_id {
+                self.full_before_terse.get_or_insert(true);
                 self.peer_terse = Some(position);
                 self.position = Some(position);
             } else if Some(local_id) == self.own_local_id {
@@ -270,9 +295,21 @@ impl ObservedAvatar {
         self.local_id.is_some() && self.appearance
     }
 
-    pub(super) fn saw_kill(&self) -> bool {
-        self.local_id
-            .is_some_and(|local_id| self.killed.contains(&local_id))
+    pub(super) fn peer_kills(&self) -> usize {
+        self.killed
+            .iter()
+            .filter(|&&id| Some(id) == self.local_id)
+            .count()
+    }
+
+    pub(super) fn check_departure(&self, leaving_kills: usize) -> Result<(), String> {
+        let staying = self.peer_kills();
+        if staying != 1 || leaving_kills != 0 {
+            return Err(format!(
+                "walker kills: observer {staying}, leaving viewer {leaving_kills}"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -337,6 +374,8 @@ mod tests {
             .unwrap();
         assert!(watcher.peer_terse.is_none());
 
+        // The redacted server capture interleaves both circuits. Only the live
+        // observer can establish which viewer received a particular datagram.
         let mut unknown = ObservedAvatar::default();
         for packet in captured_packets() {
             watcher.record(&packet, OWNER, WALKER).unwrap();
@@ -344,10 +383,58 @@ mod tests {
         }
         assert!(watcher.seen());
         assert!(watcher.peer_terse.unwrap().x > 130.0);
-        assert!(watcher.saw_kill());
+        assert_eq!(watcher.peer_kills(), 1);
+        assert_eq!(watcher.full_before_terse, Some(false));
         assert!(unknown.local_id.is_none());
         assert!(unknown.peer_terse.is_none());
-        assert!(!unknown.saw_kill());
+        assert_eq!(unknown.peer_kills(), 0);
+    }
+
+    #[test]
+    fn departure_requires_one_kill_only_on_the_staying_circuit() {
+        let full = captured_packets()
+            .find(|p| world::objects_in(p).iter().any(|b| b.full_id == WALKER))
+            .unwrap();
+        let kill = captured_packets()
+            .find(|p| world::killed(p).contains(&WALKER_LOCAL))
+            .unwrap();
+        let mut observer = ObservedAvatar::default();
+        observer.record(&full, OWNER, WALKER).unwrap();
+        assert!(observer.check_departure(0).is_err());
+        observer.record(&kill, OWNER, WALKER).unwrap();
+        observer.check_departure(0).unwrap();
+        assert!(observer.check_departure(1).is_err());
+        observer.record(&kill, OWNER, WALKER).unwrap();
+        assert!(observer.check_departure(0).is_err());
+    }
+
+    #[test]
+    fn another_full_update_cannot_replace_a_killed_peers_local_id() {
+        let mut observer = ObservedAvatar::default();
+        let full = captured_packets()
+            .find(|p| world::objects_in(p).iter().any(|b| b.full_id == WALKER))
+            .unwrap();
+        let kill = captured_packets()
+            .find(|p| world::killed(p).contains(&WALKER_LOCAL))
+            .unwrap();
+        observer.record(&full, OWNER, WALKER).unwrap();
+        observer.record(&kill, OWNER, WALKER).unwrap();
+        let mut update = full.decode::<ObjectUpdate>().unwrap();
+        update
+            .object_data
+            .iter_mut()
+            .find(|b| b.full_id == WALKER)
+            .unwrap()
+            .id += 1;
+        let mut bytes = Vec::new();
+        build_packet(&update, 3, true, false, &[], &mut bytes);
+        assert!(
+            observer
+                .record(&parse_packet(&bytes).unwrap(), OWNER, WALKER)
+                .is_err()
+        );
+        assert_eq!(observer.local_id, Some(WALKER_LOCAL));
+        assert_eq!(observer.peer_kills(), 1);
     }
 
     #[test]
