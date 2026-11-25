@@ -131,6 +131,8 @@ jobs:
           cargo xtask live run ferrobot
           cargo xtask live run ferrobot grid
           cargo xtask live run ferrobot grid --region ferroan
+      - name: Measure idle region memory by region count and object store
+        run: cargo xtask live memory
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

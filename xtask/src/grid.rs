@@ -71,6 +71,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::live;
+use crate::memory;
 
 #[path = "avatars_capture.rs"]
 mod avatars_capture;
@@ -81,6 +82,23 @@ pub(crate) mod login_probe;
 
 #[path = "grid_up.rs"]
 mod persistent;
+
+#[cfg(target_os = "linux")]
+#[path = "memory_run.rs"]
+mod memory_run;
+
+/// `cargo xtask live memory`: idle memory of the C# and Ferroan region
+/// processes, by region count and by seeded object store (P0.10n11).
+pub fn memory() -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    {
+        live::finish(memory_run::run())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        live::finish(Err("cargo xtask live runs on Linux".to_string()))
+    }
+}
 
 pub fn up(bind: Ipv4Addr) -> std::process::ExitCode {
     live::finish(persistent::up(bind))
@@ -1024,6 +1042,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         docker,
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
+    let meter = watch_grid(&grid, ferroan)?;
     if ferroan {
         let extra = docker.then(|| crate::docker::host_log_dir(crate::docker::NAME_HOME));
         ferroan_bot::set_log_redaction_check(true, extra);
@@ -1098,6 +1117,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         ferroan,
         (&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan),
         status.as_ref().map(|(region, metrics)| (region.as_str(), metrics.as_str())),
+        Some(meter.after_login()),
     ).and_then(|mut report| {
         if scenario == "login" {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
@@ -1114,7 +1134,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                     }
                     report.lines.push_str("\nmetrics: root agents 0 after logout");
                 }
-                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true), None)?;
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true), None, Some(meter.after_login()))?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
             }
@@ -1176,9 +1196,25 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         String::new()
     };
+    // Every bot has logged out and the scenario's service checks are done.
+    let memory = if failed {
+        Ok(Vec::new())
+    } else {
+        meter
+            .point("after logout")
+            .and_then(|()| meter.lines())
+            .and_then(|lines| {
+                memory::publish_summary(&run_title(spec), &lines)?;
+                Ok(lines)
+            })
+    };
     let cleanup = grid.stop();
-    let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction) {
-        (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(())) => {
+    let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction, memory) {
+        (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(()), Ok(memory)) => {
+            for line in memory {
+                report.lines.push('\n');
+                report.lines.push_str(&line);
+            }
             if !lines.is_empty() {
                 report.lines.push('\n');
                 report.lines.push_str(&lines);
@@ -1189,7 +1225,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             }
             report
         }
-        (report, relay, cleanup, scrape, smoke, redaction) => {
+        (report, relay, cleanup, scrape, smoke, redaction, memory) => {
             let mut parts = [
                 report.err(),
                 relay.err(),
@@ -1197,6 +1233,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 scrape.err(),
                 smoke.err(),
                 redaction.err(),
+                memory.err(),
             ]
             .into_iter()
             .flatten()
@@ -1311,6 +1348,54 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         )?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
     }
+}
+
+/// How long a server is left after its startup line before the `idle`
+/// memory point. QR22 measured the Ferroan region two seconds after
+/// initialization completed; the C# servers get the same wait.
+const IDLE_SETTLE: Duration = Duration::from_secs(2);
+
+/// Watch every server the grid started and take the `idle` point.
+#[cfg(target_os = "linux")]
+fn watch_grid(grid: &Grid, ferroan: bool) -> Result<std::sync::Arc<memory::Meter>, String> {
+    let meter = memory::Meter::new();
+    let home = require_started(&grid.home, "home region")?;
+    meter.watch(
+        "region",
+        if ferroan { "ferroan" } else { "csharp" },
+        home.listen_pid,
+    );
+    meter.watch(
+        "neighbour",
+        "csharp",
+        require_started(&grid.neighbour, "neighbour region")?.listen_pid,
+    );
+    meter.watch(
+        "robust",
+        "csharp",
+        require_started(&grid.robust, "Robust")?.listen_pid,
+    );
+    if let Some(services) = &grid.rust_assets {
+        meter.watch("robust", "ferroan", services.listen_pid());
+    }
+    thread::sleep(IDLE_SETTLE);
+    meter.point("idle")?;
+    Ok(meter)
+}
+
+/// The command line a grid run was started with, for the job summary.
+fn run_title(spec: &crate::live_args::RunSpec) -> String {
+    let mut title = format!("live run {} grid", spec.scenario);
+    if spec.ferroan_region {
+        title.push_str(" --region ferroan");
+    }
+    if !spec.rust_services.is_empty() {
+        title.push_str(&format!(" --rust {}", spec.rust_services.join(",")));
+    }
+    if spec.basic_physics {
+        title.push_str(" --physics basicphysics");
+    }
+    title
 }
 
 #[cfg(target_os = "linux")]
@@ -1527,11 +1612,13 @@ fn run_bot(
     strict_logout: bool,
     online: (&str, &Path, bool),
     status: Option<(&str, &str)>,
+    after_login: Option<ferroan_bot::scenario::AfterLogin>,
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
     let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
+    harness.after_login = after_login;
     if scenario == "roots" {
         harness.metrics = status.map(|(_, metrics)| metrics.to_string());
     }
@@ -1945,6 +2032,30 @@ struct RegionStart {
     basic_physics: bool,
 }
 
+/// More than one ordinary grid region needs: the memory run's store, build
+/// profile and extra regions in the same C# process.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct RegionExtras<'a> {
+    /// Copied to `OpenSim.db` in the working directory, for either server,
+    /// in place of the committed fixture.
+    store: Option<&'a Path>,
+    /// Build `ferroan-region` with the release profile.
+    release: bool,
+    /// More regions in the same C# process, each on its own UDP port.
+    more: &'a [ExtraRegion],
+}
+
+/// One more region in a C# region process. The HTTP listener is shared.
+#[cfg(target_os = "linux")]
+struct ExtraRegion {
+    name: String,
+    uuid: String,
+    x: u32,
+    y: u32,
+    udp_port: u16,
+}
+
 #[cfg(target_os = "linux")]
 fn start_region(
     cwd: &Path,
@@ -1955,8 +2066,35 @@ fn start_region(
     passwords: &[String],
     docker: bool,
 ) -> Result<Proc, String> {
+    start_region_with(
+        cwd,
+        (publish, source),
+        password,
+        spec,
+        passwords,
+        docker,
+        &RegionExtras::default(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn start_region_with(
+    cwd: &Path,
+    (publish, source): (&Path, &Path),
+    password: &str,
+    spec: RegionStart,
+    passwords: &[String],
+    docker: bool,
+    extras: &RegionExtras<'_>,
+) -> Result<Proc, String> {
+    if spec.ferroan && !extras.more.is_empty() {
+        return Err("ferroan-region runs one region per process".to_string());
+    }
     let binary = if spec.ferroan && !docker {
-        live::build_binary("ferroan-region")?
+        live::build_binary_with_profile(
+            "ferroan-region",
+            if extras.release { "release" } else { "dev" },
+        )?
     } else if spec.ferroan {
         PathBuf::new()
     } else {
@@ -1966,7 +2104,15 @@ fn start_region(
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
-    if spec.ferroan {
+    if let Some(store) = extras.store {
+        fs::copy(store, cwd.join("OpenSim.db")).map_err(|error| {
+            format!(
+                "could not copy {} to {}: {error}",
+                store.display(),
+                cwd.display()
+            )
+        })?;
+    } else if spec.ferroan {
         install_seeded_region_store(cwd)?;
     }
     let mut rewrites = Vec::new();
@@ -2037,7 +2183,19 @@ fn start_region(
         }
     }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
-    fs::write(regions.join("Regions.ini"), regions_ini(&region))
+    let mut regions_text = regions_ini(&region);
+    for more in extras.more {
+        regions_text.push('\n');
+        regions_text.push_str(&regions_ini(&RegionIni {
+            name: &more.name,
+            uuid: &more.uuid,
+            x: more.x,
+            y: more.y,
+            http_port: more.udp_port,
+            ..region
+        }));
+    }
+    fs::write(regions.join("Regions.ini"), regions_text)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = cwd.join("region.log");
     let config_arg = config.to_str().ok_or("region config path is not utf-8")?;
@@ -2098,6 +2256,18 @@ fn start_region(
         live::START_TIMEOUT,
         passwords,
     )?;
+    for more in extras.more {
+        wait_log(
+            &mut proc.child,
+            &log,
+            &format!(
+                "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
+                more.name
+            ),
+            live::START_TIMEOUT,
+            passwords,
+        )?;
+    }
     if spec.basic_physics && !spec.ferroan {
         live::require_basic_physics(&log, cwd, region.name)?;
     }

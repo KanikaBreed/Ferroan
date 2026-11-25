@@ -72,3 +72,5 @@ pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
 pub const LIVE_PORT_BASE: &str = "live.port-base";
 pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";
+pub const LIVE_MEMORY_STATUS_BYTES: &str = "live.memory-status-bytes";
+pub const LIVE_MEMORY_POINTS: &str = "live.memory-points";

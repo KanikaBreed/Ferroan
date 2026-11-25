@@ -287,6 +287,16 @@ pub(crate) fn alloc(slot: Slot) -> Result<u16, String> {
 }
 
 pub(crate) fn alloc_dynamic() -> Result<u16, String> {
+    alloc_dynamic_with(false)
+}
+
+/// A dynamic port that is also free for UDP: one more region in a C#
+/// region process (`live memory`).
+pub(crate) fn alloc_dynamic_region() -> Result<u16, String> {
+    alloc_dynamic_with(true)
+}
+
+fn alloc_dynamic_with(udp: bool) -> Result<u16, String> {
     let key = {
         let mut next = DYNAMIC_NEXT
             .lock()
@@ -300,7 +310,7 @@ pub(crate) fn alloc_dynamic() -> Result<u16, String> {
         *next = key + 1;
         key
     };
-    alloc_key(key, None, false)
+    alloc_key(key, None, udp)
 }
 
 pub(crate) fn alloc_grid(count: usize) -> Result<Vec<u16>, String> {

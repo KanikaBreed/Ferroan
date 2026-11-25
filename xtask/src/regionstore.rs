@@ -196,6 +196,19 @@ pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
     }
 }
 
+/// Bulk stores for the memory run, one per count, built by one oracle
+/// build. Each file is written through the pin's `SQLiteSimulationData`.
+pub(crate) fn bulk_stores(stores: &[(std::path::PathBuf, u32)], region: &str) -> Result<(), String> {
+    let dll = build_oracle().map_err(|_| "could not build the region store oracle".to_string())?;
+    for (db, count) in stores {
+        let path = db.to_str().ok_or("the bulk store path is not UTF-8")?;
+        if !oracle(&dll, &["bulk", path, region, &count.to_string()]) {
+            return Err(format!("the oracle did not write {count} prims to {path}"));
+        }
+    }
+    Ok(())
+}
+
 /// SQLite fixture compare, then the same groups from throwaway MySQL and
 /// PostgreSQL containers. Both containers are removed when this returns.
 pub fn cross() -> ExitCode {

@@ -33,6 +33,12 @@ const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 pub type LoginGate =
     Arc<dyn Fn(Uuid) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
+/// Called with the account's principal once that login reached the region:
+/// the circuit is ready and the arrival handshake is done. The harness takes
+/// its `online` memory point here. The hook must return quickly and must not
+/// log in or out.
+pub type AfterLogin = Arc<dyn Fn(Uuid) + Send + Sync>;
+
 /// One account the region already has. The password is not printed.
 pub struct Account {
     pub first_name: String,
@@ -75,6 +81,8 @@ pub struct Harness {
     pub service_probe: String,
     /// Runs before every [`enter`]. The harness waits for the account to settle.
     pub before_login: LoginGate,
+    /// Runs at the end of every [`enter`] that succeeded. `None` does nothing.
+    pub after_login: Option<AfterLogin>,
     /// Region metrics listener. Set for the Ferroan `roots` scenario.
     /// The C# region leaves this empty.
     pub metrics: Option<String>,
@@ -1673,6 +1681,9 @@ async fn enter(
         &response.seed_capability,
         &harness.region_log,
     )?;
+    if let Some(hook) = &harness.after_login {
+        hook(account.principal_id);
+    }
     Ok((session, response))
 }
 
