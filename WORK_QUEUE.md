@@ -114,6 +114,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR30 | R30: two live-harness flakes: a C# arrival that has begun to fall, and a late request to a region the harness has stopped | DONE (this PR) |
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
+| QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
