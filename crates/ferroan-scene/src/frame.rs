@@ -15,6 +15,10 @@
 //! one coalesced wake. Every request first applies the posts already queued,
 //! so one caller's calls apply in the order it made them. The serve's end
 //! removes the presence, so a later login starts fresh.
+//!
+//! After each tick the frame runs `ScenePresence.Update`'s terse test on every
+//! attached viewer's avatar ([`crate::terse`]) and offers a due update to
+//! every attached viewer's feed. The circuit drains its feed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,6 +35,8 @@ use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Body, Motion, MotionUpdate, ReturnData, clock_ms};
+use crate::prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
+use crate::terse::{AvatarBoard, AvatarTerse, InitialData, LastSent, UNIT_W, ViewerFeed, look_at};
 use crate::walk;
 
 /// `Constants.MinSimulationHeight`.
@@ -102,6 +108,21 @@ pub struct Departure {
     pub body_rotation: [f32; 4],
 }
 
+/// What GridUser's logout reads when a presence leaves: `AbsolutePosition`
+/// and `Lookat` (`ActivityDetector.OnConnectionClose`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leaving {
+    pub position: [f32; 3],
+    pub look_at: [f32; 3],
+}
+
+/// One viewer attached to the frame: the feed its circuit drains, and the
+/// seed flag `SendInitialData` waits for (`CapsFlags.SentSeeds`).
+pub struct ViewerLink {
+    pub feed: Arc<ViewerFeed>,
+    pub seeds_sent: Arc<AtomicBool>,
+}
+
 /// One answer from the frame thread. The call was already made.
 #[derive(Debug)]
 pub struct Pending<T>(oneshot::Receiver<T>);
@@ -147,7 +168,13 @@ enum Request {
     /// The serve ended.
     Remove {
         agent: Uuid,
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<Option<Leaving>>,
+    },
+    /// A viewer's feed. The answer is the avatar's local id.
+    Attach {
+        agent: Uuid,
+        link: ViewerLink,
+        reply: oneshot::Sender<u32>,
     },
     /// Seat a login pose for chat. The actor waits for the arrival.
     Pose {
@@ -199,11 +226,32 @@ enum Inbound {
         agent: Uuid,
         always_run: bool,
     },
+    /// `RegionHandshakeReply`.
+    HandshakeReply {
+        agent: Uuid,
+    },
 }
 
 struct Avatar {
     pose: Presence,
     body: Body,
+}
+
+/// An attached viewer and the terse state of its avatar.
+struct Viewer {
+    local_id: u32,
+    link: ViewerLink,
+    initial: InitialData,
+    last: LastSent,
+}
+
+/// The presences, the attached viewers and the board their blocks read.
+struct Scene {
+    presences: HashMap<Uuid, Avatar>,
+    viewers: HashMap<Uuid, Viewer>,
+    board: AvatarBoard,
+    /// `Scene.AllocateLocalId`.
+    next_local_id: u32,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -215,6 +263,7 @@ pub struct TerrainFrame {
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     has_map: bool,
+    board: AvatarBoard,
 }
 
 impl TerrainFrame {
@@ -235,11 +284,18 @@ impl TerrainFrame {
         let (ready_tx, ready_rx) = mpsc::channel();
         let wake = Arc::new(AtomicBool::new(false));
         let frame_wake = Arc::clone(&wake);
+        let board = AvatarBoard::default();
+        let scene = Scene {
+            presences: HashMap::new(),
+            viewers: HashMap::new(),
+            board: board.clone(),
+            next_local_id: first_local_id(),
+        };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
         let thread = std::thread::Builder::new()
             .name("ferroan-scene".to_owned())
-            .spawn(move || run(map, rx, inbound_rx, frame_wake, ready_tx))
+            .spawn(move || run(map, scene, rx, inbound_rx, frame_wake, ready_tx))
             .map_err(|_| TerrainError::Thread)?;
         ready_rx.recv().map_err(|_| TerrainError::Thread)?;
         Ok(Self {
@@ -248,7 +304,28 @@ impl TerrainFrame {
             wake,
             thread: Some(thread),
             has_map,
+            board,
         })
+    }
+
+    /// A feed for one viewer, reading this frame's board.
+    pub fn new_feed(&self) -> Arc<ViewerFeed> {
+        Arc::new(ViewerFeed::new(self.board.clone()))
+    }
+
+    /// Attach one viewer before its login pose. The answer is the avatar's
+    /// local id, which the full update and every terse block carry. A
+    /// second attach for the agent replaces the first and keeps its id.
+    pub fn attach(&self, agent: Uuid, link: ViewerLink) -> Result<Pending<u32>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::Attach { agent, link, reply })?;
+        Ok(answer)
+    }
+
+    /// One `RegionHandshakeReply`. A missing viewer is left alone. One
+    /// inbound slot, no answer.
+    pub fn handshake_reply(&self, agent: Uuid) -> Result<(), TerrainError> {
+        self.push(Inbound::HandshakeReply { agent })
     }
 
     pub fn has_map(&self) -> bool {
@@ -359,9 +436,10 @@ impl TerrainFrame {
     }
 
     /// The serve for this agent ended. Every post already queued applies
-    /// first, then the presence goes. The answer says whether one was there.
-    /// A full inbound queue cannot keep a ghost.
-    pub fn remove(&self, agent: Uuid) -> Result<Pending<bool>, TerrainError> {
+    /// first, then the presence and its viewer go. The answer is where the
+    /// presence was and its look, or `None` when there was none. A full
+    /// inbound queue cannot keep a ghost.
+    pub fn remove(&self, agent: Uuid) -> Result<Pending<Option<Leaving>>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::Remove { agent, reply })?;
         Ok(answer)
@@ -440,20 +518,29 @@ fn next_tick(due: Instant, started: Instant) -> Instant {
     if next < started { started } else { next }
 }
 
-fn drain_inbound(rx: &Receiver<Inbound>, wake: &AtomicBool, presences: &mut HashMap<Uuid, Avatar>) {
+fn drain_inbound(rx: &Receiver<Inbound>, wake: &AtomicBool, scene: &mut Scene) {
     // Clear before draining. A post that still finds the flag set relies on
     // a wake already sent, and every request drains again on receipt.
     wake.swap(false, Ordering::AcqRel);
     while let Ok(post) = rx.try_recv() {
-        apply(post, presences);
+        apply(post, scene);
     }
 }
 
-fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>) {
+fn apply(post: Inbound, scene: &mut Scene) {
+    let presences = &mut scene.presences;
     match post {
         Inbound::Child { agent, child } => {
             if let Some(avatar) = presences.get_mut(&agent) {
                 avatar.body.set_child(child);
+            }
+            if child && let Some(viewer) = scene.viewers.get_mut(&agent) {
+                viewer.initial.made_child();
+            }
+        }
+        Inbound::HandshakeReply { agent } => {
+            if let Some(viewer) = scene.viewers.get_mut(&agent) {
+                viewer.initial.handshake_reply();
             }
         }
         Inbound::Agent { agent, update } => {
@@ -472,11 +559,12 @@ fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>) {
 /// One answered call. Returns false for `Stop`.
 fn answer(
     request: Request,
-    presences: &mut HashMap<Uuid, Avatar>,
+    scene: &mut Scene,
     map: Option<&Heightmap>,
     layers: &[TerrainLayer],
     frames: u64,
 ) -> bool {
+    let presences = &mut scene.presences;
     match request {
         Request::Height { x, y, reply } => {
             let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
@@ -495,7 +583,30 @@ fn answer(
             let _ = reply.send(frames);
         }
         Request::Remove { agent, reply } => {
-            let _ = reply.send(presences.remove(&agent).is_some());
+            if let Some(viewer) = scene.viewers.remove(&agent) {
+                scene.board.remove(viewer.local_id);
+            }
+            let leaving = presences.remove(&agent).map(|avatar| Leaving {
+                position: avatar.pose.position,
+                look_at: look_at(avatar.body.camera_at_axis()),
+            });
+            let _ = reply.send(leaving);
+        }
+        Request::Attach { agent, link, reply } => {
+            let local_id = match scene.viewers.get(&agent) {
+                Some(viewer) => viewer.local_id,
+                None => scene.allocate_local_id(),
+            };
+            scene.viewers.insert(
+                agent,
+                Viewer {
+                    local_id,
+                    link,
+                    initial: InitialData::default(),
+                    last: LastSent::default(),
+                },
+            );
+            let _ = reply.send(local_id);
         }
         Request::Pose { agent, pose, reply } => {
             let mut avatar = Avatar::new(pose);
@@ -541,6 +652,9 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             avatar.pose.velocity = [0.0, 0.0, 0.0];
             avatar.body.halt_command();
+            // C# sends a terse update here without the thresholds
+            // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
+            // frame's test, so a landing under 0.05 m away sends nothing.
             let _ = reply.send(TeleportStored {
                 pose: avatar.pose,
                 look_at,
@@ -674,6 +788,7 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
 
 fn run(
     map: Option<Heightmap>,
+    mut scene: Scene,
     rx: Receiver<Request>,
     inbound: Receiver<Inbound>,
     wake: Arc<AtomicBool>,
@@ -683,15 +798,15 @@ fn run(
     if ready.send(()).is_err() {
         return;
     }
-    let mut presences: HashMap<Uuid, Avatar> = HashMap::new();
     let mut frames = 0u64;
     let mut next = Instant::now() + frame_wait();
     loop {
-        drain_inbound(&inbound, &wake, &mut presences);
+        drain_inbound(&inbound, &wake, &mut scene);
         let now = Instant::now();
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
-            step_avatars(&mut presences, map.as_ref());
+            step_avatars(&mut scene.presences, map.as_ref());
+            update_presences(&mut scene);
             frames = frames.saturating_add(1);
             next = next_tick(next, now);
             continue;
@@ -702,9 +817,87 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         };
         // A call sees every post its caller made before it.
-        drain_inbound(&inbound, &wake, &mut presences);
-        if !answer(request, &mut presences, map.as_ref(), &layers, frames) {
+        drain_inbound(&inbound, &wake, &mut scene);
+        if !answer(request, &mut scene, map.as_ref(), &layers, frames) {
             break;
+        }
+    }
+}
+
+/// `Scene.AllocateLocalId` starts at a random value below a quarter of the
+/// range (`Scene.cs` line 869). The clock stands in for the random source.
+fn first_local_id() -> u32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or(0);
+    nanos % (u32::MAX / 4)
+}
+
+impl Scene {
+    /// The next local id. Zero is never handed out. This is the region's
+    /// only allocator: avatars take their ids here, and a prim rezzed or
+    /// loaded later must take its id here too, or ids can collide.
+    fn allocate_local_id(&mut self) -> u32 {
+        self.next_local_id = self.next_local_id.wrapping_add(1);
+        if self.next_local_id == 0 {
+            self.next_local_id = 1;
+        }
+        self.next_local_id
+    }
+}
+
+/// What `CreateAvatartImprovedTerseBlock` and the thresholds read from one
+/// presence. The stand-in never sits on an object and sets no collision plane.
+fn terse_of(local_id: u32, avatar: &Avatar) -> AvatarTerse {
+    let view = avatar.body.view();
+    AvatarTerse {
+        local_id,
+        state: view.state,
+        collision_plane: UNIT_W,
+        position: avatar.pose.position,
+        velocity: avatar.pose.velocity,
+        rotation: avatar.pose.rotation,
+        angular_velocity: view.angular_velocity,
+        full_rotation: avatar.body.flying(),
+    }
+}
+
+/// `ScenePresence.Update` for each attached viewer's avatar, after the tick:
+/// the board gets the live values, and a due update goes to every attached
+/// viewer (`SendTerseUpdateToAllClients`), the avatar's own included. A child,
+/// and a login or return the arrival has not sampled, is not tested. The
+/// other side's priority is `BestAvatarResponsiveness`.
+fn update_presences(scene: &mut Scene) {
+    let mut due = Vec::new();
+    for (agent, viewer) in &mut scene.viewers {
+        let Some(avatar) = scene.presences.get(agent) else {
+            continue;
+        };
+        let now = terse_of(viewer.local_id, avatar);
+        scene.board.write(now);
+        let seeds = viewer.link.seeds_sent.load(Ordering::Acquire);
+        if !viewer.initial.frame(seeds) || avatar.body.is_child() {
+            continue;
+        }
+        if viewer.last.due(&now) {
+            viewer.last.store(&now);
+            due.push((*agent, viewer.local_id));
+        }
+    }
+    for (avatar_agent, local_id) in due {
+        for (viewer_agent, viewer) in &scene.viewers {
+            let looker = PriorityViewer {
+                agent_id: *viewer_agent,
+                position: scene
+                    .presences
+                    .get(viewer_agent)
+                    .map(|avatar| avatar.pose.position),
+                sitting_on: None,
+            };
+            let entity = PriorityEntity::Avatar { id: avatar_agent };
+            let priority = best_avatar_responsiveness(&looker, &entity);
+            viewer.link.feed.offer_terse(priority, local_id);
         }
     }
 }
@@ -885,6 +1078,196 @@ mod tests {
         }
     }
 
+    fn attach(frame: &TerrainFrame, agent: Uuid) -> (u32, Arc<ViewerFeed>, Arc<AtomicBool>) {
+        let feed = frame.new_feed();
+        let seeds = Arc::new(AtomicBool::new(false));
+        let link = ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::clone(&seeds),
+        };
+        let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
+        (local_id, feed, seeds)
+    }
+
+    fn local_ids(blocks: &[[u8; crate::terse::AVATAR_TERSE_LEN]]) -> Vec<u32> {
+        blocks
+            .iter()
+            .map(|block| u32::from_le_bytes(block[0..4].try_into().unwrap()))
+            .collect()
+    }
+
+    /// `ScenePresence.Update` sends nothing until `SendInitialData` has run:
+    /// the reply, the seeds, then four frames. A due update then goes to
+    /// every attached viewer, the walker's own first.
+    #[test]
+    fn a_terse_update_waits_for_initial_data_and_reaches_every_viewer() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let walker = Uuid::from_u128(46);
+        let watcher = Uuid::from_u128(47);
+        let (first_id, _, _) = attach(&frame, walker);
+        let (watcher_id, watcher_feed, _) = attach(&frame, watcher);
+        assert_ne!(first_id, watcher_id);
+        // Attaching again keeps the id and replaces the feed.
+        let (walker_id, walker_feed, walker_seeds) = attach(&frame, walker);
+        assert_eq!(walker_id, first_id);
+        login(&frame, walker, pose_at([128.0, 128.0, 25.0]));
+        login(&frame, watcher, pose_at([120.0, 128.0, 25.0]));
+        reuse(&frame, walker);
+        reuse(&frame, watcher);
+        // Seeds without a reply: nothing.
+        walker_seeds.store(true, Ordering::Release);
+        wait_frames(&frame, 8);
+        assert!(!walker_feed.has_updates());
+        frame.handshake_reply(walker).unwrap();
+        wait_frames(&frame, 2);
+        assert!(!walker_feed.has_updates(), "the first frames return early");
+        wait_frames(&frame, 4);
+        // The first test is due against the zero last values.
+        assert_eq!(local_ids(&walker_feed.take_terse(0)), [walker_id]);
+        assert_eq!(local_ids(&watcher_feed.take_terse(0)), [walker_id]);
+        // At rest, nothing more is due. The watcher never replied.
+        wait_frames(&frame, 3);
+        assert!(!walker_feed.has_updates());
+        assert!(!watcher_feed.has_updates());
+        // Walking starts: the velocity is due.
+        let now = clock_ms(Instant::now());
+        frame
+            .agent_update(walker, walking_update(now, 2, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 2);
+        let blocks = walker_feed.take_terse(0);
+        assert_eq!(local_ids(&blocks), [walker_id]);
+        assert_ne!(
+            &blocks[0][34..36],
+            &[0xff, 0x7f],
+            "the block carries a velocity"
+        );
+        assert!(watcher_feed.has_updates());
+        // A child is not tested, and the next reply waits again.
+        frame.set_child(walker, true).unwrap();
+        wait_frames(&frame, 2);
+        let _ = walker_feed.take_terse(0);
+        let _ = watcher_feed.take_terse(0);
+        wait_frames(&frame, 6);
+        assert!(!walker_feed.has_updates());
+        // Root again: the wait starts over at the next reply, so a due walk
+        // is not sent for the frames `SendInitialData` takes.
+        frame.set_child(walker, false).unwrap();
+        reuse(&frame, walker);
+        frame.handshake_reply(walker).unwrap();
+        // A turn is due on every frame until it is sent.
+        let mut turn = walking_update(clock_ms(Instant::now()), 3, 0);
+        turn.body_rotation = [
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ];
+        frame.agent_update(walker, turn).unwrap();
+        wait_frames(&frame, 2);
+        assert!(
+            !walker_feed.has_updates(),
+            "the re-armed wait returns early"
+        );
+        wait_frames(&frame, 4);
+        assert_eq!(local_ids(&walker_feed.take_terse(0)), [walker_id]);
+        // Leaving removes the viewer and its board entry.
+        frame.remove(walker).unwrap().blocking_wait().unwrap();
+        watcher_feed.offer_terse(1, walker_id);
+        assert!(watcher_feed.take_terse(0).is_empty());
+    }
+
+    /// `BestAvatarResponsiveness` puts a viewer's own avatar on queue 0 and
+    /// the other on queue 1, so its own update leaves first even when the
+    /// other avatar's was offered earlier.
+    #[test]
+    fn each_viewer_takes_its_own_avatar_first() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let left = Uuid::from_u128(50);
+        let right = Uuid::from_u128(51);
+        let (left_id, left_feed, left_seeds) = attach(&frame, left);
+        let (right_id, right_feed, right_seeds) = attach(&frame, right);
+        for (agent, seeds) in [(left, &left_seeds), (right, &right_seeds)] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+            seeds.store(true, Ordering::Release);
+            frame.handshake_reply(agent).unwrap();
+        }
+        wait_frames(&frame, 7);
+        let _ = left_feed.take_terse(0);
+        let _ = right_feed.take_terse(0);
+        let turn = |agent: Uuid, sequence: u32, z: f32, w: f32| {
+            let mut update = walking_update(clock_ms(Instant::now()), sequence, 0);
+            update.body_rotation = [0.0, 0.0, z, w];
+            frame.agent_update(agent, update).unwrap();
+        };
+        // The right avatar turns a frame before the left one.
+        turn(
+            right,
+            2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        wait_frames(&frame, 1);
+        turn(
+            left,
+            2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        wait_frames(&frame, 2);
+        assert_eq!(local_ids(&left_feed.take_terse(0)), [left_id, right_id]);
+        assert_eq!(local_ids(&right_feed.take_terse(0)), [right_id, left_id]);
+        // And the other way round.
+        turn(left, 3, 0.0, 1.0);
+        wait_frames(&frame, 1);
+        turn(right, 3, 0.0, 1.0);
+        wait_frames(&frame, 2);
+        assert_eq!(local_ids(&left_feed.take_terse(0)), [left_id, right_id]);
+        assert_eq!(local_ids(&right_feed.take_terse(0)), [right_id, left_id]);
+    }
+
+    /// A login is a child agent in C# until `CompleteMovement`: the wait
+    /// runs, but nothing is sent before the arrival samples the pose.
+    #[test]
+    fn nothing_is_sent_before_the_arrival() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(49);
+        let (local_id, feed, seeds) = attach(&frame, agent);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        seeds.store(true, Ordering::Release);
+        frame.handshake_reply(agent).unwrap();
+        wait_frames(&frame, 8);
+        assert!(!feed.has_updates());
+        reuse(&frame, agent);
+        wait_frames(&frame, 2);
+        assert_eq!(local_ids(&feed.take_terse(0)), [local_id]);
+    }
+
+    /// GridUser's logout reads the walked position and `Lookat`, the camera
+    /// at axis with Z dropped and normalised.
+    #[test]
+    fn leaving_reports_the_position_and_the_flattened_look() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(48);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        let mut update = walking_update(clock_ms(Instant::now()), 2, 0);
+        // Not a unit axis: C# stores it as sent (TB86).
+        update.camera_at = [0.3, 0.7, 0.2];
+        frame.agent_update(agent, update).unwrap();
+        wait_frames(&frame, 2);
+        let stored = read(&frame, agent);
+        let leaving = frame
+            .remove(agent)
+            .unwrap()
+            .blocking_wait()
+            .unwrap()
+            .unwrap();
+        assert_eq!(leaving.position, stored.position);
+        assert_eq!(leaving.look_at, look_at([0.3, 0.7, 0.2]));
+    }
+
     #[test]
     fn the_frame_thread_returns_the_height() {
         let mut plain = Vec::new();
@@ -1022,8 +1405,22 @@ mod tests {
         frame
             .agent_update(agent, walking_update(1_100, 501, CONTROL_AT_POS))
             .unwrap();
-        assert!(frame.remove(agent).unwrap().blocking_wait().unwrap());
-        assert!(!frame.remove(agent).unwrap().blocking_wait().unwrap());
+        assert!(
+            frame
+                .remove(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            frame
+                .remove(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .is_none()
+        );
         assert!(
             frame
                 .presence(agent)

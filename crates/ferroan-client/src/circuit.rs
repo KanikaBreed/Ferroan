@@ -64,6 +64,9 @@
 
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
+use crate::entity_feed::{
+    EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS, terse_packets,
+};
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, VIA_LOCATION};
 use crate::throttle::{
@@ -74,8 +77,8 @@ use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, SetAlwaysRun, StartPingCheck, TeleportLocationRequest, UseCircuitCode, logout_reply,
-    packet_ack, start_ping_check,
+    PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocationRequest,
+    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -272,6 +275,9 @@ pub enum SceneCall {
     /// `SetAlwaysRun`. One inbound slot, no answer. A refused post waits on
     /// the circuit (the latest only) and is posted again first.
     AlwaysRun(bool),
+    /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
+    /// inbound slot, no answer. A refused post waits on the circuit.
+    HandshakeReply,
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
 }
@@ -539,6 +545,12 @@ struct State {
     /// Scene parent plus this circuit's category buckets.
     throttle: ClientThrottle,
     throttle_clock: ThrottleClock,
+    /// Entity updates the region queues for this viewer.
+    feed: Option<EntityFeed>,
+    /// `m_nextOnQueueEmpty`: the feed is asked again from this instant.
+    queue_empty_at: Instant,
+    /// A `RegionHandshakeReply` the frame has not taken yet.
+    handshake_reply: Option<Uuid>,
 }
 impl State {
     #[cfg(test)]
@@ -574,6 +586,7 @@ impl State {
         }
         let source_hop = arrival.source_hop.clone();
         let return_slot = arrival.return_slot.clone();
+        let feed = arrival.updates.take();
         let (hop_tx, hop_rx) = if source_hop.is_some() {
             let (tx, rx) = mpsc::channel(8);
             (Some(tx), Some(rx))
@@ -623,6 +636,9 @@ impl State {
             return_started: false,
             throttle,
             throttle_clock,
+            feed,
+            queue_empty_at: now,
+            handshake_reply: None,
         })
     }
 
@@ -663,6 +679,14 @@ impl State {
                 }
                 if !self.pending_task.is_empty() {
                     wait = wait.min(self.throttle.wait(TASK, throttle_now));
+                }
+                if self.pending_task.len() < QUEUE_EMPTY_BELOW
+                    && self
+                        .feed
+                        .as_ref()
+                        .is_some_and(|feed| feed.updates.has_updates())
+                {
+                    wait = wait.min(self.queue_empty_at.saturating_duration_since(now));
                 }
             }
         }
@@ -741,7 +765,41 @@ impl State {
         }
         self.drain_land(sock, peer).await?;
         self.drain_task(sock, peer).await?;
+        if self.take_entity_updates()? {
+            self.drain_task(sock, peer).await?;
+        }
         Ok(())
+    }
+
+    /// `BeginFireQueueEmpty` for the task category: when its outbox holds
+    /// fewer than five packets and the feed has updates, at most every 20 ms,
+    /// take what the task bucket drips in 30 ms and queue it as terse
+    /// packets. True when packets were queued.
+    fn take_entity_updates(&mut self) -> Result<bool, CircuitError> {
+        let Some(feed) = self.feed.as_ref() else {
+            return Ok(false);
+        };
+        let now = Instant::now();
+        if self.unacked.len() > ACK_STALL
+            || self.pending_task.len() >= QUEUE_EMPTY_BELOW
+            || now < self.queue_empty_at
+            || !feed.updates.has_updates()
+        {
+            return Ok(false);
+        }
+        self.queue_empty_at = now + QUEUE_EMPTY_INTERVAL;
+        let budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
+        let blocks = feed.updates.take_terse(budget);
+        let region_handle = self.arrival.region_handle;
+        let mut queued = false;
+        for packet in terse_packets(region_handle, &blocks) {
+            // `terseUpdateHeader` zero-codes a message the template leaves plain.
+            let mut payload = encode_payload(&packet)?;
+            payload.zerocoded = true;
+            self.pending_task.push_back(payload);
+            queued = true;
+        }
+        Ok(queued)
     }
 
     async fn drain_land(
@@ -1093,6 +1151,10 @@ impl State {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
             }
+        } else if packet.id == RegionHandshakeReply::ID {
+            if packet.decode::<RegionHandshakeReply>().is_ok() {
+                self.forward_handshake_reply(expect);
+            }
         } else if packet.id == AgentThrottle::ID {
             if let Ok(throttle) = packet.decode::<AgentThrottle>() {
                 self.throttle
@@ -1264,13 +1326,27 @@ impl State {
         self.flush_motion();
     }
 
-    /// Post the waiting `SetAlwaysRun`, then the waiting `AgentUpdate`. The
-    /// update stays while the always-run is still refused, so it never
-    /// applies with the old speed.
+    /// `RegionHandshakeReply` onto the frame, without waiting.
+    fn forward_handshake_reply(&mut self, expect: &CircuitExpect) {
+        if self.login_scene.is_none() {
+            return;
+        }
+        self.handshake_reply = Some(expect.agent_id);
+        self.flush_motion();
+    }
+
+    /// Post the waiting `RegionHandshakeReply`, then the waiting
+    /// `SetAlwaysRun`, then the waiting `AgentUpdate`. The update stays while
+    /// the always-run is still refused, so it never applies with the old speed.
     fn flush_motion(&mut self) {
         let Some(scene) = self.login_scene.clone() else {
             return;
         };
+        if let Some(agent) = self.handshake_reply
+            && !scene(agent, SceneCall::HandshakeReply).refused()
+        {
+            self.handshake_reply = None;
+        }
         if let Some((agent, always_run)) = self.always_run {
             if scene(agent, SceneCall::AlwaysRun(always_run)).refused() {
                 return;
@@ -2256,6 +2332,7 @@ async fn serve_socket_reporting(
     state.connection_opened = extra.connected;
     state.login_scene = extra.login_scene;
     let mut hop_rx = state.hop_rx.take();
+    let entity_wake = state.feed.as_ref().map(|feed| Arc::clone(&feed.wake));
     let mut seated = extra.chat;
     state.chat = seated.as_ref().map(|seat| seat.hub.clone());
     // One byte past the cap so Linux `recvfrom` can report an oversize datagram
@@ -2377,6 +2454,15 @@ async fn serve_socket_reporting(
                     // The update did not arrive. A later movement can try again.
                     state.return_started = false;
                 }
+                continue;
+            }
+            _ = async {
+                match &entity_wake {
+                    Some(wake) => wake.notified().await,
+                    None => std::future::pending().await,
+                }
+            }, if entity_wake.is_some() && state.peer.is_some() => {
+                // An offer is waiting. `maintain` takes it on the next pass.
                 continue;
             }
             received = tokio::time::timeout(wait, sock.recv_from(&mut buf)) => received,
@@ -2701,7 +2787,9 @@ mod tests {
                         flags: request.flags,
                     }))
                 }
-                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
+                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
+                    Ok(SceneReply::Applied)
+                }
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),
