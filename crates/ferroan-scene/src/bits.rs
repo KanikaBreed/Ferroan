@@ -57,6 +57,18 @@ impl BitPack {
         self.data.get(..=end).unwrap_or(&self.data)
     }
 
+    /// The bits written so far, most significant first.
+    #[cfg(test)]
+    pub(crate) fn bits(&self) -> Vec<bool> {
+        let len = self.byte_pos * 8 + usize::from(self.bit_pos);
+        (0..len)
+            .map(|bit| {
+                let byte = self.data.get(bit / 8).copied().unwrap_or(0);
+                byte & (0x80 >> (bit % 8)) != 0
+            })
+            .collect()
+    }
+
     pub(crate) fn pack_bits(&mut self, mut data: u32, mut total: i32) {
         while total > 8 {
             self.pack_byte(data as u8);
