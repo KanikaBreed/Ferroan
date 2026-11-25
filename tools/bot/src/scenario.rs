@@ -415,7 +415,7 @@ async fn finish_observed_walk(
         .filter(|&&id| Some(id) == walker_id)
         .count();
     let (left, observation) = watcher
-        .during(leave_recording(
+        .during(leave_observing_before_request(
             harness,
             &mut walker.session,
             walker_account,
@@ -494,11 +494,8 @@ async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
         false,
     )
     .await?;
-    let ordered = seen
-        .full_before_terse
-        .ok_or("observer missed the walker's terse update")?;
     Ok(format!(
-        "walk: pass (forward movement, full before first terse={ordered}, observer kills={}, leaving viewer kills={leaving_kills})",
+        "walk: pass (forward movement, observer kills={}, leaving viewer kills={leaving_kills})",
         seen.peer_kills()
     ))
 }
@@ -1755,10 +1752,10 @@ async fn enter(
 }
 
 async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> Result<(), String> {
-    leave_recording(harness, session, account, |_| {}).await
+    leave_observing_before_request(harness, session, account, |_| {}).await
 }
 
-async fn leave_recording(
+async fn leave_observing_before_request(
     harness: &Harness,
     session: &mut Session,
     account: &Account,
@@ -1793,10 +1790,9 @@ async fn leave_recording(
             quiet_since = None;
         }
     }
+    // Stop recording when we send LogoutRequest. Pin8 can send its departing
+    // viewer a kill for its own avatar during teardown (TB87).
     let logout = session.logout(Duration::from_secs(2)).await;
-    while let Some(packet) = session.poll_inbox() {
-        record(&packet);
-    }
     if logout.is_ok() {
         return Ok(());
     }

@@ -75,9 +75,6 @@ pub(super) struct ObservedAvatar {
     /// The local id of the other avatar's full `ObjectUpdate`.
     pub(super) local_id: Option<u32>,
     appearance: bool,
-    // Before the full update, a terse block identifies only a local ID.
-    early_terse_ids: Vec<u32>,
-    pub(super) full_before_terse: Option<bool>,
     /// Local ids in every `KillObject` this bot received.
     pub(super) killed: Vec<u32>,
     /// Every `UUIDNameReply` block: the id, then the first and last name.
@@ -119,7 +116,15 @@ impl ObservedAvatar {
         if world::chat_heard(packet).is_some() {
             return Err("the region sent ChatFromSimulator".to_string());
         }
+        // Pin8 LLClientView.SendKillObject removes pending updates for killed IDs.
+        let killed_peer = self.local_id.filter(|id| self.killed.contains(id));
         for object in world::objects_in(packet) {
+            if killed_peer == Some(object.local_id) {
+                return Err(format!(
+                    "full update after KillObject for peer {}",
+                    object.local_id
+                ));
+            }
             if object.pcode != world::PCODE_AVATAR {
                 continue;
             }
@@ -131,13 +136,7 @@ impl ObservedAvatar {
                             object.local_id
                         ));
                     }
-                    None => {
-                        self.local_id = Some(object.local_id);
-                        if self.early_terse_ids.contains(&object.local_id) {
-                            self.full_before_terse = Some(false);
-                        }
-                        self.early_terse_ids.clear();
-                    }
+                    None => self.local_id = Some(object.local_id),
                     _ => {}
                 }
                 self.position = Some(Vec3::from(object.position));
@@ -147,14 +146,13 @@ impl ObservedAvatar {
             }
         }
         for (local_id, avatar, position) in world::terse_in(packet) {
+            if killed_peer == Some(local_id) {
+                return Err(format!("terse update after KillObject for peer {local_id}"));
+            }
             if !avatar {
                 continue;
             }
-            if self.local_id.is_none() && !self.early_terse_ids.contains(&local_id) {
-                remember(&mut self.early_terse_ids, local_id)?;
-            }
             if Some(local_id) == self.local_id {
-                self.full_before_terse.get_or_insert(true);
                 self.peer_terse = Some(position);
                 self.position = Some(position);
             } else if Some(local_id) == self.own_local_id {
@@ -384,7 +382,6 @@ mod tests {
         assert!(watcher.seen());
         assert!(watcher.peer_terse.unwrap().x > 130.0);
         assert_eq!(watcher.peer_kills(), 1);
-        assert_eq!(watcher.full_before_terse, Some(false));
         assert!(unknown.local_id.is_none());
         assert!(unknown.peer_terse.is_none());
         assert_eq!(unknown.peer_kills(), 0);
@@ -406,6 +403,33 @@ mod tests {
         assert!(observer.check_departure(1).is_err());
         observer.record(&kill, OWNER, WALKER).unwrap();
         assert!(observer.check_departure(0).is_err());
+    }
+
+    #[test]
+    fn killed_peer_cannot_reappear_in_full_or_terse_updates() {
+        let full = captured_packets()
+            .find(|p| world::objects_in(p).iter().any(|b| b.full_id == WALKER))
+            .unwrap();
+        let terse = captured_packets()
+            .find(|p| {
+                world::terse_in(p)
+                    .iter()
+                    .any(|(id, _, _)| *id == WALKER_LOCAL)
+            })
+            .unwrap();
+        let kill = captured_packets()
+            .find(|p| world::killed(p).contains(&WALKER_LOCAL))
+            .unwrap();
+        let mut observer = ObservedAvatar::default();
+        observer.record(&full, OWNER, WALKER).unwrap();
+        observer.record(&terse, OWNER, WALKER).unwrap();
+        observer.record(&kill, OWNER, WALKER).unwrap();
+        for (kind, packet) in [("full", full), ("terse", terse)] {
+            assert_eq!(
+                observer.record(&packet, OWNER, WALKER).unwrap_err(),
+                format!("{kind} update after KillObject for peer {WALKER_LOCAL}")
+            );
+        }
     }
 
     #[test]

@@ -29,7 +29,7 @@ asynchronous service cleanup, so it alone cannot authorize the next login.
 | Name | Pass line |
 | --- | --- |
 | login | `login: pass` |
-| walk | `walk: pass (forward movement, full before first terse=true, observer kills=1, leaving viewer kills=0)`. When a terse block arrives before the peer's first full update, the line is `walk: pass (forward movement, full before first terse=false, observer kills=1, leaving viewer kills=0)`. |
+| walk | `walk: pass (forward movement, observer kills=1, leaving viewer kills=0)` |
 | chat | `chat: pass`. A second account, `Chat Bot`, hears `ferroan harness chat` as a channel-0 say and `ferroan harness debug` as type 6 on DEBUG_CHANNEL |
 | build | `build: pass`. A prim is rezzed, changed and deleted |
 | teleport | `teleport: pass` with the landing position |
