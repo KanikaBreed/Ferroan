@@ -10,22 +10,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 pub fn generate(fixture_dir: Option<PathBuf>) -> ExitCode {
-    run(true, fixture_dir, false)
+    run("generate", "http", fixture_dir)
 }
 
 pub fn verify(fixture_dir: Option<PathBuf>) -> ExitCode {
-    run(false, fixture_dir, false)
+    run("verify", "http", fixture_dir)
 }
 
 pub fn status_generate() -> ExitCode {
-    run(true, None, true)
+    run("status-generate", "http-status", None)
 }
 
 pub fn status_verify() -> ExitCode {
-    run(false, None, true)
+    run("status-verify", "http-status", None)
 }
 
-fn run(writing: bool, fixture_dir: Option<PathBuf>, status_cases: bool) -> ExitCode {
+pub fn auth_generate() -> ExitCode {
+    run("auth-generate", "auth-edges", None)
+}
+
+pub fn auth_verify() -> ExitCode {
+    run("auth-verify", "auth-edges", None)
+}
+
+fn run(action: &str, suite: &str, fixture_dir: Option<PathBuf>) -> ExitCode {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
@@ -48,13 +56,7 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>, status_cases: bool) -> ExitC
     }
     let project = root.join("tools/http-oracle/HttpOracle.csproj");
     let fixtures = fixture_dir.map_or_else(
-        || {
-            root.join(if status_cases {
-                "fixtures/http-status"
-            } else {
-                "fixtures/http"
-            })
-        },
+        || root.join("fixtures").join(suite),
         |path| {
             if path.is_absolute() {
                 path
@@ -69,12 +71,6 @@ fn run(writing: bool, fixture_dir: Option<PathBuf>, status_cases: bool) -> ExitC
     if !checkout_is_clean(&reference) {
         return ExitCode::FAILURE;
     }
-    let action = match (writing, status_cases) {
-        (true, false) => "generate",
-        (false, false) => "verify",
-        (true, true) => "status-generate",
-        (false, true) => "status-verify",
-    };
     let program = vec![
         action.to_string(),
         fixtures.display().to_string(),
