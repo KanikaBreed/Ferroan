@@ -20,7 +20,8 @@
 //! attached viewer's avatar ([`crate::terse`]) and offers a due update to
 //! every attached viewer's feed. The circuit drains its feed. Arrivals,
 //! `SendInitialData` and departures also queue the other avatars' full
-//! updates, appearances and kills on the feeds ([`crate::avatars`]).
+//! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
+//! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
+use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
@@ -50,6 +52,9 @@ const MIN_HEIGHT: f32 = -100.0;
 const MAX_HEIGHT: f32 = 50_000.0;
 /// Substituted when a local teleport offset is outside the region.
 const EMERGENCY: [f32; 3] = [128.0, 128.0, 128.0];
+/// The region size the minimap scales to. `ferroan-region` refuses any
+/// other size.
+const REGION_SIZE: [u32; 2] = [256, 256];
 /// `TeleportFlags.IsFlying`.
 pub const TELEPORT_IS_FLYING: u32 = 1 << 13;
 
@@ -122,11 +127,14 @@ pub struct Leaving {
 }
 
 /// One viewer attached to the frame: the feed its circuit drains, the seed
-/// flag `SendInitialData` waits for (`CapsFlags.SentSeeds`), and what the
-/// other viewers are told about its avatar.
+/// flag `SendInitialData` waits for (`CapsFlags.SentSeeds`), whether its
+/// circuit is open, and what the other viewers are told about its avatar.
 pub struct ViewerLink {
     pub feed: Arc<ViewerFeed>,
     pub seeds_sent: Arc<AtomicBool>,
+    /// `LLClientView.IsActive`: set once `UseCircuitCode` opened the circuit.
+    /// C# has no client before that, so it sends the viewer no minimap dots.
+    pub circuit_open: Arc<AtomicBool>,
     pub look: Arc<AvatarLook>,
 }
 
@@ -263,12 +271,13 @@ struct Avatar {
     body: Body,
 }
 
-/// An attached viewer and the terse state of its avatar.
+/// An attached viewer, the terse state of its avatar, and its minimap state.
 struct Viewer {
     local_id: u32,
     link: ViewerLink,
     initial: InitialData,
     last: LastSent,
+    coarse: CoarseState,
 }
 
 /// The presences, the attached viewers and the board their blocks read.
@@ -657,6 +666,7 @@ fn answer(
                     link,
                     initial: InitialData::default(),
                     last: LastSent::default(),
+                    coarse: CoarseState::default(),
                 },
             );
             let _ = reply.send(local_id);
@@ -874,9 +884,7 @@ fn run(
         let now = Instant::now();
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
-            step_avatars(&mut scene.presences, map.as_ref());
-            update_presences(&mut scene);
-            frames = frames.saturating_add(1);
+            frames = tick(&mut scene, map.as_ref(), frames);
             next = next_tick(next, now);
             continue;
         }
@@ -891,6 +899,19 @@ fn run(
             break;
         }
     }
+}
+
+/// One frame: step every avatar, run `ScenePresence.Update` on each, count
+/// the frame, and send the minimap dots on every 50th. Returns the count.
+fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
+    step_avatars(&mut scene.presences, map);
+    update_presences(scene);
+    // `Scene.Update` counts the frame first, then tests it.
+    let frames = frames.saturating_add(1);
+    if frames.is_multiple_of(COARSE_EVERY_FRAMES) {
+        scene.send_coarse_locations();
+    }
+    frames
 }
 
 /// `Scene.AllocateLocalId` starts at a random value below a quarter of the
@@ -1039,7 +1060,7 @@ impl Scene {
             .viewer_order()
             .into_iter()
             .map(|(other, _)| other)
-            .filter(|other| *other != agent)
+            .filter(|other| *other != agent && self.is_open(other))
             .collect();
         for other in &others {
             self.send(other, AvatarPacket::Full(full.clone()));
@@ -1071,11 +1092,49 @@ impl Scene {
         }
     }
 
+    /// `SendCoarseLocations`: the root avatars in scene order, the same list
+    /// to every open viewer, children included (`ForEachScenePresence`). The
+    /// position is the frame's, after this tick. C# reads it on a pool
+    /// thread a little later and skips a frame while the last send is still
+    /// running; this send is done before the next tick.
+    fn send_coarse_locations(&mut self) {
+        let order = self.viewer_order();
+        let roots = order.iter().filter_map(|(agent, _)| {
+            let avatar = self.presences.get(agent)?;
+            (!avatar.body.is_child()).then_some((*agent, avatar.pose.position))
+        });
+        let (positions, agents) = coarse::gather(roots, REGION_SIZE);
+        for (agent, _) in &order {
+            let Some(viewer) = self.viewers.get_mut(agent) else {
+                continue;
+            };
+            if !viewer.link.circuit_open.load(Ordering::Acquire) {
+                continue;
+            }
+            if let Some(packet) = viewer.coarse.packet(*agent, &positions, &agents) {
+                viewer
+                    .link
+                    .feed
+                    .send_avatar_packet(AvatarPacket::Coarse(packet));
+            }
+        }
+    }
+
     /// `RemoveClient`: the leaving root's local id on every remaining viewer.
     fn kill_everywhere(&self, local_id: u32) {
         for (other, _) in self.viewer_order() {
-            self.send(&other, AvatarPacket::Kill(vec![local_id]));
+            if self.is_open(&other) {
+                self.send(&other, AvatarPacket::Kill(vec![local_id]));
+            }
         }
+    }
+
+    /// C# has a presence, and a client, only from `UseCircuitCode` on: a
+    /// viewer attached at login whose circuit is not open yet is not told.
+    fn is_open(&self, agent: &Uuid) -> bool {
+        self.viewers
+            .get(agent)
+            .is_some_and(|viewer| viewer.link.circuit_open.load(Ordering::Acquire))
     }
 
     /// `HasMovedAway`, then `MakeChildAgent`. Out of view range, the avatar
@@ -1307,6 +1366,7 @@ mod tests {
         let link = ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::clone(&seeds),
+            circuit_open: Arc::new(AtomicBool::new(true)),
             look: look_of(&agent.as_u128().to_string()),
         };
         let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
@@ -1473,10 +1533,12 @@ mod tests {
     fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
         feed.take_avatar_packets(usize::MAX)
             .into_iter()
-            .map(|packet| match packet {
-                AvatarPacket::Full(full) => ('F', full.agent.as_u128()),
-                AvatarPacket::Appearance { agent, .. } => ('A', agent.as_u128()),
-                AvatarPacket::Kill(ids) => ('K', u128::from(ids[0])),
+            .filter_map(|packet| match packet {
+                AvatarPacket::Full(full) => Some(('F', full.agent.as_u128())),
+                AvatarPacket::Appearance { agent, .. } => Some(('A', agent.as_u128())),
+                AvatarPacket::Kill(ids) => Some(('K', u128::from(ids[0]))),
+                // The frame thread's clock decides when a minimap list falls.
+                AvatarPacket::Coarse(_) => None,
             })
             .collect()
     }
@@ -1678,6 +1740,224 @@ mod tests {
         assert_eq!(ground, 21.0);
         assert!((landed_z(10.0, ground) - (21.0 + 0.01 + 0.8)).abs() < f32::EPSILON);
         assert_eq!(frame.layers().unwrap().blocking_wait().unwrap().len(), 1);
+    }
+
+    /// A scene driven by hand, without the frame thread, so the frame count
+    /// is exact.
+    fn bare_scene() -> Scene {
+        Scene {
+            presences: HashMap::new(),
+            viewers: HashMap::new(),
+            board: AvatarBoard::default(),
+            next_local_id: 100,
+        }
+    }
+
+    fn open_viewer(
+        scene: &mut Scene,
+        agent: Uuid,
+        open: bool,
+    ) -> (Arc<ViewerFeed>, Arc<AtomicBool>) {
+        let feed = Arc::new(ViewerFeed::new(scene.board.clone()));
+        let circuit_open = Arc::new(AtomicBool::new(open));
+        let link = ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
+            circuit_open: Arc::clone(&circuit_open),
+            look: look_of(&agent.as_u128().to_string()),
+        };
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Attach { agent, link, reply },
+            scene,
+            None,
+            &[],
+            0
+        ));
+        (feed, circuit_open)
+    }
+
+    fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {
+        let (reply, _answer) = oneshot::channel();
+        let request = Request::Arrive {
+            agent,
+            pose: pose_at(position),
+            look_at: EAST,
+            reply,
+        };
+        assert!(answer(request, scene, None, &[], 0));
+    }
+
+    /// The minimap packets a feed holds, dropping the rest.
+    fn dots(feed: &ViewerFeed) -> Vec<crate::coarse::CoarseLocations> {
+        feed.take_avatar_packets(usize::MAX)
+            .into_iter()
+            .filter_map(|packet| match packet {
+                AvatarPacket::Coarse(coarse) => Some(coarse),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn cell(scene: &Scene, agent: Uuid) -> [u8; 3] {
+        crate::coarse::location(scene.presences[&agent].pose.position)
+    }
+
+    /// C# has no presence for a viewer before its `UseCircuitCode`: an
+    /// arrival and a departure meanwhile tell it nothing, and its own
+    /// `SendInitialData` then sends the other root once.
+    #[test]
+    fn a_viewer_not_yet_open_hears_of_the_others_once_at_its_initial_data() {
+        let mut scene = bare_scene();
+        let there = Uuid::from_u128(90);
+        let leaving = Uuid::from_u128(91);
+        let coming = Uuid::from_u128(92);
+        let _ = open_viewer(&mut scene, there, true);
+        let _ = open_viewer(&mut scene, leaving, true);
+        let (feed, open) = open_viewer(&mut scene, coming, false);
+        arrive_in(&mut scene, there, [128.0, 128.0, 25.0]);
+        arrive_in(&mut scene, leaving, [129.0, 128.0, 25.0]);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Remove {
+                agent: leaving,
+                reply
+            },
+            &mut scene,
+            None,
+            &[],
+            0
+        ));
+        assert!(packet_kinds(&feed).is_empty());
+        open.store(true, Ordering::Release);
+        arrive_in(&mut scene, coming, [130.0, 128.0, 25.0]);
+        scene.send_initial_data(coming);
+        assert_eq!(
+            packet_kinds(&feed),
+            [('F', there.as_u128()), ('A', there.as_u128())]
+        );
+    }
+
+    const EVERY: u64 = COARSE_EVERY_FRAMES;
+
+    /// `Scene.Update` counts the frame, then sends on `Frame % 50 == 0`.
+    #[test]
+    fn minimap_dots_go_out_on_every_fiftieth_frame_only() {
+        let mut scene = bare_scene();
+        let agent = Uuid::from_u128(80);
+        let (feed, _) = open_viewer(&mut scene, agent, true);
+        arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        let _ = feed.take_avatar_packets(usize::MAX);
+        let mut frames = 0;
+        let mut sent_on = Vec::new();
+        for _ in 0..151 {
+            frames = tick(&mut scene, None, frames);
+            if !dots(&feed).is_empty() {
+                sent_on.push(frames);
+            }
+        }
+        assert_eq!(sent_on, [50, 100, 150]);
+    }
+
+    /// One list of roots in attach order goes to every open viewer, a child
+    /// included; each finds itself through `You`, and `Prey` is -1.
+    #[test]
+    fn each_viewer_gets_the_roots_and_its_own_index() {
+        let mut scene = bare_scene();
+        let first = Uuid::from_u128(81);
+        let second = Uuid::from_u128(82);
+        let child = Uuid::from_u128(83);
+        let waiting = Uuid::from_u128(84);
+        let (first_feed, _) = open_viewer(&mut scene, first, true);
+        let (second_feed, _) = open_viewer(&mut scene, second, true);
+        let (child_feed, _) = open_viewer(&mut scene, child, true);
+        let (waiting_feed, _) = open_viewer(&mut scene, waiting, true);
+        arrive_in(&mut scene, first, [128.0, 128.0, 25.0]);
+        arrive_in(&mut scene, second, [131.6, 40.2, 27.96]);
+        arrive_in(&mut scene, child, [10.0, 10.0, 25.0]);
+        apply(
+            Inbound::Child {
+                agent: child,
+                child: true,
+            },
+            &mut scene,
+        );
+        let frames = (0..EVERY).fold(0, |frames, _| tick(&mut scene, None, frames));
+        assert_eq!(frames, EVERY);
+        let expected = vec![cell(&scene, first), cell(&scene, second)];
+        assert_eq!(expected[1][..2], [131, 40]);
+        for (feed, you) in [
+            (&first_feed, 0),
+            (&second_feed, 1),
+            (&child_feed, -1),
+            (&waiting_feed, -1),
+        ] {
+            let got = dots(feed);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].agents, [first, second]);
+            assert_eq!(got[0].locations, expected);
+            assert_eq!((got[0].you, got[0].prey), (you, -1));
+        }
+    }
+
+    /// C# has no client before `UseCircuitCode`: a viewer whose circuit is
+    /// not open gets no dots, and its first list comes after it opens.
+    #[test]
+    fn a_viewer_gets_dots_only_once_its_circuit_is_open() {
+        let mut scene = bare_scene();
+        let there = Uuid::from_u128(85);
+        let coming = Uuid::from_u128(86);
+        let _ = open_viewer(&mut scene, there, true);
+        arrive_in(&mut scene, there, [128.0, 128.0, 25.0]);
+        let (feed, open) = open_viewer(&mut scene, coming, false);
+        let mut frames = (0..2 * EVERY).fold(0, |frames, _| tick(&mut scene, None, frames));
+        assert!(dots(&feed).is_empty());
+        open.store(true, Ordering::Release);
+        frames = (0..EVERY).fold(frames, |frames, _| tick(&mut scene, None, frames));
+        assert_eq!(frames, 3 * EVERY);
+        let got = dots(&feed);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].agents, [there]);
+        assert_eq!(got[0].you, -1, "not root until it arrives");
+    }
+
+    /// An empty list goes once; a root that leaves drops out of the next one.
+    #[test]
+    fn an_empty_list_goes_once_and_a_leaver_drops_out() {
+        let mut scene = bare_scene();
+        let staying = Uuid::from_u128(87);
+        let leaving = Uuid::from_u128(88);
+        let (feed, _) = open_viewer(&mut scene, staying, true);
+        let mut frames = 0;
+        let mut lists = Vec::new();
+        for _ in 0..3 * EVERY {
+            frames = tick(&mut scene, None, frames);
+            lists.extend(dots(&feed));
+        }
+        assert_eq!(lists.len(), 1, "the empty list goes once");
+        assert!(lists[0].agents.is_empty() && lists[0].locations.is_empty());
+        assert_eq!(lists[0].you, -1);
+        let _ = open_viewer(&mut scene, leaving, true);
+        arrive_in(&mut scene, staying, [128.0, 128.0, 25.0]);
+        arrive_in(&mut scene, leaving, [129.0, 128.0, 25.0]);
+        frames = (0..EVERY).fold(frames, |frames, _| tick(&mut scene, None, frames));
+        assert_eq!(dots(&feed)[0].agents, [staying, leaving]);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Remove {
+                agent: leaving,
+                reply
+            },
+            &mut scene,
+            None,
+            &[],
+            0
+        ));
+        let _ = (0..EVERY).fold(frames, |frames, _| tick(&mut scene, None, frames));
+        let got = dots(&feed);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].agents, [staying]);
+        assert_eq!(got[0].you, 0);
     }
 
     #[test]
