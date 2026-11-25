@@ -48,7 +48,7 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## Null Presence store
 
-`cargo xtask presence generate` records the Pin8 Null provider's calls and results. `cargo xtask presence verify` repeats them with two provider instances in one process. The Rust test `two_null_providers_match_the_pin8_sequence` replays the committed operations and compares every result, including row order and held references. [Fixture and commands](../fixtures/presence/README.md).
+`cargo xtask presence generate` records the Pin8 Null provider's calls and results. `cargo xtask presence verify` repeats them with two provider instances in one process. The live workflow runs `cargo xtask presence verify`. The Rust test `two_null_providers_match_the_pin8_sequence` replays the committed operations and compares every result, including row order and held references. [Fixture and commands](../fixtures/presence/README.md).
 
 ## Grid user stores
 

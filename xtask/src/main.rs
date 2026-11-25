@@ -28,6 +28,9 @@
 //! `throttle generate` and `throttle verify` read the pinned category token
 //! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
 //!
+//! `presence generate` and `presence verify` record and compare the pinned Null
+//! provider's calls and results in `fixtures/presence/null.json`.
+//!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.

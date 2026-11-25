@@ -34,6 +34,8 @@
 //! Presence rows and the process-wide in-memory provider used by standalone regions.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use ferroan_diag::{
@@ -74,6 +76,12 @@ impl PresenceData {
         *lock(&self.region_id)
     }
 
+    /// Update this row after a successful report. SQL providers return detached
+    /// rows, while the Null provider shares this object with its callers.
+    pub fn set_region_id(&self, region_id: Uuid) {
+        *lock(&self.region_id) = region_id;
+    }
+
     fn validate(&self) -> Result<(), PresenceLimit> {
         check(PRESENCE_FIELDS, MAX_FIELDS, self.data.len())?;
         let bytes = self
@@ -94,6 +102,40 @@ pub struct PresenceLimit {
     pub id: &'static str,
     pub maximum: usize,
     pub observed: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PresenceStoreError {
+    #[error(transparent)]
+    Limit(#[from] PresenceLimit),
+    #[error("presence database: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+pub type PresenceFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, PresenceStoreError>> + Send + 'a>>;
+
+/// The seven IPresenceData operations used by the Presence service.
+pub trait PresenceStore: Send + Sync {
+    /// `Ok(true)` means stored. `Ok(false)` means the provider stored nothing.
+    /// Exceeding a configured bound returns [`PresenceStoreError::Limit`].
+    fn store(&self, row: Arc<PresenceData>) -> PresenceFuture<'_, bool>;
+
+    fn get(&self, session: Uuid) -> PresenceFuture<'_, Option<Arc<PresenceData>>>;
+
+    fn get_by_field<'a>(
+        &'a self,
+        field: &'a str,
+        value: &'a str,
+    ) -> PresenceFuture<'a, Vec<Arc<PresenceData>>>;
+
+    fn delete<'a>(&'a self, field: &'a str, value: &'a str) -> PresenceFuture<'a, bool>;
+
+    fn report_agent(&self, session: Uuid, region: Uuid) -> PresenceFuture<'_, bool>;
+
+    fn logout_region_agents(&self, region: Uuid) -> PresenceFuture<'_, ()>;
+
+    fn verify_agent(&self, agent: Uuid, secure_session: Uuid) -> PresenceFuture<'_, bool>;
 }
 
 fn check(id: &'static str, maximum: usize, observed: usize) -> Result<(), PresenceLimit> {
@@ -200,81 +242,94 @@ impl Default for NullPresenceData {
     }
 }
 
-impl NullPresenceData {
-    /// Store by session, preserving references held by callers. Replacing a
-    /// session detaches its old row; subsequent reports update the new row.
-    pub fn store(&self, row: Arc<PresenceData>) -> Result<(), PresenceLimit> {
-        row.validate()?;
-        let mut sessions = lock(&self.sessions);
-        if let Some(&i) = sessions.index.get(&row.session_id) {
-            sessions.slots[i] = Some(row);
-            return Ok(());
-        }
-        check(
-            PRESENCE_NULL_SESSIONS,
-            MAX_SESSIONS,
-            sessions.index.len() + 1,
-        )?;
-        let id = row.session_id;
-        let i = if let Some(i) = sessions.free.pop() {
-            sessions.slots[i] = Some(row);
-            i
-        } else {
-            sessions.slots.push(Some(row));
-            sessions.slots.len() - 1
-        };
-        sessions.index.insert(id, i);
-        Ok(())
+impl PresenceStore for NullPresenceData {
+    /// Replacing a session detaches its old row. Subsequent reports update the new row.
+    fn store(&self, row: Arc<PresenceData>) -> PresenceFuture<'_, bool> {
+        Box::pin(async move {
+            row.validate()?;
+            let mut sessions = lock(&self.sessions);
+            if let Some(&i) = sessions.index.get(&row.session_id) {
+                sessions.slots[i] = Some(row);
+                return Ok(true);
+            }
+            check(
+                PRESENCE_NULL_SESSIONS,
+                MAX_SESSIONS,
+                sessions.index.len() + 1,
+            )?;
+            let id = row.session_id;
+            let i = if let Some(i) = sessions.free.pop() {
+                sessions.slots[i] = Some(row);
+                i
+            } else {
+                sessions.slots.push(Some(row));
+                sessions.slots.len() - 1
+            };
+            sessions.index.insert(id, i);
+            Ok(true)
+        })
     }
 
-    pub fn get(&self, session: Uuid) -> Option<Arc<PresenceData>> {
-        lock(&self.sessions).get(session).cloned()
+    fn get(&self, session: Uuid) -> PresenceFuture<'_, Option<Arc<PresenceData>>> {
+        Box::pin(async move { Ok(lock(&self.sessions).get(session).cloned()) })
     }
 
-    pub fn get_by_field(
-        &self,
-        field: &str,
-        value: &str,
-    ) -> Result<Vec<Arc<PresenceData>>, PresenceLimit> {
-        let filter = Filter::new(field, value)?;
-        if let Filter::Session(id) = filter {
-            return Ok(id.and_then(|id| self.get(id)).into_iter().collect());
-        }
-        let sessions = lock(&self.sessions);
-        let mut result = Vec::new();
-        for row in sessions
-            .slots
-            .iter()
-            .flatten()
-            .filter(|row| filter.matches(row))
-        {
-            check(PRESENCE_RESULTS, MAX_RESULTS, result.len() + 1)?;
-            result.push(Arc::clone(row));
-        }
-        Ok(result)
+    fn get_by_field<'a>(
+        &'a self,
+        field: &'a str,
+        value: &'a str,
+    ) -> PresenceFuture<'a, Vec<Arc<PresenceData>>> {
+        Box::pin(async move {
+            let filter = Filter::new(field, value)?;
+            let sessions = lock(&self.sessions);
+            if let Filter::Session(id) = filter {
+                return Ok(id
+                    .and_then(|id| sessions.get(id))
+                    .cloned()
+                    .into_iter()
+                    .collect());
+            }
+            let mut result = Vec::new();
+            for row in sessions
+                .slots
+                .iter()
+                .flatten()
+                .filter(|row| filter.matches(row))
+            {
+                check(PRESENCE_RESULTS, MAX_RESULTS, result.len() + 1)?;
+                result.push(Arc::clone(row));
+            }
+            Ok(result)
+        })
     }
 
-    pub fn delete(&self, field: &str, value: &str) -> Result<bool, PresenceLimit> {
-        let filter = Filter::new(field, value)?;
-        Ok(lock(&self.sessions).remove_matching(&filter))
+    fn delete<'a>(&'a self, field: &'a str, value: &'a str) -> PresenceFuture<'a, bool> {
+        Box::pin(async move {
+            let filter = Filter::new(field, value)?;
+            Ok(lock(&self.sessions).remove_matching(&filter))
+        })
     }
 
-    pub fn report_agent(&self, session: Uuid, region: Uuid) -> bool {
-        let sessions = lock(&self.sessions);
-        if let Some(row) = sessions.get(session) {
-            *lock(&row.region_id) = region;
-            true
-        } else {
-            false
-        }
+    fn report_agent(&self, session: Uuid, region: Uuid) -> PresenceFuture<'_, bool> {
+        Box::pin(async move {
+            let sessions = lock(&self.sessions);
+            let Some(row) = sessions.get(session) else {
+                return Ok(false);
+            };
+            row.set_region_id(region);
+            Ok(true)
+        })
     }
 
-    pub fn logout_region_agents(&self, region: Uuid) {
-        lock(&self.sessions).remove_matching(&Filter::Region(Some(region)));
+    fn logout_region_agents(&self, region: Uuid) -> PresenceFuture<'_, ()> {
+        Box::pin(async move {
+            lock(&self.sessions).remove_matching(&Filter::Region(Some(region)));
+            Ok(())
+        })
     }
 
-    pub fn verify_agent(&self, _agent: Uuid, _secure_session: Uuid) -> bool {
-        false
+    fn verify_agent(&self, _agent: Uuid, _secure_session: Uuid) -> PresenceFuture<'_, bool> {
+        Box::pin(async { Ok(false) })
     }
 }
 
