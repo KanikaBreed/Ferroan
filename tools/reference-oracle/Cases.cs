@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -269,6 +270,7 @@ internal static class Cases
             list.Add(Bytes("quaternion-shorts-" + pair.Item1, "quaternion-shorts", shorts, null));
             list.Add(Bytes("quaternion-full-" + pair.Item1, "quaternion-full", FullQuaternion(pair.Item2), null));
         }
+        list.Add(QuaternionBatch());
 
         var quantized = new Color4((byte)255, (byte)128, (byte)0, (byte)64);
         list.Add(Bytes("color4", "color4", quantized.GetBytes(), null));
@@ -961,6 +963,95 @@ internal static class Cases
             ["target"] = target,
         };
         return Bytes(name, "permission-fold", Utils.UIntToBytes(result), parms);
+    }
+
+    const int QuaternionBatchCount = 4096;
+    const ulong QuaternionBatchSeed = 0x5155_4154_4241_5443;
+
+    /// <summary>
+    /// 4096 quaternions through ToBytes and GetBytes on x86-64. Inputs cycle
+    /// through four shapes: raw components in [-1, 1), the same normalized,
+    /// a normalized one read back with FromBytes (the decode-then-encode path,
+    /// w rebuilt), and a normalized one scaled by 1e-4 to 2. A few fixed
+    /// edges come first.
+    /// </summary>
+    static Fixture QuaternionBatch()
+    {
+        Codec.RequireDotProduct();
+        var inputs = new List<Quaternion>
+        {
+            new Quaternion(0f, 0f, 0f, 1f),
+            new Quaternion(0f, 0f, 0f, -1f),
+            new Quaternion(0f, 0f, 0f, 0f),
+            new Quaternion(1f, 0f, 0f, 0f),
+            new Quaternion(0.5f, 0.5f, 0.5f, 0.5f),
+            new Quaternion(0.5f, 0.5f, 0.5f, -0.5f),
+            new Quaternion(0.1f, -0.2f, 0.3f, 0.9f),
+            new Quaternion(0f, 0.70710677f, 0f, -0.70710677f),
+        };
+        ulong state = QuaternionBatchSeed;
+        while (inputs.Count < QuaternionBatchCount)
+        {
+            var raw = new Quaternion(Unit(ref state), Unit(ref state), Unit(ref state), Unit(ref state));
+            float length = MathF.Sqrt(raw.X * raw.X + raw.Y * raw.Y + raw.Z * raw.Z + raw.W * raw.W);
+            if (length < 1e-3f)
+                continue;
+            var unit = new Quaternion(raw.X / length, raw.Y / length, raw.Z / length, raw.W / length);
+            switch (inputs.Count % 4)
+            {
+                case 0:
+                    inputs.Add(raw);
+                    break;
+                case 1:
+                    inputs.Add(unit);
+                    break;
+                case 2:
+                {
+                    byte[] packed = new byte[12];
+                    unit.ToBytes(packed, 0);
+                    var decoded = new Quaternion();
+                    decoded.FromBytes(packed, 0, true);
+                    inputs.Add(decoded);
+                    break;
+                }
+                default:
+                {
+                    float scale = 1e-4f + 2f * (Unit(ref state) * 0.5f + 0.5f);
+                    inputs.Add(new Quaternion(unit.X * scale, unit.Y * scale, unit.Z * scale, unit.W * scale));
+                    break;
+                }
+            }
+        }
+
+        byte[] payload = new byte[inputs.Count * Codec.QuaternionRecord];
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            int at = i * Codec.QuaternionRecord;
+            Quaternion q = inputs[i];
+            Utils.FloatToBytes(q.X, payload, at);
+            Utils.FloatToBytes(q.Y, payload, at + 4);
+            Utils.FloatToBytes(q.Z, payload, at + 8);
+            Utils.FloatToBytes(q.W, payload, at + 12);
+        }
+        payload = Codec.QuaternionBatch(payload);
+        var parms = new JsonObject
+        {
+            ["seed"] = QuaternionBatchSeed.ToString("x16", CultureInfo.InvariantCulture),
+            ["record"] = "x y z w (f32 LE), ToBytes (12), GetBytes (12)",
+            ["machine"] = "x86-64 Sse41.DotProduct",
+        };
+        return Bytes("quaternion-batch", "quaternion-batch", payload, parms);
+    }
+
+    /// <summary>SplitMix64, then the top 24 bits as a float in [-1, 1).</summary>
+    static float Unit(ref ulong state)
+    {
+        state += 0x9E37_79B9_7F4A_7C15;
+        ulong z = state;
+        z = (z ^ (z >> 30)) * 0xBF58_476D_1CE4_E5B9;
+        z = (z ^ (z >> 27)) * 0x94D0_49BB_1331_11EB;
+        z ^= z >> 31;
+        return (z >> 40) * (1f / 8388608f) - 1f;
     }
 
     static Fixture Bytes(string name, string format, byte[] payload, JsonObject parms)
