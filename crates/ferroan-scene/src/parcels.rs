@@ -25,13 +25,15 @@
 //
 // Ported to Rust for Ferroan from:
 //   Source/OpenSim.Data.SQLite/SQLiteSimulationData.cs
-//   Source/OpenSim.Framework/{LandData,ViewerDaycycle,ViewerEnvironment,ViewerSky}.cs
+//   Source/OpenSim.Framework/{LandData,ViewerDaycycle,ViewerEnvironment,ViewerSky,ViewerWater}.cs
 //   Source/OpenSim.Region.CoreModules/World/Land/{LandObject,LandManagementModule}.cs
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! SQLite land rows and the immutable region parcel map, in four-metre cells.
+
+mod vector_text;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -376,8 +378,9 @@ async fn load_rows(
 
     let mut access = HashMap::<Uuid, Vec<LandAccess>>::new();
     {
-        let query =
-            format!("SELECT a.LandUUID,a.AccessUUID,a.Flags {REGION_ACCESS} ORDER BY a.rowid");
+        let query = format!(
+            "SELECT a.LandUUID,a.AccessUUID,a.Flags {REGION_ACCESS} GROUP BY a.LandUUID,a.AccessUUID,a.Flags ORDER BY min(a.rowid)"
+        );
         let mut stream = sqlx::query(&query).bind(&region).fetch(&mut *tx);
         while let Some(row) = stream.try_next().await? {
             access
@@ -464,10 +467,16 @@ trait EnvironmentNode: Sized {
     fn field(&self, key: &str) -> &Self;
     fn values(&self) -> Option<impl Iterator<Item = &Self>>;
     fn elements(&self) -> &[Self];
-    fn text(&self) -> &str;
+    fn string_value(&self) -> Option<&str>;
+    fn is_type(&self, name: &str) -> bool {
+        self.string_value() == Some(name)
+    }
 }
 
 impl EnvironmentNode for Llsd {
+    fn is_type(&self, name: &str) -> bool {
+        self.as_str() == name
+    }
     fn field(&self, key: &str) -> &Self {
         self.get(key)
     }
@@ -477,8 +486,12 @@ impl EnvironmentNode for Llsd {
     fn elements(&self) -> &[Self] {
         self.as_array()
     }
-    fn text(&self) -> &str {
-        self.as_str()
+    fn string_value(&self) -> Option<&str> {
+        if let Llsd::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
     }
 }
 
@@ -492,21 +505,66 @@ impl EnvironmentNode for Value {
     fn elements(&self) -> &[Self] {
         self.as_array().map(Vec::as_slice).unwrap_or_default()
     }
-    fn text(&self) -> &str {
-        self.as_str().unwrap_or_default()
+    fn string_value(&self) -> Option<&str> {
+        // Empty JSON strings deserialize as an undefined OSD.
+        self.as_str().filter(|s| !s.is_empty())
     }
+}
+
+fn valid_vectors(node: &impl EnvironmentNode, fields: &[(&str, vector_text::Components)]) -> bool {
+    fields.iter().all(|(key, kind)| {
+        node.field(key)
+            .string_value()
+            .is_none_or(|s| vector_text::accepts(s, *kind))
+    })
 }
 
 /// DayCycle.FromOSD reads every frame and the water track plus four sky tracks.
 /// It skips absent or differently typed containers, but requires maps inside them.
 fn valid_day_cycle(env: &impl EnvironmentNode) -> bool {
+    use vector_text::Components::{Pair, Rotation, Triple};
     let cycle = env.field("day_cycle");
     if let Some(frames) = cycle.field("frames").values() {
         for frame in frames {
             if frame.values().is_none() {
                 return false;
             }
-            if frame.field("type").text() == "sky" {
+            let kind = frame.field("type");
+            if kind.is_type("water")
+                && !valid_vectors(
+                    frame,
+                    &[
+                        ("normal_scale", Triple),
+                        ("water_fog_color", Triple),
+                        ("wave1_direction", Pair),
+                        ("wave2_direction", Pair),
+                    ],
+                )
+            {
+                return false;
+            }
+            if kind.is_type("sky") {
+                if !valid_vectors(
+                    frame,
+                    &[
+                        ("glow", Triple),
+                        ("cloud_color", Triple),
+                        ("cloud_pos_density1", Triple),
+                        ("cloud_pos_density2", Triple),
+                        ("cloud_scroll_rate", Pair),
+                        ("moon_rotation", Rotation),
+                        ("sun_rotation", Rotation),
+                    ],
+                ) || !valid_vectors(
+                    frame.field("legacy_haze"),
+                    &[
+                        ("ambient", Triple),
+                        ("blue_density", Triple),
+                        ("blue_horizon", Triple),
+                    ],
+                ) {
+                    return false;
+                }
                 // SkyData reads the first two absorption layers and one layer
                 // each for Mie and Rayleigh scattering, when supplied.
                 for (key, count) in [

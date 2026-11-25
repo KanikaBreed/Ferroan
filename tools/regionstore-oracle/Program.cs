@@ -1505,16 +1505,38 @@ static void LoadParcels(string path, string seed, string region, string pin)
         store.Initialise(connection);
         var parcels = store.LoadLandObjects(new UUID(region));
         var defaults = new LandData { GlobalID = UUID.Zero };
-        string[] environments = {
+        List<string> environments = new() {
             "{}", "null", "unknown", "{\"env_version\":2.5}", "{\"env_version\":true}",
             "{\"env_version\":\"-1.6\"}", "{\"env_version\":2147483649}",
             """{"env_version":5,"day_cycle":{"frames":{"bad":7}}}""",
             """{"env_version":5,"day_cycle":{"tracks":[[],[],[],[],[7]]}}""",
             """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","absorption_config":[{},7]}}}}""",
             """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","mie_config":[{},7]}},"tracks":[[{}],0,[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","rayleigh_config":[7]}}}}""",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>sky</key><map><key>type</key><string>sky</string><key>glow</key><string/></map></map></map></map></llsd>",
             "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'tracks':[[i7]]}}",
             "<llsd><map><key>env_version</key><integer>42</integer></map></llsd>"
         };
+        void VectorProbe(string type, string key, object value, bool haze = false)
+        {
+            Dictionary<string, object> frame = new() { ["type"] = type };
+            if (haze) frame["legacy_haze"] = new Dictionary<string, object> { [key] = value };
+            else frame[key] = value;
+            environments.Add(JsonSerializer.Serialize(new { env_version = 5, day_cycle = new { frames = new { probe = frame } } }));
+        }
+        foreach (string key in new[] { "glow", "cloud_color", "cloud_pos_density1", "cloud_pos_density2", "cloud_scroll_rate", "moon_rotation", "sun_rotation" })
+            VectorProbe("sky", key, "x");
+        foreach (string key in new[] { "ambient", "blue_density", "blue_horizon" })
+            VectorProbe("sky", key, "bad", haze: true);
+        foreach (string key in new[] { "normal_scale", "water_fog_color", "wave1_direction", "wave2_direction" })
+            VectorProbe("water", key, "bad");
+        foreach (string value in new[] { "<1,2,3>", "1,2,3 trailing", "", "1,2", "1,2,inf", "1,2,Infinity", "1,2,∞", "1,2,+NaN" })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "1,2", "prefix<1,2>tail", "1,2 extra" })
+            VectorProbe("water", "wave1_direction", value);
+        foreach (string value in new[] { "bad", "<1,2,3>", "1,2,3", "1,2,3,4", "<1,2,3,4>tail" })
+            VectorProbe("sky", "sun_rotation", value);
+        VectorProbe("sky", "glow", new[] { 1, 2 });
         Console.WriteLine(JsonSerializer.Serialize(new {
             pin, region, parcels = parcels.Select(ParcelFields), defaults = ParcelFields(defaults),
             environments = environments.Select(text => new {
