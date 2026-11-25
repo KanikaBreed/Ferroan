@@ -54,8 +54,14 @@ pub enum AvatarError {
 }
 
 /// Fetch when `AvatarServerURI` is set. An empty URI is the constructor appearance.
-pub async fn load(uri: &str, agent_id: Uuid, first_name: &str, last_name: &str) -> AvatarWire {
-    let mut wire = AvatarWire::standing(agent_id, first_name, last_name);
+pub async fn load(
+    uri: &str,
+    agent_id: Uuid,
+    local_id: u32,
+    first_name: &str,
+    last_name: &str,
+) -> AvatarWire {
+    let mut wire = AvatarWire::standing(agent_id, local_id, first_name, last_name);
     if uri.is_empty() {
         return wire;
     }

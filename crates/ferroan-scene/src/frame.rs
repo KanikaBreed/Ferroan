@@ -21,10 +21,13 @@
 //! every attached viewer's feed. The circuit drains its feed. Arrivals,
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]).
+//! The frame and circuit share avatar local IDs as in
+//! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
+//! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -192,6 +195,7 @@ enum Request {
     /// A viewer's feed. The answer is the avatar's local id.
     Attach {
         agent: Uuid,
+        local_id: u32,
         link: ViewerLink,
         reply: oneshot::Sender<u32>,
     },
@@ -276,8 +280,6 @@ struct Scene {
     presences: HashMap<Uuid, Avatar>,
     viewers: HashMap<Uuid, Viewer>,
     board: AvatarBoard,
-    /// `Scene.AllocateLocalId`.
-    next_local_id: u32,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -289,6 +291,7 @@ pub struct TerrainFrame {
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     has_map: bool,
+    pub local_ids: Arc<LocalIds>,
     board: AvatarBoard,
 }
 
@@ -315,7 +318,6 @@ impl TerrainFrame {
             presences: HashMap::new(),
             viewers: HashMap::new(),
             board: board.clone(),
-            next_local_id: first_local_id(),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -330,6 +332,7 @@ impl TerrainFrame {
             wake,
             thread: Some(thread),
             has_map,
+            local_ids: Arc::default(),
             board,
         })
     }
@@ -343,8 +346,23 @@ impl TerrainFrame {
     /// local id, which the full update and every terse block carry. A
     /// second attach for the agent replaces the first and keeps its id.
     pub fn attach(&self, agent: Uuid, link: ViewerLink) -> Result<Pending<u32>, TerrainError> {
+        self.attach_with_id(agent, link, self.local_ids.allocate())
+    }
+
+    /// Use the reserved avatar id in every observer's feed.
+    pub fn attach_with_id(
+        &self,
+        agent: Uuid,
+        link: ViewerLink,
+        local_id: u32,
+    ) -> Result<Pending<u32>, TerrainError> {
         let (reply, answer) = pending();
-        self.request(Request::Attach { agent, link, reply })?;
+        self.request(Request::Attach {
+            agent,
+            local_id,
+            link,
+            reply,
+        })?;
         Ok(answer)
     }
 
@@ -645,10 +663,15 @@ fn answer(
             });
             let _ = reply.send(leaving);
         }
-        Request::Attach { agent, link, reply } => {
+        Request::Attach {
+            agent,
+            local_id,
+            link,
+            reply,
+        } => {
             let local_id = match scene.viewers.get(&agent) {
                 Some(viewer) => viewer.local_id,
-                None => scene.allocate_local_id(),
+                None => local_id,
             };
             scene.viewers.insert(
                 agent,
@@ -903,16 +926,25 @@ fn first_local_id() -> u32 {
     nanos % (u32::MAX / 4)
 }
 
-impl Scene {
-    /// The next local id. Zero is never handed out. This is the region's
-    /// only allocator: avatars take their ids here, and a prim rezzed or
-    /// loaded later must take its id here too, or ids can collide.
-    fn allocate_local_id(&mut self) -> u32 {
-        self.next_local_id = self.next_local_id.wrapping_add(1);
-        if self.next_local_id == 0 {
-            self.next_local_id = 1;
+/// One id space for the region, including its frame and outbound avatar packets.
+#[derive(Debug)]
+pub struct LocalIds(AtomicU32);
+
+impl Default for LocalIds {
+    fn default() -> Self {
+        Self(AtomicU32::new(first_local_id()))
+    }
+}
+
+impl LocalIds {
+    /// SceneBase.AllocateLocalId, Pin8 c401bceecd. Skip zero on wrap.
+    pub fn allocate(&self) -> u32 {
+        loop {
+            let id = self.0.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if id != 0 {
+                return id;
+            }
         }
-        self.next_local_id
     }
 }
 

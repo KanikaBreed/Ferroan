@@ -30,8 +30,8 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove,
-    SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
+    LoginPose, LoginScene, PENDING_LOGINS, RootArrival, SceneAnswer, SceneCall, SceneDeparture,
+    SceneMove, SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, kill_packets};
 pub use event_queue::EventQueueError;

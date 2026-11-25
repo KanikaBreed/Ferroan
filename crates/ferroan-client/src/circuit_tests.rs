@@ -748,7 +748,12 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
 async fn arrival_sends_the_avatar_update_and_unbaked_appearance() {
     let expect = identity(Uuid::from_u128(7));
     let config = ArrivalConfig {
-        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        avatar: Some(crate::AvatarWire::standing(
+            expect.agent_id,
+            1,
+            "Test",
+            "User",
+        )),
         ..ArrivalConfig::default()
     };
     let mut state = State::new(captured_config(), config);
@@ -981,6 +986,59 @@ fn use_circuit(expect: CircuitExpect) -> Vec<u8> {
     message.circuit_code.session_id = expect.session_id;
     message.circuit_code.code = expect.circuit_code;
     wire(&message, 1, &[])
+}
+
+fn limit_refusals(id: &str) -> u64 {
+    let prefix = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"refuse\"}} ");
+    ferroan_diag::metrics()
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_full_circuit_inbox_reports_and_keeps_the_first_128_datagrams() {
+    let inbox = Inbox::new();
+    let before = limit_refusals(UDP_CIRCUIT_INBOX);
+    for n in 0..=128 {
+        inbox.push(Datagram {
+            from: peer(),
+            bytes: vec![n],
+        });
+    }
+    assert_eq!(limit_refusals(UDP_CIRCUIT_INBOX), before + 1);
+    for n in 0..128 {
+        assert_eq!(inbox.pop().unwrap().bytes, [n]);
+    }
+    assert!(inbox.pop().is_none());
+}
+
+#[tokio::test]
+async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
+    let server = CircuitServer::bind().await.unwrap();
+    let shared = &server.inner.shared;
+    let before = limit_refusals(UDP_PENDING_LOGINS);
+    let submit = |port: u16| {
+        let from = SocketAddr::from(([127, 0, 0, 1], port));
+        assert_eq!(
+            route(
+                shared,
+                from,
+                use_circuit(identity(Uuid::from_u128(u128::from(port))))
+            ),
+            Some((from, 1))
+        );
+    };
+    for port in 1..=61 {
+        submit(port);
+    }
+    submit(1); // An existing endpoint moves to the back without displacing another.
+    assert_eq!(limit_refusals(UDP_PENDING_LOGINS), before);
+    submit(62);
+    assert_eq!(limit_refusals(UDP_PENDING_LOGINS), before + 1);
+    let pending = &shared.fan.lock().unwrap().pending;
+    let ports: Vec<_> = pending.iter().map(|d| d.from.port()).collect();
+    assert_eq!(ports, (3..=61).chain([1, 62]).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -1653,7 +1711,12 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     let expect = identity(Uuid::from_u128(7));
     let config = ArrivalConfig {
         position: [10.0, 20.0, 30.0],
-        avatar: Some(crate::AvatarWire::standing(expect.agent_id, "Test", "User")),
+        avatar: Some(crate::AvatarWire::standing(
+            expect.agent_id,
+            1,
+            "Test",
+            "User",
+        )),
         ..ArrivalConfig::default()
     };
     let mut state = State::new(captured_config(), config);
@@ -1800,7 +1863,7 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
     let mut state = State::new(captured_config(), arrival);
     state.peer = Some(peer());
     let io = FakeIo::default();
-    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), "Chat", "Bot");
+    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), 9, "Chat", "Bot");
     other.local_id = 77;
     let live = crate::LiveAvatar {
         collision_plane: [0.0, 0.0, 0.0, 1.0],

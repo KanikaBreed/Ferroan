@@ -106,7 +106,7 @@ use ferroan_client::{
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 const MAX_BODY: usize = 1024 * 1024;
@@ -118,10 +118,10 @@ const VIA_LOGIN: u32 = 1 << 7;
 pub const ROOT_AGENT_LIMIT: usize = 40;
 /// Queued accepts: the ordinary roots plus the staff and god bypass.
 pub const ADMISSION_QUEUE: usize = ROOT_AGENT_LIMIT + ROOT_BYPASS_LIMIT;
-/// Two overlapping logins, four secrets each, for every queued root.
-/// [`ferroan_log::MAX_SECRETS`] has to stay equal to this or a full region
-/// fails open and leaves a session id in a log line.
-const ADMISSION_SECRET_SLOTS: usize = ADMISSION_QUEUE * 2 * 4;
+const _: () = assert!(ferroan_client::PENDING_LOGINS == ADMISSION_QUEUE);
+/// One region's worth of circuits and one region's worth of overlapping admissions.
+pub const DISPATCH_CAPACITY: usize = ADMISSION_QUEUE * 2;
+const ADMISSION_SECRET_SLOTS: usize = DISPATCH_CAPACITY * 4;
 const _: () = assert!(
     ferroan_log::MAX_SECRETS == ADMISSION_SECRET_SLOTS,
     "log.redact-secrets does not cover the root and bypass limits"
@@ -141,6 +141,78 @@ enum SimulationError {
     Refused(String),
 }
 
+/// A slot covers CreateAgent verification, its queued accept and the circuit through final
+/// cleanup. Generations of one agent share a lifecycle lock across all three stages.
+#[derive(Default)]
+struct DispatchSlots {
+    total: usize,
+    agents: HashMap<Uuid, (usize, Arc<AgentDispatch>)>,
+}
+
+#[derive(Default)]
+struct AgentDispatch {
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    // A far hop removes the session row before its circuit finishes.
+    // Keep the completion signal as long as any generation holds a slot.
+    tail: Mutex<Option<watch::Receiver<()>>>,
+}
+
+struct DispatchSlot {
+    slots: Arc<Mutex<DispatchSlots>>,
+    agent: Uuid,
+    lane: Arc<AgentDispatch>,
+}
+
+impl DispatchSlot {
+    fn reserve(slots: &Arc<Mutex<DispatchSlots>>, agent: Uuid) -> Result<Self, &'static str> {
+        let mut state = slots.lock().unwrap_or_else(|poison| poison.into_inner());
+        let overlaps = state.total - state.agents.len();
+        let limit = if state.agents.contains_key(&agent) && overlaps >= ADMISSION_QUEUE {
+            Some((
+                ferroan_diag::REGION_OVERLAPPING_LOGINS,
+                ADMISSION_QUEUE,
+                overlaps,
+            ))
+        } else if state.total >= DISPATCH_CAPACITY {
+            Some((
+                ferroan_diag::REGION_DISPATCH,
+                DISPATCH_CAPACITY,
+                state.total,
+            ))
+        } else {
+            None
+        };
+        if let Some((id, cap, used)) = limit {
+            ferroan_diag::refuse(id, Kind::Hard, cap as u64, (used + 1) as u64, "/agent");
+            return Err("Region is busy completing a login or logout");
+        }
+        state.total += 1;
+        let (used, lane) = state.agents.entry(agent).or_default();
+        *used += 1;
+        Ok(Self {
+            slots: Arc::clone(slots),
+            agent,
+            lane: Arc::clone(lane),
+        })
+    }
+}
+
+impl Drop for DispatchSlot {
+    fn drop(&mut self) {
+        let mut state = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.total -= 1;
+        if let Some((used, _)) = state.agents.get_mut(&self.agent) {
+            *used -= 1;
+            if *used == 0 {
+                state.agents.remove(&self.agent);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SimulationState {
     region_id: Uuid,
@@ -151,7 +223,7 @@ pub struct SimulationState {
     region_size: [u32; 2],
     presence: PresenceClient,
     control_plane: ControlPlaneAccess,
-    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    dispatch_slots: Arc<Mutex<DispatchSlots>>,
     admission_open: Arc<AtomicBool>,
     /// One envelope for the lifecycle-lock wait and the Presence verify.
     /// Robust's CreateAgent connector gives up at 30 s; this stays under it.
@@ -187,20 +259,16 @@ struct ActiveSession {
     /// Set when this generation is removed while it is still the root.
     rooted_when_replaced: Arc<AtomicBool>,
     cancel: Option<oneshot::Sender<CircuitStop>>,
-    /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
-    /// completes it after logout notification.
-    logout_done: Option<oneshot::Receiver<()>>,
-    /// Child update and the promotion back to root. Shared with the circuit.
+    /// Cloned by a successor or a failed verification that must wait for logout.
+    logout_done: watch::Receiver<()>,
+    /// Shared with the circuit that can promote this child.
     slot: ReturnSlot,
 }
 
 /// Keeps the accepted seed and circuit reserved until logout, timeout or failure.
 /// Do not log this value: it includes session credentials received from Robust.
 pub struct AcceptedAgent {
-    /// Completed when this agent is dropped, after its logout notification.
-    /// Nothing reads the sender; dropping it is the signal.
-    #[allow(dead_code)]
-    logout_done: Option<oneshot::Sender<()>>,
+    predecessor: Option<watch::Receiver<()>>,
     pub accepted_at: tokio::time::Instant,
     pub expect: CircuitExpect,
     pub secure_session_id: Uuid,
@@ -221,11 +289,25 @@ pub struct AcceptedAgent {
     pub seeds_sent: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
+    // Drop last, after the UDP serve, frame removal, service writes and generation lease.
+    _logout_done: watch::Sender<()>,
 }
 
 impl AcceptedAgent {
+    pub async fn wait_for_predecessor(&mut self) {
+        if let Some(mut done) = self.predecessor.take() {
+            let _ = done.changed().await;
+        }
+    }
+
     pub async fn lock_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self._lease.lifecycle.clone().lock_owned().await
+        self._lease
+            .dispatch_slot
+            .lane
+            .lifecycle
+            .clone()
+            .lock_owned()
+            .await
     }
 
     pub fn is_current(&self) -> bool {
@@ -331,7 +413,7 @@ struct SessionLease {
     agent_id: Uuid,
     generation: Uuid,
     caps: CapsRegistry,
-    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    dispatch_slot: DispatchSlot,
     meters: Arc<RegionMeters>,
     departed: Arc<AtomicBool>,
     rooted_when_replaced: Arc<AtomicBool>,
@@ -388,7 +470,7 @@ impl SimulationState {
             region_size: config.size,
             presence: PresenceClient::new(&config.presence_server_uri),
             control_plane: config.control_plane.clone(),
-            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            dispatch_slots: Default::default(),
             admission_open: Arc::new(AtomicBool::new(true)),
             create_agent_budget: Duration::from_secs(25),
             root_limit: ROOT_AGENT_LIMIT,
@@ -519,10 +601,21 @@ impl SimulationState {
         self.accept_with_level(fields, None)
     }
 
+    #[cfg(test)]
     fn accept_with_level(
         &self,
         fields: AgentFields,
         level: Option<i32>,
+    ) -> Result<(), &'static str> {
+        let slot = DispatchSlot::reserve(&self.dispatch_slots, fields.agent_id)?;
+        self.accept_in_slot(fields, level, slot)
+    }
+
+    fn accept_in_slot(
+        &self,
+        fields: AgentFields,
+        level: Option<i32>,
+        dispatch_slot: DispatchSlot,
     ) -> Result<(), &'static str> {
         if !self.admission_open.load(Ordering::Acquire) {
             return Err("Logins to this region are disabled");
@@ -571,7 +664,13 @@ impl SimulationState {
         let generation = Uuid::new_v4();
         let departed = Arc::new(AtomicBool::new(false));
         let (cancel, cancelled) = oneshot::channel();
-        let (logout_done, logout_wait) = oneshot::channel();
+        let (logout_done, logout_wait) = watch::channel(());
+        let predecessor = dispatch_slot
+            .lane
+            .tail
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .replace(logout_wait.clone());
         let slot = ReturnSlot::new(fields.child);
         let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
@@ -584,7 +683,7 @@ impl SimulationState {
                 departed: Arc::clone(&departed),
                 rooted_when_replaced: Arc::clone(&rooted_when_replaced),
                 cancel: Some(cancel),
-                logout_done: Some(logout_wait),
+                logout_done: logout_wait,
                 slot: slot.clone(),
             },
         );
@@ -595,14 +694,15 @@ impl SimulationState {
             agent_id: fields.agent_id,
             generation,
             caps: self.caps.clone(),
-            lifecycle: self.lifecycle.clone(),
+            dispatch_slot,
             meters: self.meters.clone(),
             departed,
             rooted_when_replaced,
             open_children: self.open_children.clone(),
         };
         let accepted = AcceptedAgent {
-            logout_done: Some(logout_done),
+            _logout_done: logout_done,
+            predecessor,
             accepted_at: tokio::time::Instant::now(),
             expect: CircuitExpect {
                 agent_id: fields.agent_id,
@@ -648,7 +748,7 @@ impl SimulationState {
 
     /// A failed verify of an existing root closes that root. The session stays
     /// until the dispatcher drops the generation lease after `notify_logout`.
-    fn begin_root_close(&self, agent: Uuid) -> Option<oneshot::Receiver<()>> {
+    fn begin_root_close(&self, agent: Uuid) -> Option<watch::Receiver<()>> {
         let mut sessions = self
             .sessions
             .lock()
@@ -660,7 +760,7 @@ impl SimulationState {
         if let Some(cancel) = session.cancel.take() {
             let _ = cancel.send(CircuitStop::Disable);
         }
-        session.logout_done.take()
+        Some(session.logout_done.clone())
     }
 
     /// The root becomes a child before `UpdateAgent`. Caps and the circuit stay.
@@ -996,6 +1096,11 @@ async fn handle(
     if let Some(reason) = state.admission_for(agent, level, fields.child) {
         return create_refused(reason, peer);
     }
+    let slot = match DispatchSlot::reserve(&state.dispatch_slots, agent) {
+        Ok(slot) => slot,
+        Err(reason) => return create_refused(reason, peer),
+    };
+    let gate = Arc::clone(&slot.lane.lifecycle);
     // Same session, not a login: keep the circuit and the caps. A failed
     // presence check must not log this avatar out.
     if fields.child && !fields.via_login && state.same_session(agent, fields.session_id) {
@@ -1005,7 +1110,7 @@ async fn handle(
         if lock_wait.is_zero() {
             return create_refused(busy, peer);
         }
-        let Ok(_lifecycle) = tokio::time::timeout(lock_wait, state.lifecycle.lock()).await else {
+        let Ok(_lifecycle) = tokio::time::timeout(lock_wait, gate.lock()).await else {
             return create_refused(busy, peer);
         };
         let answer = match state.reuse_child(&fields) {
@@ -1026,7 +1131,7 @@ async fn handle(
     if lock_wait.is_zero() {
         return create_refused(busy, peer);
     }
-    let Ok(lifecycle) = tokio::time::timeout(lock_wait, state.lifecycle.lock()).await else {
+    let Ok(lifecycle) = tokio::time::timeout(lock_wait, gate.lock()).await else {
         return create_refused(busy, peer);
     };
     let verify_budget = remaining();
@@ -1041,13 +1146,14 @@ async fn handle(
         .await
         .unwrap_or(false);
     if !verified {
-        drop(lifecycle);
         // Successive logins still verify before replacing. Only a failed verify
         // of an existing root closes that root and waits for its LoggedOut.
-        if let Some(done) = state.begin_root_close(agent) {
+        let done = state.begin_root_close(agent);
+        drop(lifecycle);
+        if let Some(mut done) = done {
             let wait = remaining();
             if !wait.is_zero() {
-                let _ = tokio::time::timeout(wait, done).await;
+                let _ = tokio::time::timeout(wait, done.changed()).await;
             }
         }
         return create_refused(
@@ -1061,7 +1167,7 @@ async fn handle(
     let _lifecycle = lifecycle;
     // A child keeps the connection open. A login still closes it.
     let child_create = fields.child;
-    let answer = match state.accept_with_level(fields, level) {
+    let answer = match state.accept_in_slot(fields, level, slot) {
         Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
@@ -2081,7 +2187,15 @@ mod tests {
         assert!(!same_session.is_current());
         assert!(current.is_current());
         let guard = current.lock_lifecycle().await;
-        assert!(state.lifecycle.try_lock().is_err());
+        assert!(
+            same_session
+                ._lease
+                .dispatch_slot
+                .lane
+                .lifecycle
+                .try_lock()
+                .is_err()
+        );
         state.stop_accepting();
         assert_eq!(
             state.accept(synthetic_agent()),
@@ -2483,6 +2597,34 @@ mod tests {
             .unwrap_or(0)
     }
 
+    #[test]
+    fn dispatch_caps_replacements_and_leaves_room_for_other_agents() {
+        let slots = Arc::new(Mutex::new(DispatchSlots::default()));
+        let agent = Uuid::from_u128(1);
+        let before = ferroan_diag::metrics();
+        let mut held = Vec::new();
+        for _ in 0..=ADMISSION_QUEUE {
+            held.push(DispatchSlot::reserve(&slots, agent).unwrap());
+        }
+        assert!(DispatchSlot::reserve(&slots, agent).is_err());
+        for n in 2..=ADMISSION_QUEUE {
+            held.push(DispatchSlot::reserve(&slots, Uuid::from_u128(n as u128)).unwrap());
+        }
+        assert_eq!(held.len(), DISPATCH_CAPACITY);
+        assert!(DispatchSlot::reserve(&slots, Uuid::from_u128(999)).is_err());
+        let after = ferroan_diag::metrics();
+        for limit in [
+            ferroan_diag::REGION_DISPATCH,
+            ferroan_diag::REGION_OVERLAPPING_LOGINS,
+        ] {
+            assert!(refuse_count(&after, limit) > refuse_count(&before, limit));
+        }
+        drop(held);
+        let state = slots.lock().unwrap();
+        assert_eq!(state.total, 0);
+        assert!(state.agents.is_empty());
+    }
+
     fn other_agent(id: u128, code: u32) -> AgentFields {
         let mut fields = synthetic_agent();
         fields.agent_id = Uuid::from_u128(id);
@@ -2854,7 +2996,7 @@ mod tests {
 
         state.create_agent_budget = Duration::from_millis(200);
         let (release_tx, release_rx) = oneshot::channel();
-        let lifecycle = state.lifecycle.clone();
+        let lifecycle = root._lease.dispatch_slot.lane.lifecycle.clone();
         let holder = tokio::spawn(async move {
             let guard = lifecycle.lock_owned().await;
             let _ = release_rx.await;
@@ -2862,7 +3004,7 @@ mod tests {
         });
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if state.lifecycle.try_lock().is_err() {
+                if root._lease.dispatch_slot.lane.lifecycle.try_lock().is_err() {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -3558,9 +3700,21 @@ mod tests {
         next.circuit_code = 70;
         next.caps_path = Uuid::from_u128(71).to_string();
         state.accept(next).unwrap();
-        let current = receiver.recv().await.unwrap();
+        let mut current = receiver.recv().await.unwrap();
+        let mut old = old;
+        assert!(matches!(
+            old.predecessor.as_mut().unwrap().has_changed(),
+            Ok(false)
+        ));
+        drop(accepted);
+        old.wait_for_predecessor().await;
+        assert!(matches!(
+            current.predecessor.as_mut().unwrap().has_changed(),
+            Ok(false)
+        ));
         state.note_open_child(agent, end);
         drop(old);
+        current.wait_for_predecessor().await;
         assert_eq!(
             state.take_open_child(agent).map(|end| end.region_id),
             Some(Uuid::from_u128(7))
