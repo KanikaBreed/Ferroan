@@ -183,16 +183,16 @@ impl HandshakeConfig {
         self.terrain_pbr = stored.terrain_pbr;
         self.terrain_start_heights = stored.terrain_start_heights;
         self.terrain_height_ranges = stored.terrain_height_ranges;
-        let mut flags = self.region_flags & !SETTINGS_FLAG_MASK;
-        if stored.allow_damage {
-            flags |= 1 << 0;
-        }
         self.sim_access = match stored.maturity {
             0 => 13,
             1 => 21,
             2 => 42,
             _ => 0,
         };
+        let mut flags = self.region_flags & !SETTINGS_FLAG_MASK;
+        if stored.allow_damage {
+            flags |= 1 << 0;
+        }
         if stored.block_terraform {
             flags |= 1 << 6;
         }

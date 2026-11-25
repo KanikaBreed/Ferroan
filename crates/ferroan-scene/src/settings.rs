@@ -40,8 +40,8 @@
 //! and the lower limit to −200..0. Spawn points stay in insertion order, as
 //! pitch, yaw and distance relative to the telehub. MySQL and PostgreSQL are
 //! left unread. A null or unreadable cell keeps the fresh default and the
-//! region still loads (TB70, D53). A null cache id stays absent so the caller
-//! keeps the id it already has.
+//! region still loads (TB70, D53). A terrain save persists a missing cache id.
+//! Otherwise a null cache id leaves the handshake on its existing id.
 
 use ferroan_db::{Backend, Pool};
 use sqlx::Row;
@@ -109,7 +109,8 @@ pub struct RegionSettings {
     pub parcel_tile_id: Uuid,
     pub god_block_search: bool,
     pub casino: bool,
-    /// `None` when the cell is null or unreadable. The caller keeps its id.
+    /// A terrain save initializes a null or unreadable cell. Otherwise the
+    /// caller keeps its id when this is `None`.
     pub cache_id: Option<Uuid>,
     pub spawn_points: Vec<SpawnPoint>,
 }
@@ -155,39 +156,7 @@ pub async fn open_region_settings(
     } else {
         insert_default_settings(sqlite, &wanted).await?
     };
-    let mut settings = read_settings(&row, region)?;
-    if settings.terrain_pbr.iter().all(Uuid::is_nil) {
-        // On scene startup C# saves the classic textures as the PBR set.
-        // Recheck under the write lock before replacing a concurrently edited set.
-        let mut tx = sqlite
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(store_error)?;
-        let current = sqlx::query(SETTINGS_SQL)
-            .bind(&wanted)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        settings = read_settings(&current, region)?;
-        if settings.terrain_pbr.iter().all(Uuid::is_nil) {
-            settings.terrain_pbr = settings.terrain_textures;
-            let ids = settings.terrain_textures.map(|id| id.to_string());
-            sqlx::query(
-                "UPDATE regionsettings SET terrain_texture_1=?1, terrain_texture_2=?2,
-                 terrain_texture_3=?3, terrain_texture_4=?4, TerrainPBR1=?1,
-                 TerrainPBR2=?2, TerrainPBR3=?3, TerrainPBR4=?4 WHERE regionUUID=?5",
-            )
-            .bind(&ids[0])
-            .bind(&ids[1])
-            .bind(&ids[2])
-            .bind(&ids[3])
-            .bind(&wanted)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        }
-        tx.commit().await.map_err(store_error)?;
-    }
+    let settings = resolve_terrain_settings(sqlite, read_settings_row(&row, region)?).await?;
     let spawns = sqlx::query(SPAWN_SQL)
         .bind(&wanted)
         .fetch_all(sqlite)
@@ -201,6 +170,64 @@ pub async fn open_region_settings(
         spawn_points,
         ..settings
     }))))
+}
+
+fn needs_terrain_save(settings: &RegionSettings) -> bool {
+    settings.terrain_textures.iter().any(Uuid::is_nil)
+        || settings.terrain_pbr.iter().all(Uuid::is_nil)
+}
+
+async fn resolve_terrain_settings(
+    sqlite: &sqlx::SqlitePool,
+    stored: RegionSettings,
+) -> Result<RegionSettings, ObjectError> {
+    if !needs_terrain_save(&stored) {
+        return Ok(stored);
+    }
+
+    // Another opener or editor may have repaired the row since the first read.
+    let region = stored.region_id;
+    let wanted = region.to_string();
+    let mut tx = sqlite
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(store_error)?;
+    let row = sqlx::query(SETTINGS_SQL)
+        .bind(&wanted)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    let mut current = read_settings_row(&row, region)?;
+    if needs_terrain_save(&current) {
+        for (id, default) in current.terrain_textures.iter_mut().zip(DEFAULT_TEXTURES) {
+            if id.is_nil() {
+                *id = Uuid::from_u128(default);
+            }
+        }
+        let pbr_columns = if current.terrain_pbr.iter().all(Uuid::is_nil) {
+            current.terrain_pbr = current.terrain_textures;
+            ", TerrainPBR1=?1, TerrainPBR2=?2, TerrainPBR3=?3, TerrainPBR4=?4"
+        } else {
+            ""
+        };
+        let update = format!("UPDATE regionsettings SET terrain_texture_1=?1, terrain_texture_2=?2,
+            terrain_texture_3=?3, terrain_texture_4=?4, cacheID=?5{pbr_columns} WHERE regionUUID=?6");
+        let ids = current.terrain_textures.map(|id| id.to_string());
+        let cache_id = current.cache_id.unwrap_or_else(Uuid::new_v4);
+        sqlx::query(&update)
+            .bind(&ids[0])
+            .bind(&ids[1])
+            .bind(&ids[2])
+            .bind(&ids[3])
+            .bind(cache_id.to_string())
+            .bind(&wanted)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        current.cache_id = Some(cache_id);
+    }
+    tx.commit().await.map_err(store_error)?;
+    Ok(current)
 }
 
 async fn insert_default_settings(
@@ -275,15 +302,15 @@ const SPAWN_SQL: &str = "\
 SELECT Yaw AS yaw, Pitch AS pitch, Distance AS distance \
 FROM spawn_points WHERE RegionID = ?1 ORDER BY rowid";
 
-fn read_settings(
+fn read_settings_row(
     row: &sqlx::sqlite::SqliteRow,
     region: Uuid,
 ) -> Result<RegionSettings, ObjectError> {
     let textures = [
-        terrain_texture(uuid_cell(row, "terrain_texture_1")?, 0),
-        terrain_texture(uuid_cell(row, "terrain_texture_2")?, 1),
-        terrain_texture(uuid_cell(row, "terrain_texture_3")?, 2),
-        terrain_texture(uuid_cell(row, "terrain_texture_4")?, 3),
+        uuid_cell(row, "terrain_texture_1")?,
+        uuid_cell(row, "terrain_texture_2")?,
+        uuid_cell(row, "terrain_texture_3")?,
+        uuid_cell(row, "terrain_texture_4")?,
     ];
     let pbr = [
         uuid_cell(row, "terrain_pbr_1")?,
@@ -350,14 +377,6 @@ fn read_spawn(row: &sqlx::sqlite::SqliteRow) -> Result<SpawnPoint, ObjectError> 
         pitch: finite_f32(number(row, "pitch", 0.0)?),
         distance: finite_f32(number(row, "distance", 0.0)?),
     })
-}
-
-fn terrain_texture(id: Uuid, slot: usize) -> Uuid {
-    if id.is_nil() {
-        Uuid::from_u128(DEFAULT_TEXTURES[slot])
-    } else {
-        id
-    }
 }
 
 fn finite_f32(value: f64) -> f32 {
@@ -451,12 +470,12 @@ fn cache_id(row: &sqlx::sqlite::SqliteRow) -> Result<Option<Uuid>, ObjectError> 
         Cell::Text(text) => match text.trim().parse::<Uuid>() {
             Ok(id) => Some(id),
             Err(_) => {
-                log::warn!("region settings cacheID could not be read; the handshake keeps its id");
+                log::warn!("region settings cacheID could not be read");
                 None
             }
         },
         Cell::Int(_) | Cell::Float(_) | Cell::Bool(_) => {
-            log::warn!("region settings cacheID could not be read; the handshake keeps its id");
+            log::warn!("region settings cacheID could not be read");
             None
         }
     })
@@ -734,10 +753,11 @@ mod tests {
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
             .await
             .unwrap();
-        sqlx::query("UPDATE regionsettings SET TerrainPBR1=?1, TerrainPBR2=?1, TerrainPBR3=?1, TerrainPBR4=?1 WHERE regionUUID=?2")
+        sqlx::query("UPDATE regionsettings SET cacheID=NULL, TerrainPBR1=?1, TerrainPBR2=?1, TerrainPBR3=?1, TerrainPBR4=?1 WHERE regionUUID=?2")
             .bind(Uuid::nil().to_string()).bind(REGION).execute(&pool).await.unwrap();
         let load = || open_region_settings(&connection, region, ObjectStoreKind::Sqlite);
         let original = loaded(load().await.unwrap());
+        assert!(original.cache_id.is_some_and(|id| !id.is_nil()));
         assert_eq!(original.terrain_pbr, original.terrain_textures);
         assert_eq!(
             serde_json::json!(original.terrain_pbr.map(|id| id.to_string())),
@@ -757,10 +777,126 @@ mod tests {
             .await
             .unwrap();
         let reopened = loaded(load().await.unwrap());
+        assert_eq!(reopened.cache_id, original.cache_id);
         assert_ne!(reopened.terrain_textures, original.terrain_textures);
         assert_eq!(reopened.terrain_pbr, original.terrain_textures);
         pool.close().await;
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn regionstore_zero_classic_texture_is_saved_without_writing_partial_pbr() {
+        let (dir, connection) = copied_store();
+        let region = Uuid::parse_str(REGION).unwrap();
+        let pool = settings_test_pool(&connection).await;
+        sqlx::query(
+            "UPDATE regionsettings SET terrain_texture_2=?, cacheID=NULL WHERE regionUUID=?",
+        )
+        .bind(Uuid::nil().to_string())
+        .bind(REGION)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE TRIGGER keep_partial_pbr BEFORE UPDATE OF TerrainPBR1, TerrainPBR2, TerrainPBR3, TerrainPBR4 ON regionsettings BEGIN SELECT RAISE(ABORT, 'PBR set is populated'); END")
+            .execute(&pool).await.unwrap();
+        let load = || open_region_settings(&connection, region, ObjectStoreKind::Sqlite);
+        let first = loaded(load().await.unwrap());
+        assert_eq!(
+            serde_json::json!(first.terrain_pbr.map(|id| id.to_string())),
+            dump()["terrain_pbr"]
+        );
+        let stored: String =
+            sqlx::query_scalar("SELECT terrain_texture_2 FROM regionsettings WHERE regionUUID=?")
+                .bind(REGION)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, Uuid::from_u128(DEFAULT_TEXTURES[1]).to_string());
+        assert!(first.cache_id.is_some_and(|id| !id.is_nil()));
+        assert_eq!(loaded(load().await.unwrap()).cache_id, first.cache_id);
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn regionstore_first_insert_clears_only_its_orphan_spawn_points() {
+        let (dir, connection) = copied_store();
+        let pool = settings_test_pool(&connection).await;
+        let new_region = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO spawn_points (RegionID, Yaw, Pitch, Distance) VALUES (?, 1, 2, 3)",
+        )
+        .bind(new_region.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let settings = loaded(
+            open_region_settings(&connection, new_region, ObjectStoreKind::Sqlite)
+                .await
+                .unwrap(),
+        );
+        assert!(settings.spawn_points.is_empty());
+        // A caller that lost the insert race must keep the existing region's spawns.
+        insert_default_settings(&pool, REGION).await.unwrap();
+        let counts: Vec<(String, i64)> =
+            sqlx::query_as("SELECT RegionID, COUNT(*) FROM spawn_points GROUP BY RegionID")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(counts, [(REGION.to_owned(), 2)]);
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn regionstore_terrain_save_rechecks_the_row_under_the_write_lock() {
+        let (dir, connection) = copied_store();
+        let pool = settings_test_pool(&connection).await;
+        let region = Uuid::parse_str(REGION).unwrap();
+        let texture = Uuid::new_v4();
+        let cache = Uuid::new_v4();
+        let mut editor = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query("UPDATE regionsettings SET terrain_texture_1=?, TerrainPBR1=?, cacheID=? WHERE regionUUID=?")
+            .bind(texture.to_string()).bind(texture.to_string()).bind(cache.to_string()).bind(REGION)
+            .execute(&mut *editor).await.unwrap();
+        // The loader sees the old row while the editor's repair is uncommitted.
+        let row = sqlx::query(SETTINGS_SQL)
+            .bind(REGION)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let stale = read_settings_row(&row, region).unwrap();
+        assert!(stale.terrain_textures[0].is_nil());
+        sqlx::query("CREATE TRIGGER already_repaired BEFORE UPDATE ON regionsettings BEGIN SELECT RAISE(ABORT, 'redundant settings save'); END")
+            .execute(&mut *editor).await.unwrap();
+        editor.commit().await.unwrap();
+
+        // Even a now-clean row must be re-read under the write lock. With a
+        // zero busy timeout, contention is observable without scheduling sleeps.
+        let writer = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let busy = resolve_terrain_settings(&pool, stale.clone())
+            .await
+            .unwrap_err();
+        assert!(busy.to_string().contains("database is locked"), "{busy}");
+        writer.commit().await.unwrap();
+
+        let fresh = resolve_terrain_settings(&pool, stale).await.unwrap();
+        assert_eq!(fresh.terrain_textures[0], texture);
+        assert_eq!(fresh.terrain_pbr[0], texture);
+        assert_eq!(fresh.cache_id, Some(cache));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    async fn settings_test_pool(connection: &str) -> sqlx::SqlitePool {
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(ferroan_db::sqlite_filename(connection).unwrap())
+            .busy_timeout(std::time::Duration::ZERO);
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
