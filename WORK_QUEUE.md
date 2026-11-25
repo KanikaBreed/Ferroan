@@ -93,10 +93,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | DONE (this PR) |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | DONE (this PR) |
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
-| QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
+| QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | DONE (this PR) |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
 | QR14 | R14: the FSAssets file store's remaining durability and test gaps | DONE (this PR) |
-| QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
+| QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | DONE (this PR) |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker, host networking kept where it is the host network | DONE (this PR) |
 | QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |
 | QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | DONE (this PR) |
@@ -174,7 +174,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
-| Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
+| Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |

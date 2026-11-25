@@ -4,14 +4,12 @@
 //! Compare two standalone `login` recordings at the current pin.
 //!
 //! Counts are exact per message type and direction, except the timer and
-//! acknowledgement types named in P0.10n5, which are reported. A reliable
-//! message counts once per direction and sequence number (P0.10n6): a
-//! datagram with the resent flag is another copy of that message, so it does
-//! not add to the count. The report gives the number of resends and does not
-//! fail on it. The check on order is the first appearance of the handshake
-//! and logout messages, not the interleaving. Sequence numbers, appended
-//! acks, the resent flag, and the fields listed in [`WILDCARDS`] are not
-//! compared.
+//! acknowledgement types named in P0.10n5, which are reported. Within a login,
+//! every repeated reliable sequence in the same direction must carry the resent
+//! flag, the original message ID and the same decoded body. It counts once
+//! with the original (P0.10n6). Across logins the sequence and resent flag are
+//! wildcards. The order check uses the first appearance of the handshake and
+//! logout messages. See [`WILDCARDS`] for the other cross-login allowances.
 
 // The live runner calls this on Linux. Windows and macOS still compile the
 // binary, and the unit tests cover the comparator there.
@@ -49,15 +47,23 @@ const ORDER: &[&str] = &[
 ];
 
 const WILDCARDS: &str = "\
-wildcards: UDP sequence (one counter per direction); appended acknowledgements \
-(which packets have arrived); resent flag (retransmission timer); session, agent, \
+wildcards across logins: UDP sequence (one counter per direction) and resent flag \
+(retransmission timer). Within one login a repeated reliable sequence in the same \
+direction must have the resent flag, original message ID and same decoded body. \
+Other wildcards: appended acknowledgements (which packets have arrived); session, agent, \
 circuit, name and IP (scrubbed; each login is a new session); AgentMovementComplete \
 timestamp (simulator clock); AgentMovementComplete position Z and the ObjectUpdate \
 packed position Z (terrain height at the spawn point; not bit-stable); ObjectUpdate \
 local id and CRC (the region allocates a new avatar); AvatarAnimation sequence \
 (animation counter)";
 
-type SeenMap = BTreeMap<(&'static str, &'static str), Vec<Seen>>;
+#[derive(Default)]
+struct Messages {
+    packets: Vec<Seen>,
+    resends: usize,
+}
+
+type SeenMap = BTreeMap<(&'static str, &'static str), Messages>;
 
 /// Split one region capture into the two `login` circuits and compare them.
 pub(crate) fn compare_capture(bytes: &[u8]) -> Result<String, String> {
@@ -136,8 +142,11 @@ fn compare_sessions(left: &[Record], right: &[Record]) -> Result<String, String>
             .to_string(),
     );
     for (direction, name) in keys {
-        let left_count = left.get(&(direction, name)).map(Vec::len).unwrap_or(0);
-        let right_count = right.get(&(direction, name)).map(Vec::len).unwrap_or(0);
+        let empty = Messages::default();
+        let left = left.get(&(direction, name)).unwrap_or(&empty);
+        let right = right.get(&(direction, name)).unwrap_or(&empty);
+        let left_count = left.packets.len();
+        let right_count = right.packets.len();
         if reported(name) {
             let reason = reported_reason(name);
             lines.push(format!(
@@ -145,16 +154,8 @@ fn compare_sessions(left: &[Record], right: &[Record]) -> Result<String, String>
             ));
             continue;
         }
-        let left_packets = left
-            .get(&(direction, name))
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let right_packets = right
-            .get(&(direction, name))
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let (left_count, left_resends, left_kept) = exact_messages(left_packets);
-        let (right_count, right_resends, right_kept) = exact_messages(right_packets);
+        let left_resends = left.resends;
+        let right_resends = right.resends;
         if left_count != right_count {
             errors.push(format!(
                 "count {direction} {name}: {left_count} and {right_count} (resends {left_resends} and {right_resends})"
@@ -165,7 +166,7 @@ fn compare_sessions(left: &[Record], right: &[Record]) -> Result<String, String>
             "exact {direction} {name}: {left_count} (resends {left_resends} and {right_resends})"
         ));
         for (index, (left_packet, right_packet)) in
-            left_kept.iter().zip(right_kept.iter()).enumerate()
+            left.packets.iter().zip(&right.packets).enumerate()
         {
             let shown = index + 1;
             if left_packet.reliable != right_packet.reliable {
@@ -220,38 +221,14 @@ fn reported_reason(name: &str) -> &'static str {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
 struct Seen {
     reliable: bool,
-    resent: bool,
-    sequence: u32,
     body: Vec<u8>,
-}
-
-/// One reliable message per sequence number. A resent datagram of a sequence
-/// already seen does not add. An unreliable datagram counts unless it is
-/// itself marked resent. `resends` is the number of resent datagrams.
-fn exact_messages(packets: &[Seen]) -> (usize, usize, Vec<&Seen>) {
-    let mut kept = Vec::new();
-    let mut sequences = BTreeSet::new();
-    let mut resends = 0usize;
-    for packet in packets {
-        if packet.resent {
-            resends += 1;
-        }
-        if packet.reliable {
-            if sequences.insert(packet.sequence) {
-                kept.push(packet);
-            }
-        } else if !packet.resent {
-            kept.push(packet);
-        }
-    }
-    (kept.len(), resends, kept)
 }
 
 fn view(records: &[Record]) -> Result<SeenMap, String> {
     let mut out: SeenMap = BTreeMap::new();
+    let mut originals = BTreeMap::new();
     for (index, record) in records.iter().enumerate() {
         if !matches!(record.kind, Kind::UdpIn | Kind::UdpOut) {
             continue;
@@ -260,19 +237,40 @@ fn view(records: &[Record]) -> Result<SeenMap, String> {
             .map_err(|error| format!("UDP record {index} does not parse: {error}"))?;
         let info = message_info(packet.id)
             .ok_or_else(|| format!("UDP record {index} is not a known message"))?;
-        let scrubbed = scrub_body(packet.id, &packet.body).map_err(|error| {
-            format!("UDP record {index} ({}) does not scrub: {error}", info.name)
-        })?;
-        let body = normalize(info.name, &scrubbed)?;
         let direction = if record.kind == Kind::UdpIn {
             "in"
         } else {
             "out"
         };
-        out.entry((direction, info.name)).or_default().push(Seen {
+        let messages = out.entry((direction, info.name)).or_default();
+        messages.resends += usize::from(packet.resent());
+        if packet.reliable()
+            && let Some(previous) =
+                originals.insert((direction, packet.sequence), record.bytes.as_slice())
+        {
+            // Compare within this circuit before identity folding or cross-login
+            // wildcards. Appended ACKs can change on retransmission.
+            if !packet.resent() {
+                return Err(format!(
+                    "UDP record {index}: {direction} {} sequence {}: duplicate lacks the resent flag",
+                    info.name, packet.sequence
+                ));
+            }
+            let original = parse_packet(previous).map_err(|error| error.to_string())?;
+            if packet.id != original.id || packet.body != original.body {
+                return Err(format!(
+                    "UDP record {index}: {direction} {} sequence {}: resent message differs from the original",
+                    info.name, packet.sequence
+                ));
+            }
+            continue;
+        }
+        let scrubbed = scrub_body(packet.id, &packet.body).map_err(|error| {
+            format!("UDP record {index} ({}) does not scrub: {error}", info.name)
+        })?;
+        let body = normalize(info.name, &scrubbed)?;
+        messages.packets.push(Seen {
             reliable: packet.reliable(),
-            resent: packet.resent(),
-            sequence: packet.sequence,
             body,
         });
     }
@@ -664,6 +662,88 @@ mod tests {
         assert!(report.contains("values: matched"), "{report}");
         assert!(
             report.contains("exact in LogoutRequest: 1 (resends 0 and 2)"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn duplicate_without_resent_is_rejected_even_in_both_logins() {
+        let mut records = healthy_pair();
+        for index in message_positions(&records, LogoutRequest::ID)
+            .into_iter()
+            .rev()
+        {
+            records.insert(index + 1, records[index].clone());
+        }
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("in LogoutRequest") && error.contains("duplicate lacks the resent flag"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reported_reliable_kill_object_still_requires_a_matching_flagged_resend() {
+        let mut records = healthy_pair();
+        let index = message_positions(&records, KillObject::ID)[0];
+        let duplicate = records[index].clone();
+        records.insert(index + 1, duplicate);
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("out KillObject") && error.contains("duplicate lacks the resent flag"),
+            "{error}"
+        );
+
+        records[index + 1].bytes[0] |= ferroan_protocol::PacketFlags::RESENT;
+        let report = compare_capture(&capture(&records)).unwrap();
+        assert!(
+            report.contains("reported out KillObject: 0 and 1"),
+            "{report}"
+        );
+
+        let sequence = parse_packet(&records[index].bytes).unwrap().sequence;
+        let mut changed = KillObject::default();
+        changed.object_data.push(Default::default());
+        records[index + 1] = packet(Kind::UdpOut, sequence, true, true, &[], &changed);
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("out KillObject") && error.contains("resent message differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resend_must_match_before_cross_login_wildcards() {
+        let mut records = healthy_pair();
+        let index = message_positions(&records, AgentMovementComplete::ID)[1];
+        let first = parse_packet(&records[index].bytes).unwrap();
+        let mut movement = first.decode::<AgentMovementComplete>().unwrap();
+        // A new login may have another timestamp, but a resend of these bytes may not.
+        movement.data.timestamp += 1;
+        records.insert(
+            index + 1,
+            packet(Kind::UdpOut, first.sequence, true, true, &[], &movement),
+        );
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("out AgentMovementComplete") && error.contains("resent message differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_resend_can_carry_different_appended_acks() {
+        let mut records = healthy_pair();
+        let index = message_positions(&records, LogoutReply::ID)[1];
+        let first = parse_packet(&records[index].bytes).unwrap();
+        let reply = first.decode::<LogoutReply>().unwrap();
+        records.insert(
+            index + 1,
+            packet(Kind::UdpOut, first.sequence, true, true, &[333], &reply),
+        );
+        let report = compare_capture(&capture(&records)).unwrap();
+        assert!(
+            report.contains("exact out LogoutReply: 1 (resends 0 and 1)"),
             "{report}"
         );
     }
