@@ -497,6 +497,7 @@ dependencies = [
  "ferroan-protocol",
  "ferroan-scene",
  "ferroan-services",
+ "ferroan-types",
  "flate2",
  "hyper",
  "reqwest",

@@ -95,7 +95,7 @@ const DEFAULT_HEIGHT: f32 = 1.9;
 const SCALE_X: f32 = 0.45;
 const SCALE_Y: f32 = 0.6;
 /// `AppearanceManager.DEFAULT_AVATAR_TEXTURE`, RFC byte order.
-const DEFAULT_TEXTURE: [u8; 16] = [
+pub const DEFAULT_TEXTURE: [u8; 16] = [
     0xc2, 0x28, 0xd1, 0xcf, 0x4b, 0x5d, 0x4b, 0xa8, 0x84, 0xf4, 0x89, 0x9a, 0x07, 0x96, 0xaa, 0x97,
 ];
 

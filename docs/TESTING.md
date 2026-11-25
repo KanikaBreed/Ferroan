@@ -267,3 +267,5 @@ connection reaches its insert. It reads back both ids and counts the data
 rows for that hash. The [Pin8 oracle response](../fixtures/asset/pin8-xasset-race.json)
 records the corresponding C# result. The MySQL live HTTP report names TB58
 separately from its texture and inventory comparisons.
+
+`cargo test -p ferroan-region --lib child_neighbours` checks the scoped range form, cache lifetime, inclusive world-coordinate edges, and actual compressed child POST and PUT bodies against the [two-region Pin8 capture](../fixtures/child-view/README.md). It also checks position coalescing and the failed-simulator timeout.

@@ -50,6 +50,9 @@
 //! Transport has a 30 second deadline and ferroan-http's bounded XML reader.
 //! No retries: startup fails when registration is refused or unconfirmed.
 
+mod neighbours;
+pub use neighbours::{VisibleNeighbour, VisibleNeighbours};
+
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
