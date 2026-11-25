@@ -39,11 +39,11 @@
 //! (TB35, #482). The pin does the same. `Delete` binds `uuid` and returns
 //! true when the statement runs.
 //! An id that is not a uuid deletes nothing and returns false, and `Get` of
-//! one is missing, as the pin does (TB39 #490, TB49 #500). `Import` is
-//! `ORDER BY id LIMIT count OFFSET start`, as the pin does (TB40, #491).
-//! The hash query reads `id`, `hash` and `type` once and does not update
-//! `access_time`. A failure to open or to run that query is returned.
-//! `Import` reads one source row at a time. `force` updates `hash` and
+//! one is missing, as the pin does (TB39 #490, TB49 #500). The pin's import
+//! page is `ORDER BY id LIMIT count OFFSET start` (TB40, #491). This reader
+//! seeks that start once, then reads the next id. The hash query reads
+//! `id`, `hash` and `type` once and does not update `access_time`. A failure
+//! to open or to run that query is returned. `force` updates `hash` and
 //! `access_time` on an existing row (TB45). An ordinary store does not.
 
 use std::collections::HashMap;
@@ -54,8 +54,8 @@ use uuid::Uuid;
 
 use super::decode::{column_bytes, column_i32, column_string, column_uuid};
 use super::fsasset::{
-    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_row_within_bound,
-    import_suffix, sql_ident,
+    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_keyset_sql,
+    import_row_within_bound, import_seek_sql,
 };
 use super::model::KNOWN_FLAGS;
 use super::store::StoreError;
@@ -229,36 +229,50 @@ pub(super) async fn delete(pool: &PgPool, id: &str) -> Result<bool, StoreError> 
     Ok(true)
 }
 
-/// One page of the legacy import table. `count == 0` reads nothing. Name and
-/// description stay empty. A `data` value past the import bound is refused
-/// and is not returned.
-pub(super) async fn import_page(
+/// The id at `offset` in id order. The selected column is the id only.
+pub(super) async fn import_seek(
     pool: &PgPool,
     table: &str,
-    start: i32,
-    count: i32,
+    offset: i32,
+) -> Result<Option<Uuid>, StoreError> {
+    let sql = import_seek_sql(table, true, offset)?;
+    let row = sqlx::query(&sql).fetch_optional(pool).await?;
+    row.as_ref().map(|row| column_uuid(row, "id")).transpose()
+}
+
+/// The next legacy rows after `after`, in id order. Name and description
+/// stay empty. A `data` value past the import bound is refused and is not
+/// returned.
+pub(super) async fn import_keyset(
+    pool: &PgPool,
+    table: &str,
+    after: Option<Uuid>,
+    limit: i32,
 ) -> Result<Vec<FsImportRow>, StoreError> {
-    sql_ident(table)?;
-    if count == 0 {
-        return Ok(Vec::new());
+    let sql = import_keyset_sql(table, true, after.is_some(), limit)?;
+    let mut query = sqlx::query(&sql);
+    if let Some(id) = after {
+        query = query.bind(id.to_string());
     }
-    let suffix = import_suffix(start, count, true)?;
-    let sql = format!("SELECT * FROM {table}{suffix}");
-    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+    let rows = query.fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
-        let parsed = FsImportRow {
-            id: column_uuid(row, "id")?,
-            name: String::new(),
-            description: String::new(),
-            type_code: column_i32(row, "assetType")? as i8,
-            create_time: column_i32(row, "create_time")?,
-            data: column_bytes(row, "data")?,
-        };
+        let parsed = postgres_import_row(row)?;
         import_row_within_bound(parsed.data.len())?;
         out.push(parsed);
     }
     Ok(out)
+}
+
+fn postgres_import_row(row: &sqlx::postgres::PgRow) -> Result<FsImportRow, StoreError> {
+    Ok(FsImportRow {
+        id: column_uuid(row, "id")?,
+        name: String::new(),
+        description: String::new(),
+        type_code: column_i32(row, "assetType")? as i8,
+        create_time: column_i32(row, "create_time")?,
+        data: column_bytes(row, "data")?,
+    })
 }
 
 fn optional_text(row: &sqlx::postgres::PgRow, name: &str) -> Result<Option<String>, StoreError> {
