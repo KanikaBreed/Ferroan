@@ -136,7 +136,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q40c | P2.1a3: both teleport directions move their pose writes onto the frame | DONE (#223) |
 | Q41 | P2.1b1: per-viewer entity update queue and `PrimUpdateFlags` merging | DONE (this PR) |
 | Q42 | P2.1b2: the prioritizer (`BestAvatarResponsiveness`) | DONE (this PR) |
-| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40c |
+| Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | DONE (this PR) |
 | Q44 | P2.2a: `AgentUpdate` into movement intent | DONE (#228) |
 | Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | DONE (this PR) |
 | Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | READY after Q45 and Q42 |

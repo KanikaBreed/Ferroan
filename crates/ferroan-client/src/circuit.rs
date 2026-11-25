@@ -29,7 +29,10 @@
 //      CompletePing, SendPing, HandleUnacked, OutgoingPacketHandler,
 //      SendPacketFinal, LogoutHandler, DeactivateClientDueToTimeout, AddClient)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
-//     (constructor, UpdateRoundTrip, TickLastPacketReceived)
+//     (constructor, UpdateRoundTrip, TickLastPacketReceived,
+//      throttle setup, SetThrottles, resend and category send gate)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/TokenBucket.cs
+//   Source/OpenSim.Region.ClientStack.LindenUDP/ThrottleRates.cs
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (SendLogoutPacket, Close, CloseWithoutChecks, Kick,
 //      SendShutdownConnectionNotice, HandleCompleteAgentMovement,
@@ -48,6 +51,9 @@
 //     (OnMakeRootAgent, DoOnMakeRootAgent)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// Throttle setup, SetThrottles, the resend and category send gate,
+// TokenBucket.cs, ThrottleRates.cs and the scene bucket in LLUDPServer.cs
+// were read at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -62,13 +68,14 @@ use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{
     self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, TeleportAnswer, VIA_LOCATION,
 };
+use crate::throttle::{ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock};
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, AgentUpdate, ChatFromViewer, CompleteAgentMovement, CompletePingCheck,
-    DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest, PacketAck, SetAlwaysRun,
-    StartPingCheck, TeleportLocationRequest, UseCircuitCode, logout_reply, packet_ack,
-    start_ping_check,
+    AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
+    CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
+    PacketAck, SetAlwaysRun, StartPingCheck, TeleportLocationRequest, UseCircuitCode, logout_reply,
+    packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -462,18 +469,33 @@ struct State {
     return_started: bool,
     /// Last `AgentUpdate` camera and rotations. A hop copies this into `UpdateAgent`.
     viewer_pose: HopPose,
+    /// Scene parent plus this circuit's category buckets.
+    throttle: ClientThrottle,
+    throttle_clock: ThrottleClock,
 }
 impl State {
     #[cfg(test)]
     fn new(handshake: HandshakeConfig, arrival: ArrivalConfig) -> Self {
         Self::with_timing(handshake, arrival, CircuitTiming::default())
     }
+    #[cfg(test)]
     fn with_timing(
+        handshake: HandshakeConfig,
+        arrival: ArrivalConfig,
+        timing: CircuitTiming,
+    ) -> Self {
+        Self::with_scene(handshake, arrival, timing, SceneThrottle::stock())
+    }
+
+    fn with_scene(
         handshake: HandshakeConfig,
         mut arrival: ArrivalConfig,
         timing: CircuitTiming,
+        scene: Arc<SceneThrottle>,
     ) -> Self {
         let now = Instant::now();
+        let throttle_clock = ThrottleClock::start();
+        let throttle = ClientThrottle::open(scene, throttle_clock.now_secs());
         let pending_land = VecDeque::from(std::mem::take(&mut arrival.land));
         let source_hop = arrival.source_hop.clone();
         let return_slot = arrival.return_slot.clone();
@@ -523,7 +545,14 @@ impl State {
             return_wait: false,
             return_started: false,
             viewer_pose: HopPose::default(),
+            throttle,
+            throttle_clock,
         }
+    }
+
+    #[cfg(test)]
+    fn advance_throttle(&mut self, by: Duration) {
+        self.throttle_clock.advance(by);
     }
 
     /// Publish this circuit's window length onto the shared gauge.
@@ -544,18 +573,21 @@ impl State {
         self.published_unacked = waiting;
     }
     fn time_until_work(&self) -> Duration {
-        if self.peer.is_some()
-            && self.unacked.len() < MAX_UNACKED
-            && (!self.pending_land.is_empty() || !self.pending_task.is_empty())
-        {
-            return Duration::ZERO;
-        }
         let now = Instant::now();
         let mut wait = self.resend_at.saturating_duration_since(now);
         if self.peer.is_some() {
             wait = wait.min(self.ping_at.saturating_duration_since(now));
             if !self.pending_acks.is_empty() {
                 wait = wait.min(self.ack_at.saturating_duration_since(now));
+            }
+            if self.unacked.len() < MAX_UNACKED {
+                let throttle_now = self.throttle_clock.now_secs();
+                if !self.pending_land.is_empty() {
+                    wait = wait.min(self.throttle.wait(LAND, throttle_now));
+                }
+                if !self.pending_task.is_empty() {
+                    wait = wait.min(self.throttle.wait(TASK, throttle_now));
+                }
             }
         }
         wait
@@ -587,20 +619,28 @@ impl State {
                 if !self.unacked.is_empty() {
                     self.last_oldest = self.unacked.oldest_or(self.last_oldest);
                 }
-                let batch = self.unacked.poll(now.into_std(), self.rto);
-                let resent = u64::try_from(batch.resend.len()).unwrap_or(u64::MAX);
+                let batch = self.unacked.poll_uncommitted(now.into_std(), self.rto);
+                let mut resent = 0_u64;
+                let mut held = false;
                 for (seq, payload) in batch.resend {
-                    let mut bytes = Vec::new();
-                    packet::build_raw(
-                        &payload.bytes,
-                        payload.zerocoded,
-                        seq,
-                        true,
-                        true,
-                        &[],
-                        &mut bytes,
-                    );
+                    let bytes = wire(&payload, seq, true, true);
+                    if !self
+                        .throttle
+                        .try_spend(RESEND, bytes.len(), self.throttle_clock.now_secs())
+                    {
+                        held = true;
+                        break;
+                    }
+                    self.unacked.commit_resend(seq, now.into_std());
                     let _ = sock.send_to(&bytes, peer).await;
+                    resent = resent.saturating_add(1);
+                }
+                if held {
+                    let ready = self.throttle.wait(RESEND, self.throttle_clock.now_secs());
+                    let sooner = now + ready;
+                    if sooner < self.resend_at {
+                        self.resend_at = sooner;
+                    }
                 }
                 if let Some(udp) = &self.udp {
                     udp.resends.fetch_add(resent, Ordering::Relaxed);
@@ -634,8 +674,19 @@ impl State {
             };
             let mut message = LayerData::default();
             message.layer_id.type_ = layer.kind;
-            message.layer_data.data = layer.data;
-            self.send_message(sock, peer, &message, true).await?;
+            message.layer_data.data = layer.data.clone();
+            let payload = match encode_payload(&message) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.pending_land.push_front(layer);
+                    return Err(error);
+                }
+            };
+            if !self.spend(LAND, &payload, false) {
+                self.pending_land.push_front(layer);
+                break;
+            }
+            self.send_payload(sock, peer, payload, true).await?;
         }
         Ok(())
     }
@@ -649,9 +700,21 @@ impl State {
             let Some(payload) = self.pending_task.pop_front() else {
                 break;
             };
+            if !self.spend(TASK, &payload, false) {
+                self.pending_task.push_front(payload);
+                break;
+            }
             self.send_payload(sock, peer, payload, true).await?;
         }
         Ok(())
+    }
+
+    /// True when this category can carry `payload` right now. The size is the
+    /// datagram that would leave, including the header.
+    fn spend(&mut self, category: usize, payload: &Payload, resent: bool) -> bool {
+        let bytes = wire(payload, self.sequence.peek(), true, resent);
+        self.throttle
+            .try_spend(category, bytes.len(), self.throttle_clock.now_secs())
     }
 
     fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
@@ -701,16 +764,7 @@ impl State {
             return Err(CircuitError::TooManyUnacked(self.unacked.len()));
         }
         let seq = self.sequence.take();
-        let mut bytes = Vec::new();
-        packet::build_raw(
-            &payload.bytes,
-            payload.zerocoded,
-            seq,
-            reliable,
-            false,
-            &[],
-            &mut bytes,
-        );
+        let bytes = wire(&payload, seq, reliable, false);
         // Like OpenSimUDPBase, retain the listener after a peer send error.
         // Reliable packets still enter the retry window when sending fails.
         let _ = sock.send_to(&bytes, to).await;
@@ -850,8 +904,8 @@ impl State {
         {
             self.return_started = false;
         }
-        // Throttle and height callbacks remain planned. Arrival's circuit-code
-        // gate is applied in the movement callback after normal ACK handling.
+        // Height callbacks remain planned. Arrival's circuit-code gate is
+        // applied in the movement callback after normal ACK handling.
         if !valid_packet_ids(packet, expect) {
             return Ok(false);
         }
@@ -965,6 +1019,11 @@ impl State {
         } else if packet.id == TeleportLocationRequest::ID {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
+            }
+        } else if packet.id == AgentThrottle::ID {
+            if let Ok(throttle) = packet.decode::<AgentThrottle>() {
+                self.throttle
+                    .set_throttles(&throttle.throttle.throttles, 1.0);
             }
         } else if packet.id == AgentUpdate::ID {
             if let Ok(update) = packet.decode::<AgentUpdate>() {
@@ -1465,6 +1524,20 @@ impl Drop for SettleOnDrop {
     }
 }
 
+fn wire(payload: &Payload, sequence: u32, reliable: bool, resent: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    packet::build_raw(
+        &payload.bytes,
+        payload.zerocoded,
+        sequence,
+        reliable,
+        resent,
+        &[],
+        &mut bytes,
+    );
+    bytes
+}
+
 fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
     let mut writer = Writer::new();
     M::ID.encode(&mut writer.buf);
@@ -1586,6 +1659,8 @@ struct CircuitInner {
     timing: Mutex<CircuitTiming>,
     reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
     next_id: AtomicU64,
+    /// One parent bucket for every circuit on this listener.
+    scene_throttle: Arc<SceneThrottle>,
     /// Shared by every serve on this socket. Empty until [`CircuitServer::enable_chat`].
     chat: Mutex<Option<RegionChat>>,
     /// Seats waiting for the serve that owns that agent.
@@ -1765,6 +1840,7 @@ impl CircuitServer {
                 timing: Mutex::new(CircuitTiming::default()),
                 reader: Mutex::new(None),
                 next_id: AtomicU64::new(1),
+                scene_throttle: SceneThrottle::stock(),
                 chat: Mutex::new(None),
                 waiting_seats: Mutex::new(HashMap::new()),
                 login_scene: Mutex::new(None),
@@ -2018,6 +2094,7 @@ impl CircuitServer {
             arrival,
             timing,
             self.inner.shared.socket.counters(),
+            Arc::clone(&self.inner.scene_throttle),
             ServeExtra {
                 root_arrival,
                 connected,
@@ -2057,6 +2134,7 @@ async fn serve_socket(
         arrival,
         timing,
         None,
+        SceneThrottle::stock(),
         ServeExtra {
             root_arrival: None,
             connected: None,
@@ -2084,6 +2162,7 @@ fn take_stop(stop: &mut Option<oneshot::Receiver<CircuitStop>>) -> Option<Circui
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_socket_reporting(
     sock: &impl DatagramIo,
     expect: CircuitExpect,
@@ -2091,9 +2170,10 @@ async fn serve_socket_reporting(
     arrival: ArrivalConfig,
     timing: CircuitTiming,
     udp: Option<Arc<UdpCounters>>,
+    scene: Arc<SceneThrottle>,
     mut extra: ServeExtra<'_>,
 ) -> Result<(), CircuitError> {
-    let mut state = State::with_timing(handshake, arrival, timing);
+    let mut state = State::with_scene(handshake, arrival, timing, scene);
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;

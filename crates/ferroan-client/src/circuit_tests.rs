@@ -45,7 +45,7 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
     let io = FakeIo::default();
-    state.maintain(&io).await.unwrap();
+    release_throttled(&mut state, &io).await;
     let sent = io.sent.lock().unwrap();
     let bodies: Vec<(u8, Vec<u8>)> = sent
         .iter()
@@ -151,6 +151,63 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
     })
 }
 
+async fn release_throttled(state: &mut State, io: &FakeIo) {
+    for _ in 0..40 {
+        if state.pending_land.is_empty() && state.pending_task.is_empty() {
+            return;
+        }
+        state.advance_throttle(std::time::Duration::from_millis(200));
+        state.maintain(io).await.unwrap();
+    }
+    panic!("queued land or task did not drain");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_task_flood_stays_within_the_viewer_task_rate() {
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let blob = ferroan_bot::throttle::initial_throttle_bytes();
+    state.throttle.set_throttles(&blob, 1.0);
+    let rate = f64::from(state.throttle.view().categories[TASK].drip);
+    assert!(rate > 100_000.0, "viewer task rate {rate}");
+    let body = vec![0_u8; 1_100];
+    for _ in 0..200 {
+        state.pending_task.push_back(Payload {
+            bytes: body.clone(),
+            zerocoded: false,
+        });
+    }
+    let io = FakeIo::default();
+    let step = std::time::Duration::from_millis(5);
+    let steps = 100_u32;
+    for _ in 0..steps {
+        state.advance_throttle(step);
+        state.maintain(&io).await.unwrap();
+    }
+    let sent = io.sent.lock().unwrap();
+    assert!(sent.len() > 1);
+    assert!(!state.pending_task.is_empty());
+    let mut bytes = 0_usize;
+    let mut largest = 0_usize;
+    for packet in sent.iter() {
+        let parsed = parse_packet(packet).unwrap();
+        assert!(!parsed.resent());
+        assert_ne!(parsed.id, ferroan_protocol::msgs::StartPingCheck::ID);
+        bytes += packet.len();
+        largest = largest.max(packet.len());
+    }
+    let window = step.as_secs_f64() * f64::from(steps);
+    let budget = rate * window + largest as f64 + 32.0;
+    assert!(
+        (bytes as f64) <= budget,
+        "sent {bytes} bytes, budget {budget}, rate {rate}"
+    );
+    assert!(
+        bytes > 50_000,
+        "sent {bytes} bytes, which is inside the default task rate"
+    );
+}
+
 fn message_ids(io: &FakeIo) -> Vec<ferroan_protocol::MsgId> {
     io.sent
         .lock()
@@ -170,7 +227,7 @@ async fn local_teleport_stays_behind_a_queued_terse_update() {
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
     // Start is immediate. The terse was already queued, so it leaves before TeleportLocal.
-    state.maintain(&io).await.unwrap();
+    release_throttled(&mut state, &io).await;
     assert_eq!(
         message_ids(&io),
         vec![
@@ -194,7 +251,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
     handle_teleport(&mut state, &io, &expect, &request).await;
-    state.maintain(&io).await.unwrap();
+    release_throttled(&mut state, &io).await;
     assert_eq!(
         message_ids(&io),
         vec![
