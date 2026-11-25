@@ -75,6 +75,7 @@ mod error;
 mod estate;
 mod frame;
 mod height;
+mod initial;
 mod motion;
 mod objects;
 mod payloads;
@@ -99,7 +100,8 @@ pub use frame::{
     HopReturn, Leaving, LocalTeleport, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored,
     TerrainFrame, ViewerLink, landed_z,
 };
-pub use height::{Heightmap, movement_z};
+pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
+pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
@@ -111,6 +113,6 @@ pub use payloads::{
 };
 pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
-pub use store::open_terrain;
+pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;
 pub use xml::{from_original_xml, from_xml2, to_original_xml, to_xml2};

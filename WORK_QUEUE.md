@@ -145,7 +145,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q46a | P2.2b2a: C# walk fixture: record `live run walk grid --physics basicphysics` into `fixtures/walk/` and replay it through the Q45 stepper and the C# change thresholds (closes Q45's AWAITING VALIDATION) | DONE (this PR) |
 | Q46b | P2.2b2b: terse updates on Ferroan to self and others through the per-viewer queue and Q43's throttle, GridUser's real last position and look, `walk: pass` on Ferroan in live.yml | DONE (this PR) |
 | Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | READY after Q46b and Q48 |
-| Q82 | P2.0e2: default terrain: a store with no `terrain` row gets C#'s `pinhead-island` (or the stored baked map), written back as both rows on SQLite, so the Ferroan walk runs at C#'s height | READY |
+| Q82 | P2.0e2: default terrain: a store with no `terrain` row gets C#'s `pinhead-island` (or the stored baked map), written back as both rows on SQLite, so the Ferroan walk runs at C#'s height | DONE (this PR) |
 | Q83 | P2.0e3: terrain load and the default-terrain writes on MySQL and PostgreSQL | READY after Q82 and QR22 |
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46b |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | READY after Q42 |
