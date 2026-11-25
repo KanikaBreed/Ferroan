@@ -16,9 +16,14 @@
 //! Every input and every other send must then fall on that clock.
 //!
 //! `ScenePresence.Update` returns early until `SendInitialData` has run
-//! (`NeedInitialData`, lines 4067–4071 and 4266–4290). That frame starts the
-//! `LayerData` burst and returns too, so the first frame that runs the
-//! threshold test is the first one that starts after that burst began.
+//! (`NeedInitialData`, lines 4067–4071 and 4266–4290). That frame returns
+//! too. On a login `SendInitialData` does not send terrain (line 4338 needs
+//! `TeleportFlags` 0): the `LayerData` burst comes from the terrain module's
+//! every-fourth-frame check (`Scene.cs` 1768–1771) after `CompleteMovement`
+//! queued it (line 2472). On this recording that check ran in the
+//! `SendInitialData` frame (region log 23:26:36,005, first `LayerData`
+//! 36,017), so the first `LayerData` stands in for that frame. A new
+//! recording may not line up.
 //!
 //! Positions match bit for bit: BasicPhysics adds `velocity * timeStep` in
 //! single precision, and the stand-in does the same sums in the same order.
@@ -418,8 +423,9 @@ fn the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds() {
         k += 1;
     }
 
-    // `NeedInitialData`: the frame that starts the LayerData burst returns,
-    // and the threshold test runs from the next frame on.
+    // `NeedInitialData`: the `SendInitialData` frame returns, and the
+    // threshold test runs from the next frame on. The first LayerData is
+    // only a marker: on this recording the terrain check shared that frame.
     let gate = (1..k)
         .find(|&k| clock(k - 1) >= walk.first_layer_ms as f64)
         .unwrap();
