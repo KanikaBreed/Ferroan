@@ -35,13 +35,19 @@
 //! A damaged `terrain` or `bakedterrain` row stops startup and nothing is
 //! written (D72, TB88). C# loads a damaged blob as a zeroed or partial map
 //! (`TerrainData.cs` 496, 759–765, 822–828, 586–589), keeps the baked row,
-//! and copies it into `terrain` when that row is missing; only a NULL cell, an
+//! and copies it into `terrain` when that row is missing; only a NULL cell
+//! (SQLite; MySQL and PostgreSQL read it as no map), a NULL revision, an
 //! out-of-range revision or a truncated Compressed2D blob (671–713) throws, is
-//! logged and is overwritten (`Scene.cs` 2324–2328, 2380–2384). A failed
-//! write stops startup here. C# swallows a failed `StoreTerrain` (inside the
-//! `try`, `Scene.cs` 2340 and 2353, caught at 2375–2379), but
-//! `StoreBakedTerrain` (2383) is outside it and fails region start, so only
-//! the case that copies the baked row into `terrain` differs.
+//! logged and is overwritten (`Scene.cs` 2324–2328, 2380–2384).
+//!
+//! A failed write stops startup here on every backend (D72). On SQLite and
+//! PostgreSQL, C# swallows a failed `StoreTerrain` (inside the `try`,
+//! `Scene.cs` 2340 and 2353, caught at 2375–2379), but `StoreBakedTerrain`
+//! (2383) is outside it and fails region start, so only the case that copies
+//! the baked row into `terrain` differs. On MySQL both stores run in
+//! `Util.FireAndForget` (`MySQLSimulationData.cs` 506 and 554; the inner
+//! `try` logs at 542 and 590, and the wrapper catches everything, `Util.cs`
+//! 3397), so C# starts whatever the writes do.
 
 use ferroan_db::{Backend, Pool};
 use uuid::Uuid;
@@ -321,16 +327,19 @@ async fn read_mysql_row(
     if length > cap {
         return Ok(Some((revision, Some(length), None)));
     }
+    // The cap is in the SQL here too, and the length must be the one the
+    // first read saw.
     let blob: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
-        "SELECT Heightfield FROM bakedterrain WHERE RegionUUID = ? LIMIT 1 OFFSET ?",
+        "SELECT CASE WHEN LENGTH(Heightfield) <= ? THEN Heightfield END FROM bakedterrain WHERE RegionUUID = ? LIMIT 1 OFFSET ?",
     )
+    .bind(cap)
     .bind(&id)
     .bind(offset)
     .fetch_optional(mysql)
     .await
     .map_err(failed)?;
     match blob.and_then(|(blob,)| blob) {
-        Some(blob) if i64::try_from(blob.len()).unwrap_or(i64::MAX) <= cap => {
+        Some(blob) if i64::try_from(blob.len()).ok() == Some(length) => {
             Ok(Some((revision, Some(length), Some(blob))))
         }
         // The rows changed between the two reads.

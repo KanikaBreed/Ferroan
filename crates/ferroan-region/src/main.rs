@@ -1385,7 +1385,7 @@ mod tests {
              [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
              [Map]\nGenerateMaptiles=false\n\
              [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
-             ConnectionString=Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\n",
+             ConnectionString=\"Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\"\n",
         )
         .unwrap();
         let regions = ferroan_config::Config::parse(
@@ -1402,9 +1402,14 @@ mod tests {
         let settings = load_stored_settings(&mut config).await.unwrap();
         assert!(settings.is_none());
         // Terrain is read from the MySQL store, which is not running: startup
-        // stops on that store, not on a SQLite file named by the string.
+        // stops on the MySQL connect, not on a SQLite file named by the string.
         match load_terrain(&config).await {
-            Err(RunError::Terrain(text)) => assert!(!text.contains("sqlite"), "{text}"),
+            Err(RunError::Terrain(text)) => {
+                assert!(
+                    text.starts_with("terrain store: could not connect to mysql"),
+                    "{text}"
+                );
+            }
             Err(other) => panic!("unexpected error: {other}"),
             Ok(_) => panic!("an unreachable MySQL store loaded terrain"),
         }

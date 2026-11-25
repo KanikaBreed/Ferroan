@@ -149,7 +149,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q46b | P2.2b2b: terse updates on Ferroan to self and others through the per-viewer queue and Q43's throttle, GridUser's real last position and look, `walk: pass` on Ferroan in live.yml | DONE (this PR) |
 | Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | READY after Q46b and Q48 |
 | Q82 | P2.0e2: default terrain: a store with no `terrain` row gets C#'s `pinhead-island` (or the stored baked map), written back as both rows on SQLite, so the Ferroan walk runs at C#'s height | DONE (this PR) |
-| Q83 | P2.0e3: terrain load and the default-terrain writes on MySQL and PostgreSQL | IN PROGRESS (`feat/q83-terrain-sql`) |
+| Q83 | P2.0e3: terrain load and the default-terrain writes on MySQL and PostgreSQL | DONE (this PR) |
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | DONE (this PR) |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | DONE (this PR) |
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | READY after Q48 |
