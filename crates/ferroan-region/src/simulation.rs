@@ -987,11 +987,19 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
         .get("cb_uri")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    // `AgentData.Unpack` then `CopyFrom`: the frame stores these when the
+    // child becomes root.
     if !slot.store_update(
         ReturnPose {
             position,
             look_at,
             origin,
+            velocity: json_vec3(args.get("velocity")).unwrap_or([0.0; 3]),
+            far: json_real(args.get("far")),
+            body_rotation: json_quat(args.get("body_rotation")),
+            head_rotation: json_quat(args.get("head_rotation")),
+            control_flags: json_u32_text(args.get("control_flags")),
+            always_run: json_bool(args.get("always_run")),
         },
         callback,
     ) {
@@ -1070,6 +1078,63 @@ fn json_vec3(value: Option<&Value>) -> Option<[f32; 3]> {
         return None;
     }
     Some(out)
+}
+
+/// `osd.AsReal()`: a number, or text that parses as one. Absent is 0.
+fn json_real(value: Option<&Value>) -> f32 {
+    match value {
+        Some(Value::Number(number)) => number.as_f64().unwrap_or(0.0) as f32,
+        Some(Value::String(text)) => text.trim().parse::<f64>().unwrap_or(0.0) as f32,
+        Some(Value::Bool(flag)) => f32::from(u8::from(*flag)),
+        _ => 0.0,
+    }
+}
+
+/// `UInt32.TryParse(osd.AsString())`. Anything else is 0.
+fn json_u32_text(value: Option<&Value>) -> u32 {
+    match value {
+        Some(Value::String(text)) => text.parse().unwrap_or(0),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .and_then(|number| u32::try_from(number).ok())
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// `osd.AsBoolean()`. Absent is false.
+fn json_bool(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
+        Some(Value::String(text)) => text == "1" || text.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// `Quaternion.TryParse(osd.AsString())`. An absent key keeps `AgentData`'s
+/// zero field; text that does not parse is the identity.
+fn json_quat(value: Option<&Value>) -> [f32; 4] {
+    let Some(value) = value else {
+        return [0.0; 4];
+    };
+    let parsed = (|| {
+        let inner = value
+            .as_str()?
+            .trim()
+            .strip_prefix('<')?
+            .strip_suffix('>')?;
+        let mut out = [0.0; 4];
+        let mut parts = inner.split(',');
+        for slot in &mut out {
+            *slot = parts.next()?.trim().parse::<f32>().ok()?;
+        }
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(out)
+    })();
+    parsed.unwrap_or([0.0, 0.0, 0.0, 1.0])
 }
 
 /// Flatten Z. A missing or near-zero heading stays the arrival default.
@@ -2967,6 +3032,12 @@ mod tests {
                     "region_id": Uuid::from_u128(70).to_string(),
                     "position": "<64, 64, 12>",
                     "at_axis": "<1, 0, 0>",
+                    "velocity": "<1.5, -2, 0>",
+                    "far": 192.0,
+                    "body_rotation": "<0, 0, 0.6, 0.8>",
+                    "head_rotation": "<0, 0, 0.5, 0.8660254>",
+                    "control_flags": "8192",
+                    "always_run": true,
                     "wait_for_root": true,
                     "cb_uri": "http://127.0.0.1:9/agent/release/",
                 }),
@@ -2983,6 +3054,13 @@ mod tests {
         })
         .await
         .expect("the child update was not stored");
+        let stored = accepted.return_slot.pose();
+        assert_eq!(stored.velocity, [1.5, -2.0, 0.0]);
+        assert_eq!(stored.far, 192.0);
+        assert_eq!(stored.body_rotation, [0.0, 0.0, 0.6, 0.8]);
+        assert_eq!(stored.head_rotation, [0.0, 0.0, 0.5, 0.866_025_4]);
+        assert_eq!(stored.control_flags, 8192);
+        assert!(stored.always_run);
         accepted.mark_root();
         let flag = tokio::time::timeout(Duration::from_secs(2), waiting)
             .await
@@ -3002,6 +3080,28 @@ mod tests {
             .unwrap();
         let response = handle(State(state.clone()), ConnectInfo(peer), not_object).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn returning_agent_data_fields_parse_as_agent_data_unpack_does() {
+        assert_eq!(json_quat(None), [0.0; 4]);
+        assert_eq!(json_quat(Some(&json!("<1, 2>"))), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(json_quat(Some(&json!(7))), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            json_quat(Some(&json!("<0, 0, 1, 0>"))),
+            [0.0, 0.0, 1.0, 0.0]
+        );
+        assert_eq!(json_real(Some(&json!(64.5))), 64.5);
+        assert_eq!(json_real(Some(&json!("96"))), 96.0);
+        assert_eq!(json_real(None), 0.0);
+        assert_eq!(json_u32_text(Some(&json!("4294967295"))), u32::MAX);
+        assert_eq!(json_u32_text(Some(&json!("-1"))), 0);
+        assert_eq!(json_u32_text(Some(&json!(17))), 17);
+        assert_eq!(json_u32_text(None), 0);
+        assert!(json_bool(Some(&json!(true))));
+        assert!(json_bool(Some(&json!("True"))));
+        assert!(!json_bool(Some(&json!("no"))));
+        assert!(!json_bool(None));
     }
 
     fn child_request(fields: &AgentFields, region: Uuid, caps_path: &str) -> Request {

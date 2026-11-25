@@ -22,20 +22,35 @@ pub const UPDATE_WAIT: Duration = Duration::from_secs(10);
 /// How long an `UpdateAgent` with `wait_for_root` waits to see a root.
 pub const ROOT_WAIT: Duration = Duration::from_secs(25);
 
-/// Position and heading the return arrival packet uses, plus the source region.
-#[derive(Clone, Copy, Debug)]
+/// Position and heading the return arrival packet uses, the source region,
+/// and the movement fields `CopyFrom` takes from the returning `UpdateAgent`.
+/// The frame stores those on the presence when the child becomes root.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReturnPose {
     pub position: [f32; 3],
     pub look_at: [f32; 3],
     pub origin: Uuid,
+    pub velocity: [f32; 3],
+    pub far: f32,
+    pub body_rotation: [f32; 4],
+    pub head_rotation: [f32; 4],
+    pub control_flags: u32,
+    pub always_run: bool,
 }
 
 impl Default for ReturnPose {
+    /// The arrival defaults, and `AgentData`'s field defaults for the rest.
     fn default() -> Self {
         Self {
             position: [128.0, 128.0, 30.0],
             look_at: [1.0, 0.0, 0.0],
             origin: Uuid::nil(),
+            velocity: [0.0, 0.0, 0.0],
+            far: 0.0,
+            body_rotation: [0.0, 0.0, 0.0, 0.0],
+            head_rotation: [0.0, 0.0, 0.0, 0.0],
+            control_flags: 0,
+            always_run: false,
         }
     }
 }
@@ -139,6 +154,11 @@ impl ReturnSlot {
 
     pub fn position(&self) -> [f32; 3] {
         self.pose_mut().position
+    }
+
+    /// The stored update, or the defaults before one arrives.
+    pub fn pose(&self) -> ReturnPose {
+        *self.pose_mut()
     }
 
     /// Take the release URI once. The caller must not log it.

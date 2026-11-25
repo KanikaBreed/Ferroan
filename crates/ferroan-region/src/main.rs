@@ -52,7 +52,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use ferroan_client::{CapsRegistry, CircuitServer, CircuitStop, LandLayer};
+use ferroan_client::{
+    CapsRegistry, CircuitServer, CircuitStop, LandLayer, SceneAnswer, SceneCall, SceneRefused,
+    SceneReply,
+};
 use ferroan_config::{Config, RegionLoad};
 use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
@@ -432,7 +435,11 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
 }
 
 /// `MakeRootAgent` without physics: lift Z, and take the precomputed land packets.
-fn terrain_login(frame: Option<&TerrainFrame>, start: [f32; 3]) -> ([f32; 3], Vec<LandLayer>) {
+/// Both answers are awaited, so the frame thread never blocks this worker.
+async fn terrain_login(
+    frame: Option<&TerrainFrame>,
+    start: [f32; 3],
+) -> ([f32; 3], Vec<LandLayer>) {
     let Some(frame) = frame else {
         return (start, Vec::new());
     };
@@ -440,11 +447,21 @@ fn terrain_login(frame: Option<&TerrainFrame>, start: [f32; 3]) -> ([f32; 3], Ve
         return (start, Vec::new());
     }
     let mut position = start;
-    match frame.ground(position[0], position[1]) {
+    let ground = frame.ground(position[0], position[1]);
+    let layers = frame.layers();
+    let height = match ground {
+        Ok(pending) => pending.wait().await,
+        Err(error) => Err(error),
+    };
+    match height {
         Ok(height) => position[2] = ferroan_scene::movement_z(position[2], height),
         Err(error) => tracing::error!("ferroan-region: terrain height: {error}"),
     }
-    let land = match frame.layers() {
+    let layers = match layers {
+        Ok(pending) => pending.wait().await,
+        Err(error) => Err(error),
+    };
+    let land = match layers {
         Ok(layers) => layers
             .into_iter()
             .map(|layer| LandLayer {
@@ -554,7 +571,7 @@ impl DispatchCtx {
 
 fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::MotionUpdate {
     ferroan_scene::MotionUpdate {
-        now_ms: update.now_ms,
+        now_ms: ferroan_scene::clock_ms(update.received),
         sequence: update.sequence,
         child: update.child,
         in_transit: update.in_transit,
@@ -571,6 +588,111 @@ fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::Motion
     }
 }
 
+fn pose_reply(stored: ferroan_scene::Presence) -> SceneReply {
+    SceneReply::Pose(ferroan_client::LoginPose {
+        position: stored.position,
+        rotation: stored.rotation,
+        velocity: stored.velocity,
+        control_flags: stored.control_flags,
+        draw_distance: stored.draw_distance,
+    })
+}
+
+/// A post the frame answers. The circuit awaits the answer on its own task.
+fn answered<T: Send + 'static>(
+    posted: Result<ferroan_scene::Pending<T>, ferroan_scene::TerrainError>,
+    reply: impl FnOnce(T) -> Result<SceneReply, SceneRefused> + Send + 'static,
+) -> SceneAnswer {
+    match posted {
+        Ok(pending) => SceneAnswer::wait(async move {
+            match pending.wait().await {
+                Ok(value) => reply(value),
+                Err(_) => Err(SceneRefused),
+            }
+        }),
+        Err(_) => SceneAnswer::Ready(Err(SceneRefused)),
+    }
+}
+
+/// A post with no answer. A full queue or a stopped frame is refused.
+fn queued(posted: Result<(), ferroan_scene::TerrainError>) -> SceneAnswer {
+    SceneAnswer::Ready(
+        posted
+            .map(|()| SceneReply::Applied)
+            .map_err(|_| SceneRefused),
+    )
+}
+
+/// One circuit call onto the frame. Nothing here waits for the frame thread.
+fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer {
+    match call {
+        SceneCall::Pose(pose) => answered(
+            frame.post_login(
+                agent,
+                ferroan_scene::Presence {
+                    position: pose.position,
+                    rotation: pose.rotation,
+                    velocity: pose.velocity,
+                    control_flags: pose.control_flags,
+                    draw_distance: pose.draw_distance,
+                },
+            ),
+            |stored| Ok(pose_reply(stored)),
+        ),
+        SceneCall::Teleport(request) => answered(
+            frame.teleport_local(
+                agent,
+                ferroan_scene::LocalTeleport {
+                    position: request.position,
+                    look_at: request.look_at,
+                    half_height: request.half_height,
+                    default_landing: request.default_landing,
+                    size_x: request.size_x,
+                    size_y: request.size_y,
+                    flags: request.flags,
+                },
+            ),
+            |stored| {
+                Ok(SceneReply::Moved(ferroan_client::SceneMove {
+                    position: stored.pose.position,
+                    look_at: stored.look_at,
+                    flags: stored.flags,
+                }))
+            },
+        ),
+        SceneCall::Complete(pose) => answered(
+            frame.complete_hop(
+                agent,
+                ferroan_scene::HopReturn {
+                    position: pose.position,
+                    look_at: pose.look_at,
+                    data: ferroan_scene::ReturnData {
+                        velocity: pose.velocity,
+                        far: pose.far,
+                        body_rotation: pose.body_rotation,
+                        head_rotation: pose.head_rotation,
+                        control_flags: pose.control_flags,
+                        always_run: pose.always_run,
+                    },
+                },
+            ),
+            |stored| Ok(pose_reply(stored)),
+        ),
+        SceneCall::Reuse => answered(frame.reuse_arrival(agent), |stored| {
+            stored.map(pose_reply).ok_or(SceneRefused)
+        }),
+        SceneCall::Read => answered(frame.presence(agent), |stored| {
+            stored.map(pose_reply).ok_or(SceneRefused)
+        }),
+        SceneCall::Flying => answered(frame.flying(agent), |flying| Ok(SceneReply::Flying(flying))),
+        SceneCall::Places(ids) => answered(frame.chat_positions(&ids), |places| {
+            Ok(SceneReply::Places(places))
+        }),
+        SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
+        SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+    }
+}
+
 async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
@@ -583,91 +705,7 @@ async fn dispatch_circuits(
     circuit.enable_chat();
     if let Some(frame) = terrain.as_ref() {
         let frame = Arc::clone(frame);
-        circuit.set_login_scene(Arc::new(move |agent, call| {
-            let pose_of = |stored: ferroan_scene::Presence| {
-                ferroan_client::SceneReply::Pose(ferroan_client::LoginPose {
-                    position: stored.position,
-                    rotation: stored.rotation,
-                    velocity: stored.velocity,
-                    control_flags: stored.control_flags,
-                    draw_distance: stored.draw_distance,
-                })
-            };
-            match call {
-                ferroan_client::SceneCall::Pose(pose) => {
-                    let stored = frame
-                        .post_login(
-                            agent,
-                            ferroan_scene::Presence {
-                                position: pose.position,
-                                rotation: pose.rotation,
-                                velocity: pose.velocity,
-                                control_flags: pose.control_flags,
-                                draw_distance: pose.draw_distance,
-                            },
-                        )
-                        .map_err(|_| ())?;
-                    Ok(pose_of(stored))
-                }
-                ferroan_client::SceneCall::Land(position) => {
-                    let stored = frame.land(agent, position).map_err(|_| ())?;
-                    Ok(pose_of(stored))
-                }
-                ferroan_client::SceneCall::Teleport(request) => {
-                    let stored = frame
-                        .teleport_local(
-                            agent,
-                            ferroan_scene::LocalTeleport {
-                                position: request.position,
-                                look_at: request.look_at,
-                                half_height: request.half_height,
-                                default_landing: request.default_landing,
-                                size_x: request.size_x,
-                                size_y: request.size_y,
-                                flags: request.flags,
-                            },
-                        )
-                        .map_err(|_| ())?;
-                    Ok(ferroan_client::SceneReply::Moved(
-                        ferroan_client::SceneMove {
-                            position: stored.pose.position,
-                            look_at: stored.look_at,
-                            flags: stored.flags,
-                        },
-                    ))
-                }
-                ferroan_client::SceneCall::Complete { position, look_at } => {
-                    let stored = frame
-                        .complete_hop(agent, position, look_at)
-                        .map_err(|_| ())?;
-                    Ok(pose_of(stored))
-                }
-                ferroan_client::SceneCall::AgentUpdate(update) => {
-                    frame
-                        .agent_update(agent, motion_of(update))
-                        .map_err(|_| ())?;
-                    Ok(ferroan_client::SceneReply::Applied)
-                }
-                ferroan_client::SceneCall::AlwaysRun(always_run) => {
-                    frame.set_always_run(agent, always_run).map_err(|_| ())?;
-                    Ok(ferroan_client::SceneReply::Applied)
-                }
-                ferroan_client::SceneCall::Read => match frame.presence(agent).map_err(|_| ())? {
-                    Some(stored) => Ok(pose_of(stored)),
-                    None => Err(()),
-                },
-                ferroan_client::SceneCall::Reuse => {
-                    match frame.reuse_arrival(agent).map_err(|_| ())? {
-                        Some(stored) => Ok(pose_of(stored)),
-                        None => Err(()),
-                    }
-                }
-                ferroan_client::SceneCall::Places(ids) => {
-                    let places = frame.chat_positions(&ids).map_err(|_| ())?;
-                    Ok(ferroan_client::SceneReply::Places(places))
-                }
-            }
-        }));
+        circuit.set_login_scene(Arc::new(move |agent, call| scene_call(&frame, agent, call)));
     }
     let mut ctx = DispatchCtx {
         circuit,
@@ -736,7 +774,7 @@ async fn serve_agent(
     let (position, land) = if already_stopped {
         (agent.start_pos, Vec::new())
     } else {
-        terrain_login(terrain.as_deref(), agent.start_pos)
+        terrain_login(terrain.as_deref(), agent.start_pos).await
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
@@ -753,12 +791,11 @@ async fn serve_agent(
         let mut arrival = config.arrival(position);
         arrival.land = land;
         arrival.avatar = Some(avatar);
-        // TeleportAgentWithinRegion. Godlike needs a cached user level and
-        // IsFlying is not tracked, so both stay off. A handle this grid does
-        // not know gets the not-found packet and one offline map block.
-        // An in-view hop demotes this root and keeps the caps and the circuit.
-        // SendLocalTeleport's queue is the circuit's.
-        let ground_terrain = terrain.clone();
+        // TeleportAgentWithinRegion. Godlike needs a cached user level, so it
+        // stays off. The frame owns the landing and IsFlying. A handle this
+        // grid does not know gets the not-found packet and one offline map
+        // block. An in-view hop demotes this root and keeps the caps and the
+        // circuit. SendLocalTeleport's queue is the circuit's.
         arrival.teleport = Some(ferroan_client::TeleportRegion {
             world_x: config.location[0].wrapping_mul(256),
             world_y: config.location[1].wrapping_mul(256),
@@ -768,11 +805,6 @@ async fn serve_agent(
             half_height,
             allow_movement: true,
             godlike: false,
-            flying: false,
-            ground: Arc::new(move |x, y| match ground_terrain.as_ref() {
-                Some(frame) if frame.has_map() => frame.ground(x, y).unwrap_or(21.0),
-                _ => 21.0,
-            }),
             position: Arc::clone(&landed),
         });
         arrival.return_slot = Some(agent.return_slot.clone());
@@ -933,6 +965,13 @@ async fn serve_agent(
             }
         }
     }
+    // The serve is over: the presence leaves the frame, so nothing reads a
+    // ghost and a later login of this agent posts a fresh pose and filter.
+    // A same-agent replacement joins this task first, so this runs before
+    // the new serve posts.
+    if let Some(frame) = terrain.as_ref() {
+        forget_presence(frame, agent.expect.agent_id).await;
+    }
     // The reply is already out. Close the neighbour child before the harness
     // stops the proxy, the same moment a root logout closes known children.
     if agent.still_root() {
@@ -951,6 +990,16 @@ async fn serve_agent(
         logout_position,
     )
     .await;
+}
+
+async fn forget_presence(frame: &TerrainFrame, agent: Uuid) {
+    let removed = match frame.remove(agent) {
+        Ok(pending) => pending.wait().await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = removed {
+        tracing::debug!("ferroan-region: scene presence was not removed: {error}");
+    }
 }
 
 async fn settle(
@@ -1091,8 +1140,9 @@ mod tests {
     use ferroan_client::CircuitExpect;
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{
-        AgentMovementComplete, CompleteAgentMovement, CompletePingCheck, DisableSimulator,
-        KickUser, LogoutReply, LogoutRequest, RegionHandshake, StartPingCheck, UseCircuitCode,
+        AgentMovementComplete, AgentUpdate, CompleteAgentMovement, CompletePingCheck,
+        DisableSimulator, KickUser, LogoutReply, LogoutRequest, RegionHandshake, SetAlwaysRun,
+        StartPingCheck, UseCircuitCode,
     };
     use ferroan_protocol::{Msg, MsgId, build_packet, parse_packet};
     use serde_json::{Value, json};
@@ -1158,6 +1208,25 @@ mod tests {
             fail_arrival: bool,
             report_gate: Option<Arc<tokio::sync::Semaphore>>,
             login_wait: Duration,
+        ) -> Self {
+            Self::with_scene(
+                short_timeout,
+                fail_grid_user,
+                fail_arrival,
+                report_gate,
+                login_wait,
+                None,
+            )
+            .await
+        }
+
+        async fn with_scene(
+            short_timeout: bool,
+            fail_grid_user: bool,
+            fail_arrival: bool,
+            report_gate: Option<Arc<tokio::sync::Semaphore>>,
+            login_wait: Duration,
+            scene: Option<Arc<TerrainFrame>>,
         ) -> Self {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let seen = requests.clone();
@@ -1246,7 +1315,7 @@ mod tests {
             let running = tokio::spawn(dispatch_circuits(
                 circuit,
                 config,
-                None,
+                scene,
                 agents,
                 stopped,
                 Arc::clone(&started),
@@ -1551,6 +1620,125 @@ mod tests {
         send(&right, &logout, 4).await;
         wait_packet(&right, LogoutReply::ID).await;
         harness.finish().await.unwrap();
+    }
+
+    async fn scene_until<T>(
+        frame: &TerrainFrame,
+        mut read: impl FnMut(&TerrainFrame) -> ferroan_scene::Pending<T>,
+        mut done: impl FnMut(&T) -> bool,
+    ) -> T {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let value = read(frame).wait().await.unwrap();
+                if done(&value) {
+                    return value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn walk(socket: &tokio::net::UdpSocket, expect: CircuitExpect, sequence: u32) {
+        let mut update = AgentUpdate::default();
+        update.agent_data.agent_id = expect.agent_id;
+        update.agent_data.session_id = expect.session_id;
+        update.agent_data.far = 128.0;
+        update.agent_data.control_flags = 1;
+        send(socket, &update, sequence).await;
+    }
+
+    #[tokio::test]
+    async fn a_logout_removes_the_scene_presence_and_a_new_login_starts_fresh() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(Arc::clone(&frame)),
+        )
+        .await;
+        let first = harness.admit(false, false).await;
+        let agent = first.agent_id;
+        let socket = open(&harness, first).await;
+        wait_packet(&socket, RegionHandshake::ID).await;
+        movement(&socket, first, 2).await;
+        wait_arrival(&socket).await;
+        let login = scene_until(&frame, |f| f.presence(agent).unwrap(), Option::is_some)
+            .await
+            .unwrap();
+        // A high sequence on the first circuit, a walk, and always-run.
+        walk(&socket, first, 50).await;
+        let mut run = SetAlwaysRun::default();
+        run.agent_data.agent_id = agent;
+        run.agent_data.session_id = first.session_id;
+        run.agent_data.always_run = true;
+        send(&socket, &run, 51).await;
+        let walking = scene_until(
+            &frame,
+            |f| f.motion(agent).unwrap(),
+            |motion| motion.is_some_and(|motion| motion.always_run),
+        )
+        .await
+        .unwrap();
+        assert_eq!(walking.control_flags, 1);
+        assert!(walking.target_velocity[0] > 0.0);
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = agent;
+        logout.agent_data.session_id = first.session_id;
+        send(&socket, &logout, 52).await;
+        wait_packet(&socket, LogoutReply::ID).await;
+        // The serve ended: no ghost for chat, terse updates or a re-login.
+        scene_until(&frame, |f| f.presence(agent).unwrap(), Option::is_none).await;
+        assert!(
+            frame
+                .chat_positions(&[agent])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let second = harness.admit(true, false).await;
+        let socket = open(&harness, second).await;
+        wait_packet(&socket, RegionHandshake::ID).await;
+        movement(&socket, second, 2).await;
+        wait_arrival(&socket).await;
+        let fresh = scene_until(&frame, |f| f.presence(agent).unwrap(), Option::is_some)
+            .await
+            .unwrap();
+        // The login pose again, not where the first circuit walked to. Z may
+        // already be on the ground after a tick.
+        assert_eq!(fresh.position[..2], login.position[..2]);
+        assert_eq!(fresh.control_flags, 0);
+        assert_eq!(fresh.draw_distance, 255.0);
+        let rested = frame.motion(agent).unwrap().wait().await.unwrap().unwrap();
+        assert!(!rested.always_run);
+        assert_eq!(rested.target_velocity, [0.0, 0.0, 0.0]);
+        // A new client view: sequence 3 is newer than nothing, not older than 50.
+        walk(&socket, second, 3).await;
+        let walking = scene_until(
+            &frame,
+            |f| f.motion(agent).unwrap(),
+            |motion| motion.is_some_and(|motion| motion.control_flags == 1),
+        )
+        .await
+        .unwrap();
+        assert!(walking.target_velocity[0] > 0.0);
+        harness.finish().await.unwrap();
+        assert!(
+            frame
+                .presence(agent)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

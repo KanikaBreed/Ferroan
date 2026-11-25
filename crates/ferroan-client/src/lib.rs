@@ -27,8 +27,8 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, RootArrival, SceneCall, SceneMove, SceneReply, TeleportRequest,
-    UdpCounters,
+    LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneMove, SceneRefused,
+    SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
@@ -37,4 +37,4 @@ pub use source_hop::{
     CONNECT_INNER, FinishEvent, HopOut, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED, SourceHop,
     caps_seed, connect_reason, offline_map_block, teleport_finish_event,
 };
-pub use teleport::{GroundSample, TeleportRegion};
+pub use teleport::{IS_FLYING, TeleportRegion, VIA_LOCATION};
