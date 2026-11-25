@@ -97,7 +97,7 @@ mod walk;
 mod walk_capture;
 mod xml;
 
-pub use animation::{Anim, AnimationSet, AnimationTransfer, Movement};
+pub use animation::{Anim, AnimationSet, AnimationTransfer, MAX_OTHER_ANIMATIONS, Movement};
 pub use avatars::{AvatarFull, AvatarLook, AvatarPacket, MAX_AVATAR_PACKETS};
 pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;
@@ -109,7 +109,7 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    HopReturn, Leaving, LocalTeleport, MovedAway, Pending, Presence, TELEPORT_IS_FLYING,
+    FrameOptions, HopReturn, Leaving, LocalTeleport, MovedAway, Pending, Presence, TELEPORT_IS_FLYING,
     TeleportStored, TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};

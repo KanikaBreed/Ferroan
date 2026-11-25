@@ -58,7 +58,7 @@
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Movement animation ids from
 //   OpenMetaverse/Animations.cs
-//   libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -92,6 +92,7 @@
 //! [D38]: ../../../docs/DECISIONS.md
 //! [D39]: ../../../docs/DECISIONS.md
 
+use ferroan_diag::{Kind, REGION_AGENT_ANIMATIONS, drop_bound};
 use uuid::Uuid;
 
 use crate::motion::{
@@ -119,8 +120,6 @@ pub const MOTION_ON_SURFACE: u8 = 6;
 const FALL_DELAY_MS: i64 = 800;
 const PREJUMP_DELAY_MS: i64 = 450;
 const JUMP_PERIOD_MS: i64 = 1050;
-/// `[Startup] enableflyslow`, false as shipped.
-const FLY_SLOW: bool = false;
 /// `RegionHeartbeatEnd` updates on every second heartbeat.
 const HEARTBEATS_PER_UPDATE: u32 = 2;
 
@@ -270,6 +269,10 @@ const DEFAULT_ANIMATIONS: [(&str, Uuid); 20] = [
     ),
 ];
 
+/// Animations a set holds besides the default. `AvatarAnimation` counts its
+/// blocks in a byte, so the default and these fit one packet. C# has no cap.
+pub const MAX_OTHER_ANIMATIONS: usize = 254;
+
 /// `STAND`, the default a new animation set holds.
 pub const STAND: Uuid = Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f);
 
@@ -349,9 +352,20 @@ impl AnimationSet {
             || self.others.iter().any(|anim| anim.animation == animation)
     }
 
-    /// `Add`: false when the set already plays it.
+    /// `Add`: false when the set already plays it, or (Ferroan's bound)
+    /// already holds [`MAX_OTHER_ANIMATIONS`] others.
     pub fn add(&mut self, animation: Uuid, sequence: i32, object_id: Uuid) -> bool {
         if self.has(animation) {
+            return false;
+        }
+        if self.others.len() >= MAX_OTHER_ANIMATIONS {
+            drop_bound(
+                REGION_AGENT_ANIMATIONS,
+                Kind::Hard,
+                MAX_OTHER_ANIMATIONS as u64,
+                self.others.len() as u64 + 1,
+                "animation-add",
+            );
             return false;
         }
         self.others.push(Anim {
@@ -444,9 +458,20 @@ impl AnimationSet {
     }
 
     /// `FromArray`: appends, and answers the highest sequence (0 for none).
+    /// Past [`MAX_OTHER_ANIMATIONS`] the rest are dropped, with a readout.
     fn append(&mut self, anims: &[Anim]) -> i32 {
+        let room = MAX_OTHER_ANIMATIONS.saturating_sub(self.others.len());
+        if anims.len() > room {
+            drop_bound(
+                REGION_AGENT_ANIMATIONS,
+                Kind::Hard,
+                MAX_OTHER_ANIMATIONS as u64,
+                (self.others.len() + anims.len()) as u64,
+                "agent-data",
+            );
+        }
         let mut highest = 0;
-        for anim in anims {
+        for anim in anims.iter().take(room) {
             self.others.push(*anim);
             highest = highest.max(anim.sequence);
         }
@@ -495,6 +520,8 @@ pub struct Inputs {
     pub stop_active: bool,
     /// `SetAlwaysRun`.
     pub always_run: bool,
+    /// `Scene.m_useFlySlow`, `[Startup] enableflyslow` (false as shipped).
+    pub fly_slow: bool,
     /// `Environment.TickCount`, here the scene clock.
     pub now_ms: i64,
 }
@@ -716,7 +743,7 @@ impl Animator {
             self.falling = false;
             self.state = MOTION_FLYING;
             let movement = if held_xy {
-                if FLY_SLOW {
+                if inputs.fly_slow {
                     Movement::FlySlow
                 } else {
                     Movement::Fly
@@ -887,6 +914,7 @@ mod tests {
             }),
             stop_active: false,
             always_run: false,
+            fly_slow: false,
             now_ms,
         }
     }

@@ -68,6 +68,7 @@ pub const OBJECT_TASK_ITEMS: &str = "object.task-items";
 pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";
 pub const REGION_ENTITY_UPDATES: &str = "region.entity-updates";
 pub const REGION_AVATAR_PACKETS: &str = "region.avatar-packets";
+pub const REGION_AGENT_ANIMATIONS: &str = "region.agent-animations";
 pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
 pub const LIVE_PORT_BASE: &str = "live.port-base";

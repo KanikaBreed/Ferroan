@@ -445,13 +445,11 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         }
         (None, _) => None,
     };
-    let frame = match map {
-        Some(map) => {
-            TerrainFrame::start(map).map_err(|error| RunError::Terrain(error.to_string()))?
-        }
-        None => TerrainFrame::start_without_map()
-            .map_err(|error| RunError::Terrain(error.to_string()))?,
+    let options = ferroan_scene::FrameOptions {
+        fly_slow: config.fly_slow,
     };
+    let frame = TerrainFrame::start_with(map, options)
+        .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 

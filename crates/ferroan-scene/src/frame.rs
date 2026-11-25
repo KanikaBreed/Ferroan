@@ -288,6 +288,14 @@ struct Viewer {
     coarse: CoarseState,
 }
 
+/// Region settings the frame reads at start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameOptions {
+    /// `[Startup] enableflyslow` (`Scene.m_useFlySlow`): flying with a
+    /// direction plays `FLYSLOW` in place of `FLY`. False as shipped.
+    pub fly_slow: bool,
+}
+
 /// The presences, the attached viewers and the board their blocks read.
 struct Scene {
     presences: HashMap<Uuid, Avatar>,
@@ -295,6 +303,7 @@ struct Scene {
     board: AvatarBoard,
     /// `Scene.AllocateLocalId`.
     next_local_id: u32,
+    options: FrameOptions,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -312,15 +321,16 @@ pub struct TerrainFrame {
 impl TerrainFrame {
     /// Precomputes land packets on the frame thread, then returns.
     pub fn start(map: Heightmap) -> Result<Self, TerrainError> {
-        Self::spawn(Some(map))
+        Self::start_with(Some(map), FrameOptions::default())
     }
 
     /// Tick and store login poses when the region has no heightmap.
     pub fn start_without_map() -> Result<Self, TerrainError> {
-        Self::spawn(None)
+        Self::start_with(None, FrameOptions::default())
     }
 
-    fn spawn(map: Option<Heightmap>) -> Result<Self, TerrainError> {
+    /// Start with the region's settings, with or without a heightmap.
+    pub fn start_with(map: Option<Heightmap>, options: FrameOptions) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
         let (inbound, inbound_rx) = mpsc::sync_channel(SCENE_INBOUND);
@@ -333,6 +343,7 @@ impl TerrainFrame {
             viewers: HashMap::new(),
             board: board.clone(),
             next_local_id: first_local_id(),
+            options,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -626,6 +637,7 @@ fn answer(
     layers: &[TerrainLayer],
     frames: u64,
 ) -> bool {
+    let options = scene.options;
     let presences = &mut scene.presences;
     match request {
         Request::Height { x, y, reply } => {
@@ -680,7 +692,7 @@ fn answer(
             let _ = reply.send(local_id);
         }
         Request::Pose { agent, pose, reply } => {
-            let mut avatar = Avatar::new(agent, pose);
+            let mut avatar = Avatar::new(agent, pose, options);
             // Chat can read this pose immediately. The actor waits until
             // the arrival packet samples it, or a tick would change the
             // position that packet and GridUser still report.
@@ -697,7 +709,7 @@ fn answer(
         } => {
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(agent, pose));
+                .or_insert_with(|| Avatar::new(agent, pose, options));
             arrive_at_rest(avatar);
             // `CompleteMovement` turns a non-crossing arrival to the look it
             // sends in `AgentMovementComplete` (`RotateToLookAt`).
@@ -734,10 +746,14 @@ fn answer(
             let look_at = flatten_look(request.look_at);
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(agent, fresh(position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(position), options));
             let mut flags = request.flags;
             if avatar.body.flying() {
                 flags |= TELEPORT_IS_FLYING;
+            }
+            // `TeleportWithMomentum` stands a sitter up first (`StandUp(false)`).
+            if avatar.body.is_sitting() {
+                avatar.body.stand_up();
             }
             avatar.pose.position = position;
             avatar
@@ -758,7 +774,7 @@ fn answer(
         Request::Complete { agent, hop, reply } => {
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(agent, fresh(hop.position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(hop.position), options));
             avatar.pose.position = hop.position;
             avatar.body.apply_return(&hop.data, &mut avatar.pose);
             // CompleteMovement's RotateToLookAt replaces the copied body rotation.
@@ -789,9 +805,10 @@ fn answer(
 }
 
 impl Avatar {
-    fn new(agent: Uuid, pose: Presence) -> Self {
+    fn new(agent: Uuid, pose: Presence, options: FrameOptions) -> Self {
         let mut body = Body::new(&pose);
         body.set_agent(agent);
+        body.set_fly_slow(options.fly_slow);
         Self { body, pose }
     }
 }
@@ -1828,6 +1845,7 @@ mod tests {
             viewers: HashMap::new(),
             board: AvatarBoard::default(),
             next_local_id: 100,
+            options: FrameOptions::default(),
         }
     }
 

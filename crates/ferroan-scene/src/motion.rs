@@ -298,6 +298,8 @@ pub(crate) struct Body {
     camera_at_axis: [f32; 3],
     /// `ScenePresence.Animator`.
     animator: Animator,
+    /// `Scene.m_useFlySlow`.
+    fly_slow: bool,
 }
 
 impl Body {
@@ -356,7 +358,13 @@ impl Body {
             actor: true,
             camera_at_axis: [0.0, 0.0, 0.0],
             animator: Animator::new(Uuid::nil()),
+            fly_slow: false,
         }
+    }
+
+    /// `[Startup] enableflyslow`: flying with a direction plays `FLYSLOW`.
+    pub(crate) fn set_fly_slow(&mut self, fly_slow: bool) {
+        self.fly_slow = fly_slow;
     }
 
     /// The agent a movement animation names as its object.
@@ -394,6 +402,7 @@ impl Body {
             actor,
             stop_active: self.motion.stop_active,
             always_run: self.motion.always_run,
+            fly_slow: self.fly_slow,
             now_ms: i64::try_from(now_ms).unwrap_or(i64::MAX),
         }
     }
@@ -451,6 +460,23 @@ impl Body {
     /// one has not collided yet.
     pub(crate) fn clear_contact(&mut self) {
         self.colliding = false;
+    }
+
+    /// `StandUp`: a ground sitter gets a new actor, not flying and not yet
+    /// colliding. `STAND` is set either way.
+    pub(crate) fn stand_up(&mut self) {
+        if self.seated {
+            self.motion.flying = false;
+            self.colliding = false;
+        }
+        self.motion.sit_ground = false;
+        self.seated = false;
+        self.animator.stand_up();
+    }
+
+    /// `IsSitting`: on the ground here; nothing sits on an object yet.
+    pub(crate) fn is_sitting(&self) -> bool {
+        self.motion.sit_ground
     }
 
     pub(crate) fn view(&self) -> Motion {
@@ -574,13 +600,7 @@ impl Body {
         // `StandUp` gives a ground sitter a new actor, not flying and not
         // yet colliding, and always sets `STAND`.
         if update.control_flags & CONTROL_STAND_UP != 0 {
-            if self.seated {
-                self.motion.flying = false;
-                self.colliding = false;
-            }
-            self.motion.sit_ground = false;
-            self.seated = false;
-            self.animator.stand_up();
+            self.stand_up();
         }
         if update.control_flags & CONTROL_SIT_ON_GROUND != 0 {
             self.motion.sit_ground = true;
@@ -802,6 +822,8 @@ impl Body {
             self.motion.target_velocity = [0.0, 0.0, 0.0];
             self.physics_velocity = [0.0, 0.0, 0.0];
             pose.velocity = [0.0, 0.0, 0.0];
+            // `AddNewMovement(Vector3.Zero, 0)` ends in the animator.
+            self.animate(now_ms);
         }
     }
 }
