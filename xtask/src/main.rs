@@ -25,6 +25,9 @@
 //! need the .NET SDK and the reference checkouts. The Linux live workflow
 //! runs `verify` and `status-verify`.
 //!
+//! `throttle generate` and `throttle verify` read the pinned category token
+//! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
+//!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
@@ -100,6 +103,7 @@ mod ports;
 mod region_report;
 mod regionstore;
 mod schema;
+mod throttle_oracle;
 mod trailing_fixtures;
 mod twice;
 mod xasset_live;
@@ -127,6 +131,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http verify [directory]
        cargo xtask http status-generate
        cargo xtask http status-verify
+       cargo xtask throttle generate
+       cargo xtask throttle verify
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -238,6 +244,8 @@ fn main() -> ExitCode {
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
         ["http", "status-generate"] => http_oracle::status_generate(),
         ["http", "status-verify"] => http_oracle::status_verify(),
+        ["throttle", "generate"] => throttle_oracle::generate(),
+        ["throttle", "verify"] => throttle_oracle::verify(),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),

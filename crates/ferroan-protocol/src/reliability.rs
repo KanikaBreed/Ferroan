@@ -133,6 +133,14 @@ pub struct ResendBatch<T> {
     pub dropped: Vec<u32>,
 }
 
+/// Due sequences from [`ReliableWindow::poll_uncommitted`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DueBatch {
+    pub due: Vec<u32>,
+    /// Exhausted packets are removed before this batch is returned.
+    pub dropped: Vec<u32>,
+}
+
 impl<T> ReliableWindow<T> {
     pub fn len(&self) -> usize {
         self.packets.len()
@@ -204,6 +212,58 @@ impl<T> ReliableWindow<T> {
         for sequence in sequences {
             self.packets.remove(&sequence);
         }
+    }
+
+    /// Count one resend that actually left the socket. A refused throttle does
+    /// not call this, so the packet stays due and keeps its retry count.
+    pub fn commit_resend(&mut self, sequence: u32, now: Instant) {
+        if let Some(packet) = self.packets.get_mut(&sequence) {
+            packet.retries = packet.retries.saturating_add(1);
+            packet.sent = now;
+        }
+    }
+
+    /// Sequences that are due, in sequence order, without consuming a retry
+    /// and without cloning their payloads. Exhausted packets are still removed.
+    /// The caller reads each with [`Self::payload`] and commits each resend it
+    /// manages to put on the wire.
+    pub fn poll_uncommitted(&mut self, now: Instant, fallback: Duration) -> DueBatch {
+        let mut batch = DueBatch {
+            due: Vec::new(),
+            dropped: Vec::new(),
+        };
+        let mut crossed: Option<(u8, u8)> = None;
+        for (sequence, packet) in &self.packets {
+            if now.saturating_duration_since(packet.sent)
+                < packet.policy.timeout.unwrap_or(fallback)
+            {
+                continue;
+            }
+            if let Some(limit) = packet.retry_limit
+                && packet.retries >= limit
+            {
+                if crossed.is_none_or(|(retries, _)| packet.retries >= retries) {
+                    crossed = Some((packet.retries, limit));
+                }
+                batch.dropped.push(*sequence);
+            } else {
+                batch.due.push(*sequence);
+            }
+        }
+        batch.due.sort_unstable();
+        self.acknowledge(batch.dropped.iter().copied());
+        if let Some((retries, limit)) = crossed {
+            let observed = u64::from(retries);
+            #[cfg(test)]
+            reported_retry_observed().store(observed, std::sync::atomic::Ordering::Relaxed);
+            ferroan_diag::drop_bound(UDP_RETRIES, Kind::Soft, u64::from(limit), observed, "udp");
+        }
+        batch
+    }
+
+    /// The payload waiting under `sequence`.
+    pub fn payload(&self, sequence: u32) -> Option<&T> {
+        self.packets.get(&sequence).map(|packet| &packet.payload)
     }
 
     pub fn oldest_or(&self, fallback: u32) -> u32 {
@@ -419,6 +479,34 @@ mod tests {
             reported_retry_observed().load(Ordering::Relaxed),
             batch.dropped.len() as u64
         );
+    }
+
+    #[test]
+    fn uncommitted_poll_keeps_the_retry_until_commit() {
+        let _lock = retry_observe_lock();
+        let now = Instant::now();
+        let step = Duration::from_secs(1);
+        let policy = Resend {
+            timeout: Some(step),
+            max_retries: 1,
+        };
+        let mut window = ReliableWindow::default();
+        window.insert(4, 9_u8, now, policy).unwrap();
+        let due = now + step;
+        let batch = window.poll_uncommitted(due, step);
+        assert_eq!(batch.due, vec![4]);
+        assert_eq!(window.payload(4), Some(&9_u8));
+        assert!(batch.dropped.is_empty());
+        assert_eq!(window.retry_count(4), Some(0));
+        let again = window.poll_uncommitted(due, step);
+        assert_eq!(again.due, vec![4]);
+        assert_eq!(window.retry_count(4), Some(0));
+        window.commit_resend(4, due);
+        assert_eq!(window.retry_count(4), Some(1));
+        assert!(window.poll_uncommitted(due, step).due.is_empty());
+        let dropped = window.poll_uncommitted(due + step, step);
+        assert_eq!(dropped.dropped, vec![4]);
+        assert_eq!(window.retry_count(4), None);
     }
 
     fn retry_observe_lock() -> std::sync::MutexGuard<'static, ()> {

@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::control_plane::{ControlPlaneAccess, ControlPlaneError};
-use ferroan_client::{CapGrantSet, CircuitTiming, HandshakeConfig};
+use ferroan_client::{
+    CLIENT_MAX_BPS, CLIENT_MAX_BPS_RANGE, CapGrantSet, CircuitThrottle, CircuitTiming,
+    HandshakeConfig, SCENE_MAX_BPS,
+};
 use ferroan_config::{Config, RegionLoad};
 use ferroan_diag::{self, Kind, TIMER_MILLISECONDS, TIMER_SECONDS};
 use uuid::Uuid;
@@ -105,6 +108,8 @@ pub struct RegionConfig {
     pub estate_store: Option<String>,
     pub handshake: HandshakeConfig,
     pub circuit_timing: CircuitTiming,
+    /// `[ClientStack.LindenUDP]` client and scene throttle caps.
+    pub circuit_throttle: CircuitThrottle,
     /// Deadline for ViaLogin circuits which have not opened a viewer connection.
     /// Zero retains the C# legacy behavior of waiting until region shutdown.
     pub login_connect_wait: std::time::Duration,
@@ -366,6 +371,7 @@ impl RegionConfig {
             estate_store: estate_connection(server),
             handshake,
             circuit_timing: circuit_timing(server)?,
+            circuit_throttle: circuit_throttle(server)?,
             login_connect_wait: login_connect_wait(server)?,
             channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
@@ -647,6 +653,48 @@ fn circuit_timing(config: &Config) -> Result<CircuitTiming, RegionConfigError> {
         ack_timeout: silence("AckTimeout", "60")?,
         paused_ack_timeout: silence("PausedAckTimeout", "300")?,
     })
+}
+
+/// `ThrottleRates.cs` lines 82-86 and `LLUDPServer.cs` lines 414 and 455.
+fn circuit_throttle(config: &Config) -> Result<CircuitThrottle, RegionConfigError> {
+    const SECTION: &str = "ClientStack.LindenUDP";
+    if !config.section_names().any(|name| name == SECTION) {
+        // Without the section C# reads neither key and the scene bucket is 0.
+        return Ok(CircuitThrottle {
+            client_max_bps: CLIENT_MAX_BPS,
+            scene_max_bps: 0,
+        });
+    }
+    // ThrottleRates reads the client cap inside a try. A value that is not an
+    // integer throws and leaves the default; a parsed value is clamped.
+    let client_max_bps = match config.get(SECTION, "client_throttle_max_bps") {
+        None => CLIENT_MAX_BPS,
+        Some(text) => match csharp_int(text) {
+            Some(rate) => rate.clamp(*CLIENT_MAX_BPS_RANGE.start(), *CLIENT_MAX_BPS_RANGE.end()),
+            None => CLIENT_MAX_BPS,
+        },
+    };
+    // LLUDPServer reads the scene cap with no try, so a bad value stops startup.
+    let scene_max_bps = match config.get(SECTION, "scene_throttle_max_bps") {
+        None => SCENE_MAX_BPS,
+        Some(text) => csharp_int(text).ok_or_else(|| {
+            value(
+                SECTION,
+                "scene_throttle_max_bps",
+                "expected a signed 32-bit integer",
+            )
+        })?,
+    };
+    Ok(CircuitThrottle {
+        client_max_bps,
+        scene_max_bps,
+    })
+}
+
+/// Nini `GetInt`: `Convert.ToInt32` of the text, surrounding white space and
+/// a sign allowed.
+fn csharp_int(text: &str) -> Option<i32> {
+    text.trim().parse().ok()
 }
 
 fn number(
@@ -1117,6 +1165,61 @@ mod tests {
             Duration::from_millis(1000)
         );
         assert_eq!(config.circuit_timing.max_rto, Duration::from_millis(3000));
+    }
+
+    #[test]
+    fn throttle_caps_follow_throttle_rates_and_the_udp_server() {
+        let config = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        // No [ClientStack.LindenUDP]: the scene bucket is built with 0.
+        assert_eq!(
+            config.circuit_throttle,
+            CircuitThrottle {
+                client_max_bps: 640_000,
+                scene_max_bps: 0,
+            }
+        );
+        let mut server = server();
+        server.set("ClientStack.LindenUDP", "DefaultRTO", "0");
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(config.circuit_throttle, CircuitThrottle::default());
+        assert_eq!(config.circuit_throttle.scene_max_bps, 6_250_000);
+        for (setting, expected) in [
+            ("100", 6_250),
+            (" 320000 ", 320_000),
+            ("9000000", 1_000_000),
+            ("-4", 6_250),
+            ("1.5", 640_000),
+            ("fast", 640_000),
+            ("", 640_000),
+        ] {
+            server.set("ClientStack.LindenUDP", "client_throttle_max_bps", setting);
+            let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+            assert_eq!(
+                config.circuit_throttle.client_max_bps, expected,
+                "{setting:?}"
+            );
+        }
+        for (setting, expected) in [("0", 0), ("-1", -1), ("+125000", 125_000)] {
+            server.set("ClientStack.LindenUDP", "scene_throttle_max_bps", setting);
+            let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+            assert_eq!(
+                config.circuit_throttle.scene_max_bps, expected,
+                "{setting:?}"
+            );
+        }
+        for setting in ["many", "2147483648", ""] {
+            server.set("ClientStack.LindenUDP", "scene_throttle_max_bps", setting);
+            assert!(
+                matches!(
+                    RegionConfig::from_configs(&server, &regions()),
+                    Err(RegionConfigError::Value {
+                        key: "scene_throttle_max_bps",
+                        ..
+                    })
+                ),
+                "{setting:?}"
+            );
+        }
     }
 
     #[test]

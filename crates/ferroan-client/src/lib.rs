@@ -3,7 +3,8 @@
 
 //! The region side of one LLUDP circuit, the seed capability and an event queue.
 //!
-//! Throttles are still planned. Empty event polls wait for the C# hold deadline.
+//! Category token buckets gate resends, land and task sends. Empty event polls
+//! wait for the C# hold deadline.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -18,6 +19,7 @@ mod handshake;
 mod return_hop;
 mod source_hop;
 mod teleport;
+mod throttle;
 
 pub use appearance::{AvatarWire, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
@@ -38,3 +40,4 @@ pub use source_hop::{
     SourceHop, caps_seed, connect_reason, offline_map_block, teleport_finish_event,
 };
 pub use teleport::{IS_FLYING, TeleportRegion, VIA_LOCATION};
+pub use throttle::{CLIENT_MAX_BPS, CLIENT_MAX_BPS_RANGE, CircuitThrottle, SCENE_MAX_BPS};
