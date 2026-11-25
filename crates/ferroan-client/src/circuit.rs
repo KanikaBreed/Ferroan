@@ -1152,7 +1152,8 @@ impl State {
     /// Use the pose the frame already stored. The first arrival posts the login
     /// pose and holds the actor. This sample releases it. A tick before the
     /// sample would move the position this packet and GridUser still report.
-    /// A later arrival, after a teleport or a hop, resets the command and the
+    /// A hop completion holds the actor the same way until this sample. A
+    /// later arrival, after a teleport or a hop, resets the command and the
     /// physics velocity to rest and keeps the stored position.
     async fn login_position(&self, agent: Uuid) -> Result<[f32; 3], CircuitError> {
         let Some(scene) = self.login_scene.clone() else {
