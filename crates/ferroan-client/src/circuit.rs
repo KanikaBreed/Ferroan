@@ -58,7 +58,7 @@
 
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
-use crate::source_hop::{HopCommand, HopOut, HopRequest, SourceHop};
+use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, VIA_LOCATION};
 use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
@@ -333,6 +333,8 @@ pub enum CircuitStop {
     Disable,
     /// `Scene.Close`: reliable `KickUser`, then `DisableSimulator`.
     Shutdown,
+    /// `CloseAgent(id, false, token)`: `Close(false, false)` sends no packet.
+    Quiet,
 }
 
 type PendingUseCircuit = Mutex<Option<(SocketAddr, Vec<u8>)>>;
@@ -508,6 +510,8 @@ struct State {
     return_wait: bool,
     /// This demotion already started a promotion. Cleared once the agent is root.
     return_started: bool,
+    /// Last `AgentUpdate` camera and rotations. A hop copies this into `UpdateAgent`.
+    viewer_pose: HopPose,
 }
 impl State {
     #[cfg(test)]
@@ -569,6 +573,7 @@ impl State {
             always_run: None,
             return_wait: false,
             return_started: false,
+            viewer_pose: HopPose::default(),
         }
     }
 
@@ -808,10 +813,16 @@ impl State {
         kind: CircuitStop,
     ) -> Result<(), CircuitError> {
         if let Some(peer) = self.peer {
-            if kind == CircuitStop::Shutdown {
-                self.send_kick(sock, peer, expect).await?;
+            match kind {
+                CircuitStop::Shutdown => {
+                    self.send_kick(sock, peer, expect).await?;
+                    self.send_disable(sock, peer).await?;
+                }
+                CircuitStop::Disable => {
+                    self.send_disable(sock, peer).await?;
+                }
+                CircuitStop::Quiet => {}
             }
-            self.send_disable(sock, peer).await?;
         }
         Err(CircuitError::Closed)
     }
@@ -1146,6 +1157,11 @@ impl State {
         sequence: u32,
         message: &AgentUpdate,
     ) {
+        self.viewer_pose = HopPose {
+            center: message.agent_data.camera_center.to_array(),
+            head_rotation: message.agent_data.head_rotation.to_array(),
+            body_rotation: message.agent_data.body_rotation.to_array(),
+        };
         let Some(scene) = self.login_scene.clone() else {
             return;
         };
@@ -1332,6 +1348,7 @@ impl State {
             look_at: request.info.look_at.to_array(),
             flags,
             client_ip: to.ip().to_string(),
+            pose: self.viewer_pose,
         };
         self.in_transit = true;
         self.hop_agent = expect.agent_id;

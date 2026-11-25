@@ -72,7 +72,8 @@
 //! The simulation service calls made by C# Robust during a local grid login.
 //! The source hop's release DELETE is implemented. A child `CreateAgent` that
 //! is not a login, and `UpdateAgent`, are the destination half of a teleport.
-//! Other agent DELETE calls stay unimplemented.
+//! `DELETE /agent/{id}/{region}/` closes that agent when the auth query is its
+//! session id.
 
 use std::{
     collections::HashMap,
@@ -88,7 +89,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
-use crate::simulation_client::RegionEnd;
+use crate::simulation_client::{Appearance, RegionEnd, appearance_from_json};
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -99,7 +100,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use ferroan_client::{CapsError, CapsRegistry, CircuitExpect, ROOT_WAIT, ReturnPose, ReturnSlot};
+use ferroan_client::{
+    CapsError, CapsRegistry, CircuitExpect, CircuitStop, ROOT_WAIT, ReturnPose, ReturnSlot,
+};
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
@@ -181,7 +184,9 @@ struct ActiveSession {
     child: bool,
     /// Set when a far hop closes the agent here. Logout must not tell the grid.
     departed: Arc<AtomicBool>,
-    cancel: Option<oneshot::Sender<()>>,
+    /// Set when this generation is removed while it is still the root.
+    rooted_when_replaced: Arc<AtomicBool>,
+    cancel: Option<oneshot::Sender<CircuitStop>>,
     /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
     /// completes it after logout notification.
     logout_done: Option<oneshot::Receiver<()>>,
@@ -203,9 +208,16 @@ pub struct AcceptedAgent {
     pub start_pos: [f32; 3],
     pub first_name: String,
     pub last_name: String,
+    /// `ViaLogin`. A hop child is not one, so its end is not a failed login.
+    pub via_login: bool,
+    pub viewer: String,
+    pub channel: String,
+    pub mac: String,
+    pub id0: String,
+    pub appearance: Option<Appearance>,
     /// Same gate the session stores. The circuit waits on it for a return.
     pub return_slot: ReturnSlot,
-    cancelled: oneshot::Receiver<()>,
+    cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
 }
 
@@ -223,6 +235,25 @@ impl AcceptedAgent {
             .is_some_and(|session| session.generation == self._lease.generation)
     }
 
+    /// This root was replaced by a login that holds a different Presence session.
+    /// The old session is logged out only when this generation was still the
+    /// root. A demoted child, a departed agent, a same-session replay and a
+    /// far hop are not this case.
+    pub fn replaced_by_other_session(&self) -> bool {
+        if !self._lease.rooted_when_replaced.load(Ordering::Acquire) {
+            return false;
+        }
+        self._lease
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&self._lease.agent_id)
+            .is_some_and(|session| {
+                session.generation != self._lease.generation
+                    && session.session_id != self.expect.session_id
+            })
+    }
+
     /// A replay may replace a circuit while retaining its Presence session.
     pub fn may_logout_presence(&self) -> bool {
         self._lease
@@ -235,10 +266,11 @@ impl AcceptedAgent {
                     || session.session_id != self.expect.session_id
             })
     }
-    /// Completes when a new login replaces this circuit. The dispatcher must
-    /// drop the old UDP-serving future before starting the replacement.
-    pub async fn replaced(&mut self) {
-        let _ = (&mut self.cancelled).await;
+    /// Completes when a new login or CloseAgent stops this circuit. The
+    /// dispatcher must drop the old UDP-serving future before starting a
+    /// replacement. A dropped sender is a disable, matching the old close.
+    pub async fn replaced(&mut self) -> CircuitStop {
+        (&mut self.cancelled).await.unwrap_or(CircuitStop::Disable)
     }
 
     /// The circuit report is in hand and this generation is still the active one.
@@ -300,6 +332,8 @@ struct SessionLease {
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     meters: Arc<RegionMeters>,
     departed: Arc<AtomicBool>,
+    rooted_when_replaced: Arc<AtomicBool>,
+    open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
 }
 
 impl Drop for SessionLease {
@@ -315,6 +349,10 @@ impl Drop for SessionLease {
             .get(&self.agent_id)
             .is_some_and(|session| session.generation == self.generation)
         {
+            self.open_children
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .remove(&self.agent_id);
             self.caps.clear_agent(self.agent_id);
             if let Some(session) = sessions.remove(&self.agent_id) {
                 session.slot.close();
@@ -504,8 +542,11 @@ impl SimulationState {
             .try_reserve()
             .map_err(|_| "Region is not accepting logins")?;
         if let Some(mut previous) = sessions.remove(&fields.agent_id) {
+            if previous.root && !previous.departed.load(Ordering::Acquire) {
+                previous.rooted_when_replaced.store(true, Ordering::Release);
+            }
             if let Some(cancel) = previous.cancel.take() {
-                let _ = cancel.send(());
+                let _ = cancel.send(CircuitStop::Disable);
             }
             self.caps.clear_agent(fields.agent_id);
         }
@@ -530,6 +571,7 @@ impl SimulationState {
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
         let slot = ReturnSlot::new(fields.child);
+        let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
             fields.agent_id,
             ActiveSession {
@@ -538,6 +580,7 @@ impl SimulationState {
                 root: false,
                 child: fields.child,
                 departed: Arc::clone(&departed),
+                rooted_when_replaced: Arc::clone(&rooted_when_replaced),
                 cancel: Some(cancel),
                 logout_done: Some(logout_wait),
                 slot: slot.clone(),
@@ -553,6 +596,8 @@ impl SimulationState {
             lifecycle: self.lifecycle.clone(),
             meters: self.meters.clone(),
             departed,
+            rooted_when_replaced,
+            open_children: self.open_children.clone(),
         };
         let accepted = AcceptedAgent {
             logout_done: Some(logout_done),
@@ -568,6 +613,12 @@ impl SimulationState {
             start_pos: fields.start_pos,
             first_name: fields.first_name,
             last_name: fields.last_name,
+            via_login: fields.via_login,
+            viewer: fields.viewer,
+            channel: fields.channel,
+            mac: fields.mac,
+            id0: fields.id0,
+            appearance: fields.appearance,
             return_slot: slot,
             cancelled,
             _lease: lease,
@@ -601,7 +652,7 @@ impl SimulationState {
             return None;
         }
         if let Some(cancel) = session.cancel.take() {
-            let _ = cancel.send(());
+            let _ = cancel.send(CircuitStop::Disable);
         }
         session.logout_done.take()
     }
@@ -759,6 +810,10 @@ impl SimulationState {
         let Some(session) = sessions.get(&agent) else {
             return;
         };
+        self.open_children
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent);
         session.departed.store(true, Ordering::Release);
         let slot = session.slot.clone();
         self.caps.clear_agent(agent);
@@ -774,6 +829,24 @@ impl SimulationState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .insert(agent, end);
+    }
+
+    /// CloseAgent. The session stays so a root still logs Presence out.
+    /// A mismatched token does nothing. The HTTP handler still answers 200.
+    fn close_if_authorized(&self, agent: Uuid, auth: &str) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(session) = sessions.get_mut(&agent) else {
+            return;
+        };
+        if session.session_id.to_string() != auth {
+            return;
+        }
+        if let Some(cancel) = session.cancel.take() {
+            let _ = cancel.send(CircuitStop::Quiet);
+        }
     }
 
     /// The neighbour logout should close, once.
@@ -797,11 +870,31 @@ async fn handle(
         return bare(StatusCode::NOT_FOUND);
     };
     let region = path.get(2).and_then(|s| Uuid::parse_str(s).ok());
+    if method == "DELETE" && (agent.is_nil() || region.is_none_or(|id| id.is_nil())) {
+        return bare(StatusCode::BAD_REQUEST);
+    }
     if method == "DELETE" && path.get(3).copied() == Some("release") {
         if region == Some(state.region_id) {
             state.note_release(agent);
         }
         tracing::debug!("source hop: release");
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain"),
+                (header::CONNECTION, "close"),
+            ],
+            format!("OpenSim agent {agent}"),
+        )
+            .into_response();
+    }
+    if method == "DELETE" {
+        if region == Some(state.region_id)
+            && let Some(auth) = auth_query(request.uri().query())
+        {
+            state.close_if_authorized(agent, auth);
+        }
+        tracing::debug!("agent close");
         return (
             StatusCode::OK,
             [
@@ -951,6 +1044,13 @@ async fn update_agent(state: &SimulationState, agent: Uuid, request: Request) ->
     }
     let gzip = is_gzip(request.headers());
     let Ok(body) = to_bytes(request.into_body(), MAX_BODY).await else {
+        ferroan_diag::refuse(
+            HTTP_POST_BODY,
+            Kind::Hard,
+            MAX_BODY as u64,
+            (MAX_BODY as u64).saturating_add(1),
+            "/agent",
+        );
         return bare(StatusCode::PAYLOAD_TOO_LARGE);
     };
     let args = match decode_body(&body, gzip) {
@@ -1400,6 +1500,11 @@ struct AgentFields {
     child: bool,
     /// `ViaLogin`. A child login stays refused.
     via_login: bool,
+    viewer: String,
+    channel: String,
+    mac: String,
+    id0: String,
+    appearance: Option<Appearance>,
 }
 
 impl AgentFields {
@@ -1488,6 +1593,11 @@ impl AgentFields {
             last_name: required_str(args, "last_name")?.to_owned(),
             child,
             via_login,
+            viewer: optional_string(args, "viewer"),
+            channel: optional_string(args, "channel"),
+            mac: optional_string(args, "mac"),
+            id0: optional_string(args, "id0"),
+            appearance: args.get("packed_appearance").map(appearance_from_json),
         })
     }
 
@@ -1502,6 +1612,21 @@ impl AgentFields {
             }
         }
     }
+}
+
+fn optional_string(args: &Map<String, Value>, key: &str) -> String {
+    args.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn auth_query(query: Option<&str>) -> Option<&str> {
+    let query = query?;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "auth" && !value.is_empty()).then_some(value)
+    })
 }
 
 fn required_str<'a>(
@@ -2077,6 +2202,11 @@ mod tests {
             last_name: "Test".into(),
             child: false,
             via_login: true,
+            viewer: String::new(),
+            channel: String::new(),
+            mac: String::new(),
+            id0: String::new(),
+            appearance: None,
         }
     }
 
@@ -3126,10 +3256,45 @@ mod tests {
             .unwrap()
     }
 
+    fn captured_agent_update() -> Value {
+        let bytes = include_bytes!("../../../fixtures/neighbour-teleport/proxy-home.cap");
+        let records = ferroan_capture::read_complete_prefix(bytes).unwrap();
+        for record in records {
+            if record.kind != ferroan_capture::Kind::HttpRequest {
+                continue;
+            }
+            let Some(split) = record.bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let body = &record.bytes[split + 4..];
+            let Ok(value) = serde_json::from_slice::<Value>(body) else {
+                continue;
+            };
+            if value.get("message_type").and_then(Value::as_str) == Some("AgentData") {
+                return value;
+            }
+        }
+        panic!("proxy-home.cap has no AgentData");
+    }
+
+    fn agent_body(patch: &Value) -> Value {
+        let mut body = captured_agent_update();
+        let Some(map) = body.as_object_mut() else {
+            return body;
+        };
+        if let Value::Object(patch) = patch {
+            for (key, value) in patch {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+        body
+    }
+
     async fn put_agent(state: &SimulationState, peer: SocketAddr, body: &Value) -> String {
+        let body = agent_body(body);
         let request = Request::builder()
             .method("PUT")
-            .uri(format!("/agent/{}/", state_agent(body)))
+            .uri(format!("/agent/{}/", state_agent(&body)))
             .body(axum::body::Body::from(body.to_string()))
             .unwrap();
         let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
@@ -3148,5 +3313,228 @@ mod tests {
             .and_then(Value::as_str)
             .and_then(|text| Uuid::parse_str(text).ok())
             .unwrap_or_else(|| Uuid::from_u128(1))
+    }
+
+    #[test]
+    fn login_create_keeps_viewer_and_appearance() {
+        let args = decode_body(CREATE_REQUEST.as_bytes(), false).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let fields = AgentFields::parse(&args, agent, region).unwrap();
+        assert_eq!(fields.viewer, "Ferroan Bot 0.1.0");
+        assert_eq!(fields.channel, "Ferroan Bot");
+        assert!(!fields.mac.is_empty());
+        assert!(!fields.id0.is_empty());
+        assert!(fields.via_login);
+        let appearance = fields.appearance.expect("packed appearance");
+        assert!((appearance.height - 1.9).abs() < 0.01);
+        assert!(appearance.has_texture);
+    }
+
+    #[tokio::test]
+    async fn close_agent_checks_the_session_and_leaves_the_root() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let login = synthetic_agent();
+        let agent = login.agent_id;
+        let session = login.session_id;
+        state.accept(login).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let wrong = delete_agent(&state, peer, agent, region, "not-the-session").await;
+        assert_eq!(wrong, format!("OpenSim agent {agent}"));
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let other = delete_agent(
+            &state,
+            peer,
+            agent,
+            Uuid::from_u128(8),
+            &session.to_string(),
+        )
+        .await;
+        assert_eq!(other, format!("OpenSim agent {agent}"));
+        assert!(accepted.still_root());
+        let closed = delete_agent(&state, peer, agent, region, &session.to_string()).await;
+        assert_eq!(closed, format!("OpenSim agent {agent}"));
+        let kind = tokio::time::timeout(Duration::from_secs(1), accepted.replaced())
+            .await
+            .unwrap();
+        assert_eq!(kind, CircuitStop::Quiet);
+        assert!(accepted.is_current());
+        assert!(accepted.still_root());
+    }
+
+    #[tokio::test]
+    async fn a_nil_agent_or_region_delete_answers_false() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let agent = Uuid::from_u128(1);
+        let peer = "127.0.0.1:9".parse().unwrap();
+        for uri in [
+            format!("/agent/{}/", Uuid::nil()),
+            format!("/agent/{agent}/"),
+            format!("/agent/{agent}/{}/", Uuid::nil()),
+            format!("/agent/{}/{region}/", Uuid::nil()),
+        ] {
+            let request = Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+            assert_eq!(body.as_ref(), b"false");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_demoted_or_departed_generation_is_not_a_replaced_root() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        let login = synthetic_agent();
+        state.accept(login.clone()).unwrap();
+        let mut rooted = receiver.recv().await.unwrap();
+        rooted.mark_root();
+        let mut other = login.clone();
+        other.session_id = Uuid::from_u128(70);
+        other.secure_session_id = Uuid::from_u128(71);
+        other.circuit_code = 70;
+        other.caps_path = Uuid::from_u128(72).to_string();
+        state.accept(other.clone()).unwrap();
+        assert!(rooted.replaced_by_other_session());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rooted.replaced())
+                .await
+                .unwrap(),
+            CircuitStop::Disable
+        );
+        drop(rooted);
+        drop(receiver.recv().await.unwrap());
+
+        state.accept(login.clone()).unwrap();
+        let demoted = receiver.recv().await.unwrap();
+        demoted.mark_root();
+        state.demote_child(login.agent_id);
+        let mut next = other.clone();
+        next.session_id = Uuid::from_u128(73);
+        next.secure_session_id = Uuid::from_u128(74);
+        next.circuit_code = 73;
+        next.caps_path = Uuid::from_u128(75).to_string();
+        state.accept(next).unwrap();
+        assert!(!demoted.replaced_by_other_session());
+        drop(demoted);
+        drop(receiver.recv().await.unwrap());
+
+        state.accept(login.clone()).unwrap();
+        let departed = receiver.recv().await.unwrap();
+        departed.mark_root();
+        state.close_departed(login.agent_id);
+        let mut after = other;
+        after.session_id = Uuid::from_u128(76);
+        after.secure_session_id = Uuid::from_u128(77);
+        after.circuit_code = 76;
+        after.caps_path = Uuid::from_u128(78).to_string();
+        state.accept(after).unwrap();
+        assert!(!departed.replaced_by_other_session());
+    }
+
+    #[tokio::test]
+    async fn close_and_drop_clear_the_open_child() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        let agent = accepted.expect.agent_id;
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: Uuid::from_u128(7),
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        state.note_open_child(agent, end.clone());
+        state.close_departed(agent);
+        assert!(state.take_open_child(agent).is_none());
+
+        state.accept(synthetic_agent()).unwrap();
+        let old = receiver.recv().await.unwrap();
+        let mut next = synthetic_agent();
+        next.session_id = Uuid::from_u128(70);
+        next.circuit_code = 70;
+        next.caps_path = Uuid::from_u128(71).to_string();
+        state.accept(next).unwrap();
+        let current = receiver.recv().await.unwrap();
+        state.note_open_child(agent, end);
+        drop(old);
+        assert_eq!(
+            state.take_open_child(agent).map(|end| end.region_id),
+            Some(Uuid::from_u128(7))
+        );
+        drop(current);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_put_is_refused() {
+        let before = refuse_count(&ferroan_diag::metrics(), HTTP_POST_BODY);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/agent/{}/", Uuid::from_u128(1)))
+            .body(axum::body::Body::from(vec![b' '; MAX_BODY + 1]))
+            .unwrap();
+        let response = handle(State(state), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let after = refuse_count(&ferroan_diag::metrics(), HTTP_POST_BODY);
+        assert!(after > before);
+    }
+
+    async fn delete_agent(
+        state: &SimulationState,
+        peer: SocketAddr,
+        agent: Uuid,
+        region: Uuid,
+        auth: &str,
+    ) -> String {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/agent/{agent}/{region}/?auth={auth}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/plain");
+        String::from_utf8(
+            to_bytes(response.into_body(), MAX_BODY)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
     }
 }
