@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates,
-//      SendKillObject)
+//      SendKillObject, SendCoarseLocationUpdate's header)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
 //     (DequeueOutgoing's empty categories, BeginFireQueueEmpty,
 //      GetCatBytesCanSend)
@@ -46,6 +46,7 @@
 //! Other avatars' full updates, appearances and kills do not wait for that:
 //! C# writes them straight onto the task outbox
 //! (`SendEntityFullUpdateImmediate`, `SendAppearance`, `SendKillObject`).
+//! The minimap dots (`SendCoarseLocationUpdate`) go the same way, unreliable.
 //! The circuit queues them, in order, on every pass.
 
 use std::sync::Arc;
@@ -53,7 +54,8 @@ use std::time::Duration;
 
 use ferroan_protocol::msgs::improved_terse_object_update::{ObjectData, RegionData};
 use ferroan_protocol::msgs::{
-    AvatarAppearance, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate, kill_object,
+    AvatarAppearance, CoarseLocationUpdate, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate,
+    kill_object,
 };
 use tokio::sync::Notify;
 
@@ -89,6 +91,8 @@ pub enum AvatarPacket {
     Appearance(AvatarAppearance),
     /// `SendKillObject`: reliable, not zero-coded.
     Kill(KillObject),
+    /// `SendCoarseLocationUpdate`: unreliable, not zero-coded.
+    Coarse(CoarseLocationUpdate),
 }
 
 /// `SendKillObject`: the ids in order, 200 to a packet.
@@ -102,6 +106,34 @@ pub fn kill_packets(ids: &[u32]) -> Vec<KillObject> {
             omitted_trailing_blocks: 0,
         })
         .collect()
+}
+
+/// `SendCoarseLocationUpdate`'s body: one location per listed avatar (X, Y,
+/// Z/4), the viewer's own index and `Prey`, then the agents. Both counts are
+/// written, empty or not.
+pub fn coarse_update(
+    locations: &[[u8; 3]],
+    you: i16,
+    prey: i16,
+    agents: &[uuid::Uuid],
+) -> CoarseLocationUpdate {
+    use ferroan_protocol::msgs::coarse_location_update::{AgentData, Index, Location};
+    CoarseLocationUpdate {
+        location: locations
+            .iter()
+            .map(|[x, y, z]| Location {
+                x: *x,
+                y: *y,
+                z: *z,
+            })
+            .collect(),
+        index: Index { you, prey },
+        agent_data: agents
+            .iter()
+            .map(|agent| AgentData { agent_id: *agent })
+            .collect(),
+        omitted_trailing_blocks: 0,
+    }
 }
 
 /// The region's side of one viewer's entity updates.
@@ -175,6 +207,24 @@ mod tests {
         let mut out = [0u8; AVATAR_TERSE_LEN];
         out[0..4].copy_from_slice(&id.to_le_bytes());
         out
+    }
+
+    /// The list keeps its order, `You` and `Prey`, and an empty list still
+    /// writes both counts.
+    #[test]
+    fn a_minimap_list_keeps_its_order_and_indexes() {
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+        let message = coarse_update(&[[128, 128, 6], [131, 40, 0]], 1, -1, &[first, second]);
+        assert_eq!(message.location[1].x, 131);
+        assert_eq!(message.location[1].y, 40);
+        assert_eq!((message.index.you, message.index.prey), (1, -1));
+        assert_eq!(message.agent_data[0].agent_id, first);
+        assert_eq!(message.agent_data[1].agent_id, second);
+        let empty = coarse_update(&[], -1, -1, &[]);
+        let mut writer = ferroan_protocol::Writer::new();
+        ferroan_protocol::Msg::encode_body(&empty, &mut writer);
+        assert_eq!(writer.buf, [0, 0xff, 0xff, 0xff, 0xff, 0]);
     }
 
     #[test]

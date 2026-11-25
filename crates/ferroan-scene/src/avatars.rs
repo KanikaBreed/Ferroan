@@ -52,6 +52,9 @@
 //!   the destination (`MakeChildAgent`), and a hop out of view range kills
 //!   it, and every other root on it, both ways first (`HasMovedAway(false)`).
 //!
+//! - Every 50th frame each viewer whose circuit is open gets the minimap
+//!   dots ([`crate::coarse`]), behind whatever is already waiting.
+//!
 //! Animations and attachments are later rows (P2.3b, P2.4).
 
 use std::collections::VecDeque;
@@ -59,6 +62,8 @@ use std::sync::Arc;
 
 use ferroan_diag::{Kind, REGION_AVATAR_PACKETS, refuse};
 use uuid::Uuid;
+
+use crate::coarse::CoarseLocations;
 
 /// Waiting avatar packets per viewer. C# writes them to the outbox with no
 /// bound; Ferroan refuses the next one past this (`region.avatar-packets`).
@@ -108,6 +113,8 @@ pub enum AvatarPacket {
     Appearance { agent: Uuid, look: Arc<AvatarLook> },
     /// `SendKillObject`.
     Kill(Vec<u32>),
+    /// `SendCoarseLocationUpdate`.
+    Coarse(CoarseLocations),
 }
 
 /// The packets waiting for one viewer's circuit.
@@ -118,7 +125,15 @@ pub(crate) struct AvatarPackets {
 
 impl AvatarPackets {
     /// Queue one packet. Past [`MAX_AVATAR_PACKETS`] the packet is refused.
+    /// A minimap update replaces one still waiting at the back: the circuit
+    /// has not taken the older list, and the viewer keeps only the newest.
     pub(crate) fn push(&mut self, packet: AvatarPacket) -> bool {
+        if let AvatarPacket::Coarse(_) = &packet
+            && let Some(last @ AvatarPacket::Coarse(_)) = self.waiting.back_mut()
+        {
+            *last = packet;
+            return true;
+        }
         if self.waiting.len() >= MAX_AVATAR_PACKETS {
             refuse(
                 REGION_AVATAR_PACKETS,
@@ -183,5 +198,27 @@ mod tests {
             AvatarPacket::Kill(vec![MAX_AVATAR_PACKETS as u32 - 1])
         );
         assert!(packets.is_empty());
+    }
+
+    fn coarse(you: i16) -> AvatarPacket {
+        AvatarPacket::Coarse(CoarseLocations {
+            locations: Vec::new(),
+            you,
+            prey: -1,
+            agents: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_waiting_minimap_update_is_replaced_only_at_the_back() {
+        let mut packets = AvatarPackets::default();
+        assert!(packets.push(coarse(0)));
+        assert!(packets.push(coarse(1)));
+        assert!(packets.push(AvatarPacket::Kill(vec![7])));
+        assert!(packets.push(coarse(2)));
+        assert_eq!(
+            packets.take(usize::MAX),
+            [coarse(1), AvatarPacket::Kill(vec![7]), coarse(2)]
+        );
     }
 }

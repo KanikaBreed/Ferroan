@@ -830,6 +830,9 @@ async fn serve_agent(
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
+    // `LLClientView.IsActive`: the frame sends minimap dots only once the
+    // viewer's `UseCircuitCode` has opened the circuit.
+    let circuit_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if !already_stopped {
         let mut avatar = ferroan_region::avatar::load(
             &config.avatar_server_uri,
@@ -849,6 +852,7 @@ async fn serve_agent(
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
+                circuit_open: Arc::clone(&circuit_open),
                 look: Arc::new(ferroan_scene::AvatarLook {
                     first_name: avatar.first_name.clone(),
                     last_name: avatar.last_name.clone(),
@@ -959,7 +963,10 @@ async fn serve_agent(
                     }
                     break;
                 }
-                _ = &mut opening, if !connected => { connected = true; }
+                _ = &mut opening, if !connected => {
+                    connected = true;
+                    circuit_open.store(true, std::sync::atomic::Ordering::Release);
+                }
                 _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
                     tracing::error!("ferroan-region: login viewer did not connect before its deadline");
                     break;
@@ -1143,6 +1150,16 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                             .into_iter()
                             .map(ferroan_client::AvatarPacket::Kill),
                     );
+                }
+                ferroan_scene::AvatarPacket::Coarse(coarse) => {
+                    out.push(ferroan_client::AvatarPacket::Coarse(
+                        ferroan_client::coarse_update(
+                            &coarse.locations,
+                            coarse.you,
+                            coarse.prey,
+                            &coarse.agents,
+                        ),
+                    ));
                 }
             }
         }
@@ -3037,12 +3054,14 @@ mod tests {
         let link = ferroan_scene::ViewerLink {
             feed: frame.new_feed(),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()

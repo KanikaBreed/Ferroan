@@ -208,6 +208,22 @@ fn every_byte_fixture_matches_openmetaverse() {
                 });
                 assert_eq!(again, file, "{id}");
             }
+            "quaternion-batch" => {
+                // x, y, z, w in, then ToBytes, then GetBytes, from
+                // OpenMetaverse on x86-64 (Sse41.DotProduct, D71).
+                assert_eq!(file.len() % 40, 0, "{id}");
+                let count = file.len() / 40;
+                assert_eq!(decoded["count"].as_u64().unwrap(), count as u64, "{id}");
+                for (index, record) in file.as_chunks::<40>().0.iter().enumerate() {
+                    let f = |at: usize| f32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+                    let source = Quat::from_xyzw(f(0), f(4), f(8), f(12));
+                    let to_bytes = fill(12, |buf| write_quaternion_to_bytes(source, buf).unwrap());
+                    assert_eq!(to_bytes, record[16..28], "{id} record {index} ToBytes");
+                    let get_bytes =
+                        fill(12, |buf| write_quaternion_get_bytes(source, buf).unwrap());
+                    assert_eq!(get_bytes, record[28..40], "{id} record {index} GetBytes");
+                }
+            }
             "quaternion-shorts" => {
                 let raw = read_quaternion_shorts(&file).unwrap();
                 assert_eq!(i64::from(raw[0]), decoded["x"].as_i64().unwrap(), "{id}");
