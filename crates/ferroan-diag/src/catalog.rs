@@ -25,6 +25,7 @@ pub const UDP_DATAGRAM: &str = "udp.datagram";
 pub const UDP_ZERO_EXPANSION: &str = "udp.zero-expansion";
 pub const UDP_UNACKED: &str = "udp.unacked";
 pub const UDP_RETRIES: &str = "udp.retries";
+pub const CLIENT_CHAT_QUEUE: &str = "client.chat-queue";
 pub const EVENT_BYTES: &str = "event.bytes";
 pub const EVENT_QUEUE: &str = "event.queue";
 pub const EVENT_QUEUE_BYTES: &str = "event.queue-bytes";

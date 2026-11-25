@@ -370,8 +370,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     let shared = region.position.clone();
     let (mut state, expect, io) = seated_teleport(region);
     let chat = RegionChat::new();
-    let mut seat = chat.seat(expect.agent_id, "Test User".into());
-    state.chat = Some(chat);
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
     let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
     state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
@@ -406,12 +405,10 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
         heard.get(&expect.agent_id).copied(),
         Some([40.0, 200.0, 30.0])
     );
-    state
-        .chat
-        .as_ref()
-        .unwrap()
+    chat.audience()
         .publish(expect.agent_id, 1, 0, "after", &heard);
-    let crate::chat::ViewerBound::Chat(said) = seat.rx.try_recv().unwrap() else {
+    let crate::chat::ViewerBound::Chat(said) = state.chat.as_mut().unwrap().rx.try_recv().unwrap()
+    else {
         panic!("expected chat from the moved seat");
     };
     assert_eq!(said.chat_data.position.to_array(), [40.0, 200.0, 30.0]);
@@ -1380,8 +1377,7 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
     let mut state = State::new(captured_config(), ArrivalConfig::default());
     state.peer = Some(peer());
     let chat = RegionChat::new();
-    let _seat = chat.seat(expect.agent_id, "Test User".into());
-    state.chat = Some(chat);
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&calls);
     state.login_scene = Some(Arc::new(move |_agent, _call| {
@@ -1389,7 +1385,7 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
         Ok(SceneReply::Places(HashMap::new())).into()
     }));
     let io = FakeIo::default();
-    for (channel, sequence) in [(5, 4), (0, 5)] {
+    for (channel, sequence, expected_calls) in [(5, 4, 0), (0, 5, 1), (i32::MAX, 6, 2)] {
         let mut message = ChatFromViewer::default();
         message.agent_data.agent_id = expect.agent_id;
         message.agent_data.session_id = expect.session_id;
@@ -1407,8 +1403,52 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
             )
             .await
             .unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            expected_calls
+        );
     }
-    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_viewer_connecting_during_the_pose_lookup_does_not_hear_the_line() {
+    let expect = identity(Uuid::from_u128(1));
+    let late_id = Uuid::from_u128(2);
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let chat = RegionChat::new();
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
+    let late = Arc::new(Mutex::new(None));
+    let (hub, slot) = (chat.clone(), Arc::clone(&late));
+    state.login_scene = Some(Arc::new(move |_agent, _call| {
+        *slot.lock().unwrap() = Some(hub.seat(late_id, "Chat Bot".into()));
+        Ok(SceneReply::Places(HashMap::from([
+            (expect.agent_id, [0.0; 3]),
+            (late_id, [0.0; 3]),
+        ])))
+        .into()
+    }));
+    let mut message = ChatFromViewer::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.chat_data.type_ = 1;
+    message.chat_data.message = ferroan_protocol::str_field("before connect");
+    let bytes = wire(&message, 4, &[]);
+    state
+        .handle(
+            &FakeIo::default(),
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let mut seat = late.lock().unwrap().take().unwrap();
+    assert!(matches!(
+        seat.rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 fn logout(expect: CircuitExpect, acks: &[u32]) -> Vec<u8> {
