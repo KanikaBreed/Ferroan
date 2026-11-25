@@ -243,6 +243,39 @@ mod tests {
         assert_eq!(new_tree.data, [3]);
         assert_eq!(grass.object_data[12..], [0; 48]);
         assert_ne!(new_tree.object_data[36..48], [0; 12]);
+        assert_eq!(mesh.profile_curve, 0); // stored Circle | Triangle hole (0x30)
+        let (emitter, speaker) = (blocks[5], blocks[6]);
+        assert!(!emitter.ps_block.is_empty() && emitter.sound.is_nil());
+        assert!(speaker.ps_block.is_empty() && !speaker.sound.is_nil());
+        assert_eq!(
+            (emitter.owner_id, speaker.owner_id),
+            (root.owner_id, root.owner_id)
+        );
+        assert_ne!(emitter.object_data[36..48], [0; 12]);
+        assert_eq!((emitter.material, emitter.click_action), (2, 1));
+        assert_eq!(
+            [
+                emitter.path_twist,
+                emitter.path_twist_begin,
+                emitter.path_radius_offset,
+                emitter.path_taper_x,
+                emitter.path_taper_y,
+                emitter.path_skew
+            ],
+            [-19, 7, -11, 13, -17, -23]
+        );
+        assert_eq!(emitter.text, "Lumière 雪\0".as_bytes());
+        assert_eq!(speaker.text, format!("{}\0", "é".repeat(126)).as_bytes());
+        // Decode each extra parameter's type and length so disabling one in the
+        // oracle cannot silently shrink coverage when the fixture is refreshed.
+        let mut extra = Reader::new(&emitter.extra_params);
+        assert_eq!(extra.u8().unwrap(), 4);
+        for (kind, len) in [(0x10, 16), (0x20, 16), (0x40, 28), (0x90, 9)] {
+            assert_eq!(extra.u16().unwrap(), kind);
+            assert_eq!(extra.u32().unwrap(), len);
+            extra.fixed(len as usize).unwrap();
+        }
+        assert_eq!(extra.remaining(), 0);
         // The face's legacy material and the mesh's glTF material survive the store and the wire.
         for (bytes, suffix) in [(&root.texture_entry, 22), (&mesh.extra_params, 26)] {
             let id = format!("65000000-0000-4000-8000-{suffix:012x}")

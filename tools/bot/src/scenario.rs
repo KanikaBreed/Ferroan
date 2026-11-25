@@ -27,7 +27,7 @@ const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 
 /// Number of parts in the persisted Pin8 prim-update capture scene.
-pub const PRIM_CAPTURE_COUNT: usize = 5;
+pub const PRIM_CAPTURE_COUNT: usize = 7;
 
 /// Called with the account's principal before [`login::login`].
 ///
@@ -159,10 +159,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
         logout?;
-        return Ok(
-            "prim-capture: viewer received five distinct full prim updates\nlive: run passed"
-                .into(),
-        );
+        return Ok(format!(
+            "prim-capture: viewer received {PRIM_CAPTURE_COUNT} distinct full prim updates\nlive: run passed"
+        ));
     }
     if name == "avatars" {
         let line = avatars_scenario(&http, harness).await?;
@@ -205,7 +204,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// The fixture contains one linkset of two prims and three vegetation roots.
+/// Wait for the full set of fixture parts, including the linked child.
 async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
     let mut ids = std::collections::BTreeSet::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -234,7 +233,7 @@ async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
         }
     }
     Err(format!(
-        "expected five stored prims, received {}",
+        "expected {PRIM_CAPTURE_COUNT} stored prims, received {}",
         ids.len()
     ))
 }

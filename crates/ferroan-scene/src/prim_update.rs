@@ -415,6 +415,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capture_store_preserves_the_mesh_hole_bits_and_untrimmed_hover_text() {
+        let parts: BTreeMap<_, _> = load_capture_store()
+            .await
+            .into_iter()
+            .flat_map(|group| group.parts)
+            .map(|part| (part.uuid, part))
+            .collect();
+        let mesh = &parts[&Uuid::from_u128(0x65000000_0000_4000_8000_000000000002)];
+        let speaker = &parts[&Uuid::from_u128(0x65000000_0000_4000_8000_000000000007)];
+        assert_eq!(mesh.shape.profile_curve, 0x30);
+        assert_eq!(speaker.text, format!("{}雪tail", "é".repeat(126)));
+    }
+
+    #[tokio::test]
     async fn only_trees_keep_rotation_and_only_ordinary_prims_keep_motion() {
         let mut part = load_capture_store().await.remove(0).parts.remove(0);
         part.rotation = [1., 0., 0., 0.];

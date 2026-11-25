@@ -198,6 +198,46 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         part.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.75f);
         return new SceneObjectGroup(part);
     }
+    var effects = PrimitiveBaseShape.Default;
+    effects.PathTwist = -19;
+    effects.PathTwistBegin = 7;
+    effects.PathRadiusOffset = -11;
+    effects.PathTaperX = 13;
+    effects.PathTaperY = -17;
+    effects.PathSkew = -23;
+    effects.FlexiEntry = true;
+    effects.FlexiSoftness = 2;
+    effects.FlexiTension = 2.5f;
+    effects.FlexiDrag = 1.5f;
+    effects.FlexiGravity = -3;
+    effects.FlexiWind = 0.5f;
+    effects.FlexiForceX = 0.75f;
+    effects.LightEntry = true;
+    effects.LightColorR = 0.25f;
+    effects.LightColorG = 0.5f;
+    effects.LightColorB = 0.75f;
+    effects.LightIntensity = 0.6f;
+    effects.LightRadius = 8;
+    effects.LightFalloff = 0.5f;
+    effects.LightCutoff = 1.25f;
+    effects.ProjectionEntry = true;
+    effects.ProjectionTextureUUID = Id(27);
+    effects.ProjectionFOV = 1.5f;
+    effects.ProjectionFocus = -0.25f;
+    effects.ProjectionAmbiance = 0.5f;
+    effects.ReflectionProbe = new Primitive.ReflectionProbe { Ambiance = 0.75f, ClipDistance = 3.5f, Flags = 1 };
+    var emitter = Part(6, "particle emitter", effects, new Vector3(138, 128, 40), Vector3.Zero);
+    emitter.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -0.75f);
+    emitter.Material = (byte)OpenMetaverse.Material.Glass;
+    emitter.ClickAction = (byte)OpenMetaverse.ClickAction.Sit;
+    emitter.Text = "Lumière 雪";
+    emitter.Color = 0xff4080bb;
+    emitter.ParticleSystem = new Primitive.ParticleSystem { BurstPartCount = 5, PartMaxAge = 4, Texture = Id(28) }.GetBytes();
+    var speaker = Part(7, "looping sound", PrimitiveBaseShape.Default, new Vector3(139, 128, 40), Vector3.Zero);
+    speaker.Sound = Id(29);
+    speaker.SoundFlags = 1;
+    speaker.SoundGain = 0.375;
+
     string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
     var store = new SQLiteSimulationData();
     try
@@ -207,11 +247,24 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         store.StoreObject(vegetation, region);
         store.StoreObject(RotatedVegetation(4, PCode.Grass), region);
         store.StoreObject(RotatedVegetation(5, PCode.NewTree), region);
+        store.StoreObject(new SceneObjectGroup(emitter), region);
+        store.StoreObject(new SceneObjectGroup(speaker), region);
     }
     finally
     {
         store.Dispose();
     }
+    // Text's setter limits the value before StoreObject can persist it. Exercise
+    // the same limit on restore from a store containing the longer source text.
+    using var db = new SQLiteConnection(connection);
+    db.Open();
+    using var update = db.CreateCommand();
+    update.CommandText = "UPDATE prims SET Text=@text WHERE UUID=@id";
+    update.Parameters.AddWithValue("@text", new string('é', 126) + "雪tail");
+    update.Parameters.AddWithValue("@id", speaker.UUID.ToString());
+    if (update.ExecuteNonQuery() != 1)
+        throw new InvalidDataException("missing sound prim in capture seed");
+
 }
 
 static void Seed(string path)
