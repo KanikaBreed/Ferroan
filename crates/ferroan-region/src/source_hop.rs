@@ -1110,6 +1110,7 @@ mod tests {
             teleport: Some(region),
             source_hop: Some(hop),
             return_slot: None,
+            updates: None,
         };
         let server = CircuitServer::bind().await.unwrap();
         let udp = server.local_addr().unwrap();

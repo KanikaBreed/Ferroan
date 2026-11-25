@@ -93,6 +93,9 @@ pub struct ArrivalConfig {
     /// Child update and the promotion back to root. Absent on a circuit that
     /// cannot be a teleport destination.
     pub return_slot: Option<crate::return_hop::ReturnSlot>,
+    /// Entity updates the region queues for this viewer. Absent in tests and
+    /// on a circuit the region has not attached to its frame.
+    pub updates: Option<crate::EntityFeed>,
 }
 
 /// One reliable land packet. `kind` is `TerrainPatch.LayerType` (`0x4C` or `0x4D`).
@@ -118,6 +121,7 @@ impl Default for ArrivalConfig {
             teleport: None,
             source_hop: None,
             return_slot: None,
+            updates: None,
         }
     }
 }

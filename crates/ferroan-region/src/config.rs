@@ -426,6 +426,7 @@ impl RegionConfig {
             teleport: None,
             source_hop: None,
             return_slot: None,
+            updates: None,
         }
     }
 }

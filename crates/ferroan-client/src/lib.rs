@@ -14,6 +14,7 @@ mod caps;
 mod chat;
 mod circuit;
 mod datagram_log;
+mod entity_feed;
 mod event_queue;
 mod handshake;
 mod return_hop;
@@ -32,6 +33,7 @@ pub use circuit::{
     LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove,
     SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
+pub use entity_feed::{AVATAR_TERSE_LEN, EntityFeed, EntityUpdates};
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};

@@ -217,6 +217,8 @@ pub struct AcceptedAgent {
     pub appearance: Option<Appearance>,
     /// Same gate the session stores. The circuit waits on it for a return.
     pub return_slot: ReturnSlot,
+    /// Set when this agent's seed capability has been answered.
+    pub seeds_sent: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
 }
@@ -620,6 +622,10 @@ impl SimulationState {
             id0: fields.id0,
             appearance: fields.appearance,
             return_slot: slot,
+            seeds_sent: self
+                .caps
+                .seeds_sent(fields.agent_id)
+                .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
             cancelled,
             _lease: lease,
         };

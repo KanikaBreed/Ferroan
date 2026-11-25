@@ -278,6 +278,10 @@ pub(crate) struct Body {
     /// move a seated record, so that packet and the GridUser report stay the
     /// position written for the login.
     actor: bool,
+    /// `ScenePresence.CameraAtAxis` as C# keeps it: the packet's axis, not
+    /// normalised. `CameraAtAxis.Normalize()` (line 3043) runs on a copy of
+    /// the auto-property and changes nothing (TB86).
+    camera_at_axis: [f32; 3],
 }
 
 impl Body {
@@ -334,11 +338,24 @@ impl Body {
             child: false,
             // Direct steps in tests have an actor. A login pose holds it.
             actor: true,
+            camera_at_axis: [0.0, 0.0, 0.0],
         }
     }
 
     pub(crate) fn set_child(&mut self, child: bool) {
         self.child = child;
+    }
+
+    /// Not root for `ScenePresence.Update`: away in another region, or not
+    /// yet arrived (C# keeps a login or a return a child agent until
+    /// `CompleteMovement` makes it root, which is when the arrival samples).
+    pub(crate) fn is_child(&self) -> bool {
+        self.child || !self.actor
+    }
+
+    /// The stored camera at axis `Lookat` reads (TB86).
+    pub(crate) fn camera_at_axis(&self) -> [f32; 3] {
+        self.camera_at_axis
     }
 
     pub(crate) fn set_actor(&mut self, actor: bool) {
@@ -570,6 +587,7 @@ impl Body {
 
     fn handle_camera(&mut self, update: &MotionUpdate, pose: &mut Presence) {
         self.motion.camera_center = update.camera_center;
+        self.camera_at_axis = update.camera_at;
         self.motion.camera_at = normalize3(update.camera_at);
         self.motion.camera_left = normalize3(update.camera_left);
         self.motion.camera_up = normalize3(update.camera_up);

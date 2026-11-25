@@ -1,0 +1,173 @@
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Ported to Rust for Ferroan from
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
+//     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates)
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
+//     (DequeueOutgoing's empty categories, BeginFireQueueEmpty,
+//      GetCatBytesCanSend)
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors,
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! One viewer's entity updates, as the circuit sees them. The region fills
+//! the feed; the circuit takes terse blocks when the task category asks for
+//! more and writes them as `ImprovedTerseObjectUpdate` packets.
+//!
+//! C# asks when the task outbox holds fewer than five packets and the feed
+//! has updates, at most every 20 ms, with a budget of what the task bucket
+//! drips in 30 ms. The packets are reliable and zero-coded on the task
+//! category ("zero code is not as spec").
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use ferroan_protocol::msgs::ImprovedTerseObjectUpdate;
+use ferroan_protocol::msgs::improved_terse_object_update::{ObjectData, RegionData};
+use tokio::sync::Notify;
+
+/// The avatar `ObjectData.Data` length (`CreateAvatartImprovedTerseBlock`).
+pub const AVATAR_TERSE_LEN: usize = 60;
+
+/// `LLUDPClient.MIN_CALLBACK_MS`.
+pub(crate) const QUEUE_EMPTY_INTERVAL: Duration = Duration::from_millis(20);
+/// `HandleQueueEmpty` asks for what the task bucket sends in this time.
+pub(crate) const QUEUE_EMPTY_MS: i32 = 30;
+/// `DequeueOutgoing` reports a category empty below this many packets.
+pub(crate) const QUEUE_EMPTY_BELOW: usize = 5;
+
+/// `LLUDPServer.MAXPAYLOAD`.
+const MAX_PAYLOAD: usize = 1200;
+/// Header, region data and the block count in front of the first block.
+const FIRST_BLOCK_AT: usize = 18;
+/// Size byte, block and the empty texture entry.
+const AVATAR_BLOCK_BYTES: usize = 1 + AVATAR_TERSE_LEN + 2;
+
+/// `Utils.FloatZeroOneToushort(1.0)`. The region does not dilate time.
+const TIME_DILATION_FULL: u16 = 0xffff;
+
+/// The region's side of one viewer's entity updates.
+pub trait EntityUpdates: Send + Sync {
+    /// `HandleHasUpdates` for the task category.
+    fn has_updates(&self) -> bool;
+    /// `ProcessEntityUpdates(max_bytes)` for avatar terse updates.
+    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; AVATAR_TERSE_LEN]>;
+}
+
+/// The feed and the wake an offer notifies.
+#[derive(Clone)]
+pub struct EntityFeed {
+    pub updates: Arc<dyn EntityUpdates>,
+    pub wake: Arc<Notify>,
+}
+
+impl std::fmt::Debug for EntityFeed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EntityFeed")
+    }
+}
+
+/// The terse packets for `blocks`, in order. A block that would end at or
+/// past `MAXPAYLOAD` starts the next packet. C# keeps the last such block in
+/// the packet without counting it, so the viewer never reads it (TB85); here
+/// it starts a packet like the others (D69).
+pub(crate) fn terse_packets(
+    region_handle: u64,
+    blocks: &[[u8; AVATAR_TERSE_LEN]],
+) -> Vec<ImprovedTerseObjectUpdate> {
+    let mut packets = Vec::new();
+    let mut current: Vec<ObjectData> = Vec::new();
+    let mut end = FIRST_BLOCK_AT;
+    for block in blocks {
+        end += AVATAR_BLOCK_BYTES;
+        if end >= MAX_PAYLOAD && !current.is_empty() {
+            packets.push(packet(region_handle, std::mem::take(&mut current)));
+            end = FIRST_BLOCK_AT + AVATAR_BLOCK_BYTES;
+        }
+        current.push(ObjectData {
+            data: block.to_vec(),
+            texture_entry: Vec::new(),
+        });
+    }
+    if !current.is_empty() {
+        packets.push(packet(region_handle, current));
+    }
+    packets
+}
+
+fn packet(region_handle: u64, object_data: Vec<ObjectData>) -> ImprovedTerseObjectUpdate {
+    ImprovedTerseObjectUpdate {
+        region_data: RegionData {
+            region_handle,
+            time_dilation: TIME_DILATION_FULL,
+        },
+        object_data,
+        omitted_trailing_blocks: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(id: u32) -> [u8; AVATAR_TERSE_LEN] {
+        let mut out = [0u8; AVATAR_TERSE_LEN];
+        out[0..4].copy_from_slice(&id.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn eighteen_blocks_fit_one_packet_and_the_nineteenth_starts_another() {
+        let blocks: Vec<_> = (0..40).map(block).collect();
+        let packets = terse_packets(7, &blocks[..18]);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].object_data.len(), 18);
+        let packets = terse_packets(7, &blocks[..19]);
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.object_data.len())
+                .collect::<Vec<_>>(),
+            [18, 1]
+        );
+        let packets = terse_packets(7, &blocks);
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.object_data.len())
+                .collect::<Vec<_>>(),
+            [18, 18, 4]
+        );
+        // Order is kept across packets.
+        let ids: Vec<u32> = packets
+            .iter()
+            .flat_map(|packet| &packet.object_data)
+            .map(|object| u32::from_le_bytes(object.data[0..4].try_into().unwrap()))
+            .collect();
+        assert_eq!(ids, (0..40).collect::<Vec<_>>());
+        assert!(terse_packets(7, &[]).is_empty());
+    }
+}

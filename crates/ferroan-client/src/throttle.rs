@@ -405,6 +405,16 @@ impl ClientThrottle {
         self.categories[category].remove_tokens(amount, now, rate, burst)
     }
 
+    /// `GetCatBytesCanSend`: what `category` drips in `ms` milliseconds.
+    pub(crate) fn bytes_can_send(&self, category: usize, ms: i32) -> i32 {
+        if category == RESEND || category >= SLOTS {
+            return 0;
+        }
+        let (rate, _) = self.limits(category);
+        // `timeMS * DripRate` is a float product, then `* 1e-3` a double.
+        (f64::from(ms as f32 * rate) * 1e-3) as i32
+    }
+
     /// How long until `try_spend` can succeed. Zero means it can succeed now.
     pub(crate) fn wait(&self, category: usize, now: f64) -> Duration {
         if category >= SLOTS {

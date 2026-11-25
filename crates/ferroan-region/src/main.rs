@@ -558,6 +558,7 @@ impl DispatchCtx {
                 agent,
                 false,
                 position,
+                [0.0; 3],
             )
             .await;
             return;
@@ -735,6 +736,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         }),
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+        SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
     }
 }
 
@@ -794,6 +796,7 @@ async fn dispatch_circuits(
             agent,
             false,
             position,
+            [0.0; 3],
         )
         .await;
     }
@@ -826,7 +829,7 @@ async fn serve_agent(
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
     if !already_stopped {
-        let avatar = ferroan_region::avatar::load(
+        let mut avatar = ferroan_region::avatar::load(
             &config.avatar_server_uri,
             agent.expect.agent_id,
             &agent.first_name,
@@ -837,6 +840,26 @@ async fn serve_agent(
         let half_height = avatar.height / 2.0;
         let mut arrival = config.arrival(position);
         arrival.land = land;
+        // The frame gives the avatar its local id and fills this viewer's
+        // entity updates. Without a frame the avatar keeps id 1 and gets none.
+        if let Some(frame) = terrain.as_deref() {
+            let feed = frame.new_feed();
+            let link = ferroan_scene::ViewerLink {
+                feed: Arc::clone(&feed),
+                seeds_sent: Arc::clone(&agent.seeds_sent),
+            };
+            let attached = match frame.attach(expect.agent_id, link) {
+                Ok(pending) => pending.wait().await.ok(),
+                Err(_) => None,
+            };
+            if let Some(local_id) = attached {
+                avatar.local_id = local_id;
+                arrival.updates = Some(ferroan_client::EntityFeed {
+                    wake: feed.wake(),
+                    updates: Arc::new(SceneFeed(feed)),
+                });
+            }
+        }
         arrival.avatar = Some(avatar);
         // TeleportAgentWithinRegion. Godlike needs a cached user level, so it
         // stays off. The frame owns the landing and IsFlying. A handle this
@@ -1028,14 +1051,23 @@ async fn serve_agent(
     // ghost and a later login of this agent posts a fresh pose and filter.
     // A same-agent replacement joins this task first, so this runs before
     // the new serve posts.
-    forget.finish().await;
+    let leaving = forget.finish().await;
     // The reply is already out. Close the neighbour child before the harness
     // stops the proxy, the same moment a root logout closes known children.
     if agent.still_root() {
         hop.close_open_child(agent.expect.agent_id, agent.expect.session_id)
             .await;
     }
-    let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
+    // ActivityDetector reads AbsolutePosition and Lookat when the connection
+    // closes: the walked position and the flattened camera at axis. Without
+    // a frame record, the login or landing position and a zero look.
+    let (logout_position, logout_look) = match leaving {
+        Some(leaving) => (leaving.position, leaving.look_at),
+        None => (
+            *landed.lock().unwrap_or_else(|poison| poison.into_inner()),
+            [0.0; 3],
+        ),
+    };
     // A far hop, a demoted child and a child that never rooted leave Presence
     // where it is. Failed login is a ViaLogin session that never rooted. A
     // root that was still root when another Presence session replaced it
@@ -1047,8 +1079,22 @@ async fn serve_agent(
         agent,
         root_arrived,
         logout_position,
+        logout_look,
     )
     .await;
+}
+
+/// One viewer's frame feed, as the circuit drains it.
+struct SceneFeed(Arc<ferroan_scene::terse::ViewerFeed>);
+
+impl ferroan_client::EntityUpdates for SceneFeed {
+    fn has_updates(&self) -> bool {
+        self.0.has_updates()
+    }
+
+    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
+        self.0.take_terse(max_bytes)
+    }
 }
 
 /// Removes one agent's scene presence when its serve ends. `finish` awaits
@@ -1064,16 +1110,19 @@ impl ForgetPresence {
         Self { frame, agent }
     }
 
-    async fn finish(mut self) {
-        let Some(frame) = self.frame.take() else {
-            return;
-        };
+    /// The presence's last position and look, when the frame had one.
+    async fn finish(mut self) -> Option<ferroan_scene::Leaving> {
+        let frame = self.frame.take()?;
         let removed = match frame.remove(self.agent) {
             Ok(pending) => pending.wait().await,
             Err(error) => Err(error),
         };
-        if let Err(error) = removed {
-            tracing::debug!("ferroan-region: scene presence was not removed: {error}");
+        match removed {
+            Ok(leaving) => leaving,
+            Err(error) => {
+                tracing::debug!("ferroan-region: scene presence was not removed: {error}");
+                None
+            }
         }
     }
 }
@@ -1094,6 +1143,7 @@ async fn settle(
     agent: AcceptedAgent,
     became_root: bool,
     position: [f32; 3],
+    look_at: [f32; 3],
 ) {
     // Keep the generation lease and admission gate throughout both HTTP
     // calls. A stale generation must never mark its replacement offline.
@@ -1104,7 +1154,7 @@ async fn settle(
     // bit at the moment this generation was removed.
     let replaced = became_root && agent.replaced_by_other_session();
     let result = if became_root && agent.still_root() {
-        notify_logout(grid_user, presence, config, &agent, position).await
+        notify_logout(grid_user, presence, config, &agent, position, look_at).await
     } else if failed_login || replaced {
         notify_failed_login(grid_user, presence, &agent).await
     } else {
@@ -1182,14 +1232,14 @@ async fn notify_logout(
     config: &RegionConfig,
     agent: &AcceptedAgent,
     position: [f32; 3],
+    look_at: [f32; 3],
 ) -> Result<(), GridError> {
     let grid_result = if agent.is_current() {
-        // ActivityDetector reads ScenePresence.Lookat (zero before camera
-        // updates), not CompleteMovement's nonzero arrival-packet fallback.
-        // `position` is the terrain-lifted login position, or the local
-        // teleport landing when the avatar moved inside the region.
+        // ActivityDetector reads AbsolutePosition and ScenePresence.Lookat
+        // (zero before camera updates), not CompleteMovement's nonzero
+        // arrival-packet fallback.
         grid_user
-            .logged_out(agent.expect.agent_id, config.id, position, [0.0; 3])
+            .logged_out(agent.expect.agent_id, config.id, position, look_at)
             .await
     } else {
         Ok(())

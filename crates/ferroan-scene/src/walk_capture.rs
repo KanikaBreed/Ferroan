@@ -32,14 +32,9 @@
 //! arrival times, not frame starts, and this heartbeat ran about 90.4 ms
 //! frames while each step is still `FrameTime` 0.0909 s.
 //!
-//! Test transcriptions, not shipped code: the thresholds of
-//! `ScenePresence.Update` (`Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs`
-//! lines 4056–4133) and the avatar block of `CreateAvatartImprovedTerseBlock`
-//! (`Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs` lines
-//! 7352–7411, the path `ProcessEntityUpdates` takes at line 5634) at
-//! KanikaBreed/OpenSim-Tranquillity `c401bceecd`, with `Utils.FloatToUInt16`
-//! and `Utils.FloatToUnitUInt16` from OpenSim-NGC/libopenmetaverse
-//! `a3596616`. Their notices are in `lib.rs`.
+//! The thresholds and the block are the shipped ones in [`crate::terse`]:
+//! each sent block is built with [`avatar_block`] from that tick's values
+//! and must equal the captured 60 bytes, the local id included.
 
 use ferroan_capture::{Kind, Record, check_udp, read_capture};
 use ferroan_protocol::msgs::{
@@ -50,14 +45,8 @@ use ferroan_protocol::{Msg, parse_packet};
 use crate::frame::{FRAME_TIME, Presence};
 use crate::height::Heightmap;
 use crate::motion::{Body, CONTROL_AT_POS, MotionUpdate};
+use crate::terse::{AvatarTerse, LastSent, UNIT_W, avatar_block};
 use crate::walk;
-
-/// `ScenePresence.cs` lines 4056–4060 at pin `c401bceecd`.
-const ROTATION_TOLERANCE: f32 = 0.01;
-const VELOCITY_TOLERANCE: f32 = 0.1;
-const LOW_VELOCITY_SQ: f32 = 0.1;
-const POSITION_LARGE_TOLERANCE: f32 = 5.0;
-const POSITION_SMALL_TOLERANCE: f32 = 0.05;
 
 const PCODE_AVATAR: u8 = 47;
 const FRAME_MS: f64 = FRAME_TIME as f64 * 1000.0;
@@ -76,14 +65,12 @@ fn fixture(name: &str) -> Vec<u8> {
 #[derive(Clone, Copy, Debug)]
 struct Terse {
     time_ms: u64,
+    bytes: [u8; 60],
     local_id: u32,
     state: u8,
     plane: [f32; 4],
     position: [f32; 3],
-    velocity: [u16; 3],
     acceleration: [u16; 3],
-    rotation: [u16; 4],
-    angular: [u16; 3],
 }
 
 fn read_f32(data: &[u8], at: usize) -> f32 {
@@ -113,6 +100,7 @@ fn terse(time_ms: u64, data: &[u8]) -> Terse {
     };
     Terse {
         time_ms,
+        bytes: data.try_into().unwrap(),
         local_id: u32::from_le_bytes(data[0..4].try_into().unwrap()),
         state: data[4],
         plane: [
@@ -122,51 +110,8 @@ fn terse(time_ms: u64, data: &[u8]) -> Terse {
             read_f32(data, 18),
         ],
         position: vec(22),
-        velocity: u3(34),
         acceleration: u3(40),
-        rotation: [
-            read_u16(data, 46),
-            read_u16(data, 48),
-            read_u16(data, 50),
-            read_u16(data, 52),
-        ],
-        angular: u3(54),
     }
-}
-
-/// `Utils.FloatToUInt16(value, range)` in OpenMetaverse `a3596616`, as
-/// `Vector3.ClampedToShortsBytes` calls it for a vector inside the range: the
-/// product is a double, then truncated.
-fn pack_u16(value: f32, range: f32) -> u16 {
-    let value = value + range;
-    if value <= 0.0 {
-        return 0;
-    }
-    let value = value / range;
-    if value >= 2.0 {
-        return u16::MAX;
-    }
-    (f64::from(value) * 32767.5) as u16
-}
-
-/// `Utils.FloatToUnitUInt16`: a different rounding from `pack_u16`.
-fn pack_unit(value: f32) -> u16 {
-    if value <= -1.0 {
-        return 0;
-    }
-    if value >= 1.0 {
-        return u16::MAX;
-    }
-    (f64::from(value) * 32767.5 + 32767.0) as u16
-}
-
-/// The body rotation as `CreateAvatartImprovedTerseBlock` writes it for an
-/// avatar that is not flying or sitting: X and Y are `0x7fff`, and Z and W
-/// are scaled by `1 / sqrt(z * z + w * w)`.
-fn pack_rotation(rotation: [f32; 4]) -> [u16; 4] {
-    let (z, w) = (rotation[2], rotation[3]);
-    let a = 1.0 / (z * z + w * w).sqrt();
-    [0x7fff, 0x7fff, pack_unit(z * a), pack_unit(w * a)]
 }
 
 /// What one tick leaves for `ScenePresence.Update` to compare.
@@ -178,52 +123,20 @@ struct Sample {
     rotation: [f32; 4],
 }
 
-/// The last values `SendTerseUpdateToAllClients` stored. State and the
-/// collision plane do not change on this walk: BasicPhysics reports no
-/// collision plane, and the block carries unit W.
-#[derive(Clone, Copy, Debug)]
-struct LastSent {
-    position: [f32; 3],
-    velocity: [f32; 3],
-    rotation: [f32; 4],
-}
-
-impl LastSent {
-    /// The fresh presence: every stored value is zero.
-    fn new() -> Self {
-        Self {
-            position: [0.0; 3],
-            velocity: [0.0; 3],
-            rotation: [0.0; 4],
+impl Sample {
+    /// The walker as the frame reads it: state 0, no collision plane, not
+    /// flying, no angular velocity on this walk.
+    fn terse(&self, local_id: u32) -> AvatarTerse {
+        AvatarTerse {
+            local_id,
+            state: 0,
+            collision_plane: UNIT_W,
+            position: self.position,
+            velocity: self.velocity,
+            rotation: self.rotation,
+            angular_velocity: [0.0; 3],
+            full_rotation: false,
         }
-    }
-
-    /// `ScenePresence.Update` lines 4100–4130. Vector tolerances are per axis
-    /// (`Vector3.ApproxEquals` and `ApproxZero`).
-    fn due(&self, now: &Sample) -> bool {
-        let turned = (0..3)
-            .any(|axis| (now.rotation[axis] - self.rotation[axis]).abs() > ROTATION_TOLERANCE);
-        if turned {
-            return true;
-        }
-        let velocity_moved = (0..3)
-            .any(|axis| (now.velocity[axis] - self.velocity[axis]).abs() > VELOCITY_TOLERANCE);
-        let stopped = now.velocity == [0.0; 3] && self.velocity != [0.0; 3];
-        if velocity_moved || stopped {
-            return true;
-        }
-        let moved = |tolerance: f32| {
-            (0..3).any(|axis| (now.position[axis] - self.position[axis]).abs() > tolerance)
-        };
-        let speed_sq = now.velocity.iter().map(|axis| axis * axis).sum::<f32>();
-        moved(POSITION_LARGE_TOLERANCE)
-            || (moved(POSITION_SMALL_TOLERANCE) && speed_sq < LOW_VELOCITY_SQ)
-    }
-
-    fn store(&mut self, now: &Sample) {
-        self.position = now.position;
-        self.velocity = now.velocity;
-        self.rotation = now.rotation;
     }
 }
 
@@ -431,11 +344,12 @@ fn the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds() {
         .unwrap();
     assert_eq!(gate, k0, "the first frame past SendInitialData sends");
 
-    let mut last = LastSent::new();
+    let mut last = LastSent::default();
     let mut sends = Vec::new();
     for sample in samples.iter().filter(|sample| sample.tick >= gate) {
-        if last.due(sample) {
-            last.store(sample);
+        let now = sample.terse(walk.local_id);
+        if last.due(&now) {
+            last.store(&now);
             sends.push(*sample);
         }
     }
@@ -462,13 +376,14 @@ fn the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds() {
                 block.position
             );
         }
+        // The shipped block is the captured one, byte for byte.
         assert_eq!(
-            sent.velocity.map(|axis| pack_u16(axis, 128.0)),
-            block.velocity
+            avatar_block(&sent.terse(walk.local_id)),
+            block.bytes,
+            "tick {}",
+            sent.tick
         );
-        assert_eq!(pack_rotation(sent.rotation), block.rotation);
         assert_eq!(block.acceleration, [0x7fff; 3]);
-        assert_eq!(block.angular, [pack_u16(0.0, 64.0); 3]);
         assert_eq!(block.state, 0);
         assert_eq!(block.plane, [0.0, 0.0, 0.0, 1.0]);
     }
