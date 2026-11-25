@@ -8,14 +8,14 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 
 | id | value | where | soft or hard | configurable | C# at the pin |
 | --- | --- | --- | --- | --- | --- |
-| `http.post-body` | 1 MiB | `crates/ferroan-region/src/simulation.rs` | hard | no | No matching cap. The region refuses the body and answers 413. |
+| `http.post-body` | 1 MiB | `crates/ferroan-region/src/simulation.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | no | No matching cap. The region answers 413 on an oversized inbound body. The outbound connector refuses oversized JSON before compression or delivery. |
 | `http.asset-body` | 50,000,000 bytes | `crates/ferroan-services/src/asset/http.rs` | hard | no | `ServerUtils.cs` sets `XmlReaderSettings.MaxCharactersInDocument` to 50,000,000. |
 | `http.xml-chars` | 50,000,000 characters | `crates/ferroan-http/src/xml.rs`, asset parser | hard | no | Same `MaxCharactersInDocument`. The asset parser measures bytes. |
 | `http.xml-depth` | 64 | `crates/ferroan-http/src/xml.rs` | hard | no | Tranquillity's reader has no depth cap. |
 | `http.query-bytes` | 1 MiB | `crates/ferroan-http/src/query.rs` | hard | no | Query strings are not capped. |
 | `http.fields` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | Query fields are not capped. |
 | `http.list-items` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | A `[]` list is not capped. |
-| `http.response-bytes` | caller limit, default 50,000,000 | `crates/ferroan-http/src/client.rs` | hard | the caller passes it | Region grid replies pass 1 MiB. C# does not cap the read. |
+| `http.response-bytes` | caller limit, default 50,000,000 | `crates/ferroan-http/src/client.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | the form caller passes it, fixed for simulation | Region grid replies and outbound simulation replies use 1 MiB. The simulation connector checks both the advertised length and the streamed bytes. C# does not cap the read. |
 | `inventory.fetch-folders` | 64 | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | `FetchInvDescHandler.cs` loops every requested folder, with no cap. |
 | `inventory.fetch-items` | 256 | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | `FetchInventory2Handler.cs` has no item-count cap. |
 | `inventory.fetch-llsd` | 2 MiB | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | The handlers do not cap the LLSD they write. |

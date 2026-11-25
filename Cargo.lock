@@ -494,6 +494,7 @@ dependencies = [
  "ferroan-scene",
  "ferroan-services",
  "flate2",
+ "hyper",
  "reqwest",
  "serde_json",
  "thiserror",

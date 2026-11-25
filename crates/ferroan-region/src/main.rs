@@ -724,6 +724,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                 |departure| ferroan_client::SceneDeparture {
                     flying: departure.flying,
                     pose: ferroan_client::HopPose {
+                        always_run: departure.always_run,
                         center: departure.camera_center,
                         head_rotation: departure.head_rotation,
                         body_rotation: departure.body_rotation,
@@ -903,6 +904,8 @@ async fn serve_agent(
             channel: agent.channel.clone(),
             mac: agent.mac.clone(),
             id0: agent.id0.clone(),
+            service_urls: agent.service_urls.clone(),
+            animations: Arc::clone(&agent.animations),
             appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();

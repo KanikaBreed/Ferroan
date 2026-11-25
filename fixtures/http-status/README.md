@@ -20,6 +20,8 @@ Both requester methods use `GetNewGlobalHttpClient`. Its shared handler follows 
 
 The fixtures use fixed synthetic test UUIDs, a documentation-only advertised endpoint, and a test region name. They contain no credentials or live-grid identities. The injected XML is written by the oracle; it is identical across the four statuses for each caller. Request method, path, content type and form body are retained. Ephemeral loopback transport ports and timing are omitted. A Grid registration error endpoint, if returned, is replaced with `http://192.0.2.1:8003` for determinism. `outcome.accepted` means the injected success result was accepted; it does not mean C# threw an exception on every false value. `GetAgents` therefore records both `accepted: false` and its actual empty-array value.
 
+The Pin8 `simulation-transfer.json` fixture exercises `AgentData.Pack` and the JSON byte writer used for simulation requests. It records nondefault run, group, god and animation fields, plus an explicitly empty binary. The same oracle calls `WebUtil.ServiceOSDRequest` with standard, custom and empty HTTP reason phrases. Its connection failure and timeout cases record the behavior covered by TB89.
+
 Generate or verify on the pinned .NET SDK using:
 
 ```sh

@@ -107,7 +107,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR23 | R23: region settings and object XML writer review fixes: maturity to SimAccess, terrain PBR fill, FixedSun (withdraw D52), a stable CacheID, SoundGain as double, XML and JSON escaping as C# | READY after QR22 |
 | QR24 | R24: services review fixes: an interrupted upload never blocks the agent, the mesh upload answers as C# or refuses cleanly, session ids out of UpdateAgent excerpts, FSAssets import pages by key | DONE (this PR) |
 | QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | READY |
-| QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | READY after QR21 |
+| QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | DONE (this PR) |
 | QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | DONE (this PR) |
 | QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
 | QR29 | R29: the intermittent "UDP TeleportFinish 0, landing 0" in live services' teleport both ways with Ferroan as home | DONE (this PR) |

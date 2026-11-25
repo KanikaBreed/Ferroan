@@ -35,8 +35,11 @@
 //   Source/OpenSim.Framework/Animation.cs
 //   Source/OpenSim.Framework/VersionInfo.cs
 //   Source/OpenSim.Framework/WebUtil.cs (ServiceOSDRequest)
-//   OpenMetaverse.StructuredData JSON omit-defaults
-//   OpenSim-NGC/OpenSim-Tranquillity @ 1052cbae82ae7dc3b8abfcffe33e316498eeaad9
+//   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (CopyTo, CopyFrom)
+//   Source/OpenSim.Region.Framework/Scenes/GodController.cs (State)
+//   Source/OpenSim.Region.Framework/Scenes/Animation/{AnimationSet,ScenePresenceAnimator}.cs
+//   OpenMetaverse.StructuredData/JSON/OSDJson.cs @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -181,6 +184,86 @@ pub struct Anim {
     pub sequence: i32,
 }
 
+impl Anim {
+    fn unpack(value: &Value) -> Option<Self> {
+        let map = value.as_object()?;
+        Some(Self {
+            animation: uuid_value(map.get("animation")),
+            object_id: uuid_value(map.get("object_id")),
+            sequence: json_i32_value(map.get("seq_num")),
+        })
+    }
+}
+
+/// The animation set retained across a transfer. A fresh presence stands on the surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferAnimations {
+    pub extra: Vec<Anim>,
+    pub default_animation: Anim,
+    pub animation_state: Anim,
+    pub motion_state: u8,
+}
+
+impl Anim {
+    const STAND: Self = Self {
+        animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
+        object_id: Uuid::nil(),
+        sequence: 1,
+    };
+}
+
+impl Default for TransferAnimations {
+    fn default() -> Self {
+        Self {
+            extra: Vec::new(),
+            default_animation: Anim::STAND,
+            animation_state: Anim::STAND,
+            motion_state: 6,
+        }
+    }
+}
+
+impl TransferAnimations {
+    pub(crate) fn copy_from(&mut self, data: &Map<String, Value>) {
+        self.set_default(Anim::STAND);
+        self.extra = data
+            .get("animations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Anim::unpack)
+            .collect();
+        if let Some(anim) = data.get("default_animation").and_then(Anim::unpack) {
+            self.set_default(anim);
+        }
+        if let Some(anim) = data.get("animation_state").and_then(Anim::unpack) {
+            self.animation_state = Anim {
+                object_id: Uuid::nil(),
+                ..anim
+            };
+        }
+        if let Some(state) = data
+            .get("motion_state")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+            .filter(|n| *n != 0)
+        {
+            self.motion_state = state;
+        }
+    }
+
+    // AnimationSet retains the sequence and implicit animation when the id already matches.
+    fn set_default(&mut self, anim: Anim) {
+        if self.default_animation.animation != anim.animation {
+            self.default_animation = Anim {
+                object_id: Uuid::nil(),
+                ..anim
+            };
+            self.animation_state = self.default_animation;
+        }
+    }
+}
+
 /// `AgentData` put to a neighbour after a child create.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentData {
@@ -202,8 +285,12 @@ pub struct AgentData {
     pub head_rotation: [f32; 4],
     pub body_rotation: [f32; 4],
     pub control_flags: u32,
-    /// An empty god block is still sent. The hop's block has no keys.
-    pub god_data: bool,
+    /// Viewer UI state from the god controller. False packs as an empty god block.
+    pub viewer_ui_is_god: Option<bool>,
+    pub always_run: bool,
+    pub active_group_id: Uuid,
+    pub active_group_name: String,
+    pub animations: Vec<Anim>,
     pub agent_access: u32,
     pub default_animation: Option<Anim>,
     pub animation_state: Option<Anim>,
@@ -497,9 +584,26 @@ impl SimulationClient {
         };
         let status = response.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            let phrase = response
+                .extensions()
+                .get::<hyper::ext::ReasonPhrase>()
+                .map(|phrase| {
+                    phrase
+                        .as_bytes()
+                        .iter()
+                        .copied()
+                        .map(char::from)
+                        .collect::<String>()
+                })
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or_default().to_owned());
+            let detail = if phrase.is_empty() {
+                code.to_string()
+            } else {
+                format!("{code} ({phrase})")
+            };
             return Ok(Attempt::Failed(format!(
-                "Service request failed: [{}]",
-                status.as_u16()
+                "Service request failed: [{code}] Response status code does not indicate success: {detail}."
             )));
         }
         let bytes = match read_reply(response).await {
@@ -857,23 +961,36 @@ fn pack_update(destination: &RegionEnd, data: &AgentData, context: &TransferCont
         ("control_flags", Osd::Str(data.control_flags.to_string())),
         ("energy_level", Osd::Real(0.0)),
     ]);
-    if data.god_data {
-        entries.push(("god_data", Osd::Map(Vec::new())));
+    if let Some(enabled) = data.viewer_ui_is_god {
+        entries.push((
+            "god_data",
+            Osd::Map(vec![("ViewerUiIsGod".into(), Osd::Bool(enabled))]),
+        ));
+        entries.push(("god_level", Osd::Int(if enabled { 200 } else { 0 })));
     }
     entries.extend([
-        ("always_run", Osd::Bool(false)),
+        ("always_run", Osd::Bool(data.always_run)),
         ("prey_agent", Osd::Uuid(Uuid::nil())),
         ("agent_access", Osd::Str(data.agent_access.to_string())),
         ("agent_cof", Osd::Uuid(Uuid::nil())),
         ("crossingflags", Osd::Int(0)),
-        ("active_group_id", Osd::Uuid(Uuid::nil())),
-        ("active_group_name", Osd::Str(String::new())),
+        ("active_group_id", Osd::Uuid(data.active_group_id)),
+        (
+            "active_group_name",
+            Osd::Str(data.active_group_name.clone()),
+        ),
     ]);
     if !data.children_seeds.is_empty() {
         entries.push(("children_seeds", pack_seeds(&data.children_seeds)));
     }
     if let Some(callback) = &data.callback {
         entries.push(("cb_uri", Osd::Str(callback.clone())));
+    }
+    if !data.animations.is_empty() {
+        entries.push((
+            "animations",
+            Osd::Array(data.animations.iter().copied().map(pack_anim).collect()),
+        ));
     }
     if let Some(anim) = data.default_animation {
         entries.push(("default_animation", pack_anim(anim)));
@@ -1100,7 +1217,6 @@ fn omit_value(value: Osd) -> Option<Osd> {
         Osd::Real(0.0) => None,
         Osd::Str(text) if text.is_empty() => None,
         Osd::Uuid(id) if id.is_nil() => None,
-        Osd::Bytes(bytes) if bytes.is_empty() => None,
         Osd::Array(items) => Some(Osd::Array(items.into_iter().map(omit_element).collect())),
         Osd::Map(entries) => Some(Osd::Map(omit_entries(entries))),
         other => Some(other),
@@ -1321,6 +1437,112 @@ mod tests {
     const NEIGHBOUR_CAP: &[u8] =
         include_bytes!("../../../fixtures/neighbour-teleport/proxy-neighbour.cap");
     const LANDING: &str = "<128, 128, 30>";
+
+    fn transfer_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../fixtures/http-status/simulation-transfer.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn nondefault_agent_data_and_empty_binary_match_pin8() {
+        let agent = Uuid::from_u128(0x4000_8000_0000_0000_0001);
+        let group = Uuid::from_u128(0x4000_8000_0000_0000_0002);
+        let other = Uuid::from_u128(0x4000_8000_0000_0000_0004);
+        let mut data = agent_blank();
+        data.always_run = true;
+        data.active_group_id = group;
+        data.active_group_name = "Fixture group".into();
+        data.viewer_ui_is_god = Some(true);
+        data.animations = vec![
+            Anim {
+                animation: agent,
+                object_id: group,
+                sequence: 7,
+            },
+            Anim {
+                animation: other,
+                object_id: Uuid::nil(),
+                sequence: 0,
+            },
+        ];
+        let mut packed = pack_update(&sample_region(), &data, &TransferContext::negotiated());
+        let binary = object(vec![("empty_binary", Osd::Bytes(Vec::new()))]);
+        packed["empty_binary"] = binary["empty_binary"].clone();
+        for (key, value) in transfer_fixture()["packed"].as_object().unwrap() {
+            assert_eq!(packed.get(key), Some(value), "{key}");
+        }
+        let ordinary = pack_update(
+            &sample_region(),
+            &agent_blank(),
+            &TransferContext::negotiated(),
+        );
+        for key in [
+            "always_run",
+            "active_group_id",
+            "active_group_name",
+            "animations",
+            "god_level",
+            "throttles",
+        ] {
+            assert!(ordinary.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn neighbour_http_failure_reasons_match_pin8() {
+        let client = SimulationClient::new().unwrap();
+        let query = hop_bodies(HOME_CAP).query;
+        let fixture = transfer_fixture();
+        for status in [500, 405, 499] {
+            let (addr, server) = scripted(vec![Scripted::Text(status, "ignored")]).await;
+            let outcome = client
+                .query_access(&bound_region(addr), &query)
+                .await
+                .unwrap();
+            assert!(!outcome.success);
+            assert_eq!(outcome.reason, fixture[status.to_string()]);
+            finish_script(server).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn tb89_transport_failures_keep_local_network_details_out_of_the_reason() {
+        let fixture = transfer_fixture();
+        assert_eq!(
+            fixture["refused_mentions_endpoint"], true,
+            "revisit TB89 and D73 if Pin8's result changes"
+        );
+        assert!(
+            fixture["timeout_reason"]
+                .as_str()
+                .unwrap()
+                .contains("HttpClient.Timeout"),
+            "revisit TB89 and D73 if the .NET timeout wording changes"
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = SimulationClient::new().unwrap();
+        let request = || Outbound {
+            method: query_method(),
+            url: format!("http://{addr}/agent/"),
+            body: None,
+            compress: false,
+            keepalive: false,
+            timeout: Duration::from_millis(150),
+        };
+        // The listener leaves the request unanswered, then closes for the second call.
+        let timeout = client.execute(request()).await.unwrap();
+        drop(listener);
+        let refused = client.execute(request()).await.unwrap();
+        for result in [timeout, refused] {
+            assert_eq!(
+                parse_query(result, &TransferContext::negotiated()).reason,
+                "Service request failed: connection failed"
+            );
+        }
+    }
 
     #[test]
     fn version_reals_use_the_widened_single_and_defaults_drop() {
@@ -1875,7 +2097,19 @@ mod tests {
             head_rotation: parse_vec4(text_of(body.get("head_rotation")).as_str()),
             body_rotation: parse_vec4(text_of(body.get("body_rotation")).as_str()),
             control_flags: text_of(body.get("control_flags")).parse().unwrap_or(0),
-            god_data: body.get("god_data").is_some(),
+            viewer_ui_is_god: body
+                .get("god_data")
+                .map(|g| osd_bool(g.get("ViewerUiIsGod"))),
+            always_run: osd_bool(body.get("always_run")),
+            active_group_id: uuid_of(body.get("active_group_id")),
+            active_group_name: text_of(body.get("active_group_name")),
+            animations: body
+                .get("animations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(anim_from)
+                .collect(),
             agent_access: text_of(body.get("agent_access")).parse().unwrap_or(0),
             default_animation: body.get("default_animation").map(anim_from),
             animation_state: body.get("animation_state").map(anim_from),
@@ -2056,7 +2290,11 @@ mod tests {
             head_rotation: [0.0; 4],
             body_rotation: [0.0; 4],
             control_flags: 0,
-            god_data: false,
+            viewer_ui_is_god: None,
+            always_run: false,
+            active_group_id: Uuid::nil(),
+            active_group_name: String::new(),
+            animations: Vec::new(),
             agent_access: 0,
             default_animation: None,
             animation_state: None,
@@ -2116,8 +2354,14 @@ mod tests {
                 };
                 hits.push(Hit { header, body });
                 if let Some((status, text)) = response {
+                    let reason = match status {
+                        500 => "Internal Server Error",
+                        405 => "Neighbour refused",
+                        499 => "",
+                        _ => "X",
+                    };
                     let raw = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
                         text.len()
                     );
                     let _ = stream.write_all(raw.as_bytes()).await;

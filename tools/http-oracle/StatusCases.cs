@@ -9,6 +9,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenMetaverse;
+using OpenMetaverse.StructuredData;
+using OpenSim.Framework;
 using OpenSim.Services.Connectors;
 using OpenSim.Services.Interfaces;
 using GridRegion = OpenSim.Services.Interfaces.GridRegion;
@@ -39,8 +41,13 @@ static class StatusCases
             CheckOrWrite(Path.Combine(directory, name + ".json"), first, generate);
             manifest.Add(name);
         }
+        string simulation = SimulationTransfer().ToJsonString(Options);
+        if (simulation != SimulationTransfer().ToJsonString(Options))
+            throw new InvalidOperationException("simulation-transfer is not deterministic");
+        CheckOrWrite(Path.Combine(directory, "simulation-transfer.json"), simulation + "\n", generate);
+        manifest.Add("simulation-transfer");
         CheckOrWrite(Path.Combine(directory, "manifest.txt"), string.Join("\n", manifest) + "\n", generate);
-        Console.WriteLine($"http-status: {(generate ? "generated" : "verified")} {Callers.Length * Statuses.Length} real C# connector fault/positive cases");
+        Console.WriteLine($"http-status: {(generate ? "generated" : "verified")} {Callers.Length * Statuses.Length} form cases and the simulation-transfer fixture");
     }
 
     static void CheckOrWrite(string path, string value, bool generate)
@@ -99,6 +106,45 @@ static class StatusCases
         return new JsonObject { ["kind"] = kind, ["value"] = JsonSerializer.SerializeToNode(value), ["accepted"] = accepted };
     }
 
+    // Pin8 ChildAgentDataUpdate.cs (AgentData.Pack), WebUtil.cs (ServiceOSDRequest)
+    // and the JSON writer that the simulation connector uses for the request.
+    static JsonObject SimulationTransfer()
+    {
+        AgentData agent = new() {
+            AlwaysRun = true, ActiveGroupID = Region, ActiveGroupName = "Fixture group",
+            GodData = new OSDMap { ["ViewerUiIsGod"] = true },
+            Anims = [new OpenSim.Framework.Animation(Agent, 7, Region), new OpenSim.Framework.Animation(Session, 0, UUID.Zero)]
+        };
+        OSDMap packed = agent.Pack(new EntityTransferContext());
+        OSDMap fields = new();
+        foreach (string key in new[] { "always_run", "active_group_id", "active_group_name", "god_data", "god_level", "animations" })
+            fields[key] = packed[key];
+        fields["empty_binary"] = OSD.FromBinary([]);
+        JsonObject result = new() { ["packed"] = JsonNode.Parse(OSDParser.SerializeJsonToBytes(fields)) };
+        foreach ((int status, string phrase) in new[] { (500, "Internal Server Error"), (405, "Neighbour refused"), (499, "") })
+        {
+            using TcpListener listener = new(IPAddress.Loopback, 0);
+            listener.Start(1);
+            string uri = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            var capture = Capture(listener, status, "", timeout.Token, phrase);
+            var reply = WebUtil.ServiceOSDRequest(uri, fields, "QUERYACCESS", 5000, false, false);
+            capture.WaitAsync(timeout.Token).GetAwaiter().GetResult();
+            result[status.ToString()] = reply["Message"].AsString();
+        }
+        // Reserve the ephemeral port without listening. Record whether C# discloses it.
+        using Socket reserved = new(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        reserved.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        string endpoint = reserved.LocalEndPoint.ToString();
+        var refused = WebUtil.ServiceOSDRequest("http://" + endpoint, fields, "QUERYACCESS", 5000, false, false);
+        result["refused_mentions_endpoint"] = refused["Message"].AsString().Contains(endpoint, StringComparison.Ordinal);
+        using TcpListener silent = new(IPAddress.Loopback, 0);
+        silent.Start(1);
+        var timedOut = WebUtil.ServiceOSDRequest("http://" + silent.LocalEndpoint, fields, "QUERYACCESS", 150, false, false);
+        result["timeout_reason"] = timedOut["Message"].AsString();
+        return result;
+    }
+
     static string Response(string caller)
     {
         string contents = caller switch {
@@ -111,7 +157,7 @@ static class StatusCases
         return "<?xml version=\"1.0\"?><ServerResponse>" + contents + "</ServerResponse>";
     }
 
-    static async Task<JsonObject> Capture(TcpListener listener, int status, string body, CancellationToken token)
+    static async Task<JsonObject> Capture(TcpListener listener, int status, string body, CancellationToken token, string customReason = null)
     {
         using TcpClient socket = await listener.AcceptTcpClientAsync(token);
         using NetworkStream stream = socket.GetStream();
@@ -133,7 +179,7 @@ static class StatusCases
         byte[] request = new byte[length];
         await stream.ReadExactlyAsync(request, token);
         byte[] reply = Encoding.UTF8.GetBytes(body);
-        string reason = status switch { 200 => "OK", 201 => "Created", 302 => "Found", _ => "Internal Server Error" };
+        string reason = customReason ?? (status switch { 200 => "OK", 201 => "Created", 302 => "Found", _ => "Internal Server Error" });
         byte[] responseHeader = Encoding.ASCII.GetBytes($"HTTP/1.1 {status} {reason}\r\nContent-Type: application/xml\r\nContent-Length: {reply.Length}\r\nConnection: close\r\n\r\n");
         await stream.WriteAsync(responseHeader, token);
         await stream.WriteAsync(reply, token);
