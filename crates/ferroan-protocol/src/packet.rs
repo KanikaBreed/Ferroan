@@ -217,6 +217,36 @@ pub fn build_packet<M: Msg>(
     )
 }
 
+/// Length of the datagram `build_raw` frames for `payload` with no acks,
+/// without building it. Throttles charge this size.
+pub fn raw_len(payload: &[u8], zerocoded: bool) -> usize {
+    if !zerocoded {
+        return HEADER_SIZE + payload.len();
+    }
+    // Mirrors `zero_encode`: a run of zeros is two bytes per 255 zeros.
+    let mut coded = 0;
+    let mut zerocount: u8 = 0;
+    for &byte in payload {
+        if byte == 0 {
+            zerocount = zerocount.wrapping_add(1);
+            if zerocount == 0 {
+                coded += 2;
+                zerocount = 1;
+            }
+        } else {
+            if zerocount != 0 {
+                coded += 2;
+                zerocount = 0;
+            }
+            coded += 1;
+        }
+    }
+    if zerocount != 0 {
+        coded += 2;
+    }
+    HEADER_SIZE + coded.min(payload.len())
+}
+
 /// Frame an already-encoded message (number + body).
 pub fn build_raw(
     payload: &[u8],
@@ -409,6 +439,29 @@ mod tests {
     use crate::msgs::*;
     use crate::{Quat, Vec3, unpack_quat};
     use uuid::Uuid;
+
+    #[test]
+    fn raw_len_matches_the_framed_datagram() {
+        let cases: [&[u8]; 6] = [
+            &[],
+            &[1, 2, 3],
+            &[0, 0, 0, 5],
+            &[7, 0],
+            &[0; 300],
+            &[0, 1, 0, 0, 2, 0, 0, 0],
+        ];
+        for payload in cases {
+            for zerocoded in [false, true] {
+                let mut out = Vec::new();
+                build_raw(payload, zerocoded, 9, true, false, &[], &mut out);
+                assert_eq!(
+                    raw_len(payload, zerocoded),
+                    out.len(),
+                    "{payload:?} {zerocoded}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn roundtrip_with_acks_and_zerocode() {
