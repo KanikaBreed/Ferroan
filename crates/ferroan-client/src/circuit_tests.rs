@@ -141,7 +141,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),
             })),
-            SceneCall::Arrive(pose) => {
+            SceneCall::Arrive(pose, _) => {
                 let position = *poses.entry(agent).or_insert(pose.position);
                 Ok(SceneReply::Pose(stored_pose(position)))
             }
@@ -1660,10 +1660,11 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     state.peer = Some(peer());
     state.login_scene = Some(Arc::new(move |agent, call| {
         // The fresh login is one arrival call: no separate pose and release.
-        let SceneCall::Arrive(pose) = call else {
+        let SceneCall::Arrive(pose, look_at) = call else {
             return Err(crate::circuit::SceneRefused).into();
         };
         assert_eq!(agent, expect.agent_id);
+        assert_eq!(look_at, [0.99, 0.042, 0.0]);
         assert_eq!(pose.position, [10.0, 20.0, 30.0]);
         assert_eq!(pose.rotation, LOGIN_ROTATION);
         assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
@@ -1716,6 +1717,7 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
 struct BlockFeed {
     blocks: Mutex<Vec<[u8; crate::AVATAR_TERSE_LEN]>>,
     budgets: Mutex<Vec<i32>>,
+    packets: Mutex<Vec<crate::AvatarPacket>>,
 }
 
 impl crate::EntityUpdates for BlockFeed {
@@ -1727,6 +1729,78 @@ impl crate::EntityUpdates for BlockFeed {
         self.budgets.lock().unwrap().push(max_bytes);
         std::mem::take(&mut *self.blocks.lock().unwrap())
     }
+
+    fn take_avatar_packets(&self) -> Vec<crate::AvatarPacket> {
+        std::mem::take(&mut *self.packets.lock().unwrap())
+    }
+}
+
+/// Another avatar's full update, appearance and kill leave in the order the
+/// region queued them, ahead of a terse block: the full update reliable and
+/// zero-coded, the appearance the same, the kill reliable and unencoded.
+#[tokio::test]
+async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        region_handle: 0x0003_e800_0003_e800,
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), "Chat", "Bot");
+    other.local_id = 77;
+    let live = crate::LiveAvatar {
+        collision_plane: [0.0, 0.0, 0.0, 1.0],
+        position: [128.0, 128.0, 25.0],
+        velocity: [0.0; 3],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    };
+    {
+        let mut packets = source.packets.lock().unwrap();
+        packets.push(crate::AvatarPacket::Full(
+            other.live_update(0x0003_e800_0003_e800, &live),
+        ));
+        packets.push(crate::AvatarPacket::Appearance(other.appearance()));
+        for kill in crate::kill_packets(&[77]) {
+            packets.push(crate::AvatarPacket::Kill(kill));
+        }
+    }
+    let mut block = [0u8; crate::AVATAR_TERSE_LEN];
+    block[0..4].copy_from_slice(&77u32.to_le_bytes());
+    source.blocks.lock().unwrap().push(block);
+    state.maintain(&io).await.unwrap();
+    // The task bucket holds the rest until it refills.
+    for _ in 0..20 {
+        if io.sent.lock().unwrap().len() >= 4 {
+            break;
+        }
+        state.advance_throttle(Duration::from_millis(200));
+        state.maintain(&io).await.unwrap();
+    }
+    let sent = io.sent.lock().unwrap().clone();
+    let ids: Vec<_> = sent
+        .iter()
+        .map(|bytes| (bytes[0] & 0xc0, parse_packet(bytes).unwrap().id))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            (0xc0, ferroan_protocol::msgs::ObjectUpdate::ID),
+            (0xc0, ferroan_protocol::msgs::AvatarAppearance::ID),
+            (0x40, ferroan_protocol::msgs::KillObject::ID),
+            (0xc0, ferroan_protocol::msgs::ImprovedTerseObjectUpdate::ID),
+        ]
+    );
+    let kill = parse_packet(&sent[2])
+        .unwrap()
+        .decode::<ferroan_protocol::msgs::KillObject>()
+        .unwrap();
+    assert_eq!(kill.object_data[0].id, 77);
 }
 
 #[tokio::test]

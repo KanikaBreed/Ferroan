@@ -57,6 +57,9 @@
 //   Source/OpenSim.Framework/AvatarAppearance.cs
 //     (constructor, SetDefaultParams, SetDefaultTexture, SetSize)
 //   KanikaBreed/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   (the live block for another viewer, Q48: CreateAvatarUpdateBlock's
+//   CollisionPlane, Velocity and Rotation, at
+//   c401bceecd1684832ae8ba86a31b5ee01a4ded7b)
 //   OpenMetaverse/Primitives/TextureEntry.cs (GetBakesBytes, default face)
 //   OpenMetaverse/AppearanceManager.cs (DEFAULT_AVATAR_TEXTURE)
 //   OpenMetaverse.Types/Quaternion.cs (ToBytes)
@@ -130,6 +133,16 @@ pub struct AvatarWire {
     pub texture: Vec<u8>,
 }
 
+/// The presence values `CreateAvatarUpdateBlock` reads when it writes the
+/// block for another viewer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveAvatar {
+    pub collision_plane: [f32; 4],
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
 /// Fields `ToAvatarAppearance` copies onto the constructor defaults.
 #[derive(Clone, Debug, Default)]
 pub struct StoredAppearance {
@@ -186,6 +199,23 @@ impl AvatarWire {
             object_data: vec![object],
             omitted_trailing_blocks: 0,
         }
+    }
+
+    /// `CreateAvatarUpdateBlock` from the live presence values, as another
+    /// viewer gets it (`SendEntityFullUpdateImmediate`). `rotation` already
+    /// has X and Y zeroed for an avatar that neither flies nor sits.
+    pub fn live_update(&self, region_handle: u64, live: &LiveAvatar) -> ObjectUpdate {
+        let mut update = self.object_update(region_handle, live.position, [0.0; 3]);
+        let mut blob = vec![0u8; 76];
+        for (index, component) in live.collision_plane.into_iter().enumerate() {
+            let start = index * 4;
+            blob[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+        write_vec3(&mut blob[16..28], live.position);
+        write_vec3(&mut blob[28..40], live.velocity);
+        write_vec3(&mut blob[52..64], pack_rotation(live.rotation));
+        update.object_data[0].object_data = blob;
+        update
     }
 
     /// cofVersion -1: no `AppearanceData` block, one hover vector, no attachment count.
@@ -255,6 +285,23 @@ fn write_vec3(dest: &mut [u8], value: [f32; 3]) {
     }
 }
 
+/// `Quaternion.ToBytes`: X, Y and Z scaled by the reciprocal length, negated
+/// when W is negative. The branch that writes zeros is reached only by NaN.
+fn pack_rotation(rotation: [f32; 4]) -> [f32; 3] {
+    let [x, y, z, w] = rotation;
+    let norm = x * x + y * y + z * z + w * w;
+    if norm > 1e-6 || norm < 0.9999 {
+        let scale = if w < 0.0 {
+            -1.0 / norm.sqrt()
+        } else {
+            1.0 / norm.sqrt()
+        };
+        [scale * x, scale * y, scale * z]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
 /// `RotateToLookAt` for an unparented body, then `Quaternion.ToBytes`.
 /// X and Y are forced to 0 before the pack when the avatar is not flying.
 fn packed_look(look: [f32; 3]) -> [f32; 3] {
@@ -288,6 +335,39 @@ mod tests {
     use ferroan_protocol::Msg;
 
     use super::*;
+
+    /// The block another viewer gets carries the live plane, position,
+    /// velocity and rotation; everything else is the arrival block.
+    #[test]
+    fn a_live_update_writes_the_presence_values() {
+        let wire = AvatarWire::standing(Uuid::from_u128(7), "Test", "User");
+        let look = [0.99, 0.042, 0.0];
+        let arrival = wire.object_update(99, [128.0, 128.0, 25.96], look);
+        let half = (0.99f32 / (0.99f32 * 0.99 + 0.042 * 0.042).sqrt()).acos() * 0.5;
+        let still = LiveAvatar {
+            collision_plane: [0.0, 0.0, 0.0, 1.0],
+            position: [128.0, 128.0, 25.96],
+            velocity: [0.0; 3],
+            rotation: [0.0, 0.0, half.sin(), half.cos()],
+        };
+        assert_eq!(wire.live_update(99, &still), arrival);
+        let moving = LiveAvatar {
+            collision_plane: [0.0, 0.0, 1.0, 21.5],
+            position: [130.0, 128.0, 22.0],
+            velocity: [2.0, 0.5, 0.0],
+            rotation: [0.0, 0.0, -0.6, -0.8],
+        };
+        let update = wire.live_update(99, &moving);
+        let blob = &update.object_data[0].object_data;
+        assert_eq!(&blob[8..12], &1.0f32.to_le_bytes());
+        assert_eq!(&blob[12..16], &21.5f32.to_le_bytes());
+        assert_eq!(&blob[16..20], &130.0f32.to_le_bytes());
+        assert_eq!(&blob[28..32], &2.0f32.to_le_bytes());
+        assert_eq!(&blob[40..52], &[0u8; 12]);
+        // A negative W flips the packed axes.
+        assert_eq!(&blob[60..64], &0.6f32.to_le_bytes());
+        assert_eq!(&blob[64..76], &[0u8; 12]);
+    }
 
     #[test]
     fn default_bake_is_the_64_byte_face_entry() {

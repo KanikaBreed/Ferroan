@@ -18,7 +18,9 @@
 //!
 //! After each tick the frame runs `ScenePresence.Update`'s terse test on every
 //! attached viewer's avatar ([`crate::terse`]) and offers a due update to
-//! every attached viewer's feed. The circuit drains its feed.
+//! every attached viewer's feed. The circuit drains its feed. Arrivals,
+//! `SendInitialData` and departures also queue the other avatars' full
+//! updates, appearances and kills on the feeds ([`crate::avatars`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,12 +33,15 @@ use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
 use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Body, Motion, MotionUpdate, ReturnData, clock_ms};
 use crate::prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
-use crate::terse::{AvatarBoard, AvatarTerse, InitialData, LastSent, UNIT_W, ViewerFeed, look_at};
+use crate::terse::{
+    AvatarBoard, AvatarTerse, InitialData, InitialStep, LastSent, UNIT_W, ViewerFeed, look_at,
+};
 use crate::walk;
 
 /// `Constants.MinSimulationHeight`.
@@ -116,11 +121,25 @@ pub struct Leaving {
     pub look_at: [f32; 3],
 }
 
-/// One viewer attached to the frame: the feed its circuit drains, and the
-/// seed flag `SendInitialData` waits for (`CapsFlags.SentSeeds`).
+/// One viewer attached to the frame: the feed its circuit drains, the seed
+/// flag `SendInitialData` waits for (`CapsFlags.SentSeeds`), and what the
+/// other viewers are told about its avatar.
 pub struct ViewerLink {
     pub feed: Arc<ViewerFeed>,
     pub seeds_sent: Arc<AtomicBool>,
+    pub look: Arc<AvatarLook>,
+}
+
+/// A root that hopped away has arrived at its destination
+/// (`HasMovedAway`, then `MakeChildAgent`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovedAway {
+    /// The destination is within view range: `HasMovedAway(true)`, which
+    /// sends no kill outside a hidden parcel.
+    pub near: bool,
+    /// Roots with a child agent in the destination (`knowsNeighbourRegion`).
+    /// `MakeChildAgent` does not kill the avatar on their viewers.
+    pub known_by: Vec<Uuid>,
 }
 
 /// One answer from the frame thread. The call was already made.
@@ -183,11 +202,18 @@ enum Request {
         reply: oneshot::Sender<Presence>,
     },
     /// An arrival: the record with an actor at rest, or this pose when
-    /// there is no record yet.
+    /// there is no record yet, turned to the look the arrival packet sends.
     Arrive {
         agent: Uuid,
         pose: Presence,
+        look_at: [f32; 3],
         reply: oneshot::Sender<Presence>,
+    },
+    /// A hop away reached its destination.
+    MovedAway {
+        agent: Uuid,
+        away: MovedAway,
+        reply: oneshot::Sender<()>,
     },
     Places {
         agents: Vec<Uuid>,
@@ -362,9 +388,28 @@ impl TerrainFrame {
     /// An arrival. An existing record keeps its position and gets a physics
     /// actor at rest. With no record, `pose` is stored with an actor. Either
     /// way the actor exists after this one call.
-    pub fn arrive(&self, agent: Uuid, pose: Presence) -> Result<Pending<Presence>, TerrainError> {
+    pub fn arrive(
+        &self,
+        agent: Uuid,
+        pose: Presence,
+        look_at: [f32; 3],
+    ) -> Result<Pending<Presence>, TerrainError> {
         let (reply, answer) = pending();
-        self.request(Request::Arrive { agent, pose, reply })?;
+        self.request(Request::Arrive {
+            agent,
+            pose,
+            look_at,
+            reply,
+        })?;
+        Ok(answer)
+    }
+
+    /// A hop away reached its destination: the kills C# sends then. The
+    /// child flag was already set before the update. A missing viewer is
+    /// left alone.
+    pub fn moved_away(&self, agent: Uuid, away: MovedAway) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::MovedAway { agent, away, reply })?;
         Ok(answer)
     }
 
@@ -583,9 +628,17 @@ fn answer(
             let _ = reply.send(frames);
         }
         Request::Remove { agent, reply } => {
+            let root = presences
+                .get(&agent)
+                .is_some_and(|avatar| !avatar.body.is_child());
             if let Some(viewer) = scene.viewers.remove(&agent) {
                 scene.board.remove(viewer.local_id);
+                // `RemoveClient` kills a root on every client.
+                if root {
+                    scene.kill_everywhere(viewer.local_id);
+                }
             }
+            let presences = &mut scene.presences;
             let leaving = presences.remove(&agent).map(|avatar| Leaving {
                 position: avatar.pose.position,
                 look_at: look_at(avatar.body.camera_at_axis()),
@@ -618,10 +671,26 @@ fn answer(
             presences.insert(agent, avatar);
             let _ = reply.send(pose);
         }
-        Request::Arrive { agent, pose, reply } => {
+        Request::Arrive {
+            agent,
+            pose,
+            look_at,
+            reply,
+        } => {
             let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
             arrive_at_rest(avatar);
-            let _ = reply.send(avatar.pose);
+            // `CompleteMovement` turns a non-crossing arrival to the look it
+            // sends in `AgentMovementComplete` (`RotateToLookAt`).
+            avatar
+                .body
+                .turn_to(look_rotation(look_at), &mut avatar.pose);
+            let pose = avatar.pose;
+            scene.announce(agent);
+            let _ = reply.send(pose);
+        }
+        Request::MovedAway { agent, away, reply } => {
+            scene.moved_away(agent, &away);
+            let _ = reply.send(());
         }
         Request::Places { agents, reply } => {
             let mut found = HashMap::new();
@@ -865,25 +934,41 @@ fn terse_of(local_id: u32, avatar: &Avatar) -> AvatarTerse {
 
 /// `ScenePresence.Update` for each attached viewer's avatar, after the tick:
 /// the board gets the live values, and a due update goes to every attached
-/// viewer (`SendTerseUpdateToAllClients`), the avatar's own included. A child,
-/// and a login or return the arrival has not sampled, is not tested. The
-/// other side's priority is `BestAvatarResponsiveness`.
+/// viewer (`SendTerseUpdateToAllClients`), the avatar's own included. A
+/// viewer whose wait ends on this frame runs `SendInitialData` instead. A
+/// child, and a login or return the arrival has not sampled, is not tested.
+/// The other side's priority is `BestAvatarResponsiveness`.
 fn update_presences(scene: &mut Scene) {
     let mut due = Vec::new();
+    let mut initial = Vec::new();
     for (agent, viewer) in &mut scene.viewers {
-        let Some(avatar) = scene.presences.get(agent) else {
+        let avatar = scene.presences.get(agent);
+        if let Some(avatar) = avatar {
+            scene.board.write(terse_of(viewer.local_id, avatar));
+        }
+        let seeds = viewer.link.seeds_sent.load(Ordering::Acquire);
+        match viewer.initial.frame(seeds) {
+            InitialStep::Wait => continue,
+            InitialStep::Send => {
+                initial.push(*agent);
+                continue;
+            }
+            InitialStep::Test => {}
+        }
+        let Some(avatar) = avatar else {
             continue;
         };
-        let now = terse_of(viewer.local_id, avatar);
-        scene.board.write(now);
-        let seeds = viewer.link.seeds_sent.load(Ordering::Acquire);
-        if !viewer.initial.frame(seeds) || avatar.body.is_child() {
+        if avatar.body.is_child() {
             continue;
         }
+        let now = terse_of(viewer.local_id, avatar);
         if viewer.last.due(&now) {
             viewer.last.store(&now);
             due.push((*agent, viewer.local_id));
         }
+    }
+    for agent in initial {
+        scene.send_initial_data(agent);
     }
     for (avatar_agent, local_id) in due {
         for (viewer_agent, viewer) in &scene.viewers {
@@ -898,6 +983,129 @@ fn update_presences(scene: &mut Scene) {
             let entity = PriorityEntity::Avatar { id: avatar_agent };
             let priority = best_avatar_responsiveness(&looker, &entity);
             viewer.link.feed.offer_terse(priority, local_id);
+        }
+    }
+}
+
+impl Scene {
+    /// Attached viewers in local id order, which is the order they attached.
+    fn viewer_order(&self) -> Vec<(Uuid, u32)> {
+        let mut order: Vec<_> = self
+            .viewers
+            .iter()
+            .map(|(agent, viewer)| (*agent, viewer.local_id))
+            .collect();
+        order.sort_by_key(|(_, local_id)| *local_id);
+        order
+    }
+
+    fn is_root(&self, agent: &Uuid) -> bool {
+        self.presences
+            .get(agent)
+            .is_some_and(|avatar| !avatar.body.is_child())
+    }
+
+    /// What `CreateAvatarUpdateBlock` reads now. The stand-in sets no
+    /// collision plane and never sits on an object.
+    fn full_of(&self, agent: Uuid) -> Option<AvatarFull> {
+        let viewer = self.viewers.get(&agent)?;
+        let avatar = self.presences.get(&agent)?;
+        Some(AvatarFull {
+            agent,
+            local_id: viewer.local_id,
+            look: Arc::clone(&viewer.link.look),
+            collision_plane: UNIT_W,
+            position: avatar.pose.position,
+            velocity: avatar.pose.velocity,
+            rotation: block_rotation(avatar.pose.rotation, avatar.body.flying()),
+        })
+    }
+
+    fn send(&self, to: &Uuid, packet: AvatarPacket) {
+        if let Some(viewer) = self.viewers.get(to) {
+            viewer.link.feed.send_avatar_packet(packet);
+        }
+    }
+
+    /// `CompleteMovement`: the avatar's full update to every other viewer
+    /// (`SendInitialAvatarDataToAllAgents`), then its appearance to each
+    /// (`SendAppearanceToAgentNF`). Its own viewer gets both from its
+    /// circuit, with the arrival packet.
+    fn announce(&self, agent: Uuid) {
+        let Some(full) = self.full_of(agent) else {
+            return;
+        };
+        let others: Vec<Uuid> = self
+            .viewer_order()
+            .into_iter()
+            .map(|(other, _)| other)
+            .filter(|other| *other != agent)
+            .collect();
+        for other in &others {
+            self.send(other, AvatarPacket::Full(full.clone()));
+        }
+        for other in &others {
+            self.send(
+                other,
+                AvatarPacket::Appearance {
+                    agent,
+                    look: Arc::clone(&full.look),
+                },
+            );
+        }
+    }
+
+    /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
+    /// then its appearance, to this viewer.
+    fn send_initial_data(&self, agent: Uuid) {
+        for (other, _) in self.viewer_order() {
+            if other == agent || !self.is_root(&other) {
+                continue;
+            }
+            let Some(full) = self.full_of(other) else {
+                continue;
+            };
+            let look = Arc::clone(&full.look);
+            self.send(&agent, AvatarPacket::Full(full));
+            self.send(&agent, AvatarPacket::Appearance { agent: other, look });
+        }
+    }
+
+    /// `RemoveClient`: the leaving root's local id on every remaining viewer.
+    fn kill_everywhere(&self, local_id: u32) {
+        for (other, _) in self.viewer_order() {
+            self.send(&other, AvatarPacket::Kill(vec![local_id]));
+        }
+    }
+
+    /// `HasMovedAway`, then `MakeChildAgent`. Out of view range, the avatar
+    /// is killed on every other viewer and every other root on it. Then it is
+    /// killed on every root viewer that has no child in the destination; out
+    /// of view range that is a second kill.
+    fn moved_away(&mut self, agent: Uuid, away: &MovedAway) {
+        let Some(local_id) = self.viewers.get(&agent).map(|viewer| viewer.local_id) else {
+            return;
+        };
+        let order = self.viewer_order();
+        if !away.near {
+            if let Some(viewer) = self.viewers.get_mut(&agent) {
+                viewer.initial.made_child();
+            }
+            for (other, other_id) in &order {
+                if *other == agent {
+                    continue;
+                }
+                self.send(other, AvatarPacket::Kill(vec![local_id]));
+                if self.is_root(other) {
+                    self.send(&agent, AvatarPacket::Kill(vec![*other_id]));
+                }
+            }
+        }
+        for (other, _) in &order {
+            if *other == agent || !self.is_root(other) || away.known_by.contains(other) {
+                continue;
+            }
+            self.send(other, AvatarPacket::Kill(vec![local_id]));
         }
     }
 }
@@ -992,7 +1200,7 @@ mod tests {
     /// An arrival that has a record. The posted pose is never used.
     fn reuse(frame: &TerrainFrame, agent: Uuid) -> Presence {
         frame
-            .arrive(agent, pose_at([1.0, 1.0, 1.0]))
+            .arrive(agent, pose_at([1.0, 1.0, 1.0]), EAST)
             .unwrap()
             .blocking_wait()
             .unwrap()
@@ -1078,12 +1286,28 @@ mod tests {
         }
     }
 
+    /// A look that turns an arrival to the identity rotation.
+    const EAST: [f32; 3] = [1.0, 0.0, 0.0];
+
+    fn look_of(first_name: &str) -> Arc<AvatarLook> {
+        Arc::new(AvatarLook {
+            first_name: first_name.to_owned(),
+            last_name: "Resident".to_owned(),
+            title: String::new(),
+            visual_params: vec![1, 2, 3],
+            texture: vec![4, 5],
+            height: 1.9,
+            hover: 0.0,
+        })
+    }
+
     fn attach(frame: &TerrainFrame, agent: Uuid) -> (u32, Arc<ViewerFeed>, Arc<AtomicBool>) {
         let feed = frame.new_feed();
         let seeds = Arc::new(AtomicBool::new(false));
         let link = ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::clone(&seeds),
+            look: look_of(&agent.as_u128().to_string()),
         };
         let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
         (local_id, feed, seeds)
@@ -1242,6 +1466,178 @@ mod tests {
         reuse(&frame, agent);
         wait_frames(&frame, 2);
         assert_eq!(local_ids(&feed.take_terse(0)), [local_id]);
+    }
+
+    /// The agent ids of the full updates and appearances, and the kills, in
+    /// the order a feed holds them.
+    fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
+        feed.take_avatar_packets()
+            .into_iter()
+            .map(|packet| match packet {
+                AvatarPacket::Full(full) => ('F', full.agent.as_u128()),
+                AvatarPacket::Appearance { agent, .. } => ('A', agent.as_u128()),
+                AvatarPacket::Kill(ids) => ('K', u128::from(ids[0])),
+            })
+            .collect()
+    }
+
+    /// `CompleteMovement` sends the newcomer's full update, then its
+    /// appearance, to the viewer already there. The newcomer learns of the
+    /// other root at its `SendInitialData`: the reply, the seeds, four frames.
+    #[test]
+    fn an_arrival_is_announced_and_the_newcomer_hears_of_the_others() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let first = Uuid::from_u128(60);
+        let second = Uuid::from_u128(61);
+        let (_, first_feed, _) = attach(&frame, first);
+        login(&frame, first, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, first);
+        assert!(
+            packet_kinds(&first_feed).is_empty(),
+            "its own update is the circuit's"
+        );
+        let (_, second_feed, second_seeds) = attach(&frame, second);
+        login(&frame, second, pose_at([120.0, 128.0, 25.0]));
+        // The newcomer turns to the arrival look before it is announced.
+        let look = [0.99, 0.042, 0.0];
+        let arrived = frame
+            .arrive(second, pose_at([1.0, 1.0, 1.0]), look)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert_eq!(arrived.rotation, look_rotation(look));
+        let announced = first_feed.take_avatar_packets();
+        assert_eq!(announced.len(), 2);
+        let AvatarPacket::Full(full) = &announced[0] else {
+            panic!("the full update comes first");
+        };
+        assert_eq!(full.agent, second);
+        assert_eq!(full.position, [120.0, 128.0, 25.0]);
+        assert_eq!(full.velocity, [0.0; 3]);
+        assert_eq!(full.collision_plane, UNIT_W);
+        assert_eq!(full.rotation, look_rotation(look));
+        assert_eq!(full.look.first_name, "61");
+        assert!(matches!(
+            &announced[1],
+            AvatarPacket::Appearance { agent, .. } if *agent == second
+        ));
+        assert!(packet_kinds(&second_feed).is_empty());
+        // The wait: the reply and the seeds, then four frames.
+        second_seeds.store(true, Ordering::Release);
+        frame.handshake_reply(second).unwrap();
+        wait_frames(&frame, 2);
+        assert!(packet_kinds(&second_feed).is_empty());
+        wait_frames(&frame, 4);
+        assert_eq!(packet_kinds(&second_feed), [('F', 60), ('A', 60)]);
+        // Once only.
+        wait_frames(&frame, 3);
+        assert!(packet_kinds(&second_feed).is_empty());
+        assert!(packet_kinds(&first_feed).is_empty());
+    }
+
+    /// `SendOtherAgentsAvatarFullToMe` names root agents only.
+    #[test]
+    fn initial_data_skips_a_child_and_an_avatar_not_yet_arrived() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let child = Uuid::from_u128(62);
+        let waiting = Uuid::from_u128(63);
+        let newcomer = Uuid::from_u128(64);
+        attach(&frame, child);
+        login(&frame, child, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, child);
+        frame.set_child(child, true).unwrap();
+        attach(&frame, waiting);
+        login(&frame, waiting, pose_at([128.0, 128.0, 25.0]));
+        let (_, feed, seeds) = attach(&frame, newcomer);
+        login(&frame, newcomer, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, newcomer);
+        seeds.store(true, Ordering::Release);
+        frame.handshake_reply(newcomer).unwrap();
+        wait_frames(&frame, 7);
+        assert!(packet_kinds(&feed).is_empty());
+    }
+
+    /// `RemoveClient` kills a root on every remaining viewer and drops the
+    /// terse update still waiting for it there. A child leaves no kill.
+    #[test]
+    fn a_root_that_leaves_is_killed_on_the_others_and_a_child_is_not() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let staying = Uuid::from_u128(65);
+        let leaving = Uuid::from_u128(66);
+        let child = Uuid::from_u128(67);
+        let (_, feed, _) = attach(&frame, staying);
+        let (leaving_id, _, _) = attach(&frame, leaving);
+        let (child_id, _, _) = attach(&frame, child);
+        for agent in [staying, leaving, child] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        frame.set_child(child, true).unwrap();
+        let _ = feed.take_avatar_packets();
+        feed.offer_terse(1, leaving_id);
+        frame.remove(leaving).unwrap().blocking_wait().unwrap();
+        assert_eq!(packet_kinds(&feed), [('K', u128::from(leaving_id))]);
+        assert!(
+            !feed.has_updates(),
+            "the kill drops the waiting terse update"
+        );
+        frame.remove(child).unwrap().blocking_wait().unwrap();
+        assert!(
+            packet_kinds(&feed).is_empty(),
+            "no kill for child {child_id}"
+        );
+    }
+
+    /// `MakeChildAgent` kills the avatar on root viewers with no child in the
+    /// destination. Out of view range, `HasMovedAway(false)` first kills it
+    /// on every other viewer and every other root on its own viewer.
+    #[test]
+    fn a_hop_away_kills_where_the_destination_is_unknown() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let hopper = Uuid::from_u128(68);
+        let knows = Uuid::from_u128(69);
+        let unaware = Uuid::from_u128(70);
+        let (hopper_id, hopper_feed, _) = attach(&frame, hopper);
+        let (knows_id, knows_feed, _) = attach(&frame, knows);
+        let (unaware_id, unaware_feed, _) = attach(&frame, unaware);
+        for agent in [hopper, knows, unaware] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        for feed in [&hopper_feed, &knows_feed, &unaware_feed] {
+            let _ = feed.take_avatar_packets();
+        }
+        frame.set_child(hopper, true).unwrap();
+        let near = MovedAway {
+            near: true,
+            known_by: vec![knows],
+        };
+        frame
+            .moved_away(hopper, near)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert!(packet_kinds(&knows_feed).is_empty());
+        assert_eq!(packet_kinds(&unaware_feed), [('K', u128::from(hopper_id))]);
+        assert!(packet_kinds(&hopper_feed).is_empty());
+        let far = MovedAway {
+            near: false,
+            known_by: vec![knows],
+        };
+        frame
+            .moved_away(hopper, far)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert_eq!(packet_kinds(&knows_feed), [('K', u128::from(hopper_id))]);
+        assert_eq!(
+            packet_kinds(&unaware_feed),
+            [('K', u128::from(hopper_id)), ('K', u128::from(hopper_id))]
+        );
+        assert_eq!(
+            packet_kinds(&hopper_feed),
+            [('K', u128::from(knows_id)), ('K', u128::from(unaware_id))]
+        );
     }
 
     /// GridUser's logout reads the walked position and `Lookat`, the camera
@@ -1465,7 +1861,7 @@ mod tests {
         let agent = Uuid::from_u128(17);
         // No seat was posted first: the one arrival call stores and releases.
         let stored = frame
-            .arrive(agent, pose_at([20.0, 30.0, 40.0]))
+            .arrive(agent, pose_at([20.0, 30.0, 40.0]), EAST)
             .unwrap()
             .blocking_wait()
             .unwrap();

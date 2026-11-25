@@ -829,6 +829,31 @@ impl SimulationState {
         slot.close();
     }
 
+    /// The hop away arrived. The frame kills the avatar on root viewers that
+    /// have no child in the destination, and out of view range both ways
+    /// first. A root knows the destination when its open child is there.
+    pub async fn moved_away(&self, agent: Uuid, near: bool, end: &RegionEnd) {
+        let Some(frame) = &self.scene else {
+            return;
+        };
+        let known_by = self
+            .open_children
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .filter(|(other, child)| **other != agent && child.region_id == end.region_id)
+            .map(|(other, _)| *other)
+            .collect();
+        let away = ferroan_scene::MovedAway { near, known_by };
+        let done = match frame.moved_away(agent, away) {
+            Ok(pending) => pending.wait().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = done {
+            tracing::debug!("scene hop kills were not sent: {error}");
+        }
+    }
+
     /// Remember a neighbour child that stays in view. A later hop replaces it.
     pub fn note_open_child(&self, agent: Uuid, end: RegionEnd) {
         self.open_children
@@ -3541,6 +3566,73 @@ mod tests {
             Some(Uuid::from_u128(7))
         );
         drop(current);
+    }
+
+    /// `MakeChildAgent` spares a root whose open child is in the destination.
+    #[tokio::test]
+    async fn a_hop_away_spares_a_root_with_a_child_in_the_destination() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(2);
+        let mut state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: Uuid::from_u128(7),
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        let mut feeds = Vec::new();
+        for id in [80u128, 81, 82] {
+            let agent = Uuid::from_u128(id);
+            let feed = frame.new_feed();
+            let link = ferroan_scene::ViewerLink {
+                feed: Arc::clone(&feed),
+                seeds_sent: Arc::new(AtomicBool::new(false)),
+                look: Arc::new(ferroan_scene::AvatarLook {
+                    first_name: "Test".to_string(),
+                    last_name: "User".to_string(),
+                    title: String::new(),
+                    visual_params: Vec::new(),
+                    texture: Vec::new(),
+                    height: 1.9,
+                    hover: 0.0,
+                }),
+            };
+            let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
+            let pose = ferroan_scene::Presence {
+                position: [128.0, 128.0, 25.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0; 3],
+                control_flags: 0,
+                draw_distance: 255.0,
+            };
+            frame
+                .arrive(agent, pose, [1.0, 0.0, 0.0])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            feeds.push((local_id, feed));
+        }
+        for (_, feed) in &feeds {
+            let _ = feed.take_avatar_packets();
+        }
+        let hopper = Uuid::from_u128(80);
+        // 81 has a child in the destination; 82 does not.
+        state.note_open_child(Uuid::from_u128(81), end.clone());
+        state.moved_away(hopper, true, &end).await;
+        assert!(feeds[1].1.take_avatar_packets().is_empty());
+        assert_eq!(
+            feeds[2].1.take_avatar_packets(),
+            [ferroan_scene::AvatarPacket::Kill(vec![feeds[0].0])]
+        );
+        assert!(feeds[0].1.take_avatar_packets().is_empty());
     }
 
     #[tokio::test]

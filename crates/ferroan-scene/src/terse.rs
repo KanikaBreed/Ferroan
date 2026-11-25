@@ -77,6 +77,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::Notify;
 
+use crate::avatars::{AvatarPacket, AvatarPackets};
 use crate::entity_queue::{EntityUpdateQueue, FieldPacket, TERSE_UPDATE, classify};
 
 /// `ScenePresence.cs` lines 4056–4060.
@@ -213,20 +214,33 @@ impl InitialData {
         self.handshake = false;
     }
 
-    /// One frame. True when the threshold test runs on this frame.
-    pub fn frame(&mut self, seeds_sent: bool) -> bool {
+    /// One frame: return early, run `SendInitialData` and return, or run
+    /// the threshold test.
+    pub fn frame(&mut self, seeds_sent: bool) -> InitialStep {
         if self.need <= 0 {
-            return true;
+            return InitialStep::Test;
         }
         if self.need < 2 || !seeds_sent {
-            return false;
+            return InitialStep::Wait;
         }
         self.need += 1;
         if self.need >= 6 {
             self.need = -1;
+            return InitialStep::Send;
         }
-        false
+        InitialStep::Wait
     }
+}
+
+/// What `ScenePresence.Update` does on one frame before the threshold test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialStep {
+    /// `Update` returns early.
+    Wait,
+    /// This frame runs `SendInitialData`, then returns.
+    Send,
+    /// The threshold test runs.
+    Test,
 }
 
 /// `Utils.FloatToUInt16(value, range)`: the quotient is a float, the product
@@ -368,9 +382,12 @@ impl AvatarBoard {
 }
 
 /// One viewer's entity updates. The frame offers; the circuit takes. A
-/// waiting update wakes the circuit through [`ViewerFeed::wake`].
+/// waiting update wakes the circuit through [`ViewerFeed::wake`]. Avatar
+/// packets C# writes straight onto the task outbox wait beside the queue
+/// and are taken first ([`ViewerFeed::take_avatar_packets`]).
 pub struct ViewerFeed {
     queue: Mutex<EntityUpdateQueue>,
+    packets: Mutex<AvatarPackets>,
     board: AvatarBoard,
     wake: Arc<Notify>,
 }
@@ -379,6 +396,7 @@ impl ViewerFeed {
     pub fn new(board: AvatarBoard) -> Self {
         Self {
             queue: Mutex::new(EntityUpdateQueue::new()),
+            packets: Mutex::new(AvatarPackets::default()),
             board,
             wake: Arc::new(Notify::new()),
         }
@@ -388,6 +406,29 @@ impl ViewerFeed {
         self.queue
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn packets(&self) -> MutexGuard<'_, AvatarPackets> {
+        self.packets
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Queue one avatar packet for the circuit. A kill first drops the
+    /// waiting updates for those ids (`SendKillObject` removes them from
+    /// `m_entityUpdates`).
+    pub(crate) fn send_avatar_packet(&self, packet: AvatarPacket) {
+        if let AvatarPacket::Kill(ids) = &packet {
+            self.queue().remove(ids);
+        }
+        if self.packets().push(packet) {
+            self.wake.notify_one();
+        }
+    }
+
+    /// Every waiting avatar packet, in the order the frame sent them.
+    pub fn take_avatar_packets(&self) -> Vec<AvatarPacket> {
+        self.packets().take()
     }
 
     /// `SendEntityUpdate` for an avatar's terse flags. A full queue refuses
@@ -547,26 +588,28 @@ mod tests {
 
     #[test]
     fn the_initial_data_wait_needs_the_reply_and_the_seeds_then_four_frames() {
+        use InitialStep::{Send, Test, Wait};
         let mut wait = InitialData::default();
         // No reply yet: seeds alone do not count.
-        assert!(!wait.frame(true));
+        assert_eq!(wait.frame(true), Wait);
         wait.handshake_reply();
-        assert!(!wait.frame(false));
-        assert!(!wait.frame(false));
+        assert_eq!(wait.frame(false), Wait);
+        assert_eq!(wait.frame(false), Wait);
         // Three frames return early, the fourth runs SendInitialData.
-        for _ in 0..4 {
-            assert!(!wait.frame(true));
+        for _ in 0..3 {
+            assert_eq!(wait.frame(true), Wait);
         }
-        assert!(wait.frame(true));
-        assert!(wait.frame(false));
+        assert_eq!(wait.frame(true), Send);
+        assert_eq!(wait.frame(true), Test);
+        assert_eq!(wait.frame(false), Test);
         // A second reply does not restart it.
         wait.handshake_reply();
-        assert!(wait.frame(true));
+        assert_eq!(wait.frame(true), Test);
         // A child forgets the reply; the next one waits again.
         wait.made_child();
-        assert!(wait.frame(true));
+        assert_eq!(wait.frame(true), Test);
         wait.handshake_reply();
-        assert!(!wait.frame(true));
+        assert_eq!(wait.frame(true), Wait);
     }
 
     #[test]
