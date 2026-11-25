@@ -198,7 +198,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
-| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (over one day; proposed split below) |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79 |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
@@ -747,6 +747,18 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
+
+### Q79 proposed split (P2.11a)
+
+At Pin8 `c401bceecd`, a viewer can stay rooted on its home region while receiving updates directly from another simulator. Q18c proves a teleport and Q46b provides the home avatar's pose. Neither proves what reaches the child viewer. In the two-C# BasicPhysics grid walk capture, the neighbour HTTP proxy recorded two child admissions, one `AgentPosition` update and two closes. The neighbour UDP capture contained zero packets. The teleport bot's `Session::run_until_ready` sends `CompleteAgentMovement` and waits for `AgentMovementComplete`. On Pin8, `ScenePresence.CompleteMovement` calls `MakeRootAgent` (ScenePresence.cs 2315–2365). Reusing that wait would change the role being tested.
+
+The region connector currently looks up a region by position and sends the teleport's full `AgentData`. The hop remembers one open child endpoint. Pin8 instead selects all visible neighbours, keeps a seed for each, and sends a smaller `AgentPosition` to an existing child. Implementing the viewer, connector and per-root lifecycle and proving them together is about three days. Proposed steps, in dependency order:
+
+1. **Capture a viewer observing a C# neighbour while rooted at home** (about one day). Give the C# neighbour a known stored prim and a second account rooted there. Drive the home viewer's event queue and separate child circuit while keeping its home session active. Capture the child admission, a position update triggered by movement, and the close. Keep a redacted fixture that identifies the resident avatar and the prim by their full updates on the neighbour circuit. Assert both identities and the viewer's continued home-root status, so home traffic or a teleport cannot satisfy the check.
+2. **Discover visible neighbours and send child requests** (about one day, after the capture). Port the range query and the world-coordinate visibility test from `EntityTransferModule.GetNeighbors` and `RegionsInSPView` (2828 onward and 2295–2335). Test zero draw range, offline neighbours and touching edges of variable-size regions. Port the child circuit fields and translated start position from `EnableChildAgents` (2343–2498) and the `AgentPosition` update through `SimulationServiceConnector`. Compare the child POST and position PUT against the two-C# fixture, preserving relationships between generated fields. Q85 owns the packed viewer throttles.
+3. **Maintain each root's children and compare live visibility** (about one day, after the connector). Hook arrival and view changes to the root's neighbour set. Create each new child once, send `EnableSimulator` followed by `EstablishAgentCommunication` on acceptance (`InformClientOfNeighbourAsync`, 2759–2804), update retained children, and close departed children. Test refusals and logout during admission. Run the same viewer scenario with Ferroan as home and C# as neighbour. Compare the region-to-region bodies, event order and receipt of the same avatar and prim against the C# baseline, then run the existing Q18c teleport round trip.
+
+Together these steps satisfy P2.11a. Q80 retains inbound child handling, and walking across the border remains deferred under D38.
 
 ### Q76 object-crossing fixture scope
 
