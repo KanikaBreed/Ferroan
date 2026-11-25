@@ -77,7 +77,7 @@ use crate::throttle::{
     CircuitThrottle, ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock,
 };
 use crate::{ArrivalConfig, HandshakeConfig};
-use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
+use ferroan_diag::{self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGINS, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
@@ -1819,8 +1819,8 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
     Some(Uuid::from_bytes(raw))
 }
 /// Remembered UseCircuitCode datagrams for logins that have not started serving.
-/// One slot per source address, capped at the region root-agent limit.
-const PENDING_LOGINS: usize = 40;
+/// One slot per source address for 40 ordinary roots and the 21 staff bypass places.
+pub const PENDING_LOGINS: usize = 61;
 const INBOX_CAP: usize = 128;
 
 struct Datagram {
@@ -1847,6 +1847,13 @@ impl Inbox {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if queue.len() >= INBOX_CAP {
+            ferroan_diag::refuse(
+                UDP_CIRCUIT_INBOX,
+                Kind::Hard,
+                INBOX_CAP as u64,
+                (queue.len() + 1) as u64,
+                "udp",
+            );
             return;
         }
         queue.push_back(datagram);
@@ -2007,6 +2014,13 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
     }
     fan.pending.retain(|queued| queued.from != from);
     if fan.pending.len() >= PENDING_LOGINS {
+        ferroan_diag::drop_bound(
+            UDP_PENDING_LOGINS,
+            Kind::Hard,
+            PENDING_LOGINS as u64,
+            (fan.pending.len() + 1) as u64,
+            "udp",
+        );
         fan.pending.pop_front();
     }
     fan.pending.push_back(Datagram { from, bytes });

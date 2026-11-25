@@ -90,12 +90,12 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR6 | R6: GridUser stores C#'s position text, bounds its cache, and never drops a logout | DONE (#222) |
 | QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | DONE (this PR) |
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
-| QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
+| QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | DONE (this PR) |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | DONE (this PR) |
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
-| QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |
+| QR14 | R14: the FSAssets file store's remaining durability and test gaps | DONE (this PR) |
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker, host networking kept where it is the host network | DONE (this PR) |
 | QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |
@@ -175,7 +175,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
-| Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | READY |
+| Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | READY after Q65b and QR9 |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c |

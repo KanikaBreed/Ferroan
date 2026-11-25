@@ -461,6 +461,11 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
+    if *scenario == "prim-capture" && (!grid || flags.region_ferroan || !flags.basic_physics) {
+        return Err(ParseFail::Message(
+            "use live run prim-capture grid --physics basicphysics for the Pin8 capture".into(),
+        ));
+    }
     Ok(Command::Run(RunSpec {
         scenario: (*scenario).to_string(),
         grid,
@@ -731,6 +736,26 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn prim_capture_requires_the_csharp_grid_and_basicphysics() {
+        assert!(parse(&["run", "prim-capture", "grid"]).is_err());
+        assert!(parse(&["run", "prim-capture", "grid", "--physics", "ubode"]).is_err());
+        assert!(parse(&["run", "prim-capture", "--physics", "basicphysics"]).is_err());
+        assert!(
+            parse(&[
+                "run",
+                "prim-capture",
+                "grid",
+                "--region",
+                "ferroan",
+                "--physics",
+                "basicphysics"
+            ])
+            .is_err()
+        );
+        assert!(run(&["run", "prim-capture", "grid", "--physics", "basicphysics"]).basic_physics);
     }
 
     #[test]
