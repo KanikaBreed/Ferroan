@@ -820,6 +820,28 @@ struct NearbyTiming {
     listed: Duration,
 }
 
+/// Await `call` while the companion's circuit is driven. A region that does
+/// not answer `UUIDNameRequest` (Ferroan before P2.3d) holds a
+/// `NearmeWithDetails` call for Ferrobot's 10 s name timeout. An undriven
+/// companion stops acknowledging, the region's arrival burst and its resends fill the
+/// socket's receive buffer, and the kernel drops the `LogoutReply` that
+/// follows; the region does not resend it once the circuit closes (QR32).
+async fn driven<T>(
+    session: &mut Session,
+    call: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    tokio::pin!(call);
+    loop {
+        tokio::select! {
+            done = &mut call => return Ok(done),
+            step = session.drive(STEP) => {
+                step.map_err(|_| "companion circuit failed while Ferrobot answered")?;
+                while session.poll_inbox().is_some() {}
+            }
+        }
+    }
+}
+
 /// The companion arrived: Ferrobot got its full avatar update.
 async fn wait_nearby(
     session: &mut Session,
@@ -829,13 +851,9 @@ async fn wait_nearby(
     let started = Instant::now();
     let deadline = started + Duration::from_secs(30);
     loop {
-        session
-            .drive(STEP)
-            .await
-            .map_err(|_| "companion circuit failed while Ferrobot looked for it")?;
-        while session.poll_inbox().is_some() {}
         let asked = Instant::now();
-        match nearby(api).await {
+        let listed = driven(session, nearby(api)).await?;
+        match listed {
             Ok(list) if list.contains(&companion) => {
                 return Ok(NearbyTiming {
                     call: asked.elapsed(),
@@ -986,6 +1004,77 @@ async fn wait_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A companion that keeps receiving reliable packets during a long
+    /// Ferrobot call still gets its `LogoutReply` when it is driven. The fake
+    /// region resends a stream of reliable datagrams, about ten times what a
+    /// default receive buffer holds over the call, as a region does to a
+    /// viewer that does not acknowledge. It answers `LogoutRequest` once and
+    /// stops, as a region that closes the circuit after the reply does. An
+    /// undriven companion's buffer is full then, and the reply is lost.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_driven_companion_gets_its_logout_reply_after_a_long_call() {
+        use ferroan_protocol::msgs::{ImprovedTerseObjectUpdate, LogoutReply, LogoutRequest};
+        let region = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let agent = Agent {
+            agent_id: Uuid::from_u128(1),
+            session_id: Uuid::from_u128(2),
+            circuit_code: 3,
+        };
+        let mut session = Session::connect(region.local_addr().unwrap(), agent)
+            .await
+            .unwrap();
+        let bot = session.local_addr().unwrap();
+        let fake = tokio::spawn(async move {
+            let mut sequence = 1u32;
+            let mut buf = [0u8; 4096];
+            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            loop {
+                tokio::select! {
+                    received = region.recv_from(&mut buf) => {
+                        let (len, _) = received.unwrap();
+                        if parse_packet(&buf[..len]).is_ok_and(|packet| packet.id == LogoutRequest::ID) {
+                            let mut bytes = Vec::new();
+                            ferroan_protocol::build_packet(
+                                &LogoutReply::default(),
+                                sequence,
+                                true,
+                                false,
+                                &[],
+                                &mut bytes,
+                            );
+                            region.send_to(&bytes, bot).await.unwrap();
+                            return;
+                        }
+                    }
+                    _ = tick.tick() => {
+                        for _ in 0..100 {
+                            let mut bytes = Vec::new();
+                            ferroan_protocol::build_packet(
+                                &ImprovedTerseObjectUpdate::default(),
+                                sequence,
+                                true,
+                                false,
+                                &[],
+                                &mut bytes,
+                            );
+                            sequence += 1;
+                            let _ = region.send_to(&bytes, bot).await;
+                        }
+                    }
+                }
+            }
+        });
+        // Ferrobot's name lookup.
+        driven(
+            &mut session,
+            tokio::time::sleep(Duration::from_millis(1_500)),
+        )
+        .await
+        .unwrap();
+        session.logout(Duration::from_secs(3)).await.unwrap();
+        fake.await.unwrap();
+    }
 
     fn datagram<M: Msg>(kind: Kind, time_ms: u64, message: &M) -> Record {
         let mut bytes = Vec::new();

@@ -4,8 +4,8 @@
 //! Apply stored region settings to the handshake and keep the spawn points.
 //!
 //! SQLite is the store this load reads. MySQL and PostgreSQL stay on the fresh
-//! handshake defaults. A missing file or a missing row does the same, and does
-//! not insert a row. Spawn points are kept for the life of the value the
+//! handshake defaults, as does a missing file. SQLite initializes a missing
+//! row with a persistent cache id. Spawn points are kept for the life of the value the
 //! caller holds. They are not part of the handshake.
 
 use std::sync::Arc;
@@ -65,7 +65,7 @@ fn handshake_of(settings: &RegionSettings) -> StoredHandshake {
         terrain_start_heights: settings.terrain_start_heights.map(narrow),
         terrain_height_ranges: settings.terrain_height_ranges.map(narrow),
         allow_damage: settings.allow_damage,
-        fixed_sun: settings.fixed_sun,
+        maturity: settings.maturity,
         block_terraform: settings.block_terraform,
         allow_land_resell: settings.allow_land_resell,
         sandbox: settings.sandbox,
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_handshake_matches_the_csharp_region_except_fixed_sun() {
+    async fn the_handshake_matches_the_csharp_region() {
         let dump = dump();
         let (dir, connection) = copied_store();
         let region = Uuid::parse_str(REGION).unwrap();
@@ -130,7 +130,6 @@ mod tests {
         handshake.sim_name = "Named".to_owned();
         handshake.estate_owner = Uuid::from_u128(0x0e57);
         let owner = handshake.estate_owner;
-        let access = handshake.sim_access;
         let billable = handshake.billable_factor;
         let held = apply_stored_settings(
             Some(&ObjectStore {
@@ -146,7 +145,10 @@ mod tests {
         assert_eq!(held.spawn_points.len(), 2);
         assert_eq!(handshake.sim_name, "Named");
         assert_eq!(handshake.estate_owner, owner);
-        assert_eq!(handshake.sim_access, access);
+        assert_eq!(
+            u64::from(handshake.sim_access),
+            dump["sim_access"].as_u64().unwrap()
+        );
         assert_eq!(handshake.billable_factor, billable);
         assert_eq!(
             handshake.water_height,
@@ -180,14 +182,21 @@ mod tests {
                 ranges[index].as_f64().unwrap() as f32
             );
         }
+        let mut access_config = handshake.clone();
+        for (maturity, access) in [0, 1, 2, 3, -1]
+            .into_iter()
+            .zip(dump["access_by_maturity"].as_array().unwrap())
+        {
+            let mut stored = handshake_of(&held);
+            stored.maturity = maturity;
+            access_config.apply_stored_settings(&stored);
+            assert_eq!(
+                u64::from(access_config.build(false, false).region_info.sim_access),
+                access.as_u64().unwrap()
+            );
+        }
         let csharp = u32::try_from(dump["csharp_region_flags"].as_u64().unwrap()).unwrap();
-        let mut without_fixed_sun = HandshakeConfig::for_region(region);
-        let mut stored = handshake_of(&held);
-        stored.fixed_sun = false;
-        without_fixed_sun.apply_stored_settings(&stored);
-        assert_eq!(without_fixed_sun.region_flags, csharp);
-        assert_eq!(csharp & (1 << 4), 0);
-        assert_eq!(handshake.region_flags, csharp | (1 << 4));
+        assert_eq!(handshake.region_flags, csharp);
         let classic = handshake.build(false, false);
         let pbr_packet = handshake.build(false, true);
         assert_eq!(classic.region_info.region_flags, handshake.region_flags);
@@ -223,9 +232,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(missing.is_none());
+        assert!(missing.is_some());
         assert_eq!(untouched.region_flags, before);
-        assert_eq!(untouched.cache_id, cache);
+        assert_ne!(untouched.cache_id, cache);
         assert_eq!(untouched.water_height, 20.0);
         let _ = std::fs::remove_dir_all(dir);
     }
