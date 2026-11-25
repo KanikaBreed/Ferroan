@@ -72,6 +72,8 @@ use std::time::{Duration, Instant};
 
 use crate::live;
 
+#[path = "avatars_capture.rs"]
+mod avatars_capture;
 #[path = "grid_capture.rs"]
 mod login_capture;
 #[path = "grid_probe.rs"]
@@ -635,9 +637,7 @@ fn stop_child(child: &mut Child) {
         return;
     }
     let pid = child.id();
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -646,9 +646,7 @@ fn stop_child(child: &mut Child) {
             Ok(None) => thread::sleep(Duration::from_millis(200)),
         }
     }
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     let _ = child.wait();
 }
 
@@ -700,13 +698,14 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "teleport"
                 | "hop"
                 | "uploads"
+                | "avatars"
                 | "neighbour"
                 | "walk"
                 | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, neighbour, walk and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk and report scenarios"
                 .to_string(),
         );
     }
@@ -715,7 +714,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     }
     if !matches!(
         scenario,
-        "neighbour" | "caps" | "ferrobot" | "limits" | "roots" | "hop" | "uploads" | "report"
+        "neighbour"
+            | "caps"
+            | "ferrobot"
+            | "limits"
+            | "roots"
+            | "hop"
+            | "uploads"
+            | "avatars"
+            | "report"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
@@ -1037,12 +1044,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             udp_capture: root.join("capture-udp.cap"),
             http_captures: vec![captures.robust_public.clone(), captures.home.clone()],
         };
+        // The relay carries Ferrobot's circuit only.
+        let companion_udp =
+            (ferroan && scenario == "ferrobot").then(|| SocketAddr::from((HOME_BIND, home_port)));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|error| error.to_string())?;
         runtime
-            .block_on(crate::ferrobot::run(&harness, &config))
+            .block_on(crate::ferrobot::run_with(&harness, &config, companion_udp))
             .map(|lines| BotReport {
                 lines,
                 // Read the complete proxy evidence after grid.stop drains it.
@@ -1221,6 +1231,18 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else if ferroan && (scenario == "roots" || scenario == "uploads") {
         let comparison = login_capture::compare_two_roots(&root)?;
         Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
+    } else if ferroan && scenario == "avatars" {
+        let roots = login_capture::compare_two_roots(&root)?;
+        let comparison = avatars_capture::compare_avatars(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{roots}\n{comparison}\n{capture}\n{proxy_report}",
+            report.lines
+        ))
     } else if ferroan && scenario == "chat" {
         let comparison = login_capture::compare_local_chat(&root)?;
         let capture = live::finish_capture(

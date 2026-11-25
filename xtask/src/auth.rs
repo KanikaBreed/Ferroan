@@ -725,18 +725,14 @@ fn stop_running(owned: &mut Running) {
     }
     let pid = owned.child.id();
     drop(owned.stdin.take());
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = std::time::Instant::now();
     while matches!(owned.child.try_wait(), Ok(None)) && started.elapsed() < Duration::from_secs(20)
     {
         thread::sleep(Duration::from_millis(200));
     }
     if matches!(owned.child.try_wait(), Ok(None)) {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .status();
+        let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     }
     let _ = owned.child.wait();
     if let Some(tracked) = owned.tracked.take()

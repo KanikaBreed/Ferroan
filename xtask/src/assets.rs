@@ -240,17 +240,13 @@ pub(crate) fn stop_persistent(pid: u32, start_time: u64) -> Result<(), String> {
     if !persistent_pid_live(pid, start_time) {
         return Ok(());
     }
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let deadline = Instant::now() + Duration::from_secs(20);
     while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(100));
     }
     if persistent_pid_live(pid, start_time) {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .status();
+        let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     while persistent_pid_live(pid, start_time) && Instant::now() < deadline {
@@ -688,18 +684,14 @@ fn stop_owned(owned: &mut Owned) {
     }
     let pid = owned.child.id();
     drop(owned.stdin.take());
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = Instant::now();
     while matches!(owned.child.try_wait(), Ok(None)) && started.elapsed() < Duration::from_secs(20)
     {
         thread::sleep(Duration::from_millis(200));
     }
     if matches!(owned.child.try_wait(), Ok(None)) {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .status();
+        let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     }
     let _ = owned.child.wait();
     if let Some(tracked) = owned.tracked.take()
