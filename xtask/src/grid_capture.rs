@@ -191,10 +191,8 @@ pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> 
     service_exchanges_selected(directory, true)
 }
 
-pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
+pub(super) fn root_arrival_marker(directory: &Path, revision: &str) -> Result<Value, String> {
     use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
-    const CHANNEL: &[u8] =
-        b"OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)\0";
     for record in records(&directory.join("capture-udp.cap"))? {
         if record.kind != Kind::UdpOut {
             continue;
@@ -207,11 +205,10 @@ pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
         let arrival = packet
             .decode::<AgentMovementComplete>()
             .map_err(|_| "invalid captured root arrival")?;
-        if arrival.sim_data.channel_version != CHANNEL {
-            return Err("root-arrival capture lacks the pinned C# channel/version marker".into());
-        }
+        let channel =
+            crate::arrival_fixtures::pinned_channel(&arrival.sim_data.channel_version, revision)?;
         return Ok(
-            json!({"channel_version":String::from_utf8_lossy(CHANNEL).trim_end_matches('\0'), "arrival_position":arrival.data.position.to_array(), "arrival_look_at":arrival.data.look_at.to_array(), "arrival_handle":arrival.data.region_handle}),
+            json!({"channel_version":channel, "arrival_position":arrival.data.position.to_array(), "arrival_look_at":arrival.data.look_at.to_array(), "arrival_handle":arrival.data.region_handle}),
         );
     }
     Err("root-arrival capture has no outgoing arrival".into())
@@ -727,10 +724,19 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
     let mut movement = 0usize;
     // Each arrival's position and look, so a failed run names what it sent.
     let mut arrivals = Vec::new();
-    for record in &captured {
-        let Ok(packet) = parse_packet(&record.bytes) else {
-            continue;
-        };
+    for (index, record) in captured.iter().enumerate() {
+        if !matches!(record.kind, Kind::UdpIn | Kind::UdpOut) {
+            return Err(format!(
+                "{} UDP capture record {index} has kind {:?}",
+                side.label, record.kind
+            ));
+        }
+        let packet = parse_packet(&record.bytes).map_err(|error| {
+            format!(
+                "{} UDP record {index} ({:?}) does not parse: {error}",
+                side.label, record.kind
+            )
+        })?;
         if packet.resent() {
             continue;
         }
@@ -1422,7 +1428,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
     Ok(Value::Object(output))
 }
 
-fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
@@ -2178,6 +2184,63 @@ mod tests {
         let error = service_exchanges_selected(&directory, false).unwrap_err();
         fs::remove_dir_all(&directory).unwrap();
         assert!(error.contains("presence-get"), "{error}");
+    }
+
+    #[test]
+    fn root_arrival_marker_checks_the_captured_commit() {
+        const PIN8: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            crate::repo_root().join("fixtures/walk/walk.cap"),
+            directory.join("capture-udp.cap"),
+        )
+        .unwrap();
+        let marker = root_arrival_marker(&directory, PIN8).unwrap();
+        assert_eq!(
+            marker["channel_version"],
+            "OpenSim-NGC Tranquillity Release 1.3.34-alpha+c401bceecd (X64/Unix/DotNet)"
+        );
+        let error = root_arrival_marker(&directory, crate::arrival_fixtures::PIN).unwrap_err();
+        assert!(error.contains("pinned C# channel/version"), "{error}");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_bad_neighbour_udp_record_reports_its_side_index_and_parse_error() {
+        let side = side_neighbour();
+        let mut captured = records(
+            &crate::repo_root()
+                .join("fixtures/neighbour-teleport")
+                .join(side.udp_file),
+        )
+        .unwrap();
+        let index = captured.len();
+        captured.push(Record {
+            kind: Kind::UdpOut,
+            time_ms: 0,
+            bytes: vec![0],
+        });
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(side.udp_file),
+            ferroan_capture::write_capture(&captured).unwrap(),
+        )
+        .unwrap();
+        let error = check_udp_side(&directory, &side)
+            .err()
+            .expect("bad datagram");
+        fs::remove_dir_all(directory).unwrap();
+        assert!(
+            error.contains(&format!("neighbour UDP record {index} (UdpOut)")),
+            "{error}"
+        );
+        assert!(error.contains("packet too short"), "{error}");
     }
 
     #[test]

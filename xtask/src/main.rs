@@ -144,6 +144,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask griduser service
        cargo xtask avatar cross
        cargo xtask regionstore generate
+       cargo xtask regionstore prim-seed
        cargo xtask regionstore settings
        cargo xtask regionstore parcels
        cargo xtask regionstore serialize
@@ -153,6 +154,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
+       cargo xtask permissions generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -161,6 +163,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
+       cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
@@ -217,8 +220,10 @@ fn main() -> ExitCode {
         ["check"] => check(false),
         ["pin3", "generate"] => pin3_oracle::run(true),
         ["pin3", "verify"] => pin3_oracle::run(false),
-        ["access", "generate"] => access_oracle::run(true),
-        ["access", "verify"] => access_oracle::run(false),
+        ["access", "generate"] => access_oracle::run("access", "AccessOracle", true),
+        ["access", "verify"] => access_oracle::run("access", "AccessOracle", false),
+        ["permissions", "generate"] => access_oracle::run("permissions", "PermissionsOracle", true),
+        ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
@@ -259,6 +264,7 @@ fn main() -> ExitCode {
         ["griduser", "cross"] => asset_oracle::griduser_cross(),
         ["griduser", "service"] => asset_oracle::griduser_service(),
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
+        ["regionstore", "prim-seed"] => regionstore::prim_seed(),
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "parcels"] => regionstore::parcels(),
         ["regionstore", "settings"] => regionstore::settings(),

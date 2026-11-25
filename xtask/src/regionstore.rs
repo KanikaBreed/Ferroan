@@ -57,6 +57,38 @@ pub fn generate() -> ExitCode {
     dispatch(true)
 }
 
+/// Seed only the store. The C# grid opens a copy and records the wire fixture.
+pub fn prim_seed() -> ExitCode {
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let dir = crate::repo_root().join(".scratch/prim-seed");
+    let db = dir.join("scene.db");
+    if let Err(error) = fs::create_dir_all(&dir).and_then(|()| {
+        if db.exists() {
+            fs::remove_file(&db)?;
+        }
+        Ok(())
+    }) {
+        eprintln!("prim-seed: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !oracle(
+        &dll,
+        &[
+            "prim-seed",
+            &db.to_string_lossy(),
+            crate::live::REGION_UUID,
+            crate::live::ESTATE_OWNER,
+        ],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    println!("prim-seed: wrote {}", db.display());
+    ExitCode::SUCCESS
+}
+
 pub fn verify() -> ExitCode {
     dispatch(false)
 }
