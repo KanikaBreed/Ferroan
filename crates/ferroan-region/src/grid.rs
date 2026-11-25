@@ -74,8 +74,6 @@ pub enum GridError {
     Rejected { message: String },
     #[error("grid service reply has no recognized Result")]
     InvalidReply,
-    #[error("reported position or look direction is not finite")]
-    InvalidPosition,
 }
 
 #[derive(Clone)]

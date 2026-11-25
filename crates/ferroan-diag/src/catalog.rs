@@ -57,6 +57,7 @@ pub const TERRAIN_BLOB: &str = "terrain.blob";
 pub const ROOT_AGENTS: &str = "region.root-agents";
 pub const ROOT_BYPASS: &str = "region.root-bypass";
 pub const REGION_PENDING_UPLOADS: &str = "region.pending-uploads";
+pub const REGION_AGENT_UPLOADS: &str = "region.agent-uploads";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_OBJECTS: &str = "region.objects";
 pub const REGION_LINKSET_PRIMS: &str = "region.linkset-prims";
