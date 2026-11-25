@@ -43,7 +43,9 @@ pub async fn open_estate(
     let pool = Pool::open(Backend::Sqlite, connection, &["EstateStore"])
         .await
         .map_err(|error| EstateError(error.to_string()))?;
-    read_estate(&pool, region).await
+    let result = read_estate(&pool, region).await;
+    pool.close().await;
+    result
 }
 
 async fn read_estate(pool: &Pool, region: Uuid) -> Result<Option<EstateAccess>, EstateError> {

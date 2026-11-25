@@ -1467,6 +1467,7 @@ mod tests {
     use super::{to_original_xml, to_xml2};
     use crate::objects::ObjectStoreKind;
     use crate::open_objects;
+    use crate::test_store::CopiedStore;
     use uuid::Uuid;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
@@ -1474,21 +1475,6 @@ mod tests {
 
     fn fixture_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/regionstore")
-    }
-
-    fn copied_store() -> String {
-        let dir = std::env::temp_dir().join(format!(
-            "ferroan-object-xml-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("objects.db");
-        std::fs::copy(fixture_dir().join("objects.db"), &path).unwrap();
-        format!("Data Source={};Version=3", path.display())
     }
 
     fn assert_same(label: &str, got: &str, expected: &str) {
@@ -1518,8 +1504,9 @@ mod tests {
         let dump: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(dump["pin"], PIN);
         assert_eq!(dump["region"], REGION);
+        let store = CopiedStore::new("regionstore/objects.db");
         let groups = open_objects(
-            &copied_store(),
+            &store.connection(),
             Uuid::parse_str(REGION).unwrap(),
             ObjectStoreKind::Sqlite,
         )
