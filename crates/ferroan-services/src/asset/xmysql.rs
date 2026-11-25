@@ -83,8 +83,11 @@ pub(super) async fn get(pool: &MySqlPool, id: Uuid) -> Result<Option<Asset>, Sto
     };
     if access_time > 0 {
         let now = mysql_unix_now();
-        if access_time_is_due(now, access_time) {
-            let _ = update_access(pool, id, now).await;
+        // MySQLXAssetData.cs 313-317 logs a failed update and serves the asset.
+        if access_time_is_due(now, access_time)
+            && let Err(error) = update_access(pool, id, now).await
+        {
+            tracing::error!(asset_id = %id, %error, "xasset mysql access time update failed");
         }
     }
     Ok(Some(asset))
@@ -207,8 +210,11 @@ pub(super) async fn metadata_set(
     }
     let now = mysql_unix_now();
     for (metadata, access_time) in &pending {
-        if access_time_is_due(now, *access_time) {
-            let _ = update_access(pool, metadata.id, now).await;
+        // MySQLXAssetData.cs 313-317 logs a failed update and serves the asset.
+        if access_time_is_due(now, *access_time)
+            && let Err(error) = update_access(pool, metadata.id, now).await
+        {
+            tracing::error!(asset_id = %metadata.id, %error, "xasset mysql access time update failed");
         }
     }
     Ok(pending.into_iter().map(|(metadata, _)| metadata).collect())
