@@ -83,3 +83,4 @@ pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
 pub const LIVE_PORT_BASE: &str = "live.port-base";
 pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";
+pub const BOT_OBSERVER_HISTORY: &str = "bot.observer-history";
