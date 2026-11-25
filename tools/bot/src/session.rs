@@ -50,6 +50,9 @@ const WINDOW_WIDTH: u16 = 1920;
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// Packets a scenario has not taken yet. The oldest is dropped past this.
 const MAX_INBOX: usize = 256;
+/// Minimap updates a scenario has not taken yet. The oldest is dropped past
+/// this; a region sends each viewer one list every 50 frames (about 4.5 s).
+const MAX_COARSE: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -82,6 +85,7 @@ pub struct Session {
     logged_out: bool,
     region_id: Option<Uuid>,
     inbox: VecDeque<IncomingPacket>,
+    coarse: VecDeque<CoarseLocationUpdate>,
     last_ping: Instant,
     received: u64,
 }
@@ -112,6 +116,7 @@ impl Session {
             logged_out: false,
             region_id: None,
             inbox: VecDeque::new(),
+            coarse: VecDeque::new(),
             last_ping: Instant::now(),
             received: 0,
         })
@@ -168,6 +173,12 @@ impl Session {
     /// The next packet that was not part of the handshake, if one is waiting.
     pub fn poll_inbox(&mut self) -> Option<IncomingPacket> {
         self.inbox.pop_front()
+    }
+
+    /// The minimap updates received since the last call, oldest first. They
+    /// skip the inbox, so a scenario that does not read them is unchanged.
+    pub fn take_coarse(&mut self) -> Vec<CoarseLocationUpdate> {
+        self.coarse.drain(..).collect()
     }
 
     /// Datagrams received from the region since connect.
@@ -252,6 +263,7 @@ impl Session {
         self.handshake_sent = false;
         self.region_id = None;
         self.inbox.clear();
+        self.coarse.clear();
         self.send_movement_followup().await?;
         self.run_until_ready(http, seed, timeout).await
     }
@@ -446,12 +458,20 @@ impl Session {
             self.arrived_generation = Some(self.generation);
         }
         self.accept(flags, sequence);
+        if packet.id == CoarseLocationUpdate::ID {
+            if let Ok(message) = packet.decode::<CoarseLocationUpdate>() {
+                if self.coarse.len() >= MAX_COARSE {
+                    self.coarse.pop_front();
+                }
+                self.coarse.push_back(message);
+            }
+            return;
+        }
         // Terrain and stats can fill the inbox before a scenario reads
         // AgentMovementComplete. The checks do not use these packets.
         if matches!(
             packet.id,
             id if id == LayerData::ID
-                || id == CoarseLocationUpdate::ID
                 || id == SimStats::ID
                 || id == SimulatorViewerTimeMessage::ID
                 || id == ImageData::ID
