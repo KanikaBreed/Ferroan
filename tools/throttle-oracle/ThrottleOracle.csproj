@@ -6,7 +6,7 @@
     <Nullable>disable</Nullable>
     <RootNamespace>Ferroan.ThrottleOracle</RootNamespace>
     <AssemblyName>ThrottleOracle</AssemblyName>
-    <Description>Category token-bucket rates from the pinned Tranquillity types.</Description>
+    <Description>Category token-bucket rates from the pinned LLUDPClient.</Description>
     <AnalysisLevel>none</AnalysisLevel>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -19,22 +19,13 @@
   </PropertyGroup>
 
   <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
-    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Framework/OpenSim.Framework.csproj')"
-           Text="Set FerroanRef (or FERROAN_REF) to the scratch clone from oracle_reference::prepare. Missing OpenSim.Framework." />
-    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/TokenBucket.cs')"
-           Text="Set FerroanRef to the scratch clone. Missing TokenBucket.cs." />
-    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/ThrottleRates.cs')"
-           Text="Set FerroanRef to the scratch clone. Missing ThrottleRates.cs." />
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSim.Region.ClientStack.LindenUDP.csproj')"
+           Text="Set FerroanRef (or FERROAN_REF) to the scratch clone from oracle_reference::prepare. Missing OpenSim.Region.ClientStack.LindenUDP." />
   </Target>
 
   <ItemGroup>
-    <PackageReference Include="nini-core" Version="0.9.2.16" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
-    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Framework/OpenSim.Framework.csproj">
-      <Private>true</Private>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/OpenSim.Region.ClientStack.LindenUDP.csproj">
       <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
     </ProjectReference>
-    <Compile Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/TokenBucket.cs" Link="TokenBucket.cs" />
-    <Compile Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.ClientStack.LindenUDP/ThrottleRates.cs" Link="ThrottleRates.cs" />
   </ItemGroup>
 </Project>

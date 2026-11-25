@@ -56,9 +56,15 @@ const SLOTS: usize = 8;
 const MIN_DRIP: f32 = 500.0;
 const MAX_BURST: f32 = 7_500.0;
 const MIN_FLOW: f32 = 50_000.0;
-const SCENE_RATE: f32 = 6_250_000.0;
-const CLIENT_MAX: f32 = 640_000.0;
 const BURST_TIME: f32 = 10e-3;
+/// `scene_throttle_max_bps` when `[ClientStack.LindenUDP]` exists but omits it.
+pub const SCENE_MAX_BPS: i32 = 6_250_000;
+/// `ThrottleRates.ClientMaxRate` before configuration.
+pub const CLIENT_MAX_BPS: i32 = 640_000;
+/// `ThrottleRates` clamps a configured client cap to this range.
+pub const CLIENT_MAX_BPS_RANGE: std::ops::RangeInclusive<i32> = 6_250..=1_000_000;
+#[cfg(test)]
+const SCENE_RATE: f32 = SCENE_MAX_BPS as f32;
 
 /// Resend, Land, Wind, Cloud, Task, Texture, Asset, then the unused eighth slot.
 const DEFAULT_RATES: [f32; SLOTS] = [
@@ -147,17 +153,48 @@ struct SceneState {
     next_id: u64,
 }
 
+/// `[ClientStack.LindenUDP]` throttle caps, in bytes per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircuitThrottle {
+    /// `client_throttle_max_bps`. Values outside 6250..=1000000 are clamped.
+    pub client_max_bps: i32,
+    /// `scene_throttle_max_bps`. Zero or negative leaves the scene unlimited.
+    pub scene_max_bps: i32,
+}
+
+impl Default for CircuitThrottle {
+    fn default() -> Self {
+        Self {
+            client_max_bps: CLIENT_MAX_BPS,
+            scene_max_bps: SCENE_MAX_BPS,
+        }
+    }
+}
+
 /// The region parent. Every circuit on one listener shares it.
 pub(crate) struct SceneThrottle {
     inner: Mutex<SceneState>,
+    /// The cap each client bucket on this listener is opened with.
+    client_max: f32,
 }
 
 impl SceneThrottle {
+    #[cfg(test)]
     pub(crate) fn stock() -> Arc<Self> {
-        Arc::new(Self::new(SCENE_RATE, 0.0))
+        Self::configured(CircuitThrottle::default())
     }
 
-    fn new(rate: f32, now: f64) -> Self {
+    pub(crate) fn configured(caps: CircuitThrottle) -> Arc<Self> {
+        // The clamp keeps every channel floor (at most 1000) below the cap.
+        let client = caps
+            .client_max_bps
+            .clamp(*CLIENT_MAX_BPS_RANGE.start(), *CLIENT_MAX_BPS_RANGE.end());
+        Arc::new(Self::new(caps.scene_max_bps as f32, client as f32, 0.0))
+    }
+
+    /// `rate` is `scene_throttle_max_bps`. Zero or below leaves the scene
+    /// unlimited: the bucket then reports its children's total as its rate.
+    fn new(rate: f32, client_max: f32, now: f64) -> Self {
         let mut bucket = Bucket::at(now);
         bucket.set_requested_drip(rate);
         bucket.set_requested_burst(rate * BURST_TIME);
@@ -167,7 +204,12 @@ impl SceneThrottle {
                 children: BTreeMap::new(),
                 next_id: 1,
             }),
+            client_max,
         }
+    }
+
+    pub(crate) fn client_max(&self) -> f32 {
+        self.client_max
     }
 
     fn lock(&self) -> MutexGuard<'_, SceneState> {
@@ -259,8 +301,8 @@ impl Drop for ClientThrottle {
 }
 
 impl ClientThrottle {
-    pub(crate) fn open(scene: Arc<SceneThrottle>, now: f64) -> Self {
-        let max_rate = CLIENT_MAX;
+    /// `max_rate` is the clamped `client_throttle_max_bps`.
+    pub(crate) fn open(scene: Arc<SceneThrottle>, max_rate: f32, now: f64) -> Self {
         let burst_time = BURST_TIME;
         let mut client = Bucket::at(now);
         client.set_requested_drip(max_rate);
@@ -295,12 +337,15 @@ impl ClientThrottle {
             max_rate,
             burst_time,
         };
-        // The first deposit adds nothing. Doing it here matches a client whose
-        // send loop has already passed that empty step.
         opened.prime(now);
         opened
     }
 
+    /// The first deposit of a bucket adds nothing. C# takes that empty deposit
+    /// when the first packet of a category reaches `RemoveTokens` (it never
+    /// calls it for an empty queue), so that packet is refused once and leaves
+    /// on the next send pass. Ferroan takes it here, so the first packet of
+    /// each category leaves at once. The difference is one send pass.
     fn prime(&mut self, now: f64) {
         for index in 0..SLOTS {
             let (rate, burst) = self.limits(index);
@@ -309,18 +354,25 @@ impl ClientThrottle {
     }
 
     /// Apply one `AgentThrottle` blob. `factor` is the child-agent scale.
-    /// A blob shorter than seven floats leaves the rates unchanged.
+    /// A blob shorter than seven floats, or one whose scaled values are not
+    /// all numbers, leaves the rates unchanged (D68, TB83, TB84). Infinities
+    /// clamp to the cap and the floors.
     pub(crate) fn set_throttles(&mut self, data: &[u8], factor: f32) {
         if data.len() < 28 {
             return;
         }
         let scale = 0.125 * factor;
         let mut rates = [0.0; 7];
-        for index in 0..7 {
+        for (index, rate) in rates.iter_mut().enumerate() {
             let mut bytes = [0; 4];
             bytes.copy_from_slice(&data[index * 4..index * 4 + 4]);
-            rates[index] = f32::from_le_bytes(bytes) * scale;
-            rates[index] = rates[index].clamp(CHANNEL_FLOOR[index], self.max_rate);
+            *rate = f32::from_le_bytes(bytes) * scale;
+        }
+        if rates.iter().any(|rate| rate.is_nan()) {
+            return;
+        }
+        for (index, rate) in rates.iter_mut().enumerate() {
+            *rate = rate.clamp(CHANNEL_FLOOR[index], self.max_rate);
         }
         let total: f32 = rates.iter().sum();
         if total > self.max_rate {
@@ -363,6 +415,9 @@ impl ClientThrottle {
             return Duration::from_secs(3_600);
         }
         let tokens = tokens_after(self.categories[category], now, rate, burst);
+        if !tokens.is_finite() || !rate.is_finite() {
+            return Duration::from_secs(3_600);
+        }
         if tokens > 0.0 {
             return Duration::ZERO;
         }
@@ -526,7 +581,7 @@ mod tests {
 
     fn tree() -> (ClientThrottle, f64) {
         let now = 10.0;
-        let client = ClientThrottle::open(SceneThrottle::stock(), now);
+        let client = ClientThrottle::open(SceneThrottle::stock(), CLIENT_MAX_BPS as f32, now);
         (client, now)
     }
 
@@ -574,6 +629,86 @@ mod tests {
     }
 
     #[test]
+    fn a_nan_in_the_blob_leaves_every_rate_unchanged() {
+        let scene = SceneThrottle::stock();
+        let mut client = ClientThrottle::open(Arc::clone(&scene), CLIENT_MAX_BPS as f32, 1.0);
+        let neighbour = ClientThrottle::open(Arc::clone(&scene), CLIENT_MAX_BPS as f32, 1.0);
+        let before = (client.view(), neighbour.view());
+        for slot in 0..7 {
+            let mut blob = ferroan_bot::throttle::initial_throttle_bytes();
+            blob[slot * 4..slot * 4 + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+            client.set_throttles(&blob, 1.0);
+            assert_eq!((client.view(), neighbour.view()), before, "slot {slot}");
+        }
+        assert_eq!(client.wait(TASK, 2.0), Duration::ZERO);
+    }
+
+    #[test]
+    fn infinities_clamp_to_the_cap_and_the_floor() {
+        let (mut client, _) = tree();
+        let mut blob = [0; 28];
+        for index in 0..7 {
+            let value = if index % 2 == 0 {
+                f32::INFINITY
+            } else {
+                f32::NEG_INFINITY
+            };
+            blob[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        client.set_throttles(&blob, 1.0);
+        let view = client.view();
+        for (index, category) in view.categories.iter().take(7).enumerate() {
+            assert!(category.requested_drip.is_finite(), "category {index}");
+            assert!(category.drip.is_finite(), "category {index}");
+        }
+    }
+
+    #[test]
+    fn a_non_finite_bucket_waits_an_hour() {
+        let (mut client, now) = tree();
+        client.categories[TASK].tokens = f32::NAN;
+        assert_eq!(client.wait(TASK, now + 1.0), Duration::from_secs(3_600));
+        let (mut client, now) = tree();
+        client.categories[LAND].set_requested_drip(f32::NAN);
+        client.publish_client();
+        assert_eq!(client.wait(RESEND, now + 1.0), Duration::from_secs(3_600));
+    }
+
+    #[test]
+    fn a_zero_or_negative_scene_cap_is_unlimited() {
+        for scene_max_bps in [0, -5] {
+            let scene = SceneThrottle::configured(CircuitThrottle {
+                client_max_bps: CLIENT_MAX_BPS,
+                scene_max_bps,
+            });
+            let mut clients = Vec::new();
+            let blob = ferroan_bot::throttle::initial_throttle_bytes();
+            for _ in 0..20 {
+                let mut client = ClientThrottle::open(Arc::clone(&scene), scene.client_max(), 1.0);
+                client.set_throttles(&blob, 1.0);
+                clients.push(client);
+            }
+            let view = clients[0].view();
+            assert_eq!(view.scene.drip, view.scene.total, "{scene_max_bps}");
+            assert_eq!(
+                view.categories[TASK].drip, view.categories[TASK].requested_drip,
+                "{scene_max_bps}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_client_cap_is_clamped_like_throttle_rates() {
+        for (asked, kept) in [(100, 6_250), (640_000, 640_000), (5_000_000, 1_000_000)] {
+            let scene = SceneThrottle::configured(CircuitThrottle {
+                client_max_bps: asked,
+                scene_max_bps: SCENE_MAX_BPS,
+            });
+            assert_eq!(scene.client_max(), kept as f32, "{asked}");
+        }
+    }
+
+    #[test]
     fn ten_clients_share_one_scene_ceiling() {
         let scene = SceneThrottle::stock();
         let mut clients = Vec::new();
@@ -583,7 +718,7 @@ mod tests {
             .flat_map(|rate| (rate * 1_024.0).to_le_bytes())
             .collect();
         for _ in 0..10 {
-            let mut client = ClientThrottle::open(Arc::clone(&scene), 1.0);
+            let mut client = ClientThrottle::open(Arc::clone(&scene), CLIENT_MAX_BPS as f32, 1.0);
             client.set_throttles(&blob, 1.0);
             clients.push(client);
         }
@@ -606,12 +741,25 @@ mod tests {
         );
         let cases = document["cases"].as_array().unwrap();
         let bot = ferroan_bot::throttle::initial_throttle_bytes();
+        let mut unchanged = 0;
         for case in cases {
             let name = case["name"].as_str().unwrap();
             if name == "bot_6000" || name == "half" || name == "ten_clients" {
                 assert_eq!(decode_hex(case["blob"].as_str().unwrap()), bot, "{name}");
             }
-            let actual = replay(case);
+            let actual = replay(case, true);
+            if KEPT_RATES.contains(&name) {
+                // D68: Ferroan ignores this blob, and C# changes the rates.
+                assert_eq!(actual, replay(case, false), "{name}");
+                let task = &case["categories"][TASK];
+                assert_ne!(
+                    task["drip"].as_u64().unwrap() as u32,
+                    actual.categories[TASK].drip.to_bits(),
+                    "{name} changed nothing in C#"
+                );
+                unchanged += 1;
+                continue;
+            }
             assert_snap(&actual.scene, &case["scene"], &format!("{name} scene"));
             assert_snap(&actual.client, &case["client"], &format!("{name} client"));
             let categories = case["categories"].as_array().unwrap();
@@ -624,15 +772,19 @@ mod tests {
                 );
             }
         }
+        assert_eq!(unchanged, KEPT_RATES.len());
     }
 
-    fn replay(case: &serde_json::Value) -> TreeView {
+    /// Oracle cases where Ferroan keeps the rates (D68, TB83, TB84).
+    const KEPT_RATES: [&str; 3] = ["nan_task", "short_0", "short_8"];
+
+    fn replay(case: &serde_json::Value, apply: bool) -> TreeView {
         let scene = SceneThrottle::stock();
         let count = case["clients"].as_u64().unwrap() as usize;
         let mut clients = Vec::new();
         for _ in 0..count {
-            let mut client = ClientThrottle::open(Arc::clone(&scene), 1.0);
-            if case["apply"].as_bool().unwrap() {
+            let mut client = ClientThrottle::open(Arc::clone(&scene), CLIENT_MAX_BPS as f32, 1.0);
+            if apply && case["apply"].as_bool().unwrap() {
                 let blob = decode_hex(case["blob"].as_str().unwrap());
                 let factor = case["factor"].as_f64().unwrap() as f32;
                 client.set_throttles(&blob, factor);

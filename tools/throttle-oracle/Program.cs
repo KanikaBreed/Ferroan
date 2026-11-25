@@ -1,20 +1,24 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using Nini.Config;
-using OpenSim.Framework;
+using UUID = OpenMetaverse.UUID;
+using TokenBucket = OpenSim.Region.ClientStack.LindenUDP.TokenBucket;
 using OpenSim.Region.ClientStack.LindenUDP;
 
 /// <summary>
-/// Steady rates from the pinned token buckets. The clamps follow
-/// <c>LLUDPClient.SetThrottles</c>. The buckets themselves are the pinned types.
+/// Steady rates from the pinned <c>LLUDPClient</c>: its constructor builds the
+/// client and category buckets and <c>SetThrottles</c> applies each blob.
 /// </summary>
 static class Program
 {
     const float SceneRate = 6_250_000f;
-    static readonly float[] Floors = { 1000f, 1000f, 50f, 50f, 1000f, 1000f, 1000f };
-    static readonly int[] AssignOrder = { 0, 1, 2, 3, 6, 4, 5 };
+    static readonly FieldInfo Categories = typeof(LLUDPClient).GetField(
+        "m_throttleCategories", BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("LLUDPClient.m_throttleCategories is gone");
 
     static int Main(string[] args)
     {
@@ -76,6 +80,16 @@ static class Program
             throw new InvalidOperationException("stock throttle defaults changed");
         var bot = ChannelBlob(new[] { 600f, 400f, 80f, 80f, 2050f, 2050f, 740f });
         var ones = RepeatedFloat(1f);
+        var nan = (byte[])bot.Clone();
+        Buffer.BlockCopy(BitConverter.GetBytes(float.NaN), 0, nan, 16, 4);
+        var infinities = new byte[28];
+        for (var i = 0; i < 7; i++)
+        {
+            var value = i % 2 == 0 ? float.PositiveInfinity : float.NegativeInfinity;
+            Buffer.BlockCopy(BitConverter.GetBytes(value), 0, infinities, i * 4, 4);
+        }
+        var short8 = new byte[8];
+        Buffer.BlockCopy(bot, 0, short8, 0, 8);
         return new Document
         {
             revision = revision,
@@ -86,6 +100,14 @@ static class Program
                 Snap("floors", 1, true, 1f, ones, rates),
                 Snap("half", 1, true, 0.5f, bot, rates),
                 Snap("ten_clients", 10, true, 1f, bot, rates),
+                Snap("infinities", 1, true, 1f, infinities, rates),
+                // TB83. Ferroan leaves the rates unchanged (D68).
+                Snap("nan_task", 2, true, 1f, nan, rates),
+                // SetThrottles reads past a short array (TB84). The bytes after
+                // a freshly allocated array are normally zero, so these record
+                // what that read usually gives. Ferroan ignores the blob (D68).
+                Snap("short_0", 1, true, 1f, Array.Empty<byte>(), rates),
+                Snap("short_8", 1, true, 1f, short8, rates),
             },
         };
     }
@@ -112,19 +134,28 @@ static class Program
 
     static CaseSnap Snap(string name, int clients, bool apply, float factor, byte[] blob, ThrottleRates rates)
     {
+        // LLUDPServer builds the scene bucket the same way.
         var scene = new TokenBucket(null, SceneRate, SceneRate * 10e-3f);
-        var opened = new List<(AdaptiveTokenBucket Client, TokenBucket[] Categories)>();
+        var opened = new List<LLUDPClient>();
         for (var n = 0; n < clients; n++)
-            opened.Add(Open(scene, rates));
+        {
+            opened.Add(new LLUDPClient(
+                null, rates, scene, 0, UUID.Zero, new IPEndPoint(IPAddress.Loopback, 1), 0, 0));
+        }
         if (apply)
         {
-            foreach (var (_, categories) in opened)
-                Apply(categories, rates.ClientMaxRate, rates.BurstTime, blob, factor);
+            foreach (var client in opened)
+            {
+                // A fresh copy is the newest allocation, as a decoded packet is.
+                var data = (byte[])blob.Clone();
+                client.SetThrottles(data, factor);
+            }
         }
         var first = opened[0];
+        var categories = (TokenBucket[])Categories.GetValue(first);
         var shots = new List<BucketSnap>();
-        for (var i = 0; i < first.Categories.Length; i++)
-            shots.Add(Shot(first.Categories[i]));
+        for (var i = 0; i < categories.Length; i++)
+            shots.Add(Shot(categories[i]));
         return new CaseSnap
         {
             name = name,
@@ -133,47 +164,9 @@ static class Program
             factor = factor,
             blob = Convert.ToHexString(blob).ToLowerInvariant(),
             scene = Shot(scene),
-            client = Shot(first.Client),
+            client = Shot(first.FlowThrottle),
             categories = shots,
         };
-    }
-
-    static (AdaptiveTokenBucket Client, TokenBucket[] Categories) Open(TokenBucket scene, ThrottleRates rates)
-    {
-        var client = new AdaptiveTokenBucket(
-            scene,
-            rates.ClientMaxRate,
-            rates.ClientMaxRate * rates.BurstTime,
-            rates.AdaptiveThrottlesEnabled);
-        var categories = new TokenBucket[8];
-        for (var i = 0; i < categories.Length; i++)
-        {
-            var rate = rates.GetRate((ThrottleOutPacketType)i);
-            categories[i] = new TokenBucket(client, rate, rate * rates.BurstTime);
-        }
-        return (client, categories);
-    }
-
-    static void Apply(TokenBucket[] categories, float maxRate, float burstTime, byte[] data, float factor)
-    {
-        var scale = 0.125f * factor;
-        var values = new float[7];
-        for (var i = 0; i < values.Length; i++)
-            values[i] = Math.Clamp(BitConverter.ToSingle(data, i * 4) * scale, Floors[i], maxRate);
-        var total = 0f;
-        for (var i = 0; i < values.Length; i++)
-            total += values[i];
-        if (total > maxRate)
-        {
-            var down = maxRate / total;
-            for (var i = 0; i < values.Length; i++)
-                values[i] *= down;
-        }
-        foreach (var index in AssignOrder)
-        {
-            categories[index].RequestedDripRate = values[index];
-            categories[index].RequestedBurst = values[index] * burstTime;
-        }
     }
 
     static BucketSnap Shot(TokenBucket bucket) => new()

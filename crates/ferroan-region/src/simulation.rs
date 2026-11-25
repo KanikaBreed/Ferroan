@@ -1867,7 +1867,8 @@ mod tests {
             .unwrap()
             .with_handshake(config.handshake.clone())
             .with_timing(config.circuit_timing)
-            .unwrap();
+            .unwrap()
+            .with_throttle(config.circuit_throttle);
         let address = server.local_addr().unwrap();
         let task =
             tokio::spawn(async move { server.serve_one_with_arrival(expect, arrival).await });

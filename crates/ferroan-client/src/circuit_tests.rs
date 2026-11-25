@@ -208,6 +208,113 @@ async fn a_task_flood_stays_within_the_viewer_task_rate() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    // `LLUDPClient.DequeueOutgoing` (lines 605-609): resends only past 50.
+    for _ in 0..=ACK_STALL {
+        let payload = Payload {
+            bytes: vec![0xff, 0xff, 0x00, 0x01, 1, 2, 3],
+            zerocoded: false,
+        };
+        state
+            .send_payload(&io, peer(), payload, true)
+            .await
+            .unwrap();
+    }
+    assert_eq!(state.unacked.len(), ACK_STALL + 1);
+    io.sent.lock().unwrap().clear();
+    state.pending_task.push_back(Payload {
+        bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
+        zerocoded: false,
+    });
+    state
+        .pending_land
+        .push_back(encode_payload(&LayerData::default()).unwrap());
+    state.advance_throttle(Duration::from_millis(200));
+    state.maintain(&io).await.unwrap();
+    assert_eq!(state.pending_task.len(), 1);
+    assert_eq!(state.pending_land.len(), 1);
+    assert!(io.sent.lock().unwrap().is_empty());
+
+    tokio::time::advance(RESEND_AFTER + RESEND_INTERVAL).await;
+    state.advance_throttle(Duration::from_millis(200));
+    state.maintain(&io).await.unwrap();
+    let resent = io
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|bytes| parse_packet(bytes).unwrap().resent())
+        .count();
+    assert!(resent > 0, "resends are not gated by the backlog");
+    assert_eq!(state.pending_task.len(), 1);
+    assert_eq!(state.pending_land.len(), 1);
+
+    // At 50 waiting the queues move again. Each send adds one more.
+    state.unacked.acknowledge(1..=10);
+    release_throttled(&mut state, &io).await;
+    assert!(state.pending_task.is_empty());
+    assert!(state.pending_land.is_empty());
+}
+
+#[tokio::test]
+async fn a_map_block_reply_is_queued_on_land() {
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let (done, answer) = oneshot::channel();
+    let message = crate::source_hop::offline_map_block(Uuid::from_u128(3), 1_000);
+    state
+        .apply_hop(&io, HopCommand::Map { message, done })
+        .await
+        .unwrap();
+    // `SendMapBlock` only queues (`LLClientView.cs` 2209 and 2238).
+    assert!(answer.await.unwrap());
+    assert!(io.sent.lock().unwrap().is_empty());
+    assert_eq!(state.pending_land.len(), 1);
+    release_throttled(&mut state, &io).await;
+    assert!(
+        message_ids(&io).contains(&ferroan_protocol::msgs::MapBlockReply::ID),
+        "the land queue sends the map block"
+    );
+}
+
+#[tokio::test]
+async fn a_nan_throttle_blob_keeps_the_circuit_sending() {
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let before = state.throttle.view();
+    let mut blob = ferroan_bot::throttle::initial_throttle_bytes();
+    blob[16..20].copy_from_slice(&f32::NAN.to_le_bytes());
+    let expect = identity(Uuid::from_u128(1));
+    let mut message = AgentThrottle::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.agent_data.circuit_code = expect.circuit_code;
+    message.throttle.throttles = blob;
+    let bytes = wire(&message, 1, &[]);
+    let io = FakeIo::default();
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.throttle.view(), before);
+    state.pending_task.push_back(Payload {
+        bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
+        zerocoded: false,
+    });
+    release_throttled(&mut state, &io).await;
+}
+
 fn message_ids(io: &FakeIo) -> Vec<ferroan_protocol::MsgId> {
     io.sent
         .lock()
@@ -560,6 +667,9 @@ async fn arrival_sends_the_avatar_update_and_unbaked_appearance() {
         )
         .await
         .unwrap();
+    // Both ride the task category (`LLClientView.cs` 4656 and 4788).
+    assert_eq!(state.pending_task.len(), 2);
+    release_throttled(&mut state, &io).await;
     let sent = io.sent.lock().unwrap();
     let mut saw_object = false;
     let mut saw_appearance = false;
@@ -1168,6 +1278,7 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     }));
     let io = FakeIo::default();
     state.send_arrival(&io, peer(), &expect).await.unwrap();
+    release_throttled(&mut state, &io).await;
     assert_eq!(state.arrival.position, [10.0, 20.0, 30.0]);
     let sent = io.sent.lock().unwrap();
     let mut movement_z = None;

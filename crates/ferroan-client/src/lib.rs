@@ -40,3 +40,4 @@ pub use source_hop::{
     SourceHop, caps_seed, connect_reason, offline_map_block, teleport_finish_event,
 };
 pub use teleport::{GroundSample, TeleportRegion};
+pub use throttle::{CLIENT_MAX_BPS, CLIENT_MAX_BPS_RANGE, CircuitThrottle, SCENE_MAX_BPS};

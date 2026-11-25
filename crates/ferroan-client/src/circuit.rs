@@ -68,8 +68,10 @@ use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{
     self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, TeleportAnswer, VIA_LOCATION,
 };
-use crate::throttle::{ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock};
-use crate::{ArrivalConfig, HandshakeConfig, LandLayer};
+use crate::throttle::{
+    CircuitThrottle, ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock,
+};
+use crate::{ArrivalConfig, HandshakeConfig};
 use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
@@ -99,6 +101,9 @@ const RESEND_INTERVAL: Duration = Duration::from_millis(100);
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 const ACK_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_PENDING_ACKS: usize = 4096;
+/// `LLUDPClient.DequeueOutgoing` sends only resends while more than this many
+/// reliable packets wait for an ack.
+const ACK_STALL: usize = 50;
 const ACKS_PER_PACKET: usize = 255;
 
 /// `[ClientStack.LindenUDP]` timing values. RTO settings use milliseconds in
@@ -438,10 +443,11 @@ struct State {
     udp: Option<Arc<UdpCounters>>,
     /// This circuit's last addition to the shared unacked gauge.
     published_unacked: u64,
-    /// Land packets waiting for a free reliable slot. A 256 metre map is 256
-    /// packets, and `AgentMovementComplete` already occupies one, so the burst
-    /// does not fit in `udp.unacked`.
-    pending_land: VecDeque<LandLayer>,
+    /// Land packets waiting for the land bucket and a free reliable slot: the
+    /// arrival `LayerData` and `MapBlockReply`. A 256 metre map is 256 packets,
+    /// and `AgentMovementComplete` already occupies one, so the burst does not
+    /// fit in `udp.unacked`.
+    pending_land: VecDeque<Payload>,
     /// Avatar terse updates and `TeleportLocal`. `f6cc9597ad` puts the teleport
     /// on this queue, behind terse updates already built, so a moving avatar
     /// cannot snap back to the pre-teleport position.
@@ -485,6 +491,7 @@ impl State {
         timing: CircuitTiming,
     ) -> Self {
         Self::with_scene(handshake, arrival, timing, SceneThrottle::stock())
+            .expect("test land layers encode")
     }
 
     fn with_scene(
@@ -492,11 +499,18 @@ impl State {
         mut arrival: ArrivalConfig,
         timing: CircuitTiming,
         scene: Arc<SceneThrottle>,
-    ) -> Self {
+    ) -> Result<Self, CircuitError> {
         let now = Instant::now();
         let throttle_clock = ThrottleClock::start();
-        let throttle = ClientThrottle::open(scene, throttle_clock.now_secs());
-        let pending_land = VecDeque::from(std::mem::take(&mut arrival.land));
+        let client_max = scene.client_max();
+        let throttle = ClientThrottle::open(scene, client_max, throttle_clock.now_secs());
+        let mut pending_land = VecDeque::with_capacity(arrival.land.len());
+        for layer in std::mem::take(&mut arrival.land) {
+            let mut message = LayerData::default();
+            message.layer_id.type_ = layer.kind;
+            message.layer_data.data = layer.data;
+            pending_land.push_back(encode_payload(&message)?);
+        }
         let source_hop = arrival.source_hop.clone();
         let return_slot = arrival.return_slot.clone();
         let (hop_tx, hop_rx) = if source_hop.is_some() {
@@ -505,7 +519,7 @@ impl State {
         } else {
             (None, None)
         };
-        Self {
+        Ok(Self {
             sequence: SequenceCounter::default(),
             peer: None,
             unacked: ReliableWindow::default(),
@@ -547,7 +561,7 @@ impl State {
             viewer_pose: HopPose::default(),
             throttle,
             throttle_clock,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -580,7 +594,7 @@ impl State {
             if !self.pending_acks.is_empty() {
                 wait = wait.min(self.ack_at.saturating_duration_since(now));
             }
-            if self.unacked.len() < MAX_UNACKED {
+            if self.unacked.len() <= ACK_STALL {
                 let throttle_now = self.throttle_clock.now_secs();
                 if !self.pending_land.is_empty() {
                     wait = wait.min(self.throttle.wait(LAND, throttle_now));
@@ -622,15 +636,19 @@ impl State {
                 let batch = self.unacked.poll_uncommitted(now.into_std(), self.rto);
                 let mut resent = 0_u64;
                 let mut held = false;
-                for (seq, payload) in batch.resend {
-                    let bytes = wire(&payload, seq, true, true);
+                for seq in batch.due {
+                    let Some(payload) = self.unacked.payload(seq) else {
+                        continue;
+                    };
+                    let size = packet::raw_len(&payload.bytes, payload.zerocoded);
                     if !self
                         .throttle
-                        .try_spend(RESEND, bytes.len(), self.throttle_clock.now_secs())
+                        .try_spend(RESEND, size, self.throttle_clock.now_secs())
                     {
                         held = true;
                         break;
                     }
+                    let bytes = wire(payload, seq, true, true);
                     self.unacked.commit_resend(seq, now.into_std());
                     let _ = sock.send_to(&bytes, peer).await;
                     resent = resent.saturating_add(1);
@@ -668,22 +686,12 @@ impl State {
         sock: &impl DatagramIo,
         peer: SocketAddr,
     ) -> Result<(), CircuitError> {
-        while !self.pending_land.is_empty() && self.unacked.len() < MAX_UNACKED {
-            let Some(layer) = self.pending_land.pop_front() else {
+        while !self.pending_land.is_empty() && self.unacked.len() <= ACK_STALL {
+            let Some(payload) = self.pending_land.pop_front() else {
                 break;
             };
-            let mut message = LayerData::default();
-            message.layer_id.type_ = layer.kind;
-            message.layer_data.data = layer.data.clone();
-            let payload = match encode_payload(&message) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    self.pending_land.push_front(layer);
-                    return Err(error);
-                }
-            };
-            if !self.spend(LAND, &payload, false) {
-                self.pending_land.push_front(layer);
+            if !self.spend(LAND, &payload) {
+                self.pending_land.push_front(payload);
                 break;
             }
             self.send_payload(sock, peer, payload, true).await?;
@@ -696,11 +704,11 @@ impl State {
         sock: &impl DatagramIo,
         peer: SocketAddr,
     ) -> Result<(), CircuitError> {
-        while !self.pending_task.is_empty() && self.unacked.len() < MAX_UNACKED {
+        while !self.pending_task.is_empty() && self.unacked.len() <= ACK_STALL {
             let Some(payload) = self.pending_task.pop_front() else {
                 break;
             };
-            if !self.spend(TASK, &payload, false) {
+            if !self.spend(TASK, &payload) {
                 self.pending_task.push_front(payload);
                 break;
             }
@@ -710,11 +718,11 @@ impl State {
     }
 
     /// True when this category can carry `payload` right now. The size is the
-    /// datagram that would leave, including the header.
-    fn spend(&mut self, category: usize, payload: &Payload, resent: bool) -> bool {
-        let bytes = wire(payload, self.sequence.peek(), true, resent);
+    /// reliable datagram that would leave, including the header.
+    fn spend(&mut self, category: usize, payload: &Payload) -> bool {
+        let size = packet::raw_len(&payload.bytes, payload.zerocoded);
         self.throttle
-            .try_spend(category, bytes.len(), self.throttle_clock.now_secs())
+            .try_spend(category, size, self.throttle_clock.now_secs())
     }
 
     fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
@@ -1064,13 +1072,14 @@ impl State {
         let look_at = self.arrival.look_at;
         reply.data.position = position.into();
         self.send_message(sock, to, &reply, true).await?;
-        // CompleteMovement sends the avatar full update, then appearance.
-        // Land stays queued until the reliable window has room.
+        // CompleteMovement queues the avatar full update, then appearance, on
+        // the task category (`SendEntityFullUpdateImmediate`, `SendAppearance`).
+        // Land stays queued until its bucket and the reliable window have room.
         if let Some(avatar) = avatar {
             let update = avatar.object_update(region_handle, position, look_at);
-            self.send_message(sock, to, &update, true).await?;
+            self.enqueue_task(&update)?;
             let appearance = avatar.appearance();
-            self.send_message(sock, to, &appearance, true).await?;
+            self.enqueue_task(&appearance)?;
         }
         Ok(())
     }
@@ -1414,8 +1423,12 @@ impl State {
                 Ok(())
             }
             HopCommand::Map { message, done } => {
-                let sent = self.send_reliable(sock, &message).await?;
-                let _ = done.send(sent);
+                // `SendMapBlock` only queues on the land category.
+                let queued = self.peer.is_some();
+                if queued {
+                    self.pending_land.push_back(encode_payload(&message)?);
+                }
+                let _ = done.send(queued);
                 Ok(())
             }
             HopCommand::Leave { done } => {
@@ -1660,7 +1673,7 @@ struct CircuitInner {
     reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
     next_id: AtomicU64,
     /// One parent bucket for every circuit on this listener.
-    scene_throttle: Arc<SceneThrottle>,
+    scene_throttle: Mutex<Arc<SceneThrottle>>,
     /// Shared by every serve on this socket. Empty until [`CircuitServer::enable_chat`].
     chat: Mutex<Option<RegionChat>>,
     /// Seats waiting for the serve that owns that agent.
@@ -1840,7 +1853,7 @@ impl CircuitServer {
                 timing: Mutex::new(CircuitTiming::default()),
                 reader: Mutex::new(None),
                 next_id: AtomicU64::new(1),
-                scene_throttle: SceneThrottle::stock(),
+                scene_throttle: Mutex::new(SceneThrottle::configured(CircuitThrottle::default())),
                 chat: Mutex::new(None),
                 waiting_seats: Mutex::new(HashMap::new()),
                 login_scene: Mutex::new(None),
@@ -1940,6 +1953,16 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = timing;
         Ok(self)
+    }
+    /// Set the listener's client and scene caps. Circuits opened before this
+    /// call keep the previous scene bucket, so call it before serving.
+    pub fn with_throttle(self, caps: CircuitThrottle) -> Self {
+        *self
+            .inner
+            .scene_throttle
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = SceneThrottle::configured(caps);
+        self
     }
     pub fn local_addr(&self) -> Result<SocketAddr, CircuitError> {
         Ok(self.inner.shared.socket.local_addr()?)
@@ -2087,6 +2110,13 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
+        let scene = Arc::clone(
+            &self
+                .inner
+                .scene_throttle
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        );
         serve_socket_reporting(
             &session,
             expect,
@@ -2094,7 +2124,7 @@ impl CircuitServer {
             arrival,
             timing,
             self.inner.shared.socket.counters(),
-            Arc::clone(&self.inner.scene_throttle),
+            scene,
             ServeExtra {
                 root_arrival,
                 connected,
@@ -2173,7 +2203,7 @@ async fn serve_socket_reporting(
     scene: Arc<SceneThrottle>,
     mut extra: ServeExtra<'_>,
 ) -> Result<(), CircuitError> {
-    let mut state = State::with_scene(handshake, arrival, timing, scene);
+    let mut state = State::with_scene(handshake, arrival, timing, scene)?;
     state.udp = udp;
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
@@ -2264,7 +2294,8 @@ async fn serve_socket_reporting(
                             state.send_message(sock, peer, &message, true).await?;
                         }
                         ViewerBound::Alert(message) => {
-                            state.send_message(sock, peer, &message, true).await?;
+                            // `SendAgentAlertMessage` queues on the task category.
+                            state.enqueue_task(&message)?;
                         }
                     }
                 }
