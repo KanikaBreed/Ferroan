@@ -88,8 +88,6 @@ fn run(args: [String; 4], quiet: bool) -> Result<ExitStatus, String> {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::thread;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn group_argv_puts_the_group_after_double_dash() {
@@ -124,6 +122,8 @@ mod tests {
     #[test]
     fn signals_only_the_named_group() {
         use std::os::unix::process::CommandExt;
+        use std::thread;
+        use std::time::{Duration, Instant};
 
         let spawn = || {
             Command::new("sleep")
