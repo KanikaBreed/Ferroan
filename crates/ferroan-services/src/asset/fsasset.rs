@@ -243,7 +243,8 @@ impl FsAssetStore {
     }
 
     /// Plugin `Delete`. A statement that runs returns true, including when no
-    /// row matched. PostgreSQL returns false for an id that is not a uuid.
+    /// row matched. MySQL returns false for a database error. PostgreSQL
+    /// returns false for an id that is not a uuid and returns a statement error.
     pub async fn delete(&self, id: &str) -> Result<bool, StoreError> {
         match self.backend() {
             Backend::Mysql => super::fmysql::delete(self.mysql()?, &self.table, id).await,

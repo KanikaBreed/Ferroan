@@ -91,6 +91,35 @@ async fn mysql_hashes_split_an_open_failure_from_a_query_error() {
     open.close().await;
 }
 
+/// A missing table is a statement error. MySQL delete answers false for that.
+/// PostgreSQL delete still returns the error.
+#[tokio::test]
+async fn mysql_delete_maps_a_statement_error_to_false() {
+    let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL is unset; mysql delete statement error was not run");
+        return;
+    };
+    if url.is_empty() || !url.starts_with("mysql:") {
+        eprintln!("FERROAN_MYSQL_URL is not a mysql url; mysql delete statement error was not run");
+        return;
+    }
+    // The connection error can contain the database URL, so it is not printed.
+    let pool = match sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect(&url)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(_) => panic!("mysql"),
+    };
+    let deleted = super::super::fmysql::delete(&pool, "ferroan_qr28_absent", "x")
+        .await
+        .expect("statement error is false");
+    assert!(!deleted);
+    pool.close().await;
+}
+
 /// A 32-hex id and an uppercase id stay in stored-text order. Each row is
 /// visited once. `count == -1` still skips `start` rows.
 #[tokio::test]
