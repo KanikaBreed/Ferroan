@@ -30,7 +30,7 @@ asynchronous service cleanup, so it alone cannot authorize the next login.
 | --- | --- |
 | login | `login: pass` |
 | walk | `walk: pass` with the start and end position |
-| chat | `chat: pass`. A second account, `Chat Bot`, hears `ferroan harness chat` |
+| chat | `chat: pass`. A second account, `Chat Bot`, hears `ferroan harness chat` as a channel-0 say and `ferroan harness debug` as type 6 on DEBUG_CHANNEL |
 | build | `build: pass`. A prim is rezzed, changed and deleted |
 | teleport | `teleport: pass` with the landing position |
 | texture | `texture: pass` with the uploaded size and the library texture size. Both are JPEG 2000 |
