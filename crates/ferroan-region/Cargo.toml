@@ -19,6 +19,7 @@ ferroan-scene = { path = "../ferroan-scene" }
 ferroan-services = { path = "../ferroan-services" }
 tracing = "0.1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+hyper = { version = "1", features = ["http1"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
