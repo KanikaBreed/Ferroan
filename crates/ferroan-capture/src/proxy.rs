@@ -17,6 +17,13 @@
 //! client has the bytes. A reset does not fail the proxy. A client that
 //! shuts down only its write side still receives the response.
 //!
+//! The owner calls `ProxyStatus::upstream_stopping` when it begins to stop
+//! the upstream server on purpose. A request that arrives after that and whose
+//! upstream connect is refused stays in the capture with no response, is
+//! counted by `ProxyStatus::refused_after_stop`, and is not a failure: another
+//! server still running sent it to one the owner has shut down. A refused
+//! connect before that call still fails the proxy.
+//!
 //! Timeout reference (no C# code copied): EventQueueGetModule.cs, KEEPALIVE,
 //! VIEWERKEEPALIVE and OnRegisterCaps, under
 //! Source/OpenSim.Region.ClientStack.LindenCaps/EventQueue/ at Tranquillity
@@ -61,6 +68,10 @@ pub struct ProxyStatus(Arc<StatusInner>);
 #[derive(Default)]
 struct StatusInner {
     failures: AtomicU64,
+    /// Set by the owner when it begins stopping the upstream server.
+    upstream_stopping: AtomicBool,
+    /// Requests refused by the upstream after `upstream_stopping` was set.
+    refused_after_stop: AtomicU64,
     stopping: AtomicBool,
     finished: AtomicBool,
     stop: Notify,
@@ -69,6 +80,18 @@ struct StatusInner {
 impl ProxyStatus {
     pub fn failures(&self) -> u64 {
         self.0.failures.load(Ordering::Acquire)
+    }
+
+    /// Mark the upstream as being stopped on purpose. From now on a request
+    /// whose upstream connect is refused is not a failure. Call it just before
+    /// the upstream server is told to stop, never while it is meant to be up.
+    pub fn upstream_stopping(&self) {
+        self.0.upstream_stopping.store(true, Ordering::Release);
+    }
+
+    /// Requests that arrived after `upstream_stopping` and were refused.
+    pub fn refused_after_stop(&self) -> u64 {
+        self.0.refused_after_stop.load(Ordering::Acquire)
     }
 
     pub fn ensure_success(&self) -> io::Result<()> {
@@ -233,7 +256,7 @@ async fn serve_inner(
                 let capture = Arc::clone(&capture);
                 let status = status.clone();
                 exchanges.spawn(async move {
-                    let result = forward(client, upstream, capture, reply_timeout).await;
+                    let result = forward(client, upstream, capture, reply_timeout, &status).await;
                     if result.is_err() { status.failed(); }
                     result
                 });
@@ -381,12 +404,16 @@ async fn forward(
     upstream: SocketAddr,
     capture: Arc<Capture>,
     reply_timeout: Duration,
+    status: &ProxyStatus,
 ) -> io::Result<()> {
     let Some(request) = read_message_or_unused(&mut client, true, IO_WAIT).await? else {
         // A connection pool may preconnect and close without sending HTTP.
         // No exchange began, so neither a capture nor a failure is warranted.
         return Ok(());
     };
+    // Read when the request is in hand: only a request that arrives after the
+    // owner began stopping the upstream may meet a refusal without failing.
+    let upstream_stopping = status.0.upstream_stopping.load(Ordering::Acquire);
     // Record the bytes the upstream server reads. C# copies the request's
     // Connection onto the response, so the fixture has to show this rewrite.
     // The stamp is this moment, before the upstream wait, so a held poll still
@@ -400,8 +427,20 @@ async fn forward(
         bytes: forwarded.clone(),
     }])?;
     let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
-        Ok(Some(response)) => response,
-        Ok(None) => {
+        Ok(Reply::Response(response)) => response,
+        Ok(Reply::Refused(_)) if upstream_stopping => {
+            // The upstream was shut down on purpose before this request came.
+            // Keep the request as evidence; the client sees a closed socket.
+            status.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
+            capture.flushed().await?;
+            return Ok(());
+        }
+        Ok(Reply::Refused(error)) => {
+            // The upstream is meant to be up: a failed exchange.
+            let _ = capture.flushed().await;
+            return Err(error);
+        }
+        Ok(Reply::ClientLeft) => {
             // The client reset after the request was queued. Leave that
             // request in the capture and keep the listener up.
             capture.flushed().await?;
@@ -436,23 +475,39 @@ async fn forward(
     Ok(())
 }
 
+/// How one forwarded exchange ended, short of an error.
+enum Reply {
+    Response(Vec<u8>),
+    /// The client went away while the upstream held the reply.
+    ClientLeft,
+    /// The upstream connect was refused: nothing listens there.
+    Refused(io::Error),
+}
+
 async fn exchange(
     client: &mut TcpStream,
     upstream: SocketAddr,
     forwarded: &[u8],
     reply_timeout: Duration,
-) -> io::Result<Option<Vec<u8>>> {
-    let mut server = timeout(IO_WAIT, TcpStream::connect(upstream))
+) -> io::Result<Reply> {
+    let connected = timeout(IO_WAIT, TcpStream::connect(upstream))
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"))??;
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"))?;
+    let mut server = match connected {
+        Ok(server) => server,
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            return Ok(Reply::Refused(error));
+        }
+        Err(error) => return Err(error),
+    };
     // The socket exists only after connect. C# sets NoDelay before ConnectAsync;
     // the following writes see the same option.
     set_tcp_nodelay(&server)?;
     write_message(&mut server, forwarded).await?;
     tokio::select! {
         biased;
-        response = read_message(&mut server, false, reply_timeout) => response.map(Some),
-        _ = client_left(client) => Ok(None),
+        response = read_message(&mut server, false, reply_timeout) => response.map(Reply::Response),
+        _ = client_left(client) => Ok(Reply::ClientLeft),
     }
 }
 
@@ -1021,6 +1076,72 @@ mod tests {
         }
     }
 
+    async fn closed_port() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        address
+    }
+
+    #[tokio::test]
+    async fn a_refused_upstream_that_is_meant_to_be_up_fails_the_proxy() {
+        let (address, status, task, path) =
+            tracked_proxy(closed_port().await, Duration::from_secs(1)).await;
+        assert!(request(address).await.is_empty());
+        assert_eq!(
+            task.await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::ConnectionRefused
+        );
+        assert_eq!(status.failures(), 1);
+        assert_eq!(status.refused_after_stop(), 0);
+        assert!(status.finish(IO_WAIT).await.is_err());
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, Kind::HttpRequest);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_request_after_the_upstream_was_stopped_is_not_a_failure() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, Duration::from_secs(1)).await;
+        // The owner begins stopping the upstream; it still answers until it is gone.
+        status.upstream_stopping();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        assert!(request(address).await.starts_with(b"HTTP/1.1 200 OK"));
+        server.await.unwrap();
+        // Now nothing listens there: the late request (C#'s CloseAgent from a
+        // neighbour still running) is refused and kept, and the proxy goes on.
+        assert!(request(address).await.is_empty());
+        assert!(request(address).await.is_empty());
+        assert!(!task.is_finished());
+        assert_eq!(status.failures(), 0);
+        assert_eq!(status.refused_after_stop(), 2);
+        status.finish(IO_WAIT).await.unwrap();
+        task.await.unwrap().unwrap();
+        let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+        let kinds: Vec<Kind> = records.iter().map(|record| record.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                Kind::HttpRequest,
+                Kind::HttpResponse,
+                Kind::HttpRequest,
+                Kind::HttpRequest
+            ]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[tokio::test]
     async fn finish_waits_for_in_flight_evidence() {
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1110,7 +1231,14 @@ mod tests {
             let (capture, path) = capture_file();
             let forwarding = tokio::spawn(async move {
                 let (client, _) = listener.accept().await.unwrap();
-                forward(client, upstream_addr, capture, Duration::from_millis(100)).await
+                forward(
+                    client,
+                    upstream_addr,
+                    capture,
+                    Duration::from_millis(100),
+                    &ProxyStatus::default(),
+                )
+                .await
             });
             let mut client = TcpStream::connect(address).await.unwrap();
             client
@@ -1154,9 +1282,15 @@ mod tests {
         let forwarding = tokio::spawn(async move {
             for _ in 0..2 {
                 let (client, _) = listener.accept().await.unwrap();
-                forward(client, upstream_addr, capture.clone(), IO_WAIT)
-                    .await
-                    .unwrap();
+                forward(
+                    client,
+                    upstream_addr,
+                    capture.clone(),
+                    IO_WAIT,
+                    &ProxyStatus::default(),
+                )
+                .await
+                .unwrap();
             }
         });
         for _ in 0..2 {

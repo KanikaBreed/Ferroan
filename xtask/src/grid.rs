@@ -570,6 +570,12 @@ impl Drop for Proc {
     }
 }
 
+/// Indexes of the grid's capture proxies, in the order `run_linux` starts them.
+const PROXY_ROBUST_PRIVATE: usize = 0;
+const PROXY_ROBUST_PUBLIC: usize = 1;
+const PROXY_HOME: usize = 2;
+const PROXY_NEIGHBOUR: usize = 3;
+
 #[cfg(target_os = "linux")]
 struct Grid {
     robust: Option<Proc>,
@@ -584,7 +590,24 @@ struct Grid {
 #[cfg(target_os = "linux")]
 impl Grid {
     fn stop(&mut self) -> Result<(), String> {
-        for slot in [&mut self.home, &mut self.neighbour, &mut self.robust] {
+        for (slot, proxies) in [
+            (&mut self.home, &[PROXY_HOME][..]),
+            (&mut self.neighbour, &[PROXY_NEIGHBOUR]),
+            (
+                &mut self.robust,
+                &[PROXY_ROBUST_PRIVATE, PROXY_ROBUST_PUBLIC],
+            ),
+        ] {
+            // A server still running may call this one after it is gone (the
+            // C# neighbour's CloseAgent to home); its proxy keeps that request
+            // without failing. Only from here: a refusal before this fails.
+            if slot.is_some()
+                && let Some(running) = &self.proxies
+            {
+                for index in proxies {
+                    running.upstream_stopping(*index);
+                }
+            }
             drop(slot.take());
         }
         drop(self.rust_assets.take());
@@ -744,6 +767,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         home: root.join("proxy-home.cap"),
         neighbour: root.join("proxy-neighbour.cap"),
     };
+    // In the order of PROXY_ROBUST_PRIVATE, PROXY_ROBUST_PUBLIC, PROXY_HOME
+    // and PROXY_NEIGHBOUR, which Grid::stop uses.
     grid.proxies = Some(start_proxies(&[
         (
             SocketAddr::from((ADVERTISED, private_proxy)),
@@ -1207,7 +1232,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             report.lines
         ))
     } else if ferroan && scenario == "neighbour" {
-        let comparison = login_capture::compare_neighbour_teleport(&root)?;
+        let comparison =
+            login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::Ferroan)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
             &report.http,
@@ -1230,7 +1256,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             report.lines
         ))
     } else if scenario == "neighbour" {
-        let comparison = login_capture::compare_neighbour_teleport(&root)?;
+        let comparison =
+            login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::CSharp)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
             &report.http,
