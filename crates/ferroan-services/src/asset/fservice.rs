@@ -284,7 +284,7 @@ impl FsAssetService {
 
     /// `Store`. `Err` is the object cleanup throwing. `Ok` is the id text,
     /// including the zero UUID when the asset was not stored.
-    pub async fn store_asset(&self, asset: &mut Asset, id_text: &str) -> Result<String, ()> {
+    pub(crate) async fn store_asset(&self, asset: &mut Asset, id_text: &str) -> Result<String, ()> {
         self.store_asset_inner(asset, id_text, false).await
     }
 
@@ -336,7 +336,8 @@ impl FsAssetService {
     }
 
     /// `Delete`. Answers what the plugin answers (TB50, #501): a PostgreSQL
-    /// non-uuid is false. `Err` is a statement that failed.
+    /// non-uuid is false, and a MySQL database error is false. `Err` is any
+    /// other failure.
     pub async fn delete(&self, id: &str) -> Result<bool, StoreError> {
         self.store.delete(id).await
     }
@@ -398,8 +399,9 @@ impl FsAssetService {
 
     /// `HandleImportAssets`. A bad integer does not open the database.
     /// A failed connection logs and returns no `Import done` line.
-    /// The connection string is not logged. The remote console does not call this yet.
-    #[allow(dead_code)]
+    /// The live FSAssets harness invokes this library entry point with the operator
+    /// command arguments. ferroan-robust has yet to register the console command.
+    /// The connection string stays out of the log.
     pub async fn console_import(&self, args: &[&str]) -> Result<Vec<String>, StoreError> {
         let request = match parse_fs_import(args) {
             FsImportParse::Syntax => return Ok(vec![import_syntax_line()]),

@@ -4,18 +4,21 @@
 //! FSAssets live compare.
 //!
 //! `cargo xtask live assets --backend fsassets --db mysql|pgsql` copies the
-//! loaded library into `fsassets` and gzip files under one `BaseDirectory`,
-//! then runs texture and inventory against C# and Ferroan. Each service then
-//! reads an asset the other stored on that same database and directory.
+//! loaded library into `fsassets` and gzip files. Each service has its own
+//! `BaseDirectory`. Texture and inventory then run against C# and Ferroan.
 //!
-//! A read of 10,000 assets is timed on each side with
-//! `DaysBetweenAccessTimeUpdates` 365, so the interval does not also write
-//! `access_time`. The texture run leaves the pin default of 0. The success
-//! line is `assets: match`. The force probe stores an existing id again
-//! through C# HTTP, an ordinary store, which keeps the old hash on every pin;
-//! the force import itself (TB45, fixed at Pin8 by #524) is compared by
-//! `cargo xtask asset fsassets-cross`. A miss status or an import page that differs fails the command.
-//! Any other HTTP difference fails the command.
+//! A read of 10,000 assets, each with its own hash and file, is timed on
+//! each side with `DaysBetweenAccessTimeUpdates` 365, so the interval does
+//! not also write `access_time`. After an untimed pass on each side,
+//! both orders are timed once. Both SQL pools allow eight connections. The texture run leaves
+//! the pin default of 0. The success line is `assets: match`.
+//!
+//! The force probe stores an existing id again through both HTTP services.
+//! An ordinary store keeps the old hash. The live force import replaces it.
+//! The import probe runs both services' ordinary and forced commands on one source
+//! table and compares the rows, with the times left out, and the decompressed
+//! files. A miss status, a row that differs, or a file that differs fails
+//! the command. Any other HTTP difference fails the command.
 
 use std::process::ExitCode;
 
@@ -27,7 +30,11 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use flate2::Compression;
 #[cfg(target_os = "linux")]
+use flate2::read::GzDecoder;
+#[cfg(target_os = "linux")]
 use flate2::write::GzEncoder;
+#[cfg(target_os = "linux")]
+use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
@@ -58,21 +65,27 @@ const BULK_COUNT: u32 = 10_000;
 #[cfg(any(target_os = "linux", test))]
 const TIMED_ACCESS_DAYS: i32 = 365;
 #[cfg(target_os = "linux")]
-const BULK_BODY: &[u8] = b"1";
-#[cfg(target_os = "linux")]
 const RUST_WROTE: &str = "f23e00c0-0000-4000-8000-000000000001";
 #[cfg(target_os = "linux")]
 const CSHARP_WROTE: &str = "f23e00c0-0000-4000-8000-000000000002";
 #[cfg(any(target_os = "linux", test))]
 const FORCE_ID: &str = "f23e00c0-0000-4000-8000-000000000003";
 #[cfg(target_os = "linux")]
-const RUST_BODY: &[u8] = b"fsasset-rust-wrote";
-#[cfg(target_os = "linux")]
-const CSHARP_BODY: &[u8] = b"fsasset-csharp-wrote";
+const CROSS_BODY: &[u8] = b"fsasset-cross-read";
 #[cfg(target_os = "linux")]
 const FORCE_OLD: &[u8] = b"fsasset-force-old";
 #[cfg(target_os = "linux")]
 const FORCE_NEW: &[u8] = b"fsasset-force-new";
+#[cfg(any(target_os = "linux", test))]
+const IMPORT_TABLE: &str = "ferroan_qr28_import";
+#[cfg(any(target_os = "linux", test))]
+const IMPORT_ONE: &str = "f23e00d0-0000-4000-8000-000000000001";
+#[cfg(any(target_os = "linux", test))]
+const IMPORT_TWO: &str = "f23e00d0-0000-4000-8000-000000000002";
+#[cfg(any(target_os = "linux", test))]
+const IMPORT_BODY_ONE: &[u8] = b"import-one";
+#[cfg(any(target_os = "linux", test))]
+const IMPORT_BODY_TWO: &[u8] = b"import-two";
 #[cfg(any(target_os = "linux", test))]
 const EMPTY_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -151,21 +164,22 @@ fn compare_linux(db: FsassetDb) -> Result<String, String> {
     let run = live::scratch_run();
     fs::create_dir_all(&run)
         .map_err(|error| format!("could not create {}: {error}", run.display()))?;
-    let base = run.join(format!("fsasset-base-{}", db.label()));
-    if base.exists() {
-        fs::remove_dir_all(&base)
-            .map_err(|error| format!("could not reset {}: {error}", base.display()))?;
-    }
-    fs::create_dir_all(&base)
-        .map_err(|error| format!("could not create {}: {error}", base.display()))?;
-    let base_arg = base.to_str().ok_or("fsassets base path is not utf-8")?;
+    let csharp_base = prepare_base(&run, &format!("fsasset-base-{}-csharp", db.label()))?;
+    let ferroan_base = prepare_base(&run, &format!("fsasset-base-{}-ferroan", db.label()))?;
+    let csharp_base_arg = csharp_base
+        .to_str()
+        .ok_or("fsassets base path is not utf-8")?;
+    let ferroan_base_arg = ferroan_base
+        .to_str()
+        .ok_or("fsassets base path is not utf-8")?;
     let seed = crate::assets::seed_library_database()?;
     let rows = read_seed_rows(&seed)?;
-    write_library_files(&base, &rows)?;
+    write_library_files(&csharp_base, &rows)?;
+    write_library_files(&ferroan_base, &rows)?;
     let now = unix_now()?;
     let library = library_sql(db, &rows, now)?;
-    let csharp = run_side(db, &target, "csharp", &library, base_arg, 0)?;
-    let ferroan = run_side(db, &target, "ferroan", &library, base_arg, 0)?;
+    let csharp = run_side(db, &target, "csharp", &library, csharp_base_arg, 0)?;
+    let ferroan = run_side(db, &target, "ferroan", &library, ferroan_base_arg, 0)?;
     let left = crate::assets::canonical_http(
         &fs::read(&csharp.capture)
             .map_err(|error| format!("could not read {}: {error}", csharp.capture.display()))?,
@@ -182,45 +196,36 @@ fn compare_linux(db: FsassetDb) -> Result<String, String> {
             ferroan.capture.display()
         ));
     }
-    let timed = time_and_cross(db, &target, base_arg, now)?;
+    let timed = time_and_cross(db, &target, now)?;
     classify_missing(timed.csharp_miss, timed.ferroan_miss)?;
-    classify_force(timed.csharp_kept_hash, timed.ferroan_wrote_hash)?;
+    classify_force(timed.csharp_kept_hash, timed.ferroan_kept_hash)?;
     probe_import(db, &target, &run)?;
     Ok(success_report(
         &csharp.report,
         &ferroan.report,
         left.lines().count(),
-        timed.csharp_ms,
-        timed.ferroan_ms,
-        &[],
+        &timed,
     ))
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn success_report(
-    csharp: &str,
-    ferroan: &str,
-    records: usize,
-    csharp_ms: u128,
-    ferroan_ms: u128,
-    differences: &[&str],
-) -> String {
-    let mut text = format!(
+#[cfg(target_os = "linux")]
+fn success_report(csharp: &str, ferroan: &str, records: usize, times: &TimedCross) -> String {
+    format!(
         "{csharp}\n{ferroan}\nassets: match ({records} http records)\ncross-read ok\n\
-         10000-asset read: csharp {csharp_ms} ms, ferroan {ferroan_ms} ms"
-    );
-    if !differences.is_empty() {
-        text.push_str("\nknown differences: ");
-        text.push_str(&differences.join(", "));
-    }
-    text
+         10000-asset read after one untimed warm-up pass per side: order csharp-then-ferroan {csharp_first} ms, {ferroan_second} ms; \
+         order ferroan-then-csharp {ferroan_first} ms, {csharp_second} ms\n\
+         sequential HTTP GET /data, 10000 distinct hashes, release servers, pooled SQL (max 8), verified bodies, setup excluded. Each figure is a single run, not a performance claim.",
+        csharp_first = times.csharp_first_ms,
+        ferroan_second = times.ferroan_second_ms,
+        ferroan_first = times.ferroan_first_ms,
+        csharp_second = times.csharp_second_ms,
+    )
 }
 
-/// A non-uuid get is a miss on both sides at Pin7. A status that differs is
-/// a failure, not a listed difference.
+/// A non-UUID GET returns 404 on both services at Pin8.
 #[cfg(any(target_os = "linux", test))]
 fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
-    if csharp == ferroan {
+    if csharp == 404 && ferroan == 404 {
         return Ok(());
     }
     Err(format!(
@@ -228,75 +233,28 @@ fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
     ))
 }
 
-/// The C# probe is an ordinary `POST /assets` of an existing id, which keeps
-/// the old hash (as Ferroan's ordinary store does). Ferroan's force update,
-/// applied after it, writes the new hash and `access_time` only. Neither is a
-/// known difference: the force import (TB45) is compared by
-/// `asset fsassets-cross` since Pin8.
+/// Both probes are an ordinary `POST /assets` of an existing id. Each keeps
+/// the old hash. The live import probe checks that force import replaces it.
 #[cfg(any(target_os = "linux", test))]
-fn classify_force(csharp_kept_hash: bool, ferroan_wrote_hash: bool) -> Result<(), String> {
-    match (csharp_kept_hash, ferroan_wrote_hash) {
+fn classify_force(csharp_kept_hash: bool, ferroan_kept_hash: bool) -> Result<(), String> {
+    match (csharp_kept_hash, ferroan_kept_hash) {
         (true, true) => Ok(()),
         (false, true) => Err("an ordinary C# store overwrote an existing hash".to_string()),
-        (true, false) => Err("ferroan force update did not change the hash".to_string()),
-        (false, false) => Err("force import changed neither hash".to_string()),
+        (true, false) => Err("an ordinary ferroan store overwrote an existing hash".to_string()),
+        (false, false) => Err("an ordinary store overwrote both hashes".to_string()),
     }
 }
 
-/// Pin7 PostgreSQL import returns `count` rows from row `start`, ordered by
-/// id. Ferroan uses that same page. MySQL is `LIMIT start, count` with no
-/// order on the pin, so only the row count is compared.
+/// The import snapshot. `create_time` and `access_time` are the store clock,
+/// so they are left out. PostgreSQL has no name or description column.
 #[cfg(any(target_os = "linux", test))]
-fn pages_match(postgres: bool, pin: &str, ferroan: &str) -> Result<(), String> {
+fn import_row_sql(postgres: bool) -> &'static str {
     if postgres {
-        if page_ids(pin) == page_ids(ferroan) {
-            return Ok(());
-        }
-        return Err(format!(
-            "import page ids differ on postgresql: pin {} rows, ferroan {} rows",
-            row_count(pin),
-            row_count(ferroan)
-        ));
-    }
-    if row_count(pin) == row_count(ferroan) {
-        return Ok(());
-    }
-    Err(format!(
-        "import page counts differ on mysql: pin {} rows, ferroan {} rows",
-        row_count(pin),
-        row_count(ferroan)
-    ))
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn pin_page_sql(postgres: bool) -> &'static str {
-    if postgres {
-        "SELECT id::text FROM ferroan_q23e_import ORDER BY id LIMIT 2 OFFSET 0"
+        "SELECT id::text || '|' || type::text || '|' || lower(trim(hash)) || '|' || \
+         asset_flags::text FROM fsassets ORDER BY id"
     } else {
-        "SELECT id FROM ferroan_q23e_import LIMIT 0, 2"
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn ferroan_page_sql(postgres: bool) -> &'static str {
-    if postgres {
-        "SELECT id::text FROM ferroan_q23e_import ORDER BY id LIMIT 2 OFFSET 0"
-    } else {
-        "SELECT id FROM ferroan_q23e_import ORDER BY id LIMIT 0, 2"
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn force_sql(postgres: bool, id: &str, hash: &str, now: i64) -> String {
-    if postgres {
-        format!(
-            "UPDATE fsassets SET \"hash\" = '{hash}', \"access_time\" = {now} \
-             WHERE \"id\" = '{id}'::uuid"
-        )
-    } else {
-        format!(
-            "UPDATE fsassets SET hash = '{hash}', access_time = UNIX_TIMESTAMP() WHERE id = '{id}'"
-        )
+        "SELECT CONCAT_WS('|', id, name, description, type, LOWER(TRIM(hash)), asset_flags) \
+         FROM fsassets ORDER BY id"
     }
 }
 
@@ -360,10 +318,11 @@ fn database_target(db: FsassetDb) -> Result<DbTarget, String> {
     parse_database_url(&raw).map_err(|error| format!("{name}: {error}"))
 }
 
-/// C# keeps `Pooling=false`. Ferroan rejects that key and uses its own pool.
+/// Shared connection options. The C# service INI also sets the pool size to
+/// match the fixed Ferroan pool.
 #[cfg(any(target_os = "linux", test))]
-fn ado(db: FsassetDb, target: &DbTarget, pooling_false: bool) -> String {
-    let mut text = match db {
+fn ado(db: FsassetDb, target: &DbTarget) -> String {
+    match db {
         FsassetDb::Mysql => format!(
             "Server={};Port={};Database={};User ID={};Password={};SslMode=None",
             target.host, target.port, target.database, target.user, target.password
@@ -372,11 +331,23 @@ fn ado(db: FsassetDb, target: &DbTarget, pooling_false: bool) -> String {
             "Server={};Port={};Database={};User Id={};Password={};SSL Mode=Disable",
             target.host, target.port, target.database, target.user, target.password
         ),
-    };
-    if pooling_false {
-        text.push_str(";Pooling=false");
     }
-    text
+}
+
+/// One console token. `User ID` and `SSL Mode` contain spaces, and the
+/// console splits on whitespace.
+#[cfg(any(target_os = "linux", test))]
+fn console_ado(db: FsassetDb, target: &DbTarget) -> String {
+    match db {
+        FsassetDb::Mysql => format!(
+            "Server={};Port={};Database={};Uid={};Password={};SslMode=None",
+            target.host, target.port, target.database, target.user, target.password
+        ),
+        FsassetDb::Pgsql => format!(
+            "Server={};Port={};Database={};Username={};Password={};SslMode=Disable",
+            target.host, target.port, target.database, target.user, target.password
+        ),
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -392,6 +363,15 @@ struct IniSpec<'a> {
 
 #[cfg(any(target_os = "linux", test))]
 fn service_ini(spec: &IniSpec<'_>) -> String {
+    let ado = if spec.grid {
+        format!(
+            "{};Pooling=true;Maximum Pool Size={}",
+            spec.ado,
+            ferroan_db::MAX_POOL_CONNECTIONS
+        )
+    } else {
+        spec.ado.to_string()
+    };
     let asset = format!(
         "[AssetService]\n    \
          LocalServiceModule = \"OpenSim.Services.FSAssetService.dll:FSAssetConnector\"\n    \
@@ -400,9 +380,11 @@ fn service_ini(spec: &IniSpec<'_>) -> String {
          BaseDirectory = \"{base}\"\n    \
          SpoolDirectory = \"{spool}\"\n    \
          DaysBetweenAccessTimeUpdates = {days}\n    \
+         AllowRemoteDelete = true\n    \
+         AllowRemoteDeleteAllTypes = true\n    \
          ShowConsoleStats = false\n",
         provider = spec.provider,
-        ado = spec.ado,
+        ado = ado,
         base = spec.base,
         spool = spec.spool,
         days = spec.access_days,
@@ -424,7 +406,7 @@ fn service_ini(spec: &IniSpec<'_>) -> String {
          ConnectionString = \"{ado}\"\n\n{asset}",
         port = spec.port,
         provider = spec.provider,
-        ado = spec.ado,
+        ado = ado,
     )
 }
 
@@ -458,13 +440,8 @@ fn library_sql(db: FsassetDb, rows: &[SeedAsset], now: i64) -> Result<String, St
 }
 
 #[cfg(target_os = "linux")]
-fn timing_sql(
-    db: FsassetDb,
-    now: i64,
-    bulk_hash: &str,
-    force_hash: &str,
-) -> Result<String, String> {
-    if !is_hash(bulk_hash) || !is_hash(force_hash) || i32::try_from(now).is_err() {
+fn timing_sql(db: FsassetDb, now: i64, force_hash: &str) -> Result<String, String> {
+    if !is_hash(force_hash) || i32::try_from(now).is_err() {
         return Err("the timed seed has a bad hash".to_string());
     }
     let mut sql = String::from(match db {
@@ -472,13 +449,14 @@ fn timing_sql(
         FsassetDb::Pgsql => "BEGIN;\nDELETE FROM fsassets;\n",
     });
     for index in 0..BULK_COUNT {
+        let hash = sha256_bytes(&bulk_body(index));
         let row = SeedAsset {
             id: bulk_id(index),
             name_hex: String::new(),
             description_hex: String::new(),
             type_code: 0,
             flags: 0,
-            hash_hex: bulk_hash.to_string(),
+            hash_hex: hash,
             data: Vec::new(),
         };
         validate_row(&row)?;
@@ -581,6 +559,19 @@ fn bulk_id(index: u32) -> String {
     format!("f23e0000-0000-4000-8000-{index:012x}")
 }
 
+/// A distinct body, so each timed asset has its own hash and file.
+#[cfg(any(target_os = "linux", test))]
+fn bulk_body(index: u32) -> Vec<u8> {
+    format!("bulk-{index}").into_bytes()
+}
+
+/// Longer than 64 characters, and it contains a character outside the basic
+/// multilingual plane.
+#[cfg(any(target_os = "linux", test))]
+fn cross_name() -> String {
+    format!("sea😀{}", "n".repeat(70))
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn hash_to_file(hash: &str) -> PathBuf {
     let chars: Vec<char> = hash.chars().collect();
@@ -600,6 +591,18 @@ fn gzip_file(disk: &Path) -> PathBuf {
     let mut name = disk.as_os_str().to_os_string();
     name.push(".gz");
     PathBuf::from(name)
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_base(run: &Path, name: &str) -> Result<PathBuf, String> {
+    let base = run.join(name);
+    if base.exists() {
+        fs::remove_dir_all(&base)
+            .map_err(|error| format!("could not reset {}: {error}", base.display()))?;
+    }
+    fs::create_dir_all(&base)
+        .map_err(|error| format!("could not create {}: {error}", base.display()))?;
+    Ok(base)
 }
 
 #[cfg(target_os = "linux")]
@@ -631,18 +634,6 @@ fn write_gzip(base: &Path, hash: &str, data: &[u8]) -> Result<(), String> {
     file.sync_all()
         .map_err(|error| format!("could not store an asset file: {error}"))?;
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn wait_gzip(base: &str, hash: &str) -> Result<(), String> {
-    let path = gzip_file(&Path::new(base).join(hash_to_file(hash)));
-    for _ in 0..40 {
-        if path.is_file() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    Err("the asset writer did not publish the file".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -854,7 +845,7 @@ fn start_side(spec: &StartSpec<'_>) -> Result<crate::assets::Owned, String> {
     let ini = service_ini(&IniSpec {
         port: spec.port,
         provider: spec.db.provider(),
-        ado: &ado(spec.db, spec.target, csharp),
+        ado: &ado(spec.db, spec.target),
         grid: csharp,
         base: spec.base,
         spool: spec.spool,
@@ -871,7 +862,7 @@ fn start_side(spec: &StartSpec<'_>) -> Result<crate::assets::Owned, String> {
         if !binary.is_file() {
             return Err("run cargo xtask live build first".to_string());
         }
-        crate::assets::spawn_owned(
+        let mut server = crate::assets::spawn_owned(
             &binary,
             &[
                 "--inimaster",
@@ -885,9 +876,17 @@ fn start_side(spec: &StartSpec<'_>) -> Result<crate::assets::Owned, String> {
             spec.log,
             true,
             true,
-        )
+        )?;
+        crate::assets::wait_service(&mut server, "fsasset-csharp", spec.port, spec.log)?;
+        // Robust binds the socket before it registers the asset routes.
+        wait_log_line(
+            spec.log,
+            "AssetServiceConnector loaded successfully",
+            &spec.target.password,
+        )?;
+        Ok(server)
     } else {
-        let binary = live::build_binary("ferroan-robust")?;
+        let binary = live::build_binary_with_profile("ferroan-robust", "release")?;
         crate::assets::spawn_owned(
             &binary,
             &["--inimaster", ini_arg, "--inidirectory", empty_arg],
@@ -901,35 +900,40 @@ fn start_side(spec: &StartSpec<'_>) -> Result<crate::assets::Owned, String> {
 
 #[cfg(target_os = "linux")]
 struct TimedCross {
-    csharp_ms: u128,
-    ferroan_ms: u128,
+    csharp_first_ms: u128,
+    ferroan_second_ms: u128,
+    ferroan_first_ms: u128,
+    csharp_second_ms: u128,
     csharp_miss: u16,
     ferroan_miss: u16,
     csharp_kept_hash: bool,
-    ferroan_wrote_hash: bool,
+    ferroan_kept_hash: bool,
 }
 
 #[cfg(target_os = "linux")]
-fn time_and_cross(
-    db: FsassetDb,
-    target: &DbTarget,
-    base: &str,
-    now: i64,
-) -> Result<TimedCross, String> {
-    let bulk_hash = sha256_bytes(BULK_BODY);
+fn time_and_cross(db: FsassetDb, target: &DbTarget, now: i64) -> Result<TimedCross, String> {
     let old_hash = sha256_bytes(FORCE_OLD);
-    let new_hash = sha256_bytes(FORCE_NEW);
-    let sql = timing_sql(db, now, &bulk_hash, &old_hash)?;
+    let sql = timing_sql(db, now, &old_hash)?;
     let run = live::scratch_run();
     apply_sql(db, target, &sql, &run)?;
-    write_gzip(Path::new(base), &bulk_hash, BULK_BODY)?;
-    write_gzip(Path::new(base), &old_hash, FORCE_OLD)?;
+    let label = db.label();
+    let csharp_base = prepare_base(&run, &format!("fsasset-timed-base-{label}-csharp"))?;
+    let ferroan_base = prepare_base(&run, &format!("fsasset-timed-base-{label}-ferroan"))?;
+    println!("live: fsassets writing {BULK_COUNT} asset files");
+    write_timed_files(&csharp_base, &old_hash)?;
+    write_timed_files(&ferroan_base, &old_hash)?;
+    let csharp_base_arg = csharp_base
+        .to_str()
+        .ok_or("fsassets base path is not utf-8")?;
+    let ferroan_base_arg = ferroan_base
+        .to_str()
+        .ok_or("fsassets base path is not utf-8")?;
     let rust_port = live::allocate_port()?;
     let csharp_port = live::allocate_port()?;
-    let rust_log = run.join(format!("fsasset-{}-timed-ferroan.log", db.label()));
-    let csharp_log = run.join(format!("fsasset-{}-timed-csharp.log", db.label()));
-    let rust_spool = run.join(format!("fsasset-timed-spool-{}-ferroan", db.label()));
-    let csharp_spool = run.join(format!("fsasset-timed-spool-{}-csharp", db.label()));
+    let rust_log = run.join(format!("fsasset-{label}-timed-ferroan.log"));
+    let csharp_log = run.join(format!("fsasset-{label}-timed-csharp.log"));
+    let rust_spool = run.join(format!("fsasset-timed-spool-{label}-ferroan"));
+    let csharp_spool = run.join(format!("fsasset-timed-spool-{label}-csharp"));
     fs::create_dir_all(&rust_spool)
         .map_err(|error| format!("could not create {}: {error}", rust_spool.display()))?;
     fs::create_dir_all(&csharp_spool)
@@ -940,15 +944,15 @@ fn time_and_cross(
     let csharp_spool_arg = csharp_spool
         .to_str()
         .ok_or("fsassets spool path is not utf-8")?;
-    let ferroan_name = format!("{}-timed-ferroan", db.label());
-    let csharp_name = format!("{}-timed-csharp", db.label());
+    let ferroan_name = format!("{label}-timed-ferroan");
+    let csharp_name = format!("{label}-timed-csharp");
     let mut ferroan = start_side(&StartSpec {
         db,
         target,
         name: &ferroan_name,
         port: rust_port,
         log: &rust_log,
-        base,
+        base: ferroan_base_arg,
         spool: rust_spool_arg,
         access_days: TIMED_ACCESS_DAYS,
     })?;
@@ -958,7 +962,7 @@ fn time_and_cross(
         name: &csharp_name,
         port: csharp_port,
         log: &csharp_log,
-        base,
+        base: csharp_base_arg,
         spool: csharp_spool_arg,
         access_days: TIMED_ACCESS_DAYS,
     });
@@ -974,63 +978,261 @@ fn time_and_cross(
             crate::assets::wait_service(&mut csharp, "fsasset-csharp", csharp_port, &csharp_log)
         });
     let outcome = ready.and_then(|()| {
-        cross_store(rust_port, base, RUST_WROTE, RUST_BODY, csharp_port)?;
-        cross_store(csharp_port, base, CSHARP_WROTE, CSHARP_BODY, rust_port)?;
-        println!("live: fsassets reading {BULK_COUNT} assets");
-        let csharp_ms = time_reads(csharp_port)?;
-        let ferroan_ms = time_reads(rust_port)?;
+        cross_read(
+            db,
+            target,
+            &run,
+            rust_port,
+            &ferroan_base,
+            csharp_port,
+            &csharp_base,
+        )?;
+        println!("live: fsassets warming up both services with {BULK_COUNT} reads each");
+        time_reads(csharp_port)?;
+        time_reads(rust_port)?;
+        println!("live: fsassets reading {BULK_COUNT} assets, csharp then ferroan");
+        let csharp_first_ms = time_reads(csharp_port)?;
+        let ferroan_second_ms = time_reads(rust_port)?;
+        println!("live: fsassets reading {BULK_COUNT} assets, ferroan then csharp");
+        let ferroan_first_ms = time_reads(rust_port)?;
+        let csharp_second_ms = time_reads(csharp_port)?;
         let csharp_miss = http_status(csharp_port, "/assets/nope")?;
         let ferroan_miss = http_status(rust_port, "/assets/nope")?;
-        post_asset(csharp_port, FORCE_ID, "force", FORCE_NEW)?;
+        post_asset(csharp_port, FORCE_ID, "force", 0, "Normal", FORCE_NEW)?;
+        let after_csharp = select_hash(db, target, &run, FORCE_ID)?;
+        post_asset(rust_port, FORCE_ID, "force", 0, "Normal", FORCE_NEW)?;
+        let after_ferroan = select_hash(db, target, &run, FORCE_ID)?;
+        if db == FsassetDb::Mysql {
+            probe_refused_delete(target, &run, csharp_port, rust_port)?;
+        }
         Ok(TimedCross {
-            csharp_ms,
-            ferroan_ms,
+            csharp_first_ms,
+            ferroan_second_ms,
+            ferroan_first_ms,
+            csharp_second_ms,
             csharp_miss,
             ferroan_miss,
-            csharp_kept_hash: false,
-            ferroan_wrote_hash: false,
+            csharp_kept_hash: after_csharp.eq_ignore_ascii_case(&old_hash),
+            ferroan_kept_hash: after_ferroan.eq_ignore_ascii_case(&old_hash),
         })
     });
     drop(csharp);
     drop(ferroan);
-    let mut timed = outcome?;
-    let stored = select_hash(db, target, &run, FORCE_ID)?;
-    timed.csharp_kept_hash = stored.eq_ignore_ascii_case(&old_hash);
-    if !is_hash(&new_hash) || !is_uuid(FORCE_ID) {
-        return Err("the force update is not a uuid and hash".to_string());
-    }
-    apply_sql(
-        db,
-        target,
-        &force_sql(db.postgres(), FORCE_ID, &new_hash, now),
-        &run,
-    )?;
-    let updated = select_hash(db, target, &run, FORCE_ID)?;
-    timed.ferroan_wrote_hash = updated.eq_ignore_ascii_case(&new_hash);
-    Ok(timed)
+    outcome
+}
+
+/// A foreign key keeps a readable asset in place while both services try
+/// to delete it. Removing the constraint lets both delete routes succeed.
+#[cfg(target_os = "linux")]
+fn probe_refused_delete(
+    target: &DbTarget,
+    run: &Path,
+    csharp: u16,
+    ferroan: u16,
+) -> Result<(), String> {
+    let sql = |statement: &str| apply_sql(FsassetDb::Mysql, target, statement, run);
+    let delete = |port, id, expected| {
+        let path = format!("/assets/{id}");
+        let reply = http_exchange(port, &http_request("DELETE", &path, port, &[]), false)?;
+        if reply.status == 200 && reply.body == ferroan_services::asset::encode_bool(expected) {
+            Ok(())
+        } else {
+            Err(format!(
+                "DELETE {path}: expected HTTP 200 {expected}, received HTTP {}",
+                reply.status
+            ))
+        }
+    };
+    let drop_guard = "DROP TABLE IF EXISTS ferroan_qr28_delete_guard";
+    sql(drop_guard)?;
+    sql(&format!(
+        "CREATE TABLE ferroan_qr28_delete_guard AS SELECT id FROM fsassets WHERE id IN ('{RUST_WROTE}', '{CSHARP_WROTE}')"
+    ))?;
+    let refused = (|| {
+        sql("ALTER TABLE ferroan_qr28_delete_guard ADD FOREIGN KEY (id) REFERENCES fsassets(id)")?;
+        delete(csharp, RUST_WROTE, false)?;
+        delete(ferroan, CSHARP_WROTE, false)
+    })();
+    let cleanup = sql(drop_guard);
+    refused?;
+    cleanup?;
+    delete(csharp, RUST_WROTE, true)?;
+    delete(ferroan, CSHARP_WROTE, true)?;
+    println!(
+        "live: mysql DELETE on each service: 200 false with foreign key, 200 true after release"
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn cross_store(writer: u16, base: &str, id: &str, body: &[u8], reader: u16) -> Result<(), String> {
-    post_asset(writer, id, "cross", body)?;
-    wait_gzip(base, &sha256_bytes(body))?;
-    let reply = http_get(reader, &format!("/assets/{id}/data"))?;
-    if reply.status != 200 || reply.body != body {
+fn write_timed_files(base: &Path, old_hash: &str) -> Result<(), String> {
+    for index in 0..BULK_COUNT {
+        if index.is_multiple_of(2000) {
+            println!("live: fsassets file {index}");
+        }
+        let body = bulk_body(index);
+        write_gzip(base, &sha256_bytes(&body), &body)?;
+    }
+    write_gzip(base, old_hash, FORCE_OLD)
+}
+
+/// Each side stores the same asset shape under its own id. The gzip the
+/// writer published is copied into the reader's base, and both GET the asset.
+/// The two stored rows are compared with the times left out.
+#[cfg(target_os = "linux")]
+fn cross_read(
+    db: FsassetDb,
+    target: &DbTarget,
+    run: &Path,
+    ferroan_port: u16,
+    ferroan_base: &Path,
+    csharp_port: u16,
+    csharp_base: &Path,
+) -> Result<(), String> {
+    let name = cross_name();
+    let hash = sha256_bytes(CROSS_BODY);
+    post_asset(ferroan_port, RUST_WROTE, &name, 7, "Maptile", CROSS_BODY)?;
+    post_asset(csharp_port, CSHARP_WROTE, &name, 7, "Maptile", CROSS_BODY)?;
+    wait_published(ferroan_base, std::slice::from_ref(&hash))?;
+    wait_published(csharp_base, std::slice::from_ref(&hash))?;
+    let ferroan_xml = asset_document(ferroan_port, RUST_WROTE)?;
+    let csharp_xml = asset_document(csharp_port, CSHARP_WROTE)?;
+    let ferroan_file = read_published(ferroan_base, &hash)?;
+    let csharp_file = read_published(csharp_base, &hash)?;
+    // The reader's base gets the writer's gzip, not a file that reader wrote.
+    place_published(csharp_base, &hash, &ferroan_file)?;
+    let csharp_reads_ferroan = asset_document(csharp_port, RUST_WROTE)?;
+    if ferroan_xml != csharp_reads_ferroan {
         return Err(format!(
-            "cross-read of {id} status {} length {}",
-            reply.status,
-            reply.body.len()
+            "cross-read XML differs for {RUST_WROTE}\n{}",
+            crate::assets::first_difference(&ferroan_xml, &csharp_reads_ferroan)
+        ));
+    }
+    place_published(ferroan_base, &hash, &csharp_file)?;
+    let ferroan_reads_csharp = asset_document(ferroan_port, CSHARP_WROTE)?;
+    if csharp_xml != ferroan_reads_csharp {
+        return Err(format!(
+            "cross-read XML differs for {CSHARP_WROTE}\n{}",
+            crate::assets::first_difference(&csharp_xml, &ferroan_reads_csharp)
+        ));
+    }
+    let stored_by_ferroan = normalize_id(&ferroan_xml, RUST_WROTE);
+    let stored_by_csharp = normalize_id(&csharp_xml, CSHARP_WROTE);
+    if stored_by_ferroan != stored_by_csharp {
+        return Err(format!(
+            "stored asset XML differs\n{}",
+            crate::assets::first_difference(&stored_by_ferroan, &stored_by_csharp)
+        ));
+    }
+    let ferroan_row = normalize_id(&select_cross_row(db, target, run, RUST_WROTE)?, RUST_WROTE);
+    let csharp_row = normalize_id(
+        &select_cross_row(db, target, run, CSHARP_WROTE)?,
+        CSHARP_WROTE,
+    );
+    if ferroan_row != csharp_row {
+        return Err(format!(
+            "fsassets rows differ\ncsharp: {csharp_row}\nferroan: {ferroan_row}"
         ));
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn post_asset(port: u16, id: &str, name: &str, body: &[u8]) -> Result<(), String> {
-    let xml = asset_xml(id, name, body);
-    let reply = http_exchange(port, &http_request("POST", "/assets", port, &xml), false)?;
+fn asset_document(port: u16, id: &str) -> Result<String, String> {
+    let reply = http_get(port, &format!("/assets/{id}"))?;
     if reply.status != 200 {
-        return Err(format!("asset store of {id} status {}", reply.status));
+        return Err(format!("cross-read of {id} status {}", reply.status));
+    }
+    let decoded = ferroan_services::asset::decode_asset(&reply.body)
+        .map_err(|_| format!("cross-read of {id} returned invalid asset XML"))?;
+    if decoded.id_text != id
+        || decoded.asset.type_code != 7
+        || decoded.asset.flags == 0
+        || decoded.asset.data != CROSS_BODY
+    {
+        return Err(format!(
+            "cross-read of {id} lost its id, type, flags or data"
+        ));
+    }
+    String::from_utf8(reply.body).map_err(|_| format!("cross-read of {id} is not utf-8"))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn normalize_id(text: &str, id: &str) -> String {
+    text.replace(id, "{id}")
+}
+
+#[cfg(target_os = "linux")]
+fn published_path(base: &Path, hash: &str) -> PathBuf {
+    base.join(gzip_file(&hash_to_file(hash)))
+}
+
+#[cfg(target_os = "linux")]
+fn read_published(base: &Path, hash: &str) -> Result<Vec<u8>, String> {
+    let path = published_path(base, hash);
+    fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn place_published(base: &Path, hash: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = published_path(base, hash);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    fs::write(&path, bytes).map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn select_cross_row(
+    db: FsassetDb,
+    target: &DbTarget,
+    run: &Path,
+    id: &str,
+) -> Result<String, String> {
+    if !is_uuid(id) {
+        return Err("the cross-read id is not a uuid".to_string());
+    }
+    let sql = if db.postgres() {
+        format!(
+            "SELECT id::text || '|' || type::text || '|' || lower(trim(hash)) || '|' || \
+             asset_flags::text FROM fsassets WHERE id = '{id}'::uuid"
+        )
+    } else {
+        format!(
+            "SELECT CONCAT_WS('|', id, name, description, type, LOWER(TRIM(hash)), asset_flags) \
+             FROM fsassets WHERE id = '{id}'"
+        )
+    };
+    let text = query_sql(db, target, run, &sql)?;
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let row = lines
+        .next()
+        .ok_or_else(|| format!("the fsassets row {id} is missing"))?
+        .trim()
+        .to_string();
+    if lines.next().is_some() {
+        return Err(format!("the fsassets row {id} is not one row"));
+    }
+    Ok(row)
+}
+
+#[cfg(target_os = "linux")]
+fn post_asset(
+    port: u16,
+    id: &str,
+    name: &str,
+    type_code: i8,
+    flags: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    let xml = asset_xml(id, name, type_code, flags, body);
+    let reply = http_exchange(port, &http_request("POST", "/assets", port, &xml), false)?;
+    if reply.status != 200 || reply.body != ferroan_services::asset::encode_string(id) {
+        return Err(format!(
+            "asset store of {id} did not return its id (HTTP {})",
+            reply.status
+        ));
     }
     Ok(())
 }
@@ -1040,12 +1242,10 @@ fn time_reads(port: u16) -> Result<u128, String> {
     let started = Instant::now();
     let mut conn = Conn::connect(port)?;
     for index in 0..BULK_COUNT {
-        if index.is_multiple_of(2000) {
-            println!("live: fsassets read {index}");
-        }
         let path = format!("/assets/{}/data", bulk_id(index));
         let reply = conn.get(&http_request("GET", &path, port, &[]))?;
-        if reply.status != 200 || reply.body.as_slice() != BULK_BODY {
+        let body = bulk_body(index);
+        if reply.status != 200 || reply.body.as_slice() != body {
             return Err(format!(
                 "asset {index} read status {} ({} bytes)",
                 reply.status,
@@ -1262,20 +1462,36 @@ fn http_request(method: &str, path: &str, port: u16, body: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(target_os = "linux")]
-fn asset_xml(id: &str, name: &str, data: &[u8]) -> Vec<u8> {
+fn asset_xml(id: &str, name: &str, type_code: i8, flags: &str, data: &[u8]) -> Vec<u8> {
     let encoded = base64(data);
+    let name = xml_text(name);
+    let flags = xml_text(flags);
     let text = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
          <AssetBase xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
          xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n  \
          <Data>{encoded}</Data>\n  <FullID>\n    <Guid>{id}</Guid>\n  </FullID>\n  \
          <ID>{id}</ID>\n  <Name>{name}</Name>\n  <Description>cross</Description>\n  \
-         <Type>0</Type>\n  <UploadAttempts>0</UploadAttempts>\n  \
+         <Type>{type_code}</Type>\n  <UploadAttempts>0</UploadAttempts>\n  \
          <Local>false</Local>\n  <Temporary>false</Temporary>\n  \
-         <CreatorID></CreatorID>\n  <Flags>Normal</Flags>\n</AssetBase>"
+         <CreatorID></CreatorID>\n  <Flags>{flags}</Flags>\n</AssetBase>"
     );
     let mut out = vec![0xEF, 0xBB, 0xBF];
     out.extend_from_slice(text.as_bytes());
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn xml_text(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            other => out.push(other),
+        }
+    }
     out
 }
 
@@ -1312,53 +1528,366 @@ fn base64(data: &[u8]) -> String {
 }
 
 #[cfg(target_os = "linux")]
+struct ImportSnapshot {
+    rows: String,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+/// C# `import` on the Robust console, then Ferroan's `import` in process.
+/// The remote console does not register that command. Both run on one source
+/// table. `fsassets` is emptied between them.
+#[cfg(target_os = "linux")]
 fn probe_import(db: FsassetDb, target: &DbTarget, run: &Path) -> Result<(), String> {
-    let create = import_seed_sql(db.postgres());
-    apply_sql(db, target, create, run)?;
-    let pin = query_sql(db, target, run, pin_page_sql(db.postgres()));
-    let ferroan = query_sql(db, target, run, ferroan_page_sql(db.postgres()));
+    let outcome = (|| {
+        apply_sql(db, target, &import_source_sql(db.postgres()), run)?;
+        apply_sql(db, target, "DELETE FROM fsassets;\n", run)?;
+        let label = db.label();
+        let csharp_base = prepare_base(run, &format!("fsasset-import-base-{label}-csharp"))?;
+        let ferroan_base = prepare_base(run, &format!("fsasset-import-base-{label}-ferroan"))?;
+        let imports = |base: &Path,
+                       importer: fn(
+            FsassetDb,
+            &DbTarget,
+            &Path,
+            &Path,
+            bool,
+        ) -> Result<ImportSnapshot, String>| {
+            let set_source = |body: &[u8]| {
+                let hex = hex_encode(body);
+                let data = if db.postgres() {
+                    format!("decode('{hex}', 'hex')")
+                } else {
+                    format!("UNHEX('{hex}')")
+                };
+                apply_sql(
+                    db,
+                    target,
+                    &format!("UPDATE {IMPORT_TABLE} SET data={data} WHERE id='{IMPORT_ONE}'"),
+                    run,
+                )
+            };
+            set_source(IMPORT_BODY_ONE)?;
+            let ordinary = importer(db, target, run, base, false)?;
+            set_source(FORCE_NEW)?;
+            let forced = importer(db, target, run, base, true)?;
+            Ok::<_, String>([ordinary, forced])
+        };
+        let csharp = imports(&csharp_base, import_with_csharp)?;
+        apply_sql(db, target, "DELETE FROM fsassets", run)?;
+        let ferroan = imports(&ferroan_base, import_with_ferroan)?;
+        for (left, right) in csharp.iter().zip(&ferroan) {
+            if left.rows != right.rows {
+                return Err(format!(
+                    "import rows differ\ncsharp: {}\nferroan: {}",
+                    left.rows.trim(),
+                    right.rows.trim()
+                ));
+            }
+            if left.files != right.files {
+                return Err(import_file_diff(&left.files, &right.files));
+            }
+        }
+        println!("live: import and force import: both catalog rows and published files match");
+        Ok(())
+    })();
     let dropped = apply_sql(
         db,
         target,
-        "DROP TABLE IF EXISTS ferroan_q23e_import;\n",
+        &format!("DROP TABLE IF EXISTS {IMPORT_TABLE};\n"),
         run,
     );
-    let pin = pin?;
-    let ferroan = ferroan?;
-    dropped?;
-    pages_match(db.postgres(), &pin, &ferroan)
+    outcome?;
+    dropped
 }
 
-#[cfg(target_os = "linux")]
-fn import_seed_sql(postgres: bool) -> &'static str {
+#[cfg(any(target_os = "linux", test))]
+fn import_source_sql(postgres: bool) -> String {
+    let one = hex_encode(IMPORT_BODY_ONE);
+    let two = hex_encode(IMPORT_BODY_TWO);
     if postgres {
-        "DROP TABLE IF EXISTS ferroan_q23e_import;\n\
-         CREATE TABLE ferroan_q23e_import (id uuid PRIMARY KEY);\n\
-         INSERT INTO ferroan_q23e_import (id) VALUES \
-         ('f23e00a0-0000-4000-8000-000000000001'), \
-         ('f23e00a0-0000-4000-8000-000000000002'), \
-         ('f23e00a0-0000-4000-8000-000000000003');\n"
+        format!(
+            "DROP TABLE IF EXISTS {IMPORT_TABLE};\n\
+             CREATE TABLE {IMPORT_TABLE} (\n\
+               id uuid NOT NULL PRIMARY KEY,\n\
+               name varchar(64) NOT NULL DEFAULT '',\n\
+               description varchar(64) NOT NULL DEFAULT '',\n\
+               \"assetType\" smallint NOT NULL,\n\
+               create_time integer NOT NULL DEFAULT 0,\n\
+               data bytea NOT NULL\n\
+             );\n\
+             INSERT INTO {IMPORT_TABLE} \
+             (id, name, description, \"assetType\", create_time, data) VALUES\n\
+             ('{IMPORT_ONE}', 'kelp', 'one', 0, 1700000000, decode('{one}', 'hex')),\n\
+             ('{IMPORT_TWO}', 'reed', 'two', 7, 1700000001, decode('{two}', 'hex'));\n"
+        )
     } else {
-        "DROP TABLE IF EXISTS ferroan_q23e_import;\n\
-         CREATE TABLE ferroan_q23e_import (id char(36) PRIMARY KEY);\n\
-         INSERT INTO ferroan_q23e_import (id) VALUES \
-         ('f23e00a0-0000-4000-8000-000000000001'), \
-         ('f23e00a0-0000-4000-8000-000000000002'), \
-         ('f23e00a0-0000-4000-8000-000000000003');\n"
+        format!(
+            "DROP TABLE IF EXISTS {IMPORT_TABLE};\n\
+             CREATE TABLE {IMPORT_TABLE} (\n\
+               id char(36) NOT NULL,\n\
+               name varchar(64) NOT NULL DEFAULT '',\n\
+               description varchar(64) NOT NULL DEFAULT '',\n\
+               assetType tinyint NOT NULL,\n\
+               create_time int NOT NULL DEFAULT 0,\n\
+               data longblob NOT NULL,\n\
+               PRIMARY KEY (id)\n\
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;\n\
+             INSERT INTO {IMPORT_TABLE} \
+             (id, name, description, assetType, create_time, data) VALUES\n\
+             ('{IMPORT_ONE}', 'kelp', 'one', 0, 1700000000, UNHEX('{one}')),\n\
+             ('{IMPORT_TWO}', 'reed', 'two', 7, 1700000001, UNHEX('{two}'));\n"
+        )
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn row_count(text: &str) -> usize {
-    page_ids(text).len()
+#[cfg(target_os = "linux")]
+fn import_with_csharp(
+    db: FsassetDb,
+    target: &DbTarget,
+    run: &Path,
+    base: &Path,
+    force: bool,
+) -> Result<ImportSnapshot, String> {
+    let port = live::allocate_port()?;
+    let label = db.label();
+    let log = run.join(format!("fsasset-{label}-import-csharp.log"));
+    let spool = run.join(format!("fsasset-import-spool-{label}-csharp"));
+    fs::create_dir_all(&spool)
+        .map_err(|error| format!("could not create {}: {error}", spool.display()))?;
+    let base_arg = base.to_str().ok_or("fsassets base path is not utf-8")?;
+    let spool_arg = spool.to_str().ok_or("fsassets spool path is not utf-8")?;
+    let name = format!("{label}-import-csharp");
+    let mut server = start_side(&StartSpec {
+        db,
+        target,
+        name: &name,
+        port,
+        log: &log,
+        base: base_arg,
+        spool: spool_arg,
+        access_days: TIMED_ACCESS_DAYS,
+    })?;
+    let ready = crate::assets::wait_service(&mut server, "fsasset-import-csharp", port, &log);
+    let outcome = ready.and_then(|()| {
+        let command = if force { "force import" } else { "import" };
+        let line = format!("{command} {} {IMPORT_TABLE}\n", console_ado(db, target));
+        server.write_console(&line)?;
+        wait_log_line(&log, "Import done, 2 assets imported", &target.password)?;
+        let hashes = [
+            sha256_bytes(if force { FORCE_NEW } else { IMPORT_BODY_ONE }),
+            sha256_bytes(IMPORT_BODY_TWO),
+        ];
+        wait_published(base, &hashes)?;
+        snapshot_import(db, target, run, base, force)
+    });
+    drop(server);
+    outcome
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn page_ids(text: &str) -> Vec<&str> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect()
+#[cfg(target_os = "linux")]
+fn import_with_ferroan(
+    db: FsassetDb,
+    target: &DbTarget,
+    run: &Path,
+    base: &Path,
+    force: bool,
+) -> Result<ImportSnapshot, String> {
+    use ferroan_services::asset::WriterPass;
+
+    let label = db.label();
+    let spool = run.join(format!("fsasset-import-spool-{label}-ferroan"));
+    fs::create_dir_all(&spool)
+        .map_err(|error| format!("could not create {}: {error}", spool.display()))?;
+    let url = std::env::var(db.env_name()).map_err(|_| format!("{} is unset", db.env_name()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|_| "could not start the import runtime".to_string())?;
+    runtime.block_on(async {
+        let pool = ferroan_db::Pool::connect_sqlx_url(&url)
+            .await
+            .map_err(|_| "ferroan import did not open the database".to_string())?;
+        pool.require_stores(&["FSAssetStore"])
+            .await
+            .map_err(|_| "ferroan import did not find the asset store".to_string())?;
+        let store = ferroan_services::asset::FsAssetStore::with_settings(pool, "fsassets", 0)
+            .map_err(|_| "ferroan import did not open the asset store".to_string())?;
+        let files = ferroan_services::asset::FsFiles::new(base, &spool, false);
+        let service =
+            ferroan_services::asset::FsAssetService::new(store, files.clone(), None, true);
+        let console = console_ado(db, target);
+        let args = ["force", "import", console.as_str(), IMPORT_TABLE];
+        let command = if force { &args[..] } else { &args[1..] };
+        let lines = service
+            .console_import(command)
+            .await
+            .map_err(|_| "ferroan import failed".to_string())?;
+        if !lines
+            .iter()
+            .any(|line| line == "Import done, 2 assets imported")
+        {
+            return Err("ferroan import did not finish".to_string());
+        }
+        loop {
+            match files.writer_pass() {
+                WriterPass::Drained => return Ok(()),
+                WriterPass::More => continue,
+                WriterPass::Retry => {
+                    return Err("ferroan import left a file in the spool".to_string());
+                }
+            }
+        }
+    })?;
+    let hashes = [
+        sha256_bytes(if force { FORCE_NEW } else { IMPORT_BODY_ONE }),
+        sha256_bytes(IMPORT_BODY_TWO),
+    ];
+    wait_published(base, &hashes)?;
+    snapshot_import(db, target, run, base, force)
+}
+
+#[cfg(target_os = "linux")]
+fn snapshot_import(
+    db: FsassetDb,
+    target: &DbTarget,
+    run: &Path,
+    base: &Path,
+    force: bool,
+) -> Result<ImportSnapshot, String> {
+    let rows = query_sql(db, target, run, import_row_sql(db.postgres()))?;
+    let files = published_files(base)?;
+    let expected_hash = sha256_bytes(if force { FORCE_NEW } else { IMPORT_BODY_ONE });
+    if select_hash(db, target, run, IMPORT_ONE)? != expected_hash || rows.lines().count() != 2 {
+        return Err("import did not store the expected rows and hash".to_string());
+    }
+    let expected_files = if force { 3 } else { 2 };
+    if files.len() != expected_files {
+        return Err(format!(
+            "import published {} files, expected {expected_files}",
+            files.len()
+        ));
+    }
+    Ok(ImportSnapshot { rows, files })
+}
+
+#[cfg(target_os = "linux")]
+fn published_files(base: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut out = BTreeMap::new();
+    let mut pending = vec![base.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = fs::read_dir(&dir)
+            .map_err(|error| format!("could not read {}: {error}", dir.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("could not read {}: {error}", dir.display()))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            if kind.is_symlink() {
+                return Err(format!(
+                    "unexpected link in import output: {}",
+                    path.display()
+                ));
+            }
+            if kind.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".gz") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(base)
+                .map_err(|_| "an imported file is outside its base".to_string())?;
+            let key = relative
+                .to_str()
+                .ok_or("an imported file path is not utf-8")?
+                .to_string();
+            let compressed = fs::File::open(&path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            let limit = IMPORT_BODY_ONE
+                .len()
+                .max(IMPORT_BODY_TWO.len())
+                .max(FORCE_NEW.len());
+            let mut decoder = GzDecoder::new(compressed).take((limit + 1) as u64);
+            let mut data = Vec::new();
+            decoder
+                .read_to_end(&mut data)
+                .map_err(|_| format!("could not decompress {}", path.display()))?;
+            if data.len() > limit || out.len() >= 3 {
+                return Err("import output exceeds the three seeded files or their size".to_owned());
+            }
+            out.insert(key, data);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(target_os = "linux")]
+fn import_file_diff(left: &BTreeMap<String, Vec<u8>>, right: &BTreeMap<String, Vec<u8>>) -> String {
+    if left.len() != right.len() {
+        return format!(
+            "import files differ: csharp {} files, ferroan {} files",
+            left.len(),
+            right.len()
+        );
+    }
+    for (key, data) in left {
+        match right.get(key) {
+            Some(other) if other == data => {}
+            Some(other) => {
+                return format!(
+                    "import file {key} differs: csharp {} bytes, ferroan {} bytes",
+                    data.len(),
+                    other.len()
+                );
+            }
+            None => return format!("import file {key} is missing on ferroan"),
+        }
+    }
+    "import files differ".to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn wait_log_line(log: &Path, needle: &str, secret: &str) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        if let Ok(text) = fs::read_to_string(log)
+            && text.contains(needle)
+        {
+            return Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(90) {
+            let tail = fs::read(log).unwrap_or_default();
+            return Err(format!(
+                "did not observe {needle} in the C# service log\n{}",
+                redact(&tail_text(&tail), secret)
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_published(base: &Path, hashes: &[String]) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        if hashes
+            .iter()
+            .all(|hash| published_path(base, hash).is_file())
+        {
+            return Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            return Err("the asset writer did not publish the imported file".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1540,44 +2069,41 @@ mod tests {
     }
 
     #[test]
-    fn fsasset_success_line_names_only_the_ids_this_run_shows() {
-        let mysql = success_report("csharp", "ferroan", 12, 10, 12, &["TB45"]);
-        assert!(mysql.contains("assets: match (12 http records)"));
-        assert!(mysql.contains("cross-read ok"));
-        assert!(mysql.contains("10000-asset read: csharp 10 ms, ferroan 12 ms"));
-        assert!(mysql.contains("known differences: TB45"));
-        assert!(!mysql.contains("TB39"));
-        assert!(!mysql.contains("TB40"));
-        let clean = success_report("csharp", "ferroan", 1, 1, 1, &[]);
-        assert!(!clean.contains("known differences"));
-    }
-
-    #[test]
-    fn fsasset_probes_fail_a_miss_or_a_page_that_differs() {
+    fn fsasset_probes_fail_a_miss_or_a_store_that_overwrites() {
         assert!(classify_missing(404, 404).is_ok());
         assert!(classify_missing(500, 404).is_err());
         assert!(classify_force(true, true).is_ok());
         assert!(classify_force(false, true).is_err());
         assert!(classify_force(true, false).is_err());
-        assert!(pages_match(false, "a\nb\n", "b\na\n").is_ok());
-        assert!(pages_match(false, "a\n", "a\nb\n").is_err());
-        assert!(pages_match(true, "a\nb\n", "a\nb\n").is_ok());
-        assert!(pages_match(true, "a\nb\n", "b\na\n").is_err());
+        assert!(classify_force(false, false).is_err());
     }
 
     #[test]
-    fn fsasset_import_sql_matches_the_pin_page() {
-        assert_eq!(pin_page_sql(true), ferroan_page_sql(true));
-        assert!(pin_page_sql(true).contains("ORDER BY id LIMIT 2 OFFSET 0"));
-        assert!(!pin_page_sql(true).contains("LIMIT 0 OFFSET 2"));
-        assert!(pin_page_sql(false).contains("LIMIT 0, 2"));
-        assert!(!pin_page_sql(false).contains("ORDER BY"));
-        assert!(ferroan_page_sql(false).contains("ORDER BY id LIMIT 0, 2"));
-        let force = force_sql(true, FORCE_ID, &"ab".repeat(32), 5);
-        assert!(force.contains("SET \"hash\""));
-        assert!(force.contains("access_time"));
-        assert!(!force.contains("name"));
-        assert_eq!(row_count("one\n\ntwo\n"), 2);
+    fn fsasset_import_rows_leave_out_the_clock_and_the_console_string_has_no_spaces() {
+        let postgres = import_row_sql(true);
+        let mysql = import_row_sql(false);
+        assert!(postgres.contains("ORDER BY id"));
+        assert!(mysql.contains("CONCAT_WS"));
+        assert!(!postgres.contains("create_time"));
+        assert!(!postgres.contains("access_time"));
+        assert!(!mysql.contains("create_time"));
+        assert!(!mysql.contains("access_time"));
+        assert!(!postgres.contains("name"));
+        assert!(mysql.contains("name"));
+        let source = import_source_sql(false);
+        assert!(source.contains(IMPORT_TABLE));
+        assert!(source.contains(IMPORT_ONE));
+        assert!(source.contains(IMPORT_TWO));
+        assert!(source.contains("UNHEX"));
+        assert!(import_source_sql(true).contains("decode("));
+        let console = console_ado(FsassetDb::Mysql, &target());
+        assert!(!console.contains(' '));
+        assert!(!console.contains("Pooling"));
+        assert!(console.contains("Uid="));
+        let postgres_console = console_ado(FsassetDb::Pgsql, &target());
+        assert!(!postgres_console.contains(' '));
+        assert!(postgres_console.contains("Username="));
+        assert!(postgres_console.contains("SslMode=Disable"));
     }
 
     #[test]
@@ -1606,14 +2132,21 @@ mod tests {
         assert_eq!(base64(b"hello"), "aGVsbG8=");
         assert!(is_uuid(&bulk_id(9_999)));
         assert_ne!(bulk_id(0), FORCE_ID);
+        assert_ne!(sha256_bytes(&bulk_body(0)), sha256_bytes(&bulk_body(1)));
+        let name = cross_name();
+        assert!(name.chars().count() > 64);
+        assert!(name.chars().any(|ch| u32::from(ch) > 0xFFFF));
+        let normalized = normalize_id(&format!("ID {FORCE_ID} tail"), FORCE_ID);
+        assert_eq!(normalized, "ID {id} tail");
     }
 
     #[test]
     fn fsasset_ado_omits_pooling_for_ferroan_and_the_response_parser_stops_at_the_body() {
-        let csharp = ado(FsassetDb::Mysql, &target(), true);
-        let ferroan = ado(FsassetDb::Pgsql, &target(), false);
-        assert!(csharp.contains("Pooling=false"));
+        let csharp = ado(FsassetDb::Mysql, &target());
+        let ferroan = ado(FsassetDb::Pgsql, &target());
+        assert!(!csharp.contains("Pooling"));
         assert!(csharp.contains("SslMode=None"));
+        assert!(csharp.contains("User ID="));
         assert!(!ferroan.contains("Pooling"));
         assert!(ferroan.contains("SSL Mode=Disable"));
         let ini = service_ini(&IniSpec {
@@ -1639,6 +2172,8 @@ mod tests {
             access_days: 0,
         });
         assert!(grid.contains("AssetServiceConnector"));
+        assert!(grid.contains("Pooling=true;Maximum Pool Size=8"));
+        assert!(!ini.contains("Pooling="));
         let raw =
             b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhelloMORE";
         let taken = take_response(raw).expect("parse").expect("complete");

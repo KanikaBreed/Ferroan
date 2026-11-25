@@ -29,6 +29,9 @@
 //      FromCompressedTerrainSerializationV2DGZip, GetPatchMinMax, GetPatchBlock)
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (MakeRootAgent)
 //   KanikaBreed/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
+//   Source/OpenSim.Framework/TerrainData.cs
+//     (GetDatabaseBlob, ToCompressedTerrainSerializationV2DGzip)
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -36,10 +39,12 @@
 //! A truncated or unknown blob fails closed. C# would `ClearLand()` to 21
 //! and keep running; this row refuses to start on a damaged store.
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use ferroan_diag::{Kind, TERRAIN_BLOB, TERRAIN_EDGE};
+use flate2::Compression;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 
 use crate::error::TerrainError;
 
@@ -54,7 +59,8 @@ pub const BLOB_CAP: usize = 8 + 4096 * 4096 * 4;
 
 const PATCH: i32 = 16;
 const REVISION_V2: i32 = 22;
-const REVISION_V2_GZIP: i32 = 23;
+/// `DBTerrainRevision.Variable2DGzip`, the revision `GetDatabaseBlob` writes.
+pub const REVISION_V2_GZIP: i32 = 23;
 
 /// One region's heightmap. Index is `y * width + x`.
 #[derive(Clone, Debug)]
@@ -65,6 +71,39 @@ pub struct Heightmap {
 }
 
 impl Heightmap {
+    /// A map of `width * height` cells, `y * width + x`. The caller checks
+    /// the edges and the length.
+    pub(crate) fn from_cells(width: i32, height: i32, cells: Vec<f32>) -> Self {
+        Self {
+            width,
+            height,
+            cells,
+        }
+    }
+
+    /// `TerrainData.GetDatabaseBlob`: revision 23 and
+    /// `ToCompressedTerrainSerializationV2DGzip`. The plain stream is the X
+    /// and Y sizes, then every cell (Y outer, X inner) after
+    /// `MathF.Round(h, 3, MidpointRounding.AwayFromZero)`. C# copies its
+    /// gzip member out before the trailer is written; this one is complete,
+    /// which `GZipStream` reads the same.
+    pub fn to_blob(&self) -> Result<(i32, Vec<u8>), TerrainError> {
+        let mut plain = Vec::with_capacity(8 + self.cells.len() * 4);
+        plain.extend_from_slice(&self.width.to_le_bytes());
+        plain.extend_from_slice(&self.height.to_le_bytes());
+        for value in &self.cells {
+            plain.extend_from_slice(&round3_away(*value).to_le_bytes());
+        }
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&plain)
+            .map_err(|error| TerrainError::Store(format!("gzip: {error}")))?;
+        let blob = encoder
+            .finish()
+            .map_err(|error| TerrainError::Store(format!("gzip: {error}")))?;
+        Ok((REVISION_V2_GZIP, blob))
+    }
+
     pub fn width(&self) -> i32 {
         self.width
     }
@@ -220,7 +259,19 @@ pub fn movement_z(start_z: f32, ground: f32) -> f32 {
     if lifted > start_z { lifted } else { start_z }
 }
 
-fn check_edge(side: i32) -> Result<(), TerrainError> {
+/// `MathF.Round(x, 3, MidpointRounding.AwayFromZero)` in .NET 10: scale by
+/// 1000 in `float`, add `0.5` less one ulp with the sign of the value,
+/// truncate, and divide. Values at or beyond 1e8 are returned unchanged.
+pub(crate) fn round3_away(x: f32) -> f32 {
+    if x.is_nan() || x.abs() >= 1.0e8 {
+        return x;
+    }
+    let scaled = x * 1000.0;
+    let half = f32::from_bits(0.5f32.to_bits() - 1);
+    (scaled + half.copysign(scaled)).trunc() / 1000.0
+}
+
+pub(crate) fn check_edge(side: i32) -> Result<(), TerrainError> {
     if (16..=MAX_EDGE).contains(&side) && side % PATCH == 0 {
         return Ok(());
     }
@@ -234,7 +285,7 @@ fn check_edge(side: i32) -> Result<(), TerrainError> {
     Err(TerrainError::Edge)
 }
 
-fn refuse_blob(observed: usize) {
+pub(crate) fn refuse_blob(observed: usize) {
     ferroan_diag::refuse(
         TERRAIN_BLOB,
         Kind::Hard,

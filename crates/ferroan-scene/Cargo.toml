@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-scene"
-description = "Read-only region terrain, scalar prims, region settings, object XML and the frame thread"
+description = "Region terrain and its default rows, scalar prims, region settings, object XML and the frame thread"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

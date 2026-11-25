@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
     return 2;
 }
 
@@ -92,8 +92,11 @@ try
         case "probe" when args.Length == 3:
             ProbeXml(args[1], args[2]);
             return 0;
+        case "terrain-load" when args.Length == 4:
+            LoadTerrainRows(args[1], args[2], args[3]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
             return 2;
     }
 }
@@ -724,6 +727,75 @@ static byte[] MaterialBlob()
     blob[3] = 0;
     text.CopyTo(blob, 4);
     return blob;
+}
+
+// Both terrain rows through the pin's LoadTerrain and LoadBakedTerrain for a
+// 256 m region. Each map is its cells as float bits, Y outer and X inner (the
+// order GetDatabaseBlob writes), the stored revision, and whether the pin's
+// own GetDatabaseBlob of that map gives the stored bytes.
+static void LoadTerrainRows(string path, string regionText, string pin)
+{
+    string full = Path.GetFullPath(path);
+    UUID region = new UUID(regionText);
+    TerrainData terrain;
+    TerrainData baked;
+    SQLiteSimulationData store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise("Data Source=" + full + ";Version=3;");
+        terrain = store.LoadTerrain(region, 256, 256, (int)Constants.RegionHeight);
+        baked = store.LoadBakedTerrain(region, 256, 256, (int)Constants.RegionHeight);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+
+    JsonObject dump = new JsonObject
+    {
+        ["pin"] = pin,
+        ["region"] = region.ToString(),
+        ["terrain"] = TerrainJson(terrain, RawTerrainRow(full, "terrain", regionText)),
+        ["bakedterrain"] = TerrainJson(baked, RawTerrainRow(full, "bakedterrain", regionText)),
+    };
+    Console.Out.Write(dump.ToJsonString(new JsonSerializerOptions { WriteIndented = false }));
+    Console.Out.WriteLine();
+}
+
+static (long revision, byte[] blob)? RawTerrainRow(string path, string table, string region)
+{
+    using SQLiteConnection db = new SQLiteConnection("Data Source=" + path + ";Version=3;");
+    db.Open();
+    using SQLiteCommand cmd = new SQLiteCommand(
+        "select Revision, Heightfield from " + table + " where RegionUUID = :RegionUUID", db);
+    cmd.Parameters.Add(new SQLiteParameter(":RegionUUID", region));
+    using SQLiteDataReader row = cmd.ExecuteReader();
+    if (!row.Read())
+        return null;
+    return (Convert.ToInt64(row["Revision"]), (byte[])row["Heightfield"]);
+}
+
+static JsonNode TerrainJson(TerrainData map, (long revision, byte[] blob)? raw)
+{
+    if (map is null)
+        return null;
+    JsonArray cells = new JsonArray();
+    for (int y = 0; y < map.SizeY; y++)
+        for (int x = 0; x < map.SizeX; x++)
+            cells.Add(BitConverter.SingleToUInt32Bits(map[x, y]));
+    map.GetDatabaseBlob(out int revision, out Array blob);
+    byte[] ours = (byte[])blob;
+    return new JsonObject
+    {
+        ["size_x"] = map.SizeX,
+        ["size_y"] = map.SizeY,
+        ["stored_revision"] = raw?.revision,
+        ["stored_bytes"] = raw?.blob.Length,
+        ["csharp_revision"] = revision,
+        ["csharp_bytes"] = ours.Length,
+        ["csharp_blob_is_stored_blob"] = raw is not null && ours.AsSpan().SequenceEqual(raw.Value.blob),
+        ["cells"] = cells,
+    };
 }
 
 static void Load(string path, string regionText, string pin)
