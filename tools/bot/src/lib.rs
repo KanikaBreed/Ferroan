@@ -27,3 +27,4 @@ pub use circuit::{Circuit, Resend};
 pub use login::{CHANNEL, LOGIN_OPTIONS, LoginRequest, LoginResponse, hash_password, login};
 pub use redact_scan::{scan_login, scan_passwords, set_log_redaction_check};
 pub use session::{Agent, Session};
+pub use world::terse_in;

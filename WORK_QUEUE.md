@@ -181,7 +181,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
-| Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
+| Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | READY after Q65c2 |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3 |

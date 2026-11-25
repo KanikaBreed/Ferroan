@@ -1,0 +1,28 @@
+[control]
+6ms seq=3 flags=40 Task=512000bps
+76ms seq=4 flags=c0 full avatar100@666693295
+91ms seq=8 flags=c0 full avatar101@666693296
+410ms seq=28 flags=c0 full avatar101@666693296
+426ms seq=32 flags=c0 full p1@666693287->0:first p2@666693288->666693287:first p3@666693289->0:first p4@666693290->0:first p5@666693291->0:first p6@666693292->0:first
+441ms seq=33 flags=c0 full p7@666693293->0:first p8@666693294->0:first
+456ms seq=34 flags=c0 terse avatar@666693296
+516ms seq=35 flags=c0 full p1@666693287->0:repeat p3@666693289->0:repeat p4@666693290->0:repeat p5@666693291->0:repeat p6@666693292->0:repeat
+531ms seq=36 flags=c0 full p7@666693293->0:repeat p8@666693294->0:repeat
+546ms seq=37 flags=c0 terse avatar@666693295 avatar@666693296
+2415ms seq=39 flags=c0 terse avatar@666693295
+[limited]
+0ms seq=3 flags=40 Task=8000bps
+13ms seq=4 flags=c0 full avatar101@666693296
+950ms seq=25 flags=c0 full avatar100@666693295
+1462ms seq=28 flags=c0 terse avatar@666693296
+1538ms seq=29 flags=c0 terse avatar@666693295
+1613ms seq=30 flags=c0 full p1@666693287->0:first
+1869ms seq=31 flags=c0 full p2@666693288->666693287:first
+1927ms seq=34 flags=40 Task=512000bps
+1929ms seq=32 flags=c0 full p3@666693289->0:first
+1930ms seq=33 flags=c0 full p4@666693290->0:first
+1930ms seq=34 flags=c0 full p5@666693291->0:first
+1930ms seq=35 flags=c0 full p6@666693292->0:first
+1930ms seq=36 flags=c0 full p7@666693293->0:first
+1945ms seq=37 flags=c0 full p8@666693294->0:first
+2351ms seq=40 flags=c0 terse avatar@666693295

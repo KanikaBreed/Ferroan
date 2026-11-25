@@ -98,6 +98,11 @@ impl Circuit {
     }
 
     /// `try_send_to` only succeeds after the socket has been polled ready.
+    /// Datagram prepared by the most recent send, before another circuit operation.
+    pub(crate) fn sent_datagram(&self) -> &[u8] {
+        &self.buf
+    }
+
     async fn raw_send(&mut self) -> bool {
         if self.sock.writable().await.is_err() {
             return false;

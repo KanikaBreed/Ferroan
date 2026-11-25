@@ -21,11 +21,12 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use ferroan_capture::{Kind, Record};
 use ferroan_protocol::msgs::{
     AgentHeightWidth, AgentMovementComplete, AgentThrottle, CoarseLocationUpdate,
-    CompleteAgentMovement, CompletePingCheck, ImageData, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, RegionHandshake, RegionHandshakeReply, SimStats, SimulatorViewerTimeMessage,
-    StartPingCheck, UseCircuitCode,
+    CompleteAgentMovement, CompletePingCheck, ImageData, ImprovedTerseObjectUpdate, LayerData,
+    LogoutReply, LogoutRequest, ObjectUpdate, PacketAck, RegionHandshake, RegionHandshakeReply,
+    SimStats, SimulatorViewerTimeMessage, StartPingCheck, UseCircuitCode,
 };
 use ferroan_protocol::{IncomingPacket, Msg, parse_packet};
 use uuid::Uuid;
@@ -50,6 +51,8 @@ const WINDOW_WIDTH: u16 = 1920;
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// Packets a scenario has not taken yet. The oldest is dropped past this.
 const MAX_INBOX: usize = 256;
+/// Per-circuit bound for each observer history, including the raw arrival trace.
+pub(crate) const OBSERVER_HISTORY: usize = 256;
 /// Minimap updates a scenario has not taken yet. The oldest is dropped past
 /// this; a region sends each viewer one list every 50 frames (about 4.5 s).
 const MAX_COARSE: usize = 64;
@@ -68,6 +71,35 @@ pub enum SessionError {
     SeedTask,
     #[error("the previous circuit visit still has too many buffered datagrams")]
     PriorCircuitBacklog,
+    #[error("prim arrival capture is full")]
+    ArrivalCaptureFull,
+}
+
+struct ArrivalCapture {
+    task_bps: f32,
+    start: Instant,
+    records: Vec<Record>,
+}
+
+impl ArrivalCapture {
+    fn record(&mut self, kind: Kind, bytes: &[u8]) -> Result<(), SessionError> {
+        if self.records.len() >= OBSERVER_HISTORY {
+            ferroan_diag::refuse(
+                ferroan_diag::BOT_OBSERVER_HISTORY,
+                ferroan_diag::Kind::Hard,
+                OBSERVER_HISTORY as u64,
+                self.records.len() as u64 + 1,
+                "bot",
+            );
+            return Err(SessionError::ArrivalCaptureFull);
+        }
+        self.records.push(Record {
+            kind,
+            time_ms: self.start.elapsed().as_millis() as u64,
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
 }
 
 pub struct Session {
@@ -76,6 +108,7 @@ pub struct Session {
     caps: HashMap<String, String>,
     ucc_seq: u32,
     movement_sent: bool,
+    arrival_capture: Option<ArrivalCapture>,
     handshake_sent: bool,
     handshake_sequence: Option<u32>,
     generation: u64,
@@ -107,6 +140,7 @@ impl Session {
             caps: HashMap::new(),
             ucc_seq,
             movement_sent: false,
+            arrival_capture: None,
             handshake_sent: false,
             handshake_sequence: None,
             generation: 0,
@@ -251,7 +285,7 @@ impl Session {
         for index in 0..=MAX_INBOX {
             match self.circuit.try_recv_from(&mut buf) {
                 Ok(_) if index == MAX_INBOX => return Err(SessionError::PriorCircuitBacklog),
-                Ok((len, from)) => self.receive_datagram(&buf[..len], from).await,
+                Ok((len, from)) => self.receive_datagram(&buf[..len], from).await?,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
             }
@@ -298,12 +332,8 @@ impl Session {
         movement.agent_data.circuit_code = self.agent.circuit_code;
         self.circuit.send(&movement, true).await?;
 
-        let mut throttle = AgentThrottle::default();
-        throttle.agent_data.agent_id = self.agent.agent_id;
-        throttle.agent_data.session_id = self.agent.session_id;
-        throttle.agent_data.circuit_code = self.agent.circuit_code;
-        throttle.throttle.throttles = throttle::initial_throttle_bytes();
-        self.circuit.send(&throttle, true).await?;
+        self.send_throttles(self.arrival_capture.as_ref().map(|c| c.task_bps))
+            .await?;
 
         let mut window = AgentHeightWidth::default();
         window.agent_data.agent_id = self.agent.agent_id;
@@ -316,6 +346,37 @@ impl Session {
         Ok(())
     }
 
+    pub(crate) fn capture_prim_arrival(&mut self, task_bps: f32) {
+        self.arrival_capture = Some(ArrivalCapture {
+            task_bps,
+            start: Instant::now(),
+            records: Vec::new(),
+        });
+    }
+
+    pub(crate) fn take_arrival_records(&mut self) -> Option<Vec<Record>> {
+        self.arrival_capture.take().map(|c| c.records)
+    }
+
+    pub(crate) async fn send_throttles(
+        &mut self,
+        task_bps: Option<f32>,
+    ) -> Result<(), SessionError> {
+        let mut throttle = AgentThrottle::default();
+        throttle.agent_data.agent_id = self.agent.agent_id;
+        throttle.agent_data.session_id = self.agent.session_id;
+        throttle.agent_data.circuit_code = self.agent.circuit_code;
+        throttle.throttle.throttles = throttle::initial_throttle_bytes();
+        if let Some(rate) = task_bps {
+            throttle.throttle.throttles[16..20].copy_from_slice(&rate.to_le_bytes());
+        }
+        self.circuit.send(&throttle, true).await?;
+        if let Some(capture) = &mut self.arrival_capture {
+            capture.record(Kind::UdpIn, self.circuit.sent_datagram())?;
+        }
+        Ok(())
+    }
+
     async fn pump_once(&mut self, idle: Duration) -> Result<(), SessionError> {
         self.maybe_ping().await?;
         self.circuit.tick().await;
@@ -325,27 +386,36 @@ impl Session {
             return Ok(());
         };
         let (len, from) = received?;
-        self.receive_datagram(&buf[..len], from).await;
-        Ok(())
+        self.receive_datagram(&buf[..len], from).await
     }
 
-    async fn receive_datagram(&mut self, bytes: &[u8], from: SocketAddr) {
+    async fn receive_datagram(
+        &mut self,
+        bytes: &[u8],
+        from: SocketAddr,
+    ) -> Result<(), SessionError> {
         if from != self.circuit.addr {
-            return;
+            return Ok(());
         }
         self.received += 1;
         let Ok(packet) = parse_packet(bytes) else {
-            return;
+            return Ok(());
         };
         if !self
             .circuit
             .on_receive(packet.flags, packet.sequence, &packet.acks)
         {
             self.circuit.flush_acks().await;
-            return;
+            return Ok(());
+        }
+        if let Some(capture) = &mut self.arrival_capture
+            && (packet.id == ObjectUpdate::ID || packet.id == ImprovedTerseObjectUpdate::ID)
+        {
+            capture.record(Kind::UdpOut, bytes)?;
         }
         self.dispatch(packet).await;
         self.circuit.flush_acks().await;
+        Ok(())
     }
 
     fn accept(&mut self, flags: u8, sequence: u32) {
