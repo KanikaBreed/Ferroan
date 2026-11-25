@@ -430,3 +430,91 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
     assert!(service.verify(id, &token, 30).await.unwrap());
     assert!(service.release(id, &token).await.unwrap());
 }
+
+fn pin8_auth_edges() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../../fixtures/auth-edges/cases.json")).unwrap()
+}
+
+#[tokio::test]
+async fn authorization_documents_match_pin8_status_and_body_bytes() {
+    let fixture = pin8_auth_edges();
+    let app = authorization_router();
+    for case in fixture["xml"].as_array().unwrap() {
+        let request = case["request"].as_str().unwrap();
+        let (status, body) = call(app.clone(), "/authorization", request).await;
+        assert_eq!(
+            u64::from(status.as_u16()),
+            case["status"].as_u64().unwrap(),
+            "{request}"
+        );
+        assert_eq!(body, case["body"].as_str().unwrap(), "{request}");
+    }
+}
+
+#[tokio::test]
+async fn auth_list_field_updates_the_row_as_in_pin8() {
+    let case = &pin8_auth_edges()["list"];
+    let service = password_service(sqlite_store().await);
+    assert!(service.set_password(principal(), "fixture").await.unwrap());
+    let app = http(service);
+    let (status, body) = call(
+        app.clone(),
+        "/auth/plain",
+        case["request"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, case["body"].as_str().unwrap());
+    let (_, info) = call(
+        app,
+        "/auth/plain",
+        &format!("METHOD=getauthinfo&PRINCIPAL={PRINCIPAL}"),
+    )
+    .await;
+    assert!(info.contains(&format!(
+        "<AccountType>{}</AccountType>",
+        case["account_type"].as_str().unwrap()
+    )));
+}
+
+#[tokio::test]
+async fn refused_webkey_clear_does_not_issue_a_token() {
+    let reference = &pin8_auth_edges()["clear_refused"];
+    assert_eq!(reference["clear_attempts"], 1);
+    assert_eq!(reference["token_issued"], true);
+
+    let pool = ferroan_db::open_sqlite_file(&scratch_auth(), &["AuthStore"])
+        .await
+        .unwrap();
+    let sqlite = pool.sqlite().unwrap().clone();
+    let store = AuthStore::new(pool, "auth").unwrap();
+    let id = principal();
+    let row = AuthRow {
+        principal_id: id,
+        password_hash: String::new(),
+        password_salt: String::new(),
+        web_login_key: Uuid::new_v4().to_string(),
+        account_type: "fixture".into(),
+    };
+    assert!(store.store(&row).await.unwrap());
+    // Model Store returning false (zero rows changed), separately from a SQL exception.
+    sqlx::query(
+        "CREATE TRIGGER refuse_clear BEFORE UPDATE ON auth BEGIN SELECT RAISE(IGNORE); END",
+    )
+    .execute(&sqlite)
+    .await
+    .unwrap();
+    let service = AuthService::new(store, AuthKind::Webkey);
+    assert!(
+        service
+            .authenticate(id, &row.web_login_key, 30)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tokens")
+        .fetch_one(&sqlite)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}

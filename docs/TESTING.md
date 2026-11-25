@@ -40,6 +40,8 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 ## HTTP fixtures
 
+`cargo xtask http auth-verify` checks the pinned authorization XML, list-valued authentication form and refused web-key clear against the [authentication edge fixtures](../fixtures/auth-edges/README.md). `cargo xtask live compare auth` sends the XML and list form to both HTTP servers. TB94/D79 is covered separately by the oracle's refused-store case and the Rust SQLite test.
+
 `cargo xtask http generate` and `verify` build [tools/http-oracle](../tools/http-oracle/README.md) and call Tranquillity's query-string and XML helpers. The committed `fixtures/http` files are read by `ferroan-http` tests on all three CI platforms; the Linux live workflow runs `http verify` against the pinned C# source. `cargo xtask http status-verify` runs the same live job against the 36 connector status fixtures in [fixtures/http-status](../fixtures/http-status/README.md).
 
 ## Asset fixtures

@@ -29,6 +29,7 @@
 //   Source/OpenSim.Services.AuthenticationService/WebkeyAuthenticationService.cs
 //   Source/OpenSim.Services.AuthenticationService/WebkeyOrPasswordAuthenticationService.cs
 //   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+// Webkey clear reviewed against KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b (D79).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -201,6 +202,7 @@ impl AuthService {
                 };
                 if row.web_login_key == password {
                     row.web_login_key = ZERO_KEY.to_string();
+                    // D79: a web login key must be consumed before issuing its token.
                     if !self.store.store(&row).await? {
                         return Ok(String::new());
                     }
@@ -231,8 +233,7 @@ enum Presented {
     Key,
 }
 
-/// `new UUID(text)` throws below 32 characters or when the text is not a UUID.
-/// `UUID.Zero` is a rejected key, not a throw.
+/// Pin8 rejects malformed and zero UUIDs before looking up the key.
 fn classify_webkey(password: &str) -> Presented {
     if password.len() < 32 {
         return Presented::Invalid;

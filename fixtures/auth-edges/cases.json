@@ -1,0 +1,104 @@
+{
+  "revision": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "xml": [
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CExtension\u003E\u003CNested\u003E\u003CID\u003Ehidden\u003C/ID\u003E\u003C/Nested\u003E\u003C/Extension\u003E\u003CID\u003Edirect\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Edirect has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003C!--before--\u003E\u003CID\u003Ea\u003C!--inside--\u003Eb\u003C/ID\u003E\u003C!--after--\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Eab has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003Ea\u003C![CDATA[\u003C\u0026\u003E]]\u003Eb\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Ea\u0026lt;\u0026amp;\u0026gt;b has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003C![CDATA[unused]]\u003E\u003CID\u003Edirect\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Edirect has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003Efirst\u003C/ID\u003E\u003CID\u003Esecond\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Efirst has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID/\u003E\u003CID\u003Esecond\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID xmlns=\u0027urn:other\u0027\u003Eforeign\u003C/ID\u003E\u003CID\u003Edirect\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Edirect has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003Ex\u0026#x20;y\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Ex y has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E\u003Cnested/\u003E\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CFirstName\u003E\u003Cnested/\u003E\u003C/FirstName\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CUnknown\u003E\u003C/Mismatch\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E  \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E a \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E a  has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E\u003C![CDATA[  ]]\u003E\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E   has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID xml:space=\u0027preserve\u0027\u003E  \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E   has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E  \u003C![CDATA[a]]\u003E  \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Ea has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003Efirst\u003C/ID\u003E\u003CID\u003E\u003Cignored/\u003E\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Efirst has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E a \u003C!--c--\u003E b \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E a  b  has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    }
+  ],
+  "list": {
+    "request": "METHOD=setauthinfo\u0026PRINCIPAL=11111111-1111-4111-8111-111111111111\u0026AccountType[]=",
+    "body": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003CResult\u003ESuccess\u003C/Result\u003E\n\u003C/ServerResponse\u003E",
+    "account_type": "System.Collections.Generic.List\u00601[System.String]"
+  },
+  "clear_refused": {
+    "clear_attempts": 1,
+    "token_issued": true
+  }
+}
