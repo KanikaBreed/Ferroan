@@ -198,6 +198,8 @@ jobs:
         run: cargo xtask live run uploads grid --region ferroan
       - name: Hear channel 0 chat on the Ferroan region
         run: cargo xtask live run chat grid --region ferroan
+      - name: Walk on the Ferroan region and see the terse updates
+        run: cargo xtask live run walk grid --region ferroan
       - name: Teleport inside the Ferroan region
         run: cargo xtask live run teleport grid --region ferroan
       - name: Teleport from the Ferroan region onto the C# neighbour

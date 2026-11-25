@@ -43,6 +43,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::event_queue::{EventQueue, EventQueueError, PollReply};
@@ -175,6 +176,8 @@ struct CapsState {
     queue: EventQueue,
     agent_id: Uuid,
     granted: Vec<GrantedCap>,
+    /// `CapsFlags.SentSeeds`: set once a seed request has been answered.
+    seeds_sent: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -286,6 +289,7 @@ impl CapsRegistry {
                 queue: EventQueue::new(),
                 agent_id,
                 granted,
+                seeds_sent: Arc::new(AtomicBool::new(false)),
             },
             events_path,
         });
@@ -300,6 +304,17 @@ impl CapsRegistry {
         for registered in active.drain(..) {
             registered.state.queue.close();
         }
+    }
+
+    /// The flag a seed answer sets for this agent's registration
+    /// (`CapsFlags.SentSeeds`). `None` when the agent has no seed here.
+    pub fn seeds_sent(&self, agent_id: Uuid) -> Option<Arc<AtomicBool>> {
+        self.active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .find(|registered| registered.state.agent_id == agent_id)
+            .map(|registered| Arc::clone(&registered.state.seeds_sent))
     }
 
     /// Close one agent's seed, event queue and granted paths.
@@ -546,6 +561,7 @@ impl CapsServer {
             queue: EventQueue::new(),
             agent_id: Uuid::nil(),
             granted: Vec::new(),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
         };
         let queue = state.queue.clone();
         let app = Router::new()
@@ -627,6 +643,7 @@ async fn seed(State(state): State<CapsState>, request: Request) -> Response {
             map.insert(text, cap.url.clone());
         }
     }
+    state.seeds_sent.store(true, Ordering::Release);
     response(StatusCode::OK, SEED_MIME, to_xml(&map))
 }
 
@@ -792,6 +809,7 @@ mod tests {
             queue: EventQueue::new(),
             agent_id: Uuid::nil(),
             granted: Vec::new(),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
         };
         // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
         let request = Request::builder()

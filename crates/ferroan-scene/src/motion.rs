@@ -341,6 +341,13 @@ impl Body {
         self.child = child;
     }
 
+    /// Not root for `ScenePresence.Update`: away in another region, or not
+    /// yet arrived (C# keeps a login or a return a child agent until
+    /// `CompleteMovement` makes it root, which is when the arrival samples).
+    pub(crate) fn is_child(&self) -> bool {
+        self.child || !self.actor
+    }
+
     pub(crate) fn set_actor(&mut self, actor: bool) {
         self.actor = actor;
     }

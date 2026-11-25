@@ -81,6 +81,7 @@ mod payloads;
 pub mod prioritizer;
 mod settings;
 mod store;
+pub mod terse;
 mod walk;
 #[cfg(test)]
 mod walk_capture;
@@ -95,8 +96,8 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    HopReturn, LocalTeleport, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame,
-    landed_z,
+    HopReturn, Leaving, LocalTeleport, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored,
+    TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, movement_z};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};

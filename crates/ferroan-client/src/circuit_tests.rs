@@ -134,7 +134,9 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                     flags: request.flags,
                 }))
             }
-            SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
+            SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
+                Ok(SceneReply::Applied)
+            }
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),
@@ -694,6 +696,7 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         teleport: None,
         source_hop: None,
         return_slot: None,
+        updates: None,
     };
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), config);
@@ -1706,4 +1709,110 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     }
     assert_eq!(movement_z, Some(41.5));
     assert_eq!(avatar_z, Some(41.5));
+}
+
+/// A feed the test fills with ready blocks. `take_terse` records the budget.
+#[derive(Default)]
+struct BlockFeed {
+    blocks: Mutex<Vec<[u8; crate::AVATAR_TERSE_LEN]>>,
+    budgets: Mutex<Vec<i32>>,
+}
+
+impl crate::EntityUpdates for BlockFeed {
+    fn has_updates(&self) -> bool {
+        !self.blocks.lock().unwrap().is_empty()
+    }
+
+    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; crate::AVATAR_TERSE_LEN]> {
+        self.budgets.lock().unwrap().push(max_bytes);
+        std::mem::take(&mut *self.blocks.lock().unwrap())
+    }
+}
+
+#[tokio::test]
+async fn a_waiting_terse_block_leaves_reliable_and_zero_coded_on_the_task_bucket() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        region_handle: 0x0003_e800_0003_e800,
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let mut block = [0u8; crate::AVATAR_TERSE_LEN];
+    block[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+    block[5] = 1;
+    source.blocks.lock().unwrap().push(block);
+    state.maintain(&io).await.unwrap();
+    let sent = io.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    let bytes = &sent[0];
+    // `terseUpdateHeader`: MSG_RELIABLE | MSG_ZEROCODED.
+    assert_eq!(bytes[0] & 0xc0, 0xc0);
+    let packet = parse_packet(bytes).unwrap();
+    assert_eq!(
+        packet.id,
+        ferroan_protocol::msgs::ImprovedTerseObjectUpdate::ID
+    );
+    let message = packet
+        .decode::<ferroan_protocol::msgs::ImprovedTerseObjectUpdate>()
+        .unwrap();
+    assert_eq!(message.region_data.region_handle, 0x0003_e800_0003_e800);
+    assert_eq!(message.region_data.time_dilation, 0xffff);
+    assert_eq!(message.object_data.len(), 1);
+    assert_eq!(message.object_data[0].data, block.to_vec());
+    assert!(message.object_data[0].texture_entry.is_empty());
+    // The budget is 30 ms of the default task rate, 18,500 bytes a second.
+    assert_eq!(*source.budgets.lock().unwrap(), [555]);
+    // The next ask waits 20 ms.
+    source.blocks.lock().unwrap().push(block);
+    state.maintain(&io).await.unwrap();
+    assert_eq!(io.sent.lock().unwrap().len(), 1);
+    assert!(state.time_until_work() <= Duration::from_millis(20));
+}
+
+#[tokio::test]
+async fn a_region_handshake_reply_is_forwarded_and_a_refusal_waits() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let store = Arc::clone(&seen);
+    let refusing = Arc::clone(&refuse);
+    state.login_scene = Some(Arc::new(move |_agent, call| {
+        if refusing.load(Ordering::Acquire) {
+            return Err(crate::circuit::SceneRefused).into();
+        }
+        store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(call);
+        Ok(SceneReply::Applied).into()
+    }));
+    let mut reply = ferroan_protocol::msgs::RegionHandshakeReply::default();
+    reply.agent_data.agent_id = expect.agent_id;
+    reply.agent_data.session_id = expect.session_id;
+    let bytes = wire(&reply, 3, &[]);
+    let io = FakeIo::default();
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    assert!(seen.lock().unwrap().is_empty());
+    refuse.store(false, Ordering::Release);
+    state.maintain(&io).await.unwrap();
+    let seen = seen.lock().unwrap_or_else(|poison| poison.into_inner());
+    assert_eq!(seen.len(), 1);
+    assert!(matches!(seen[0], SceneCall::HandshakeReply));
 }

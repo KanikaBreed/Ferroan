@@ -665,11 +665,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "hop"
                 | "uploads"
                 | "neighbour"
+                | "walk"
                 | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, neighbour and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, neighbour, walk and report scenarios"
                 .to_string(),
         );
     }
