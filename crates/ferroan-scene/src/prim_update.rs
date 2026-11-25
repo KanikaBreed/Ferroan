@@ -374,10 +374,13 @@ mod tests {
     #[tokio::test]
     async fn stored_parts_match_every_byte_of_the_pin8_full_updates() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
-        let entries: Vec<serde_json::Value> =
+        let map: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("map.json")).unwrap()).unwrap();
+        let owner = &map["owner"];
+        let store_owner: Uuid = owner["store_uuid"].as_str().unwrap().parse().unwrap();
+        let capture_owner: Uuid = owner["capture_uuid"].as_str().unwrap().parse().unwrap();
         let mut aliases = BTreeMap::new();
-        for entry in &entries {
+        for entry in map["parts"].as_array().unwrap() {
             let store: Uuid = entry["store_uuid"].as_str().unwrap().parse().unwrap();
             let alias: Uuid = entry["capture_uuid"].as_str().unwrap().parse().unwrap();
             aliases.insert(store, (alias, entry));
@@ -396,12 +399,12 @@ mod tests {
                 let local = alias.as_u128() as u32;
                 let mut block = StoredPrimUpdate::from_store(part, &flags, local, root_local)
                     .unwrap()
-                    .block_for(part.owner_id);
+                    .block_for(store_owner);
                 assert_eq!(block.full_id, part.uuid);
                 block.full_id = alias;
                 if !block.owner_id.is_nil() {
-                    assert_eq!(block.owner_id, part.owner_id);
-                    block.owner_id = Uuid::from_u128(100);
+                    assert_eq!(block.owner_id, store_owner);
+                    block.owner_id = capture_owner;
                 }
                 let mut writer = Writer::new();
                 block.encode(&mut writer);

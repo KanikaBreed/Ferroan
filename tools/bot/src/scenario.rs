@@ -156,8 +156,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "prim-capture" {
         let (mut session, _) = enter(&http, harness, &harness.owner).await?;
         let result = wait_for_stored_prims(&mut session).await;
-        leave(harness, &mut session, &harness.owner).await?;
+        let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
+        logout?;
         return Ok(
             "prim-capture: viewer received five distinct full prim updates\nlive: run passed"
                 .into(),
@@ -169,7 +170,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all or {}",
+            "unknown scenario {name}; expected all, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };

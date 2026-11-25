@@ -151,6 +151,17 @@ impl Owned {
     pub(crate) fn detach(mut self) {
         self.stop_on_drop = false;
     }
+
+    /// One console line. The text is not logged: an import line carries the
+    /// connection string.
+    pub(crate) fn write_console(&mut self, line: &str) -> Result<(), String> {
+        let stdin = self.stdin.as_mut().ok_or("the asset console is not open")?;
+        std::io::Write::write_all(stdin, line.as_bytes())
+            .map_err(|_| "could not write the asset console".to_string())?;
+        std::io::Write::flush(stdin)
+            .map_err(|_| "could not write the asset console".to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
