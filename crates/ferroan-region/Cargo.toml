@@ -15,6 +15,7 @@ ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-log = { path = "../ferroan-log" }
+ferroan-protocol = { path = "../ferroan-protocol" }
 ferroan-scene = { path = "../ferroan-scene" }
 ferroan-services = { path = "../ferroan-services" }
 tracing = "0.1"
@@ -30,5 +31,4 @@ workspace = true
 
 [dev-dependencies]
 ferroan-capture = { path = "../ferroan-capture" }
-ferroan-protocol = { path = "../ferroan-protocol" }
 tokio = { version = "1", features = ["test-util"] }

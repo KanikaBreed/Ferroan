@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates,
-//      SendKillObject)
+//      SendKillObject, SendCoarseLocationUpdate's header)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
 //     (DequeueOutgoing's empty categories, BeginFireQueueEmpty,
 //      GetCatBytesCanSend)
@@ -46,6 +46,7 @@
 //! Other avatars' full updates, appearances and kills do not wait for that:
 //! C# writes them straight onto the task outbox
 //! (`SendEntityFullUpdateImmediate`, `SendAppearance`, `SendKillObject`).
+//! The minimap dots (`SendCoarseLocationUpdate`) go the same way, unreliable.
 //! The circuit queues them, in order, on every pass.
 
 use std::sync::Arc;
@@ -53,7 +54,8 @@ use std::time::Duration;
 
 use ferroan_protocol::msgs::improved_terse_object_update::{ObjectData, RegionData};
 use ferroan_protocol::msgs::{
-    AvatarAppearance, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate, kill_object,
+    AvatarAppearance, CoarseLocationUpdate, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate,
+    kill_object,
 };
 use tokio::sync::Notify;
 
@@ -89,6 +91,8 @@ pub enum AvatarPacket {
     Appearance(AvatarAppearance),
     /// `SendKillObject`: reliable, not zero-coded.
     Kill(KillObject),
+    /// `SendCoarseLocationUpdate`: unreliable, not zero-coded.
+    Coarse(CoarseLocationUpdate),
 }
 
 /// `SendKillObject`: the ids in order, 200 to a packet.
