@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
     return 2;
 }
 
@@ -92,6 +92,9 @@ try
         case "read" when args.Length == 3:
             ReadXml(args[1], args[2]);
             return 0;
+        case "coalesced" when args.Length == 3:
+            CaptureCoalesced(args[1], args[2]);
+            return 0;
         case "probe" when args.Length == 3:
             ProbeXml(args[1], args[2]);
             return 0;
@@ -113,7 +116,7 @@ try
             SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
             return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
             return 2;
     }
 }
@@ -1040,6 +1043,79 @@ static void Serialize(string path, string regionText, string pin)
     JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
     Console.Out.Write(JsonSerializer.Serialize(root, options));
     Console.Out.Write('\n');
+}
+
+// Pin8 CoalescedSceneObjectsSerializer and SceneObjectGroup.Extra{To,From}XmlString.
+static void CaptureCoalesced(string dumpPath, string pin)
+{
+    var rows = JsonNode.Parse(File.ReadAllText(dumpPath))["groups"].AsArray();
+    var linked = System.Xml.Linq.XElement.Parse(rows[1]["original"].GetValue<string>());
+    var parts = linked.Descendants("SceneObjectPart").ToArray();
+    void SetVector(System.Xml.Linq.XElement part, string name, params string[] values)
+    {
+        foreach (var (axis, value) in part.Element(name).Elements().Zip(values))
+            axis.Value = value;
+    }
+    parts[0].Element("LocalId").Value = "73";
+    SetVector(parts[0], "GroupPosition", "-12.25", "2.75", "41.5");
+    SetVector(parts[0], "RotationOffset", "0", "0", "0.6", "0.8");
+    parts[1].Element("ParentID").Value = "73";
+    SetVector(parts[1], "OffsetPosition", "-3", "5", "9");
+    SetVector(parts[1], "RotationOffset", "0.6", "0", "0", "0.8");
+    SetVector(parts[1], "Scale", "1", "3", "8");
+    string[] inputs = [linked.ToString(System.Xml.Linq.SaveOptions.DisableFormatting), rows[0]["original"].GetValue<string>()];
+    var groups = inputs.Select(SceneObjectSerializer.FromOriginalXmlFormat).ToArray();
+    var bundle = new CoalescedSceneObjects(UUID.Zero, groups);
+    string xml = CoalescedSceneObjectsSerializer.ToXml(bundle);
+    string ReadBack(string source)
+    {
+        if (!CoalescedSceneObjectsSerializer.TryFromXml(source, out var read))
+            throw new InvalidOperationException("coalesced read failed");
+        return CoalescedSceneObjectsSerializer.ToXml(read);
+    }
+    var probe = groups[1];
+    string id = probe.UUID.ToString();
+    string tag = $"<ExtraFromItemID>{id}</ExtraFromItemID>";
+    string[] extras = ["", "<Other />", tag, $"around{tag}suffix", $"<ExtraFromItemID>{id}",
+        "<ExtraFromItemID>bad</ExtraFromItemID>", $"<ExtraFromItemID>{id.Replace("-", "")}</ExtraFromItemID>",
+        $"<ExtraFromItemID> {id} trailing</ExtraFromItemID>", $"<ExtraFromItemID>bad</ExtraFromItemID>{tag}"];
+    var extra = extras.Select(input =>
+    {
+        probe.FromItemID = probe.UUID;
+        probe.ExtraFromXmlString(input);
+        return new { input, id = probe.FromItemID.ToString(), xml = probe.ExtraToXmlString() };
+    }).ToArray();
+    string[] documents = ["<Other />", "<CoalescedObject />", "<CoalescedObject",
+        "<CoalescedObject /><Extra />", "<CoalescedObject xmlns='urn:fixture' />",
+        "<CoalescedObject><Unknown><SceneObjectGroup /></Unknown></CoalescedObject>"];
+    var reads = documents.Select(input =>
+    {
+        bool accepted = CoalescedSceneObjectsSerializer.TryFromXml(input, out var result);
+        return new { input, count = accepted ? result.Count : (int?)null };
+    }).ToArray();
+    // Preserve a valid member after a component that FromOriginalXmlFormat cannot read.
+    var changed = System.Xml.Linq.XElement.Parse(xml);
+    changed.SetAttributeValue("x", "invalid");
+    changed.Elements().First().SetAttributeValue("offsety", "99999");
+    string badMember = SceneObjectSerializer.ToOriginalXmlFormat(groups[1])
+        .Replace("<KeyframeMotion>", "<KeyframeMotion>!");
+    changed.AddFirst(new System.Xml.Linq.XElement("SceneObjectGroup", System.Xml.Linq.XElement.Parse(badMember)));
+    bool skipsBadMember = ReadBack(changed.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)) == ReadBack(xml);
+    const string noShape = "<CoalescedObject><SceneObjectGroup><RootPart><SceneObjectPart /></RootPart>"
+        + "<OtherParts /></SceneObjectGroup></CoalescedObject>";
+    if (!CoalescedSceneObjectsSerializer.TryFromXml(noShape, out var missingShape))
+        throw new InvalidOperationException("shape-less read refused");
+    string noShapeWriteError = null;
+    try { CoalescedSceneObjectsSerializer.ToXml(missingShape); }
+    catch (NullReferenceException error) { noShapeWriteError = error.GetType().Name; }
+    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(xml);
+    Console.Out.Write(JsonSerializer.Serialize(new {
+        pin, inputs, xml, readBack = ReadBack(xml), reads, skipsBadMember, noShape, noShapeWriteError,
+        single = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero, groups[0])),
+        empty = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero)),
+        readBytes = CoalescedSceneObjectsSerializer.TryFromXmlData(bytes, out _),
+        readBytesWithNul = CoalescedSceneObjectsSerializer.TryFromXmlData([..bytes, 0], out _), extra
+    }, new JsonSerializerOptions { WriteIndented = true }));
 }
 
 static void ReadXml(string dumpPath, string pin)

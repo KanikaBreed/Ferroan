@@ -168,7 +168,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q56 | P2.4c: region settings and spawn points from the store | DONE (#224) |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
-| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
+| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | READY |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |

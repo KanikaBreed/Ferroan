@@ -181,6 +181,14 @@ pub fn serialize() -> ExitCode {
 /// from the objects it read. One group also carries an unknown part element
 /// and an unknown shape element; both are skipped.
 pub fn read() -> ExitCode {
+    xml_capture("read", XML_READ_DUMP)
+}
+
+pub fn coalesced() -> ExitCode {
+    xml_capture("coalesced", "fixtures/regionstore/coalesced.json")
+}
+
+fn xml_capture(command: &str, output: &str) -> ExitCode {
     let root = crate::repo_root();
     let dll = match build_oracle() {
         Ok(path) => path,
@@ -202,16 +210,16 @@ pub fn read() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let source_arg = source.display().to_string();
-    let json = match oracle_stdout(&dll, &["read", &source_arg, &pinned]) {
+    let json = match oracle_stdout(&dll, &[command, &source_arg, &pinned]) {
         Some(text) => text,
         None => return ExitCode::FAILURE,
     };
-    let dump = root.join(XML_READ_DUMP);
+    let dump = root.join(output);
     if let Err(error) = fs::write(&dump, json) {
         eprintln!("{LABEL}: could not write {}: {error}", dump.display());
         return ExitCode::FAILURE;
     }
-    println!("{LABEL}: wrote {XML_READ_DUMP}");
+    println!("{LABEL}: wrote {output}");
     ExitCode::SUCCESS
 }
 

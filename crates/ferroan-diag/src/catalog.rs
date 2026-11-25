@@ -70,6 +70,7 @@ pub const REGION_AGENT_CAPS: &str = "region.agent-caps";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_OBJECTS: &str = "region.objects";
 pub const REGION_LINKSET_PRIMS: &str = "region.linkset-prims";
+pub const OBJECT_COALESCED_PRIMS: &str = "object.coalesced-prims";
 pub const OBJECT_XML_BYTES: &str = "object.xml-bytes";
 pub const OBJECT_TASK_ITEMS: &str = "object.task-items";
 pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";

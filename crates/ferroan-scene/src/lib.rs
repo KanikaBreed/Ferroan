@@ -124,4 +124,7 @@ pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;
-pub use xml::{from_original_xml, from_xml2, to_original_xml, to_xml2};
+pub use xml::{
+    from_coalesced_xml, from_coalesced_xml_data, from_original_xml, from_xml2, to_coalesced_xml,
+    to_original_xml, to_xml2,
+};

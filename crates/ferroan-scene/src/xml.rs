@@ -108,6 +108,10 @@ use xml_float::{format_f32, format_f64};
 #[path = "xml_read.rs"]
 mod xml_read;
 
+#[path = "coalesced.rs"]
+mod coalesced;
+pub use coalesced::{from_coalesced_xml, from_coalesced_xml_data, to_coalesced_xml};
+
 pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.
@@ -129,10 +133,10 @@ fn write_group(group: &ObjectGroup, original: bool) -> String {
     out.start("SceneObjectGroup");
     if original {
         out.start("RootPart");
-        write_part(&mut out, root, true);
+        write_part(&mut out, root, root);
         out.end("RootPart");
     } else {
-        write_part(&mut out, root, true);
+        write_part(&mut out, root, root);
     }
     out.start("OtherParts");
     for part in group.parts.iter().skip(1) {
@@ -141,10 +145,10 @@ fn write_group(group: &ObjectGroup, original: bool) -> String {
         }
         if original {
             out.start("Part");
-            write_part(&mut out, part, false);
+            write_part(&mut out, part, root);
             out.end("Part");
         } else {
-            write_part(&mut out, part, false);
+            write_part(&mut out, part, root);
         }
     }
     out.end("OtherParts");
@@ -158,7 +162,8 @@ fn write_group(group: &ObjectGroup, original: bool) -> String {
     out.s
 }
 
-fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
+fn write_part(out: &mut Out, part: &ObjectPart, root: &ObjectPart) {
+    let is_root = part.uuid == root.uuid;
     out.start_part();
     out.bool("AllowedDrop", part.allowed_drop);
     let (creator, creator_data) = if let Some(raw) = &part.xml_creator_data {
@@ -185,7 +190,14 @@ fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
     out.bool("PassCollisions", part.pass_collisions);
     out.elem("RegionHandle", "0");
     out.display("ScriptAccessPin", part.script_access_pin);
-    out.vec3("GroupPosition", part.group_position);
+    out.vec3(
+        "GroupPosition",
+        if part.parent_id == 0 {
+            part.group_position
+        } else {
+            root.group_position
+        },
+    );
     out.vec3("OffsetPosition", part.offset);
     out.quat("RotationOffset", part.rotation);
     out.vec3("Velocity", part.velocity);
@@ -1496,6 +1508,98 @@ mod tests {
                 .get(at..expected.len().min(at + window))
                 .unwrap_or("")
         );
+    }
+
+    #[test]
+    fn regionstore_coalesced_matches_pin8_in_both_directions() {
+        let text = std::fs::read_to_string(fixture_dir().join("coalesced.json")).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(fixture["pin"], PIN);
+        let groups: Vec<_> = fixture["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| super::from_original_xml(input.as_str().unwrap()).unwrap())
+            .collect();
+        for (label, members) in [
+            ("xml", &groups[..]),
+            ("single", &groups[..1]),
+            ("empty", &[][..]),
+        ] {
+            assert_same(
+                label,
+                &super::to_coalesced_xml(members).unwrap(),
+                fixture[label].as_str().unwrap(),
+            );
+        }
+        let xml = fixture["xml"].as_str().unwrap();
+        let expected = fixture["readBack"].as_str().unwrap();
+        let check = |members: Vec<crate::ObjectGroup>| {
+            assert_eq!(members.len(), groups.len());
+            assert_same(
+                "readBack",
+                &super::to_coalesced_xml(&members).unwrap(),
+                expected,
+            );
+        };
+        check(super::from_coalesced_xml(xml).unwrap());
+        assert_eq!(
+            fixture["noShapeWriteError"], "NullReferenceException",
+            "TB103"
+        );
+        let no_shape = super::from_coalesced_xml(fixture["noShape"].as_str().unwrap()).unwrap();
+        assert_eq!(no_shape.len(), 1);
+        assert!(
+            super::to_coalesced_xml(&no_shape)
+                .unwrap()
+                .contains("<Shape>")
+        );
+        assert_eq!(fixture["skipsBadMember"], true);
+        let bad_member =
+            to_original_xml(&groups[1]).replace("<KeyframeMotion>", "<KeyframeMotion>!");
+        let changed = xml
+            .replacen("offsety=\"", "offsety=\"invalid", 1)
+            .replacen(" x=\"", " x=\"invalid", 1)
+            .replacen(
+                "><SceneObjectGroup",
+                &format!("><SceneObjectGroup>{bad_member}</SceneObjectGroup><SceneObjectGroup"),
+                1,
+            );
+        check(super::from_coalesced_xml(&changed).unwrap());
+        for row in fixture["reads"].as_array().unwrap() {
+            let input = row["input"].as_str().unwrap();
+            let count = super::from_coalesced_xml(input).map(|members| members.len() as u64);
+            assert_eq!(count, row["count"].as_u64(), "{input}");
+        }
+        assert_eq!(
+            fixture["readBytes"], false,
+            "TB102: revisit D83 if Pin8 accepts valid bytes"
+        );
+        assert_eq!(
+            fixture["readBytesWithNul"], false,
+            "TB102: revisit the terminated case"
+        );
+        let mut bytes = xml.as_bytes().to_vec();
+        check(super::from_coalesced_xml_data(&bytes).unwrap());
+        bytes.push(0);
+        check(super::from_coalesced_xml_data(&bytes).unwrap());
+        bytes.push(0);
+        assert!(super::from_coalesced_xml_data(&bytes).is_none());
+        assert!(super::from_coalesced_xml_data(&[0xff; 40]).is_none());
+    }
+
+    #[test]
+    fn regionstore_extra_item_id_matches_pin8() {
+        let text = std::fs::read_to_string(fixture_dir().join("coalesced.json")).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut group = super::from_original_xml(fixture["inputs"][0].as_str().unwrap()).unwrap();
+        for row in fixture["extra"].as_array().unwrap() {
+            group.from_item_id = group.parts[0].uuid;
+            let input = row["input"].as_str().unwrap();
+            group.extra_from_xml_string(input).unwrap();
+            assert_eq!(group.from_item_id.to_string(), row["id"], "{input}");
+            assert_eq!(group.extra_to_xml_string(), row["xml"], "{input}");
+        }
     }
 
     #[tokio::test]
