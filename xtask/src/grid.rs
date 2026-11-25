@@ -635,9 +635,7 @@ fn stop_child(child: &mut Child) {
         return;
     }
     let pid = child.id();
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -646,9 +644,7 @@ fn stop_child(child: &mut Child) {
             Ok(None) => thread::sleep(Duration::from_millis(200)),
         }
     }
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     let _ = child.wait();
 }
 

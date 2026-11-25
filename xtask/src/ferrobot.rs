@@ -98,12 +98,7 @@ impl Process {
 
     async fn terminate(&mut self) -> Result<(), String> {
         self.running()?;
-        let status = Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+        let status = crate::signal::signal_pid(crate::signal::Signal::Term, self.child.id())
             .map_err(|_| "could not send SIGTERM to Ferrobot")?;
         if !status.success() {
             return Err("SIGTERM to Ferrobot failed".into());
