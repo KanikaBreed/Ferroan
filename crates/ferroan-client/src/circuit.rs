@@ -56,6 +56,9 @@
 // were read at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Chat registration follows HandleUseCircuitCode in LLUDPServer.cs and
 // Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs at the same Pin8 revision.
+// Local teleport admission and Task ordering were checked against
+// ScenePresence.CompleteMovement, EntityTransferModule.Teleport and
+// LLClientView.SendLocalTeleport at that Pin8 revision.
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -81,8 +84,9 @@ use ferroan_diag::{self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGI
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocationRequest,
-    UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocal,
+    TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack,
+    start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -110,6 +114,8 @@ const MAX_PENDING_ACKS: usize = 4096;
 /// reliable packets wait for an ack.
 const ACK_STALL: usize = 50;
 const ACKS_PER_PACKET: usize = 255;
+/// Maximum unsent TeleportLocal replies per circuit, independent of Land and other Task traffic.
+const MAX_PENDING_TELEPORTS: usize = 256;
 /// A name reply is dropped when this many task packets already wait.
 /// C#'s task outbox has no bound.
 pub const MAX_NAME_REPLIES: usize = 1024;
@@ -526,6 +532,8 @@ struct State {
     /// on this queue, behind terse updates already built, so a moving avatar
     /// cannot snap back to the pre-teleport position.
     pending_task: VecDeque<Payload>,
+    /// Unsent TeleportLocal replies in the Task FIFO.
+    pending_teleports: usize,
     /// Accepted logins acquire their chat queue only once the viewer connects.
     pending_chat: Option<(RegionChat, String)>,
     chat: Option<ChatSeat>,
@@ -635,6 +643,7 @@ impl State {
             published_unacked: 0,
             pending_land,
             pending_task: VecDeque::new(),
+            pending_teleports: 0,
             pending_chat: None,
             chat: None,
             in_transit: false,
@@ -879,6 +888,12 @@ impl State {
                 self.pending_task.push_front(payload);
                 break;
             }
+            if self.pending_teleports > 0
+                && ferroan_protocol::MsgId::decode(&payload.bytes)
+                    .is_ok_and(|(id, _)| id == TeleportLocal::ID)
+            {
+                self.pending_teleports -= 1;
+            }
             let reliable = payload.reliable;
             self.send_payload(sock, peer, payload, reliable).await?;
         }
@@ -895,6 +910,9 @@ impl State {
 
     fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
         self.pending_task.push_back(encode_payload(message)?);
+        if M::ID == TeleportLocal::ID {
+            self.pending_teleports += 1;
+        }
         Ok(())
     }
 
@@ -962,6 +980,17 @@ impl State {
         self.send_payload(sock, to, encode_payload(message)?, reliable)
             .await
     }
+
+    fn check_reliable_room(&self) -> Result<(), CircuitError> {
+        if self.unacked.len() >= MAX_UNACKED {
+            let count = self.unacked.len() as u64;
+            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
+            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
+            return Err(CircuitError::TooManyUnacked(self.unacked.len()));
+        }
+        Ok(())
+    }
+
     async fn send_payload(
         &mut self,
         sock: &impl DatagramIo,
@@ -969,11 +998,8 @@ impl State {
         payload: Payload,
         reliable: bool,
     ) -> Result<(), CircuitError> {
-        if reliable && self.unacked.len() >= MAX_UNACKED {
-            let count = self.unacked.len() as u64;
-            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
-            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
-            return Err(CircuitError::TooManyUnacked(self.unacked.len()));
+        if reliable {
+            self.check_reliable_room()?;
         }
         let seq = self.sequence.take();
         let bytes = wire(&payload, seq, reliable, false);
@@ -1512,7 +1538,16 @@ impl State {
             self.send_message(sock, to, &failed, true).await?;
             return Ok(());
         }
-        if self.pending_task.len() + self.unacked.len() >= MAX_UNACKED {
+        // TeleportStart needs a real send slot before we move the presence.
+        self.check_reliable_room()?;
+        if self.pending_teleports >= MAX_PENDING_TELEPORTS {
+            ferroan_diag::refuse(
+                ferroan_diag::UDP_PENDING_TELEPORTS,
+                Kind::Hard,
+                MAX_PENDING_TELEPORTS as u64,
+                self.pending_teleports as u64 + 1,
+                "udp",
+            );
             let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
             self.send_message(sock, to, &failed, true).await?;
             return Ok(());

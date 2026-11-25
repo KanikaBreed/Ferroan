@@ -91,7 +91,7 @@ fn seated_teleport(region: crate::teleport::TeleportRegion) -> (State, CircuitEx
     (state, expect, FakeIo::default())
 }
 
-async fn handle_teleport(state: &mut State, io: &FakeIo, expect: &CircuitExpect, request: &[u8]) {
+async fn handle_packet(state: &mut State, io: &FakeIo, expect: &CircuitExpect, request: &[u8]) {
     state
         .handle(
             io,
@@ -340,28 +340,310 @@ fn message_ids(io: &FakeIo) -> Vec<ferroan_protocol::MsgId> {
         .collect()
 }
 
+impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
+    fn has_updates(&self) -> bool {
+        self.has_updates()
+    }
+
+    fn take_terse(&self, budget: i32) -> Vec<[u8; ferroan_scene::terse::AVATAR_TERSE_LEN]> {
+        self.take_terse(budget)
+    }
+
+    fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket> {
+        // This frame has only the sender, with coarse locations disabled.
+        assert!(self.take_avatar_packets(max).is_empty());
+        Vec::new()
+    }
+}
+
 #[tokio::test]
-async fn local_teleport_stays_behind_a_queued_terse_update() {
-    let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
-    let (mut state, expect, io) = seated_teleport(region);
-    let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
-    state.login_scene = Some(recording_scene(places));
-    state
-        .enqueue_task(&ferroan_protocol::msgs::ImprovedTerseObjectUpdate::default())
+async fn local_teleport_stays_behind_the_frames_preteleport_terse() {
+    use ferroan_protocol::msgs::{ImprovedTerseObjectUpdate, TeleportLocal, TeleportStart};
+    use ferroan_scene::{AvatarLook, Presence, TerrainFrame, ViewerLink};
+
+    let start = [128.0, 128.0, ferroan_scene::AVATAR_SIZE_Z];
+    let (mut state, expect, io) = seated_teleport(crate::teleport::TeleportRegion::flat(start));
+    let frame = TerrainFrame::start_without_map().unwrap();
+    let feed = frame.new_feed();
+    let wake = feed.wake();
+    let link = ViewerLink {
+        feed: Arc::clone(&feed),
+        seeds_sent: Arc::new(true.into()),
+        circuit_open: Arc::new(false.into()),
+        look: Arc::new(AvatarLook {
+            first_name: "Test".into(),
+            last_name: "User".into(),
+            title: String::new(),
+            visual_params: vec![],
+            texture: vec![],
+            height: 1.9,
+            hover: 0.0,
+        }),
+    };
+    let local_id = frame
+        .attach(expect.agent_id, link)
+        .unwrap()
+        .wait()
+        .await
         .unwrap();
-    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
-    // Start is immediate. The terse was already queued, so it leaves before TeleportLocal.
-    release_throttled(&mut state, &io).await;
-    assert_eq!(
-        message_ids(&io),
-        vec![
-            ferroan_protocol::msgs::TeleportStart::ID,
-            ferroan_protocol::msgs::ImprovedTerseObjectUpdate::ID,
-            ferroan_protocol::msgs::TeleportLocal::ID,
-        ]
+    let pose = Presence {
+        position: start,
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        velocity: [0.0; 3],
+        control_flags: 0,
+        draw_distance: 128.0,
+    };
+    frame
+        .arrive(expect.agent_id, pose, [1.0, 0.0, 0.0])
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    frame.handshake_reply(expect.agent_id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !feed.has_updates() {
+            wake.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+    state.feed = Some(EntityFeed {
+        updates: feed,
+        wake,
+    });
+    state.login_scene = Some(Arc::new(move |agent, call| {
+        let SceneCall::Teleport(request) = call else {
+            panic!("expected a local teleport")
+        };
+        let moved = frame
+            .teleport_local(
+                agent,
+                ferroan_scene::LocalTeleport {
+                    position: request.position,
+                    look_at: request.look_at,
+                    flags: request.flags,
+                    half_height: request.half_height,
+                    default_landing: request.default_landing,
+                    size_x: request.size_x,
+                    size_y: request.size_y,
+                },
+            )
+            .unwrap();
+        SceneAnswer::wait(async move {
+            let moved = moved.wait().await.unwrap();
+            Ok(SceneReply::Moved(SceneMove {
+                position: moved.pose.position,
+                look_at: moved.look_at,
+                flags: moved.flags,
+            }))
+        })
+    }));
+    // Hold Task while the normal send loop picks up and encodes the frame's pose.
+    state.advance_throttle(Duration::from_secs(1));
+    assert!(
+        state
+            .throttle
+            .try_spend(TASK, 1_000_000, state.throttle_clock.now_secs())
     );
-    assert!(state.pending_task.is_empty());
+    state.maintain(&io).await.unwrap();
+    assert_eq!(state.pending_task.len(), 1);
+    let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
+    handle_packet(&mut state, &io, &expect, &request).await;
+    let order = [
+        TeleportStart::ID,
+        ImprovedTerseObjectUpdate::ID,
+        TeleportLocal::ID,
+    ];
+    let sent = || {
+        io.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|bytes| parse_packet(bytes).unwrap())
+            .filter(|packet| order.contains(&packet.id))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        sent().iter().map(|p| p.id).collect::<Vec<_>>(),
+        [TeleportStart::ID]
+    );
+    state.advance_throttle(Duration::from_secs(600));
+    release_throttled(&mut state, &io).await;
+    let packets = sent();
+    assert_eq!(
+        packets.iter().take(3).map(|p| p.id).collect::<Vec<_>>(),
+        order
+    );
+    let terse = packets[1].decode::<ImprovedTerseObjectUpdate>().unwrap();
+    let block = &terse.object_data[0].data;
+    assert_eq!(block[..4], local_id.to_le_bytes());
+    assert_eq!(block[22..26], start[0].to_le_bytes());
+    assert_eq!(block[26..30], start[1].to_le_bytes());
+    assert_eq!(block[30..34], start[2].to_le_bytes());
+    assert_eq!(
+        packets[2]
+            .decode::<TeleportLocal>()
+            .unwrap()
+            .info
+            .position
+            .to_array(),
+        [40.0, 200.0, 30.0]
+    );
+    // A later frame may already have offered another terse at the landing.
+    for packet in &packets[3..] {
+        let update = packet.decode::<ImprovedTerseObjectUpdate>().unwrap();
+        for block in &update.object_data {
+            assert_eq!(block.data[22..26], 40.0_f32.to_le_bytes());
+            assert_eq!(block.data[26..30], 200.0_f32.to_le_bytes());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn local_teleport_after_arrival_with_land_and_task_backlogs_matches_csharp() {
+    use ferroan_protocol::msgs::{
+        AgentMovementComplete, TeleportFailed, TeleportLocal, TeleportStart,
+    };
+
+    let capture =
+        ferroan_capture::read_capture(include_bytes!("../../../fixtures/captures/session.cap"))
+            .unwrap();
+    let pair: Vec<_> = capture
+        .iter()
+        .filter(|r| r.kind == ferroan_capture::Kind::UdpOut)
+        .filter_map(|r| parse_packet(&r.bytes).ok())
+        .filter(|p| !p.resent() && [TeleportStart::ID, TeleportLocal::ID].contains(&p.id))
+        .take(2)
+        .collect();
+    assert_eq!(pair[0].id, TeleportStart::ID);
+    let local = pair[1].decode::<TeleportLocal>().unwrap();
+    let expect = identity(local.info.agent_id);
+    for name_count in [0, MAX_UNACKED] {
+        let arrival = ArrivalConfig {
+            land: vec![
+                crate::LandLayer {
+                    kind: 0x4c,
+                    data: vec![0x77; 128]
+                };
+                256
+            ],
+            teleport: Some(crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0])),
+            ..ArrivalConfig::default()
+        };
+        let mut state = State::new(captured_config(), arrival);
+        state.peer = Some(peer());
+        let io = FakeIo::default();
+        state.login_scene = Some(recording_scene(Arc::default()));
+        handle_packet(&mut state, &io, &expect, &movement(expect, 1, &[])).await;
+        assert!(message_ids(&io).contains(&AgentMovementComplete::ID));
+        for _ in 0..256 {
+            state.advance_throttle(Duration::from_millis(200));
+            state.maintain(&io).await.unwrap();
+            if state.unacked.len() > ACK_STALL {
+                break;
+            }
+        }
+        assert_eq!(state.unacked.len(), ACK_STALL + 1);
+        assert!(!state.pending_land.is_empty());
+        for n in 0..name_count {
+            state
+                .enqueue_name(
+                    Uuid::from_u128(n as u128 + 1),
+                    &UserName::new("Test", "User"),
+                )
+                .unwrap();
+        }
+        let request = teleport_request(expect, 0, local.info.position.to_array(), 2);
+        handle_packet(&mut state, &io, &expect, &request).await;
+        let ids = message_ids(&io);
+        assert!(ids.contains(&TeleportStart::ID));
+        assert!(!ids.contains(&TeleportFailed::ID));
+        assert!(!ids.contains(&TeleportLocal::ID));
+        // Acknowledge only datagrams delivered to this viewer.
+        let mut acknowledged = 0;
+        for tick in 0..256 {
+            let acks = {
+                let sent = io.sent.lock().unwrap();
+                let acks = sent[acknowledged..]
+                    .iter()
+                    .map(|b| parse_packet(b).unwrap())
+                    .filter(|p| p.reliable())
+                    .map(|p| p.sequence)
+                    .collect::<Vec<_>>();
+                acknowledged = sent.len();
+                acks
+            };
+            let ack = PacketAck {
+                packets: acks
+                    .into_iter()
+                    .map(|id| packet_ack::Packets { id })
+                    .collect(),
+                omitted_trailing_blocks: 0,
+            };
+            let mut bytes = Vec::new();
+            build_packet(&ack, tick + 3, false, false, &[], &mut bytes);
+            handle_packet(&mut state, &io, &expect, &bytes).await;
+            state.advance_throttle(Duration::from_millis(200));
+            state.maintain(&io).await.unwrap();
+            if state.pending_task.is_empty() {
+                break;
+            }
+        }
+        let sent = io.sent.lock().unwrap();
+        let actual: Vec<_> = sent
+            .iter()
+            .map(|b| parse_packet(b).unwrap())
+            .filter(|p| [TeleportStart::ID, TeleportLocal::ID].contains(&p.id))
+            .collect();
+        assert_eq!(actual.len(), 2);
+        for (packet, reference) in actual.iter().zip(&pair) {
+            assert_eq!(packet.id, reference.id);
+            assert_eq!(packet.body, reference.body);
+            let flags =
+                ferroan_protocol::PacketFlags::RELIABLE | ferroan_protocol::PacketFlags::ZEROCODED;
+            assert_eq!(packet.flags & flags, reference.flags & flags);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_unsent_local_teleports_consume_the_teleport_bound() {
+    use ferroan_protocol::msgs::{TeleportFailed, TeleportStart};
+    let (mut state, expect, io) =
+        seated_teleport(crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]));
+    let poses = Arc::new(Mutex::new(HashMap::new()));
+    state.login_scene = Some(recording_scene(Arc::clone(&poses)));
+    let first = [40.0, 200.0, 30.0];
+    for n in 0..MAX_PENDING_TELEPORTS {
+        let request = teleport_request(expect, 0, first, n as u32 + 1);
+        handle_packet(&mut state, &io, &expect, &request).await;
+        let start = parse_packet(io.sent.lock().unwrap().last().unwrap()).unwrap();
+        assert_eq!(start.id, TeleportStart::ID);
+        state.unacked.acknowledge([start.sequence]);
+    }
+    let next = [41.0, 201.0, 30.0];
+    let last = MAX_PENDING_TELEPORTS as u32 + 1;
+    handle_packet(
+        &mut state,
+        &io,
+        &expect,
+        &teleport_request(expect, 0, next, last),
+    )
+    .await;
+    assert_eq!(message_ids(&io).last(), Some(&TeleportFailed::ID));
+    assert_eq!(poses.lock().unwrap()[&expect.agent_id], first);
+
+    state.advance_throttle(Duration::from_secs(1));
+    state.maintain(&io).await.unwrap();
+    handle_packet(
+        &mut state,
+        &io,
+        &expect,
+        &teleport_request(expect, 0, next, last + 1),
+    )
+    .await;
+    assert_eq!(message_ids(&io).last(), Some(&TeleportStart::ID));
+    assert_eq!(poses.lock().unwrap()[&expect.agent_id], next);
 }
 
 #[tokio::test]
@@ -374,7 +656,7 @@ async fn local_teleport_lands_and_moves_the_chat_seat() {
     let places = Arc::new(Mutex::new(HashMap::<Uuid, [f32; 3]>::new()));
     state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
+    handle_packet(&mut state, &io, &expect, &request).await;
     release_throttled(&mut state, &io).await;
     assert_eq!(
         message_ids(&io),
@@ -444,7 +726,7 @@ async fn a_teleport_outside_the_region_or_while_frozen_fails() {
     let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
     let (mut state, expect, io) = seated_teleport(region);
     let request = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
+    handle_packet(&mut state, &io, &expect, &request).await;
     let failed = parse_packet(&io.sent.lock().unwrap()[0])
         .unwrap()
         .decode::<ferroan_protocol::msgs::TeleportFailed>()
@@ -463,7 +745,7 @@ async fn a_teleport_outside_the_region_or_while_frozen_fails() {
     frozen.allow_movement = false;
     let (mut state, expect, io) = seated_teleport(frozen);
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
+    handle_packet(&mut state, &io, &expect, &request).await;
     let failed = parse_packet(&io.sent.lock().unwrap()[0])
         .unwrap()
         .decode::<ferroan_protocol::msgs::TeleportFailed>()
@@ -506,7 +788,7 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
         }));
         let io = FakeIo::default();
         let foreign = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
-        handle_teleport(&mut state, &io, &expect, &foreign).await;
+        handle_packet(&mut state, &io, &expect, &foreign).await;
         for _ in 0..50 {
             if flags.lock().unwrap().is_some() {
                 break;
@@ -584,7 +866,7 @@ async fn a_second_teleport_during_a_source_hop_is_refused() {
     state.peer = Some(peer());
     let io = FakeIo::default();
     let foreign = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &foreign).await;
+    handle_packet(&mut state, &io, &expect, &foreign).await;
     for _ in 0..50 {
         if calls.load(Ordering::SeqCst) == 1 {
             break;
@@ -595,9 +877,9 @@ async fn a_second_teleport_during_a_source_hop_is_refused() {
     assert!(state.in_transit);
     io.sent.lock().unwrap().clear();
     let again = teleport_request(expect, 256, [10.0, 10.0, 30.0], 3);
-    handle_teleport(&mut state, &io, &expect, &again).await;
+    handle_packet(&mut state, &io, &expect, &again).await;
     let local = teleport_request(expect, 0, [40.0, 200.0, 30.0], 4);
-    handle_teleport(&mut state, &io, &expect, &local).await;
+    handle_packet(&mut state, &io, &expect, &local).await;
     {
         let sent = io.sent.lock().unwrap();
         assert_eq!(sent.len(), 2);
@@ -632,7 +914,7 @@ async fn a_second_teleport_during_a_source_hop_is_refused() {
     }
     assert!(!state.in_transit);
     let after = teleport_request(expect, 256, [10.0, 10.0, 30.0], 5);
-    handle_teleport(&mut state, &io, &expect, &after).await;
+    handle_packet(&mut state, &io, &expect, &after).await;
     for _ in 0..50 {
         if calls.load(Ordering::SeqCst) == 2 {
             break;
@@ -667,7 +949,7 @@ async fn a_source_hop_does_not_write_the_scene_pose() {
     state.login_scene = Some(recording_scene(Arc::clone(&places)));
     let io = FakeIo::default();
     let foreign = teleport_request(expect, 256, [10.0, 10.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &foreign).await;
+    handle_packet(&mut state, &io, &expect, &foreign).await;
     for _ in 0..50 {
         if calls.load(Ordering::SeqCst) == 1 {
             break;
@@ -1115,7 +1397,7 @@ async fn a_local_teleport_without_a_scene_cannot_be_processed() {
     let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
     let (mut state, expect, io) = seated_teleport(region);
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
+    handle_packet(&mut state, &io, &expect, &request).await;
     state.maintain(&io).await.unwrap();
     assert_eq!(
         message_ids(&io),
@@ -1140,7 +1422,7 @@ async fn the_scene_flags_go_on_the_local_teleport_packets() {
         _ => Err(crate::circuit::SceneRefused).into(),
     }));
     let request = teleport_request(expect, 0, [40.0, 200.0, 30.0], 2);
-    handle_teleport(&mut state, &io, &expect, &request).await;
+    handle_packet(&mut state, &io, &expect, &request).await;
     state.maintain(&io).await.unwrap();
     let sent = io.sent.lock().unwrap();
     let flags: Vec<u32> = sent
