@@ -1522,13 +1522,34 @@ mod tests {
             AvatarPacket::Appearance { agent, .. } if *agent == second
         ));
         assert!(packet_kinds(&second_feed).is_empty());
-        // The wait: the reply and the seeds, then four frames.
+        // The wait: the reply and the seeds, then four frames. The frame
+        // thread ticks on the wall clock, so the test does not count frames
+        // by sleeping. The counter is read before the reply is posted, so
+        // every frame of the wait comes after that reading; the packets are
+        // queued in a tick that is already counted when the counter is read
+        // after them.
         second_seeds.store(true, Ordering::Release);
+        let before = frames(&frame);
         frame.handshake_reply(second).unwrap();
-        wait_frames(&frame, 2);
-        assert!(packet_kinds(&second_feed).is_empty());
-        wait_frames(&frame, 4);
-        assert_eq!(packet_kinds(&second_feed), [('F', 60), ('A', 60)]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let sent = loop {
+            let kinds = packet_kinds(&second_feed);
+            if !kinds.is_empty() {
+                break kinds;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SendInitialData never ran"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let seen = frames(&frame);
+        assert_eq!(sent, [('F', 60), ('A', 60)]);
+        assert!(
+            seen >= before + 4,
+            "SendInitialData ran {} frames after the reply, before the fourth",
+            seen - before
+        );
         // Once only.
         wait_frames(&frame, 3);
         assert!(packet_kinds(&second_feed).is_empty());
