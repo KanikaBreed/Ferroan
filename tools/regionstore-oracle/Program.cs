@@ -15,6 +15,7 @@ using OpenSim.Data.MySQL;
 using OpenSim.Data.PGSQL;
 using OpenSim.Data.SQLite;
 using OpenSim.Framework;
+using OpenSim.Region.Framework.Interfaces;
 using OpenSim.Region.Framework.Scenes;
 using OpenSim.Region.Framework.Scenes.Serialization;
 using OpenSim.Region.PhysicsModules.SharedBase;
@@ -778,6 +779,53 @@ static void Serialize(string path, string regionText, string pin)
         });
     }
 
+    // Keep writer-only inputs out of the XML reader fixture. XmlTextWriter
+    // emits references for characters that an XML 1.0 parser can reject.
+    SceneObjectGroup probe = groups.First(g => g.RootPart.Name == "showcase");
+    SceneObjectPart part = probe.RootPart;
+    string special = "x\r\n\t<>&\"'+`\\\u0001\u001f\u007f\ufffe\uffffé😀";
+    part.Description = special;
+    part.SoundGain = (double)0.1f;
+    part.AllowUnsit = false;
+    part.ScriptedSitOnly = true;
+    part.LinksetData = new LinksetData();
+    part.LinksetData.AddOrUpdateLinksetDataKey("key", special, "");
+    using var stream = new MemoryStream();
+    using var bytes = new BinaryWriter(stream);
+    bytes.Write((byte)8);
+    void Entry(ushort kind, string hex)
+    {
+        byte[] data = Convert.FromHexString(hex);
+        bytes.Write(kind);
+        bytes.Write(data.Length);
+        bytes.Write(data);
+    }
+    const string id = "0123456789ABCDEF0123456789ABCDEF";
+    Entry(0x10, "870A64050000803F0000004000004040"); // flexible
+    Entry(0x20, "10204080000080400000003F0000803F"); // light
+    Entry(0x30, id + "01");                           // sculpt
+    Entry(0x60, id + "05");                           // mesh sculpt type
+    Entry(0x40, id + "0000803F0000003F0000803E");     // projection
+    Entry(0x70, "03000000");                          // mesh flags
+    Entry(0x90, "0000003F0000004003");                // reflection probe
+    Entry(0x80, "0102" + id);                         // render materials
+    byte[] seed = stream.ToArray();
+    // SQLite builds ExtraParams first, then restores the separate MatOvrd column.
+    byte[] overrides = part.Shape.RenderMaterialsOvrToRawBin();
+    part.Shape.ExtraParams = seed;
+    part.Shape.RenderMaterialsOvrFromRawBin(overrides);
+    root.writer_probe = new {
+        id = part.UUID.ToString(), description = part.Description,
+        extra = seed.Select(b => (int)b).ToArray(),
+        gains = new[] { (double)0.1f, 1e-4, 1e-5, 1e16, 1e17, double.Epsilon, -0d,
+                        double.MaxValue, double.PositiveInfinity, double.NegativeInfinity, double.NaN }
+            .Select(g => new { bits = BitConverter.DoubleToUInt64Bits(g).ToString("X16"),
+                               text = g.ToString(OpenSim.Framework.Culture.FormatProvider) }).ToArray(),
+        bytes_used = part.LinksetData.BytesUsed, bytes_free = part.LinksetData.BytesFree,
+        xml2 = SceneObjectSerializer.ToXml2Format(probe),
+        original = SceneObjectSerializer.ToOriginalXmlFormat(probe)
+    };
+
     JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
     Console.Out.Write(JsonSerializer.Serialize(root, options));
     Console.Out.Write('\n');
@@ -1237,6 +1285,60 @@ static void InsertSpawn(SQLiteConnection db, double yaw, double pitch, double di
     command.ExecuteNonQuery();
 }
 
+// Isolate the missing-row observation from the committed fixture. Opening a
+// fresh plugin twice proves the id came back from SQLite across a restart.
+static bool MissingCachePersists(string source)
+{
+    string path = Path.Combine(AppContext.BaseDirectory, $"missing-settings-{Guid.NewGuid():N}.db");
+    File.Copy(source, path);
+    UUID region = UUID.Random();
+    UUID Load()
+    {
+        var store = new SQLiteSimulationData();
+        try
+        {
+            store.Initialise($"Data Source={path};Version=3;Pooling=False;");
+            return store.LoadRegionSettings(region).CacheID;
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+    try
+    {
+        UUID first = Load();
+        return !first.IsZero() && first == Load();
+    }
+    finally
+    {
+        File.Delete(path);
+    }
+}
+
+// Observe Scene's own all-zero PBR fallback at its Save boundary. Leave before
+// the rest of scene startup, which would require a grid and region modules.
+static string[] SceneSavedPbr(RegionSettings source)
+{
+    var settings = new RegionSettings {
+        TerrainTexture1 = source.TerrainTexture1, TerrainTexture2 = source.TerrainTexture2,
+        TerrainTexture3 = source.TerrainTexture3, TerrainTexture4 = source.TerrainTexture4
+    };
+    var service = DispatchProxy.Create<ISimulationDataService, TerrainProbeService>();
+    ((TerrainProbeService)service).Settings = settings;
+    settings.OnSave += _ => throw new TerrainSettingsSaved();
+    try
+    {
+        _ = new Scene(new RegionInfo { RegionID = source.RegionUUID }, null, service, null, null, "");
+    }
+    catch (TerrainSettingsSaved)
+    {
+        return new[] { settings.TerrainPBR1, settings.TerrainPBR2,
+                       settings.TerrainPBR3, settings.TerrainPBR4 }.Select(id => id.ToString()).ToArray();
+    }
+    throw new InvalidOperationException("Scene did not save the empty PBR set");
+}
+
 static void LoadSettings(string path, string regionText, string pin)
 {
     string full = Path.GetFullPath(path);
@@ -1313,6 +1415,11 @@ static void LoadSettings(string path, string regionText, string pin)
         agent_limit = settings.AgentLimit,
         object_bonus = settings.ObjectBonus,
         maturity = settings.Maturity,
+        sim_access = Util.ConvertMaturityToAccessLevel((uint)settings.Maturity),
+        access_by_maturity = new[] { 0, 1, 2, 3, -1 }.Select(m =>
+            (int)Util.ConvertMaturityToAccessLevel((uint)m)).ToArray(),
+        missing_cache_persists = MissingCachePersists(full),
+        saved_pbr_from_empty = SceneSavedPbr(settings),
         terrain_raise_limit = settings.TerrainRaiseLimit,
         terrain_lower_limit = settings.TerrainLowerLimit,
         use_estate_sun = settings.UseEstateSun,
@@ -1453,6 +1560,7 @@ sealed class DumpGroup
 
 sealed class SerializeDump
 {
+    public object writer_probe { get; set; }
     public string pin { get; set; }
     public string region { get; set; }
     public List<SerializeGroup> groups { get; set; }
@@ -2274,6 +2382,19 @@ sealed class Row
     }
 }
 
+sealed class TerrainSettingsSaved : Exception { }
+
+public class TerrainProbeService : DispatchProxy
+{
+    public RegionSettings Settings { get; set; }
+    protected override object Invoke(MethodInfo method, object[] args) => method.Name switch
+    {
+        nameof(ISimulationDataService.LoadRegionSettings) => Settings,
+        nameof(ISimulationDataService.GetExtra) => new Dictionary<string, string>(),
+        _ => throw new NotSupportedException(method.Name)
+    };
+}
+
 sealed class SettingsDump
 {
     public string pin { get; set; }
@@ -2307,6 +2428,10 @@ sealed class SettingsDump
     public int agent_limit { get; set; }
     public double object_bonus { get; set; }
     public int maturity { get; set; }
+    public byte sim_access { get; set; }
+    public int[] access_by_maturity { get; set; }
+    public bool missing_cache_persists { get; set; }
+    public string[] saved_pbr_from_empty { get; set; }
     public double terrain_raise_limit { get; set; }
     public double terrain_lower_limit { get; set; }
     public bool use_estate_sun { get; set; }
