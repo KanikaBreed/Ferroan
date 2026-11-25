@@ -5,6 +5,7 @@
 //! captures. Raw grid traffic stays in scratch; only this object's data leaves it.
 
 use super::{MAX_CAPTURE, Message, bounded, paired};
+use crate::grid::{HOME_NAME, NEIGHBOUR_NAME};
 use crate::live::{CHAT_USER, ESTATE_OWNER};
 use ferroan_capture::{Kind, Record, read_capture, write_capture};
 use ferroan_protocol::msgs::{
@@ -27,8 +28,8 @@ fn write(path: &Path, data: &[u8]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn exchange(records: &[Record], dest: &str, alias: &str) -> Result<(String, String), String> {
-    let (viewer, region) = if alias == "home" {
+fn exchange(records: &[Record], dest: &str) -> Result<(String, String), String> {
+    let (viewer, region) = if dest == HOME_NAME {
         (ESTATE_OWNER, crate::live::REGION_UUID)
     } else {
         (CHAT_USER, crate::grid::NEIGHBOUR_UUID)
@@ -69,9 +70,7 @@ fn exchange(records: &[Record], dest: &str, alias: &str) -> Result<(String, Stri
         if fields["destination_name"] != dest || res.status != Some(200) || res.text()? != "True" {
             return Err("wrong destination or unsuccessful object POST".into());
         }
-        let body = body
-            .replace(ESTATE_OWNER, &OWNER.to_string())
-            .replace(dest, alias);
+        let body = body.replace(ESTATE_OWNER, &OWNER.to_string());
         let request = format!(
             "POST {path} HTTP/1.1\r\nContent-Type: {}\r\n\r\n{body}",
             req.content_type
@@ -83,7 +82,7 @@ fn exchange(records: &[Record], dest: &str, alias: &str) -> Result<(String, Stri
         );
         exchange = Some((request, response));
     }
-    exchange.ok_or_else(|| format!("{alias} received no object POST"))
+    exchange.ok_or_else(|| format!("{dest} received no object POST"))
 }
 
 fn project<M: Msg>(packet: &IncomingPacket, msg: &M) -> Vec<u8> {
@@ -101,6 +100,17 @@ fn project<M: Msg>(packet: &IncomingPacket, msg: &M) -> Vec<u8> {
         &mut bytes,
     );
     bytes
+}
+
+fn decode_original<M: Msg>(packet: &IncomingPacket, bytes: &[u8]) -> Result<M, String> {
+    let decoded = packet.decode::<M>().map_err(|e| e.to_string())?;
+    if project(packet, &decoded) != bytes {
+        return Err(format!(
+            "captured {:?} sequence {} does not re-encode byte for byte",
+            packet.id, packet.sequence
+        ));
+    }
+    Ok(decoded)
 }
 
 fn viewer(records: Vec<Record>, agent: Uuid, alias: Uuid) -> Result<Vec<Record>, String> {
@@ -146,7 +156,7 @@ fn viewer(records: Vec<Record>, agent: Uuid, alias: Uuid) -> Result<Vec<Record>,
                 continue;
             }
             (Kind::UdpOut, ObjectUpdate::ID) => {
-                let mut update = packet.decode::<ObjectUpdate>().map_err(|e| e.to_string())?;
+                let mut update = decode_original::<ObjectUpdate>(&packet, &record.bytes)?;
                 update
                     .object_data
                     .retain(|b| matches!(b.full_id, ROOT | CHILD));
@@ -164,9 +174,7 @@ fn viewer(records: Vec<Record>, agent: Uuid, alias: Uuid) -> Result<Vec<Record>,
                 project(&packet, &update)
             }
             (Kind::UdpIn, MultipleObjectUpdate::ID) => {
-                let mut edit = packet
-                    .decode::<MultipleObjectUpdate>()
-                    .map_err(|e| e.to_string())?;
+                let mut edit = decode_original::<MultipleObjectUpdate>(&packet, &record.bytes)?;
                 if !pinned_arrival
                     || Some(edit.agent_data.session_id) != session
                     || edit.agent_data.agent_id != agent
@@ -183,9 +191,8 @@ fn viewer(records: Vec<Record>, agent: Uuid, alias: Uuid) -> Result<Vec<Record>,
                 project(&packet, &edit)
             }
             (Kind::UdpOut, ImprovedTerseObjectUpdate::ID) => {
-                let mut terse = packet
-                    .decode::<ImprovedTerseObjectUpdate>()
-                    .map_err(|e| e.to_string())?;
+                let mut terse =
+                    decode_original::<ImprovedTerseObjectUpdate>(&packet, &record.bytes)?;
                 let mut parts = Vec::new();
                 for part in terse.object_data {
                     let id = ferroan_protocol::Reader::new(&part.data)
@@ -202,7 +209,7 @@ fn viewer(records: Vec<Record>, agent: Uuid, alias: Uuid) -> Result<Vec<Record>,
                 project(&packet, &terse)
             }
             (Kind::UdpOut, KillObject::ID) => {
-                let mut kills = packet.decode::<KillObject>().map_err(|e| e.to_string())?;
+                let mut kills = decode_original::<KillObject>(&packet, &record.bytes)?;
                 kills.object_data.retain(|b| locals.contains(&b.id));
                 if kills.object_data.is_empty() {
                     continue;
@@ -222,7 +229,7 @@ pub(in crate::grid) fn extract(run: &Path) -> Result<String, String> {
     for (side, name, direction, agent, alias, udp) in [
         (
             "home",
-            crate::grid::HOME_NAME,
+            HOME_NAME,
             "westbound",
             ESTATE_OWNER,
             OWNER,
@@ -230,7 +237,7 @@ pub(in crate::grid) fn extract(run: &Path) -> Result<String, String> {
         ),
         (
             "neighbour",
-            crate::grid::NEIGHBOUR_NAME,
+            NEIGHBOUR_NAME,
             "eastbound",
             CHAT_USER,
             Uuid::from_u128(101),
@@ -238,7 +245,7 @@ pub(in crate::grid) fn extract(run: &Path) -> Result<String, String> {
         ),
     ] {
         let http = read(&run.join(format!("proxy-{side}.cap")))?;
-        let (req, res) = exchange(&http, name, side)?;
+        let (req, res) = exchange(&http, name)?;
         let events = viewer(
             read(&run.join(udp))?,
             agent.parse().map_err(|_| "bad harness account")?,
@@ -350,7 +357,7 @@ fn replay_post(
     {
         return Err("wrong object POST path, method or reply".into());
     }
-    let region_id = if dest == "home" {
+    let region_id = if dest == HOME_NAME {
         crate::live::REGION_UUID
     } else {
         crate::grid::NEIGHBOUR_UUID
@@ -489,14 +496,14 @@ fn replay(dir: &Path) -> Result<(), String> {
     let home = replay_post(
         dir,
         "eastbound",
-        "neighbour",
+        NEIGHBOUR_NAME,
         crate::grid::NEIGHBOUR_X * 256,
         "<8, 128, 40>",
     )?;
     let neighbour = replay_post(
         dir,
         "westbound",
-        "home",
+        HOME_NAME,
         crate::grid::HOME_X * 256,
         "<248, 128, 40>",
     )?;
@@ -537,6 +544,27 @@ mod tests {
     }
 
     #[test]
+    fn extraction_rejects_a_viewer_datagram_that_cannot_be_rebuilt_exactly() {
+        let records = read(&crate::repo_root().join("fixtures/object-cross/home.cap")).unwrap();
+        for id in [ObjectUpdate::ID, MultipleObjectUpdate::ID] {
+            let mut record = records
+                .iter()
+                .find(|r| parse_packet(&r.bytes).unwrap().id == id)
+                .unwrap()
+                .clone();
+            // An extra header byte leaves the decoded message intact but is
+            // absent from the rebuilt datagram.
+            record.bytes[5] = 1;
+            record.bytes.insert(6, 42);
+            let error = viewer(vec![record], OWNER, OWNER).unwrap_err();
+            assert!(
+                error.contains("does not re-encode byte for byte"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn an_object_access_query_fails_even_if_the_post_would_follow() {
         for path in [
             format!("/object/{ROOT}/"),
@@ -548,7 +576,7 @@ mod tests {
                 bytes: format!("QUERYACCESS {path} HTTP/1.1\r\n\r\n").into_bytes(),
             };
             assert!(
-                exchange(&[record], "region", "home")
+                exchange(&[record], HOME_NAME)
                     .unwrap_err()
                     .contains("access query")
             );
