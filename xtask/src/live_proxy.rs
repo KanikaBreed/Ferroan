@@ -12,7 +12,8 @@ use ferroan_capture::{DEFAULT_REPLY_TIMEOUT, ProxyStatus};
 
 pub(crate) struct Proxies {
     runtime: tokio::runtime::Runtime,
-    statuses: Vec<ProxyStatus>,
+    /// One per bind, in the order `start` was given them, with its capture.
+    statuses: Vec<(ProxyStatus, PathBuf)>,
 }
 
 impl Proxies {
@@ -41,7 +42,7 @@ impl Proxies {
                     .map_err(|error| format!("could not bind proxy on {listen}: {error}"))?;
                 addresses.push(listener.local_addr().map_err(|error| error.to_string())?);
                 let status = ProxyStatus::default();
-                statuses.push(status.clone());
+                statuses.push((status.clone(), path.clone()));
                 let upstream = *upstream;
                 let path = path.clone();
                 tokio::spawn(async move {
@@ -65,14 +66,36 @@ impl Proxies {
         Ok((addresses, Self { runtime, statuses }))
     }
 
+    /// The harness is about to stop the upstream of bind `index` on purpose.
+    ///
+    /// A request that reaches that proxy afterwards and finds the upstream gone
+    /// (refused, or reset, closed or broken before any response byte) is kept
+    /// in its capture and is not a failure. In the grid, the C#
+    /// neighbour closes its child agent on the home region after the bot logs
+    /// out of the neighbour, on its own thread; that DELETE can come after the
+    /// home region has been stopped (PR #249's run 45546454682). A refusal
+    /// before this call still fails the run.
+    pub(crate) fn upstream_stopping(&self, index: usize) {
+        if let Some((status, _)) = self.statuses.get(index) {
+            status.upstream_stopping();
+        }
+    }
+
     pub(crate) fn finish(self) -> Result<(), String> {
         self.runtime.block_on(async {
             let mut failure = None;
-            for status in self.statuses {
-                if let Err(error) = status
+            for (status, path) in self.statuses {
+                let result = status
                     .finish(DEFAULT_REPLY_TIMEOUT + Duration::from_secs(20))
-                    .await
-                {
+                    .await;
+                let late = status.refused_after_stop();
+                if late > 0 {
+                    println!(
+                        "live: proxy {} kept {late} request(s) that came after its upstream was stopped",
+                        path.display()
+                    );
+                }
+                if let Err(error) = result {
                     failure.get_or_insert_with(|| format!("capture proxy failed: {error}"));
                 }
             }
@@ -85,6 +108,50 @@ impl Proxies {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn a_refusal_after_the_harness_stops_that_upstream_is_not_a_failure() {
+        let paths: Vec<PathBuf> = ["stopped", "up"]
+            .iter()
+            .map(|name| {
+                crate::repo_root()
+                    .join(".scratch")
+                    .join(format!("proxy-{name}-{}.cap", uuid::Uuid::new_v4()))
+            })
+            .collect();
+        // Two upstreams with nothing listening: one the harness is stopping,
+        // one that is meant to be up.
+        let closed = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
+        let (addresses, proxies) = Proxies::start(&[
+            ("127.0.0.1:0".parse().unwrap(), closed(), paths[0].clone()),
+            ("127.0.0.1:0".parse().unwrap(), closed(), paths[1].clone()),
+        ])
+        .unwrap();
+        proxies.upstream_stopping(0);
+        for address in &addresses {
+            let mut client = std::net::TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .write_all(b"DELETE /agent/x/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut response = Vec::new();
+            let _ = client.read_to_end(&mut response);
+            assert!(response.is_empty());
+        }
+        // Only the refusal while the upstream was meant to be up counts.
+        let error = proxies.finish().unwrap_err();
+        assert!(error.contains("recorded 1 failure(s)"), "{error}");
+        for path in paths {
+            let records = ferroan_capture::read_capture(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(records.len(), 1, "{}", path.display());
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn a_forced_upstream_error_fails_the_harness_proxy_run() {
