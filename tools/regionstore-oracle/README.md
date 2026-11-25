@@ -7,6 +7,7 @@ A .NET 10 console program that loads one region's prims from a SQLite, MySQL or 
 ```sh
 cargo xtask regionstore generate
 cargo xtask regionstore settings
+cargo xtask regionstore parcels
 cargo xtask regionstore serialize
 cargo xtask regionstore verify
 cargo xtask regionstore cross

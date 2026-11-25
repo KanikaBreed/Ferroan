@@ -170,6 +170,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
+| Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |

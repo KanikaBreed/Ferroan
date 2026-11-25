@@ -99,6 +99,8 @@ enum RunError {
     Terrain(String),
     #[error("objects: {0}")]
     Objects(String),
+    #[error("parcels: {0}")]
+    Parcels(#[from] ferroan_scene::parcels::ParcelError),
     #[error("region settings: {0}")]
     Settings(String),
 }
@@ -436,13 +438,23 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         }
         None => None,
     };
-    let frame = match map {
-        Some(map) => {
-            TerrainFrame::start(map).map_err(|error| RunError::Terrain(error.to_string()))?
+    let parcels = match &config.object_store {
+        Some(store) if store.kind != ferroan_scene::ObjectStoreKind::Sqlite => None,
+        store => {
+            let connection = store.as_ref().map(|store| store.connection.as_str());
+            let parcels = ferroan_scene::parcels::open_parcels(
+                connection,
+                config.id,
+                config.size,
+                config.estate_owner,
+            )
+            .await?;
+            tracing::info!("ferroan-region: loaded {} parcels", parcels.parcels().len());
+            Some(parcels)
         }
-        None => TerrainFrame::start_without_map()
-            .map_err(|error| RunError::Terrain(error.to_string()))?,
     };
+    let frame = TerrainFrame::start_region(map, parcels)
+        .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -1428,6 +1440,7 @@ mod tests {
         assert!(bare_config.object_store.is_none());
         let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
         assert!(!bare_terrain.has_map());
+        assert_eq!(bare_terrain.parcels().unwrap().parcels().len(), 1);
     }
     #[tokio::test]
     async fn terrain_is_stored_in_the_simulation_data_store() {
@@ -1447,6 +1460,16 @@ mod tests {
             &path,
         )
         .unwrap();
+        let seed = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
+        )
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../../fixtures/regionstore/parcels.sql"))
+            .execute(&seed)
+            .await
+            .unwrap();
+        seed.close().await;
         // `[DatabaseService]` names MySQL; `[SimulationDataStore]` replaces it.
         let server = ferroan_config::Config::parse(&format!(
             "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
@@ -1462,7 +1485,7 @@ mod tests {
         ))
         .unwrap();
         let regions = ferroan_config::Config::parse(
-            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+            "[Ferroan Test]\nRegionUUID=11111111-1111-1111-1111-111111111111\n\
              Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
              ExternalHostName=127.0.0.1\n",
         )
@@ -1470,6 +1493,10 @@ mod tests {
         let config = RegionConfig::from_configs(&server, &regions).unwrap();
         let terrain = load_terrain(&config).await.unwrap().unwrap();
         assert!(terrain.has_map());
+        let parcels = terrain.parcels().unwrap();
+        assert_eq!(parcels.parcels().len(), 3);
+        assert_eq!(parcels.at_cell(1, 0).unwrap().name, "West");
+        assert_eq!(parcels.at_cell(2, 0).unwrap().name, "East");
         let stored = ferroan_scene::open_terrain(
             &format!("URI=file:{};UseUTF16Encoding=True", path.display()),
             config.id,

@@ -298,6 +298,7 @@ pub struct TerrainFrame {
     /// send another wake until the frame clears it.
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    parcels: Option<crate::parcels::ParcelMap>,
     has_map: bool,
     board: AvatarBoard,
 }
@@ -305,15 +306,19 @@ pub struct TerrainFrame {
 impl TerrainFrame {
     /// Precomputes land packets on the frame thread, then returns.
     pub fn start(map: Heightmap) -> Result<Self, TerrainError> {
-        Self::spawn(Some(map))
+        Self::start_region(Some(map), None)
     }
 
     /// Tick and store login poses when the region has no heightmap.
     pub fn start_without_map() -> Result<Self, TerrainError> {
-        Self::spawn(None)
+        Self::start_region(None, None)
     }
 
-    fn spawn(map: Option<Heightmap>) -> Result<Self, TerrainError> {
+    /// Start the frame with its immutable startup parcel map.
+    pub fn start_region(
+        map: Option<Heightmap>,
+        parcels: Option<crate::parcels::ParcelMap>,
+    ) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
         let (inbound, inbound_rx) = mpsc::sync_channel(SCENE_INBOUND);
@@ -340,8 +345,13 @@ impl TerrainFrame {
             wake,
             thread: Some(thread),
             has_map,
+            parcels,
             board,
         })
+    }
+
+    pub fn parcels(&self) -> Option<&crate::parcels::ParcelMap> {
+        self.parcels.as_ref()
     }
 
     /// A feed for one viewer, reading this frame's board.
