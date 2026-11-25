@@ -1108,9 +1108,19 @@ static void CaptureCoalesced(string dumpPath, string pin)
     string noShapeWriteError = null;
     try { CoalescedSceneObjectsSerializer.ToXml(missingShape); }
     catch (NullReferenceException error) { noShapeWriteError = error.GetType().Name; }
+    // ModifySerializedObject's asset-byte path. Exercise both UTF-8 replacement
+    // and SanitizeXml's namespace repair inside the first member's name.
+    byte[] damaged = System.Text.Encoding.UTF8.GetBytes(xml.Replace("<Name>link-restore<", "<Name>xmlns:xmlns:broken!name<"));
+    int marker = damaged.AsSpan().IndexOf("!name<"u8);
+    if (marker < 0) throw new InvalidOperationException("missing damaged-name marker");
+    damaged[marker] = 0xc3;
+    string decoded = OpenSim.Framework.Serialization.External.ExternalRepresentationUtils.SanitizeXml(Utils.BytesToString(damaged));
+    if (!CoalescedSceneObjectsSerializer.TryFromXml(decoded, out var repaired))
+        throw new InvalidOperationException("asset byte path refused the coalesced groups");
+    var repairedNames = repaired.Objects.Select(g => g.Name).ToArray();
     byte[] bytes = System.Text.Encoding.UTF8.GetBytes(xml);
     Console.Out.Write(JsonSerializer.Serialize(new {
-        pin, inputs, xml, readBack = ReadBack(xml), reads, skipsBadMember, noShape, noShapeWriteError,
+        pin, inputs, xml, repairedNames, readBack = ReadBack(xml), reads, skipsBadMember, noShape, noShapeWriteError,
         single = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero, groups[0])),
         empty = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero)),
         readBytes = CoalescedSceneObjectsSerializer.TryFromXmlData(bytes, out _),

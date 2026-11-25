@@ -898,7 +898,7 @@ fn decode_b64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn sanitize_xml(xml: &str) -> String {
+pub(super) fn sanitize_xml(xml: &str) -> String {
     let Some(start) = xml.find("xmlns:xmlns:") else {
         return xml.to_owned();
     };

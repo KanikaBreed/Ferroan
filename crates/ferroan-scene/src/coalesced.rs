@@ -56,7 +56,7 @@
 
 use super::{
     format_f32, to_original_xml,
-    xml_read::{bounded, read_original, unix_now},
+    xml_read::{bounded, read_original, sanitize_xml, unix_now},
 };
 use crate::{ObjectGroup, objects::MAX_REGION_OBJECTS};
 use ferroan_diag::{Kind, OBJECT_COALESCED_PRIMS, refuse};
@@ -191,8 +191,9 @@ fn product(a: Rotation, b: Rotation) -> Rotation {
     ]
 }
 
-/// Read members in document order. Pin8 ignores wrapper sizes and offsets
-/// and continues when an individual original-format group cannot be loaded.
+/// Read members in document order as TryFromXml does, skipping unreadable members.
+/// The rez path additionally requires valid wrapper sizes and offsets to place each
+/// linkset. Its caller needs those values as well as the members.
 pub fn from_coalesced_xml(xml: &str) -> Option<Vec<ObjectGroup>> {
     bounded(xml.len())?;
     let root = ferroan_llsd::xml::parse_document(xml.as_bytes()).ok()?;
@@ -220,14 +221,12 @@ fn read_members(root: &ferroan_llsd::xml::Element, limit: u64) -> Option<Vec<Obj
     Some(groups)
 }
 
-/// Read a UTF-8 inventory asset, including the optional single NUL terminator (D83).
+/// Decode and sanitize the inventory asset as ModifySerializedObject does (D83).
 pub fn from_coalesced_xml_data(data: &[u8]) -> Option<Vec<ObjectGroup>> {
     bounded(data.len())?;
-    if data.len() < 32 {
-        return None;
-    }
-    let text = std::str::from_utf8(data.strip_suffix(&[0]).unwrap_or(data)).ok()?;
-    from_coalesced_xml(text)
+    let text = String::from_utf8_lossy(data.strip_suffix(&[0]).unwrap_or(data));
+    bounded(text.len())?;
+    from_coalesced_xml(&sanitize_xml(&text))
 }
 
 impl ObjectGroup {

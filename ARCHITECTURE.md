@@ -40,7 +40,7 @@ hash before the write transaction, then commits the metadata if another store
 has already inserted the same hash. This also works under MariaDB snapshot
 isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
 
-`ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The reader restores member positions from their parts. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
+`ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The member reader follows `TryFromXml` and restores positions from the parts. Rez must also parse the wrapper sizes and offsets and refuse invalid values, as `GetObjectsToRez` does (3185–3208). The member reader alone cannot place these groups for rez. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
 
 ## Planned
 

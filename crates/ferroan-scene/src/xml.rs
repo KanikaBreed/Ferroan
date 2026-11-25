@@ -1573,7 +1573,7 @@ mod tests {
         }
         assert_eq!(
             fixture["readBytes"], false,
-            "TB102: revisit D83 if Pin8 accepts valid bytes"
+            "TB102: the unused byte overload now accepts valid bytes"
         );
         assert_eq!(
             fixture["readBytesWithNul"], false,
@@ -1586,6 +1586,19 @@ mod tests {
         bytes.push(0);
         assert!(super::from_coalesced_xml_data(&bytes).is_none());
         assert!(super::from_coalesced_xml_data(&[0xff; 40]).is_none());
+        assert!(
+            super::from_coalesced_xml_data(b"<CoalescedObject />")
+                .unwrap()
+                .is_empty()
+        );
+        let mut damaged = xml
+            .replace("<Name>link-restore<", "<Name>xmlns:xmlns:broken!name<")
+            .into_bytes();
+        let marker = damaged.windows(6).position(|b| b == b"!name<").unwrap();
+        damaged[marker] = 0xc3;
+        let members = super::from_coalesced_xml_data(&damaged).unwrap();
+        let names: Vec<_> = members.iter().map(|g| &g.parts[0].name).collect();
+        assert_eq!(serde_json::json!(names), fixture["repairedNames"]);
     }
 
     #[test]
