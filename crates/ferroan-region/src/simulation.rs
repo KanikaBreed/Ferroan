@@ -63,6 +63,8 @@
 // a single CreateAgent budget under Robust's 30 s connector timeout, and an
 // empty JSON 403 for a refused control-plane POST. The release DELETE is
 // AgentHandlers.DoAgentDelete when the action is "release", pin c401bceecd.
+// Circuit service URLs follow AgentCircuitData.UnpackAgentCircuitData at Pin8,
+// c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // At pin 1d7abb8337,
 // Scene.CheckLandPositionAccess admits a god or an estate manager before the
 // root-agent count. Those extra roots share region.root-bypass.
@@ -89,7 +91,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
-use crate::simulation_client::{Appearance, RegionEnd, appearance_from_json};
+use crate::simulation_client::{Appearance, RegionEnd, TransferAnimations, appearance_from_json};
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -271,6 +273,7 @@ struct ActiveSession {
     logout_done: watch::Receiver<()>,
     /// Shared with the circuit that can promote this child.
     slot: ReturnSlot,
+    animations: Arc<Mutex<TransferAnimations>>,
 }
 
 impl ActiveSession {
@@ -306,6 +309,8 @@ pub struct AcceptedAgent {
     pub channel: String,
     pub mac: String,
     pub id0: String,
+    pub animations: Arc<Mutex<TransferAnimations>>,
+    pub service_urls: Vec<(String, String)>,
     pub appearance: Option<Appearance>,
     /// Same gate the session stores. The circuit waits on it for a return.
     pub return_slot: ReturnSlot,
@@ -731,6 +736,7 @@ impl SimulationState {
             .replace(logout_wait.clone());
         let slot = ReturnSlot::new(fields.child);
         let child = Arc::new(Mutex::new(child));
+        let animations = Arc::new(Mutex::new(TransferAnimations::default()));
         let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
             fields.agent_id,
@@ -744,6 +750,7 @@ impl SimulationState {
                 cancel: Some(cancel),
                 logout_done: logout_wait,
                 slot: slot.clone(),
+                animations: Arc::clone(&animations),
             },
         );
         publish_agents(&sessions, &self.meters);
@@ -780,6 +787,8 @@ impl SimulationState {
             channel: fields.channel,
             mac: fields.mac,
             id0: fields.id0,
+            animations,
+            service_urls: fields.service_urls,
             appearance: fields.appearance,
             return_slot: slot,
             seeds_sent: self
@@ -1283,7 +1292,7 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
     let Some(session) = json_uuid(args.get("session_uuid")) else {
         return false;
     };
-    let ChildGate::Child(slot) = child_gate(state, agent, session) else {
+    let ChildGate::Child(slot, animations) = child_gate(state, agent, session) else {
         return false;
     };
     let Some(position) = json_vec3(args.get("position")) else {
@@ -1298,21 +1307,27 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
         .map(str::to_owned);
     // `AgentData.Unpack` then `CopyFrom`: the frame stores these when the
     // child becomes root.
-    if !slot.store_update(
-        ReturnPose {
-            position,
-            look_at,
-            origin,
-            velocity,
-            far: json_real(args.get("far")),
-            body_rotation: json_quat(args.get("body_rotation")),
-            head_rotation: json_quat(args.get("head_rotation")),
-            control_flags: json_u32_text(args.get("control_flags")),
-            always_run: json_bool(args.get("always_run")),
-        },
-        callback,
-    ) {
-        return false;
+    {
+        let mut animations = animations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !slot.store_update(
+            ReturnPose {
+                position,
+                look_at,
+                origin,
+                velocity,
+                far: json_real(args.get("far")),
+                body_rotation: json_quat(args.get("body_rotation")),
+                head_rotation: json_quat(args.get("head_rotation")),
+                control_flags: json_u32_text(args.get("control_flags")),
+                always_run: json_bool(args.get("always_run")),
+            },
+            callback,
+        ) {
+            return false;
+        }
+        animations.copy_from(args);
     }
     if args.get("wait_for_root").and_then(Value::as_bool) == Some(true) {
         slot.wait_root(ROOT_WAIT).await
@@ -1330,7 +1345,7 @@ fn apply_agent_position(state: &SimulationState, agent: Uuid, args: &Map<String,
     };
     match child_gate(state, agent, session) {
         ChildGate::Root => true,
-        ChildGate::Child(slot) => {
+        ChildGate::Child(slot, _) => {
             let Some(position) = json_vec3(args.get("position")) else {
                 return false;
             };
@@ -1344,7 +1359,7 @@ enum ChildGate {
     Missing,
     Mismatch,
     Root,
-    Child(ReturnSlot),
+    Child(ReturnSlot, Arc<Mutex<TransferAnimations>>),
 }
 
 fn child_gate(state: &SimulationState, agent: Uuid, session: Uuid) -> ChildGate {
@@ -1361,7 +1376,7 @@ fn child_gate(state: &SimulationState, agent: Uuid, session: Uuid) -> ChildGate 
     if !row.is_child() {
         return ChildGate::Root;
     }
-    ChildGate::Child(row.slot.clone())
+    ChildGate::Child(row.slot.clone(), Arc::clone(&row.animations))
 }
 
 fn json_uuid(value: Option<&Value>) -> Option<Uuid> {
@@ -1734,6 +1749,7 @@ struct AgentFields {
     channel: String,
     mac: String,
     id0: String,
+    service_urls: Vec<(String, String)>,
     appearance: Option<Appearance>,
 }
 
@@ -1827,6 +1843,7 @@ impl AgentFields {
             channel: optional_string(args, "channel"),
             mac: optional_string(args, "mac"),
             id0: optional_string(args, "id0"),
+            service_urls: circuit_service_urls(args),
             appearance: args.get("packed_appearance").map(appearance_from_json),
         })
     }
@@ -1842,6 +1859,26 @@ impl AgentFields {
             }
         }
     }
+}
+
+/// AgentCircuitData prefers the serviceurls map, falling back to legacy key/value pairs.
+fn circuit_service_urls(args: &Map<String, Value>) -> Vec<(String, String)> {
+    let mut legacy = Map::new();
+    let urls = if let Some(map) = args.get("serviceurls").and_then(Value::as_object) {
+        map
+    } else if let Some(flat) = args.get("service_urls").and_then(Value::as_array) {
+        for [key, value] in flat.as_chunks::<2>().0 {
+            if let (Some(key), Value::String(_)) = (key.as_str(), value) {
+                legacy.insert(key.to_owned(), value.clone());
+            }
+        }
+        &legacy
+    } else {
+        return Vec::new();
+    };
+    urls.iter()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+        .collect()
 }
 
 fn optional_string(args: &Map<String, Value>, key: &str) -> String {
@@ -2445,6 +2482,7 @@ mod tests {
             channel: String::new(),
             mac: String::new(),
             id0: String::new(),
+            service_urls: Vec::new(),
             appearance: None,
         }
     }
@@ -3486,6 +3524,10 @@ mod tests {
                     "head_rotation": "<0, 0, 0.5, 0.8660254>",
                     "control_flags": "8192",
                     "always_run": true,
+                    "default_animation": { "animation": agent.to_string(), "seq_num": 8 },
+                    "animation_state": { "animation": session.to_string(), "seq_num": 9 },
+                    "animations": [{ "animation": agent.to_string(), "object_id": session.to_string(), "seq_num": 10 }],
+                    "motion_state": 2,
                     "wait_for_root": true,
                     "cb_uri": "http://127.0.0.1:9/agent/release/",
                 }),
@@ -3509,6 +3551,13 @@ mod tests {
         assert_eq!(stored.head_rotation, [0.0, 0.0, 0.5, 0.866_025_4]);
         assert_eq!(stored.control_flags, 8192);
         assert!(stored.always_run);
+        {
+            let animations = accepted.animations.lock().unwrap();
+            assert_eq!(animations.default_animation.animation, agent);
+            assert_eq!(animations.animation_state.sequence, 9);
+            assert_eq!(animations.extra[0].object_id, session);
+            assert_eq!(animations.motion_state, 2);
+        }
         accepted.mark_root();
         let flag = tokio::time::timeout(Duration::from_secs(2), waiting)
             .await
@@ -3552,6 +3601,22 @@ mod tests {
             arrival_look([0.0005, 0.0, 0.0], [0.0; 3]),
             [0.99, 0.042, 0.0]
         );
+    }
+
+    #[test]
+    fn circuit_urls_prefer_the_map_and_keep_the_last_legacy_value() {
+        let mut args = json!({"service_urls":["HomeURI", "/", "HomeURI", "legacy/", "odd"]});
+        assert_eq!(
+            circuit_service_urls(args.as_object().unwrap()),
+            [("HomeURI".into(), "legacy/".into())]
+        );
+        args["serviceurls"] = json!({"HomeURI": "map/"});
+        assert_eq!(
+            circuit_service_urls(args.as_object().unwrap()),
+            [("HomeURI".into(), "map/".into())]
+        );
+        args["serviceurls"] = json!({});
+        assert!(circuit_service_urls(args.as_object().unwrap()).is_empty());
     }
 
     #[test]
