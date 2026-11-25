@@ -1060,7 +1060,7 @@ impl Scene {
             .viewer_order()
             .into_iter()
             .map(|(other, _)| other)
-            .filter(|other| *other != agent)
+            .filter(|other| *other != agent && self.is_open(other))
             .collect();
         for other in &others {
             self.send(other, AvatarPacket::Full(full.clone()));
@@ -1123,8 +1123,18 @@ impl Scene {
     /// `RemoveClient`: the leaving root's local id on every remaining viewer.
     fn kill_everywhere(&self, local_id: u32) {
         for (other, _) in self.viewer_order() {
-            self.send(&other, AvatarPacket::Kill(vec![local_id]));
+            if self.is_open(&other) {
+                self.send(&other, AvatarPacket::Kill(vec![local_id]));
+            }
         }
+    }
+
+    /// C# has a presence, and a client, only from `UseCircuitCode` on: a
+    /// viewer attached at login whose circuit is not open yet is not told.
+    fn is_open(&self, agent: &Uuid) -> bool {
+        self.viewers
+            .get(agent)
+            .is_some_and(|viewer| viewer.link.circuit_open.load(Ordering::Acquire))
     }
 
     /// `HasMovedAway`, then `MakeChildAgent`. Out of view range, the avatar
@@ -1356,7 +1366,7 @@ mod tests {
         let link = ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::clone(&seeds),
-            circuit_open: Arc::new(AtomicBool::new(false)),
+            circuit_open: Arc::new(AtomicBool::new(true)),
             look: look_of(&agent.as_u128().to_string()),
         };
         let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
@@ -1523,11 +1533,12 @@ mod tests {
     fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
         feed.take_avatar_packets(usize::MAX)
             .into_iter()
-            .map(|packet| match packet {
-                AvatarPacket::Full(full) => ('F', full.agent.as_u128()),
-                AvatarPacket::Appearance { agent, .. } => ('A', agent.as_u128()),
-                AvatarPacket::Kill(ids) => ('K', u128::from(ids[0])),
-                AvatarPacket::Coarse(_) => ('C', 0),
+            .filter_map(|packet| match packet {
+                AvatarPacket::Full(full) => Some(('F', full.agent.as_u128())),
+                AvatarPacket::Appearance { agent, .. } => Some(('A', agent.as_u128())),
+                AvatarPacket::Kill(ids) => Some(('K', u128::from(ids[0]))),
+                // The frame thread's clock decides when a minimap list falls.
+                AvatarPacket::Coarse(_) => None,
             })
             .collect()
     }
@@ -1790,6 +1801,41 @@ mod tests {
 
     fn cell(scene: &Scene, agent: Uuid) -> [u8; 3] {
         crate::coarse::location(scene.presences[&agent].pose.position)
+    }
+
+    /// C# has no presence for a viewer before its `UseCircuitCode`: an
+    /// arrival and a departure meanwhile tell it nothing, and its own
+    /// `SendInitialData` then sends the other root once.
+    #[test]
+    fn a_viewer_not_yet_open_hears_of_the_others_once_at_its_initial_data() {
+        let mut scene = bare_scene();
+        let there = Uuid::from_u128(90);
+        let leaving = Uuid::from_u128(91);
+        let coming = Uuid::from_u128(92);
+        let _ = open_viewer(&mut scene, there, true);
+        let _ = open_viewer(&mut scene, leaving, true);
+        let (feed, open) = open_viewer(&mut scene, coming, false);
+        arrive_in(&mut scene, there, [128.0, 128.0, 25.0]);
+        arrive_in(&mut scene, leaving, [129.0, 128.0, 25.0]);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Remove {
+                agent: leaving,
+                reply
+            },
+            &mut scene,
+            None,
+            &[],
+            0
+        ));
+        assert!(packet_kinds(&feed).is_empty());
+        open.store(true, Ordering::Release);
+        arrive_in(&mut scene, coming, [130.0, 128.0, 25.0]);
+        scene.send_initial_data(coming);
+        assert_eq!(
+            packet_kinds(&feed),
+            [('F', there.as_u128()), ('A', there.as_u128())]
+        );
     }
 
     const EVERY: u64 = COARSE_EVERY_FRAMES;

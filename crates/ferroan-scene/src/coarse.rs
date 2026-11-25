@@ -179,6 +179,11 @@ mod tests {
     fn out_of_range_values_wrap_as_csharp_casts_them() {
         assert_eq!(location([10.0, 10.0, 1024.0]), [10, 10, 0]);
         assert_eq!(location([10.0, 10.0, 1024.5]), [10, 10, 0]);
+        assert_eq!(
+            location([10.0, 10.0, 1100.0]),
+            [10, 10, 0],
+            "the 1024 m cut"
+        );
         assert_eq!(location([10.0, 10.0, 1023.9]), [10, 10, 255]);
         assert_eq!(location([10.0, 10.0, -1.0]), [10, 10, 0]);
         assert_eq!(location([10.0, 10.0, -4.0]), [10, 10, 255]);
@@ -227,7 +232,7 @@ mod tests {
             .map(|n| (Uuid::from_u128(n + 10), [n as f32, 1.0, 0.0]))
             .collect();
         let (positions, agents) = gather(roots, [256, 256]);
-        assert_eq!(positions.len(), MAX_COARSE_LOCATIONS);
+        assert_eq!(positions.len(), 60);
         assert_eq!(agents[0], Uuid::from_u128(10));
         assert_eq!(agents[59], Uuid::from_u128(69));
         let last = Uuid::from_u128(69);

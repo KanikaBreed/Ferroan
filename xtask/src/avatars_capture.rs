@@ -126,8 +126,10 @@ fn masked_coarse(update: &CoarseLocationUpdate) -> Vec<u8> {
 /// Ferroan's minimap lists against C#'s. Each run sends one list to each
 /// viewer every 50 frames, so the count follows the clock and is not
 /// compared; the kinds of list are: both avatars to each viewer, and the
-/// owner alone after the second bot leaves. An empty list (a viewer whose
-/// avatar has not arrived yet) is allowed on either side. Redaction puts the
+/// owner alone after the second bot leaves. A list to a viewer whose avatar
+/// has not arrived yet (`You` -1: the owner alone to the second bot, when a
+/// 50-frame boundary falls between its UseCircuitCode and its arrival, or
+/// an empty list when nobody is root) is allowed on either side. Redaction puts the
 /// agent placeholder in every `AgentID`, so the redacted lists are compared
 /// with the fixture, and the order (the owner first, as it arrived first) is
 /// checked on the raw run.
@@ -160,10 +162,12 @@ fn compare_coarse(
     {
         return Err("a CoarseLocationUpdate is not unreliable, unencoded and plain".into());
     }
+    // A list to a viewer that is not root yet (`You` -1) depends on whether
+    // a 50-frame boundary falls between its UseCircuitCode and its arrival.
     let kinds = |seen: &[Seen<CoarseLocationUpdate>]| {
         let mut kinds: Vec<Vec<u8>> = seen
             .iter()
-            .filter(|seen| !seen.message.agent_data.is_empty())
+            .filter(|seen| !seen.message.agent_data.is_empty() && seen.message.index.you != -1)
             .map(|seen| masked_coarse(&seen.message))
             .collect();
         kinds.sort();
@@ -380,7 +384,7 @@ pub(super) fn compare_avatars(directory: &Path) -> Result<String, String> {
         chat,
     )?;
     Ok(format!(
-        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# also sends the kill to the leaving viewer after its LogoutReply ({} kill(s) in the C# capture), and AvatarAnimation is P2.3b1",
+        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# can also send the kill to the leaving viewer after its LogoutReply (TB87, racing the circuit close; {} kill(s) in the C# capture), and AvatarAnimation is P2.3b1",
         ferroan.fulls.len(),
         ferroan.appearances.len(),
         kills.len(),
@@ -432,7 +436,7 @@ mod tests {
         // The owner's kill of the second bot. C#'s kill to the leaving viewer
         // after its LogoutReply (TB87) races the bot closing its circuit and
         // is not in this recording.
-        assert!((1..=2).contains(&found.kills.len()));
+        assert_eq!(found.kills.len(), 1);
         for kill in &found.kills {
             assert_eq!(kill.flags & 0xc0, PacketFlags::RELIABLE);
             assert_eq!(kill.message.object_data.len(), 1);
@@ -536,5 +540,43 @@ mod tests {
             .collect::<Vec<_>>();
         off_row[2].message.location[1].y = 129;
         assert!(compare_coarse(&found.coarse, &off_row, &[], (&[], &[]), owner, chat).is_err());
+    }
+
+    /// A frame boundary between the second bot's UseCircuitCode and its
+    /// arrival sends its viewer the owner alone with `You` -1. That list is
+    /// allowed on either side and is not a fourth kind.
+    #[test]
+    fn a_list_before_the_arrival_is_not_a_kind() {
+        let records = super::super::login_capture::records(
+            &crate::repo_root().join("fixtures/avatars/avatars.cap"),
+        )
+        .unwrap();
+        let owner = Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
+        let chat = Uuid::parse_str(crate::live::CHAT_USER).unwrap();
+        let found = avatar_packets(&records, &[owner, chat]).unwrap();
+        let alone = found
+            .coarse
+            .iter()
+            .find(|seen| seen.message.agent_data.len() == 1)
+            .unwrap();
+        let mut early = alone.message.clone();
+        early.index.you = -1;
+        let mut ferroan = vec![Seen {
+            flags: 0,
+            message: early.clone(),
+        }];
+        ferroan.extend(found.coarse.iter().map(|seen| Seen {
+            flags: seen.flags,
+            message: seen.message.clone(),
+        }));
+        let mut raw_early = early;
+        raw_early.agent_data[0].agent_id = owner;
+        let raw = [Seen {
+            flags: 0,
+            message: raw_early,
+        }];
+        assert!(compare_coarse(&ferroan, &ferroan, &raw, (&[], &[]), owner, chat).is_ok());
+        assert!(compare_coarse(&found.coarse, &ferroan, &raw, (&[], &[]), owner, chat).is_ok());
+        assert!(compare_coarse(&ferroan, &found.coarse, &[], (&[], &[]), owner, chat).is_ok());
     }
 }

@@ -51,7 +51,7 @@ const PING_EVERY: Duration = Duration::from_secs(5);
 /// Packets a scenario has not taken yet. The oldest is dropped past this.
 const MAX_INBOX: usize = 256;
 /// Minimap updates a scenario has not taken yet. The oldest is dropped past
-/// this; a region sends about two a second.
+/// this; a region sends each viewer one list every 50 frames (about 4.5 s).
 const MAX_COARSE: usize = 64;
 
 #[derive(Debug, thiserror::Error)]

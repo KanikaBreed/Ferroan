@@ -1149,41 +1149,18 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                     );
                 }
                 ferroan_scene::AvatarPacket::Coarse(coarse) => {
-                    out.push(ferroan_client::AvatarPacket::Coarse(coarse_message(
-                        &coarse,
-                    )));
+                    out.push(ferroan_client::AvatarPacket::Coarse(
+                        ferroan_client::coarse_update(
+                            &coarse.locations,
+                            coarse.you,
+                            coarse.prey,
+                            &coarse.agents,
+                        ),
+                    ));
                 }
             }
         }
         out
-    }
-}
-
-/// `SendCoarseLocationUpdate`'s body. Both counts are written, empty or not.
-fn coarse_message(
-    coarse: &ferroan_scene::CoarseLocations,
-) -> ferroan_protocol::msgs::CoarseLocationUpdate {
-    use ferroan_protocol::msgs::coarse_location_update::{AgentData, Index, Location};
-    ferroan_protocol::msgs::CoarseLocationUpdate {
-        location: coarse
-            .locations
-            .iter()
-            .map(|[x, y, z]| Location {
-                x: *x,
-                y: *y,
-                z: *z,
-            })
-            .collect(),
-        index: Index {
-            you: coarse.you,
-            prey: coarse.prey,
-        },
-        agent_data: coarse
-            .agents
-            .iter()
-            .map(|agent| AgentData { agent_id: *agent })
-            .collect(),
-        omitted_trailing_blocks: 0,
     }
 }
 
@@ -1447,34 +1424,6 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
-
-    /// The frame's list keeps its order, `You` and `Prey` on the wire, and
-    /// an empty list still writes both counts.
-    #[test]
-    fn a_minimap_list_keeps_its_order_and_indexes() {
-        let first = Uuid::from_u128(1);
-        let second = Uuid::from_u128(2);
-        let message = coarse_message(&ferroan_scene::CoarseLocations {
-            locations: vec![[128, 128, 6], [131, 40, 0]],
-            you: 1,
-            prey: -1,
-            agents: vec![first, second],
-        });
-        assert_eq!(message.location[1].x, 131);
-        assert_eq!(message.location[1].y, 40);
-        assert_eq!((message.index.you, message.index.prey), (1, -1));
-        assert_eq!(message.agent_data[0].agent_id, first);
-        assert_eq!(message.agent_data[1].agent_id, second);
-        let empty = coarse_message(&ferroan_scene::CoarseLocations {
-            locations: Vec::new(),
-            you: -1,
-            prey: -1,
-            agents: Vec::new(),
-        });
-        let mut writer = ferroan_protocol::Writer::new();
-        ferroan_protocol::Msg::encode_body(&empty, &mut writer);
-        assert_eq!(writer.buf, [0, 0xff, 0xff, 0xff, 0xff, 0]);
-    }
 
     fn csharp_lifecycle() -> Value {
         serde_json::from_str(include_str!("../../../fixtures/pin3/lifecycle.json")).unwrap()
@@ -3102,14 +3051,14 @@ mod tests {
         let link = ferroan_scene::ViewerLink {
             feed: frame.new_feed(),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
