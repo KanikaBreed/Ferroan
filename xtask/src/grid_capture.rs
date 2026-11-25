@@ -577,6 +577,8 @@ struct NeighbourSide {
     here: u64,
     /// `TeleportFinish` names the region being entered.
     entering: u64,
+    /// `AgentData.region_id` is the region the avatar is leaving.
+    source_region_id: &'static str,
     movement_complete: usize,
     negotiated: usize,
     enable_simulator: usize,
@@ -622,6 +624,7 @@ fn side_home() -> NeighbourSide {
         y: super::HOME_Y,
         here: region_handle(super::HOME_X, super::HOME_Y),
         entering: region_handle(super::NEIGHBOUR_X, super::NEIGHBOUR_Y),
+        source_region_id: super::NEIGHBOUR_UUID,
         movement_complete: 2,
         negotiated: 2,
         enable_simulator: 0,
@@ -641,6 +644,7 @@ fn side_neighbour() -> NeighbourSide {
         y: super::NEIGHBOUR_Y,
         here: region_handle(super::NEIGHBOUR_X, super::NEIGHBOUR_Y),
         entering: region_handle(super::HOME_X, super::HOME_Y),
+        source_region_id: crate::live::REGION_UUID,
         movement_complete: 1,
         negotiated: 1,
         enable_simulator: 1,
@@ -840,6 +844,21 @@ fn check_http_side(directory: &Path, side: &NeighbourSide) -> Result<HttpCounts,
             if body.get("child").and_then(Value::as_bool) != Some(true) {
                 return Err(format!("{} CreateAgent child is not true", side.label));
             }
+            for key in ["viewer", "channel", "mac", "id0"] {
+                if body
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_none_or(|text| text.is_empty())
+                {
+                    return Err(format!("{} CreateAgent {key} is empty", side.label));
+                }
+            }
+            if body.get("packed_appearance").is_none() {
+                return Err(format!(
+                    "{} CreateAgent has no packed appearance",
+                    side.label
+                ));
+            }
             require_destination(&body, side, &meters_x, &meters_y)?;
             context_versions(&body, side.label)?;
             creates += 1;
@@ -857,6 +876,12 @@ fn check_http_side(directory: &Path, side: &NeighbourSide) -> Result<HttpCounts,
             if body.get("position").and_then(Value::as_str) != Some(LANDING_POS) {
                 return Err(format!(
                     "{} UpdateAgent position is not {LANDING_POS}",
+                    side.label
+                ));
+            }
+            if body.get("region_id").and_then(Value::as_str) != Some(side.source_region_id) {
+                return Err(format!(
+                    "{} UpdateAgent region_id is not the source region",
                     side.label
                 ));
             }
@@ -1002,15 +1027,43 @@ fn check_events(records: &[Record], side: &NeighbourSide) -> Result<EventCounts,
     })
 }
 
+fn require_be_u32(
+    value: &ferroan_llsd::Llsd,
+    expected: u32,
+    label: &str,
+    key: &str,
+) -> Result<(), String> {
+    match value {
+        ferroan_llsd::Llsd::Binary(bytes) if bytes.len() == 4 => {
+            let got = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if got == expected {
+                Ok(())
+            } else {
+                Err(format!("{label} TeleportFinish {key} is not {expected}"))
+            }
+        }
+        _ => Err(format!(
+            "{label} TeleportFinish {key} is not a 4-byte binary integer"
+        )),
+    }
+}
+
 fn check_teleport_finish(event: &ferroan_llsd::Llsd, side: &NeighbourSide) -> Result<(), String> {
     let info = event.get("body").get("Info").at(0);
     // EventQueueGetHandlers.TeleportFinishEvent stores LocationID 4.
-    // The caller passes 0. The viewer sees 4.
-    if info.get("LocationID").as_u32() != 4
-        || info.get("SimAccess").as_i32() != 13
-        || info.get("TeleportFlags").as_u32() != TELEPORT_FLAGS
-        || info.get("RegionSizeX").as_u32() != 256
-        || info.get("RegionSizeY").as_u32() != 256
+    // The caller passes 0. The viewer sees 4. The capture stores those
+    // four counts as 4-byte big-endian binary. An integer reads as zero.
+    require_be_u32(info.get("LocationID"), 4, side.label, "LocationID")?;
+    require_be_u32(
+        info.get("TeleportFlags"),
+        TELEPORT_FLAGS,
+        side.label,
+        "TeleportFlags",
+    )?;
+    require_be_u32(info.get("RegionSizeX"), 256, side.label, "RegionSizeX")?;
+    require_be_u32(info.get("RegionSizeY"), 256, side.label, "RegionSizeY")?;
+    if !matches!(info.get("SimAccess"), ferroan_llsd::Llsd::Integer(13))
+        || !matches!(info.get("SimPort"), ferroan_llsd::Llsd::Integer(_))
         || info.get("RegionHandle").as_u64() != side.entering
     {
         return Err(format!(
@@ -2043,5 +2096,53 @@ mod tests {
         assert!(line.contains("CrossedRegion 0"), "{line}");
         assert!(line.contains("UseCircuitCode 2"), "{line}");
         assert!(line.contains("no UDP TeleportFinish"), "{line}");
+    }
+
+    #[test]
+    fn teleport_finish_integer_location_is_not_the_capture_type() {
+        let mut info = ferroan_llsd::Llsd::new_map();
+        info.insert("LocationID", ferroan_llsd::Llsd::Integer(4));
+        info.insert(
+            "TeleportFlags",
+            ferroan_llsd::Llsd::Binary(16u32.to_be_bytes().to_vec()),
+        );
+        info.insert(
+            "RegionSizeX",
+            ferroan_llsd::Llsd::Binary(256u32.to_be_bytes().to_vec()),
+        );
+        info.insert(
+            "RegionSizeY",
+            ferroan_llsd::Llsd::Binary(256u32.to_be_bytes().to_vec()),
+        );
+        info.insert("SimAccess", ferroan_llsd::Llsd::Integer(13));
+        info.insert("SimPort", ferroan_llsd::Llsd::Integer(9100));
+        info.insert(
+            "AgentID",
+            ferroan_llsd::Llsd::Uuid(uuid::Uuid::from_u128(1)),
+        );
+        info.insert("SimIP", ferroan_llsd::Llsd::Binary(vec![127, 0, 0, 1]));
+        info.insert(
+            "RegionHandle",
+            ferroan_llsd::Llsd::Binary(side_home().entering.to_be_bytes().to_vec()),
+        );
+        info.insert(
+            "SeedCapability",
+            ferroan_llsd::Llsd::String("http://127.0.0.1/CAPS/seed/".to_string()),
+        );
+        let mut events = ferroan_llsd::Llsd::new_array();
+        let mut body = ferroan_llsd::Llsd::new_map();
+        let mut info_list = ferroan_llsd::Llsd::new_array();
+        info_list.push(info);
+        body.insert("Info", info_list);
+        let mut event = ferroan_llsd::Llsd::new_map();
+        event.insert("body", body);
+        events.push(event);
+        let mut root = ferroan_llsd::Llsd::new_map();
+        root.insert("events", events);
+        let error = check_teleport_finish(root.get("events").at(0), &side_home()).unwrap_err();
+        assert!(
+            error.contains("LocationID is not a 4-byte binary integer"),
+            "{error}"
+        );
     }
 }

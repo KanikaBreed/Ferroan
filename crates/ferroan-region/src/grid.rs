@@ -47,10 +47,18 @@
 //! Transport has a 30 second deadline and ferroan-http's bounded XML reader.
 //! No retries: startup fails when registration is refused or unconfirmed.
 
+use std::future::Future;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
+use ferroan_diag::{Kind, NEIGHBOUR_DNS};
 use ferroan_http::{Field, FieldMap};
 use uuid::Uuid;
+
+/// A neighbour name is looked up for at most this long. `Dns.GetHostEntry` waits
+/// without a timeout. `Util.getEndPoint` keeps a result for 300 seconds.
+const NEIGHBOUR_DNS_WAIT: Duration = Duration::from_secs(2);
 
 use crate::config::RegionConfig;
 
@@ -379,10 +387,86 @@ impl GridClient {
             fields.insert(key.to_owned(), Field::Str(value));
         }
         let reply = grid_form(&self.endpoint, &fields).await?;
-        Ok(match reply.get("result") {
-            Some(Field::Map(region)) => parse_located(region),
-            _ => None,
-        })
+        let Some(Field::Map(region)) = reply.get("result") else {
+            return Ok(None);
+        };
+        let Some(mut located) = parse_located(region) else {
+            return Ok(None);
+        };
+        let Some(host) = located_host(region) else {
+            return Ok(None);
+        };
+        let port = located.endpoint.port();
+        located.endpoint = endpoint_for(&host, port).await;
+        Ok(Some(located))
+    }
+}
+
+/// A literal address is used as written. A name is looked up for at most two
+/// seconds, and an IPv4 answer wins. An empty name is not looked up.
+/// `0.0.0.0` is not an endpoint. A timed-out lookup is `region.neighbour-dns`.
+async fn endpoint_for(host: &str, port: u16) -> SocketAddr {
+    let owned = host.to_owned();
+    bounded_endpoint(host, port, async move {
+        let addrs = tokio::net::lookup_host((owned.as_str(), port)).await?;
+        Ok(addrs.collect())
+    })
+    .await
+}
+
+fn unspecified(port: u16) -> SocketAddr {
+    SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))
+}
+
+async fn bounded_endpoint(
+    host: &str,
+    port: u16,
+    lookup: impl Future<Output = io::Result<Vec<SocketAddr>>>,
+) -> SocketAddr {
+    if host.is_empty() {
+        return unspecified(port);
+    }
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        if ip.is_unspecified() {
+            tracing::warn!("neighbour address {host} is not usable");
+            return unspecified(port);
+        }
+        return SocketAddr::from((ip, port));
+    }
+    if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        return SocketAddr::from((ip, port));
+    }
+    let addrs = match tokio::time::timeout(NEIGHBOUR_DNS_WAIT, lookup).await {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(error)) => {
+            tracing::warn!("neighbour DNS failed for {host}: {error}");
+            return unspecified(port);
+        }
+        Err(_elapsed) => {
+            let waited = u64::try_from(NEIGHBOUR_DNS_WAIT.as_millis()).unwrap_or(u64::MAX);
+            ferroan_diag::refuse(NEIGHBOUR_DNS, Kind::Hard, waited, waited, "neighbour");
+            tracing::warn!("neighbour DNS timed out for {host}");
+            return unspecified(port);
+        }
+    };
+    if addrs.is_empty() {
+        tracing::warn!("neighbour DNS failed for {host}: no address");
+        return unspecified(port);
+    }
+    if let Some(address) = addrs.iter().find(|address| address.is_ipv4()) {
+        return *address;
+    }
+    addrs
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| unspecified(port))
+}
+
+fn located_host(map: &FieldMap) -> Option<String> {
+    match map.get("serverIP") {
+        None => Some("127.0.0.1".to_string()),
+        Some(Field::Str(text)) => Some(text.clone()),
+        _ => None,
     }
 }
 
@@ -415,9 +499,13 @@ fn parse_located(map: &FieldMap) -> Option<LocatedRegion> {
         _ => return None,
     };
     let port = endpoint_port(map)?;
+    // The caller resolves a name. A non-address stays unspecified until then.
     let endpoint = match host.parse::<Ipv4Addr>() {
         Ok(ip) => SocketAddr::from((ip, port)),
-        Err(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+        Err(_) => host
+            .parse::<Ipv6Addr>()
+            .map(|ip| SocketAddr::from((ip, port)))
+            .unwrap_or_else(|_| SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))),
     };
     Some(LocatedRegion {
         region_id,
@@ -1365,5 +1453,88 @@ mod tests {
                 .is_none()
         );
         serving.abort();
+    }
+
+    #[tokio::test]
+    async fn a_dns_name_resolves_to_ipv4_and_an_empty_host_does_not() {
+        assert_eq!(
+            endpoint_for("localhost", 9100).await,
+            "127.0.0.1:9100".parse().unwrap()
+        );
+        assert_eq!(
+            endpoint_for("", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+        assert_eq!(
+            endpoint_for("ferroan.invalid", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+        assert_eq!(
+            endpoint_for("0.0.0.0", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_neighbour_dns_timeout_is_refused() {
+        let before = neighbour_dns_refusals();
+        let address = bounded_endpoint(
+            "stuck.example",
+            9100,
+            std::future::pending::<std::io::Result<Vec<SocketAddr>>>(),
+        )
+        .await;
+        assert_eq!(address, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100)));
+        assert!(neighbour_dns_refusals() > before);
+    }
+
+    fn neighbour_dns_refusals() -> u64 {
+        let prefix = "ferroan_limit_hits_total{limit=\"region.neighbour-dns\",action=\"refuse\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn region_by_position_resolves_a_dns_name() {
+        let mut region = FieldMap::new();
+        for (key, value) in [
+            ("uuid", Uuid::from_u128(7).to_string()),
+            ("locX", "256".to_string()),
+            ("locY", "256".to_string()),
+            ("serverIP", "localhost".to_string()),
+            ("serverPort", "9100".to_string()),
+            ("serverURI", "http://localhost:9200".to_string()),
+        ] {
+            region.insert(key.to_owned(), Field::Str(value));
+        }
+        let mut ok = FieldMap::new();
+        ok.insert("result".to_owned(), Field::Map(region));
+        let xml = ferroan_http::build_xml_response(&ok).unwrap();
+        let app = axum::Router::new().fallback(move || {
+            let xml = xml.clone();
+            async move {
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/xml")],
+                    xml,
+                )
+            }
+        });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", socket.local_addr().unwrap());
+        let serving = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let client = GridClient {
+            endpoint: format!("{base}/grid"),
+        };
+        let found = client
+            .region_by_position(Uuid::from_u128(3), 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        serving.abort();
+        assert_eq!(found.endpoint, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(found.server_uri, "http://localhost:9200/");
     }
 }
