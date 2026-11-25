@@ -100,7 +100,10 @@ impl Pool {
         stores: &[&str],
     ) -> Result<Self, DbError> {
         let pool = Self::connect(backend, connection_string).await?;
-        pool.require_stores(stores).await?;
+        if let Err(error) = pool.require_stores(stores).await {
+            pool.close().await;
+            return Err(error);
+        }
         Ok(pool)
     }
 

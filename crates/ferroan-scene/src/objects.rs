@@ -348,7 +348,9 @@ pub async fn open_objects(
     let pool = Pool::open(backend, connection, &["RegionStore"])
         .await
         .map_err(|error| ObjectError::Store(error.to_string()))?;
-    load_objects(&pool, region).await
+    let result = load_objects(&pool, region).await;
+    pool.close().await;
+    result
 }
 
 /// Load with [`MAX_REGION_OBJECTS`] and [`MAX_LINKSET_PRIMS`].
@@ -2688,6 +2690,7 @@ fn pg_quat_req(row: &PgRow, x: &str, y: &str, z: &str, w: &str) -> Result<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_store::CopiedStore;
     use std::collections::BTreeSet;
     use std::process::Command;
 
@@ -2702,21 +2705,6 @@ mod tests {
     fn committed_dump() -> Value {
         let text = std::fs::read_to_string(fixture_dir().join("objects.json")).unwrap();
         serde_json::from_str(&text).unwrap()
-    }
-
-    fn copied_store() -> String {
-        let dir = std::env::temp_dir().join(format!(
-            "ferroan-regionstore-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("objects.db");
-        std::fs::copy(fixture_dir().join("objects.db"), &path).unwrap();
-        format!("Data Source={};Version=3", path.display())
     }
 
     fn json_i64(value: &Value, path: &str) -> i64 {
@@ -3745,8 +3733,9 @@ mod tests {
         let dump = committed_dump();
         assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
+        let store = CopiedStore::new("regionstore/objects.db");
         let groups = open_objects(
-            &copied_store(),
+            &store.connection(),
             Uuid::parse_str(REGION).unwrap(),
             ObjectStoreKind::Sqlite,
         )
@@ -3886,7 +3875,8 @@ mod tests {
 
     #[tokio::test]
     async fn regionstore_unreadable_inventory_row_is_left_out() {
-        let connection = copied_store();
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
         let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
             .await
             .unwrap();
@@ -3922,6 +3912,7 @@ mod tests {
                 != Uuid::parse_str("d1000000-0000-0000-0000-000000000002").unwrap())
         );
         assert_eq!(groups[3].parts[0].name, "no-shape");
+        pool.close().await;
     }
 
     #[test]
@@ -3993,7 +3984,8 @@ mod tests {
 
     #[tokio::test]
     async fn regionstore_streams_this_region_only() {
-        let connection = copied_store();
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
         let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
             .await
             .unwrap();
@@ -4057,11 +4049,13 @@ mod tests {
                 .iter()
                 .any(|group| { group.parts.iter().any(|part| part.name == "link-restore") })
         );
+        pool.close().await;
     }
 
     #[tokio::test]
     async fn regionstore_root_test_compares_the_stored_text() {
-        let connection = copied_store();
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
         let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
             .await
             .unwrap();
@@ -4085,11 +4079,13 @@ mod tests {
                 .iter()
                 .any(|group| group.parts.iter().any(|part| part.name == "showcase"))
         );
+        pool.close().await;
     }
 
     #[tokio::test]
     async fn regionstore_limits_refuse_a_smaller_cap() {
-        let connection = copied_store();
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
         let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
             .await
             .unwrap();
@@ -4110,6 +4106,7 @@ mod tests {
             }) => {}
             other => panic!("linkset cap: {other:?}"),
         }
+        pool.close().await;
     }
 
     #[tokio::test]
@@ -4142,7 +4139,8 @@ mod tests {
         let dll = std::env::var("FERROAN_REGIONSTORE_ORACLE").unwrap();
         let dump = committed_dump();
         let pin = dump["pin"].as_str().unwrap();
-        let connection = copied_store();
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
         let path = ferroan_db::sqlite_filename(&connection).unwrap();
         let output = Command::new("dotnet")
             .arg(&dll)

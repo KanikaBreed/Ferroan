@@ -509,12 +509,15 @@ pub async fn open_terrain(
     let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"])
         .await
         .map_err(|error| TerrainError::Store(error.to_string()))?;
-    read_terrain(&pool, region, width, height).await
+    let result = read_terrain(&pool, region, width, height).await;
+    pool.close().await;
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_store::CopiedStore;
     use std::io::Write;
 
     use crate::objects::ObjectStoreKind;
@@ -558,20 +561,8 @@ mod tests {
 
     #[tokio::test]
     async fn region_store_revision_is_checked_before_the_blob() {
-        let dir = std::env::temp_dir().join(format!(
-            "ferroan-terrain-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("RegionStore.db");
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/db/sqlite/RegionStore.db");
-        std::fs::copy(&fixture, &path).unwrap();
-        let connection = format!("Data Source={};Version=3", path.display());
+        let store = CopiedStore::new("db/sqlite/RegionStore.db");
+        let connection = store.connection();
         let region = Uuid::from_u128(0x6d1a_7f4e_0c3b_4f53_9a1e_5f0e_3c2a_9b01);
         let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
             .await
@@ -588,7 +579,7 @@ mod tests {
         let map = read_terrain(&pool, region, 16, 16).await.unwrap().unwrap();
         assert_eq!(map.cells()[15 * 16], 40.0);
         assert_eq!(map.height_at(0.0, 15.0), 40.0);
-        let _ = std::fs::remove_dir_all(&dir);
+        pool.close().await;
     }
 
     fn scratch_store(name: &str) -> (std::path::PathBuf, String) {
