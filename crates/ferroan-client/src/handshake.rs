@@ -51,11 +51,13 @@
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (SendRegionHandshake, GetRegionFlags)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPZeroEncoder.cs (AddShortString)
-//   Source/OpenSim.Framework/Util.cs (osUTF8Getbytes, ConvertMaturityToAccessLevel)
+//   Source/OpenSim.Framework/Util.cs (osUTF8Getbytes)
 //   Source/OpenSim.Framework/RegionSettings.cs
 //   Source/OpenSim.Framework/EstateSettings.cs
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (terrain texture defaults)
 //   OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c
+//   Source/OpenSim.Framework/RegionInfo.cs (AccessLevel), Util.cs
+//     (ConvertMaturityToAccessLevel), Tranquillity dev-build @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 //   OpenMetaverse/Simulator.cs (RegionFlags)
 //   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
@@ -93,8 +95,7 @@ pub struct HandshakeConfig {
 }
 
 /// Region-settings fields the handshake sends. Estate bits already on the
-/// config stay. `fixed_sun` is the stored column: the C# property ignores it,
-/// so a viewer that reads `SunFixed` never sees that column (TB69, D52).
+/// config stay. Maturity selects the access level. FixedSun is inert.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredHandshake {
     pub water_height: f32,
@@ -104,7 +105,7 @@ pub struct StoredHandshake {
     pub terrain_start_heights: [f32; 4],
     pub terrain_height_ranges: [f32; 4],
     pub allow_damage: bool,
-    pub fixed_sun: bool,
+    pub maturity: i32,
     pub block_terraform: bool,
     pub allow_land_resell: bool,
     pub sandbox: bool,
@@ -186,9 +187,12 @@ impl HandshakeConfig {
         if stored.allow_damage {
             flags |= 1 << 0;
         }
-        if stored.fixed_sun {
-            flags |= 1 << 4;
-        }
+        self.sim_access = match stored.maturity {
+            0 => 13,
+            1 => 21,
+            2 => 42,
+            _ => 0,
+        };
         if stored.block_terraform {
             flags |= 1 << 6;
         }
@@ -368,7 +372,7 @@ mod tests {
             terrain_start_heights: [-100.0, 11.5, 12.25, 13.5],
             terrain_height_ranges: [70.0, 80.5, 90.0, 4000.0],
             allow_damage: true,
-            fixed_sun: true,
+            maturity: 2,
             block_terraform: true,
             allow_land_resell: false,
             sandbox: true,
@@ -391,7 +395,7 @@ mod tests {
             estate & !(1 << 26)
         );
         assert_eq!(config.region_flags & (1 << 26), 0);
-        assert_eq!(config.region_flags & (1 << 4), 1 << 4);
+        assert_eq!(config.region_flags & (1 << 4), 0);
         let classic = config.build(false, false);
         let pbr = config.build(false, true);
         assert_eq!(classic.region_info.water_height, 42.5);
@@ -400,7 +404,7 @@ mod tests {
         assert_eq!(classic.region_info.terrain_height_range11, 4000.0);
         assert!(pbr.region_info.terrain_detail0.is_nil());
         assert_eq!(pbr.region_info.terrain_detail1, Uuid::from_u128(8));
-        assert_eq!(classic.region_info.sim_access, 13);
+        assert_eq!(classic.region_info.sim_access, 42);
         assert_eq!(classic.region_info.billable_factor, 0.0);
     }
 }

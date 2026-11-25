@@ -288,8 +288,8 @@ fn write_part(out: &mut Out, part: &ObjectPart, is_root: bool) {
     if let Some(text) = part.linkset.as_ref().and_then(linkset_json) {
         out.elem("LinksetData", &text);
     }
-    out.bool("AllowUnsit", true);
-    out.bool("ScriptedSitOnly", false);
+    out.bool("AllowUnsit", part.allow_unsit);
+    out.bool("ScriptedSitOnly", part.scripted_sit_only);
     let derived = sit_derived(part.sit_target_position, part.sit_target_rotation);
     if part.sit_target_active != derived {
         out.bool("SitTargetActive", part.sit_target_active);
@@ -1269,7 +1269,6 @@ fn push_json_string(text: &str, out: &mut String) {
     out.push('"');
     for ch in text.chars() {
         match ch {
-            '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\u{0008}' => out.push_str("\\b"),
             '\u{000c}' => out.push_str("\\f"),
@@ -1278,8 +1277,8 @@ fn push_json_string(text: &str, out: &mut String) {
             '\t' => out.push_str("\\t"),
             other
                 if (other as u32) < 0x20
-                    || matches!(other, '<' | '>' | '&' | '\u{2028}' | '\u{2029}')
-                    || (other as u32) > 0x7f =>
+                    || matches!(other, '"' | '\'' | '+' | '`' | '<' | '>' | '&')
+                    || (other as u32) >= 0x7f =>
             {
                 let mut units = [0u16; 2];
                 let encoded = other.encode_utf16(&mut units);
@@ -1454,7 +1453,10 @@ fn escape(text: &str, out: &mut String) {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            '\r' => out.push_str("&#xD;"),
+            '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "&#x{:X};", ch as u32);
+            }
             other => out.push(other),
         }
     }
@@ -1540,5 +1542,42 @@ mod tests {
                 row["original"].as_str().unwrap(),
             );
         }
+        let seed = &dump["writer_probe"];
+        for gain in seed["gains"].as_array().unwrap() {
+            let bits = u64::from_str_radix(gain["bits"].as_str().unwrap(), 16).unwrap();
+            assert_eq!(
+                super::format_f64(f64::from_bits(bits)),
+                gain["text"].as_str().unwrap()
+            );
+        }
+        let mut group = groups
+            .into_iter()
+            .find(|g| g.parts[0].uuid.to_string() == seed["id"].as_str().unwrap())
+            .unwrap();
+        let part = &mut group.parts[0];
+        part.description = seed["description"].as_str().unwrap().to_owned();
+        part.sound_gain = f64::from(0.1_f32);
+        part.allow_unsit = false;
+        part.scripted_sit_only = true;
+        part.shape.extra_params = serde_json::from_value(seed["extra"].clone()).unwrap();
+        part.linkset = Some(crate::payloads::LinksetData {
+            entries: Some(vec![crate::payloads::LinksetEntry {
+                key: "key".into(),
+                password: Some(String::new()),
+                value: Some(part.description.clone()),
+            }]),
+            bytes_used: seed["bytes_used"].as_i64().unwrap().try_into().unwrap(),
+            bytes_free: seed["bytes_free"].as_i64().unwrap().try_into().unwrap(),
+        });
+        assert_same(
+            "writer probe xml2",
+            &to_xml2(&group),
+            seed["xml2"].as_str().unwrap(),
+        );
+        assert_same(
+            "writer probe original",
+            &to_original_xml(&group),
+            seed["original"].as_str().unwrap(),
+        );
     }
 }
