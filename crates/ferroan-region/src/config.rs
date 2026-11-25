@@ -142,6 +142,10 @@ pub struct RegionConfig {
     /// Driver for [`Self::terrain_store`], from `[DatabaseService]` only.
     /// `[SimulationDataStore]` does not change this.
     pub terrain_kind: Option<ferroan_scene::ObjectStoreKind>,
+    /// `[Terrain] InitialTerrain` (`pinhead-island` when absent): the map a
+    /// SQLite store with no `terrain` and no `bakedterrain` row gets. A SQLite
+    /// file that is not on disk runs it without storing it.
+    pub initial_terrain: ferroan_scene::InitialTerrain,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
     /// PostgreSQL providers are kept. A null provider leaves this empty.
@@ -401,6 +405,11 @@ impl RegionConfig {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             terrain_kind: database_service_kind(server),
+            initial_terrain: ferroan_scene::InitialTerrain::from_name(
+                server
+                    .get("Terrain", "InitialTerrain")
+                    .unwrap_or(ferroan_scene::DEFAULT_INITIAL_TERRAIN),
+            ),
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -1117,6 +1126,23 @@ mod tests {
         assert!(prioritization_scheme_differs(
             angular.prioritization_scheme.as_deref()
         ));
+    }
+
+    #[test]
+    fn initial_terrain_is_the_island_unless_exactly_flat() {
+        use ferroan_scene::InitialTerrain;
+        let plain = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        assert_eq!(plain.initial_terrain, InitialTerrain::PinheadIsland);
+        for (setting, expected) in [
+            ("flat", InitialTerrain::Flat),
+            ("Flat", InitialTerrain::PinheadIsland),
+            ("pinhead-island", InitialTerrain::PinheadIsland),
+        ] {
+            let mut server = server();
+            server.set("Terrain", "InitialTerrain", setting);
+            let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+            assert_eq!(config.initial_terrain, expected, "{setting}");
+        }
     }
 
     #[test]

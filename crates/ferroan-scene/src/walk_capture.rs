@@ -405,3 +405,71 @@ fn the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds() {
     let deadline = (release.now_ms + 250) as f64;
     assert!(clock(stop.tick - 1) <= deadline && deadline < clock(stop.tick));
 }
+
+/// The `LayerData` burst C# sent from its generated `pinhead-island` holds
+/// the same 256 patches, bit for bit, as Ferroan's land layers for the
+/// island it generates for a store with no `terrain` row. C# packs several
+/// patches into one packet in view-distance order (`SendTerrainUpdatesByViewDistance`),
+/// and Ferroan sends one patch per packet in the spiral, so each captured
+/// body is split into the patches it carries: the same layer header, then
+/// patches that each equal one of Ferroan's, then the end marker.
+#[test]
+fn the_csharp_layer_burst_is_the_generated_island() {
+    let records = read_capture(&fixture("walk.cap")).unwrap();
+    let island = crate::initial::InitialTerrain::PinheadIsland
+        .generate(REGION_EDGE, REGION_EDGE)
+        .unwrap();
+    let ours = crate::compress::land_patch_bits(&island);
+    let layers = crate::compress::land_layers(&island);
+    let header = bits_of(&layers[0].data[..4]);
+    let end: Vec<bool> = (0..8).map(|bit| 97u8 & (0x80 >> bit) != 0).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut packets = 0;
+    for record in records.iter().filter(|record| record.kind == Kind::UdpOut) {
+        let Ok(packet) = parse_packet(&record.bytes) else {
+            continue;
+        };
+        if packet.id != LayerData::ID {
+            continue;
+        }
+        packets += 1;
+        let message = packet.decode::<LayerData>().unwrap();
+        assert_eq!(message.layer_id.type_, layers[0].kind);
+        let bits = bits_of(&message.layer_data.data);
+        assert_eq!(bits[..32], header[..], "LayerData {packets} header");
+        let mut at = 32;
+        loop {
+            let found = ours.iter().find(|(patch, patch_bits)| {
+                !seen.contains(patch) && bits.get(at..at + patch_bits.len()) == Some(patch_bits)
+            });
+            match found {
+                Some((patch, patch_bits)) => {
+                    seen.insert(*patch);
+                    at += patch_bits.len();
+                }
+                None => {
+                    assert_eq!(
+                        bits.get(at..at + 8),
+                        Some(&end[..]),
+                        "LayerData {packets}: bit {at} is neither one of Ferroan's patches nor the end"
+                    );
+                    break;
+                }
+            }
+        }
+        // What is left is the byte's padding.
+        assert!(
+            bits.len() - (at + 8) < 8,
+            "LayerData {packets} trailing bytes"
+        );
+    }
+    assert_eq!(packets, 12);
+    assert_eq!(seen.len(), 256, "every patch of the island, once");
+}
+
+fn bits_of(bytes: &[u8]) -> Vec<bool> {
+    bytes
+        .iter()
+        .flat_map(|byte| (0..8).map(move |bit| byte & (0x80 >> bit) != 0))
+        .collect()
+}
