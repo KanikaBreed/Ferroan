@@ -567,6 +567,33 @@ mod tests {
     }
 
     #[test]
+    fn a_gap_of_five_millionths_is_outside_the_packing_tolerance() {
+        // x just past 1 with y = z = 0: FromBytes sets w to 0, the length is
+        // x², and ToBytes scales x back to 1. The gap is about 5e-6, inside
+        // the old 1e-5 tolerance and outside 2e-6.
+        let x = 1.000_005f32;
+        let mut message = AgentUpdate::default();
+        message.agent_data.agent_id = Uuid::from_u128(0x1111);
+        message.agent_data.session_id = Uuid::from_u128(0x2222);
+        message.agent_data.far = 64.0;
+        let mut payload = Vec::new();
+        AgentUpdate::ID.encode(&mut payload);
+        let mut body = crate::Writer::new();
+        message.encode_body(&mut body);
+        payload.extend(body.buf);
+        for slot in [1 + 32, 1 + 44] {
+            payload[slot..slot + 4].copy_from_slice(&x.to_le_bytes());
+            payload[slot + 4..slot + 12].fill(0);
+        }
+        let datagram = frame_like_ferrobot(&payload, 41, false);
+        let repacked = crate::pack_quat(unpack_quat(Vec3::new(x, 0.0, 0.0)));
+        let gap = (x - repacked[0]).abs();
+        assert!(gap > 2.0e-6 && gap < 1.0e-5, "gap {gap}");
+        assert!(gap > crate::QUAT_PACKING_TOLERANCE, "gap {gap}");
+        assert!(!client_datagram_within_quat_packing(&datagram).unwrap());
+    }
+
+    #[test]
     fn a_non_quaternion_byte_the_encoder_rewrites_is_outside_packing() {
         let message = SimulatorLoad::default();
         let mut payload = Vec::new();

@@ -197,10 +197,9 @@ fn validate_base(base: u16, ephemeral: Option<(u16, u16)>) -> Result<(), String>
     if base < 1024 {
         return Err(format!("{ENV} {base} is below 1024"));
     }
+    // A multiple of SPAN is at most 65504, so its block ends by 65535: the
+    // alignment check below is also the room check.
     let last = u32::from(base) + u32::from(SPAN) - 1;
-    if last > u32::from(u16::MAX) {
-        return Err(format!("{ENV} {base} does not leave room for {SPAN} ports"));
-    }
     if !base.is_multiple_of(SPAN) {
         let below = base - base % SPAN;
         return Err(format!(
@@ -358,7 +357,7 @@ fn alloc_key(key: u8, today: Option<u16>, udp: bool) -> Result<u16, String> {
         ensure_free(port, udp)?;
         port
     } else {
-        ephemeral(&assigned)?
+        ephemeral(&assigned, udp, os_port)?
     };
     if assigned.iter().any(|(_, have)| *have == port) {
         return Err(format!("port {port} was already allocated for this run"));
@@ -367,18 +366,34 @@ fn alloc_key(key: u8, today: Option<u16>, udp: bool) -> Result<u16, String> {
     Ok(port)
 }
 
-fn ephemeral(assigned: &[(u8, u16)]) -> Result<u16, String> {
+/// A TCP port the OS hands out for port 0.
+fn os_port() -> Result<u16, String> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| format!("could not bind a local port: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("could not read a local port: {error}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+/// A port from `probe` that this run has not taken. A region slot (`udp`)
+/// also skips a port whose UDP side is in use, as a based run checks it.
+fn ephemeral(
+    assigned: &[(u8, u16)],
+    udp: bool,
+    mut probe: impl FnMut() -> Result<u16, String>,
+) -> Result<u16, String> {
     for _ in 0..16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("could not bind a local port: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("could not read a local port: {error}"))?
-            .port();
-        drop(listener);
-        if !assigned.iter().any(|(_, have)| *have == port) {
-            return Ok(port);
+        let port = probe()?;
+        if assigned.iter().any(|(_, have)| *have == port) {
+            continue;
         }
+        if udp && ensure_udp_free(port).is_err() {
+            continue;
+        }
+        return Ok(port);
     }
     Err("could not allocate a local port".to_string())
 }
@@ -690,7 +705,11 @@ mod tests {
         assert_ne!(based.port_of(Slot::Loki), Some(CANONICAL_LOKI));
         assert_ne!(based.port_of(Slot::OtelHttp), Some(CANONICAL_OTEL_HTTP));
         assert!(Plan::from_raw(Some("80")).is_err());
-        assert!(Plan::from_raw(Some("65505")).is_err());
+        // 65505 is refused for alignment; the last aligned base, 65504,
+        // ends its block at 65535.
+        let error = Plan::parse(Some("65505"), None).unwrap_err();
+        assert!(error.contains("not a multiple of 32"), "{error}");
+        assert!(Plan::parse(Some("65504"), None).is_ok());
         assert!(Plan::from_raw(Some("nope")).is_err());
         assert!(
             Plan::parse(Some("25000"), None).is_err(),
@@ -751,6 +770,15 @@ mod tests {
         // tests may take that number meanwhile, so only the UDP half is held.
         let error = ensure_udp_free(port).unwrap_err();
         assert!(error.contains("UDP"), "{error}");
+        // With no base, a region slot skips that port and takes the next.
+        let free = os_port().unwrap();
+        let mut offered = [port, free].into_iter();
+        let chosen = ephemeral(&[], true, || Ok(offered.next().unwrap())).unwrap();
+        assert_eq!(chosen, free);
+        // A TCP-only slot keeps the first port.
+        let mut offered = [port, free].into_iter();
+        let chosen = ephemeral(&[], false, || Ok(offered.next().unwrap())).unwrap();
+        assert_eq!(chosen, port);
         drop(socket);
     }
 

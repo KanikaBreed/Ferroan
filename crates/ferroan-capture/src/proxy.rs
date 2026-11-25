@@ -275,8 +275,8 @@ fn validate_timeout(wait: Duration) -> io::Result<()> {
 
 /// Record bytes queued for the writer thread and not yet written. A stalled
 /// disk with every exchange in flight would otherwise hold up to
-/// `MAX_EXCHANGES` requests and responses of up to `BODY_CAP` each, about
-/// 545 MB. Limit `capture.writer-queue`.
+/// `MAX_EXCHANGES` requests and responses of up to `HEADER_CAP` plus
+/// `BODY_CAP` each, about 544 MiB. Limit `capture.writer-queue`.
 pub const WRITER_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Bytes one record takes in the queue: its body plus the capture framing.
@@ -1423,19 +1423,24 @@ mod tests {
             }]
         };
         // The first record fills the 64 KiB pipe and the writer blocks on it.
-        capture.submit(record()).unwrap();
-        capture.submit(record()).unwrap();
-        let error = capture.submit(record()).unwrap_err();
-        assert!(
-            error.to_string().contains("capture.writer-queue"),
-            "{error}"
-        );
+        // Results are taken before any assert: the drain thread must start
+        // first, or a failed assert would leave the writer (and Drop) stuck.
+        let first = capture.submit(record());
+        let second = capture.submit(record());
+        let third = capture.submit(record());
         let drained = std::thread::spawn(move || {
             let mut reader = reader;
             let mut got = Vec::new();
             std::io::Read::read_to_end(&mut reader, &mut got).unwrap();
             got
         });
+        first.unwrap();
+        second.unwrap();
+        let error = third.unwrap_err();
+        assert!(
+            error.to_string().contains("capture.writer-queue"),
+            "{error}"
+        );
         timeout(Duration::from_secs(5), capture.flushed())
             .await
             .unwrap()
