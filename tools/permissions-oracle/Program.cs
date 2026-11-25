@@ -3,6 +3,7 @@
 
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Nini.Config;
 using OpenMetaverse;
 using OpenSim.Framework;
@@ -22,27 +23,68 @@ static class Program
     static readonly UUID LandOwner = new("00000000-0000-4000-8000-000000000004");
     static readonly Vector3 Position = new(32, 40, 22);
 
+    // These property names are the INI keys written to the fixture.
+    record Settings(string permissionmodules = "DefaultPermissionsModule",
+        bool serverside_object_permissions = true, bool allow_grid_gods = true,
+        bool region_owner_is_god = false, bool region_manager_is_god = false,
+        bool force_grid_gods_only = false, bool automatic_gods = false,
+        bool implicit_gods = false, bool propagate_permissions = true)
+    {
+        public IConfigSource Config()
+        {
+            var config = new IniConfigSource();
+            var startup = config.AddConfig("Startup");
+            foreach (var setting in JsonSerializer.SerializeToElement(this).EnumerateObject())
+                startup.Set(setting.Name, setting.Value.ToString());
+            return config;
+        }
+    }
+
+    record ItemMasks(Mask Current, Mask Group, Mask Everyone);
+
     record Case(string Name, bool OwnsObject = false, bool Deeded = false, bool Member = false,
         GroupPowers Powers = 0, Mask OwnerMask = Mask.AllEffective, Mask GroupMask = 0,
-        Mask EveryoneMask = 0, bool Attachment = false, bool Manager = false, bool ManagerIsGod = false,
-        int UserLevel = 0, bool GodMode = false, bool OwnsLand = false, bool GroupLand = false,
-        ParcelFlags LandFlags = 0, bool HasLand = true, bool Bypass = false);
+        Mask EveryoneMask = 0, bool Attachment = false, bool Manager = false,
+        int UserLevel = 0, bool OwnsLand = false, bool GroupLand = false,
+        ParcelFlags LandFlags = 0, bool HasLand = true, bool EstateOwner = false,
+        Mask BaseMask = Mask.AllEffective, PrimFlags Flags = PrimFlags.Phantom,
+        ItemMasks InventoryItem = null, bool FriendCanModify = false)
+    {
+        [JsonIgnore]
+        public Settings Settings { get; init; } = new();
+    }
 
     static readonly Case[] Cases = [
         new("owner", OwnsObject: true),
-        new("owner-locked", OwnsObject: true, OwnerMask: Mask.Copy | Mask.Transfer),
+        new("owner-unlocked", OwnsObject: true, OwnerMask: Mask.Modify | Mask.Copy | Mask.Transfer | Mask.Move),
+        new("owner-locked", OwnsObject: true, OwnerMask: Mask.Modify | Mask.Copy | Mask.Transfer),
+        new("owner-inventory-no-copy", OwnsObject: true,
+            InventoryItem: new(Mask.Modify | Mask.Move | Mask.Transfer, 0, 0)),
         new("other"), new("other-everyone-move", EveryoneMask: Mask.Move),
         new("other-everyone-copy-transfer", EveryoneMask: Mask.Copy | Mask.Transfer),
         new("other-copy-no-transfer", OwnerMask: Mask.Move | Mask.Copy, EveryoneMask: Mask.Copy),
-        new("group-shared-member", Member: true, GroupMask: Mask.Modify | Mask.Move | Mask.Copy),
+        new("group-shared-member", Member: true, OwnerMask: Mask.Modify | Mask.Copy | Mask.Transfer | Mask.Move,
+            GroupMask: Mask.Modify | Mask.Move | Mask.Copy),
+        new("group-shared-member-locked", Member: true, OwnerMask: Mask.Modify | Mask.Copy | Mask.Transfer,
+            GroupMask: Mask.Modify | Mask.Move | Mask.Copy),
+        new("group-shared-no-base-transfer", Member: true, BaseMask: Mask.AllEffective & ~Mask.Transfer,
+            GroupMask: Mask.Modify | Mask.Move | Mask.Copy, EveryoneMask: Mask.Copy),
+        new("other-everyone-move-locked", OwnerMask: Mask.Modify | Mask.Copy | Mask.Transfer, EveryoneMask: Mask.Move),
         new("group-shared-nonmember", GroupMask: Mask.Modify | Mask.Move | Mask.Copy),
         new("group-owned-member", Deeded: true, Member: true),
+        new("group-owned-nonmember", Deeded: true),
+        new("friend-with-modify-rights", FriendCanModify: true),
         new("group-owned-manipulate", Deeded: true, Member: true, Powers: GroupPowers.ObjectManipulate),
+        new("estate-owner", EstateOwner: true),
+        new("estate-owner-as-admin", EstateOwner: true) { Settings = new(region_owner_is_god: true) },
         new("estate-manager", Manager: true),
-        new("estate-manager-as-admin", Manager: true, ManagerIsGod: true),
+        new("estate-manager-as-admin", Manager: true) { Settings = new(region_manager_is_god: true) },
+        new("estate-manager-god-mode", Manager: true) { Settings = new(region_manager_is_god: true, automatic_gods: true) },
         new("grid-god-mode-off", UserLevel: 200),
-        new("grid-god-mode-on", UserLevel: 200, GodMode: true),
-        new("grid-god-locked-owner", UserLevel: 200, GodMode: true, OwnsObject: true, OwnerMask: Mask.Copy | Mask.Transfer),
+        new("grid-god-mode-on", UserLevel: 200) { Settings = new(automatic_gods: true) },
+        new("grid-god-implicit", UserLevel: 200) { Settings = new(implicit_gods: true) },
+        new("grid-gods-disabled", UserLevel: 200) { Settings = new(allow_grid_gods: false, automatic_gods: true) },
+        new("grid-god-locked-owner", UserLevel: 200, OwnsObject: true, OwnerMask: Mask.Copy | Mask.Transfer) { Settings = new(automatic_gods: true) },
         new("attachment-owner", OwnsObject: true, Attachment: true),
         new("attachment-other", Attachment: true, EveryoneMask: Mask.AllEffective),
         new("parcel-owned", OwnsLand: true),
@@ -53,7 +95,16 @@ static class Program
         new("parcel-deeded-allow-rez", Member: true, GroupLand: true, Powers: GroupPowers.AllowRez),
         new("copy-and-duplicate", EveryoneMask: Mask.Copy | Mask.Transfer, LandFlags: ParcelFlags.CreateObjects),
         new("no-parcel", OwnsObject: true, HasLand: false),
-        new("permissions-bypassed", Bypass: true),
+        new("permissions-bypassed") { Settings = new(serverside_object_permissions: false) },
+        new("bypass-restricted-mask", OwnerMask: Mask.Transfer) { Settings = new(serverside_object_permissions: false) },
+        new("bypass-other-attachment", Attachment: true) { Settings = new(serverside_object_permissions: false) },
+        new("scripted", Flags: PrimFlags.Scripted),
+        new("touch", Flags: PrimFlags.Touch),
+        new("money", Flags: PrimFlags.Money),
+        new("inventory-drop", Flags: PrimFlags.AllowInventoryDrop),
+        new("temporary", Flags: PrimFlags.Temporary),
+        new("temporary-on-rez", Flags: PrimFlags.TemporaryOnRez),
+        new("physics", Flags: PrimFlags.Physics),
     ];
 
     static int Main(string[] args)
@@ -66,7 +117,7 @@ static class Program
         }
         string path = Path.GetFullPath(Path.Combine(args[1], "objects.json"));
         Directory.SetCurrentDirectory(AppContext.BaseDirectory); // ScenePresenceAnimator loads data/avataranimations.xml.
-        var rows = Cases.Select(input => new { input, expected = Observe(input) }).ToArray();
+        var rows = Cases.Select(input => new { input, settings = input.Settings, expected = Observe(input) }).ToArray();
         var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
         string json = JsonSerializer.Serialize(new { revision = args[3], cases = rows }, options).ReplaceLineEndings("\n") + "\n";
         if (args[0] == "generate")
@@ -74,13 +125,62 @@ static class Program
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, json);
         }
-        else if (!File.Exists(path) || File.ReadAllText(path).ReplaceLineEndings("\n") != json)
+        else
         {
-            Console.Error.WriteLine("permissions: fixture differs from pinned observations");
-            return 1;
+            if (!File.Exists(path))
+            {
+                Console.Error.WriteLine($"permissions: missing fixture {path}");
+                return 1;
+            }
+            string stored = File.ReadAllText(path).ReplaceLineEndings("\n");
+            if (stored != json)
+            {
+                try
+                {
+                    using var observation = JsonDocument.Parse(json);
+                    using var fixture = JsonDocument.Parse(stored);
+                    string field = Difference(observation.RootElement, fixture.RootElement, "fixture");
+                    Console.Error.WriteLine($"permissions: fixture differs at {field ?? "formatting or property order"}");
+                }
+                catch (JsonException error)
+                {
+                    Console.Error.WriteLine($"permissions: invalid fixture JSON at line {error.LineNumber}, byte {error.BytePositionInLine}");
+                }
+                return 1;
+            }
         }
         Console.WriteLine($"permissions: {rows.Length} cases {args[0]} passed");
         return 0;
+    }
+
+    static string Difference(JsonElement observed, JsonElement stored, string path)
+    {
+        if (observed.ValueKind != stored.ValueKind) return path;
+        if (observed.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var field in observed.EnumerateObject())
+            {
+                string key = $"{path}.{field.Name}";
+                if (!stored.TryGetProperty(field.Name, out var value)) return key;
+                if (Difference(field.Value, value, key) is { } difference) return difference;
+            }
+            foreach (var field in stored.EnumerateObject())
+                if (!observed.TryGetProperty(field.Name, out _)) return $"{path}.{field.Name} (extra)";
+            return null;
+        }
+        if (path == "fixture.cases")
+        {
+            int index = 0;
+            foreach (var row in observed.EnumerateArray())
+            {
+                string name = row.GetProperty("input").GetProperty("name").GetString();
+                string key = $"case {name}";
+                if (index >= stored.GetArrayLength()) return $"{key} (missing)";
+                if (Difference(row, stored[index++], key) is { } difference) return difference;
+            }
+            return index == stored.GetArrayLength() ? null : $"fixture.cases[{index}] (extra)";
+        }
+        return JsonElement.DeepEquals(observed, stored) ? null : path;
     }
 
     // The lightweight scene constructor provides a real graph and permission event dispatcher.
@@ -91,16 +191,9 @@ static class Program
 
     static object Observe(Case c)
     {
-        var config = new IniConfigSource();
-        var ini = config.AddConfig("Startup");
-        ini.Set("permissionmodules", "DefaultPermissionsModule");
-        ini.Set("serverside_object_permissions", !c.Bypass);
-        ini.Set("allow_grid_gods", true);
-        ini.Set("region_manager_is_god", c.ManagerIsGod);
-        ini.Set("automatic_gods", c.GodMode);
-
+        var config = c.Settings.Config();
         var info = new RegionInfo { RegionName = "Fixture" };
-        info.EstateSettings.EstateOwner = LandOwner;
+        info.EstateSettings.EstateOwner = c.EstateOwner ? Agent : LandOwner;
         if (c.Manager) info.EstateSettings.AddEstateManager(Agent);
         var scene = new FixtureScene(info, config);
         scene.RegisterModuleInterface<IUserAccountService>(InputProxy.For<IUserAccountService>((m, a) =>
@@ -108,6 +201,10 @@ static class Program
         scene.RegisterModuleInterface<IGroupsModule>(InputProxy.For<IGroupsModule>((m, a) =>
             m == "GetMembershipData" ? ((UUID)a[0] == Group && (UUID)a[1] == Agent && c.Member
                 ? new GroupMembershipData { GroupPowers = (ulong)c.Powers } : null) : throw Unexpected(m)));
+        if (c.FriendCanModify)
+            scene.RegisterModuleInterface<IFriendsModule>(InputProxy.For<IFriendsModule>((m, a) =>
+                m == "GetRightsGrantedByFriend" ? ((UUID)a[0] == Agent && (UUID)a[1] == Owner
+                    ? (int)FriendRights.CanModifyObjects : 0) : throw Unexpected(m)));
         var land = new LandData { OwnerID = c.OwnsLand ? Agent : c.GroupLand ? Group : LandOwner,
             GroupID = Group, IsGroupOwned = c.GroupLand, Flags = (uint)c.LandFlags };
         var parcel = InputProxy.For<ILandObject>((m, _) => m == "get_LandData" ? land : throw Unexpected(m));
@@ -141,7 +238,7 @@ static class Program
         var group = new SceneObjectGroup(c.OwnsObject ? Agent : c.Deeded ? Group : Owner, Position, PrimitiveBaseShape.CreateBox());
         var part = group.RootPart;
         part.GroupID = Group;
-        part.BaseMask = (uint)Mask.AllEffective;
+        part.BaseMask = (uint)c.BaseMask;
         part.OwnerMask = (uint)c.OwnerMask;
         part.GroupMask = (uint)c.GroupMask;
         part.EveryoneMask = (uint)c.EveryoneMask;
@@ -151,18 +248,36 @@ static class Program
             throw new InvalidOperationException("fixture object did not enter the graph");
         group.IsAttachment = c.Attachment;
 
+        // Supply the observed prim state after attach. Runtime event flags are derived by the part.
+        part.Flags = c.Flags;
+        part.AllowedDrop = c.Flags.HasFlag(PrimFlags.AllowInventoryDrop);
+        scriptEvents events = 0;
+        if (c.Flags.HasFlag(PrimFlags.Touch)) events |= scriptEvents.touch_start;
+        if (c.Flags.HasFlag(PrimFlags.Money)) events |= scriptEvents.money;
+        if (events != 0 || part.AllowedDrop) part.SetScriptEvents(UUID.Random(), (ulong)events);
+        if (c.InventoryItem is { } masks)
+            part.Inventory.RestoreInventoryItems([new TaskInventoryItem {
+                ItemID = UUID.Random(), OwnerID = part.OwnerID, InvType = (int)InventoryType.Notecard,
+                CurrentPermissions = (uint)masks.Current, GroupPermissions = (uint)masks.Group,
+                EveryonePermissions = (uint)masks.Everyone
+            }]);
         var p = scene.Permissions;
         uint viewerFlags = p.GenerateClientFlags(part, presence);
         uint initialFlags = flagInput ?? throw new InvalidOperationException("flag handler was not called");
         return new {
-            clientFlagInput = initialFlags,
+            effectiveOwnerMask = group.EffectiveOwnerPerms, effectiveGroupMask = group.EffectiveGroupPerms,
+            effectiveEveryoneMask = group.EffectiveEveryOnePerms,
+            effectiveGroupOrEveryoneMask = group.EffectiveGroupOrEveryOnePerms, isGod = presence.IsGod,
+            isViewerUIGod = presence.IsViewerUIGod, clientFlagInput = initialFlags,
             moduleClientFlags = module.GenerateClientFlags(part, presence, initialFlags),
             generateClientFlags = viewerFlags,
             canRez = p.CanRezObject(1, Agent, Position),
             canEdit = p.CanEditObject(group, client), canMove = p.CanMoveObject(group, client),
             canDelete = p.CanDeleteObject(group, client), canTake = p.CanTakeObject(group, presence),
             canLink = p.CanLinkObject(Agent, part.UUID), canTakeCopy = p.CanTakeCopyObject(group, presence),
-            canDuplicate = p.CanDuplicateObject(group, Agent)
+            canDuplicate = p.CanDuplicateObject(group, Agent), canEditById = p.CanEditObject(part.UUID, Agent),
+            canDeleteById = p.CanDeleteObject(part.UUID, Agent), canDelink = p.CanDelinkObject(Agent, part.UUID),
+            canSelectObject = p.CanChangeSelectedState(part, presence)
         };
     }
 

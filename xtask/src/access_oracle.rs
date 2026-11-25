@@ -11,7 +11,7 @@ pub fn run(name: &str, project: &str, writing: bool) -> ExitCode {
     match run_inner(name, project, writing) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("permissions module oracle: {error}");
+            eprintln!("oracle: {error}");
             ExitCode::FAILURE
         }
     }
@@ -70,7 +70,7 @@ fn restore_clone(reference: &Path) -> Result<(), String> {
     if status.is_empty() {
         return Ok(());
     }
-    eprintln!("permissions module oracle: restoring scratch clone edits:\n{status}");
+    eprintln!("oracle: restoring scratch clone edits:\n{status}");
     git(&checkout, &["checkout", "--", "."])?;
     git(&checkout, &["clean", "-fd"])?;
     let status = git(&checkout, &["status", "--porcelain"])?;
@@ -157,12 +157,12 @@ fn dotnet(
     match command.status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            eprintln!("permissions module oracle: dotnet exited with {status}");
+            eprintln!("oracle: dotnet exited with {status}");
             false
         }
         Err(error) => {
             eprintln!(
-                "permissions module oracle: could not run dotnet (the .NET SDK is required for these fixtures): {error}"
+                "oracle: could not run dotnet (the .NET SDK is required for these fixtures): {error}"
             );
             false
         }
