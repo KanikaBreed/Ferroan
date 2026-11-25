@@ -65,7 +65,8 @@
 use crate::chat::{ChatSeat, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
-    EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS, terse_packets,
+    AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
+    terse_packets,
 };
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, VIA_LOCATION};
@@ -258,8 +259,10 @@ pub enum SceneCall {
     /// Seat a login pose for chat. The actor waits for the arrival.
     Pose(LoginPose),
     /// An arrival. An existing record keeps its position and gets an actor
-    /// at rest; with none, this pose is stored with an actor. One call.
-    Arrive(LoginPose),
+    /// at rest; with none, this pose is stored with an actor. The avatar
+    /// turns to the look `AgentMovementComplete` carries (`RotateToLookAt`),
+    /// and the other viewers are told of it. One call.
+    Arrive(LoginPose, [f32; 3]),
     /// `ChatFromViewer` forwarded so distance uses the stored poses.
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. The frame owns the landing
@@ -764,9 +767,34 @@ impl State {
             self.send_ping(sock, peer).await?;
         }
         self.drain_land(sock, peer).await?;
+        self.take_avatar_packets()?;
         self.drain_task(sock, peer).await?;
         if self.take_entity_updates()? {
             self.drain_task(sock, peer).await?;
+        }
+        Ok(())
+    }
+
+    /// Other avatars' full updates, appearances and kills, which C# writes
+    /// straight onto the task outbox, behind what is already there. Only
+    /// while the waiting task packets and the unacknowledged ones leave room
+    /// in the reliable window: a viewer that stops acknowledging leaves them
+    /// in the feed, whose bound (`region.avatar-packets`) then applies.
+    fn take_avatar_packets(&mut self) -> Result<(), CircuitError> {
+        let Some(feed) = self.feed.as_ref() else {
+            return Ok(());
+        };
+        let room = MAX_UNACKED.saturating_sub(self.pending_task.len() + self.unacked.len());
+        if room == 0 {
+            return Ok(());
+        }
+        for packet in feed.updates.take_avatar_packets(room) {
+            let payload = match &packet {
+                AvatarPacket::Full(update) => encode_payload(update)?,
+                AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,
+                AvatarPacket::Kill(kill) => encode_payload(kill)?,
+            };
+            self.pending_task.push_back(payload);
         }
         Ok(())
     }
@@ -1228,7 +1256,8 @@ impl State {
             control_flags: 0,
             draw_distance: LOGIN_DRAW_DISTANCE,
         };
-        match scene(agent, SceneCall::Arrive(pose)).reply().await {
+        let look_at = self.arrival.look_at;
+        match scene(agent, SceneCall::Arrive(pose, look_at)).reply().await {
             Ok(SceneReply::Pose(stored)) => Ok(stored.position),
             _ => Err(CircuitError::SceneInbound),
         }
@@ -2794,7 +2823,7 @@ mod tests {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),
                 })),
-                SceneCall::Arrive(pose) => {
+                SceneCall::Arrive(pose, _) => {
                     let position = *poses.entry(agent).or_insert(pose.position);
                     Ok(SceneReply::Pose(LoginPose { position, ..pose }))
                 }

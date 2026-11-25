@@ -724,7 +724,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
-        SceneCall::Arrive(pose) => answered(
+        SceneCall::Arrive(pose, look_at) => answered(
             frame.arrive(
                 agent,
                 ferroan_scene::Presence {
@@ -734,6 +734,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                     control_flags: pose.control_flags,
                     draw_distance: pose.draw_distance,
                 },
+                look_at,
             ),
             |stored| Ok(pose_reply(stored)),
         ),
@@ -873,6 +874,15 @@ async fn serve_agent(
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
+                look: Arc::new(ferroan_scene::AvatarLook {
+                    first_name: avatar.first_name.clone(),
+                    last_name: avatar.last_name.clone(),
+                    title: avatar.title.clone(),
+                    visual_params: avatar.visual_params.clone(),
+                    texture: avatar.texture.clone(),
+                    height: avatar.height,
+                    hover: avatar.hover,
+                }),
             };
             let attached = match frame.attach(expect.agent_id, link) {
                 Ok(pending) => pending.wait().await.ok(),
@@ -882,7 +892,10 @@ async fn serve_agent(
                 avatar.local_id = local_id;
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
-                    updates: Arc::new(SceneFeed(feed)),
+                    updates: Arc::new(SceneFeed {
+                        feed,
+                        region_handle: arrival.region_handle,
+                    }),
                 });
             }
         }
@@ -1111,16 +1124,64 @@ async fn serve_agent(
 }
 
 /// One viewer's frame feed, as the circuit drains it.
-struct SceneFeed(Arc<ferroan_scene::terse::ViewerFeed>);
+struct SceneFeed {
+    feed: Arc<ferroan_scene::terse::ViewerFeed>,
+    region_handle: u64,
+}
 
 impl ferroan_client::EntityUpdates for SceneFeed {
     fn has_updates(&self) -> bool {
-        self.0.has_updates()
+        self.feed.has_updates()
     }
 
     fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
-        self.0.take_terse(max_bytes)
+        self.feed.take_terse(max_bytes)
     }
+
+    fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
+        let mut out = Vec::new();
+        for packet in self.feed.take_avatar_packets(max) {
+            match packet {
+                ferroan_scene::AvatarPacket::Full(full) => {
+                    let mut wire = avatar_wire(full.agent, &full.look);
+                    wire.local_id = full.local_id;
+                    let live = ferroan_client::LiveAvatar {
+                        collision_plane: full.collision_plane,
+                        position: full.position,
+                        velocity: full.velocity,
+                        rotation: full.rotation,
+                    };
+                    out.push(ferroan_client::AvatarPacket::Full(
+                        wire.live_update(self.region_handle, &live),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Appearance { agent, look } => {
+                    out.push(ferroan_client::AvatarPacket::Appearance(
+                        avatar_wire(agent, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Kill(ids) => {
+                    out.extend(
+                        ferroan_client::kill_packets(&ids)
+                            .into_iter()
+                            .map(ferroan_client::AvatarPacket::Kill),
+                    );
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The wire form of another avatar, from what its own viewer attached with.
+fn avatar_wire(agent: Uuid, look: &ferroan_scene::AvatarLook) -> ferroan_client::AvatarWire {
+    let mut wire = ferroan_client::AvatarWire::standing(agent, &look.first_name, &look.last_name);
+    wire.title.clone_from(&look.title);
+    wire.visual_params.clone_from(&look.visual_params);
+    wire.texture.clone_from(&look.texture);
+    wire.height = look.height;
+    wire.hover = look.hover;
+    wire
 }
 
 /// Removes one agent's scene presence when its serve ends. `finish` awaits
@@ -1361,6 +1422,7 @@ mod tests {
         assert!(!bare_terrain.has_map());
     }
     use ferroan_client::CircuitExpect;
+    use ferroan_client::EntityUpdates;
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{
         AgentMovementComplete, AgentUpdate, CompleteAgentMovement, CompletePingCheck,
@@ -2976,5 +3038,89 @@ mod tests {
         let replacement = open(&harness, next).await;
         wait_id(&replacement, RegionHandshake::ID).await;
         harness.finish().await.unwrap();
+    }
+
+    /// The feed turns the frame's avatar packets into the wire messages:
+    /// another avatar's full update with its local id, name and live values,
+    /// its appearance, and the kill.
+    #[test]
+    fn the_scene_feed_writes_another_avatars_packets() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let feed = frame.new_feed();
+        let agent = Uuid::from_u128(90);
+        let look = Arc::new(ferroan_scene::AvatarLook {
+            first_name: "Chat".to_string(),
+            last_name: "Bot".to_string(),
+            title: String::new(),
+            visual_params: vec![7, 8],
+            texture: vec![1; 64],
+            height: 1.8,
+            hover: 0.0,
+        });
+        let link = ferroan_scene::ViewerLink {
+            feed: frame.new_feed(),
+            seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            look: Arc::clone(&look),
+        };
+        let watcher = Uuid::from_u128(91);
+        let watcher_link = ferroan_scene::ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            look: Arc::clone(&look),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            frame
+                .attach(watcher, watcher_link)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
+            let pose = ferroan_scene::Presence {
+                position: [100.0, 120.0, 22.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0; 3],
+                control_flags: 0,
+                draw_distance: 255.0,
+            };
+            frame
+                .arrive(agent, pose, [1.0, 0.0, 0.0])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            frame.remove(agent).unwrap().wait().await.unwrap();
+            let scene_feed = SceneFeed {
+                feed,
+                region_handle: 77,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 3);
+            let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
+                panic!("the full update comes first");
+            };
+            assert_eq!(update.region_data.region_handle, 77);
+            let block = &update.object_data[0];
+            assert_eq!(block.id, local_id);
+            assert_eq!(block.full_id, agent);
+            assert_eq!(block.scale.z, 1.8);
+            assert!(
+                String::from_utf8_lossy(&block.name_value)
+                    .contains("FirstName STRING RW SV Chat\n")
+            );
+            assert_eq!(&block.object_data[16..20], &100.0f32.to_le_bytes());
+            let ferroan_client::AvatarPacket::Appearance(appearance) = &packets[1] else {
+                panic!("the appearance follows");
+            };
+            assert_eq!(appearance.sender.id, agent);
+            assert_eq!(appearance.visual_param.len(), 2);
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+                panic!("the kill comes last");
+            };
+            assert_eq!(kill.object_data[0].id, local_id);
+        });
     }
 }

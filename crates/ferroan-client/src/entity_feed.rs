@@ -25,7 +25,8 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates)
+//     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates,
+//      SendKillObject)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
 //     (DequeueOutgoing's empty categories, BeginFireQueueEmpty,
 //      GetCatBytesCanSend)
@@ -41,12 +42,19 @@
 //! has updates, at most every 20 ms, with a budget of what the task bucket
 //! drips in 30 ms. The packets are reliable and zero-coded on the task
 //! category ("zero code is not as spec").
+//!
+//! Other avatars' full updates, appearances and kills do not wait for that:
+//! C# writes them straight onto the task outbox
+//! (`SendEntityFullUpdateImmediate`, `SendAppearance`, `SendKillObject`).
+//! The circuit queues them, in order, on every pass.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferroan_protocol::msgs::ImprovedTerseObjectUpdate;
 use ferroan_protocol::msgs::improved_terse_object_update::{ObjectData, RegionData};
+use ferroan_protocol::msgs::{
+    AvatarAppearance, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate, kill_object,
+};
 use tokio::sync::Notify;
 
 /// The avatar `ObjectData.Data` length (`CreateAvatartImprovedTerseBlock`).
@@ -69,12 +77,42 @@ const AVATAR_BLOCK_BYTES: usize = 1 + AVATAR_TERSE_LEN + 2;
 /// `Utils.FloatZeroOneToushort(1.0)`. The region does not dilate time.
 const TIME_DILATION_FULL: u16 = 0xffff;
 
+/// `SendKillObject` puts at most this many ids in one packet.
+const KILLS_PER_PACKET: usize = 200;
+
+/// One packet C# writes straight onto the task outbox.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AvatarPacket {
+    /// `SendEntityFullUpdateImmediate`: reliable and zero-coded.
+    Full(ObjectUpdate),
+    /// `SendAppearance`: reliable and zero-coded.
+    Appearance(AvatarAppearance),
+    /// `SendKillObject`: reliable, not zero-coded.
+    Kill(KillObject),
+}
+
+/// `SendKillObject`: the ids in order, 200 to a packet.
+pub fn kill_packets(ids: &[u32]) -> Vec<KillObject> {
+    ids.chunks(KILLS_PER_PACKET)
+        .map(|chunk| KillObject {
+            object_data: chunk
+                .iter()
+                .map(|id| kill_object::ObjectData { id: *id })
+                .collect(),
+            omitted_trailing_blocks: 0,
+        })
+        .collect()
+}
+
 /// The region's side of one viewer's entity updates.
 pub trait EntityUpdates: Send + Sync {
     /// `HandleHasUpdates` for the task category.
     fn has_updates(&self) -> bool;
     /// `ProcessEntityUpdates(max_bytes)` for avatar terse updates.
     fn take_terse(&self, max_bytes: i32) -> Vec<[u8; AVATAR_TERSE_LEN]>;
+    /// At most `max` waiting avatar packets, the oldest first, in the order
+    /// the region sent them. The rest wait for a later pass.
+    fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket>;
 }
 
 /// The feed and the wake an offer notifies.
@@ -137,6 +175,22 @@ mod tests {
         let mut out = [0u8; AVATAR_TERSE_LEN];
         out[0..4].copy_from_slice(&id.to_le_bytes());
         out
+    }
+
+    #[test]
+    fn kills_go_two_hundred_to_a_packet_in_order() {
+        let ids: Vec<u32> = (1..=401).collect();
+        let packets = kill_packets(&ids);
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.object_data.len())
+                .collect::<Vec<_>>(),
+            [200, 200, 1]
+        );
+        assert_eq!(packets[2].object_data[0].id, 401);
+        assert_eq!(kill_packets(&[7])[0].object_data[0].id, 7);
+        assert!(kill_packets(&[]).is_empty());
     }
 
     #[test]

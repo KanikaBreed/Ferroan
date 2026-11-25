@@ -150,6 +150,10 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = uploads_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
+    if name == "avatars" {
+        let line = avatars_scenario(&http, harness).await?;
+        return Ok(format!("{line}\nlive: run passed"));
+    }
     let Some(names) = selection(name) else {
         return Err(format!(
             "unknown scenario {name}; expected all or {}",
@@ -566,6 +570,137 @@ async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
         "uploads: pass ({} bytes, two avatars)",
         harness.texture.len()
     ))
+}
+
+/// What one bot has seen of the other avatar.
+#[derive(Debug, Default)]
+struct OtherAvatar {
+    /// The local id of the other avatar's full `ObjectUpdate`.
+    local_id: Option<u32>,
+    appearance: bool,
+    /// Local ids in every `KillObject` this bot received.
+    killed: Vec<u32>,
+}
+
+impl OtherAvatar {
+    fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
+        while let Some(packet) = session.poll_inbox() {
+            if world::chat_heard(&packet).is_some() {
+                return Err("the region sent ChatFromSimulator".to_string());
+            }
+            for object in world::objects_in(&packet) {
+                if object.full_id == other && object.pcode == world::PCODE_AVATAR {
+                    self.local_id = Some(object.local_id);
+                }
+            }
+            if packet.id == AvatarAppearance::ID
+                && let Ok(message) = packet.decode::<AvatarAppearance>()
+                && message.sender.id == other
+                && !message.visual_param.is_empty()
+                // A viewer drops an appearance for an avatar it does not
+                // know yet: only one after the full update counts.
+                && self.local_id.is_some()
+            {
+                self.appearance = true;
+            }
+            self.killed.extend(world::killed(&packet));
+        }
+        Ok(())
+    }
+
+    fn seen(&self) -> bool {
+        self.local_id.is_some() && self.appearance
+    }
+
+    fn saw_kill(&self) -> bool {
+        self.local_id
+            .is_some_and(|local_id| self.killed.contains(&local_id))
+    }
+}
+
+/// Both harness accounts in the region together. Each bot gets the other's
+/// full avatar `ObjectUpdate` and `AvatarAppearance`: the one already there
+/// when the other arrives, the newcomer once its initial data is sent. When
+/// the second bot leaves, the first gets `KillObject` for the local id it saw.
+async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let owner_id = harness.owner.principal_id;
+    let chat_id = harness.chat.principal_id;
+    let (mut owner, _) = enter(http, harness, &harness.owner).await?;
+    let mut owner_saw = OtherAvatar::default();
+    let chat_login = enter(http, harness, &harness.chat);
+    tokio::pin!(chat_login);
+    let chat_result = loop {
+        tokio::select! {
+            result = &mut chat_login => break result,
+            step = owner.drive(STEP) => {
+                step.map_err(|error| error.to_string())?;
+                owner_saw.note(&mut owner, chat_id)?;
+            }
+        }
+    };
+    let (mut chat, _) = match chat_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(error);
+        }
+    };
+    let mut chat_saw = OtherAvatar::default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !(owner_saw.seen() && chat_saw.seen()) && std::time::Instant::now() < deadline {
+        owner.drive(STEP).await.map_err(|error| error.to_string())?;
+        chat.drive(STEP).await.map_err(|error| error.to_string())?;
+        owner_saw.note(&mut owner, chat_id)?;
+        chat_saw.note(&mut chat, owner_id)?;
+    }
+    let early_kill = [owner_saw.local_id, chat_saw.local_id]
+        .into_iter()
+        .flatten()
+        .any(|id| owner_saw.killed.contains(&id) || chat_saw.killed.contains(&id));
+    if !(owner_saw.seen() && chat_saw.seen()) || early_kill {
+        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        if early_kill {
+            return Err("an avatar was killed while both were in the region".to_string());
+        }
+        return Err(format!(
+            "the bots did not see each other (owner saw {owner_saw:?}, second bot saw {chat_saw:?})"
+        ));
+    }
+    let left = {
+        let logout = leave(harness, &mut chat, &harness.chat);
+        tokio::pin!(logout);
+        loop {
+            tokio::select! {
+                result = &mut logout => break result,
+                step = owner.drive(STEP) => {
+                    step.map_err(|error| error.to_string())?;
+                    owner_saw.note(&mut owner, chat_id)?;
+                }
+            }
+        }
+    };
+    if let Err(error) = left {
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err(error);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !owner_saw.saw_kill() && std::time::Instant::now() < deadline {
+        owner.drive(STEP).await.map_err(|error| error.to_string())?;
+        owner_saw.note(&mut owner, chat_id)?;
+    }
+    let killed = owner_saw.saw_kill();
+    leave(harness, &mut owner, &harness.owner).await?;
+    if !killed {
+        return Err(format!(
+            "no KillObject for the second bot's local id {:?} after it left",
+            owner_saw.local_id
+        ));
+    }
+    Ok(
+        "avatars: pass (each bot saw the other's local id and appearance; KillObject on leave)"
+            .to_string(),
+    )
 }
 
 fn refuse_chat(session: &mut Session) -> Result<(), String> {
