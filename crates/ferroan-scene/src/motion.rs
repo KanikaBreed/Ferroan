@@ -14,7 +14,8 @@
 //! of that test. Either way, both are forced when the last update that
 //! changed both is more than 500 ms old (lines 8854–8857).
 //!
-//! The scene then stores the draw distance, the title and mute flags, the
+//! The scene then stores the draw distance (clamped to 32..`MaxDrawDistance`,
+//! the `DrawDistance` setter at `ScenePresence.cs` line 721), the title and mute flags, the
 //! head, the control flags, and the fly, sit-on-ground, and stand flags
 //! (`ScenePresence.HandleAgentUpdate`, lines 2747–3018). Direction bits,
 //! including a nudge folded down by 19, become a body-space vector. Walk and
@@ -28,13 +29,27 @@
 //! on the ground or in the air leaves that command for 250 ms. Stop replaces
 //! it immediately, at 0.2 times 4.096.
 //!
+//! A camera-only update stores the far plane of the last movement-significant
+//! update: `LLClientView` passes its stored arguments, and only the movement
+//! branch copies `Far` into them (lines 8870–8894). Packet times are the
+//! monotonic [`clock_ms`], as `Util.GetTimeStampMS` is a stopwatch.
+//!
 //! The frame tick integrates this command (`walk`). Terse updates, the camera
 //! ray, scripted control grabs, the hide-title broadcast, and the animation
 //! machine stay later rows. The animator starts on the surface, so a key
 //! release takes the 250 ms path. The avatar counts as on the ground when it
 //! is not flying. Move-to-target stays off: neither of these packets starts it.
 
+use std::sync::OnceLock;
+use std::time::Instant;
+
 use crate::frame::Presence;
+
+/// `Scene.m_maxDrawDistance`, the shipped default (`[Startup] MaxDrawDistance`
+/// is commented out in `RegionServerDefaults.ini`).
+pub const MAX_DRAW_DISTANCE: f32 = 512.0;
+/// The `DrawDistance` setter's lower bound.
+const MIN_DRAW_DISTANCE: f32 = 32.0;
 
 /// Forward, from `AgentManager.ControlFlags`.
 pub const CONTROL_AT_POS: u32 = 1 << 0;
@@ -129,6 +144,37 @@ const HIDE_TITLE: u8 = 0x01;
 /// `AgentUpdateFlags.MuteCollisions`.
 const MUTE_COLLISIONS: u8 = 0x80;
 
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds on the scene's monotonic clock. The circuit stamps each
+/// `AgentUpdate` with its receive instant and the tick reads the same clock,
+/// so the 20 ms, 500 ms and delayed-stop tests never see a wall-clock step.
+/// An instant before the clock started reads 0.
+pub fn clock_ms(at: Instant) -> u64 {
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    u64::try_from(at.saturating_duration_since(epoch).as_millis()).unwrap_or(u64::MAX)
+}
+
+/// `ScenePresence.DrawDistance`'s setter: `Utils.Clamp(value, 32, MaxDrawDistance)`.
+/// NaN passes through, as both comparisons are false.
+pub(crate) fn clamp_draw_distance(far: f32) -> f32 {
+    let far = if far > MAX_DRAW_DISTANCE {
+        MAX_DRAW_DISTANCE
+    } else {
+        far
+    };
+    if far < MIN_DRAW_DISTANCE {
+        MIN_DRAW_DISTANCE
+    } else {
+        far
+    }
+}
+
+/// `IsUsableRotation`: finite and not too short to be a rotation.
+pub(crate) fn usable_rotation(q: [f32; 4]) -> bool {
+    finite4(q) && quat_dot(q, q) >= 1.0e-6
+}
+
 /// One decoded `AgentUpdate`. Times and the sequence come from the datagram.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionUpdate {
@@ -175,6 +221,17 @@ pub struct Motion {
     pub camera_up: [f32; 3],
     pub camera_rotation: [f32; 4],
     pub needs_camera_collision: bool,
+}
+
+/// The movement fields of a returning `UpdateAgent` (`AgentData.Unpack`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReturnData {
+    pub velocity: [f32; 3],
+    pub far: f32,
+    pub body_rotation: [f32; 4],
+    pub head_rotation: [f32; 4],
+    pub control_flags: u32,
+    pub always_run: bool,
 }
 
 /// Whether a packet was kept, and which half of it changed the record.
@@ -253,10 +310,12 @@ impl Body {
                 needs_camera_collision: false,
             },
             // A fresh client view has a zero quaternion, not the login heading.
+            // Its timestamps are 0 on a stopwatch that has run since boot, so
+            // the first update is always forced: minus infinity here.
             filter: Filter {
                 sequence: 0,
-                last_update_ms: 0.0,
-                last_move_ms: 0.0,
+                last_update_ms: f64::NEG_INFINITY,
+                last_move_ms: f64::NEG_INFINITY,
                 body_rotation: [0.0, 0.0, 0.0, 0.0],
                 head_rotation: [0.0, 0.0, 0.0, 0.0],
                 state: 0,
@@ -294,12 +353,42 @@ impl Body {
         self.motion.always_run = always_run;
     }
 
-    /// A local teleport stops the command. The fly and sit flags stay.
+    /// `sp.Velocity = Vector3.Zero` and a new physics actor at rest. The fly
+    /// and sit flags, the angular velocity and a pending delayed stop stay:
+    /// neither `TeleportAgentWithinRegion` nor `MakeRootAgent` clears them.
     pub(crate) fn halt_command(&mut self) {
         self.motion.target_velocity = [0.0, 0.0, 0.0];
-        self.motion.angular_velocity = [0.0, 0.0, 0.0];
-        self.motion.delayed_stop_ms = -1;
         self.physics_velocity = [0.0, 0.0, 0.0];
+    }
+
+    /// `RotateToLookAt`: the body faces this way. The packet filter keeps its own copy.
+    pub(crate) fn turn_to(&mut self, rotation: [f32; 4], pose: &mut Presence) {
+        self.motion.body_rotation = rotation;
+        pose.rotation = rotation;
+    }
+
+    /// `ScenePresence.Flying`: true only with a physics actor that flies. A
+    /// ground sit, a child, and a pose the arrival has not sampled have no actor.
+    pub(crate) fn flying(&self) -> bool {
+        self.motion.flying && self.actor && !self.seated && !self.child
+    }
+
+    /// The returning `UpdateAgent`, as `CopyFrom` stores it, then the flying
+    /// state `CompleteMovement` gives the new actor from the control flags.
+    pub(crate) fn apply_return(&mut self, data: &ReturnData, pose: &mut Presence) {
+        pose.velocity = data.velocity;
+        let far = clamp_draw_distance(data.far);
+        self.motion.draw_distance = far;
+        pose.draw_distance = far;
+        self.motion.head_rotation = data.head_rotation;
+        if usable_rotation(data.body_rotation) {
+            self.motion.body_rotation = data.body_rotation;
+            pose.rotation = data.body_rotation;
+        }
+        self.motion.control_flags = data.control_flags;
+        pose.control_flags = data.control_flags;
+        self.motion.always_run = data.always_run;
+        self.motion.flying = data.control_flags & CONTROL_FLY != 0;
     }
 
     pub(crate) fn apply(&mut self, update: &MotionUpdate, pose: &mut Presence) -> Applied {
@@ -361,8 +450,9 @@ impl Body {
             self.last_finite = pose.position;
         }
 
-        self.motion.draw_distance = update.far;
-        pose.draw_distance = update.far;
+        let far = clamp_draw_distance(update.far);
+        self.motion.draw_distance = far;
+        pose.draw_distance = far;
         self.motion.flags = update.flags;
         self.motion.hide_title = update.flags & HIDE_TITLE != 0;
         self.motion.mute_collisions = update.flags & MUTE_COLLISIONS != 0;
@@ -392,8 +482,11 @@ impl Body {
             return;
         }
 
-        self.motion.body_rotation = update.body_rotation;
-        pose.rotation = update.body_rotation;
+        // The `Rotation` setter keeps the previous value for one that is not usable.
+        if usable_rotation(update.body_rotation) {
+            self.motion.body_rotation = update.body_rotation;
+            pose.rotation = update.body_rotation;
+        }
 
         let mut movement_flags = update.control_flags & (NORM_MASK | NUDGE_MASK);
         let old_flags = self.motion.movement_flags & (NORM_MASK | NUDGE_MASK);
@@ -488,8 +581,10 @@ impl Body {
         if finite4(rotation) {
             self.motion.camera_rotation = rotation;
         }
-        self.motion.draw_distance = update.far;
-        pose.draw_distance = update.far;
+        // The stored arguments: this packet's far only when the movement half kept it.
+        let far = clamp_draw_distance(self.filter.far);
+        self.motion.draw_distance = far;
+        pose.draw_distance = far;
     }
 
     fn add_new_movement(&mut self, command: [f32; 3], speed: f32, body: [f32; 4]) {
@@ -900,12 +995,25 @@ mod tests {
         assert_eq!(pose.position, [128.0, 128.0, 25.0]);
     }
 
+    /// One circuit of the capture: a fresh client view and presence per
+    /// `UseCircuitCode`, the sequences that circuit has seen, and its burst.
+    struct Replay {
+        body: Body,
+        pose: Presence,
+        seen: std::collections::HashSet<u32>,
+        burst: usize,
+        updates: u32,
+    }
+
+    /// `UseCircuitCode`s this close together are one login burst: the build
+    /// scenario logs the owner and the chat account in together, and the
+    /// redaction gives both the same ids.
+    const BURST_MS: u64 = 100;
+
     #[test]
     fn session_capture_agent_updates_become_movement_intent() {
-        use std::collections::HashMap;
-
         use ferroan_capture::{Kind, read_capture};
-        use ferroan_protocol::msgs::{AgentUpdate, SetAlwaysRun};
+        use ferroan_protocol::msgs::{AgentUpdate, SetAlwaysRun, UseCircuitCode};
         use ferroan_protocol::{Msg, parse_packet};
 
         let path = concat!(
@@ -914,12 +1022,21 @@ mod tests {
         );
         let bytes = std::fs::read(path).unwrap();
         let records = read_capture(&bytes).unwrap();
-        let mut avatars: HashMap<uuid::Uuid, (Body, Presence)> = HashMap::new();
+        // The capture holds nine circuits under one redacted agent id. Each
+        // `UseCircuitCode` starts a new circuit: LLClientView's filter and the
+        // presence start over. Two circuits opened in one burst (the owner and
+        // the chat account of `build_scenario`) share ids, so a datagram goes
+        // to the newest circuit of the latest burst that has not seen its
+        // sequence. One every circuit of that burst has seen is a reliable
+        // duplicate the UDP server drops (`PacketArchive`).
+        let mut circuits: Vec<Replay> = Vec::new();
         let mut agent_updates = 0u32;
         let mut always_runs = 0u32;
         let mut movement_kept = 0u32;
         let mut camera_kept = 0u32;
-        let mut dropped = 0u32;
+        let mut duplicates = 0u32;
+        let mut filtered = 0u32;
+        let mut last_open: Option<u64> = None;
 
         for record in records {
             if record.kind != Kind::UdpIn {
@@ -928,9 +1045,45 @@ mod tests {
             let Ok(packet) = parse_packet(&record.bytes) else {
                 continue;
             };
+            if packet.id == UseCircuitCode::ID {
+                let burst = match (circuits.last(), last_open) {
+                    (Some(last), Some(at)) if record.time_ms.saturating_sub(at) <= BURST_MS => {
+                        last.burst
+                    }
+                    (Some(last), _) => last.burst + 1,
+                    (None, _) => 0,
+                };
+                last_open = Some(record.time_ms);
+                let pose = login_pose();
+                circuits.push(Replay {
+                    body: Body::new(&pose),
+                    pose,
+                    seen: std::collections::HashSet::from([packet.sequence]),
+                    burst,
+                    updates: 0,
+                });
+                continue;
+            }
+            let Some(latest) = circuits.last().map(|circuit| circuit.burst) else {
+                continue;
+            };
+            let Some(circuit) = circuits
+                .iter_mut()
+                .rev()
+                .take_while(|circuit| circuit.burst == latest)
+                .find(|circuit| !circuit.seen.contains(&packet.sequence))
+            else {
+                if packet.id == AgentUpdate::ID {
+                    agent_updates += 1;
+                    duplicates += 1;
+                }
+                continue;
+            };
+            circuit.seen.insert(packet.sequence);
             if packet.id == AgentUpdate::ID {
                 let message = packet.decode::<AgentUpdate>().unwrap();
                 agent_updates += 1;
+                circuit.updates += 1;
                 let update = MotionUpdate {
                     now_ms: record.time_ms,
                     sequence: packet.sequence,
@@ -947,60 +1100,58 @@ mod tests {
                     control_flags: message.agent_data.control_flags,
                     flags: message.agent_data.flags,
                 };
-                let (body, pose) =
-                    avatars
-                        .entry(message.agent_data.agent_id)
-                        .or_insert_with(|| {
-                            let pose = login_pose();
-                            (Body::new(&pose), pose)
-                        });
-                let applied = body.apply(&update, pose);
+                let applied = circuit.body.apply(&update, &mut circuit.pose);
                 if applied.dropped {
-                    dropped += 1;
+                    filtered += 1;
                     continue;
                 }
+                let view = circuit.body.view();
                 if applied.movement {
                     movement_kept += 1;
-                    assert_eq!(body.view().control_flags, update.control_flags);
-                    assert_eq!(body.view().draw_distance, update.far);
-                    if !body.view().sit_ground {
-                        assert_eq!(pose.rotation, update.body_rotation);
+                    assert_eq!(view.control_flags, update.control_flags);
+                    assert_eq!(view.draw_distance, update.far);
+                    if !view.sit_ground {
+                        assert_eq!(circuit.pose.rotation, update.body_rotation);
                     }
                 }
                 if applied.camera {
                     camera_kept += 1;
-                    assert_eq!(body.view().camera_center, update.camera_center);
-                    assert_eq!(body.view().draw_distance, update.far);
+                    assert_eq!(view.camera_center, update.camera_center);
+                    assert_eq!(view.draw_distance, update.far);
                 }
             } else if packet.id == SetAlwaysRun::ID {
                 let message = packet.decode::<SetAlwaysRun>().unwrap();
                 always_runs += 1;
-                if let Some((body, _)) = avatars.get_mut(&message.agent_data.agent_id) {
-                    body.set_always_run(message.agent_data.always_run);
-                    assert_eq!(body.view().always_run, message.agent_data.always_run);
-                }
+                circuit.body.set_always_run(message.agent_data.always_run);
+                assert_eq!(
+                    circuit.body.view().always_run,
+                    message.agent_data.always_run
+                );
             }
         }
-        let (body, pose) = avatars.values().next().unwrap();
-        let view = body.view();
+        let walked: Vec<&Replay> = circuits.iter().filter(|c| c.updates > 0).collect();
+        let bursts = circuits.last().map_or(0, |circuit| circuit.burst + 1);
         assert_eq!(
             (
+                circuits.len(),
+                bursts,
+                walked.len(),
                 agent_updates,
                 movement_kept,
                 camera_kept,
-                dropped,
+                duplicates,
+                filtered,
                 always_runs,
-                avatars.len()
             ),
-            (9, 7, 2, 2, 0, 1)
+            (9, 7, 3, 9, 9, 4, 0, 0, 0)
         );
-        assert_eq!(pose.control_flags, view.control_flags);
+
+        // The walk circuit: seven held-forward updates, all kept for movement.
+        // The camera is forced on the first and again once 500 ms have passed.
+        let walk = walked[0];
+        let view = walk.body.view();
+        assert_eq!(walk.updates, 7);
         assert_eq!(view.control_flags, CONTROL_AT_POS);
-        assert!(!view.flying && !view.sit_ground && !view.always_run);
-        assert_eq!(view.flags, 0);
-        assert_eq!(view.state, 0);
-        assert_eq!(view.draw_distance, 128.0);
-        assert_eq!(pose.draw_distance, 128.0);
         let speed = (view.target_velocity[0] * view.target_velocity[0]
             + view.target_velocity[1] * view.target_velocity[1]
             + view.target_velocity[2] * view.target_velocity[2])
@@ -1009,6 +1160,120 @@ mod tests {
         assert!((view.target_velocity[0] - 2.455_391_4).abs() < 1.0e-5);
         assert!((view.target_velocity[1] - 0.104_168_13).abs() < 1.0e-5);
         assert_eq!(view.target_velocity[2], 0.0);
+
+        // The owner and the chat account of the build burst: each sends one
+        // standing update (the same sequence 7 on its own circuit), and each
+        // stands: no controls held, no command.
+        assert_eq!(walked[1].burst, walked[2].burst);
+        for stand in &walked[1..] {
+            let view = stand.body.view();
+            assert_eq!(stand.updates, 1);
+            assert_eq!(stand.pose.control_flags, view.control_flags);
+            assert_eq!(view.control_flags, 0);
+            assert_eq!(view.movement_flags, 0);
+            assert_eq!(view.target_velocity, [0.0, 0.0, 0.0]);
+            assert_eq!(view.delayed_stop_ms, -1);
+            assert!(!view.flying && !view.sit_ground && !view.always_run);
+            assert_eq!(view.flags, 0);
+            assert_eq!(view.state, 0);
+            assert_eq!(view.draw_distance, 128.0);
+            assert_eq!(stand.pose.draw_distance, 128.0);
+        }
+    }
+
+    #[test]
+    fn a_camera_only_update_keeps_the_far_of_the_last_movement_update() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        body.apply(&update(1_000, 1, 0), &mut pose);
+        assert_eq!(body.view().draw_distance, 128.0);
+        // Far moves by less than 32 m and the camera moves: camera only.
+        let mut camera = update(1_100, 2, 0);
+        camera.far = 150.0;
+        camera.camera_center = [130.0, 128.0, 26.0];
+        let applied = body.apply(&camera, &mut pose);
+        assert!(applied.camera && !applied.movement);
+        assert_eq!(body.view().draw_distance, 128.0);
+        assert_eq!(pose.draw_distance, 128.0);
+        // A movement update stores the new far, clamped as `DrawDistance` is.
+        let mut near = update(1_200, 3, CONTROL_AT_POS);
+        near.far = 4.0;
+        body.apply(&near, &mut pose);
+        assert_eq!(body.view().draw_distance, 32.0);
+        let mut far = update(1_300, 4, 0);
+        far.far = 1_000.0;
+        body.apply(&far, &mut pose);
+        assert_eq!(pose.draw_distance, MAX_DRAW_DISTANCE);
+    }
+
+    #[test]
+    fn the_first_update_on_a_new_clock_is_forced() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        let applied = body.apply(&update(0, 1, 0), &mut pose);
+        assert!(applied.movement && applied.camera);
+        let later = clock_ms(Instant::now() + std::time::Duration::from_millis(5));
+        assert!(later >= clock_ms(Instant::now()));
+    }
+
+    #[test]
+    fn a_halt_keeps_the_angular_velocity_and_the_delayed_stop() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        let roll = CONTROL_FLY | CONTROL_TURN_LEFT | CONTROL_YAW_POS | CONTROL_AT_POS;
+        body.apply(&update(1_000, 1, roll), &mut pose);
+        body.apply(&update(1_030, 2, CONTROL_FLY), &mut pose);
+        let before = body.view();
+        assert!(before.angular_velocity[2] != 0.0);
+        assert!(before.delayed_stop_ms > 0);
+        body.halt_command();
+        let after = body.view();
+        assert_eq!(after.target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(after.angular_velocity, before.angular_velocity);
+        assert_eq!(after.delayed_stop_ms, before.delayed_stop_ms);
+        assert!(body.flying());
+        body.set_child(true);
+        assert!(!body.flying());
+    }
+
+    #[test]
+    fn a_return_copies_the_agent_data_fields() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        let yaw = std::f32::consts::FRAC_1_SQRT_2;
+        body.apply_return(
+            &ReturnData {
+                velocity: [1.0, 2.0, 0.0],
+                far: 16.0,
+                body_rotation: [0.0, 0.0, yaw, yaw],
+                head_rotation: [0.0, 0.0, 0.5, 0.5],
+                control_flags: CONTROL_FLY,
+                always_run: true,
+            },
+            &mut pose,
+        );
+        let view = body.view();
+        assert_eq!(pose.velocity, [1.0, 2.0, 0.0]);
+        assert_eq!(pose.draw_distance, 32.0);
+        assert_eq!(pose.rotation, [0.0, 0.0, yaw, yaw]);
+        assert_eq!(view.head_rotation, [0.0, 0.0, 0.5, 0.5]);
+        assert_eq!(pose.control_flags, CONTROL_FLY);
+        assert!(view.always_run && view.flying && body.flying());
+        // A zero rotation is not usable and the previous one stays.
+        body.apply_return(
+            &ReturnData {
+                velocity: [0.0, 0.0, 0.0],
+                far: 255.0,
+                body_rotation: [0.0, 0.0, 0.0, 0.0],
+                head_rotation: [0.0, 0.0, 0.0, 1.0],
+                control_flags: 0,
+                always_run: false,
+            },
+            &mut pose,
+        );
+        assert_eq!(pose.rotation, [0.0, 0.0, yaw, yaw]);
+        assert!(!body.view().flying && !body.view().always_run);
     }
 
     #[test]
