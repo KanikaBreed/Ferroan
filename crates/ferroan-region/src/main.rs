@@ -419,15 +419,17 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
-            ferroan_scene::open_terrain(
+            let loaded = ferroan_scene::load_world_map(
                 connection,
                 config.id,
                 width,
                 height,
-                ferroan_scene::ObjectStoreKind::Sqlite,
+                config.initial_terrain,
             )
             .await
-            .map_err(|error| RunError::Terrain(error.to_string()))?
+            .map_err(|error| RunError::Terrain(error.to_string()))?;
+            log_world_map(&loaded, config.initial_terrain);
+            Some(loaded.map)
         }
         (Some(_), Some(_)) => {
             tracing::info!(
@@ -451,6 +453,30 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
             .map_err(|error| RunError::Terrain(error.to_string()))?,
     };
     Ok(Some(Arc::new(frame)))
+}
+
+/// Ferroan's lines for the cases `Scene.LoadWorldMap` logs.
+fn log_world_map(loaded: &ferroan_scene::WorldMap, initial: ferroan_scene::InitialTerrain) {
+    use ferroan_scene::TerrainSource;
+    let name = match initial {
+        ferroan_scene::InitialTerrain::Flat => "flat",
+        ferroan_scene::InitialTerrain::PinheadIsland => "pinhead-island",
+    };
+    match loaded.source {
+        TerrainSource::Stored => {}
+        TerrainSource::Baked => {
+            tracing::warn!("ferroan-region: terrain not found. Used stored baked terrain.");
+        }
+        TerrainSource::Generated => tracing::info!(
+            "ferroan-region: no default terrain. Generated {name} and stored it as the terrain row."
+        ),
+        TerrainSource::GeneratedUnstored => tracing::warn!(
+            "ferroan-region: the region store file does not exist. Running {name} without storing it."
+        ),
+    }
+    if loaded.stored_baked {
+        tracing::info!("ferroan-region: stored the heightmap as the bakedterrain row.");
+    }
 }
 
 /// `MakeRootAgent` without physics: lift Z, and take the precomputed land packets.
