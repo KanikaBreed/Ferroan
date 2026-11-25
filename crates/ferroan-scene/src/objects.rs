@@ -4220,11 +4220,21 @@ mod tests {
         }
         assert!(!ids.contains(&Uuid::parse_str("99999999-9999-9999-9999-999999999992").unwrap()));
         assert!(!ids.contains(&Uuid::parse_str("ffffffff-ffff-ffff-ffff-fffffffffff1").unwrap()));
-        let showcase = groups
+        let showcase_group = groups
             .iter()
-            .flat_map(|group| group.parts.iter())
-            .find(|part| part.name == "showcase")
+            .find(|group| group.parts[0].name == "showcase")
             .unwrap();
+        let showcase = &showcase_group.parts[0];
+        for xml in [
+            crate::to_xml2(showcase_group),
+            crate::to_original_xml(showcase_group),
+        ] {
+            assert!(
+                xml.contains(
+                    "<AllowUnsit>false</AllowUnsit><ScriptedSitOnly>true</ScriptedSitOnly>"
+                )
+            );
+        }
         assert_eq!(showcase.flags, 0x401);
         assert!(!showcase.volume_detect);
         assert!(!showcase.allow_unsit);
