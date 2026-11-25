@@ -91,7 +91,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | DONE (this PR) |
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
-| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
+| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | DONE (this PR) |
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
@@ -109,11 +109,12 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | DONE (this PR) |
 | QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | DONE (this PR) |
 | QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | DONE (this PR) |
-| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
+| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | DONE (this PR) |
 | QR29 | R29: the intermittent "UDP TeleportFinish 0, landing 0" in live services' teleport both ways with Ferroan as home | DONE (this PR) |
 | QR30 | R30: two live-harness flakes: a C# arrival that has begun to fall, and a late request to a region the harness has stopped | DONE (this PR) |
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
+| QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -173,7 +174,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
-| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | READY after Q42 and Q53 |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
+| Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | READY |
+| Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | READY after Q65b and QR9 |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -678,6 +683,12 @@ Q48 DONE (25 November 2026, `feat/q48-avatars`): At pin `c401bceecd`, `CompleteM
 Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 and Q83 come from Q46b's note that the Ferroan harness walk runs at Z 0: C# builds and stores a default terrain when the store has none, Ferroan leaves the ground at 0. Q82 does SQLite, generation and the harness; Q83 does MySQL and PostgreSQL, after QR22 settles how the region picks its backend from `StorageProvider`. Q84: Ferroan never answers `UUIDNameRequest`, which costs Ferrobot about 10 s per `nearby` call; it needs Q48 so that Ferrobot sees the other avatars at all. Q85 is Q43's child-throttle note; it waits for the child-agent items Q79 and Q80, and for QR26, which changes the same outgoing AgentData. Each item's scope, C# lines at `c401bceecd`, evidence and size are on its TASKS.md row. A fifth gap was not queued: C# `MakeRootAgent` lands a newcomer on another avatar's capsule with a filtered ray cast (`ScenePresence.cs` 1543–1602, `PrimsNonPhantomAgents`), but only when the physics engine supports filtered ray casts. BasicPhysics does not (`PhysicsScene.cs` 347–350 returns false, and BasicPhysics does not override it), so a `--physics basicphysics` C# region lands at ground height as the D38 stand-in does, and there is nothing in Phase 2 to match. It is recorded as a Phase 3 note in [docs/PLAN.md](docs/PLAN.md).
 
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
+
+### Q65 split
+
+**BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
+
+The manager approved Q65a through Q65d on 25 November. Their dependencies and acceptance checks are in TASKS.md.
 
 ## Found while working
 

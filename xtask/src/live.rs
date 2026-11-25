@@ -863,6 +863,11 @@ pub(crate) fn ensure_region_built() -> Result<(), String> {
 /// Use Cargo's artifact path, including configured target directories/profiles.
 #[cfg(target_os = "linux")]
 pub(crate) fn build_binary(name: &str) -> Result<PathBuf, String> {
+    build_binary_with_profile(name, "dev")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn build_binary_with_profile(name: &str, profile: &str) -> Result<PathBuf, String> {
     use std::io::Read;
     use std::process::Stdio;
     let log = repo_root()
@@ -875,6 +880,8 @@ pub(crate) fn build_binary(name: &str) -> Result<PathBuf, String> {
     let mut child = Command::new("cargo")
         .args([
             "build",
+            "--profile",
+            profile,
             "-p",
             name,
             "--bin",

@@ -27,6 +27,10 @@ static class Program
         public bool OwnerGod;
         public bool ManagerGod;
         public bool Force;
+        public string Modules = "DefaultPermissionsModule";
+        public bool? ServerPermissions = true;
+        public string PermissionsModulesOverride;
+        public bool? ServerPermissionsOverride;
     }
 
     static int Main(string[] args)
@@ -65,6 +69,15 @@ static class Program
         Case[] cases =
         {
             One("ordinary", Ordinary, 0, true, false, false, false),
+            new Case { Name = "settings-unset", Agent = Ordinary, Modules = null, ServerPermissions = null },
+            new Case { Name = "permissions-bypassed", Agent = Ordinary, Allow = true, ServerPermissions = false },
+            new Case { Name = "permissions-overrides-startup", Agent = Ordinary, Modules = "Other", ServerPermissions = false,
+                PermissionsModulesOverride = "DefaultPermissionsModule", ServerPermissionsOverride = true },
+            new Case { Name = "permissions-bypassed-nil", Agent = UUID.Zero, ServerPermissions = false },
+            new Case { Name = "default-module-absent", Agent = Ordinary, Modules = "Other" },
+            new Case { Name = "default-module-empty", Agent = Ordinary, Modules = "" },
+            new Case { Name = "default-module-case-sensitive", Agent = Ordinary, Modules = "defaultpermissionsmodule" },
+            new Case { Name = "default-module-in-list", Agent = Ordinary, Modules = "First, DefaultPermissionsModule , Last" },
             One("estate-owner", Owner, 0, false, false, false, false),
             One("estate-manager", Manager, 0, false, false, false, false),
             One("grid-god", God, 200, true, false, false, false),
@@ -81,7 +94,6 @@ static class Program
         body.Append("{\n");
         body.Append("  \"pin\": ").Append(JsonString(revision)).Append(",\n");
         body.Append("  \"method\": \"Scene.CheckLandPositionAccess\",\n");
-        body.Append("  \"module\": \"DefaultPermissionsModule\",\n");
         body.Append("  \"agent_limit\": 0,\n");
         body.Append("  \"not_crossing\": false,\n");
         body.Append("  \"owner\": ").Append(JsonString(Owner.ToString())).Append(",\n");
@@ -99,6 +111,14 @@ static class Program
             body.Append("      \"region_owner_is_god\": ").Append(item.OwnerGod ? "true" : "false").Append(",\n");
             body.Append("      \"region_manager_is_god\": ").Append(item.ManagerGod ? "true" : "false").Append(",\n");
             body.Append("      \"force_grid_gods_only\": ").Append(item.Force ? "true" : "false").Append(",\n");
+            if (item.Modules != null)
+                body.Append("      \"permissionmodules\": ").Append(JsonString(item.Modules)).Append(",\n");
+            if (item.ServerPermissions is bool serverPermissions)
+                body.Append("      \"serverside_object_permissions\": ").Append(serverPermissions ? "true" : "false").Append(",\n");
+            if (item.PermissionsModulesOverride != null)
+                body.Append("      \"permissions_modules_override\": ").Append(JsonString(item.PermissionsModulesOverride)).Append(",\n");
+            if (item.ServerPermissionsOverride is bool serverOverride)
+                body.Append("      \"permissions_serverside_override\": ").Append(serverOverride ? "true" : "false").Append(",\n");
             body.Append("      \"success\": ").Append(success ? "true" : "false").Append(",\n");
             body.Append("      \"reason\": ").Append(JsonString(reason)).Append("\n");
             body.Append(index + 1 == cases.Length ? "    }\n" : "    },\n");
@@ -133,8 +153,6 @@ static class Program
         DefaultPermissionsModule module = new DefaultPermissionsModule();
         module.Initialise(Permissions(item));
         module.AddRegion(scene);
-        if (!scene.Permissions.IsEstateManager(Owner) || scene.Permissions.IsEstateManager(Ordinary))
-            throw new InvalidOperationException(item.Name + ": DefaultPermissionsModule did not attach");
         bool success = scene.CheckLandPositionAccess(
             item.Agent, false, false, true, Vector3.Zero, out string reason);
         reason ??= "";
@@ -150,8 +168,14 @@ static class Program
         IniConfigSource source = new IniConfigSource();
         IConfig startup = source.AddConfig("Startup");
         IConfig permissions = source.AddConfig("Permissions");
-        startup.Set("permissionmodules", "DefaultPermissionsModule");
-        startup.Set("serverside_object_permissions", "true");
+        if (item.Modules != null)
+            startup.Set("permissionmodules", item.Modules);
+        if (item.ServerPermissions is bool serverPermissions)
+            startup.Set("serverside_object_permissions", serverPermissions ? "true" : "false");
+        if (item.PermissionsModulesOverride != null)
+            permissions.Set("permissionmodules", item.PermissionsModulesOverride);
+        if (item.ServerPermissionsOverride is bool serverOverride)
+            permissions.Set("serverside_object_permissions", serverOverride ? "true" : "false");
         permissions.Set("allow_grid_gods", item.Allow ? "true" : "false");
         permissions.Set("region_owner_is_god", item.OwnerGod ? "true" : "false");
         permissions.Set("region_manager_is_god", item.ManagerGod ? "true" : "false");

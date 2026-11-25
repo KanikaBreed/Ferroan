@@ -155,7 +155,7 @@ pub struct SimulationState {
     control_plane: ControlPlaneAccess,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     admission_open: Arc<AtomicBool>,
-    /// One envelope for the lifecycle-lock wait and the Presence verify.
+    /// One envelope for the account lookup, lifecycle lock and Presence verification.
     /// Robust's CreateAgent connector gives up at 30 s; this stays under it.
     /// Tests shorten it. It is not a configuration key.
     create_agent_budget: Duration,
@@ -448,13 +448,12 @@ impl SimulationState {
         if let Some(level) = self.staff.cached_level(agent) {
             return Some(level);
         }
-        let level =
+        let account =
             crate::grid::account_user_level(self.staff.account_uri(), self.staff.scope_id(), agent)
-                .await;
-        if let Some(level) = level {
-            self.staff.note_level(agent, level);
-        }
-        level
+                .await?;
+        let level = account.level;
+        self.staff.note_account(agent, account);
+        Some(level)
     }
 
     fn admission_refusal(&self, agent: Uuid, level: Option<i32>) -> Option<&'static str> {
@@ -996,16 +995,19 @@ async fn handle(
     // The root-agent bound uses that same early point. A god level looked up
     // here is the level accept uses, including when the level cache is full.
     // A child does not take a root slot. A closed region still refuses it.
-    let level = state.lookup_level(agent).await;
+    let deadline = tokio::time::Instant::now() + state.create_agent_budget;
+    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
+    let busy = "Region is busy completing a login or logout";
+    let Ok(level) = tokio::time::timeout_at(deadline, state.lookup_level(agent)).await else {
+        return create_refused(busy, peer);
+    };
     if let Some(reason) = state.admission_for(agent, level, fields.child) {
         return create_refused(reason, peer);
     }
     // Same session, not a login: keep the circuit and the caps. A failed
     // presence check must not log this avatar out.
     if fields.child && !fields.via_login && state.same_session(agent, fields.session_id) {
-        let busy = "Region is busy completing a login or logout";
-        let deadline = tokio::time::Instant::now() + state.create_agent_budget;
-        let lock_wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let lock_wait = remaining();
         if lock_wait.is_zero() {
             return create_refused(busy, peer);
         }
@@ -1021,11 +1023,8 @@ async fn handle(
         return json_reply(answer, false);
     }
     // SimulationServiceConnector.CreateAgent posts with a 30 s timeout. The
-    // lock wait and the Presence verify share one shorter budget so Robust
+    // account lookup, lock wait and Presence verify share one shorter budget so Robust
     // does not time out and retry a login this region then accepts.
-    let deadline = tokio::time::Instant::now() + state.create_agent_budget;
-    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
-    let busy = "Region is busy completing a login or logout";
     let lock_wait = remaining();
     if lock_wait.is_zero() {
         return create_refused(busy, peer);
@@ -2559,6 +2558,52 @@ mod tests {
         );
     }
 
+    // Keep socket I/O on the real clock. Advance only the interval under test.
+    async fn advance_clock(elapsed: Duration) {
+        tokio::time::pause();
+        tokio::time::advance(elapsed).await;
+        tokio::time::resume();
+    }
+
+    #[tokio::test]
+    async fn a_demoted_account_loses_the_bypass_after_its_cache_lifetime() {
+        for (local_field, ttl) in [("", 3600), ("<LocalToGrid>False</LocalToGrid>", 172800)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let requests = hits.clone();
+            let app = axum::Router::new().route("/accounts", axum::routing::post(move || {
+                let level = if requests.fetch_add(1, Ordering::Relaxed) == 0 { 200 } else { 199 };
+                async move { format!("<ServerResponse><result type=\"List\"><UserLevel>{level}</UserLevel>{local_field}</result></ServerResponse>") }
+            }));
+            let service = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut config = test_config(&base, Uuid::from_u128(5));
+            config.user_account_server_uri = base.clone();
+            config.allow_grid_gods = true;
+            let (sender, _receiver) = mpsc::channel(1);
+            let mut state =
+                SimulationState::new(&config, CapsRegistry::new(&base).unwrap(), sender);
+            state.root_limit = 0;
+            let agent = Uuid::from_u128(80);
+            let level = state.lookup_level(agent).await;
+            assert_eq!(state.admission_refusal(agent, level), None);
+            advance_clock(Duration::from_secs(ttl - 1)).await;
+            assert_eq!(state.lookup_level(agent).await, Some(200));
+            assert_eq!(hits.load(Ordering::Relaxed), 1);
+
+            // The first sweep after the lifetime forces another getaccount.
+            advance_clock(Duration::from_secs(2)).await;
+            let level = state.lookup_level(agent).await;
+            assert_eq!(level, Some(199));
+            assert_eq!(
+                state.admission_refusal(agent, level),
+                Some("The region is full")
+            );
+            assert_eq!(hits.load(Ordering::Relaxed), 2);
+            service.abort();
+        }
+    }
+
     #[tokio::test]
     async fn getaccount_level_200_admits_a_grid_god_to_a_full_region() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2797,6 +2842,91 @@ mod tests {
             sender,
         );
         assert_eq!(state.create_agent_budget, Duration::from_secs(25));
+    }
+
+    #[tokio::test]
+    async fn the_account_lookup_and_presence_share_the_create_agent_deadline() {
+        for exhaust_in_lookup in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let account_started = Arc::new(Notify::new());
+            let release_account = Arc::new(Notify::new());
+            let presence_started = Arc::new(Notify::new());
+            let started = account_started.clone();
+            let release = release_account.clone();
+            let verifying = presence_started.clone();
+            let app = axum::Router::new()
+                .route("/accounts", axum::routing::post(move || {
+                    let started = started.clone();
+                    let release = release.clone();
+                    async move {
+                        started.notify_one();
+                        release.notified().await;
+                        "<ServerResponse><result type=\"List\"><UserLevel>200</UserLevel></result></ServerResponse>"
+                    }
+                }))
+                .route("/presence", axum::routing::post(move || {
+                    verifying.notify_one();
+                    std::future::pending::<String>()
+                }));
+            let service = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let region = Uuid::from_u128(5);
+            let mut config = test_config(&base, region);
+            config.allow_grid_gods = true;
+            config.user_account_server_uri = base.clone();
+            let (sender, _receiver) = mpsc::channel(1);
+            let mut state =
+                SimulationState::new(&config, CapsRegistry::new(&base).unwrap(), sender);
+            state.root_limit = 0;
+            state.create_agent_budget = Duration::from_secs(3);
+            let request = Request::builder()
+                .method("POST")
+                .uri(format!("/agent/{}/", Uuid::from_u128(1)))
+                .body(axum::body::Body::from(create_body_for(
+                    synthetic_agent(),
+                    region,
+                )))
+                .unwrap();
+            let response = tokio::spawn(handle(
+                State(state),
+                ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+                request,
+            ));
+            let guard = Duration::from_secs(1);
+            tokio::time::timeout(guard, account_started.notified())
+                .await
+                .unwrap();
+            if exhaust_in_lookup {
+                advance_clock(Duration::from_millis(3100)).await;
+            } else {
+                advance_clock(Duration::from_secs(2)).await;
+                release_account.notify_one();
+                tokio::time::timeout(guard, presence_started.notified())
+                    .await
+                    .unwrap();
+                advance_clock(Duration::from_millis(1100)).await;
+            }
+            let response = tokio::time::timeout(guard, response)
+                .await
+                .unwrap()
+                .unwrap();
+            let bytes = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+            let result: Value = serde_json::from_slice(&bytes).unwrap();
+            if exhaust_in_lookup {
+                assert_eq!(
+                    result["reason"],
+                    "Region is busy completing a login or logout"
+                );
+            } else {
+                assert!(
+                    result["reason"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Failed to verify user presence")
+                );
+            }
+            service.abort();
+        }
     }
 
     #[tokio::test]

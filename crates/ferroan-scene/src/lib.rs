@@ -90,6 +90,8 @@ pub mod prioritizer;
 mod settings;
 mod store;
 pub mod terse;
+#[cfg(test)]
+mod test_store;
 mod walk;
 #[cfg(test)]
 mod walk_capture;
