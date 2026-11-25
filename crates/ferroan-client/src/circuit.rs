@@ -70,6 +70,7 @@ use crate::entity_feed::{
     AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
     terse_packets,
 };
+use crate::names::{CircuitNames, RegionNames, Requested, UserName};
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, VIA_LOCATION};
 use crate::throttle::{
@@ -81,7 +82,7 @@ use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
     PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocationRequest,
-    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -109,6 +110,9 @@ const MAX_PENDING_ACKS: usize = 4096;
 /// reliable packets wait for an ack.
 const ACK_STALL: usize = 50;
 const ACKS_PER_PACKET: usize = 255;
+/// A name reply is dropped when this many task packets already wait.
+/// C#'s task outbox has no bound.
+pub const MAX_NAME_REPLIES: usize = 1024;
 
 /// `[ClientStack.LindenUDP]` timing values. RTO settings use milliseconds in
 /// Tranquillity configuration; inactivity settings use seconds. Zero RTO values
@@ -559,6 +563,8 @@ struct State {
     queue_empty_at: Instant,
     /// A `RegionHandshakeReply` the frame has not taken yet.
     handshake_reply: Option<Uuid>,
+    /// `UUIDNameRequest` answers. Absent when the region has no name lookup.
+    names: Option<CircuitNames>,
 }
 impl State {
     #[cfg(test)]
@@ -648,6 +654,7 @@ impl State {
             feed,
             queue_empty_at: now,
             handshake_reply: None,
+            names: None,
         })
     }
 
@@ -888,6 +895,42 @@ impl State {
 
     fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
         self.pending_task.push_back(encode_payload(message)?);
+        Ok(())
+    }
+
+    /// `SendNameReply` queues on the task category. Past
+    /// `region.name-replies` waiting task packets the reply is dropped.
+    fn enqueue_name(&mut self, id: Uuid, name: &UserName) -> Result<(), CircuitError> {
+        if self.pending_task.len() >= MAX_NAME_REPLIES {
+            ferroan_diag::drop_bound(
+                ferroan_diag::REGION_NAME_REPLIES,
+                Kind::Hard,
+                MAX_NAME_REPLIES as u64,
+                self.pending_task.len() as u64 + 1,
+                "names",
+            );
+            return Ok(());
+        }
+        self.enqueue_task(&crate::names::name_reply(id, name))
+    }
+
+    /// `LLClientView.HandleUUIDNameRequest`: ignored while the avatar is on
+    /// its way to another region, otherwise one lookup per block.
+    fn request_names(&mut self, packet: &IncomingPacket) -> Result<(), CircuitError> {
+        let Some(names) = self.names.clone() else {
+            return Ok(());
+        };
+        if self.in_transit {
+            return Ok(());
+        }
+        let Ok(request) = packet.decode::<UUIDNameRequest>() else {
+            return Ok(());
+        };
+        for block in &request.uuid_name_block {
+            if let Requested::Answered(name) = names.request(block.id) {
+                self.enqueue_name(block.id, &name)?;
+            }
+        }
         Ok(())
     }
     async fn send_ping(
@@ -1201,6 +1244,8 @@ impl State {
             if packet.decode::<RegionHandshakeReply>().is_ok() {
                 self.forward_handshake_reply(expect);
             }
+        } else if packet.id == UUIDNameRequest::ID {
+            self.request_names(packet)?;
         } else if packet.id == AgentThrottle::ID {
             if let Ok(throttle) = packet.decode::<AgentThrottle>() {
                 self.throttle
@@ -1855,6 +1900,8 @@ struct CircuitInner {
     waiting_chat: Mutex<HashMap<Uuid, (RegionChat, String)>>,
     /// Login posts its landed pose here and reads that record back.
     login_scene: Mutex<Option<LoginScene>>,
+    /// Name lookups for `UUIDNameRequest`. Empty until [`CircuitServer::enable_names`].
+    names: Mutex<Option<RegionNames>>,
 }
 
 impl Drop for CircuitInner {
@@ -2039,6 +2086,7 @@ impl CircuitServer {
                 chat: Mutex::new(None),
                 waiting_chat: Mutex::new(HashMap::new()),
                 login_scene: Mutex::new(None),
+                names: Mutex::new(None),
             }),
         })
     }
@@ -2103,6 +2151,32 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .insert(agent, (chat, name));
+    }
+
+    /// Answer `UUIDNameRequest` on every later serve, from `source`. Call it
+    /// on the tokio runtime: it starts the region's lookup queue.
+    pub fn enable_names(&self, source: Arc<dyn crate::NameSource>) {
+        let mut names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if names.is_none() {
+            *names = Some(RegionNames::start(source));
+        }
+    }
+
+    /// `Scene.CacheUserName` for a resident of this grid: the arrival's names.
+    pub fn cache_arrival_name(&self, agent: Uuid, first: &str, last: &str) {
+        let names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        if let Some(names) = names {
+            names.add_arrival(agent, first, last);
+        }
     }
 
     fn take_waiting_chat(&self, agent: Uuid) -> Option<(RegionChat, String)> {
@@ -2298,6 +2372,13 @@ impl CircuitServer {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner()),
         );
+        let names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .map(RegionNames::circuit);
         serve_socket_reporting(
             &session,
             expect,
@@ -2314,6 +2395,7 @@ impl CircuitServer {
                 stop,
                 chat,
                 login_scene,
+                names,
             },
         )
         .await
@@ -2328,6 +2410,7 @@ struct ServeExtra<'a> {
     stop: Option<oneshot::Receiver<CircuitStop>>,
     chat: Option<(RegionChat, String)>,
     login_scene: Option<LoginScene>,
+    names: Option<(CircuitNames, mpsc::Receiver<(Uuid, UserName)>)>,
 }
 
 #[cfg(test)]
@@ -2353,6 +2436,7 @@ async fn serve_socket(
             stop: None,
             chat: None,
             login_scene: None,
+            names: None,
         },
     )
     .await
@@ -2389,6 +2473,13 @@ async fn serve_socket_reporting(
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
     state.login_scene = extra.login_scene;
+    let mut name_rx = match extra.names {
+        Some((names, rx)) => {
+            state.names = Some(names);
+            Some(rx)
+        }
+        None => None,
+    };
     let mut hop_rx = state.hop_rx.take();
     let entity_wake = state.feed.as_ref().map(|feed| Arc::clone(&feed.wake));
     state.pending_chat = extra.chat;
@@ -2481,6 +2572,18 @@ async fn serve_socket_reporting(
                     }
                 } else {
                     state.chat = None;
+                }
+                continue;
+            }
+            answer = async {
+                match name_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if name_rx.is_some() && state.peer.is_some() => {
+                match answer {
+                    Some((id, name)) => state.enqueue_name(id, &name)?,
+                    None => name_rx = None,
                 }
                 continue;
             }
@@ -2963,6 +3066,107 @@ mod tests {
         assert!(wait_for(&right, &mut buf, LogoutReply::ID).await);
         speaker_task.await.unwrap().unwrap();
         listener_task.await.unwrap().unwrap();
+    }
+
+    fn name_request_packet(id: Uuid) -> ferroan_protocol::IncomingPacket {
+        use ferroan_protocol::msgs::{UUIDNameRequest, uuid_name_request};
+        let mut request = UUIDNameRequest::default();
+        request
+            .uuid_name_block
+            .push(uuid_name_request::UUIDNameBlock { id });
+        let mut bytes = Vec::new();
+        build_packet(&request, 1, true, false, &[], &mut bytes);
+        parse_packet(&bytes).unwrap()
+    }
+
+    fn named_state(id: Uuid) -> super::State {
+        let region =
+            crate::names::RegionNames::start(Arc::new(crate::names::tests::Fake::default()));
+        region.cache_found(id, crate::names::UserName::new("Chat", "Bot"));
+        let mut state = super::State::new(
+            crate::HandshakeConfig::for_region(Uuid::nil()),
+            crate::ArrivalConfig::default(),
+        );
+        state.names = Some(region.circuit().0);
+        state
+    }
+
+    /// A cached name is answered on the task outbox, until it holds
+    /// `MAX_NAME_REPLIES` packets.
+    #[tokio::test]
+    async fn a_name_reply_waits_on_the_task_outbox_up_to_its_bound() {
+        let id = Uuid::from_u128(0x79);
+        let mut state = named_state(id);
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), 1);
+        while state.pending_task.len() < super::MAX_NAME_REPLIES {
+            let payload = state.pending_task[0].clone();
+            state.pending_task.push_back(payload);
+        }
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), super::MAX_NAME_REPLIES);
+    }
+
+    /// `HandleUUIDNameRequest` ignores a presence in transit.
+    #[tokio::test]
+    async fn a_name_request_in_transit_is_ignored() {
+        let id = Uuid::from_u128(0x7a);
+        let mut state = named_state(id);
+        state.in_transit = true;
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert!(state.pending_task.is_empty());
+    }
+
+    /// `UUIDNameRequest` with a known and an unknown id: one reliable,
+    /// plain `UUIDNameReply` for the known one, none for the other.
+    #[tokio::test]
+    async fn a_name_request_answers_the_known_id_only() {
+        use ferroan_protocol::msgs::{UUIDNameReply, UUIDNameRequest, uuid_name_request};
+        let server = CircuitServer::bind().await.unwrap();
+        let known = Uuid::from_u128(0x77);
+        let unknown = Uuid::from_u128(0x78);
+        server.enable_names(Arc::new(crate::names::tests::Fake::with_account(
+            known, "Chat", "Bot",
+        )));
+        let addr = server.local_addr().unwrap();
+        let agent = expect_agent();
+        let serving = server.clone();
+        let task =
+            tokio::spawn(async move { serving.serve_one(agent, Duration::from_secs(20)).await });
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        send(&sock, addr, 1, &use_circuit(1, 2, 42), true).await;
+        let mut buf = [0u8; 4096];
+        assert!(wait_for(&sock, &mut buf, RegionHandshake::ID).await);
+        let mut request = UUIDNameRequest::default();
+        for id in [unknown, known] {
+            request
+                .uuid_name_block
+                .push(uuid_name_request::UUIDNameBlock { id });
+        }
+        send(&sock, addr, 2, &request, true).await;
+        let mut replies = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(1) {
+            if let Some(packet) = recv(&sock, &mut buf, Duration::from_millis(100)).await
+                && packet.id == UUIDNameReply::ID
+            {
+                assert!(packet.reliable());
+                assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+                replies.push(packet.decode::<UUIDNameReply>().unwrap());
+            }
+        }
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        let block = &replies[0].uuid_name_block;
+        assert_eq!(block.len(), 1);
+        assert_eq!(block[0].id, known);
+        assert_eq!(block[0].first_name, b"Chat\0");
+        assert_eq!(block[0].last_name, b"Bot\0");
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = agent.agent_id;
+        logout.agent_data.session_id = agent.session_id;
+        send(&sock, addr, 3, &logout, true).await;
+        assert!(wait_for(&sock, &mut buf, LogoutReply::ID).await);
+        task.await.unwrap().unwrap();
     }
 
     async fn wait_for(sock: &UdpSocket, buf: &mut [u8], id: ferroan_protocol::MsgId) -> bool {

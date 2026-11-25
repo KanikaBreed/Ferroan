@@ -694,6 +694,13 @@ async fn dispatch_circuits(
     hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
+    // UserManagementModule: names from the account service, then GridUser.
+    circuit.enable_names(ferroan_region::names::GridNames::new(
+        &config.user_account_server_uri,
+        config.scope_id,
+        &config.grid_user_server_uri,
+        config.grid_home.clone(),
+    ));
     if let Some(frame) = terrain.as_ref() {
         let frame = Arc::clone(frame);
         circuit.set_login_scene(Arc::new(move |agent, call| scene_call(&frame, agent, call)));
@@ -898,6 +905,9 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
+        // Scene.CacheUserName. CreateAgent's service URLs are not kept, so
+        // every arrival is a resident of this grid, as an empty HomeURI is.
+        circuit.cache_arrival_name(expect.agent_id, &agent.first_name, &agent.last_name);
         circuit.attach_chat(
             expect.agent_id,
             format!("{} {}", agent.first_name, agent.last_name),

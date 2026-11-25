@@ -17,6 +17,7 @@ mod datagram_log;
 mod entity_feed;
 mod event_queue;
 mod handshake;
+mod names;
 mod return_hop;
 mod source_hop;
 mod teleport;
@@ -30,14 +31,18 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, PENDING_LOGINS, RootArrival, SceneAnswer, SceneCall, SceneDeparture,
-    SceneMove, SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
+    LoginPose, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, RootArrival, SceneAnswer, SceneCall,
+    SceneDeparture, SceneMove, SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
     AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
+pub use names::{
+    MAX_CIRCUIT_LOOKUPS, MAX_NAME_CACHE, MAX_NAME_LOOKUPS, NameFuture, NameSource, RegionNames,
+    UserName,
+};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};
 pub use source_hop::{
     CONNECT_INNER, FinishEvent, HopOut, HopPose, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED,
