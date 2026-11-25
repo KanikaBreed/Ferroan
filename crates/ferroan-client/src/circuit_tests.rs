@@ -141,7 +141,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),
             })),
-            SceneCall::Arrive(pose) => {
+            SceneCall::Arrive(pose, _) => {
                 let position = *poses.entry(agent).or_insert(pose.position);
                 Ok(SceneReply::Pose(stored_pose(position)))
             }
@@ -187,6 +187,7 @@ async fn a_task_flood_stays_within_the_viewer_task_rate() {
         state.pending_task.push_back(Payload {
             bytes: body.clone(),
             zerocoded: false,
+            reliable: true,
         });
     }
     let io = FakeIo::default();
@@ -230,6 +231,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
         let payload = Payload {
             bytes: vec![0xff, 0xff, 0x00, 0x01, 1, 2, 3],
             zerocoded: false,
+            reliable: true,
         };
         state
             .send_payload(&io, peer(), payload, true)
@@ -241,6 +243,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
         zerocoded: false,
+        reliable: true,
     });
     state
         .pending_land
@@ -323,6 +326,7 @@ async fn a_nan_throttle_blob_keeps_the_circuit_sending() {
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
         zerocoded: false,
+        reliable: true,
     });
     release_throttled(&mut state, &io).await;
 }
@@ -1660,10 +1664,11 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     state.peer = Some(peer());
     state.login_scene = Some(Arc::new(move |agent, call| {
         // The fresh login is one arrival call: no separate pose and release.
-        let SceneCall::Arrive(pose) = call else {
+        let SceneCall::Arrive(pose, look_at) = call else {
             return Err(crate::circuit::SceneRefused).into();
         };
         assert_eq!(agent, expect.agent_id);
+        assert_eq!(look_at, [0.99, 0.042, 0.0]);
         assert_eq!(pose.position, [10.0, 20.0, 30.0]);
         assert_eq!(pose.rotation, LOGIN_ROTATION);
         assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
@@ -1716,6 +1721,7 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
 struct BlockFeed {
     blocks: Mutex<Vec<[u8; crate::AVATAR_TERSE_LEN]>>,
     budgets: Mutex<Vec<i32>>,
+    packets: Mutex<Vec<crate::AvatarPacket>>,
 }
 
 impl crate::EntityUpdates for BlockFeed {
@@ -1727,6 +1733,196 @@ impl crate::EntityUpdates for BlockFeed {
         self.budgets.lock().unwrap().push(max_bytes);
         std::mem::take(&mut *self.blocks.lock().unwrap())
     }
+
+    fn take_avatar_packets(&self, max: usize) -> Vec<crate::AvatarPacket> {
+        let mut packets = self.packets.lock().unwrap();
+        let count = max.min(packets.len());
+        packets.drain(..count).collect()
+    }
+}
+
+/// A circuit whose reliable window is full takes no avatar packets: they stay
+/// in the feed, where its bound applies. Freed room takes only that many.
+#[tokio::test]
+async fn a_stalled_circuit_leaves_avatar_packets_in_the_feed() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    // Exhaust the task bucket so the waiting packets stay.
+    let now = state.throttle_clock.now_secs();
+    assert!(state.throttle.try_spend(TASK, 10_000_000, now));
+    let mut ping = CompletePingCheck::default();
+    ping.ping_id.ping_id = 1;
+    for _ in 0..MAX_UNACKED {
+        state.enqueue_task(&ping).unwrap();
+    }
+    {
+        let mut packets = source.packets.lock().unwrap();
+        for id in 0..5 {
+            for kill in crate::kill_packets(&[id]) {
+                packets.push(crate::AvatarPacket::Kill(kill));
+            }
+        }
+    }
+    state.maintain(&io).await.unwrap();
+    assert_eq!(source.packets.lock().unwrap().len(), 5);
+    assert_eq!(state.pending_task.len(), MAX_UNACKED);
+    // Two slots free up: two packets move, the oldest first.
+    state.pending_task.pop_back();
+    state.pending_task.pop_back();
+    state.maintain(&io).await.unwrap();
+    assert_eq!(source.packets.lock().unwrap().len(), 3);
+    assert_eq!(state.pending_task.len(), MAX_UNACKED);
+    let crate::AvatarPacket::Kill(next) = &source.packets.lock().unwrap()[0] else {
+        panic!("a kill");
+    };
+    assert_eq!(next.object_data[0].id, 2);
+}
+
+/// Another avatar's full update, appearance and kill leave in the order the
+/// region queued them, ahead of a terse block: the full update reliable and
+/// zero-coded, the appearance the same, the kill reliable and unencoded.
+#[tokio::test]
+async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        region_handle: 0x0003_e800_0003_e800,
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let mut other = crate::AvatarWire::standing(Uuid::from_u128(9), "Chat", "Bot");
+    other.local_id = 77;
+    let live = crate::LiveAvatar {
+        collision_plane: [0.0, 0.0, 0.0, 1.0],
+        position: [128.0, 128.0, 25.0],
+        velocity: [0.0; 3],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    };
+    {
+        let mut packets = source.packets.lock().unwrap();
+        packets.push(crate::AvatarPacket::Full(
+            other.live_update(0x0003_e800_0003_e800, &live),
+        ));
+        packets.push(crate::AvatarPacket::Appearance(other.appearance()));
+        for kill in crate::kill_packets(&[77]) {
+            packets.push(crate::AvatarPacket::Kill(kill));
+        }
+    }
+    let mut block = [0u8; crate::AVATAR_TERSE_LEN];
+    block[0..4].copy_from_slice(&77u32.to_le_bytes());
+    source.blocks.lock().unwrap().push(block);
+    state.maintain(&io).await.unwrap();
+    // The task bucket holds the rest until it refills.
+    for _ in 0..20 {
+        if io.sent.lock().unwrap().len() >= 4 {
+            break;
+        }
+        state.advance_throttle(Duration::from_millis(200));
+        state.maintain(&io).await.unwrap();
+    }
+    let sent = io.sent.lock().unwrap().clone();
+    let ids: Vec<_> = sent
+        .iter()
+        .map(|bytes| (bytes[0] & 0xc0, parse_packet(bytes).unwrap().id))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            (0xc0, ferroan_protocol::msgs::ObjectUpdate::ID),
+            (0xc0, ferroan_protocol::msgs::AvatarAppearance::ID),
+            (0x40, ferroan_protocol::msgs::KillObject::ID),
+            (0xc0, ferroan_protocol::msgs::ImprovedTerseObjectUpdate::ID),
+        ]
+    );
+    let kill = parse_packet(&sent[2])
+        .unwrap()
+        .decode::<ferroan_protocol::msgs::KillObject>()
+        .unwrap();
+    assert_eq!(kill.object_data[0].id, 77);
+}
+
+/// `SendCoarseLocationUpdate` writes its own header: no flags (unreliable,
+/// not zero-coded), Medium 6, then the counts, `You` and `Prey` little
+/// endian, and the agent ids. It waits behind a kill on the task outbox and
+/// never enters the reliable window.
+#[tokio::test]
+async fn a_coarse_location_update_leaves_unreliable_with_the_csharp_layout() {
+    use ferroan_protocol::msgs::coarse_location_update::{AgentData, Index, Location};
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let first = Uuid::from_u128(0x0102);
+    let second = Uuid::from_u128(0x0304);
+    let coarse = ferroan_protocol::msgs::CoarseLocationUpdate {
+        location: vec![
+            Location {
+                x: 128,
+                y: 128,
+                z: 6,
+            },
+            Location {
+                x: 131,
+                y: 40,
+                z: 6,
+            },
+        ],
+        index: Index { you: 1, prey: -1 },
+        agent_data: vec![
+            AgentData { agent_id: first },
+            AgentData { agent_id: second },
+        ],
+        omitted_trailing_blocks: 0,
+    };
+    {
+        let mut packets = source.packets.lock().unwrap();
+        for kill in crate::kill_packets(&[77]) {
+            packets.push(crate::AvatarPacket::Kill(kill));
+        }
+        packets.push(crate::AvatarPacket::Coarse(coarse));
+    }
+    for _ in 0..20 {
+        state.maintain(&io).await.unwrap();
+        if io.sent.lock().unwrap().len() >= 2 {
+            break;
+        }
+        state.advance_throttle(Duration::from_millis(200));
+    }
+    let sent = io.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        parse_packet(&sent[0]).unwrap().id,
+        ferroan_protocol::msgs::KillObject::ID
+    );
+    let bytes = &sent[1];
+    assert_eq!(bytes[0], 0, "unreliable, not zero-coded, no acks");
+    assert_eq!(bytes[5], 0);
+    let mut body = vec![0xff, 6, 2, 128, 128, 6, 131, 40, 6, 1, 0, 0xff, 0xff, 2];
+    body.extend_from_slice(first.as_bytes());
+    body.extend_from_slice(second.as_bytes());
+    assert_eq!(&bytes[6..], &body[..]);
+    assert_eq!(state.unacked.len(), 1, "only the kill waits for an ack");
 }
 
 #[tokio::test]

@@ -33,7 +33,7 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -297,26 +297,52 @@ fn validate_timeout(wait: Duration) -> io::Result<()> {
     Ok(())
 }
 
+/// Record bytes queued for the writer thread and not yet written. A stalled
+/// disk with every exchange in flight would otherwise hold up to
+/// `MAX_EXCHANGES` requests and responses of up to `HEADER_CAP` plus
+/// `BODY_CAP` each, about 544 MiB. Limit `capture.writer-queue`.
+pub const WRITER_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Bytes one record takes in the queue: its body plus the capture framing.
+fn queued_size(records: &[Record]) -> usize {
+    records
+        .iter()
+        .map(|record| record.bytes.len().saturating_add(16))
+        .fold(0usize, usize::saturating_add)
+}
+
 enum Job {
-    Write(Vec<Record>),
-    Flush(std::sync::mpsc::Sender<io::Result<()>>),
+    Write(Vec<Record>, usize),
+    Flush(tokio::sync::oneshot::Sender<io::Result<()>>),
 }
 
 /// One writer thread, in submission order. Callers enqueue without waiting,
-/// so a full pipe cannot hold the next POST. `flushed` waits until that
-/// thread has applied every record submitted so far.
+/// so a full pipe cannot hold the next POST, up to [`WRITER_QUEUE_BYTES`]
+/// queued. Past that the record is refused and the exchange fails. `flushed`
+/// waits, without a blocking thread, until the writer has applied every
+/// record submitted so far.
 struct Capture {
     tx: Mutex<Option<std::sync::mpsc::Sender<Job>>>,
     writer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    queued: Arc<AtomicUsize>,
+    budget: usize,
 }
 
 impl Capture {
     fn start(file: std::fs::File) -> Self {
+        Self::start_with(file, WRITER_QUEUE_BYTES)
+    }
+
+    fn start_with(file: std::fs::File, budget: usize) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || writer_loop(file, rx));
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = Arc::clone(&queued);
+        let writer = std::thread::spawn(move || writer_loop(file, rx, &written));
         Self {
             tx: Mutex::new(Some(tx)),
             writer: Mutex::new(Some(writer)),
+            queued,
+            budget,
         }
     }
 
@@ -324,16 +350,43 @@ impl Capture {
         if records.is_empty() {
             return Ok(());
         }
+        let size = queued_size(&records);
+        let reserved = self
+            .queued
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued
+                    .checked_add(size)
+                    .filter(|total| *total <= self.budget)
+            });
+        if let Err(queued) = reserved {
+            let observed = queued.saturating_add(size);
+            ferroan_diag::refuse(
+                ferroan_diag::CAPTURE_WRITER_QUEUE,
+                ferroan_diag::Kind::Hard,
+                u64::try_from(self.budget).unwrap_or(u64::MAX),
+                u64::try_from(observed).unwrap_or(u64::MAX),
+                "capture proxy",
+            );
+            return Err(io::Error::other(format!(
+                "capture writer queue is full ({observed} bytes past {}, limit {})",
+                self.budget,
+                ferroan_diag::CAPTURE_WRITER_QUEUE
+            )));
+        }
         let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
-        let tx = guard
+        let sent = guard
             .as_ref()
-            .ok_or_else(|| io::Error::other("capture writer stopped"))?;
-        tx.send(Job::Write(records))
-            .map_err(|_| io::Error::other("capture writer stopped"))
+            .map(|tx| tx.send(Job::Write(records, size)).is_ok())
+            .unwrap_or(false);
+        if !sent {
+            self.queued.fetch_sub(size, Ordering::AcqRel);
+            return Err(io::Error::other("capture writer stopped"));
+        }
+        Ok(())
     }
 
     async fn flushed(&self) -> io::Result<()> {
-        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         {
             let guard = self.tx.lock().unwrap_or_else(|poison| poison.into_inner());
             let tx = guard
@@ -342,13 +395,9 @@ impl Capture {
             tx.send(Job::Flush(ack_tx))
                 .map_err(|_| io::Error::other("capture writer stopped"))?;
         }
-        tokio::task::spawn_blocking(move || {
-            ack_rx
-                .recv()
-                .unwrap_or_else(|_| Err(io::Error::other("capture writer stopped")))
-        })
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?
+        ack_rx
+            .await
+            .unwrap_or_else(|_| Err(io::Error::other("capture writer stopped")))
     }
 }
 
@@ -369,16 +418,18 @@ impl Drop for Capture {
     }
 }
 
-fn writer_loop(mut file: std::fs::File, rx: std::sync::mpsc::Receiver<Job>) {
+fn writer_loop(mut file: std::fs::File, rx: std::sync::mpsc::Receiver<Job>, queued: &AtomicUsize) {
     let mut error: Option<String> = None;
     while let Ok(job) = rx.recv() {
         match job {
-            Job::Write(records) => {
+            Job::Write(records, size) => {
                 if error.is_none()
                     && let Err(err) = append_records(&mut file, &records)
                 {
                     error = Some(err.to_string());
                 }
+                drop(records);
+                queued.fetch_sub(size, Ordering::AcqRel);
             }
             Job::Flush(ack) => {
                 let result = match &error {
@@ -1604,6 +1655,71 @@ mod tests {
         server.abort();
         let _ = server.await;
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A writer stuck on a full pipe holds what was queued, up to the budget.
+    /// The next record past it is refused (`capture.writer-queue`), and the
+    /// queue takes records again once the pipe drains.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_stalled_writer_queue_refuses_past_its_budget() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.scratch/proxy-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("queue-{}.fifo", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = path.clone();
+        let opener = std::thread::spawn(move || std::fs::File::open(fifo).unwrap());
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let reader = opener.join().unwrap();
+        let capture = Capture::start_with(file, 256 * 1024);
+        let record = || {
+            vec![Record {
+                kind: Kind::HttpRequest,
+                time_ms: 1,
+                bytes: vec![b'q'; 100 * 1024],
+            }]
+        };
+        // The first record fills the 64 KiB pipe and the writer blocks on it.
+        // Results are taken before any assert: the drain thread must start
+        // first, or a failed assert would leave the writer (and Drop) stuck.
+        let first = capture.submit(record());
+        let second = capture.submit(record());
+        let third = capture.submit(record());
+        let drained = std::thread::spawn(move || {
+            let mut reader = reader;
+            let mut got = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut got).unwrap();
+            got
+        });
+        first.unwrap();
+        second.unwrap();
+        let error = third.unwrap_err();
+        assert!(
+            error.to_string().contains("capture.writer-queue"),
+            "{error}"
+        );
+        timeout(Duration::from_secs(5), capture.flushed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture.queued.load(Ordering::Acquire), 0);
+        capture.submit(record()).unwrap();
+        timeout(Duration::from_secs(5), capture.flushed())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(capture);
+        let bytes = drained.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let mut framed = crate::format::MAGIC.to_vec();
+        framed.extend_from_slice(&bytes);
+        assert_eq!(read_capture(&framed).unwrap().len(), 3);
     }
 
     /// Ferrobot polls again as soon as it has the reply. Recording the request

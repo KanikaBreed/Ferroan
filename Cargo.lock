@@ -379,6 +379,7 @@ dependencies = [
 name = "ferroan-capture"
 version = "0.1.0"
 dependencies = [
+ "ferroan-diag",
  "ferroan-protocol",
  "glam",
  "serde_json",

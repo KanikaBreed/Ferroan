@@ -9,3 +9,13 @@
 `loader-sample.json`, `seed.json`, `commands.json` and `library-manifest.json` are the same oracle. The sample is a small asset-set tree. The seed file is the loader callback against a copy of the SQLite fixture: a new id is inserted, matching bytes are left alone, different bytes replace the row, and a null payload stops the load. The command file is the connector text for `show asset`, `dump asset` and `delete asset`. The manifest is id, name, type and SHA1 for the pin's library; the library bytes stay in the reference checkout.
 
 The XML files are marked binary in `.gitattributes`. `controls.xml` contains a raw CR, and the repository's LF conversion would delete it.
+
+`pin8-xasset-race.json` is the final `AssetOracle xdb exists` response from
+`MySQLXAssetData` at Pin8 (`c401bceecd1684832ae8ba86a31b5ee01a4ded7b`).
+On MySQL 8.4.13 and MariaDB 11.8.9 a transaction held the first asset and
+its new bytes uncommitted. A second writer called `xdb put` with another id
+and the same bytes. The first writer committed once the server showed the
+second writer's data insert. The put returned and the oracle queried the two
+ids in writer order. Both engines produced the same response. The MySQL
+part of `xasset_plugins_cross_read` repeats this observation against the
+pinned C# plugin. Recapture the response when a pin includes the TB58 fix.
