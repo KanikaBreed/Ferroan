@@ -331,6 +331,9 @@ fn start_mysql(ports: &RegionstoreRun) -> Result<MysqlContainer, String> {
         return Err(format!("docker run exited with {status}"));
     }
     let container = MysqlContainer { name: name.clone() };
+    // Over TCP: the image's first-start server answers on its socket only
+    // (`--skip-networking`) and then restarts, so a socket ping can pass
+    // before the published port accepts the seed.
     for _ in 0..60 {
         let ready = Command::new("docker")
             .args([
@@ -338,6 +341,8 @@ fn start_mysql(ports: &RegionstoreRun) -> Result<MysqlContainer, String> {
                 name,
                 "mysqladmin",
                 "ping",
+                "--protocol=TCP",
+                "-h127.0.0.1",
                 "-uroot",
                 "-pferroan",
                 "--silent",
@@ -459,20 +464,23 @@ fn postgres_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) ->
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: PostgreSQL oracle dump matches {POSTGRES_DUMP}");
-    if postgres_tests(root, &rust_url) {
+    if postgres_tests(root, dll, &rust_url, &csharp) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
 }
 
-fn postgres_tests(root: &Path, connection: &str) -> bool {
+/// `ado` is the C# connection string the terrain tests hand the oracle.
+fn postgres_tests(root: &Path, dll: &Path, connection: &str, ado: &str) -> bool {
     let mut command = Command::new("cargo");
     command
         .current_dir(root)
         .env("FERROAN_REGIONSTORE", "1")
+        .env("FERROAN_REGIONSTORE_ORACLE", dll)
         .env("FERROAN_REGIONSTORE_CROSS", "1")
         .env("FERROAN_REGIONSTORE_POSTGRES", connection)
+        .env("FERROAN_REGIONSTORE_POSTGRES_ADO", ado)
         .args([
             "test",
             "-p",
@@ -528,14 +536,15 @@ fn mysql_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) -> Ex
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: MySQL oracle dump matches {MYSQL_DUMP}");
-    if mysql_tests(root, dll, &rust_url) {
+    if mysql_tests(root, dll, &rust_url, &csharp) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
 }
 
-fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
+/// `ado` is the C# connection string the terrain tests hand the oracle.
+fn mysql_tests(root: &Path, dll: &Path, connection: &str, ado: &str) -> bool {
     let mut command = Command::new("cargo");
     command
         .current_dir(root)
@@ -543,6 +552,7 @@ fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
         .env("FERROAN_REGIONSTORE_ORACLE", dll)
         .env("FERROAN_REGIONSTORE_CROSS", "1")
         .env("FERROAN_REGIONSTORE_MYSQL", connection)
+        .env("FERROAN_REGIONSTORE_MYSQL_ADO", ado)
         .args([
             "test",
             "-p",
