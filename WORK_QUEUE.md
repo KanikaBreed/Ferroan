@@ -91,7 +91,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR7 | R7: CI image jobs are never cancelled while waiting, and no C# build can tear `GITHUB_ENV` | DONE (this PR) |
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
-| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
+| QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | DONE (this PR) |
 | QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
@@ -109,7 +109,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | DONE (this PR) |
 | QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | DONE (this PR) |
 | QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | DONE (this PR) |
-| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
+| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | DONE (this PR) |
 | QR29 | R29: the intermittent "UDP TeleportFinish 0, landing 0" in live services' teleport both ways with Ferroan as home | DONE (this PR) |
 | QR30 | R30: two live-harness flakes: a C# arrival that has begun to fall, and a late request to a region the harness has stopped | DONE (this PR) |
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
