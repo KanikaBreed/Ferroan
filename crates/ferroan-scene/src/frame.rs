@@ -112,6 +112,7 @@ pub struct Presence {
 /// after `IsUsableRotation`, the camera from updates the filter kept).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Departure {
+    pub always_run: bool,
     pub flying: bool,
     pub camera_center: [f32; 3],
     pub head_rotation: [f32; 4],
@@ -757,6 +758,7 @@ fn answer(
             let departure = presences.get(&agent).map(|avatar| {
                 let view = avatar.body.view();
                 Departure {
+                    always_run: view.always_run,
                     flying: avatar.body.flying(),
                     camera_center: view.camera_center,
                     head_rotation: view.head_rotation,
@@ -2239,12 +2241,14 @@ mod tests {
         second.head_rotation = [0.0, 0.0, 0.6, 0.8];
         second.camera_center = [100.005, 100.0, 30.0];
         frame.agent_update(agent, second).unwrap();
+        frame.set_always_run(agent, true).unwrap();
         let departure = frame
             .departure(agent)
             .unwrap()
             .blocking_wait()
             .unwrap()
             .unwrap();
+        assert!(departure.always_run);
         assert!(!departure.flying);
         assert_eq!(departure.camera_center, [100.0, 100.0, 30.0]);
         assert_eq!(departure.body_rotation, [0.0, 0.0, 0.6, 0.8]);

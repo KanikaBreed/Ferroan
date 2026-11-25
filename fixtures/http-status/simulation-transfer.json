@@ -1,0 +1,28 @@
+{
+  "packed": {
+    "always_run": true,
+    "active_group_id": "00000000-0000-4000-8000-000000000002",
+    "active_group_name": "Fixture group",
+    "active_group_title": "Fixture title",
+    "god_data": {
+      "ViewerUiIsGod": true
+    },
+    "god_level": 200,
+    "animations": [
+      {
+        "animation": "00000000-0000-4000-8000-000000000001",
+        "object_id": "00000000-0000-4000-8000-000000000002",
+        "seq_num": 7
+      },
+      {
+        "animation": "00000000-0000-4000-8000-000000000004"
+      }
+    ],
+    "empty_binary": []
+  },
+  "500": "Service request failed: [500] Response status code does not indicate success: 500 (Internal Server Error).",
+  "405": "Service request failed: [405] Response status code does not indicate success: 405 (Neighbour refused).",
+  "499": "Service request failed: [499] Response status code does not indicate success: 499.",
+  "refused_mentions_endpoint": true,
+  "timeout_reason": "Service request failed: The request was canceled due to the configured HttpClient.Timeout of 0.15 seconds elapsing."
+}
