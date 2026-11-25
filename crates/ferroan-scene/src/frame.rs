@@ -22,6 +22,10 @@
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
 //! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
+//! Each frame ends with `RegionHeartbeatEnd`: every root's animator updates
+//! on every second one ([`crate::animation`]). A departure carries the live
+//! animator for `CopyTo`, a hop completion applies the sender's (`CopyFrom`),
+//! and a hop away that arrived resets it (`MakeChildAgent`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,6 +38,7 @@ use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::animation::AnimationTransfer;
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
 use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
@@ -82,7 +87,7 @@ pub struct TeleportStored {
 }
 
 /// The returning `UpdateAgent` for a hop completion.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HopReturn {
     pub position: [f32; 3],
     pub look_at: [f32; 3],
@@ -110,10 +115,12 @@ pub struct Presence {
 /// Where the departing avatar is, for a source hop: `ScenePresence.Flying`
 /// and the camera center and rotations `CopyTo` sends (the body rotation
 /// after `IsUsableRotation`, the camera from updates the filter kept).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Departure {
     pub always_run: bool,
     pub flying: bool,
+    /// `CopyTo`'s animations, default, implicit default and motion state.
+    pub animations: AnimationTransfer,
     pub camera_center: [f32; 3],
     pub head_rotation: [f32; 4],
     pub body_rotation: [f32; 4],
@@ -673,7 +680,7 @@ fn answer(
             let _ = reply.send(local_id);
         }
         Request::Pose { agent, pose, reply } => {
-            let mut avatar = Avatar::new(pose);
+            let mut avatar = Avatar::new(agent, pose);
             // Chat can read this pose immediately. The actor waits until
             // the arrival packet samples it, or a tick would change the
             // position that packet and GridUser still report.
@@ -688,7 +695,9 @@ fn answer(
             look_at,
             reply,
         } => {
-            let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
+            let avatar = presences
+                .entry(agent)
+                .or_insert_with(|| Avatar::new(agent, pose));
             arrive_at_rest(avatar);
             // `CompleteMovement` turns a non-crossing arrival to the look it
             // sends in `AgentMovementComplete` (`RotateToLookAt`).
@@ -700,6 +709,10 @@ fn answer(
             let _ = reply.send(pose);
         }
         Request::MovedAway { agent, away, reply } => {
+            // `MakeChildAgent` resets the animations.
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.reset_animations();
+            }
             scene.moved_away(agent, &away);
             let _ = reply.send(());
         }
@@ -721,7 +734,7 @@ fn answer(
             let look_at = flatten_look(request.look_at);
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(position)));
             let mut flags = request.flags;
             if avatar.body.flying() {
                 flags |= TELEPORT_IS_FLYING;
@@ -732,6 +745,7 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             avatar.pose.velocity = [0.0, 0.0, 0.0];
             avatar.body.halt_command();
+            avatar.body.clear_contact();
             // C# sends a terse update here without the thresholds
             // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
             // frame's test, so a landing under 0.05 m away sends nothing.
@@ -744,7 +758,7 @@ fn answer(
         Request::Complete { agent, hop, reply } => {
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(hop.position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(hop.position)));
             avatar.pose.position = hop.position;
             avatar.body.apply_return(&hop.data, &mut avatar.pose);
             // CompleteMovement's RotateToLookAt replaces the copied body rotation.
@@ -760,6 +774,7 @@ fn answer(
                 Departure {
                     always_run: view.always_run,
                     flying: avatar.body.flying(),
+                    animations: avatar.body.animator().transfer(),
                     camera_center: view.camera_center,
                     head_rotation: view.head_rotation,
                     body_rotation: view.body_rotation,
@@ -774,11 +789,10 @@ fn answer(
 }
 
 impl Avatar {
-    fn new(pose: Presence) -> Self {
-        Self {
-            body: Body::new(&pose),
-            pose,
-        }
+    fn new(agent: Uuid, pose: Presence) -> Self {
+        let mut body = Body::new(&pose);
+        body.set_agent(agent);
+        Self { body, pose }
     }
 }
 
@@ -789,7 +803,7 @@ fn arrive_at_rest(avatar: &mut Avatar) {
     avatar.pose.velocity = [0.0, 0.0, 0.0];
     avatar.body.halt_command();
     avatar.body.set_child(false);
-    avatar.body.set_actor(true);
+    avatar.body.new_actor();
 }
 
 /// A hop completion: root and at rest, as `arrive_at_rest`, but the actor
@@ -908,6 +922,7 @@ fn run(
 fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     step_avatars(&mut scene.presences, map);
     update_presences(scene);
+    heartbeat_end(&mut scene.presences);
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
     if frames.is_multiple_of(COARSE_EVERY_FRAMES) {
@@ -1176,6 +1191,19 @@ pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
 }
 
+/// `RegionHeartbeatEnd` for every root: the animator updates on every second
+/// one. C# subscribes a presence in `CompleteMovement` and drops it in
+/// `MakeChildAgent`; here a child, and a pose the arrival has not sampled, is
+/// skipped.
+fn heartbeat_end(presences: &mut HashMap<Uuid, Avatar>) {
+    let now = clock_ms(Instant::now());
+    for avatar in presences.values_mut() {
+        if !avatar.body.is_child() {
+            avatar.body.heartbeat(now);
+        }
+    }
+}
+
 fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) {
     // The same monotonic clock the circuit stamps each AgentUpdate with.
     let now = clock_ms(Instant::now());
@@ -1307,6 +1335,7 @@ mod tests {
                 head_rotation: [0.0, 0.0, 0.0, 1.0],
                 control_flags: 0,
                 always_run: false,
+                animations: crate::animation::AnimationTransfer::default(),
             },
         }
     }
@@ -2255,6 +2284,90 @@ mod tests {
         assert_eq!(departure.head_rotation, [0.0, 0.0, 0.6, 0.8]);
     }
 
+    /// `CopyTo` reads the live animator: the heartbeat walks an arrival
+    /// whose actor touched the ground after its first forward update.
+    /// `MakeChildAgent` resets the set, and a return's `CopyFrom` replaces it.
+    #[test]
+    fn the_departure_carries_the_live_animator_and_a_return_copies_it() {
+        use crate::animation::{
+            Anim, AnimationTransfer, MOTION_FLYING, MOTION_ON_SURFACE, STAND, default_animation,
+        };
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(23);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        let depart = |frame: &TerrainFrame| {
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+        };
+        let standing = depart(&frame);
+        assert_eq!(standing.default_animation.unwrap().animation, STAND);
+        assert_eq!(standing.default_animation.unwrap().sequence, 1);
+        assert_eq!(standing.motion_state, MOTION_ON_SURFACE);
+
+        frame
+            .agent_update(agent, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 4);
+        let walking = depart(&frame);
+        let walk = walking.default_animation.unwrap();
+        assert_eq!(walk.animation, default_animation("WALK").unwrap());
+        assert_eq!(walk.object_id, agent);
+        assert_eq!(walking.animation_state, Some(walk));
+        assert!(walking.animations.is_empty());
+        assert_eq!(walking.motion_state, MOTION_ON_SURFACE);
+
+        frame.set_child(agent, true).unwrap();
+        frame
+            .moved_away(
+                agent,
+                MovedAway {
+                    near: true,
+                    known_by: Vec::new(),
+                },
+            )
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        let reset = depart(&frame);
+        assert_eq!(reset.default_animation.unwrap().animation, STAND);
+        assert_eq!(reset.default_animation.unwrap().sequence, 1);
+
+        let fly = default_animation("FLY").unwrap();
+        let extra = Anim {
+            animation: Uuid::from_u128(500),
+            sequence: 41,
+            object_id: Uuid::from_u128(501),
+        };
+        let mut back = standing_return([128.0, 128.0, 40.0]);
+        back.data.animations = AnimationTransfer {
+            animations: vec![extra],
+            default_animation: Some(Anim {
+                animation: fly,
+                sequence: 40,
+                object_id: Uuid::from_u128(502),
+            }),
+            animation_state: None,
+            motion_state: MOTION_FLYING,
+        };
+        complete(&frame, agent, back);
+        let copied = depart(&frame);
+        let expected = Anim {
+            animation: fly,
+            sequence: 40,
+            object_id: Uuid::nil(),
+        };
+        assert_eq!(copied.default_animation, Some(expected));
+        assert_eq!(copied.animation_state, Some(expected));
+        assert_eq!(copied.animations, [extra]);
+        assert_eq!(copied.motion_state, MOTION_FLYING);
+    }
+
     #[test]
     fn a_landing_is_the_position_chat_reads() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -2403,6 +2516,7 @@ mod tests {
                     head_rotation: [0.0, 0.0, 0.25, 0.75],
                     control_flags: CONTROL_FLY,
                     always_run: false,
+                    animations: crate::animation::AnimationTransfer::default(),
                 },
             },
         );

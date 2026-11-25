@@ -57,7 +57,8 @@
 //! the frame thread. The frame ticks at the shipped `FrameTime`,
 //! stores the login presence, and answers a forwarded chat with those positions.
 //! A landing updates the position. An `AgentUpdate` stores movement intent on
-//! that presence. Each tick integrates that intent with the walking stand-in.
+//! that presence. Each tick integrates that intent with the walking stand-in,
+//! and the movement animation follows it ([`animation`]).
 //! Each viewer has an entity-update queue. A second update for the same local
 //! id merges flags. The default prioritizer places that viewer's avatar first,
 //! then other avatars, attachments, and prims by distance. Beside it, each
@@ -71,6 +72,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod animation;
 pub mod avatars;
 mod bits;
 pub mod coarse;
@@ -93,6 +95,7 @@ mod walk;
 mod walk_capture;
 mod xml;
 
+pub use animation::{Anim, AnimationSet, AnimationTransfer, Movement};
 pub use avatars::{AvatarFull, AvatarLook, AvatarPacket, MAX_AVATAR_PACKETS};
 pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;

@@ -286,7 +286,7 @@ pub enum SceneCall {
 }
 
 /// The departing avatar for a source hop.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneDeparture {
     pub flying: bool,
     pub pose: HopPose,
@@ -1623,10 +1623,8 @@ impl State {
         // A full inbound queue does not stop the return. The arrival packet
         // reads the frame. This token carries the position the frame stored,
         // or the mailbox position when the frame did not accept the post.
-        let position = self
-            .complete_scene(agent, pose)
-            .await
-            .unwrap_or(pose.position);
+        let mailbox = pose.position;
+        let position = self.complete_scene(agent, pose).await.unwrap_or(mailbox);
         self.arrival.position = position;
         let Some(slot) = self.return_slot.clone() else {
             self.return_started = false;

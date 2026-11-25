@@ -502,6 +502,10 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
                     center: [1.0, 2.0, 3.0],
                     head_rotation: [0.0, 0.0, 0.6, 0.8],
                     body_rotation: [0.0, 0.0, 0.8, 0.6],
+                    animations: crate::AgentAnimations {
+                        motion_state: 1,
+                        ..crate::AgentAnimations::standing()
+                    },
                 },
             }))
             .into(),
@@ -520,13 +524,15 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
         if flying {
             expected |= crate::teleport::IS_FLYING;
         }
-        let (sent, pose) = flags.lock().unwrap().unwrap();
+        let (sent, pose) = flags.lock().unwrap().clone().unwrap();
         assert_eq!(sent, expected);
         // The frame's kept values, not the last raw AgentUpdate.
         assert!(pose.always_run);
         assert_eq!(pose.center, [1.0, 2.0, 3.0]);
         assert_eq!(pose.head_rotation, [0.0, 0.0, 0.6, 0.8]);
         assert_eq!(pose.body_rotation, [0.0, 0.0, 0.8, 0.6]);
+        // And its animator, for `CopyTo`.
+        assert_eq!(pose.animations.motion_state, 1);
     }
 }
 
@@ -553,8 +559,16 @@ async fn a_return_forwards_the_whole_agent_data_to_the_scene() {
         head_rotation: [0.0, 0.0, 0.0, 1.0],
         control_flags: 1 << 13,
         always_run: true,
+        // The animator fields reach the frame with the rest.
+        animations: crate::AgentAnimations {
+            motion_state: 1,
+            ..crate::AgentAnimations::standing()
+        },
     };
-    state.finish_return(expect.agent_id, pose).await.unwrap();
+    state
+        .finish_return(expect.agent_id, pose.clone())
+        .await
+        .unwrap();
     assert_eq!(*seen.lock().unwrap(), Some(pose));
     // The arrival uses the position the frame stored.
     assert_eq!(state.arrival.position, [1.0, 2.0, 3.0]);

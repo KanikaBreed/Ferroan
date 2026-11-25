@@ -8,6 +8,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod agent_animations;
 mod appearance;
 mod arrival;
 mod caps;
@@ -22,6 +23,7 @@ mod source_hop;
 mod teleport;
 mod throttle;
 
+pub use agent_animations::{AgentAnimations, Anim};
 pub use appearance::{AvatarWire, LiveAvatar, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{

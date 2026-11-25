@@ -634,6 +634,36 @@ fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::Motion
     }
 }
 
+/// A returning `UpdateAgent`'s animator fields for the frame's `CopyFrom`.
+fn scene_animations(sent: ferroan_client::AgentAnimations) -> ferroan_scene::AnimationTransfer {
+    let anim = |anim: ferroan_client::Anim| ferroan_scene::Anim {
+        animation: anim.animation,
+        sequence: anim.sequence,
+        object_id: anim.object_id,
+    };
+    ferroan_scene::AnimationTransfer {
+        animations: sent.animations.into_iter().map(anim).collect(),
+        default_animation: sent.default_animation.map(anim),
+        animation_state: sent.animation_state.map(anim),
+        motion_state: sent.motion_state,
+    }
+}
+
+/// The frame's animator for a departure's `CopyTo`.
+fn agent_animations(live: ferroan_scene::AnimationTransfer) -> ferroan_client::AgentAnimations {
+    let anim = |anim: ferroan_scene::Anim| ferroan_client::Anim {
+        animation: anim.animation,
+        object_id: anim.object_id,
+        sequence: anim.sequence,
+    };
+    ferroan_client::AgentAnimations {
+        animations: live.animations.into_iter().map(anim).collect(),
+        default_animation: live.default_animation.map(anim),
+        animation_state: live.animation_state.map(anim),
+        motion_state: live.motion_state,
+    }
+}
+
 fn pose_reply(stored: ferroan_scene::Presence) -> SceneReply {
     SceneReply::Pose(ferroan_client::LoginPose {
         position: stored.position,
@@ -719,6 +749,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         head_rotation: pose.head_rotation,
                         control_flags: pose.control_flags,
                         always_run: pose.always_run,
+                        animations: scene_animations(pose.animations),
                     },
                 },
             ),
@@ -754,6 +785,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         center: departure.camera_center,
                         head_rotation: departure.head_rotation,
                         body_rotation: departure.body_rotation,
+                        animations: agent_animations(departure.animations),
                     },
                 },
             );
@@ -935,7 +967,6 @@ async fn serve_agent(
             mac: agent.mac.clone(),
             id0: agent.id0.clone(),
             service_urls: agent.service_urls.clone(),
-            animations: Arc::clone(&agent.animations),
             appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();
@@ -3089,6 +3120,55 @@ mod tests {
             };
             assert_eq!(departure.pose.always_run, enabled);
         }
+    }
+
+    /// A returning `UpdateAgent`'s animator fields go through the frame's
+    /// `CopyFrom`, and the next departure's `CopyTo` reads them back.
+    #[tokio::test]
+    async fn a_return_animation_set_reaches_the_next_departure_through_the_frame() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(8);
+        let fly = Uuid::from_u128(0xaec4610c_757f_bc4e_c092_c6e9caf18daf);
+        let extra = ferroan_client::Anim {
+            animation: Uuid::from_u128(5),
+            object_id: Uuid::from_u128(6),
+            sequence: 41,
+        };
+        let sent = ferroan_client::Anim {
+            animation: fly,
+            object_id: Uuid::from_u128(9),
+            sequence: 40,
+        };
+        let pose = ferroan_client::ReturnPose {
+            origin: Uuid::from_u128(70),
+            animations: ferroan_client::AgentAnimations {
+                animations: vec![extra],
+                default_animation: Some(sent),
+                animation_state: None,
+                motion_state: 1,
+            },
+            ..Default::default()
+        };
+        scene_call(&frame, agent, SceneCall::Complete(pose))
+            .reply()
+            .await
+            .unwrap();
+        let SceneReply::Departure(departure) = scene_call(&frame, agent, SceneCall::Departure)
+            .reply()
+            .await
+            .unwrap()
+        else {
+            panic!("expected the frame's departure state");
+        };
+        let copied = ferroan_client::Anim {
+            object_id: Uuid::nil(),
+            ..sent
+        };
+        let animations = departure.pose.animations;
+        assert_eq!(animations.default_animation, Some(copied));
+        assert_eq!(animations.animation_state, Some(copied));
+        assert_eq!(animations.animations, [extra]);
+        assert_eq!(animations.motion_state, 1);
     }
 
     /// The feed turns the frame's avatar packets into the wire messages:
