@@ -97,6 +97,8 @@ Q15's `crates/ferroan-client/src/appearance.rs` follows `LLClientView.SendAppear
 
 QR10's full-region admission follows `Source/OpenSim.Server.RegionServer/OpenSimBase.cs`, `Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs`, `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs`, `Source/OpenSim.Region.Framework/Scenes/Scene.Permissions.cs`, `Source/OpenSim.Region.CoreModules/ServiceConnectorsOut/UserAccounts/UserAccountCache.cs`, `Source/OpenSim.Services.Interfaces/IUserAccountService.cs` and `Source/OpenSim.Framework/ExpiringCacheOS.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 
+QR11's local chat follows `Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs`, `Source/OpenSim.Framework/ChatTypeEnum.cs` and `Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause).
+
 Q65b's full world-prim encoder follows Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs` (`CreatePrimUpdateBlock`) and `LLUDPZeroEncoder.cs`, `SceneObjectPart.cs`, `SceneObjectPartInventory.cs` and `SceneObjectGroup.Inventory.cs` under `Source/OpenSim.Region.Framework/Scenes`, and `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Its short text fields follow libopenmetaverse `OpenMetaverse.Types/OSUTF8.cs` and `UtilsConversions.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`.
 
 ## Names

@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
     return 2;
 }
 
@@ -98,8 +98,22 @@ try
         case "terrain-load" when args.Length == 4:
             LoadTerrainRows(args[1], args[2], args[3]);
             return 0;
+        case "mysql-terrain-load" when args.Length == 4:
+            DumpTerrain(new MySQLSimulationData(), args[1], args[2], args[3],
+                table => RawTerrainRowDb(new MySqlConnection(args[1]), table, args[2], "?RegionUUID", "RegionUUID", "Revision", "Heightfield", new UUID(args[2]).ToString()));
+            return 0;
+        case "postgres-terrain-load" when args.Length == 4:
+            DumpTerrain(new PGSQLSimulationData(), args[1], args[2], args[3],
+                table => RawTerrainRowDb(new NpgsqlConnection(args[1]), table, args[2], ":RegionUUID", "\"RegionUUID\"", "\"Revision\"", "\"Heightfield\"", new Guid(args[2])));
+            return 0;
+        case "mysql-terrain-seed" when args.Length == 3:
+            SeedTerrain(new MySQLSimulationData(), args[1], args[2]);
+            return 0;
+        case "postgres-terrain-seed" when args.Length == 3:
+            SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
             return 2;
     }
 }
@@ -872,13 +886,25 @@ static byte[] MaterialBlob()
 static void LoadTerrainRows(string path, string regionText, string pin)
 {
     string full = Path.GetFullPath(path);
+    DumpTerrain(new SQLiteSimulationData(), "Data Source=" + full + ";Version=3;", regionText, pin,
+        table => RawTerrainRow(full, table, regionText));
+}
+
+// One backend's LoadTerrain and LoadBakedTerrain for a 256 m region, with the
+// stored row beside each map.
+static void DumpTerrain(
+    ISimulationDataStore store,
+    string connection,
+    string regionText,
+    string pin,
+    Func<string, (long revision, byte[] blob)?> raw)
+{
     UUID region = new UUID(regionText);
     TerrainData terrain;
     TerrainData baked;
-    SQLiteSimulationData store = new SQLiteSimulationData();
     try
     {
-        store.Initialise("Data Source=" + full + ";Version=3;");
+        store.Initialise(connection);
         terrain = store.LoadTerrain(region, 256, 256, (int)Constants.RegionHeight);
         baked = store.LoadBakedTerrain(region, 256, 256, (int)Constants.RegionHeight);
     }
@@ -891,11 +917,59 @@ static void LoadTerrainRows(string path, string regionText, string pin)
     {
         ["pin"] = pin,
         ["region"] = region.ToString(),
-        ["terrain"] = TerrainJson(terrain, RawTerrainRow(full, "terrain", regionText)),
-        ["bakedterrain"] = TerrainJson(baked, RawTerrainRow(full, "bakedterrain", regionText)),
+        ["terrain"] = TerrainJson(terrain, raw("terrain")),
+        ["bakedterrain"] = TerrainJson(baked, raw("bakedterrain")),
     };
     Console.Out.Write(dump.ToJsonString(new JsonSerializerOptions { WriteIndented = false }));
     Console.Out.WriteLine();
+}
+
+// The pin's own StoreTerrain and StoreBakedTerrain of a new pinhead-island,
+// as Scene.LoadWorldMap stores it. MySQL stores from a fire-and-forget
+// callback; FireAndForgetMethod.None runs it before this returns.
+static void SeedTerrain(ISimulationDataStore store, string connection, string regionText)
+{
+    Util.FireAndForgetMethod = FireAndForgetMethod.None;
+    UUID region = new UUID(regionText);
+    TerrainChannel channel = new TerrainChannel("pinhead-island", 256, 256, (int)Constants.RegionHeight);
+    try
+    {
+        store.Initialise(connection);
+        store.StoreTerrain(channel.GetTerrainData(), region);
+        store.StoreBakedTerrain(channel.GetTerrainData(), region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+}
+
+// The first stored row of `table` for the region, as the backend returns it.
+static (long revision, byte[] blob)? RawTerrainRowDb(
+    DbConnection db,
+    string table,
+    string regionText,
+    string parameter,
+    string regionColumn,
+    string revisionColumn,
+    string heightColumn,
+    object region)
+{
+    using (db)
+    {
+        db.Open();
+        using DbCommand cmd = db.CreateCommand();
+        cmd.CommandText = "select " + revisionColumn + ", " + heightColumn + " from " + table +
+            " where " + regionColumn + " = " + parameter;
+        DbParameter value = cmd.CreateParameter();
+        value.ParameterName = parameter.TrimStart('?', ':');
+        value.Value = region;
+        cmd.Parameters.Add(value);
+        using DbDataReader row = cmd.ExecuteReader();
+        if (!row.Read() || row.IsDBNull(1))
+            return null;
+        return (Convert.ToInt64(row[0]), (byte[])row[1]);
+    }
 }
 
 static (long revision, byte[] blob)? RawTerrainRow(string path, string table, string region)

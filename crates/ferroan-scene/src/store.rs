@@ -10,6 +10,19 @@
 //! first `bakedterrain` row with no order. The id string is `UUID.ToString()`,
 //! the lowercase hyphenated form.
 //!
+//! MySQL and PostgreSQL follow `MySQLSimulationData.cs` (`StoreTerrain` 504,
+//! `StoreBakedTerrain` 552, `LoadTerrain` 611, `LoadBakedTerrain` 653) and
+//! `PGSQLSimulationData.cs` (`LoadTerrain` 540, `LoadBakedTerrain` 579,
+//! `StoreTerrain` 623, `StoreBakedTerrain` 667) at `c401bceecd`: the same
+//! revision 23 rows, keyed by the id string on MySQL and by a `uuid` column on
+//! PostgreSQL. Both load the highest-revision `terrain` row. PostgreSQL takes
+//! the first `bakedterrain` row; MySQL reads them all and keeps the last
+//! row's revision with the last cell that is not NULL. Both treat a NULL
+//! cell as no map, where SQLite throws on it. C# stores on MySQL from a
+//! fire-and-forget callback and on PostgreSQL as two statements on two
+//! connections; Ferroan stores each row in one transaction before the frame
+//! starts.
+//!
 //! [`load_world_map`] is `Scene.LoadWorldMap` (`Scene.cs` 2313–2385 at
 //! `c401bceecd`). With no `terrain` row it copies the `bakedterrain` row, or
 //! builds `[Terrain] InitialTerrain`, and stores it as `terrain`
@@ -22,13 +35,19 @@
 //! A damaged `terrain` or `bakedterrain` row stops startup and nothing is
 //! written (D72, TB88). C# loads a damaged blob as a zeroed or partial map
 //! (`TerrainData.cs` 496, 759–765, 822–828, 586–589), keeps the baked row,
-//! and copies it into `terrain` when that row is missing; only a NULL cell, an
+//! and copies it into `terrain` when that row is missing; only a NULL cell
+//! (SQLite; MySQL and PostgreSQL read it as no map), a NULL revision, an
 //! out-of-range revision or a truncated Compressed2D blob (671–713) throws, is
-//! logged and is overwritten (`Scene.cs` 2324–2328, 2380–2384). A failed
-//! write stops startup here. C# swallows a failed `StoreTerrain` (inside the
-//! `try`, `Scene.cs` 2340 and 2353, caught at 2375–2379), but
-//! `StoreBakedTerrain` (2383) is outside it and fails region start, so only
-//! the case that copies the baked row into `terrain` differs.
+//! logged and is overwritten (`Scene.cs` 2324–2328, 2380–2384).
+//!
+//! A failed write stops startup here on every backend (D72). On SQLite and
+//! PostgreSQL, C# swallows a failed `StoreTerrain` (inside the `try`,
+//! `Scene.cs` 2340 and 2353, caught at 2375–2379), but `StoreBakedTerrain`
+//! (2383) is outside it and fails region start, so only the case that copies
+//! the baked row into `terrain` differs. On MySQL both stores run in
+//! `Util.FireAndForget` (`MySQLSimulationData.cs` 506 and 554; the inner
+//! `try` logs at 542 and 590, and the wrapper catches everything, `Util.cs`
+//! 3397), so C# starts whatever the writes do.
 
 use ferroan_db::{Backend, Pool};
 use uuid::Uuid;
@@ -46,8 +65,16 @@ enum Table {
 }
 
 impl Table {
-    /// `LoadTerrain` orders by revision; `LoadBakedTerrain` takes the first row.
-    fn select(self) -> &'static str {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Terrain => "terrain",
+            Self::Baked => "bakedterrain",
+        }
+    }
+
+    /// SQLite: `LoadTerrain` orders by revision; `LoadBakedTerrain` takes the
+    /// first row. `?2` is the blob cap.
+    fn sqlite_select(self) -> &'static str {
         match self {
             Self::Terrain => {
                 "SELECT Revision, length(Heightfield), CASE WHEN length(Heightfield) <= ?2 THEN Heightfield END FROM terrain WHERE RegionUUID = ?1 ORDER BY Revision DESC LIMIT 1"
@@ -58,14 +85,26 @@ impl Table {
         }
     }
 
-    fn delete(self) -> &'static str {
+    /// PostgreSQL, the same order as SQLite. `$2` is the blob cap.
+    fn postgres_select(self) -> &'static str {
+        match self {
+            Self::Terrain => {
+                r#"SELECT "Revision"::int8, octet_length("Heightfield")::int8, CASE WHEN octet_length("Heightfield") <= $2 THEN "Heightfield" END FROM terrain WHERE "RegionUUID" = $1 ORDER BY "Revision" DESC LIMIT 1"#
+            }
+            Self::Baked => {
+                r#"SELECT "Revision"::int8, octet_length("Heightfield")::int8, CASE WHEN octet_length("Heightfield") <= $2 THEN "Heightfield" END FROM bakedterrain WHERE "RegionUUID" = $1 LIMIT 1"#
+            }
+        }
+    }
+
+    fn sqlite_delete(self) -> &'static str {
         match self {
             Self::Terrain => "DELETE FROM terrain WHERE RegionUUID = ?1",
             Self::Baked => "DELETE FROM bakedterrain WHERE RegionUUID = ?1",
         }
     }
 
-    fn insert(self) -> &'static str {
+    fn sqlite_insert(self) -> &'static str {
         match self {
             Self::Terrain => {
                 "INSERT INTO terrain (RegionUUID, Revision, Heightfield) VALUES (?1, ?2, ?3)"
@@ -75,7 +114,47 @@ impl Table {
             }
         }
     }
+
+    fn mysql_delete(self) -> &'static str {
+        match self {
+            Self::Terrain => "DELETE FROM terrain WHERE RegionUUID = ?",
+            Self::Baked => "DELETE FROM bakedterrain WHERE RegionUUID = ?",
+        }
+    }
+
+    fn mysql_insert(self) -> &'static str {
+        match self {
+            Self::Terrain => {
+                "INSERT INTO terrain (RegionUUID, Revision, Heightfield) VALUES (?, ?, ?)"
+            }
+            Self::Baked => {
+                "INSERT INTO bakedterrain (RegionUUID, Revision, Heightfield) VALUES (?, ?, ?)"
+            }
+        }
+    }
+
+    fn postgres_delete(self) -> &'static str {
+        match self {
+            Self::Terrain => r#"DELETE FROM terrain WHERE "RegionUUID" = $1"#,
+            Self::Baked => r#"DELETE FROM bakedterrain WHERE "RegionUUID" = $1"#,
+        }
+    }
+
+    fn postgres_insert(self) -> &'static str {
+        match self {
+            Self::Terrain => {
+                r#"INSERT INTO terrain ("RegionUUID", "Revision", "Heightfield") VALUES ($1, $2, $3)"#
+            }
+            Self::Baked => {
+                r#"INSERT INTO bakedterrain ("RegionUUID", "Revision", "Heightfield") VALUES ($1, $2, $3)"#
+            }
+        }
+    }
 }
+
+/// What a select returned for one row: the revision, the cell's length in
+/// bytes, and the cell when it is within the cap. NULL is `None`.
+type RawRow = (Option<i64>, Option<i64>, Option<Vec<u8>>);
 
 /// Where the region's heightmap came from at startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,9 +199,9 @@ pub async fn read_baked_terrain(
     read_row(pool, Table::Baked, region, width, height).await
 }
 
-/// One row of `table`. The cell is fetched only when `length(Heightfield)`
-/// is within [`BLOB_CAP`]; a larger one is refused through `terrain.blob`
-/// before sqlx loads it. A NULL cell is damaged.
+/// One row of `table`, by the backend's `LoadTerrain` or `LoadBakedTerrain`.
+/// The cell is fetched only when its length is within [`BLOB_CAP`]; a larger
+/// one is refused through `terrain.blob` before sqlx loads it.
 async fn read_row(
     pool: &Pool,
     table: Table,
@@ -130,20 +209,58 @@ async fn read_row(
     width: i32,
     height: i32,
 ) -> Result<Option<Heightmap>, TerrainError> {
-    let Some(sqlite) = pool.sqlite() else {
-        return Err(TerrainError::Store("connection is not SQLite".to_owned()));
+    read_row_capped(pool, table, region, width, height, BLOB_CAP).await
+}
+
+async fn read_row_capped(
+    pool: &Pool,
+    table: Table,
+    region: Uuid,
+    width: i32,
+    height: i32,
+    cap: usize,
+) -> Result<Option<Heightmap>, TerrainError> {
+    let cap_bind = i64::try_from(cap).unwrap_or(i64::MAX);
+    let failed = |error: sqlx::Error| TerrainError::Store(error.to_string());
+    // SQLite's reader casts the cell to `byte[]`, so a NULL cell throws in
+    // C# (TB88): it is damaged here. MySQL and PostgreSQL test the cell for
+    // `DBNull` and load no map, so a NULL cell is no row there.
+    let (row, null_is_absent) = if let Some(sqlite) = pool.sqlite() {
+        let row: Option<RawRow> = sqlx::query_as(table.sqlite_select())
+            .bind(region.as_hyphenated().to_string())
+            .bind(cap_bind)
+            .fetch_optional(sqlite)
+            .await
+            .map_err(failed)?;
+        (row, false)
+    } else if let Some(postgres) = pool.postgres() {
+        let row: Option<RawRow> = sqlx::query_as(table.postgres_select())
+            .bind(region)
+            .bind(cap_bind)
+            .fetch_optional(postgres)
+            .await
+            .map_err(failed)?;
+        (row, true)
+    } else if pool.mysql().is_some() {
+        (read_mysql_row(pool, table, region, cap_bind).await?, true)
+    } else {
+        return Err(TerrainError::Store(
+            "connection is not SQLite, MySQL or PostgreSQL".to_owned(),
+        ));
     };
-    let row: Option<(i64, Option<i64>, Option<Vec<u8>>)> = sqlx::query_as(table.select())
-        .bind(region.as_hyphenated().to_string())
-        .bind(i64::try_from(BLOB_CAP).unwrap_or(i64::MAX))
-        .fetch_optional(sqlite)
-        .await
-        .map_err(|error| TerrainError::Store(error.to_string()))?;
     let Some((revision, length, blob)) = row else {
         return Ok(None);
     };
-    let Some(length) = length else {
+    // `Convert.ToInt32` of a NULL revision throws on every backend.
+    let Some(revision) = revision else {
         return Err(TerrainError::Damaged);
+    };
+    let Some(length) = length else {
+        return if null_is_absent {
+            Ok(None)
+        } else {
+            Err(TerrainError::Damaged)
+        };
     };
     let Some(blob) = blob else {
         refuse_blob(usize::try_from(length).unwrap_or(usize::MAX));
@@ -151,6 +268,85 @@ async fn read_row(
     };
     let revision = i32::try_from(revision).map_err(|_| TerrainError::Revision(i32::MIN))?;
     Ok(Some(Heightmap::from_blob(revision, &blob, width, height)?))
+}
+
+/// `MySQLSimulationData.LoadTerrain` keeps the highest revision.
+/// `LoadBakedTerrain` reads every row with no order: the revision is the
+/// last row's, and the cell the last one that is not NULL. The rows are
+/// streamed without their cells (constant memory), then that one cell is
+/// read at its offset in the same unordered scan.
+async fn read_mysql_row(
+    pool: &Pool,
+    table: Table,
+    region: Uuid,
+    cap: i64,
+) -> Result<Option<RawRow>, TerrainError> {
+    use futures_util::TryStreamExt;
+
+    let Some(mysql) = pool.mysql() else {
+        return Ok(None);
+    };
+    let failed = |error: sqlx::Error| TerrainError::Store(error.to_string());
+    let id = region.as_hyphenated().to_string();
+    if table == Table::Terrain {
+        return sqlx::query_as(
+            "SELECT CAST(Revision AS SIGNED), CAST(LENGTH(Heightfield) AS SIGNED), CASE WHEN LENGTH(Heightfield) <= ? THEN Heightfield END FROM terrain WHERE RegionUUID = ? ORDER BY Revision DESC LIMIT 1",
+        )
+        .bind(cap)
+        .bind(&id)
+        .fetch_optional(mysql)
+        .await
+        .map_err(failed);
+    }
+    let mut rows = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT CAST(Revision AS SIGNED), CAST(LENGTH(Heightfield) AS SIGNED) FROM bakedterrain WHERE RegionUUID = ?",
+    )
+    .bind(&id)
+    .fetch(mysql);
+    let mut last: Option<Option<i64>> = None;
+    let mut cell: Option<(u64, i64)> = None;
+    let mut index = 0u64;
+    while let Some((revision, length)) = rows.try_next().await.map_err(failed)? {
+        // `Convert.ToInt32` throws on the first NULL revision.
+        if revision.is_none() {
+            return Ok(Some((None, length, None)));
+        }
+        last = Some(revision);
+        if let Some(length) = length {
+            cell = Some((index, length));
+        }
+        index += 1;
+    }
+    drop(rows);
+    let Some(revision) = last else {
+        return Ok(None);
+    };
+    let Some((offset, length)) = cell else {
+        return Ok(Some((revision, None, None)));
+    };
+    if length > cap {
+        return Ok(Some((revision, Some(length), None)));
+    }
+    // The cap is in the SQL here too, and the length must be the one the
+    // first read saw.
+    let blob: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+        "SELECT CASE WHEN LENGTH(Heightfield) <= ? THEN Heightfield END FROM bakedterrain WHERE RegionUUID = ? LIMIT 1 OFFSET ?",
+    )
+    .bind(cap)
+    .bind(&id)
+    .bind(offset)
+    .fetch_optional(mysql)
+    .await
+    .map_err(failed)?;
+    match blob.and_then(|(blob,)| blob) {
+        Some(blob) if i64::try_from(blob.len()).ok() == Some(length) => {
+            Ok(Some((revision, Some(length), Some(blob))))
+        }
+        // The rows changed between the two reads.
+        _ => Err(TerrainError::Store(
+            "bakedterrain rows changed while they were read".to_owned(),
+        )),
+    }
 }
 
 /// `StoreTerrain`: replace this region's `terrain` rows with one revision 23 row.
@@ -167,32 +363,69 @@ pub async fn store_baked_terrain(
     store(pool, Table::Baked, region, map).await
 }
 
+/// Delete then insert, as every backend's `StoreTerrain` and
+/// `StoreBakedTerrain` do, in one transaction. MySQL keys the row by the id
+/// string, PostgreSQL by a `uuid` column.
 async fn store(
     pool: &Pool,
     table: Table,
     region: Uuid,
     map: &Heightmap,
 ) -> Result<(), TerrainError> {
-    let Some(sqlite) = pool.sqlite() else {
-        return Err(TerrainError::Store("connection is not SQLite".to_owned()));
-    };
     let (revision, blob) = map.to_blob()?;
     let id = region.as_hyphenated().to_string();
-    let failed = |error: sqlx::Error| TerrainError::Store(error.to_string());
-    let mut tx = sqlite.begin().await.map_err(failed)?;
-    sqlx::query(table.delete())
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(failed)?;
-    sqlx::query(table.insert())
-        .bind(&id)
-        .bind(i64::from(revision))
-        .bind(blob)
-        .execute(&mut *tx)
-        .await
-        .map_err(failed)?;
-    tx.commit().await.map_err(failed)
+    let failed = |error: sqlx::Error| TerrainError::Store(format!("{}: {error}", table.name()));
+    if let Some(sqlite) = pool.sqlite() {
+        let mut tx = sqlite.begin().await.map_err(failed)?;
+        sqlx::query(table.sqlite_delete())
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        sqlx::query(table.sqlite_insert())
+            .bind(&id)
+            .bind(i64::from(revision))
+            .bind(blob)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        return tx.commit().await.map_err(failed);
+    }
+    if let Some(mysql) = pool.mysql() {
+        let mut tx = mysql.begin().await.map_err(failed)?;
+        sqlx::query(table.mysql_delete())
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        sqlx::query(table.mysql_insert())
+            .bind(&id)
+            .bind(revision)
+            .bind(blob)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        return tx.commit().await.map_err(failed);
+    }
+    if let Some(postgres) = pool.postgres() {
+        let mut tx = postgres.begin().await.map_err(failed)?;
+        sqlx::query(table.postgres_delete())
+            .bind(region)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        sqlx::query(table.postgres_insert())
+            .bind(region)
+            .bind(revision)
+            .bind(blob)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        return tx.commit().await.map_err(failed);
+    }
+    Err(TerrainError::Store(
+        "connection is not SQLite, MySQL or PostgreSQL".to_owned(),
+    ))
 }
 
 /// `Scene.LoadWorldMap` on an open store: read both rows, fill in the
@@ -228,25 +461,34 @@ pub async fn world_map(
 }
 
 /// Open the region store read and write, require `RegionStore` at the
-/// pinned migration, and run [`world_map`]. A missing file gets the initial
-/// terrain in memory and nothing is written.
+/// pinned migration, and run [`world_map`]. `kind` is the configured
+/// `StorageProvider`. A SQLite file that does not exist gets the initial
+/// terrain in memory and nothing is written; Ferroan does not create a store.
 pub async fn load_world_map(
     connection: &str,
+    kind: ObjectStoreKind,
     region: Uuid,
     width: i32,
     height: i32,
     initial: InitialTerrain,
 ) -> Result<WorldMap, TerrainError> {
-    let path = ferroan_db::sqlite_filename(connection)
-        .map_err(|error| TerrainError::Store(error.to_string()))?;
-    if !path.exists() {
-        return Ok(WorldMap {
-            map: initial.generate(width, height)?,
-            source: TerrainSource::GeneratedUnstored,
-            stored_baked: false,
-        });
+    let backend = match kind {
+        ObjectStoreKind::Sqlite => Backend::Sqlite,
+        ObjectStoreKind::Mysql => Backend::Mysql,
+        ObjectStoreKind::Postgres => Backend::Postgres,
+    };
+    if kind == ObjectStoreKind::Sqlite {
+        let path = ferroan_db::sqlite_filename(connection)
+            .map_err(|error| TerrainError::Store(error.to_string()))?;
+        if !path.exists() {
+            return Ok(WorldMap {
+                map: initial.generate(width, height)?,
+                source: TerrainSource::GeneratedUnstored,
+                stored_baked: false,
+            });
+        }
     }
-    let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"])
+    let pool = Pool::open(backend, connection, &["RegionStore"])
         .await
         .map_err(|error| TerrainError::Store(error.to_string()))?;
     let loaded = world_map(&pool, region, width, height, initial).await;
@@ -254,12 +496,10 @@ pub async fn load_world_map(
     loaded
 }
 
-/// Open the region store, require `RegionStore` at the pinned migration, and
-/// read its terrain. `None` means the file is absent, the table has no row
-/// for this region, or the provider is MySQL or PostgreSQL. Those stores have
-/// no saved heightmap yet and the connection string is not read as SQLite.
-/// `Standalone.ini` names `URI=file:OpenSim.db`, which C# creates; this row
-/// does not, so a missing file is no saved heightmap.
+/// Read a SQLite store's `terrain` row without writing anything (the
+/// harness reads the home store after a run with it). `None` means the file
+/// is absent, the table has no row for this region, or `kind` is not SQLite;
+/// the region itself loads every backend through [`load_world_map`].
 pub async fn open_terrain(
     connection: &str,
     region: Uuid,
@@ -394,9 +634,16 @@ mod tests {
     #[tokio::test]
     async fn an_empty_store_gets_the_island_as_both_rows() {
         let (dir, connection) = scratch_store("empty");
-        let first = load_world_map(&connection, REGION, 256, 256, InitialTerrain::PinheadIsland)
-            .await
-            .unwrap();
+        let first = load_world_map(
+            &connection,
+            ObjectStoreKind::Sqlite,
+            REGION,
+            256,
+            256,
+            InitialTerrain::PinheadIsland,
+        )
+        .await
+        .unwrap();
         assert_eq!(first.source, TerrainSource::Generated);
         assert!(first.stored_baked);
         // The region runs with the unrounded island, as C# does on this start.
@@ -430,9 +677,16 @@ mod tests {
         pool.close().await;
 
         // The next start reads the row and writes nothing.
-        let second = load_world_map(&connection, REGION, 256, 256, InitialTerrain::Flat)
-            .await
-            .unwrap();
+        let second = load_world_map(
+            &connection,
+            ObjectStoreKind::Sqlite,
+            REGION,
+            256,
+            256,
+            InitialTerrain::Flat,
+        )
+        .await
+        .unwrap();
         assert_eq!(second.source, TerrainSource::Stored);
         assert!(!second.stored_baked);
         assert!(same_cells(&second.map, &csharp));
@@ -544,9 +798,16 @@ mod tests {
                 .as_nanos()
         ));
         let connection = format!("URI=file:{};UseUTF16Encoding=True", path.display());
-        let loaded = load_world_map(&connection, REGION, 256, 256, InitialTerrain::PinheadIsland)
-            .await
-            .unwrap();
+        let loaded = load_world_map(
+            &connection,
+            ObjectStoreKind::Sqlite,
+            REGION,
+            256,
+            256,
+            InitialTerrain::PinheadIsland,
+        )
+        .await
+        .unwrap();
         assert_eq!(loaded.source, TerrainSource::GeneratedUnstored);
         assert!(!loaded.stored_baked);
         assert_eq!(loaded.map.height_at(128.0, 128.0), 25.0);
@@ -565,9 +826,16 @@ mod tests {
         }
         let dll = std::env::var("FERROAN_REGIONSTORE_ORACLE").unwrap();
         let (dir, connection) = scratch_store("oracle");
-        let loaded = load_world_map(&connection, REGION, 256, 256, InitialTerrain::PinheadIsland)
-            .await
-            .unwrap();
+        let loaded = load_world_map(
+            &connection,
+            ObjectStoreKind::Sqlite,
+            REGION,
+            256,
+            256,
+            InitialTerrain::PinheadIsland,
+        )
+        .await
+        .unwrap();
         assert_eq!(loaded.source, TerrainSource::Generated);
         let path = ferroan_db::sqlite_filename(&connection).unwrap();
         let output = std::process::Command::new("dotnet")
@@ -641,5 +909,379 @@ mod tests {
         .await
         .unwrap();
         assert!(map.is_none());
+    }
+
+    /// The C# row for a new 256 m region (`fixtures/walk/terrain.bin`).
+    fn csharp_island() -> Heightmap {
+        Heightmap::from_blob(
+            23,
+            &std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../fixtures/walk/terrain.bin"),
+            )
+            .unwrap(),
+            256,
+            256,
+        )
+        .unwrap()
+    }
+
+    /// One server backend under `cargo xtask regionstore cross`: the
+    /// connection, its C# form for the oracle, and the oracle command prefix.
+    struct Cross {
+        kind: ObjectStoreKind,
+        connection: String,
+        ado: String,
+        oracle: String,
+        prefix: &'static str,
+    }
+
+    fn cross(kind: ObjectStoreKind) -> Option<Cross> {
+        if std::env::var("FERROAN_REGIONSTORE_CROSS").ok().as_deref() != Some("1") {
+            return None;
+        }
+        let (url, ado, prefix) = match kind {
+            ObjectStoreKind::Mysql => (
+                "FERROAN_REGIONSTORE_MYSQL",
+                "FERROAN_REGIONSTORE_MYSQL_ADO",
+                "mysql",
+            ),
+            ObjectStoreKind::Postgres => (
+                "FERROAN_REGIONSTORE_POSTGRES",
+                "FERROAN_REGIONSTORE_POSTGRES_ADO",
+                "postgres",
+            ),
+            ObjectStoreKind::Sqlite => return None,
+        };
+        Some(Cross {
+            kind,
+            connection: std::env::var(url).ok()?,
+            ado: std::env::var(ado).ok()?,
+            oracle: std::env::var("FERROAN_REGIONSTORE_ORACLE").ok()?,
+            prefix,
+        })
+    }
+
+    fn oracle(cross: &Cross, command: &str, args: &[&str]) -> Vec<u8> {
+        let output = std::process::Command::new("dotnet")
+            .arg(&cross.oracle)
+            .arg(format!("{}-{command}", cross.prefix))
+            .args(args)
+            .env("MSBUILDDISABLENODEREUSE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    }
+
+    async fn open(cross: &Cross) -> Pool {
+        let backend = match cross.kind {
+            ObjectStoreKind::Mysql => Backend::Mysql,
+            _ => Backend::Postgres,
+        };
+        Pool::open(backend, &cross.connection, &["RegionStore"])
+            .await
+            .unwrap()
+    }
+
+    /// A row as a test writes it: any revision, any cell, or NULL.
+    async fn raw_insert(
+        pool: &Pool,
+        table: Table,
+        region: Uuid,
+        revision: Option<i32>,
+        blob: Option<Vec<u8>>,
+    ) {
+        if let Some(mysql) = pool.mysql() {
+            sqlx::query(table.mysql_insert())
+                .bind(region.as_hyphenated().to_string())
+                .bind(revision)
+                .bind(blob)
+                .execute(mysql)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query(table.postgres_insert())
+                .bind(region)
+                .bind(revision)
+                .bind(blob)
+                .execute(pool.postgres().unwrap())
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn clear(pool: &Pool, region: Uuid) {
+        for table in [Table::Terrain, Table::Baked] {
+            if let Some(mysql) = pool.mysql() {
+                sqlx::query(table.mysql_delete())
+                    .bind(region.as_hyphenated().to_string())
+                    .execute(mysql)
+                    .await
+                    .unwrap();
+            } else {
+                sqlx::query(table.postgres_delete())
+                    .bind(region)
+                    .execute(pool.postgres().unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    async fn count(pool: &Pool, table: Table, region: Uuid) -> i64 {
+        if let Some(mysql) = pool.mysql() {
+            sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {} WHERE RegionUUID = ? AND Heightfield IS NOT NULL",
+                table.name()
+            ))
+            .bind(region.as_hyphenated().to_string())
+            .fetch_one(mysql)
+            .await
+            .unwrap()
+        } else {
+            sqlx::query_scalar(&format!(
+                r#"SELECT COUNT(*) FROM {} WHERE "RegionUUID" = $1 AND "Heightfield" IS NOT NULL"#,
+                table.name()
+            ))
+            .bind(region)
+            .fetch_one(pool.postgres().unwrap())
+            .await
+            .unwrap()
+        }
+    }
+
+    fn region(n: u128) -> Uuid {
+        Uuid::from_u128(0x7e44_0000_0000_4000_8000_0000_0000_0000 | n)
+    }
+
+    /// The SQLite cases on a server backend, the oracle reading Ferroan's
+    /// rows, and Ferroan reading the rows the pin stores.
+    async fn server_terrain_cases(cross: Cross) {
+        let pin = ferroan_db::TRANQUILLITY_REVISION;
+        let island = csharp_island();
+        let flat = InitialTerrain::Flat.generate(256, 256).unwrap();
+        let pool = open(&cross).await;
+
+        // An empty store gets the island as both rows, and the pin loads them.
+        let empty = region(1);
+        clear(&pool, empty).await;
+        let first = load_world_map(
+            &cross.connection,
+            cross.kind,
+            empty,
+            256,
+            256,
+            InitialTerrain::PinheadIsland,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.source, TerrainSource::Generated);
+        assert!(first.stored_baked);
+        let terrain = read_terrain(&pool, empty, 256, 256).await.unwrap().unwrap();
+        let baked = read_baked_terrain(&pool, empty, 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(same_cells(&terrain, &island));
+        assert!(same_cells(&baked, &island));
+        let dump: serde_json::Value = serde_json::from_slice(&oracle(
+            &cross,
+            "terrain-load",
+            &[&cross.ado, &empty.as_hyphenated().to_string(), pin],
+        ))
+        .unwrap();
+        let expected: Vec<u64> = island
+            .cells()
+            .iter()
+            .map(|h| u64::from(h.to_bits()))
+            .collect();
+        for table in ["terrain", "bakedterrain"] {
+            let row = &dump[table];
+            assert_eq!(row["stored_revision"], 23, "{} {table}", cross.prefix);
+            let cells: Vec<u64> = row["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|cell| cell.as_u64().unwrap())
+                .collect();
+            assert!(
+                cells == expected,
+                "{} {table}: the pin loads Ferroan's row",
+                cross.prefix
+            );
+            eprintln!(
+                "{} {table}: the pin loads {} cells; stored {} gzip bytes, the pin writes {}",
+                cross.prefix,
+                cells.len(),
+                row["stored_bytes"],
+                row["csharp_bytes"]
+            );
+        }
+        let second = load_world_map(
+            &cross.connection,
+            cross.kind,
+            empty,
+            256,
+            256,
+            InitialTerrain::Flat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.source, TerrainSource::Stored);
+        assert!(!second.stored_baked);
+        assert_eq!(count(&pool, Table::Terrain, empty).await, 1);
+        assert_eq!(count(&pool, Table::Baked, empty).await, 1);
+
+        // A terrain row without a baked row gets the baked row.
+        let terrain_only = region(2);
+        clear(&pool, terrain_only).await;
+        store_terrain(&pool, terrain_only, &flat).await.unwrap();
+        let loaded = world_map(&pool, terrain_only, 256, 256, InitialTerrain::PinheadIsland)
+            .await
+            .unwrap();
+        assert_eq!(loaded.source, TerrainSource::Stored);
+        assert!(loaded.stored_baked);
+        let baked = read_baked_terrain(&pool, terrain_only, 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(same_cells(&baked, &flat));
+
+        // A baked row without a terrain row is copied; the baked row stays.
+        let baked_only = region(3);
+        clear(&pool, baked_only).await;
+        store_baked_terrain(&pool, baked_only, &flat).await.unwrap();
+        let loaded = world_map(&pool, baked_only, 256, 256, InitialTerrain::PinheadIsland)
+            .await
+            .unwrap();
+        assert_eq!(loaded.source, TerrainSource::Baked);
+        assert!(!loaded.stored_baked);
+        let terrain = read_terrain(&pool, baked_only, 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(same_cells(&terrain, &flat));
+        assert_eq!(count(&pool, Table::Baked, baked_only).await, 1);
+
+        // The rows the pin stores load to its island, and nothing is written.
+        let csharp = region(4);
+        clear(&pool, csharp).await;
+        oracle(
+            &cross,
+            "terrain-seed",
+            &[&cross.ado, &csharp.as_hyphenated().to_string()],
+        );
+        let loaded = world_map(&pool, csharp, 256, 256, InitialTerrain::Flat)
+            .await
+            .unwrap();
+        assert_eq!(loaded.source, TerrainSource::Stored);
+        assert!(!loaded.stored_baked);
+        assert!(same_cells(&loaded.map, &island));
+
+        // A NULL cell is no row on MySQL and PostgreSQL: the island replaces it.
+        let null_cell = region(5);
+        clear(&pool, null_cell).await;
+        raw_insert(&pool, Table::Terrain, null_cell, Some(23), None).await;
+        assert!(
+            read_terrain(&pool, null_cell, 256, 256)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let loaded = world_map(&pool, null_cell, 256, 256, InitialTerrain::PinheadIsland)
+            .await
+            .unwrap();
+        assert_eq!(loaded.source, TerrainSource::Generated);
+        assert_eq!(count(&pool, Table::Terrain, null_cell).await, 1);
+
+        // A NULL revision is damaged, and a cell over the cap is refused
+        // before it is read.
+        let bounded = region(6);
+        clear(&pool, bounded).await;
+        raw_insert(&pool, Table::Baked, bounded, None, Some(vec![0; 16])).await;
+        assert!(matches!(
+            read_baked_terrain(&pool, bounded, 256, 256).await,
+            Err(TerrainError::Damaged)
+        ));
+        store_terrain(&pool, bounded, &flat).await.unwrap();
+        assert!(matches!(
+            read_row_capped(&pool, Table::Terrain, bounded, 256, 256, 100).await,
+            Err(TerrainError::Blob)
+        ));
+        assert!(
+            read_row_capped(&pool, Table::Terrain, bounded, 256, 256, BLOB_CAP)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        for n in 1..=6 {
+            clear(&pool, region(n)).await;
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn regionstore_mysql_terrain_matches_the_pin() {
+        let Some(cross) = cross(ObjectStoreKind::Mysql) else {
+            eprintln!("regionstore mysql terrain skipped");
+            return;
+        };
+        server_terrain_cases(cross).await;
+    }
+
+    #[tokio::test]
+    async fn regionstore_postgres_terrain_matches_the_pin() {
+        let Some(cross) = cross(ObjectStoreKind::Postgres) else {
+            eprintln!("regionstore postgres terrain skipped");
+            return;
+        };
+        server_terrain_cases(cross).await;
+    }
+
+    /// `MySQLSimulationData.LoadBakedTerrain` keeps the last row's revision
+    /// and the last cell that is not NULL.
+    #[tokio::test]
+    async fn regionstore_mysql_baked_terrain_is_the_last_row() {
+        let Some(cross) = cross(ObjectStoreKind::Mysql) else {
+            eprintln!("regionstore mysql baked rows skipped");
+            return;
+        };
+        let pool = open(&cross).await;
+        let rows = region(7);
+        clear(&pool, rows).await;
+        let flat = InitialTerrain::Flat.generate(256, 256).unwrap();
+        let island = InitialTerrain::PinheadIsland.generate(256, 256).unwrap();
+        let (_, flat_blob) = flat.to_blob().unwrap();
+        let (_, island_blob) = island.to_blob().unwrap();
+        raw_insert(&pool, Table::Baked, rows, Some(23), Some(flat_blob.clone())).await;
+        raw_insert(&pool, Table::Baked, rows, Some(23), Some(island_blob)).await;
+        let baked = read_baked_terrain(&pool, rows, 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(same_cells(&baked, &csharp_island()));
+        clear(&pool, rows).await;
+        raw_insert(&pool, Table::Baked, rows, Some(23), Some(flat_blob)).await;
+        raw_insert(&pool, Table::Baked, rows, Some(23), None).await;
+        let baked = read_baked_terrain(&pool, rows, 256, 256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(same_cells(&baked, &flat));
+        clear(&pool, rows).await;
+        raw_insert(&pool, Table::Baked, rows, Some(23), None).await;
+        assert!(
+            read_baked_terrain(&pool, rows, 256, 256)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        clear(&pool, rows).await;
+        pool.close().await;
     }
 }
