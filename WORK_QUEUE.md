@@ -109,7 +109,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | DONE (this PR) |
 | QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | DONE (this PR) |
 | QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | DONE (this PR) |
-| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
+| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | DONE (this PR) |
 | QR29 | R29: the intermittent "UDP TeleportFinish 0, landing 0" in live services' teleport both ways with Ferroan as home | DONE (this PR) |
 | QR30 | R30: two live-harness flakes: a C# arrival that has begun to fall, and a late request to a region the harness has stopped | DONE (this PR) |
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
