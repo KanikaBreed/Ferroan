@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+ferroan-diag = { path = "../ferroan-diag" }
 ferroan-protocol = { path = "../ferroan-protocol" }
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

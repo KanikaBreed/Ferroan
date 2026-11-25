@@ -10,33 +10,26 @@
 //! grid-user crate that first checked this against `float.ToString`.
 
 /// en-US general spelling of one `double`, for `SoundGain`.
-///
-/// A value that is exactly a `float` uses [`format_f32`], so a store load keeps
-/// the spelling the serializer already writes. Anything else uses the shortest
-/// round trip, with `E` and a signed two-digit exponent.
 pub(crate) fn format_f64(value: f64) -> String {
-    let narrow = value as f32;
-    if f64::from(narrow) == value {
-        return format_f32(narrow);
+    if value == 0.0 || !value.is_finite() {
+        return format_f32(value as f32);
     }
-    if value.is_nan() {
-        return "NaN".to_owned();
-    }
-    if value.is_infinite() {
-        return if value.is_sign_negative() {
-            "-∞".to_owned()
-        } else {
-            "∞".to_owned()
-        };
-    }
-    let text = format!("{value}");
-    let Some((body, exponent)) = text.split_once('e') else {
-        return text;
+    // The JSON number formatter supplies the nearest shortest decimal.
+    // .NET's general format switches notation at exponents -5 and 17.
+    let text = serde_json::Value::from(value.abs()).to_string();
+    let Some((digits, exponent)) = decimal_parts(&text) else {
+        return value.to_string();
     };
-    let Ok(exponent) = exponent.parse::<i32>() else {
-        return text;
+    let body = if (-4..17).contains(&exponent) {
+        fixed(&digits, exponent)
+    } else {
+        scientific(&digits, exponent)
     };
-    format!("{body}E{exponent:+03}")
+    if value.is_sign_negative() {
+        format!("-{body}")
+    } else {
+        body
+    }
 }
 
 pub(crate) fn format_f32(value: f32) -> String {
@@ -105,7 +98,10 @@ fn even_final_digit(digits: &str) -> bool {
 }
 
 fn shortest_parts(value: f32) -> Option<(String, i32)> {
-    let text = format!("{value:?}");
+    decimal_parts(&format!("{value:?}"))
+}
+
+fn decimal_parts(text: &str) -> Option<(String, i32)> {
     if let Some((mantissa, exponent)) = text.split_once(['e', 'E']) {
         let exponent = exponent.parse().ok()?;
         return Some((digits_from_mantissa(mantissa), exponent));
@@ -124,7 +120,7 @@ fn shortest_parts(value: f32) -> Option<(String, i32)> {
         let digits = format!("{whole}{}", trim_end_zeros(fraction));
         return Some((digits, i32::try_from(whole.len()).ok()? - 1));
     }
-    Some((trim_end_zeros(&text), i32::try_from(text.len()).ok()? - 1))
+    Some((trim_end_zeros(text), i32::try_from(text.len()).ok()? - 1))
 }
 
 fn digits_from_mantissa(mantissa: &str) -> String {

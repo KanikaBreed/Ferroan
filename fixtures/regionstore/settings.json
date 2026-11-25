@@ -58,6 +58,21 @@
   "agent_limit": 15,
   "object_bonus": 1.5,
   "maturity": 21,
+  "sim_access": 0,
+  "access_by_maturity": [
+    13,
+    21,
+    42,
+    0,
+    0
+  ],
+  "missing_cache_persists": true,
+  "saved_pbr_from_empty": [
+    "b8d3965a-ad78-bf43-699b-bff8eca6c975",
+    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2",
+    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3",
+    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4"
+  ],
   "terrain_raise_limit": 200,
   "terrain_lower_limit": -200,
   "use_estate_sun": false,

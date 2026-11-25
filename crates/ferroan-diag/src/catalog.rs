@@ -70,3 +70,5 @@ pub const REGION_ENTITY_UPDATES: &str = "region.entity-updates";
 pub const REGION_AVATAR_PACKETS: &str = "region.avatar-packets";
 pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
+pub const LIVE_PORT_BASE: &str = "live.port-base";
+pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";

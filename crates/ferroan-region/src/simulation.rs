@@ -3594,6 +3594,7 @@ mod tests {
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::new(AtomicBool::new(false)),
+                circuit_open: Arc::new(AtomicBool::new(true)),
                 look: Arc::new(ferroan_scene::AvatarLook {
                     first_name: "Test".to_string(),
                     last_name: "User".to_string(),

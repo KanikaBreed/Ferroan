@@ -17,6 +17,7 @@
 //   OpenMetaverse.Types/UtilsConversions.cs
 
 using System.Globalization;
+using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Text.Json.Nodes;
 using OpenMetaverse;
@@ -268,6 +269,8 @@ internal static class Codec
             case "quaternion-getbytes":
             case "quaternion-tobytes":
                 return PackedQuaternion(payload, format);
+            case "quaternion-batch":
+                return QuaternionBatchNode(payload);
             case "quaternion-shorts":
                 return Shorts4(payload);
             case "quaternion-full":
@@ -356,6 +359,50 @@ internal static class Codec
         node["w_bits"] = F32(value.W);
         node["encoder"] = format;
         return node;
+    }
+
+    /// <summary>One record: x, y, z, w in, then ToBytes, then GetBytes.</summary>
+    internal const int QuaternionRecord = 40;
+
+    /// <summary>
+    /// LengthSquared takes the Sse41.DotProduct branch only on x86-64 with
+    /// SSE4.1, which sums (x*x + y*y) + (z*z + w*w). Other machines take the
+    /// scalar branch, which sums left to right. The batch is the x86-64 reference.
+    /// </summary>
+    internal static void RequireDotProduct()
+    {
+        if (!Sse41.IsSupported)
+            throw new InvalidOperationException("quaternion-batch needs Sse41.DotProduct (x86-64 with SSE4.1)");
+    }
+
+    static JsonObject QuaternionBatchNode(byte[] payload)
+    {
+        if (payload.Length == 0 || payload.Length % QuaternionRecord != 0)
+            throw new ArgumentException("expected whole 40-byte records, got " + payload.Length);
+        JsonObject node = Type("quaternion-batch");
+        node["count"] = payload.Length / QuaternionRecord;
+        return node;
+    }
+
+    /// <summary>Encode every record's input again with ToBytes and GetBytes.</summary>
+    internal static byte[] QuaternionBatch(byte[] payload)
+    {
+        RequireDotProduct();
+        if (payload.Length == 0 || payload.Length % QuaternionRecord != 0)
+            throw new ArgumentException("expected whole 40-byte records, got " + payload.Length);
+        byte[] again = new byte[payload.Length];
+        for (int at = 0; at < payload.Length; at += QuaternionRecord)
+        {
+            var value = new Quaternion(
+                Utils.BytesToFloat(payload, at),
+                Utils.BytesToFloat(payload, at + 4),
+                Utils.BytesToFloat(payload, at + 8),
+                Utils.BytesToFloat(payload, at + 12));
+            Buffer.BlockCopy(payload, at, again, at, 16);
+            value.ToBytes(again, at + 16);
+            Buffer.BlockCopy(value.GetBytes(), 0, again, at + 28, 12);
+        }
+        return again;
     }
 
     static JsonObject Shorts4(byte[] payload)
@@ -517,6 +564,8 @@ internal static class Codec
                 value.ToBytes(again, 0);
                 return again;
             }
+            case "quaternion-batch":
+                return QuaternionBatch(payload);
             case "quaternion-shorts":
                 return payload.ToArray();
             case "quaternion-full":
