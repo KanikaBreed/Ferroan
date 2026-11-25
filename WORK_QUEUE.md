@@ -169,10 +169,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
-| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46b |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
+| Q60a | P2.6a1: load SQLite parcels and create the in-memory default | READY |
+| Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
-| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
+| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
@@ -685,6 +688,12 @@ Q84 DONE (25 November 2026, `feat/q84-uuid-names`): `UUIDNameRequest` is answere
 Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 and Q83 come from Q46b's note that the Ferroan harness walk runs at Z 0: C# builds and stores a default terrain when the store has none, Ferroan leaves the ground at 0. Q82 does SQLite, generation and the harness; Q83 does MySQL and PostgreSQL, after QR22 settles how the region picks its backend from `StorageProvider`. Q84: Ferroan never answers `UUIDNameRequest`, which costs Ferrobot about 10 s per `nearby` call; it needs Q48 so that Ferrobot sees the other avatars at all. Q85 is Q43's child-throttle note; it waits for the child-agent items Q79 and Q80, and for QR26, which changes the same outgoing AgentData. Each item's scope, C# lines at `c401bceecd`, evidence and size are on its TASKS.md row. A fifth gap was not queued: C# `MakeRootAgent` lands a newcomer on another avatar's capsule with a filtered ray cast (`ScenePresence.cs` 1543–1602, `PrimsNonPhantomAgents`), but only when the physics engine supports filtered ray casts. BasicPhysics does not (`PhysicsScene.cs` 347–350 returns false, and BasicPhysics does not override it), so a `--physics basicphysics` C# region lands at ground height as the D38 stand-in does, and there is nothing in Phase 2 to match. It is recorded as a Phase 3 note in [docs/PLAN.md](docs/PLAN.md).
 
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
+
+### Q60 split
+
+**BLOCKED, 25 November 2026** (`feat/q60-parcel-overlay`). Estimated two engineering days for SQLite land loading, a store-backed packet comparison and delivery on the viewer circuit. The existing login capture includes `ParcelOverlay`, but does not associate a multi-parcel seed with the expected bytes for a particular viewer. The circuit already drains terrain through the Land throttle. It still needs the parcel map, the viewer's relationship to each parcel and the Pin8 send conditions. Pin8 `c401bceecd` checks membership in the parcel's owning group even when the viewer has a different active group (`LLClientView.IsGroupMember`, line 421).
+
+The manager approved Q60a through Q60c. Their dependencies and acceptance checks are in TASKS.md.
 
 ### Q65 split
 
