@@ -388,7 +388,7 @@ async fn load_stored_settings(
     config: &mut RegionConfig,
 ) -> Result<Option<std::sync::Arc<ferroan_scene::RegionSettings>>, RunError> {
     ferroan_region::settings::apply_stored_settings(
-        config.object_store.as_deref(),
+        config.object_store.as_ref(),
         config.id,
         &mut config.handshake,
     )
@@ -400,7 +400,7 @@ async fn load_stored_objects(
     config: &RegionConfig,
 ) -> Result<Arc<Vec<ferroan_scene::ObjectGroup>>, RunError> {
     let stored =
-        ferroan_region::objects::load_stored_objects(config.object_store.as_deref(), config.id)
+        ferroan_region::objects::load_stored_objects(config.object_store.as_ref(), config.id)
             .await
             .map_err(RunError::Objects)?;
     let (objects, prims) = {
@@ -415,15 +415,33 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let map = match config.terrain_store.as_deref() {
-        Some(connection) => {
+    let map = match (config.terrain_store.as_deref(), config.terrain_kind) {
+        (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
-            ferroan_scene::open_terrain(connection, config.id, width, height)
-                .await
-                .map_err(|error| RunError::Terrain(error.to_string()))?
+            ferroan_scene::open_terrain(
+                connection,
+                config.id,
+                width,
+                height,
+                ferroan_scene::ObjectStoreKind::Sqlite,
+            )
+            .await
+            .map_err(|error| RunError::Terrain(error.to_string()))?
         }
-        None => None,
+        (Some(_), Some(_)) => {
+            tracing::info!(
+                "ferroan-region: MySQL and PostgreSQL stores have no saved heightmap yet"
+            );
+            None
+        }
+        (Some(_), None) => {
+            tracing::info!(
+                "ferroan-region: the database service is not a SQLite terrain store; no saved heightmap"
+            );
+            None
+        }
+        (None, _) => None,
     };
     let frame = match map {
         Some(map) => {
@@ -680,7 +698,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
-        SceneCall::Arrive(pose) => answered(
+        SceneCall::Arrive(pose, look_at) => answered(
             frame.arrive(
                 agent,
                 ferroan_scene::Presence {
@@ -690,6 +708,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                     control_flags: pose.control_flags,
                     draw_distance: pose.draw_distance,
                 },
+                look_at,
             ),
             |stored| Ok(pose_reply(stored)),
         ),
@@ -829,6 +848,15 @@ async fn serve_agent(
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
+                look: Arc::new(ferroan_scene::AvatarLook {
+                    first_name: avatar.first_name.clone(),
+                    last_name: avatar.last_name.clone(),
+                    title: avatar.title.clone(),
+                    visual_params: avatar.visual_params.clone(),
+                    texture: avatar.texture.clone(),
+                    height: avatar.height,
+                    hover: avatar.hover,
+                }),
             };
             let attached = match frame.attach(expect.agent_id, link) {
                 Ok(pending) => pending.wait().await.ok(),
@@ -838,7 +866,10 @@ async fn serve_agent(
                 avatar.local_id = local_id;
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
-                    updates: Arc::new(SceneFeed(feed)),
+                    updates: Arc::new(SceneFeed {
+                        feed,
+                        region_handle: arrival.region_handle,
+                    }),
                 });
             }
         }
@@ -1067,16 +1098,64 @@ async fn serve_agent(
 }
 
 /// One viewer's frame feed, as the circuit drains it.
-struct SceneFeed(Arc<ferroan_scene::terse::ViewerFeed>);
+struct SceneFeed {
+    feed: Arc<ferroan_scene::terse::ViewerFeed>,
+    region_handle: u64,
+}
 
 impl ferroan_client::EntityUpdates for SceneFeed {
     fn has_updates(&self) -> bool {
-        self.0.has_updates()
+        self.feed.has_updates()
     }
 
     fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
-        self.0.take_terse(max_bytes)
+        self.feed.take_terse(max_bytes)
     }
+
+    fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
+        let mut out = Vec::new();
+        for packet in self.feed.take_avatar_packets(max) {
+            match packet {
+                ferroan_scene::AvatarPacket::Full(full) => {
+                    let mut wire = avatar_wire(full.agent, &full.look);
+                    wire.local_id = full.local_id;
+                    let live = ferroan_client::LiveAvatar {
+                        collision_plane: full.collision_plane,
+                        position: full.position,
+                        velocity: full.velocity,
+                        rotation: full.rotation,
+                    };
+                    out.push(ferroan_client::AvatarPacket::Full(
+                        wire.live_update(self.region_handle, &live),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Appearance { agent, look } => {
+                    out.push(ferroan_client::AvatarPacket::Appearance(
+                        avatar_wire(agent, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Kill(ids) => {
+                    out.extend(
+                        ferroan_client::kill_packets(&ids)
+                            .into_iter()
+                            .map(ferroan_client::AvatarPacket::Kill),
+                    );
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The wire form of another avatar, from what its own viewer attached with.
+fn avatar_wire(agent: Uuid, look: &ferroan_scene::AvatarLook) -> ferroan_client::AvatarWire {
+    let mut wire = ferroan_client::AvatarWire::standing(agent, &look.first_name, &look.last_name);
+    wire.title.clone_from(&look.title);
+    wire.visual_params.clone_from(&look.visual_params);
+    wire.texture.clone_from(&look.texture);
+    wire.height = look.height;
+    wire.hover = look.hover;
+    wire
 }
 
 /// Removes one agent's scene presence when its serve ends. `finish` awaits
@@ -1259,7 +1338,65 @@ fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mysql_storage_provider_startup_does_not_open_sqlite() {
+        let server = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
+             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+        )
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\n",
+        )
+        .unwrap();
+        let mut config = RegionConfig::from_configs(&server, &regions).unwrap();
+        assert_eq!(
+            config.object_store.as_ref().map(|store| store.kind),
+            Some(ferroan_scene::ObjectStoreKind::Mysql)
+        );
+        assert_eq!(
+            config.terrain_kind,
+            Some(ferroan_scene::ObjectStoreKind::Mysql)
+        );
+        assert!(
+            config
+                .terrain_store
+                .as_deref()
+                .unwrap()
+                .contains("Data Source=")
+        );
+        let settings = load_stored_settings(&mut config).await.unwrap();
+        assert!(settings.is_none());
+        let terrain = load_terrain(&config).await.unwrap().unwrap();
+        assert!(!terrain.has_map());
+
+        let bare = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\n\
+             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+        )
+        .unwrap();
+        let bare_config = RegionConfig::from_configs(&bare, &regions).unwrap();
+        assert!(bare_config.object_store.is_none());
+        assert!(bare_config.terrain_kind.is_none());
+        assert!(bare_config.terrain_store.is_some());
+        let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
+        assert!(!bare_terrain.has_map());
+    }
     use ferroan_client::CircuitExpect;
+    use ferroan_client::EntityUpdates;
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{
         AgentMovementComplete, AgentUpdate, CompleteAgentMovement, CompletePingCheck,
@@ -2875,5 +3012,89 @@ mod tests {
         let replacement = open(&harness, next).await;
         wait_id(&replacement, RegionHandshake::ID).await;
         harness.finish().await.unwrap();
+    }
+
+    /// The feed turns the frame's avatar packets into the wire messages:
+    /// another avatar's full update with its local id, name and live values,
+    /// its appearance, and the kill.
+    #[test]
+    fn the_scene_feed_writes_another_avatars_packets() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let feed = frame.new_feed();
+        let agent = Uuid::from_u128(90);
+        let look = Arc::new(ferroan_scene::AvatarLook {
+            first_name: "Chat".to_string(),
+            last_name: "Bot".to_string(),
+            title: String::new(),
+            visual_params: vec![7, 8],
+            texture: vec![1; 64],
+            height: 1.8,
+            hover: 0.0,
+        });
+        let link = ferroan_scene::ViewerLink {
+            feed: frame.new_feed(),
+            seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            look: Arc::clone(&look),
+        };
+        let watcher = Uuid::from_u128(91);
+        let watcher_link = ferroan_scene::ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            look: Arc::clone(&look),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            frame
+                .attach(watcher, watcher_link)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
+            let pose = ferroan_scene::Presence {
+                position: [100.0, 120.0, 22.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0; 3],
+                control_flags: 0,
+                draw_distance: 255.0,
+            };
+            frame
+                .arrive(agent, pose, [1.0, 0.0, 0.0])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            frame.remove(agent).unwrap().wait().await.unwrap();
+            let scene_feed = SceneFeed {
+                feed,
+                region_handle: 77,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 3);
+            let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
+                panic!("the full update comes first");
+            };
+            assert_eq!(update.region_data.region_handle, 77);
+            let block = &update.object_data[0];
+            assert_eq!(block.id, local_id);
+            assert_eq!(block.full_id, agent);
+            assert_eq!(block.scale.z, 1.8);
+            assert!(
+                String::from_utf8_lossy(&block.name_value)
+                    .contains("FirstName STRING RW SV Chat\n")
+            );
+            assert_eq!(&block.object_data[16..20], &100.0f32.to_le_bytes());
+            let ferroan_client::AvatarPacket::Appearance(appearance) = &packets[1] else {
+                panic!("the appearance follows");
+            };
+            assert_eq!(appearance.sender.id, agent);
+            assert_eq!(appearance.visual_param.len(), 2);
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+                panic!("the kill comes last");
+            };
+            assert_eq!(kill.object_data[0].id, local_id);
+        });
     }
 }

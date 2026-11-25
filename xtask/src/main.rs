@@ -103,6 +103,7 @@ mod ports;
 mod region_report;
 mod regionstore;
 mod schema;
+mod signal;
 mod throttle_oracle;
 mod trailing_fixtures;
 mod twice;

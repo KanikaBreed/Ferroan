@@ -424,9 +424,7 @@ fn stop_region(running: &mut Running) {
     running.stopped = true;
     let pid = running.child.id();
     if matches!(running.child.try_wait(), Ok(None)) {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &format!("-{pid}")])
-            .status();
+        let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
         let started = std::time::Instant::now();
         while matches!(running.child.try_wait(), Ok(None))
             && started.elapsed() < std::time::Duration::from_secs(20)
@@ -434,9 +432,7 @@ fn stop_region(running: &mut Running) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         if matches!(running.child.try_wait(), Ok(None)) {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &format!("-{pid}")])
-                .status();
+            let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
             let _ = running.child.wait();
         }
     }

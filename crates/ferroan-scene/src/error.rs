@@ -33,4 +33,6 @@ pub enum ObjectError {
     Objects { configured: u64, observed: u64 },
     #[error("linkset prim count {observed} exceeds {configured}")]
     Linkset { configured: u64, observed: u64 },
+    #[error("task inventory count {observed} exceeds {configured}")]
+    TaskItems { configured: u64, observed: u64 },
 }

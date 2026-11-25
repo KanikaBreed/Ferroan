@@ -60,14 +60,17 @@
 //! that presence. Each tick integrates that intent with the walking stand-in.
 //! Each viewer has an entity-update queue. A second update for the same local
 //! id merges flags. The default prioritizer places that viewer's avatar first,
-//! then other avatars, attachments, and prims by distance. This crate does not
-//! write those packets.
+//! then other avatars, attachments, and prims by distance. Beside it, each
+//! viewer gets the other avatars' full updates, appearances and kills
+//! ([`avatars`]). This crate does not write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
-//! `ferroan-region` keeps this load at startup. `ObjectUpdate` is a later row.
+//! `ferroan-region` keeps this load at startup. A prim `ObjectUpdate` is a
+//! later row.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod avatars;
 mod bits;
 mod compress;
 pub mod entity_queue;
@@ -87,6 +90,7 @@ mod walk;
 mod walk_capture;
 mod xml;
 
+pub use avatars::{AvatarFull, AvatarLook, AvatarPacket, MAX_AVATAR_PACKETS};
 pub use compress::TerrainLayer;
 pub use entity_queue::{
     ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,
@@ -96,14 +100,14 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    HopReturn, Leaving, LocalTeleport, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored,
-    TerrainFrame, ViewerLink, landed_z,
+    HopReturn, Leaving, LocalTeleport, MovedAway, Pending, Presence, TELEPORT_IS_FLYING,
+    TeleportStored, TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, movement_z};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
-    ObjectShape, load_objects, load_objects_limited, open_objects,
+    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
 };
 pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,

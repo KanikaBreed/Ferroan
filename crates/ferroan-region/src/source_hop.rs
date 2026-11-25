@@ -133,6 +133,8 @@ pub struct PresenceWatch {
     armed: AtomicBool,
     closed: AtomicBool,
     woke: AtomicBool,
+    /// `Some(near)` once the hop's kills were asked for.
+    moved: std::sync::Mutex<Option<bool>>,
     budget: Duration,
     release: Notify,
 }
@@ -146,6 +148,7 @@ impl PresenceWatch {
             armed: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             woke: AtomicBool::new(false),
+            moved: std::sync::Mutex::new(None),
             budget,
             release: Notify::new(),
         })
@@ -173,6 +176,13 @@ impl PresenceWatch {
 
     pub(crate) fn woke(&self) -> bool {
         self.woke.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn moved(&self) -> Option<bool> {
+        *self
+            .moved
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 }
 
@@ -205,6 +215,22 @@ impl HopPresence {
             Self::Live(state) => state.restore_root(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.restored.store(true, Ordering::Release),
+        }
+    }
+
+    /// `HasMovedAway` and `MakeChildAgent`: the kills the frame sends once
+    /// the destination has the avatar.
+    async fn moved_away(&self, agent: Uuid, near: bool, end: &RegionEnd) {
+        match self {
+            Self::Idle => {}
+            Self::Live(state) => state.moved_away(agent, near, end).await,
+            #[cfg(test)]
+            Self::Watch(watch) => {
+                *watch
+                    .moved
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = Some(near);
+            }
         }
     }
 
@@ -548,6 +574,9 @@ async fn perform(work: HopWork<'_>) {
             .await;
         return;
     }
+    presence
+        .moved_away(session.agent_id, !outside, &destination.end)
+        .await;
     if !outside {
         // Logout closes this child. An outside-view hop does not leave one.
         presence.note_child(session.agent_id, &destination.end);
@@ -1775,6 +1804,16 @@ mod tests {
         assert!(!watch.restored());
         assert!(!watch.armed());
         assert!(!watch.closed());
+        // The kills follow the update's answer.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while watch.moved().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            watch.moved(),
+            Some(true),
+            "a near hop kills after it arrives"
+        );
         assert!(!opened.running.is_finished());
         no_kick(&opened.gathered.lock().unwrap());
     }
@@ -1812,6 +1851,7 @@ mod tests {
         assert!(watch.restored());
         assert!(!watch.armed());
         assert!(!watch.closed());
+        assert_eq!(watch.moved(), None, "a failed update kills nothing");
         assert!(!opened.running.is_finished());
     }
 
@@ -1869,6 +1909,7 @@ mod tests {
         assert!(!watch.restored());
         assert!(watch.armed());
         assert!(watch.closed());
+        assert_eq!(watch.moved(), Some(false));
         assert_eq!(hits.len(), 3);
         assert!(
             hits.iter()

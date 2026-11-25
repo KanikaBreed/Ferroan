@@ -742,8 +742,8 @@ fn stop_identity(identity: &Identity) -> Result<(), String> {
         return Ok(());
     }
     for (signal, wait) in [
-        ("-TERM", Duration::from_secs(30)),
-        ("-KILL", Duration::from_secs(5)),
+        (crate::signal::Signal::Term, Duration::from_secs(30)),
+        (crate::signal::Signal::Kill, Duration::from_secs(5)),
     ] {
         if !identity.live() {
             return Ok(());
@@ -754,9 +754,7 @@ fn stop_identity(identity: &Identity) -> Result<(), String> {
                 identity.pid
             ));
         }
-        Command::new("kill")
-            .args([signal, &format!("-{}", identity.pid)])
-            .status()
+        crate::signal::signal_group(signal, identity.pid)
             .map_err(|error| format!("could not signal grid process {}: {error}", identity.pid))?;
         let deadline = Instant::now() + wait;
         while identity.live() && Instant::now() < deadline {

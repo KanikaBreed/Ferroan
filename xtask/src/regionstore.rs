@@ -31,10 +31,27 @@ const XML_READ_DUMP: &str = "fixtures/regionstore/objects-xml-read.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
-const MYSQL_NAME: &str = "ferroan-regionstore-mysql";
-const MYSQL_PORT: &str = "13317";
-const POSTGRES_NAME: &str = "ferroan-regionstore-postgres";
-const POSTGRES_PORT: &str = "15433";
+struct RegionstoreRun {
+    mysql_name: String,
+    mysql_port: u16,
+    postgres_name: String,
+    postgres_port: u16,
+}
+
+/// Names and published ports include the port base, so two runs do not share a container.
+fn regionstore_run() -> RegionstoreRun {
+    let base = std::env::var(crate::ports::ENV)
+        .ok()
+        .and_then(|text| text.parse::<u16>().ok())
+        .filter(|base| *base >= 1024 && u32::from(*base) < u32::from(u16::MAX))
+        .unwrap_or_else(|| 20_000 + (std::process::id() % 10_000) as u16);
+    RegionstoreRun {
+        mysql_name: format!("ferroan-regionstore-mysql-{base}"),
+        mysql_port: base,
+        postgres_name: format!("ferroan-regionstore-postgres-{base}"),
+        postgres_port: base + 1,
+    }
+}
 
 pub fn generate() -> ExitCode {
     dispatch(true)
@@ -200,55 +217,62 @@ pub fn cross() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mysql = match start_mysql() {
+    let ports = regionstore_run();
+    let mysql = match start_mysql(&ports) {
         Ok(container) => container,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let mysql_code = mysql_cross(&root, &dll, &pinned);
+    let mysql_code = mysql_cross(&root, &dll, &pinned, &ports);
     drop(mysql);
     if mysql_code != ExitCode::SUCCESS {
         return mysql_code;
     }
-    let postgres = match start_postgres() {
+    let postgres = match start_postgres(&ports) {
         Ok(container) => container,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let code = postgres_cross(&root, &dll, &pinned);
+    let code = postgres_cross(&root, &dll, &pinned, &ports);
     drop(postgres);
     code
 }
 
-struct MysqlContainer;
+struct MysqlContainer {
+    name: String,
+}
 
 impl Drop for MysqlContainer {
     fn drop(&mut self) {
         let _ = Command::new("docker")
-            .args(["rm", "-f", MYSQL_NAME])
+            .args(["rm", "-f", &self.name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
 }
 
-fn start_mysql() -> Result<MysqlContainer, String> {
+fn start_mysql(ports: &RegionstoreRun) -> Result<MysqlContainer, String> {
+    let name = &ports.mysql_name;
     let _ = Command::new("docker")
-        .args(["rm", "-f", MYSQL_NAME])
+        .args(["rm", "-f", name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    println!("$ docker run --name {MYSQL_NAME} -p 127.0.0.1:{MYSQL_PORT}:3306 mysql:8.4");
+    println!(
+        "$ docker run --name {name} -p 127.0.0.1:{}:3306 mysql:8.4",
+        ports.mysql_port
+    );
     let status = Command::new("docker")
         .args([
             "run",
             "-d",
             "--name",
-            MYSQL_NAME,
+            name,
             "-e",
             "MYSQL_ROOT_PASSWORD=ferroan",
             "-e",
@@ -258,7 +282,7 @@ fn start_mysql() -> Result<MysqlContainer, String> {
             "-e",
             "MYSQL_PASSWORD=ferroan",
             "-p",
-            &format!("127.0.0.1:{MYSQL_PORT}:3306"),
+            &format!("127.0.0.1:{}:3306", ports.mysql_port),
             "mysql:8.4",
             "--character-set-server=utf8mb3",
             "--collation-server=utf8mb3_general_ci",
@@ -268,18 +292,18 @@ fn start_mysql() -> Result<MysqlContainer, String> {
         .map_err(|error| format!("could not run docker: {error}"))?;
     if !status.success() {
         let _ = Command::new("docker")
-            .args(["rm", "-f", MYSQL_NAME])
+            .args(["rm", "-f", name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
         return Err(format!("docker run exited with {status}"));
     }
-    let container = MysqlContainer;
+    let container = MysqlContainer { name: name.clone() };
     for _ in 0..60 {
         let ready = Command::new("docker")
             .args([
                 "exec",
-                MYSQL_NAME,
+                name,
                 "mysqladmin",
                 "ping",
                 "-uroot",
@@ -297,31 +321,37 @@ fn start_mysql() -> Result<MysqlContainer, String> {
     Err("MySQL container did not become ready".to_owned())
 }
 
-struct PostgresContainer;
+struct PostgresContainer {
+    name: String,
+}
 
 impl Drop for PostgresContainer {
     fn drop(&mut self) {
         let _ = Command::new("docker")
-            .args(["rm", "-f", POSTGRES_NAME])
+            .args(["rm", "-f", &self.name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
 }
 
-fn start_postgres() -> Result<PostgresContainer, String> {
+fn start_postgres(ports: &RegionstoreRun) -> Result<PostgresContainer, String> {
+    let name = &ports.postgres_name;
     let _ = Command::new("docker")
-        .args(["rm", "-f", POSTGRES_NAME])
+        .args(["rm", "-f", name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    println!("$ docker run --name {POSTGRES_NAME} -p 127.0.0.1:{POSTGRES_PORT}:5432 postgres:16");
+    println!(
+        "$ docker run --name {name} -p 127.0.0.1:{}:5432 postgres:16",
+        ports.postgres_port
+    );
     let status = Command::new("docker")
         .args([
             "run",
             "-d",
             "--name",
-            POSTGRES_NAME,
+            name,
             "-e",
             "POSTGRES_USER=ferroan",
             "-e",
@@ -329,7 +359,7 @@ fn start_postgres() -> Result<PostgresContainer, String> {
             "-e",
             "POSTGRES_DB=ferroan",
             "-p",
-            &format!("127.0.0.1:{POSTGRES_PORT}:5432"),
+            &format!("127.0.0.1:{}:5432", ports.postgres_port),
             "postgres:16",
         ])
         .stdout(Stdio::null())
@@ -337,24 +367,16 @@ fn start_postgres() -> Result<PostgresContainer, String> {
         .map_err(|error| format!("could not run docker: {error}"))?;
     if !status.success() {
         let _ = Command::new("docker")
-            .args(["rm", "-f", POSTGRES_NAME])
+            .args(["rm", "-f", name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
         return Err(format!("docker run exited with {status}"));
     }
-    let container = PostgresContainer;
+    let container = PostgresContainer { name: name.clone() };
     for _ in 0..60 {
         let ready = Command::new("docker")
-            .args([
-                "exec",
-                POSTGRES_NAME,
-                "pg_isready",
-                "-U",
-                "ferroan",
-                "-d",
-                "ferroan",
-            ])
+            .args(["exec", name, "pg_isready", "-U", "ferroan", "-d", "ferroan"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -366,18 +388,18 @@ fn start_postgres() -> Result<PostgresContainer, String> {
     Err("PostgreSQL container did not become ready".to_owned())
 }
 
-fn postgres_urls() -> (String, String) {
+fn postgres_urls(port: u16) -> (String, String) {
     let csharp = format!(
-        "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false"
+        "Host=127.0.0.1;Port={port};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable;Pooling=false"
     );
     let rust = format!(
-        "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
+        "Host=127.0.0.1;Port={port};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
     );
     (csharp, rust)
 }
 
-fn postgres_cross(root: &Path, dll: &Path, pin: &str) -> ExitCode {
-    let (csharp, rust_url) = postgres_urls();
+fn postgres_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) -> ExitCode {
+    let (csharp, rust_url) = postgres_urls(ports.postgres_port);
     if run_oracle(dll, "postgres-seed", &["postgres-seed", &csharp]).is_none() {
         return ExitCode::FAILURE;
     }
@@ -442,18 +464,18 @@ fn postgres_tests(root: &Path, connection: &str) -> bool {
     }
 }
 
-fn mysql_urls() -> (String, String) {
+fn mysql_urls(port: u16) -> (String, String) {
     let csharp = format!(
-        "Server=127.0.0.1;Port={MYSQL_PORT};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false"
+        "Server=127.0.0.1;Port={port};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None;Pooling=false"
     );
     let rust = format!(
-        "Server=127.0.0.1;Port={MYSQL_PORT};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None"
+        "Server=127.0.0.1;Port={port};Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None"
     );
     (csharp, rust)
 }
 
-fn mysql_cross(root: &Path, dll: &Path, pin: &str) -> ExitCode {
-    let (csharp, rust_url) = mysql_urls();
+fn mysql_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) -> ExitCode {
+    let (csharp, rust_url) = mysql_urls(ports.mysql_port);
     if run_oracle(dll, "mysql-seed", &["mysql-seed", &csharp]).is_none() {
         return ExitCode::FAILURE;
     }

@@ -527,6 +527,7 @@ dependencies = [
  "ferroan-llsd",
  "ferroan-protocol",
  "flate2",
+ "futures-util",
  "log",
  "serde_json",
  "sqlx",

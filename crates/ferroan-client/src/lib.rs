@@ -22,7 +22,7 @@ mod source_hop;
 mod teleport;
 mod throttle;
 
-pub use appearance::{AvatarWire, StoredAppearance};
+pub use appearance::{AvatarWire, LiveAvatar, StoredAppearance};
 pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,
@@ -33,7 +33,7 @@ pub use circuit::{
     LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove,
     SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
-pub use entity_feed::{AVATAR_TERSE_LEN, EntityFeed, EntityUpdates};
+pub use entity_feed::{AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, kill_packets};
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};
