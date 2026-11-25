@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::super::fscommands::import_done_lines;
 use super::super::fservice::FsAssetService;
-use super::super::fsfiles::{FsFiles, sha256_hex};
+use super::super::fsfiles::{FsFiles, WriterPass, sha256_hex};
 use super::super::model::KNOWN_FLAGS;
 use super::FsAssetStore;
 use super::FsMetadata;
@@ -344,7 +344,7 @@ async fn command_round_trip(store: FsAssetStore, url: &str) {
         service.console_show_assets().await.expect("count"),
         vec!["Total asset count: 2".to_string()]
     );
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     let first = iid(1);
     let digest = service
         .console_show_digest(&["show", "digest", &first.to_string()])
@@ -397,7 +397,7 @@ async fn command_round_trip(store: FsAssetStore, url: &str) {
         .await
         .expect("page");
     assert_eq!(again, import_done_lines(1));
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     assert!(
         digest_of(&service, iid(2)).await.contains(&old_hash),
         "an ordinary import leaves the stored hash"
@@ -407,7 +407,7 @@ async fn command_round_trip(store: FsAssetStore, url: &str) {
         .await
         .expect("force");
     assert_eq!(forced, import_done_lines(1));
-    assert!(files.writer_pass());
+    assert_eq!(files.writer_pass(), WriterPass::Drained);
     let new_hash = sha256_hex(&[9, 9]);
     let after = digest_of(&service, iid(2)).await;
     assert!(after.contains(&new_hash));

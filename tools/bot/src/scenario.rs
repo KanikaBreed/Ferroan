@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_protocol::Msg;
-use ferroan_protocol::msgs::{AvatarAppearance, CoarseLocationUpdate, ObjectUpdate};
+use ferroan_protocol::msgs::{
+    AvatarAppearance, CoarseLocationUpdate, ObjectUpdate, UUIDNameReply, UUIDNameRequest,
+    uuid_name_request,
+};
 use glam::Vec3;
 use uuid::Uuid;
 
@@ -634,6 +637,8 @@ struct OtherAvatar {
     appearance: bool,
     /// Local ids in every `KillObject` this bot received.
     killed: Vec<u32>,
+    /// Every `UUIDNameReply` block: the id, then the first and last name.
+    names: Vec<(Uuid, String, String)>,
     /// The other avatar's position in its latest full or terse update.
     position: Option<Vec3>,
     own_local_id: Option<u32>,
@@ -686,6 +691,18 @@ impl OtherAvatar {
                 self.appearance = true;
             }
             self.killed.extend(world::killed(&packet));
+            if packet.id == UUIDNameReply::ID {
+                let reply = packet
+                    .decode::<UUIDNameReply>()
+                    .map_err(|_| "a UUIDNameReply did not decode".to_string())?;
+                for block in reply.uuid_name_block {
+                    self.names.push((
+                        block.id,
+                        ferroan_protocol::field_str(&block.first_name),
+                        ferroan_protocol::field_str(&block.last_name),
+                    ));
+                }
+            }
         }
         for coarse in session.take_coarse() {
             self.note_coarse(me, other, coarse);
@@ -758,6 +775,14 @@ impl OtherAvatar {
             }
         }
         Ok(())
+    }
+
+    fn named(&self, id: Uuid) -> Vec<(String, String)> {
+        self.names
+            .iter()
+            .filter(|(named, _, _)| *named == id)
+            .map(|(_, first, last)| (first.clone(), last.clone()))
+            .collect()
     }
 
     fn seen(&self) -> bool {
@@ -843,6 +868,17 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
         let _ = leave(harness, &mut owner, &harness.owner).await;
         return Err(format!("minimap: {error}"));
     }
+    let named = exchange_names(
+        harness,
+        (&mut owner, &mut owner_saw),
+        (&mut chat, &mut chat_saw),
+    )
+    .await;
+    if let Err(error) = named {
+        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
+        let _ = leave(harness, &mut owner, &harness.owner).await;
+        return Err(error);
+    }
     let left = {
         let logout = leave(harness, &mut chat, &harness.chat);
         tokio::pin!(logout);
@@ -888,7 +924,7 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
             .join(" ")
     };
     Ok(format!(
-        "avatars: pass (each bot saw the other's local id, appearance and minimap dot; the dot followed a walk; KillObject and no dot on leave)\nminimap: the owner saw the second bot's dot at {}",
+        "avatars: pass (each bot saw the other's local id, appearance and minimap dot and got its name; the unknown id was answered only from the cached miss; the dot followed a walk; KillObject and no dot on leave)\nminimap: the owner saw the second bot's dot at {}",
         cells(&owner_saw.other_cells)
     ))
 }
@@ -978,6 +1014,115 @@ fn coarse_cell_near(cell: [u8; 3], position: Vec3) -> bool {
     let byte = |value: f32| (value as i32) as u8;
     let near = |got: u8, value: f32| got == byte(value - 0.1) || got == byte(value + 0.1);
     near(cell[0], position.x) && near(cell[1], position.y) && near(cell[2], position.z * 0.25)
+}
+
+/// An id no harness grid has: `UUIDNameRequest` for it gets no reply.
+pub const UNKNOWN_NAME_ID: Uuid = Uuid::from_u128(0x0f0e_0d0c_0b0a_4984_8984_0102_0304_0506);
+
+fn name_request(ids: &[Uuid]) -> UUIDNameRequest {
+    let mut request = UUIDNameRequest::default();
+    for id in ids {
+        request
+            .uuid_name_block
+            .push(uuid_name_request::UUIDNameBlock { id: *id });
+    }
+    request
+}
+
+/// Each bot asks for the other's name and for [`UNKNOWN_NAME_ID`], in one
+/// `UUIDNameRequest`. Each must get one `UUIDNameReply` with the other's
+/// account names. The first request for the unknown id to be looked up gets
+/// no reply; the other bot's may come after that miss is cached and then
+/// gets `Unknown` and the id (TB89), so at most one of the two is answered,
+/// only that way. Then the owner asks for the unknown id again and must get
+/// `Unknown` and the id from the cached miss.
+async fn exchange_names(
+    harness: &Harness,
+    owner: (&mut Session, &mut OtherAvatar),
+    chat: (&mut Session, &mut OtherAvatar),
+) -> Result<(), String> {
+    let (owner, owner_saw) = owner;
+    let (chat, chat_saw) = chat;
+    let owner_id = harness.owner.principal_id;
+    let chat_id = harness.chat.principal_id;
+    owner
+        .send(&name_request(&[chat_id, UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    chat.send(&name_request(&[owner_id, UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut settle_until = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        owner.drive(STEP).await.map_err(|error| error.to_string())?;
+        chat.drive(STEP).await.map_err(|error| error.to_string())?;
+        owner_saw.note(owner, chat_id)?;
+        chat_saw.note(chat, owner_id)?;
+        unknown_answers(owner_saw, chat_saw, 1)?;
+        let both = !owner_saw.named(chat_id).is_empty() && !chat_saw.named(owner_id).is_empty();
+        match settle_until {
+            None if both => {
+                settle_until = Some(std::time::Instant::now() + Duration::from_secs(1));
+            }
+            Some(until) if std::time::Instant::now() >= until => break,
+            _ => {}
+        }
+        if settle_until.is_none() && std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "UUIDNameReply did not name the other bot (owner got {:?}, second bot got {:?})",
+                owner_saw.names, chat_saw.names
+            ));
+        }
+    }
+    for (saw, other, account) in [
+        (&*owner_saw, chat_id, &harness.chat),
+        (&*chat_saw, owner_id, &harness.owner),
+    ] {
+        let named = saw.named(other);
+        let want = (account.first_name.clone(), account.last_name.clone());
+        if named != [want.clone()] {
+            return Err(format!(
+                "UUIDNameReply named {other} as {named:?}, not once as {want:?}"
+            ));
+        }
+    }
+    let before = owner_saw.named(UNKNOWN_NAME_ID).len();
+    owner
+        .send(&name_request(&[UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while owner_saw.named(UNKNOWN_NAME_ID).len() == before && std::time::Instant::now() < deadline {
+        owner.drive(STEP).await.map_err(|error| error.to_string())?;
+        chat.drive(STEP).await.map_err(|error| error.to_string())?;
+        owner_saw.note(owner, chat_id)?;
+        chat_saw.note(chat, owner_id)?;
+    }
+    if owner_saw.named(UNKNOWN_NAME_ID).len() != before + 1 {
+        return Err(format!(
+            "the second request for the unknown id got {:?}, not Unknown and the id from the cached miss",
+            owner_saw.named(UNKNOWN_NAME_ID)
+        ));
+    }
+    unknown_answers(owner_saw, chat_saw, 2)
+}
+
+/// Every reply for [`UNKNOWN_NAME_ID`] is `Unknown` and the id, and the two
+/// bots got at most `most` of them.
+fn unknown_answers(owner: &OtherAvatar, chat: &OtherAvatar, most: usize) -> Result<(), String> {
+    let want = ("Unknown".to_string(), UNKNOWN_NAME_ID.to_string());
+    let answers: Vec<_> = owner
+        .named(UNKNOWN_NAME_ID)
+        .into_iter()
+        .chain(chat.named(UNKNOWN_NAME_ID))
+        .collect();
+    if answers.len() > most || answers.iter().any(|answer| *answer != want) {
+        return Err(format!(
+            "the region answered the unknown id {answers:?}; at most {most} reply, each Unknown and the id"
+        ));
+    }
+    Ok(())
 }
 
 fn refuse_chat(session: &mut Session) -> Result<(), String> {

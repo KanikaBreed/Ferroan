@@ -22,10 +22,13 @@
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
 //! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
+//! The frame and circuit share avatar local IDs as in
+//! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
+//! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -286,8 +289,7 @@ struct Scene {
     presences: HashMap<Uuid, Avatar>,
     viewers: HashMap<Uuid, Viewer>,
     board: AvatarBoard,
-    /// `Scene.AllocateLocalId`.
-    next_local_id: u32,
+    local_ids: Arc<LocalIds>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -299,6 +301,7 @@ pub struct TerrainFrame {
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     has_map: bool,
+    local_ids: Arc<LocalIds>,
     board: AvatarBoard,
 }
 
@@ -321,11 +324,12 @@ impl TerrainFrame {
         let wake = Arc::new(AtomicBool::new(false));
         let frame_wake = Arc::clone(&wake);
         let board = AvatarBoard::default();
+        let local_ids = Arc::new(LocalIds::default());
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),
             board: board.clone(),
-            next_local_id: first_local_id(),
+            local_ids: Arc::clone(&local_ids),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -340,8 +344,14 @@ impl TerrainFrame {
             wake,
             thread: Some(thread),
             has_map,
+            local_ids,
             board,
         })
+    }
+
+    /// Draw from the frame's single region-wide counter (`SceneBase.AllocateLocalId`).
+    pub fn allocate_local_id(&self) -> u32 {
+        self.local_ids.allocate()
     }
 
     /// A feed for one viewer, reading this frame's board.
@@ -658,7 +668,7 @@ fn answer(
         Request::Attach { agent, link, reply } => {
             let local_id = match scene.viewers.get(&agent) {
                 Some(viewer) => viewer.local_id,
-                None => scene.allocate_local_id(),
+                None => scene.local_ids.allocate(),
             };
             scene.viewers.insert(
                 agent,
@@ -926,16 +936,25 @@ fn first_local_id() -> u32 {
     nanos % (u32::MAX / 4)
 }
 
-impl Scene {
-    /// The next local id. Zero is never handed out. This is the region's
-    /// only allocator: avatars take their ids here, and a prim rezzed or
-    /// loaded later must take its id here too, or ids can collide.
-    fn allocate_local_id(&mut self) -> u32 {
-        self.next_local_id = self.next_local_id.wrapping_add(1);
-        if self.next_local_id == 0 {
-            self.next_local_id = 1;
+/// One id space for the region, including its frame and outbound avatar packets.
+#[derive(Debug)]
+struct LocalIds(AtomicU32);
+
+impl Default for LocalIds {
+    fn default() -> Self {
+        Self(AtomicU32::new(first_local_id()))
+    }
+}
+
+impl LocalIds {
+    /// SceneBase.AllocateLocalId, Pin8 c401bceecd. Skip zero on wrap.
+    fn allocate(&self) -> u32 {
+        loop {
+            let id = self.0.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if id != 0 {
+                return id;
+            }
         }
-        self.next_local_id
     }
 }
 
@@ -1798,7 +1817,7 @@ mod tests {
             presences: HashMap::new(),
             viewers: HashMap::new(),
             board: AvatarBoard::default(),
-            next_local_id: 100,
+            local_ids: Arc::default(),
         }
     }
 
