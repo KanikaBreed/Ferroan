@@ -57,24 +57,38 @@ pub(crate) fn csharp_provenance(records: &[Record], revision: &str) -> Result<Va
 
 /// VersionInfo.GetVersionString and Scene's runtime suffix identify a local C# release build.
 pub(crate) fn pinned_channel<'a>(bytes: &'a [u8], revision: &str) -> Result<&'a str, String> {
-    let error = "arrival lacks the pinned C# channel/version marker";
+    let expected = revision.get(..10);
+    let error = || {
+        let raw = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+        let shown = &raw[..raw.len().min(1024)];
+        let seen = String::from_utf8_lossy(shown);
+        let suffix = if raw.len() > shown.len() {
+            " (truncated)"
+        } else {
+            ""
+        };
+        format!(
+            "arrival lacks the pinned C# channel/version marker: expected revision {}, saw {seen:?}{suffix}",
+            expected.unwrap_or("<invalid revision>")
+        )
+    };
     let channel = bytes
         .strip_suffix(&[0])
         .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .ok_or(error)?;
+        .ok_or_else(error)?;
     let (version, commit) = channel
         .strip_prefix("OpenSim-NGC Tranquillity Release ")
         .and_then(|s| s.strip_suffix(" (X64/Unix/DotNet)"))
         .and_then(|s| s.split_once('+'))
-        .ok_or(error)?;
+        .ok_or_else(error)?;
     if version.is_empty()
         || !version
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
-        || Some(commit) != revision.get(..10)
+        || Some(commit) != expected
         || (revision == PIN && bytes != CSHARP_CHANNEL)
     {
-        return Err(error.into());
+        return Err(error());
     }
     Ok(channel)
 }
@@ -431,7 +445,10 @@ pub(crate) mod tests {
             csharp_provenance(&records, PIN8).unwrap()["channel_version"],
             std::str::from_utf8(channel.strip_suffix(&[0]).unwrap()).unwrap()
         );
-        assert!(csharp_provenance(&records, PIN).is_err());
+        let error = csharp_provenance(&records, PIN).unwrap_err();
+        assert!(error.contains(&PIN[..10]), "{error}");
+        let observed = std::str::from_utf8(channel.strip_suffix(&[0]).unwrap()).unwrap();
+        assert!(error.contains(observed), "{error}");
     }
 
     #[test]

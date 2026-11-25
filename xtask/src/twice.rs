@@ -4,14 +4,12 @@
 //! Compare two standalone `login` recordings at the current pin.
 //!
 //! Counts are exact per message type and direction, except the timer and
-//! acknowledgement types named in P0.10n5, which are reported. A reliable
-//! message counts once per direction and sequence number (P0.10n6): a
-//! flagged resend with the same message ID and decoded body is another copy and does
-//! not add to the count. The report gives the number of resends and does not
-//! fail on it. The check on order is the first appearance of the handshake
-//! and logout messages, not the interleaving. Sequence numbers, appended
-//! acks, the resent flag, and the fields listed in [`WILDCARDS`] are not
-//! compared.
+//! acknowledgement types named in P0.10n5, which are reported. Within a login,
+//! every repeated reliable sequence in the same direction must carry the resent
+//! flag, the original message ID and the same decoded body. It counts once
+//! with the original (P0.10n6). Across logins the sequence and resent flag are
+//! wildcards. The order check uses the first appearance of the handshake and
+//! logout messages. See [`WILDCARDS`] for the other cross-login allowances.
 
 // The live runner calls this on Linux. Windows and macOS still compile the
 // binary, and the unit tests cover the comparator there.
@@ -49,8 +47,10 @@ const ORDER: &[&str] = &[
 ];
 
 const WILDCARDS: &str = "\
-wildcards: UDP sequence (one counter per direction); appended acknowledgements \
-(which packets have arrived); resent flag (retransmission timer); session, agent, \
+wildcards across logins: UDP sequence (one counter per direction) and resent flag \
+(retransmission timer). Within one login a repeated reliable sequence in the same \
+direction must have the resent flag, original message ID and same decoded body. \
+Other wildcards: appended acknowledgements (which packets have arrived); session, agent, \
 circuit, name and IP (scrubbed; each login is a new session); AgentMovementComplete \
 timestamp (simulator clock); AgentMovementComplete position Z and the ObjectUpdate \
 packed position Z (terrain height at the spawn point; not bit-stable); ObjectUpdate \
@@ -243,29 +243,27 @@ fn view(records: &[Record]) -> Result<SeenMap, String> {
             "out"
         };
         let messages = out.entry((direction, info.name)).or_default();
-        if !reported(info.name) {
-            messages.resends += usize::from(packet.resent());
-            if packet.reliable()
-                && let Some(previous) =
-                    originals.insert((direction, packet.sequence), record.bytes.as_slice())
-            {
-                // Compare within this circuit before identity folding or cross-login
-                // wildcards. Appended ACKs can change on retransmission.
-                if !packet.resent() {
-                    return Err(format!(
-                        "UDP record {index}: {direction} {} sequence {}: duplicate lacks the resent flag",
-                        info.name, packet.sequence
-                    ));
-                }
-                let original = parse_packet(previous).map_err(|error| error.to_string())?;
-                if packet.id != original.id || packet.body != original.body {
-                    return Err(format!(
-                        "UDP record {index}: {direction} {} sequence {}: resent message differs from the original",
-                        info.name, packet.sequence
-                    ));
-                }
-                continue;
+        messages.resends += usize::from(packet.resent());
+        if packet.reliable()
+            && let Some(previous) =
+                originals.insert((direction, packet.sequence), record.bytes.as_slice())
+        {
+            // Compare within this circuit before identity folding or cross-login
+            // wildcards. Appended ACKs can change on retransmission.
+            if !packet.resent() {
+                return Err(format!(
+                    "UDP record {index}: {direction} {} sequence {}: duplicate lacks the resent flag",
+                    info.name, packet.sequence
+                ));
             }
+            let original = parse_packet(previous).map_err(|error| error.to_string())?;
+            if packet.id != original.id || packet.body != original.body {
+                return Err(format!(
+                    "UDP record {index}: {direction} {} sequence {}: resent message differs from the original",
+                    info.name, packet.sequence
+                ));
+            }
+            continue;
         }
         let scrubbed = scrub_body(packet.id, &packet.body).map_err(|error| {
             format!("UDP record {index} ({}) does not scrub: {error}", info.name)
@@ -680,6 +678,36 @@ mod tests {
         let error = compare_capture(&capture(&records)).unwrap_err();
         assert!(
             error.contains("in LogoutRequest") && error.contains("duplicate lacks the resent flag"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reported_reliable_kill_object_still_requires_a_matching_flagged_resend() {
+        let mut records = healthy_pair();
+        let index = message_positions(&records, KillObject::ID)[0];
+        let duplicate = records[index].clone();
+        records.insert(index + 1, duplicate);
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("out KillObject") && error.contains("duplicate lacks the resent flag"),
+            "{error}"
+        );
+
+        records[index + 1].bytes[0] |= ferroan_protocol::PacketFlags::RESENT;
+        let report = compare_capture(&capture(&records)).unwrap();
+        assert!(
+            report.contains("reported out KillObject: 0 and 1"),
+            "{report}"
+        );
+
+        let sequence = parse_packet(&records[index].bytes).unwrap().sequence;
+        let mut changed = KillObject::default();
+        changed.object_data.push(Default::default());
+        records[index + 1] = packet(Kind::UdpOut, sequence, true, true, &[], &changed);
+        let error = compare_capture(&capture(&records)).unwrap_err();
+        assert!(
+            error.contains("out KillObject") && error.contains("resent message differs"),
             "{error}"
         );
     }
