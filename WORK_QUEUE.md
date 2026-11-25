@@ -173,7 +173,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
-| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | READY after Q42 and Q53 |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (proposed split below) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -678,6 +678,17 @@ Q48 DONE (25 November 2026, `feat/q48-avatars`): At pin `c401bceecd`, `CompleteM
 Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 and Q83 come from Q46b's note that the Ferroan harness walk runs at Z 0: C# builds and stores a default terrain when the store has none, Ferroan leaves the ground at 0. Q82 does SQLite, generation and the harness; Q83 does MySQL and PostgreSQL, after QR22 settles how the region picks its backend from `StorageProvider`. Q84: Ferroan never answers `UUIDNameRequest`, which costs Ferrobot about 10 s per `nearby` call; it needs Q48 so that Ferrobot sees the other avatars at all. Q85 is Q43's child-throttle note; it waits for the child-agent items Q79 and Q80, and for QR26, which changes the same outgoing AgentData. Each item's scope, C# lines at `c401bceecd`, evidence and size are on its TASKS.md row. A fifth gap was not queued: C# `MakeRootAgent` lands a newcomer on another avatar's capsule with a filtered ray cast (`ScenePresence.cs` 1543–1602, `PrimsNonPhantomAgents`), but only when the physics engine supports filtered ray casts. BasicPhysics does not (`PhysicsScene.cs` 347–350 returns false, and BasicPhysics does not override it), so a `--physics basicphysics` C# region lands at ground height as the D38 stand-in does, and there is nothing in Phase 2 to match. It is recorded as a Phase 3 note in [docs/PLAN.md](docs/PLAN.md).
 
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
+
+### Q65 sizing and proposed split
+
+**BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
+
+Each proposed item below is estimated at half a day to a day, including its acceptance checks.
+
+1. **Capture full prim updates from Pin8.** Build and persist a small SQLite scene on C# with a root, linked child and representative shape and payload cases. Reopen it on C# and capture the outgoing full `ObjectUpdate` blocks. Use the server's `SupportViewerObjectsCache=false` setting for this capture so cacheable prims take the full path. Keep a redacted fixture and a store-to-capture UUID map. Check local-ID uniqueness and child-to-root references before masking IDs.
+2. **Encode full prim blocks.** Port `CreatePrimUpdateBlock` against that fixture, including the owner-only flags stand-in until P2.7b. Check block bytes, including relative transforms, pseudo-CRC, texture entry, material IDs, extra params, text, particles and sound. Use a persisted nonzero pseudo-CRC in the comparison so the clock-derived fallback does not require a byte mask.
+3. **Deliver stored linksets to each viewer.** Give loaded parts and avatars IDs from the frame's single counter. The requested `TerrainFrame::allocate_local_id` is in QR9 (#266), while this base has only the private scene method. Reuse QR22's region-filtered load, Q42's per-viewer priority queue and Q43's Task budget. Test root/child IDs across two viewers, full and avatar terse updates in the same queue, and reliable multi-packet delivery across the encoded-size boundary when the task bucket refills.
+4. **Prove the store swap and 500-prim delivery.** Stop the C# region after persistence, start Ferroan on that same `OpenSim.db`, and compare each received prim with the C# capture using the ID mapping. On the seeded load require all 500 distinct expected prims at the viewer and zero queue drops. Finish with `live compare region` reporting `region: match` and the Ferroan walk, avatars and teleport runs passing.
 
 ## Found while working
 
