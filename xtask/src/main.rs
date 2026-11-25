@@ -152,6 +152,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
+       cargo xtask permissions generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -216,8 +217,10 @@ fn main() -> ExitCode {
         ["check"] => check(false),
         ["pin3", "generate"] => pin3_oracle::run(true),
         ["pin3", "verify"] => pin3_oracle::run(false),
-        ["access", "generate"] => access_oracle::run(true),
-        ["access", "verify"] => access_oracle::run(false),
+        ["access", "generate"] => access_oracle::run("access", "AccessOracle", true),
+        ["permissions", "generate"] => access_oracle::run("permissions", "PermissionsOracle", true),
+        ["access", "verify"] => access_oracle::run("access", "AccessOracle", false),
+        ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),

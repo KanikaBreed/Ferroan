@@ -65,6 +65,8 @@ isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
 
 ## Where code comes from
 
+The [permissions oracle](tools/permissions-oracle/README.md) records the pinned scene dispatcher's viewer flags and object and parcel decisions. P2.7b and P2.7c consume the same cases.
+
 The grid harness schedules scenarios individually and waits for bounded
 GridUser/Presence logout state between them. This separates receipt of the
 viewer's LogoutReply from completion of asynchronous service cleanup before

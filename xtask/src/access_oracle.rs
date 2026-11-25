@@ -1,31 +1,31 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Observe full-region admission through the pinned scene and permissions module.
+//! Run the admission and object-permissions oracles against the pinned permissions module.
 
 use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-pub fn run(writing: bool) -> ExitCode {
-    match run_inner(writing) {
+pub fn run(name: &str, project: &str, writing: bool) -> ExitCode {
+    match run_inner(name, project, writing) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("access oracle: {error}");
+            eprintln!("permissions module oracle: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn run_inner(writing: bool) -> Result<(), String> {
+fn run_inner(name: &str, project: &str, writing: bool) -> Result<(), String> {
     let root = crate::repo_root();
     scrub_scratch_clone(&root);
     let reference =
         crate::http_oracle::reference_root().and_then(crate::oracle_reference::prepare)?;
     let revision = crate::http_oracle::pinned_and_checked(&root, &reference)?;
-    let artifacts = root.join(".scratch/access-oracle/artifacts");
+    let artifacts = root.join(format!(".scratch/{name}-oracle/artifacts"));
     fs::create_dir_all(&artifacts).map_err(|error| error.to_string())?;
-    let project = root.join("tools/access-oracle/AccessOracle.csproj");
+    let project = root.join(format!("tools/{name}-oracle/{project}.csproj"));
     if !dotnet(&root, &reference, &artifacts, &project, "build", false, &[]) {
         return Err(after_failure(&reference, "C# build failed"));
     }
@@ -33,7 +33,7 @@ fn run_inner(writing: bool) -> Result<(), String> {
     let action = if writing { "generate" } else { "verify" };
     let args = vec![
         action.to_owned(),
-        root.join("fixtures/access").display().to_string(),
+        root.join("fixtures").join(name).display().to_string(),
         "--revision".into(),
         revision,
     ];
@@ -70,7 +70,7 @@ fn restore_clone(reference: &Path) -> Result<(), String> {
     if status.is_empty() {
         return Ok(());
     }
-    eprintln!("access oracle: restoring scratch clone edits:\n{status}");
+    eprintln!("permissions module oracle: restoring scratch clone edits:\n{status}");
     git(&checkout, &["checkout", "--", "."])?;
     git(&checkout, &["clean", "-fd"])?;
     let status = git(&checkout, &["status", "--porcelain"])?;
@@ -157,12 +157,12 @@ fn dotnet(
     match command.status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            eprintln!("access oracle: dotnet exited with {status}");
+            eprintln!("permissions module oracle: dotnet exited with {status}");
             false
         }
         Err(error) => {
             eprintln!(
-                "access oracle: could not run dotnet (the .NET SDK is required for access fixtures): {error}"
+                "permissions module oracle: could not run dotnet (the .NET SDK is required for these fixtures): {error}"
             );
             false
         }

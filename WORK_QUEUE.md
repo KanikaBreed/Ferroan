@@ -171,7 +171,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46b |
-| Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
+| Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
