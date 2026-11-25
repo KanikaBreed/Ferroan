@@ -588,7 +588,7 @@ fn answer(
             }
             let leaving = presences.remove(&agent).map(|avatar| Leaving {
                 position: avatar.pose.position,
-                look_at: look_at(avatar.body.view().camera_at),
+                look_at: look_at(avatar.body.camera_at_axis()),
             });
             let _ = reply.send(leaving);
         }
@@ -652,6 +652,9 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             avatar.pose.velocity = [0.0, 0.0, 0.0];
             avatar.body.halt_command();
+            // C# sends a terse update here without the thresholds
+            // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
+            // frame's test, so a landing under 0.05 m away sends nothing.
             let _ = reply.send(TeleportStored {
                 pose: avatar.pose,
                 look_at,
@@ -832,7 +835,9 @@ fn first_local_id() -> u32 {
 }
 
 impl Scene {
-    /// The next local id. Zero is never handed out.
+    /// The next local id. Zero is never handed out. This is the region's
+    /// only allocator: avatars take their ids here, and a prim rezzed or
+    /// loaded later must take its id here too, or ids can collide.
     fn allocate_local_id(&mut self) -> u32 {
         self.next_local_id = self.next_local_id.wrapping_add(1);
         if self.next_local_id == 0 {
@@ -1145,10 +1150,81 @@ mod tests {
         let _ = watcher_feed.take_terse(0);
         wait_frames(&frame, 6);
         assert!(!walker_feed.has_updates());
+        // Root again: the wait starts over at the next reply, so a due walk
+        // is not sent for the frames `SendInitialData` takes.
+        frame.set_child(walker, false).unwrap();
+        reuse(&frame, walker);
+        frame.handshake_reply(walker).unwrap();
+        // A turn is due on every frame until it is sent.
+        let mut turn = walking_update(clock_ms(Instant::now()), 3, 0);
+        turn.body_rotation = [
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ];
+        frame.agent_update(walker, turn).unwrap();
+        wait_frames(&frame, 2);
+        assert!(
+            !walker_feed.has_updates(),
+            "the re-armed wait returns early"
+        );
+        wait_frames(&frame, 4);
+        assert_eq!(local_ids(&walker_feed.take_terse(0)), [walker_id]);
         // Leaving removes the viewer and its board entry.
         frame.remove(walker).unwrap().blocking_wait().unwrap();
         watcher_feed.offer_terse(1, walker_id);
         assert!(watcher_feed.take_terse(0).is_empty());
+    }
+
+    /// `BestAvatarResponsiveness` puts a viewer's own avatar on queue 0 and
+    /// the other on queue 1, so its own update leaves first even when the
+    /// other avatar's was offered earlier.
+    #[test]
+    fn each_viewer_takes_its_own_avatar_first() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let left = Uuid::from_u128(50);
+        let right = Uuid::from_u128(51);
+        let (left_id, left_feed, left_seeds) = attach(&frame, left);
+        let (right_id, right_feed, right_seeds) = attach(&frame, right);
+        for (agent, seeds) in [(left, &left_seeds), (right, &right_seeds)] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+            seeds.store(true, Ordering::Release);
+            frame.handshake_reply(agent).unwrap();
+        }
+        wait_frames(&frame, 7);
+        let _ = left_feed.take_terse(0);
+        let _ = right_feed.take_terse(0);
+        let turn = |agent: Uuid, sequence: u32, z: f32, w: f32| {
+            let mut update = walking_update(clock_ms(Instant::now()), sequence, 0);
+            update.body_rotation = [0.0, 0.0, z, w];
+            frame.agent_update(agent, update).unwrap();
+        };
+        // The right avatar turns a frame before the left one.
+        turn(
+            right,
+            2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        wait_frames(&frame, 1);
+        turn(
+            left,
+            2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        wait_frames(&frame, 2);
+        assert_eq!(local_ids(&left_feed.take_terse(0)), [left_id, right_id]);
+        assert_eq!(local_ids(&right_feed.take_terse(0)), [right_id, left_id]);
+        // And the other way round.
+        turn(left, 3, 0.0, 1.0);
+        wait_frames(&frame, 1);
+        turn(right, 3, 0.0, 1.0);
+        wait_frames(&frame, 2);
+        assert_eq!(local_ids(&left_feed.take_terse(0)), [left_id, right_id]);
+        assert_eq!(local_ids(&right_feed.take_terse(0)), [right_id, left_id]);
     }
 
     /// A login is a child agent in C# until `CompleteMovement`: the wait
@@ -1177,7 +1253,8 @@ mod tests {
         login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
         reuse(&frame, agent);
         let mut update = walking_update(clock_ms(Instant::now()), 2, 0);
-        update.camera_at = [0.0, 0.6, 0.8];
+        // Not a unit axis: C# stores it as sent (TB86).
+        update.camera_at = [0.3, 0.7, 0.2];
         frame.agent_update(agent, update).unwrap();
         wait_frames(&frame, 2);
         let stored = read(&frame, agent);
@@ -1188,7 +1265,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(leaving.position, stored.position);
-        assert_eq!(leaving.look_at, [0.0, 1.0, 0.0]);
+        assert_eq!(leaving.look_at, look_at([0.3, 0.7, 0.2]));
     }
 
     #[test]

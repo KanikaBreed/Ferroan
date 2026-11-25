@@ -178,8 +178,11 @@ impl LastSent {
 /// first `RegionHandshakeReply` makes it 2. Once the seed capability has been
 /// answered, each frame adds one and returns, and the frame that reaches 6
 /// runs `SendInitialData`, then returns too. The threshold test runs from the
-/// next frame. Becoming a child sets it to done and forgets the reply, so
-/// the next reply starts the wait again (line 7602).
+/// next frame. A far departure sets it to done and forgets the reply
+/// (`HasMovedAway(false)`, line 7602); for a near hop the reply is forgotten
+/// by the return's `CompleteMovement` before it sends a new handshake (lines
+/// 2428–2429). Either way the next reply starts the wait again. Ferroan
+/// forgets it when the avatar becomes a child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InitialData {
     need: i32,
@@ -320,14 +323,18 @@ pub fn avatar_block(avatar: &AvatarTerse) -> [u8; AVATAR_TERSE_LEN] {
     out
 }
 
-/// `ScenePresence.Lookat`: the camera at axis with Z dropped, then
-/// `Vector3.Normalize`, which gives zero at a length squared of 1e-6 or less.
+/// `ScenePresence.Lookat` (lines 648–655): the stored camera at axis, which
+/// C# never normalises (TB86), with Z dropped, then `Vector3.Normalize` on
+/// its SSE4.1 path (`Vector3.cs` lines 227–243), which divides each axis by
+/// the length and gives zero at a length squared of 1e-6 or less. The
+/// scalar path multiplies by the reciprocal, which can differ in the last
+/// bit; x86-64 servers take the SSE path.
 pub fn look_at(camera_at: [f32; 3]) -> [f32; 3] {
     let (x, y) = (camera_at[0], camera_at[1]);
     let length = x * x + y * y;
     if length > 1e-6 {
-        let scale = 1.0 / length.sqrt();
-        [x * scale, y * scale, 0.0]
+        let length = length.sqrt();
+        [x / length, y / length, 0.0]
     } else {
         [0.0; 3]
     }
@@ -608,6 +615,25 @@ mod tests {
         let u16_at = |at: usize| u16::from_le_bytes([block[at], block[at + 1]]);
         assert_eq!(u16_at(34), u16::MAX);
         assert_eq!(u16_at(36), float_to_u16(32.0, 128.0));
+    }
+
+    /// Dividing by the length, as the SSE path does, is not multiplying by
+    /// its reciprocal in the last bit.
+    #[test]
+    fn look_at_divides_by_the_length() {
+        let axis = [0.3, 0.7, 0.2];
+        let length = (0.3f32 * 0.3 + 0.7 * 0.7).sqrt();
+        let looked = look_at(axis);
+        assert_eq!(looked[0].to_bits(), (0.3f32 / length).to_bits());
+        assert_eq!(looked[1].to_bits(), (0.7f32 / length).to_bits());
+        let reciprocal = 1.0 / length;
+        assert_ne!(
+            [looked[0].to_bits(), looked[1].to_bits()],
+            [
+                (0.3f32 * reciprocal).to_bits(),
+                (0.7f32 * reciprocal).to_bits()
+            ]
+        );
     }
 
     #[test]

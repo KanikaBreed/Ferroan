@@ -1816,3 +1816,40 @@ async fn a_region_handshake_reply_is_forwarded_and_a_refusal_waits() {
     assert_eq!(seen.len(), 1);
     assert!(matches!(seen[0], SceneCall::HandshakeReply));
 }
+
+/// `DequeueOutgoing` reports the task category empty only below five
+/// waiting packets, so a fuller outbox does not ask the feed.
+#[tokio::test]
+async fn the_feed_is_asked_only_below_five_waiting_task_packets() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    // Exhaust the task bucket so the waiting packets stay.
+    let now = state.throttle_clock.now_secs();
+    assert!(state.throttle.try_spend(TASK, 10_000_000, now));
+    let mut ping = CompletePingCheck::default();
+    ping.ping_id.ping_id = 1;
+    for _ in 0..5 {
+        state.enqueue_task(&ping).unwrap();
+    }
+    source
+        .blocks
+        .lock()
+        .unwrap()
+        .push([0u8; crate::AVATAR_TERSE_LEN]);
+    state.maintain(&io).await.unwrap();
+    assert!(source.budgets.lock().unwrap().is_empty());
+    assert_eq!(state.pending_task.len(), 5);
+    state.pending_task.pop_back();
+    state.maintain(&io).await.unwrap();
+    assert_eq!(source.budgets.lock().unwrap().len(), 1);
+    assert!(io.sent.lock().unwrap().is_empty());
+}
