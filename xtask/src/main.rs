@@ -152,7 +152,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask live build
-       FERROAN_LIVE_PORT_BASE or --port-base <port> moves every live port and gives the run its own directory
+       FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]

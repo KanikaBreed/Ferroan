@@ -267,8 +267,11 @@ pub fn read_vec3_clamped(src: &[u8]) -> Result<[u16; 3], WireError> {
     Ok([read_u16(src), read_u16(&src[2..]), read_u16(&src[4..])])
 }
 
+/// `Quaternion.LengthSquared` on x86-64: `Sse41.DotProduct` adds the products
+/// in pairs, `(x² + y²) + (z² + w²)`. The scalar branch other machines take
+/// adds left to right. x86-64 is the reference (D71 in docs/DECISIONS.md).
 fn length_squared(q: Quat) -> f32 {
-    q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+    (q.x * q.x + q.y * q.y) + (q.z * q.z + q.w * q.w)
 }
 
 /// Twelve little-endian floats, X Y Z, after the OpenMetaverse normalize step.

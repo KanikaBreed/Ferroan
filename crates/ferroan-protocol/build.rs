@@ -724,6 +724,28 @@ fn generate(msgs: &[Message]) -> String {
     }
     s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
 
+    // Same decode and encode, but each packed quaternion keeps the x, y and z
+    // it was read with. A capture of a server packet is checked this way:
+    // `ToBytes` output read back and packed again is not always the same bytes.
+    s.push_str("pub fn reencode_body_keeping_quats(id: MsgId, body: &[u8]) -> Result<Vec<u8>, DecodeError> {\n    match id {\n");
+    let mut kept = std::collections::BTreeSet::new();
+    for m in msgs {
+        let id = match m.freq.as_str() {
+            "High" => format!("MsgId::High({})", m.number),
+            "Medium" => format!("MsgId::Medium({})", m.number),
+            _ => format!("MsgId::Low({})", m.number & 0xFFFF),
+        };
+        if !kept.insert(id.clone()) {
+            panic!("duplicate message id {id} ({})", m.name);
+        }
+        let _ = writeln!(
+            s,
+            "        {id} => {{ let m = {}::decode(body)?; let mut w = Writer::new(); w.keep_packed_quats(); m.encode_body(&mut w); Ok(w.buf) }},",
+            m.name
+        );
+    }
+    s.push_str("        _ => Err(DecodeError::Malformed(\"unknown message\")),\n    }\n}\n");
+
     // Same decode and encode, plus which body bytes are packed quaternions.
     // The client capture check allows only those bytes to differ, and only
     // by the packing tolerance. Server packets stay byte-exact.
@@ -759,7 +781,7 @@ fn generate(msgs: &[Message]) -> String {
         }
         let _ = writeln!(
             s,
-            "        {id} => {{ let mut m = {}::decode(body)?; m.scrub(); let mut w = Writer::new(); m.encode_body(&mut w); Ok(w.buf) }},",
+            "        {id} => {{ let mut m = {}::decode(body)?; m.scrub(); let mut w = Writer::new(); w.keep_packed_quats(); m.encode_body(&mut w); Ok(w.buf) }},",
             m.name
         );
     }

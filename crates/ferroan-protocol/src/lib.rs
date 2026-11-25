@@ -255,11 +255,22 @@ pub fn unpack_quat(v: Vec3) -> Quat {
 /// and `z`. [`pack_quat`] rescales with the OpenMetaverse length rule. Across
 /// the headings the protocol test scans, those two stay inside this gap. A
 /// larger gap is a different rotation, not packing.
-pub const QUAT_PACKING_TOLERANCE: f32 = 1.0e-5;
+pub const QUAT_PACKING_TOLERANCE: f32 = 2.0e-6;
+
+/// `Quaternion.LengthSquared` as OpenMetaverse computes it on x86-64.
+///
+/// With SSE4.1 it is `Sse41.DotProduct(q, q, 0xf1)`, and `DPPS` adds the
+/// products in pairs: `(x² + y²) + (z² + w²)`. The scalar branch other
+/// machines take adds left to right and can differ in the last bit. x86-64 is
+/// the reference (D71 in `docs/DECISIONS.md`).
+#[inline]
+pub fn quat_length_squared(q: Quat) -> f32 {
+    (q.x * q.x + q.y * q.y) + (q.z * q.z + q.w * q.w)
+}
 
 /// Pack a quaternion the way `Quaternion.ToBytes` does.
 ///
-/// When `x² + y² + z² + w² > 1e-6` or that length is `< 0.9999`, the three
+/// The length is [`quat_length_squared`]. When it is `> 1e-6` or `< 0.9999`, the three
 /// written floats are `scale * x`, `scale * y` and `scale * z`, with
 /// `scale = -1/sqrt(length)` when `w < 0` and `1/sqrt(length)` otherwise.
 /// Otherwise three zeroes are written. A real length cannot miss both
@@ -267,7 +278,7 @@ pub const QUAT_PACKING_TOLERANCE: f32 = 1.0e-5;
 /// [`unpack_quat`] is not the `w` that was scaled, so bytes this function just
 /// wrote are not always what a second call writes.
 pub fn pack_quat(q: Quat) -> [f32; 3] {
-    let norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    let norm = quat_length_squared(q);
     if norm > 1e-6 || norm < 0.9999 {
         let scale = if q.w < 0.0 {
             -1.0 / norm.sqrt()
@@ -286,6 +297,8 @@ pub struct Writer {
     pub buf: Vec<u8>,
     /// Set by [`Writer::record_quat_marks`]. Each `true` is a byte [`Writer::quat`] wrote.
     quat_marks: Option<Vec<bool>>,
+    /// Set by [`Writer::keep_packed_quats`].
+    keep_quats: bool,
 }
 
 impl Writer {
@@ -293,12 +306,20 @@ impl Writer {
         Self {
             buf: Vec::with_capacity(256),
             quat_marks: None,
+            keep_quats: false,
         }
     }
 
     /// Record which bytes the next [`Writer::quat`] calls write.
     pub(crate) fn record_quat_marks(&mut self) {
         self.quat_marks = Some(Vec::new());
+    }
+
+    /// Write each quaternion's x, y and z as they are, with no `ToBytes`
+    /// rescale. A packet decoded and encoded this way gives back its own bytes,
+    /// so redaction and the capture check change nothing but identities.
+    pub(crate) fn keep_packed_quats(&mut self) {
+        self.keep_quats = true;
     }
 
     /// Marks from [`Writer::record_quat_marks`], padded to the body length.
@@ -375,7 +396,11 @@ impl Writer {
     #[inline]
     pub fn quat(&mut self, q: Quat) {
         let start = self.buf.len();
-        let packed = pack_quat(q);
+        let packed = if self.keep_quats {
+            [q.x, q.y, q.z]
+        } else {
+            pack_quat(q)
+        };
         self.f32(packed[0]);
         self.f32(packed[1]);
         self.f32(packed[2]);
@@ -439,9 +464,13 @@ pub mod msgs {
 }
 
 pub use msgs::{
-    IdCheck, id_check, message_info, reencode_body, reencode_body_quat_marks, scrub_body,
+    IdCheck, id_check, message_info, reencode_body, reencode_body_keeping_quats,
+    reencode_body_quat_marks, scrub_body,
 };
-pub use packet::{client_datagram_within_quat_packing, reencode_datagram, scrub_datagram};
+pub use packet::{
+    client_datagram_within_quat_packing, reencode_datagram, reencode_datagram_keeping_quats,
+    scrub_datagram,
+};
 
 #[cfg(test)]
 mod tests {

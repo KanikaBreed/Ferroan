@@ -300,6 +300,26 @@ pub fn build_raw(
 /// acks. Zero-coding follows the flag on the datagram. Tranquillity sets
 /// that flag on some messages the template marks Unencoded.
 pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    reencode_with(data, crate::reencode_body)
+}
+
+/// [`reencode_datagram`], but each packed quaternion keeps the x, y and z it
+/// was read with instead of the `ToBytes` rescale.
+///
+/// A server packet in a capture is checked this way. C# writes `ToBytes`
+/// output; reading that back rebuilds `w`, and packing it again does not
+/// always give the same bytes (76 of the oracle batch's 1022 read-back
+/// quaternions differ). Every other byte must still match.
+/// Whether Ferroan packs as OpenMetaverse does is the oracle's
+/// `quaternion-batch` fixture, not this check.
+pub fn reencode_datagram_keeping_quats(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    reencode_with(data, crate::reencode_body_keeping_quats)
+}
+
+fn reencode_with(
+    data: &[u8],
+    body: fn(crate::MsgId, &[u8]) -> Result<Vec<u8>, DecodeError>,
+) -> Result<Vec<u8>, DecodeError> {
     let parsed = parse_packet(data)?;
     if !parsed.extra.is_empty() {
         return Err(DecodeError::Malformed("extra header is not re-encoded"));
@@ -307,10 +327,15 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if crate::message_info(parsed.id).is_none() {
         return Err(DecodeError::Malformed("unknown message"));
     }
-    let body = crate::reencode_body(parsed.id, &parsed.body)?;
+    let body = body(parsed.id, &parsed.body)?;
+    Ok(frame_like(&parsed, &body))
+}
+
+/// Frame `body` with the sequence, flags and acks of `parsed`.
+fn frame_like(parsed: &IncomingPacket, body: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(4 + body.len());
     parsed.id.encode(&mut payload);
-    payload.extend(body);
+    payload.extend_from_slice(body);
     let mut out = Vec::new();
     build_raw(
         &payload,
@@ -321,7 +346,7 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
         &parsed.acks,
         &mut out,
     );
-    Ok(out)
+    out
 }
 
 /// Whether `original` matches [`reencode_datagram`] except for packed
@@ -329,13 +354,18 @@ pub fn reencode_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
 ///
 /// The header, message, acks and every non-quaternion body byte must match.
 /// The body length must match, so a trailing byte is not treated as packing.
-/// A packet the server sent is not checked here: that path stays byte-exact.
+/// The zero-coding must be the canonical one: the original body framed again
+/// has to give back the original datagram. A packet the server sent is not
+/// checked here: see [`reencode_datagram_keeping_quats`].
 pub fn client_datagram_within_quat_packing(original: &[u8]) -> Result<bool, DecodeError> {
     let again = reencode_datagram(original)?;
     if again == original {
         return Ok(true);
     }
     let parsed = parse_packet(original)?;
+    if frame_like(&parsed, &parsed.body) != original {
+        return Ok(false);
+    }
     let encoded = parse_packet(&again)?;
     if parsed.flags != encoded.flags
         || parsed.sequence != encoded.sequence
@@ -407,30 +437,10 @@ fn f32_le(bytes: &[u8]) -> Option<f32> {
 }
 
 /// Decode, replace session, agent, name, circuit and IP fields, and encode
-/// again. Other bytes follow the same path as [`reencode_datagram`].
+/// again. Other bytes follow the same path as
+/// [`reencode_datagram_keeping_quats`], so packed quaternions keep their bytes.
 pub fn scrub_datagram(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
-    let parsed = parse_packet(data)?;
-    if !parsed.extra.is_empty() {
-        return Err(DecodeError::Malformed("extra header is not re-encoded"));
-    }
-    if crate::message_info(parsed.id).is_none() {
-        return Err(DecodeError::Malformed("unknown message"));
-    }
-    let body = crate::scrub_body(parsed.id, &parsed.body)?;
-    let mut payload = Vec::with_capacity(4 + body.len());
-    parsed.id.encode(&mut payload);
-    payload.extend(body);
-    let mut out = Vec::new();
-    build_raw(
-        &payload,
-        parsed.flags & PacketFlags::ZEROCODED != 0,
-        parsed.sequence,
-        parsed.reliable(),
-        parsed.resent(),
-        &parsed.acks,
-        &mut out,
-    );
-    Ok(out)
+    reencode_with(data, crate::scrub_body)
 }
 
 #[cfg(test)]
@@ -608,6 +618,72 @@ mod tests {
             let decoded = unpack_quat(Vec3::new(packed[0], packed[1], packed[2]));
             assert_eq!(crate::pack_quat(decoded), packed, "{name} is a fixed point");
         }
+    }
+
+    /// `fixtures/oracle/bytes/quaternion-batch.bin`: 4096 records of x, y, z,
+    /// w in, then `ToBytes`, then `GetBytes`, written by OpenMetaverse on
+    /// x86-64 with SSE4.1.
+    fn openmetaverse_batch() -> Vec<(Quat, [u8; 12])> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/oracle/bytes/quaternion-batch.bin");
+        let file = std::fs::read(path).unwrap();
+        assert_eq!(file.len() % 40, 0);
+        file.as_chunks::<40>()
+            .0
+            .iter()
+            .map(|record| {
+                let f = |at: usize| f32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+                let q = Quat::from_xyzw(f(0), f(4), f(8), f(12));
+                (q, record[16..28].try_into().unwrap())
+            })
+            .collect()
+    }
+
+    fn le_bytes(packed: [f32; 3]) -> Vec<u8> {
+        packed
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn pack_quat_matches_openmetaverse_on_thousands_of_quaternions() {
+        let batch = openmetaverse_batch();
+        assert_eq!(batch.len(), 4096);
+        let mut sequential_differs = 0;
+        let mut decoded_rescaled = 0;
+        for (index, (source, expect)) in batch.iter().enumerate() {
+            let packed = crate::pack_quat(*source);
+            assert_eq!(le_bytes(packed), expect, "record {index} {source:?}");
+            // Left-to-right sum, the scalar branch: what #211 wrote.
+            let norm = source.x * source.x
+                + source.y * source.y
+                + source.z * source.z
+                + source.w * source.w;
+            if norm != crate::quat_length_squared(*source) {
+                let scale = if source.w < 0.0 {
+                    -1.0 / norm.sqrt()
+                } else {
+                    1.0 / norm.sqrt()
+                };
+                let scalar = [scale * source.x, scale * source.y, scale * source.z];
+                if le_bytes(scalar) != expect {
+                    sequential_differs += 1;
+                }
+            }
+            // Every fourth record from the eighth on was read back with
+            // FromBytes, so its w is already the rebuilt one. The #173 short
+            // circuit wrote such x, y, z back unchanged.
+            if index >= 8 && index % 4 == 2 && packed != [source.x, source.y, source.z] {
+                decoded_rescaled += 1;
+            }
+        }
+        // The scalar sum writes other bytes for some of these records.
+        assert!(sequential_differs > 0, "the batch tells the two sums apart");
+        assert!(
+            decoded_rescaled > 0,
+            "the batch rescales a decoded quaternion"
+        );
     }
 
     #[test]
