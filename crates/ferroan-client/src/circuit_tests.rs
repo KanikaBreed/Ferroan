@@ -135,12 +135,20 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                 }))
             }
             SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
-            SceneCall::Flying => Ok(SceneReply::Flying(false)),
-            SceneCall::Read | SceneCall::Reuse => poses
+            SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
+                flying: false,
+                pose: crate::source_hop::HopPose::default(),
+            })),
+            SceneCall::Arrive(pose) => {
+                let position = *poses.entry(agent).or_insert(pose.position);
+                Ok(SceneReply::Pose(stored_pose(position)))
+            }
+            SceneCall::Read => Ok(poses
                 .get(&agent)
                 .copied()
-                .map(|position| SceneReply::Pose(stored_pose(position)))
-                .ok_or(crate::circuit::SceneRefused),
+                .map_or(SceneReply::Missing, |position| {
+                    SceneReply::Pose(stored_pose(position))
+                })),
             SceneCall::Places(ids) => {
                 let places = ids
                     .into_iter()
@@ -300,12 +308,12 @@ async fn a_teleport_outside_the_region_or_while_frozen_fails() {
 }
 
 #[tokio::test]
-async fn a_source_hop_asks_the_scene_whether_the_avatar_flies() {
+async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
     for flying in [false, true] {
         let flags = Arc::new(Mutex::new(None));
         let seen = Arc::clone(&flags);
         let hop = crate::source_hop::SourceHop::new(move |request, _out| {
-            *seen.lock().unwrap() = Some(request.flags);
+            *seen.lock().unwrap() = Some((request.flags, request.pose));
             Box::pin(async {})
         });
         let expect = identity(Uuid::from_u128(1));
@@ -317,7 +325,15 @@ async fn a_source_hop_asks_the_scene_whether_the_avatar_flies() {
         let mut state = State::new(captured_config(), config);
         state.peer = Some(peer());
         state.login_scene = Some(Arc::new(move |_agent, call| match call {
-            SceneCall::Flying => Ok(SceneReply::Flying(flying)).into(),
+            SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
+                flying,
+                pose: crate::source_hop::HopPose {
+                    center: [1.0, 2.0, 3.0],
+                    head_rotation: [0.0, 0.0, 0.6, 0.8],
+                    body_rotation: [0.0, 0.0, 0.8, 0.6],
+                },
+            }))
+            .into(),
             _ => Err(crate::circuit::SceneRefused).into(),
         }));
         let io = FakeIo::default();
@@ -333,7 +349,12 @@ async fn a_source_hop_asks_the_scene_whether_the_avatar_flies() {
         if flying {
             expected |= crate::teleport::IS_FLYING;
         }
-        assert_eq!(*flags.lock().unwrap(), Some(expected));
+        let (sent, pose) = flags.lock().unwrap().unwrap();
+        assert_eq!(sent, expected);
+        // The frame's kept values, not the last raw AgentUpdate.
+        assert_eq!(pose.center, [1.0, 2.0, 3.0]);
+        assert_eq!(pose.head_rotation, [0.0, 0.0, 0.6, 0.8]);
+        assert_eq!(pose.body_rotation, [0.0, 0.0, 0.8, 0.6]);
     }
 }
 
@@ -979,6 +1000,109 @@ async fn a_refused_always_run_is_kept_and_sent_again_before_the_next_update() {
 }
 
 #[tokio::test]
+async fn an_update_waits_while_the_always_run_before_it_is_refused() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let refuse_run = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (store, refuse) = (Arc::clone(&seen), Arc::clone(&refuse_run));
+    state.login_scene = Some(Arc::new(move |_agent, call| {
+        if matches!(call, SceneCall::AlwaysRun(_))
+            && refuse.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(crate::circuit::SceneRefused).into();
+        }
+        store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(call);
+        Ok(SceneReply::Applied).into()
+    }));
+    let io = FakeIo::default();
+    let mut run = ferroan_protocol::msgs::SetAlwaysRun::default();
+    run.agent_data.agent_id = expect.agent_id;
+    run.agent_data.session_id = expect.session_id;
+    run.agent_data.always_run = true;
+    let bytes = wire(&run, 4, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    for sequence in [5, 6] {
+        let mut message = ferroan_protocol::msgs::AgentUpdate::default();
+        message.agent_data.agent_id = expect.agent_id;
+        message.agent_data.session_id = expect.session_id;
+        let bytes = wire(&message, sequence, &[]);
+        state
+            .handle(
+                &io,
+                peer(),
+                &expect,
+                &parse_packet(&bytes).unwrap(),
+                bytes.len(),
+            )
+            .await
+            .unwrap();
+    }
+    // The frame would take the update, but not ahead of the always-run.
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(
+        state.pending_update.map(|(_, update)| update.sequence),
+        Some(6)
+    );
+    refuse_run.store(false, std::sync::atomic::Ordering::Relaxed);
+    state.maintain(&io).await.unwrap();
+    assert!(state.always_run.is_none() && state.pending_update.is_none());
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(matches!(seen[0], SceneCall::AlwaysRun(true)));
+    assert!(matches!(&seen[1], SceneCall::AgentUpdate(update) if update.sequence == 6));
+}
+
+#[tokio::test]
+async fn a_refused_update_is_held_and_posted_by_maintenance() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    state.login_scene = Some(Arc::new(move |_agent, call| {
+        assert!(matches!(call, SceneCall::AgentUpdate(_)));
+        if counted.fetch_add(1, Ordering::Relaxed) == 0 {
+            Err(crate::circuit::SceneRefused).into()
+        } else {
+            Ok(SceneReply::Applied).into()
+        }
+    }));
+    let mut message = ferroan_protocol::msgs::AgentUpdate::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    let bytes = wire(&message, 4, &[]);
+    let io = FakeIo::default();
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    assert!(state.pending_update.is_some());
+    state.maintain(&io).await.unwrap();
+    assert!(state.pending_update.is_none());
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
 async fn a_refused_always_run_is_sent_again_by_maintenance() {
     let expect = identity(Uuid::from_u128(1));
     let mut state = State::new(captured_config(), ArrivalConfig::default());
@@ -1365,7 +1489,8 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
     state.login_scene = Some(Arc::new(move |agent, call| {
-        let SceneCall::Pose(pose) = call else {
+        // The fresh login is one arrival call: no separate pose and release.
+        let SceneCall::Arrive(pose) = call else {
             return Err(crate::circuit::SceneRefused).into();
         };
         assert_eq!(agent, expect.agent_id);

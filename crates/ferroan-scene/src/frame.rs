@@ -7,13 +7,14 @@
 //! ground. Login, chat, a local teleport and a hop completion store the pose.
 //! An `AgentUpdate` stores movement intent. Teleport packets stay on the circuit.
 //!
-//! Nothing here blocks a caller. A post that needs an answer returns a
-//! [`Pending`] reply, a tokio oneshot the async caller awaits; the post itself
-//! is made before the method returns, so posts from one caller apply in order.
-//! `AgentUpdate`, `SetAlwaysRun` and the child flag are posted without a reply.
-//! Every post shares one bounded inbound queue and one coalesced wake. A
-//! request on the query channel first applies every post already queued.
-//! The serve's end removes the presence, so a later login starts fresh.
+//! Nothing here blocks a caller. A call that needs an answer goes on the
+//! request channel and returns a [`Pending`] reply, a tokio oneshot the async
+//! caller awaits. Each circuit has at most one such call outstanding, so that
+//! channel is bounded by the circuits. `AgentUpdate`, `SetAlwaysRun` and the
+//! child flag are posted with no answer on the bounded inbound queue, behind
+//! one coalesced wake. Every request first applies the posts already queued,
+//! so one caller's calls apply in the order it made them. The serve's end
+//! removes the presence, so a later login starts fresh.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,7 +91,18 @@ pub struct Presence {
     pub draw_distance: f32,
 }
 
-/// One answer from the frame thread. The post was already made.
+/// Where the departing avatar is, for a source hop: `ScenePresence.Flying`
+/// and the camera center and rotations `CopyTo` sends (the body rotation
+/// after `IsUsableRotation`, the camera from updates the filter kept).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Departure {
+    pub flying: bool,
+    pub camera_center: [f32; 3],
+    pub head_rotation: [f32; 4],
+    pub body_rotation: [f32; 4],
+}
+
+/// One answer from the frame thread. The call was already made.
 #[derive(Debug)]
 pub struct Pending<T>(oneshot::Receiver<T>);
 
@@ -100,8 +112,9 @@ impl<T> Pending<T> {
         self.0.await.map_err(|_| TerrainError::Stopped)
     }
 
-    /// Block this thread for the answer. Not for an async task.
-    pub fn blocking_wait(self) -> Result<T, TerrainError> {
+    /// Block this thread for the answer. Tests only: it panics on a tokio worker.
+    #[cfg(test)]
+    pub(crate) fn blocking_wait(self) -> Result<T, TerrainError> {
         self.0.blocking_recv().map_err(|_| TerrainError::Stopped)
     }
 }
@@ -131,20 +144,23 @@ enum Request {
     Frames {
         reply: oneshot::Sender<u64>,
     },
-    /// The serve ended. Queued posts apply first.
+    /// The serve ended.
     Remove {
         agent: Uuid,
         reply: oneshot::Sender<bool>,
     },
-    Wake,
-    Stop,
-}
-
-enum Inbound {
+    /// Seat a login pose for chat. The actor waits for the arrival.
     Pose {
         agent: Uuid,
         pose: Presence,
-        reply: Option<oneshot::Sender<Presence>>,
+        reply: oneshot::Sender<Presence>,
+    },
+    /// An arrival: the record with an actor at rest, or this pose when
+    /// there is no record yet.
+    Arrive {
+        agent: Uuid,
+        pose: Presence,
+        reply: oneshot::Sender<Presence>,
     },
     Places {
         agents: Vec<Uuid>,
@@ -160,16 +176,16 @@ enum Inbound {
         hop: HopReturn,
         reply: oneshot::Sender<Presence>,
     },
-    /// A later arrival that reuses the record. The command returns to rest.
-    Reuse {
+    Departure {
         agent: Uuid,
-        reply: oneshot::Sender<Option<Presence>>,
+        reply: oneshot::Sender<Option<Departure>>,
     },
-    /// `ScenePresence.Flying` for a hop's teleport flags.
-    Flying {
-        agent: Uuid,
-        reply: oneshot::Sender<bool>,
-    },
+    Wake,
+    Stop,
+}
+
+/// Posts with no answer. These share the bounded inbound queue.
+enum Inbound {
     /// The avatar is away, or has come back, for the physics tick.
     Child {
         agent: Uuid,
@@ -254,38 +270,35 @@ impl TerrainFrame {
         Ok(answer)
     }
 
-    /// Store one login pose. The answer is the record the frame thread kept.
+    /// Seat one login pose so chat can read it. The actor waits for the
+    /// arrival. The answer is the record the frame thread kept.
     pub fn post_login(
         &self,
         agent: Uuid,
         pose: Presence,
     ) -> Result<Pending<Presence>, TerrainError> {
         let (reply, answer) = pending();
-        self.push(Inbound::Pose {
-            agent,
-            pose,
-            reply: Some(reply),
-        })?;
+        self.request(Request::Pose { agent, pose, reply })?;
         Ok(answer)
     }
 
-    /// Store one login pose with no answer. A later post sees it.
-    pub fn seat_login(&self, agent: Uuid, pose: Presence) -> Result<(), TerrainError> {
-        self.push(Inbound::Pose {
-            agent,
-            pose,
-            reply: None,
-        })
+    /// An arrival. An existing record keeps its position and gets a physics
+    /// actor at rest. With no record, `pose` is stored with an actor. Either
+    /// way the actor exists after this one call.
+    pub fn arrive(&self, agent: Uuid, pose: Presence) -> Result<Pending<Presence>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::Arrive { agent, pose, reply })?;
+        Ok(answer)
     }
 
-    /// A forwarded same-region `TeleportLocationRequest`. One inbound slot.
+    /// A forwarded same-region `TeleportLocationRequest`.
     pub fn teleport_local(
         &self,
         agent: Uuid,
         request: LocalTeleport,
     ) -> Result<Pending<TeleportStored>, TerrainError> {
         let (reply, answer) = pending();
-        self.push(Inbound::Teleport {
+        self.request(Request::Teleport {
             agent,
             request,
             reply,
@@ -294,30 +307,22 @@ impl TerrainFrame {
     }
 
     /// A hop completion: the returning `UpdateAgent` as `CopyFrom` stores it,
-    /// then the new root actor at rest facing the look. One inbound slot.
+    /// then the new root actor at rest facing the look.
     pub fn complete_hop(
         &self,
         agent: Uuid,
         hop: HopReturn,
     ) -> Result<Pending<Presence>, TerrainError> {
         let (reply, answer) = pending();
-        self.push(Inbound::Complete { agent, hop, reply })?;
+        self.request(Request::Complete { agent, hop, reply })?;
         Ok(answer)
     }
 
-    /// A later arrival that already has a record. The position stays. The
-    /// command and the physics velocity return to rest. A miss is `None`.
-    pub fn reuse_arrival(&self, agent: Uuid) -> Result<Pending<Option<Presence>>, TerrainError> {
+    /// The departing avatar's flight and pose, after every post already
+    /// queued. A missing avatar is `None`.
+    pub fn departure(&self, agent: Uuid) -> Result<Pending<Option<Departure>>, TerrainError> {
         let (reply, answer) = pending();
-        self.push(Inbound::Reuse { agent, reply })?;
-        Ok(answer)
-    }
-
-    /// Whether the avatar flies now, after every post already queued. A
-    /// missing avatar is not flying. One inbound slot.
-    pub fn flying(&self, agent: Uuid) -> Result<Pending<bool>, TerrainError> {
-        let (reply, answer) = pending();
-        self.push(Inbound::Flying { agent, reply })?;
+        self.request(Request::Departure { agent, reply })?;
         Ok(answer)
     }
 
@@ -328,7 +333,7 @@ impl TerrainFrame {
     }
 
     /// One forwarded `AgentUpdate`. A missing avatar is dropped. One inbound
-    /// slot, no answer: a full queue drops the packet and the viewer sends another.
+    /// slot, no answer.
     pub fn agent_update(&self, agent: Uuid, update: MotionUpdate) -> Result<(), TerrainError> {
         self.push(Inbound::Agent { agent, update })
     }
@@ -345,7 +350,7 @@ impl TerrainFrame {
         agents: &[Uuid],
     ) -> Result<Pending<HashMap<Uuid, [f32; 3]>>, TerrainError> {
         let (reply, answer) = pending();
-        self.push(Inbound::Places {
+        self.request(Request::Places {
             agents: agents.to_vec(),
             reply,
         })?;
@@ -354,7 +359,7 @@ impl TerrainFrame {
 
     /// The serve for this agent ended. Every post already queued applies
     /// first, then the presence goes. The answer says whether one was there.
-    /// This does not take an inbound slot, so a full queue cannot keep a ghost.
+    /// A full inbound queue cannot keep a ghost.
     pub fn remove(&self, agent: Uuid) -> Result<Pending<bool>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::Remove { agent, reply })?;
@@ -434,23 +439,64 @@ fn next_tick(due: Instant, started: Instant) -> Instant {
     if next < started { started } else { next }
 }
 
-fn drain_inbound(
-    rx: &Receiver<Inbound>,
-    wake: &AtomicBool,
-    presences: &mut HashMap<Uuid, Avatar>,
-    map: Option<&Heightmap>,
-) {
+fn drain_inbound(rx: &Receiver<Inbound>, wake: &AtomicBool, presences: &mut HashMap<Uuid, Avatar>) {
     // Clear before draining. A post that still finds the flag set relies on
     // a wake already sent, and every request drains again on receipt.
     wake.swap(false, Ordering::AcqRel);
     while let Ok(post) = rx.try_recv() {
-        apply(post, presences, map);
+        apply(post, presences);
     }
 }
 
-fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) {
+fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>) {
     match post {
-        Inbound::Pose { agent, pose, reply } => {
+        Inbound::Child { agent, child } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.set_child(child);
+            }
+        }
+        Inbound::Agent { agent, update } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.apply(&update, &mut avatar.pose);
+            }
+        }
+        Inbound::AlwaysRun { agent, always_run } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.set_always_run(always_run);
+            }
+        }
+    }
+}
+
+/// One answered call. Returns false for `Stop`.
+fn answer(
+    request: Request,
+    presences: &mut HashMap<Uuid, Avatar>,
+    map: Option<&Heightmap>,
+    layers: &[TerrainLayer],
+    frames: u64,
+) -> bool {
+    match request {
+        Request::Height { x, y, reply } => {
+            let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
+            let _ = reply.send(height);
+        }
+        Request::Layers { reply } => {
+            let _ = reply.send(layers.to_vec());
+        }
+        Request::Read { agent, reply } => {
+            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
+        }
+        Request::Motion { agent, reply } => {
+            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
+        }
+        Request::Frames { reply } => {
+            let _ = reply.send(frames);
+        }
+        Request::Remove { agent, reply } => {
+            let _ = reply.send(presences.remove(&agent).is_some());
+        }
+        Request::Pose { agent, pose, reply } => {
             let mut avatar = Avatar::new(pose);
             // Chat can read this pose immediately. The actor waits until
             // the arrival packet samples it, or a tick would change the
@@ -458,11 +504,14 @@ fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heig
             avatar.body.set_actor(false);
             let pose = avatar.pose;
             presences.insert(agent, avatar);
-            if let Some(reply) = reply {
-                let _ = reply.send(pose);
-            }
+            let _ = reply.send(pose);
         }
-        Inbound::Places { agents, reply } => {
+        Request::Arrive { agent, pose, reply } => {
+            let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
+            arrive_at_rest(avatar);
+            let _ = reply.send(avatar.pose);
+        }
+        Request::Places { agents, reply } => {
             let mut found = HashMap::new();
             for agent in agents {
                 if let Some(avatar) = presences.get(&agent) {
@@ -471,7 +520,7 @@ fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heig
             }
             let _ = reply.send(found);
         }
-        Inbound::Teleport {
+        Request::Teleport {
             agent,
             request,
             reply,
@@ -497,7 +546,7 @@ fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heig
                 flags,
             });
         }
-        Inbound::Complete { agent, hop, reply } => {
+        Request::Complete { agent, hop, reply } => {
             let avatar = presences
                 .entry(agent)
                 .or_insert_with(|| Avatar::new(fresh(hop.position)));
@@ -510,35 +559,22 @@ fn apply(post: Inbound, presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heig
             arrive_at_rest(avatar);
             let _ = reply.send(avatar.pose);
         }
-        Inbound::Reuse { agent, reply } => {
-            let pose = presences.get_mut(&agent).map(|avatar| {
-                arrive_at_rest(avatar);
-                avatar.pose
+        Request::Departure { agent, reply } => {
+            let departure = presences.get(&agent).map(|avatar| {
+                let view = avatar.body.view();
+                Departure {
+                    flying: avatar.body.flying(),
+                    camera_center: view.camera_center,
+                    head_rotation: view.head_rotation,
+                    body_rotation: view.body_rotation,
+                }
             });
-            let _ = reply.send(pose);
+            let _ = reply.send(departure);
         }
-        Inbound::Flying { agent, reply } => {
-            let flying = presences
-                .get(&agent)
-                .is_some_and(|avatar| avatar.body.flying());
-            let _ = reply.send(flying);
-        }
-        Inbound::Child { agent, child } => {
-            if let Some(avatar) = presences.get_mut(&agent) {
-                avatar.body.set_child(child);
-            }
-        }
-        Inbound::Agent { agent, update } => {
-            if let Some(avatar) = presences.get_mut(&agent) {
-                avatar.body.apply(&update, &mut avatar.pose);
-            }
-        }
-        Inbound::AlwaysRun { agent, always_run } => {
-            if let Some(avatar) = presences.get_mut(&agent) {
-                avatar.body.set_always_run(always_run);
-            }
-        }
+        Request::Wake => {}
+        Request::Stop => return false,
     }
+    true
 }
 
 impl Avatar {
@@ -638,7 +674,7 @@ fn run(
     let mut frames = 0u64;
     let mut next = Instant::now() + frame_wait();
     loop {
-        drain_inbound(&inbound, &wake, &mut presences, map.as_ref());
+        drain_inbound(&inbound, &wake, &mut presences);
         let now = Instant::now();
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
@@ -652,30 +688,10 @@ fn run(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        // A query or a removal sees every post its caller made before it.
-        drain_inbound(&inbound, &wake, &mut presences, map.as_ref());
-        match request {
-            Request::Height { x, y, reply } => {
-                let height = map.as_ref().map(|map| map.height_at(x, y)).unwrap_or(0.0);
-                let _ = reply.send(height);
-            }
-            Request::Layers { reply } => {
-                let _ = reply.send(layers.clone());
-            }
-            Request::Read { agent, reply } => {
-                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
-            }
-            Request::Motion { agent, reply } => {
-                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
-            }
-            Request::Frames { reply } => {
-                let _ = reply.send(frames);
-            }
-            Request::Remove { agent, reply } => {
-                let _ = reply.send(presences.remove(&agent).is_some());
-            }
-            Request::Wake => {}
-            Request::Stop => break,
+        // A call sees every post its caller made before it.
+        drain_inbound(&inbound, &wake, &mut presences);
+        if !answer(request, &mut presences, map.as_ref(), &layers, frames) {
+            break;
         }
     }
 }
@@ -767,8 +783,22 @@ mod tests {
             .unwrap()
     }
 
-    fn reuse(frame: &TerrainFrame, agent: Uuid) -> Option<Presence> {
-        frame.reuse_arrival(agent).unwrap().blocking_wait().unwrap()
+    /// An arrival that has a record. The posted pose is never used.
+    fn reuse(frame: &TerrainFrame, agent: Uuid) -> Presence {
+        frame
+            .arrive(agent, pose_at([1.0, 1.0, 1.0]))
+            .unwrap()
+            .blocking_wait()
+            .unwrap()
+    }
+
+    fn flying(frame: &TerrainFrame, agent: Uuid) -> bool {
+        frame
+            .departure(agent)
+            .unwrap()
+            .blocking_wait()
+            .unwrap()
+            .is_some_and(|departure| departure.flying)
     }
 
     fn teleport(frame: &TerrainFrame, agent: Uuid, request: LocalTeleport) -> TeleportStored {
@@ -874,7 +904,7 @@ mod tests {
         assert!(after < 10, "frames {after}");
         assert_eq!(FRAME_TIME, 0.0909);
         assert_eq!(read(&frame, agent).position, [4.0, 5.0, 26.0]);
-        let released = reuse(&frame, agent).unwrap();
+        let released = reuse(&frame, agent);
         assert_eq!(released.position, [4.0, 5.0, 26.0]);
         std::thread::sleep(Duration::from_millis(400));
         let snapped = read(&frame, agent);
@@ -903,14 +933,12 @@ mod tests {
     #[test]
     fn a_full_scene_inbound_channel_reports_the_limit() {
         let (tx, _rx) = mpsc::sync_channel(SCENE_INBOUND);
-        let pose = pose_at([0.0, 0.0, 0.0]);
         for index in 0..SCENE_INBOUND {
             push_inbound(
                 &tx,
-                Inbound::Pose {
+                Inbound::AlwaysRun {
                     agent: Uuid::from_u128(index as u128),
-                    pose,
-                    reply: None,
+                    always_run: true,
                 },
             )
             .unwrap();
@@ -931,9 +959,7 @@ mod tests {
     fn posts_without_an_answer_are_applied_before_a_later_query() {
         let frame = TerrainFrame::start_without_map().unwrap();
         let agent = Uuid::from_u128(12);
-        frame
-            .seat_login(agent, pose_at([128.0, 128.0, 25.0]))
-            .unwrap();
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
         // Many posts share one wake. Each is applied before the query that follows.
         for sequence in 1..=100 {
             frame
@@ -973,7 +999,7 @@ mod tests {
         let other = Uuid::from_u128(14);
         login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
         login(&frame, other, pose_at([130.0, 128.0, 25.0]));
-        reuse(&frame, agent).unwrap();
+        reuse(&frame, agent);
         frame
             .agent_update(agent, walking_update(1_000, 500, CONTROL_AT_POS))
             .unwrap();
@@ -994,8 +1020,15 @@ mod tests {
                 .is_none()
         );
         assert!(!places(&frame, &[agent, other]).contains_key(&agent));
-        assert!(reuse(&frame, agent).is_none());
-        assert!(!frame.flying(agent).unwrap().blocking_wait().unwrap());
+        assert!(
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .is_none()
+        );
+        assert!(!flying(&frame, agent));
         // The other avatar stays.
         assert_eq!(places(&frame, &[other]).len(), 1);
 
@@ -1014,6 +1047,75 @@ mod tests {
         assert_eq!(walking.control_flags, CONTROL_AT_POS);
         assert!(walking.target_velocity[0] > 0.0);
         assert_eq!(read(&frame, agent).position, [10.0, 20.0, 25.0]);
+    }
+
+    #[test]
+    fn an_arrival_with_no_record_stores_the_pose_with_an_actor() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(17);
+        // No seat was posted first: the one arrival call stores and releases.
+        let stored = frame
+            .arrive(agent, pose_at([20.0, 30.0, 40.0]))
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert_eq!(stored.position, [20.0, 30.0, 40.0]);
+        frame
+            .agent_update(
+                agent,
+                walking_update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS),
+            )
+            .unwrap();
+        assert!(flying(&frame, agent));
+        wait_frames(&frame, 2);
+        assert!(read(&frame, agent).position[0] > 20.0);
+    }
+
+    #[test]
+    fn answered_calls_do_not_wait_behind_a_full_inbound_queue() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(18);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        // A flood of posts with no answer may fill the inbound queue. The
+        // answered calls do not use it, so none of them is refused.
+        for sequence in 0..(SCENE_INBOUND as u32 * 4) {
+            let _ = frame.agent_update(agent, walking_update(1_000, sequence + 1, 0));
+        }
+        let moved = teleport(&frame, agent, local([40.0, 40.0, 40.0], [1.0, 0.0, 0.0]));
+        assert_eq!(moved.pose.position, [40.0, 40.0, 40.0]);
+        assert_eq!(reuse(&frame, agent).position, [40.0, 40.0, 40.0]);
+        assert_eq!(places(&frame, &[agent]).len(), 1);
+    }
+
+    #[test]
+    fn a_departure_reports_the_kept_camera_and_a_usable_body_rotation() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(19);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        let mut first = walking_update(1_000, 1, 0);
+        first.body_rotation = [0.0, 0.0, 0.6, 0.8];
+        first.head_rotation = [0.0, 0.0, 0.0, 1.0];
+        first.camera_center = [100.0, 100.0, 30.0];
+        frame.agent_update(agent, first).unwrap();
+        // Movement significant (controls change), camera not (moved 0.005),
+        // and a body rotation that is not usable.
+        let mut second = walking_update(1_100, 2, CONTROL_AT_POS);
+        second.body_rotation = [0.0, 0.0, 0.0, 0.0];
+        second.head_rotation = [0.0, 0.0, 0.6, 0.8];
+        second.camera_center = [100.005, 100.0, 30.0];
+        frame.agent_update(agent, second).unwrap();
+        let departure = frame
+            .departure(agent)
+            .unwrap()
+            .blocking_wait()
+            .unwrap()
+            .unwrap();
+        assert!(!departure.flying);
+        assert_eq!(departure.camera_center, [100.0, 100.0, 30.0]);
+        assert_eq!(departure.body_rotation, [0.0, 0.0, 0.6, 0.8]);
+        assert_eq!(departure.head_rotation, [0.0, 0.0, 0.6, 0.8]);
     }
 
     #[test]
@@ -1112,13 +1214,13 @@ mod tests {
         frame
             .agent_update(agent, walking_update(1_000, 1, CONTROL_FLY))
             .unwrap();
-        assert!(!frame.flying(agent).unwrap().blocking_wait().unwrap());
+        assert!(!flying(&frame, agent));
         assert_eq!(
             teleport(&frame, agent, local([40.0, 40.0, 40.0], [1.0, 0.0, 0.0])).flags,
             16
         );
-        reuse(&frame, agent).unwrap();
-        assert!(frame.flying(agent).unwrap().blocking_wait().unwrap());
+        reuse(&frame, agent);
+        assert!(flying(&frame, agent));
         let flown = teleport(&frame, agent, local([50.0, 50.0, 60.0], [1.0, 0.0, 0.0]));
         assert_eq!(flown.flags, 16 | TELEPORT_IS_FLYING);
         // Still flying on the landing: the fly flag stays.
@@ -1126,7 +1228,7 @@ mod tests {
         frame
             .agent_update(agent, walking_update(2_000, 2, 0))
             .unwrap();
-        assert!(!frame.flying(agent).unwrap().blocking_wait().unwrap());
+        assert!(!flying(&frame, agent));
         let walked = teleport(&frame, agent, local([60.0, 60.0, 30.0], [1.0, 0.0, 0.0]));
         assert_eq!(walked.flags, 16);
         // A child has no actor and does not fly.
@@ -1134,14 +1236,8 @@ mod tests {
             .agent_update(agent, walking_update(3_000, 3, CONTROL_FLY))
             .unwrap();
         frame.set_child(agent, true).unwrap();
-        assert!(!frame.flying(agent).unwrap().blocking_wait().unwrap());
-        assert!(
-            !frame
-                .flying(Uuid::from_u128(99))
-                .unwrap()
-                .blocking_wait()
-                .unwrap()
-        );
+        assert!(!flying(&frame, agent));
+        assert!(!flying(&frame, Uuid::from_u128(99)));
     }
 
     #[test]
@@ -1149,7 +1245,7 @@ mod tests {
         let frame = TerrainFrame::start_without_map().unwrap();
         let agent = Uuid::from_u128(16);
         login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
-        reuse(&frame, agent).unwrap();
+        reuse(&frame, agent);
         // Before departure: walking, far 96, always-run on.
         frame
             .agent_update(agent, walking_update(1_000, 1, CONTROL_AT_POS))
@@ -1186,7 +1282,7 @@ mod tests {
         assert_eq!(view.head_rotation, [0.0, 0.0, 0.25, 0.75]);
         assert_eq!(view.target_velocity, [0.0, 0.0, 0.0]);
         assert_eq!(view.draw_distance, 200.0);
-        assert!(frame.flying(agent).unwrap().blocking_wait().unwrap());
+        assert!(flying(&frame, agent));
         // A far below 32 is clamped as `DrawDistance` is.
         let mut near = standing_return([20.0, 30.0, 40.0]);
         near.data.far = 8.0;
@@ -1208,7 +1304,6 @@ mod tests {
                 draw_distance: 64.0,
             },
         );
-        assert!(reuse(&frame, Uuid::from_u128(99)).is_none());
         frame.set_child(Uuid::from_u128(99), true).unwrap();
         frame
             .agent_update(agent, walking_update(1_000, 1, CONTROL_AT_POS))
@@ -1232,7 +1327,7 @@ mod tests {
         let parked = read(&frame, agent).position;
         wait_frames(&frame, 2);
         assert_eq!(read(&frame, agent).position, parked);
-        let reused = reuse(&frame, agent).unwrap();
+        let reused = reuse(&frame, agent);
         assert_eq!(reused.velocity, [0.0, 0.0, 0.0]);
         assert_eq!(reused.position[0], parked[0]);
         assert_eq!(reused.position[1], parked[1]);

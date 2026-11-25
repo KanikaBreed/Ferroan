@@ -482,8 +482,11 @@ impl Body {
             return;
         }
 
-        self.motion.body_rotation = update.body_rotation;
-        pose.rotation = update.body_rotation;
+        // The `Rotation` setter keeps the previous value for one that is not usable.
+        if usable_rotation(update.body_rotation) {
+            self.motion.body_rotation = update.body_rotation;
+            pose.rotation = update.body_rotation;
+        }
 
         let mut movement_flags = update.control_flags & (NORM_MASK | NUDGE_MASK);
         let old_flags = self.motion.movement_flags & (NORM_MASK | NUDGE_MASK);
@@ -993,13 +996,19 @@ mod tests {
     }
 
     /// One circuit of the capture: a fresh client view and presence per
-    /// `UseCircuitCode`, and the reliable sequences that circuit has seen.
+    /// `UseCircuitCode`, the sequences that circuit has seen, and its burst.
     struct Replay {
         body: Body,
         pose: Presence,
-        reliable: std::collections::HashSet<u32>,
+        seen: std::collections::HashSet<u32>,
+        burst: usize,
         updates: u32,
     }
+
+    /// `UseCircuitCode`s this close together are one login burst: the build
+    /// scenario logs the owner and the chat account in together, and the
+    /// redaction gives both the same ids.
+    const BURST_MS: u64 = 100;
 
     #[test]
     fn session_capture_agent_updates_become_movement_intent() {
@@ -1013,10 +1022,13 @@ mod tests {
         );
         let bytes = std::fs::read(path).unwrap();
         let records = read_capture(&bytes).unwrap();
-        // The capture holds nine circuits of the same agent. Each `UseCircuitCode`
-        // starts a new circuit: LLClientView's filter and the presence start
-        // over. A reliable datagram seen twice on one circuit is dropped by
-        // the UDP server before the handler (`PacketArchive`).
+        // The capture holds nine circuits under one redacted agent id. Each
+        // `UseCircuitCode` starts a new circuit: LLClientView's filter and the
+        // presence start over. Two circuits opened in one burst (the owner and
+        // the chat account of `build_scenario`) share ids, so a datagram goes
+        // to the newest circuit of the latest burst that has not seen its
+        // sequence. One every circuit of that burst has seen is a reliable
+        // duplicate the UDP server drops (`PacketArchive`).
         let mut circuits: Vec<Replay> = Vec::new();
         let mut agent_updates = 0u32;
         let mut always_runs = 0u32;
@@ -1024,6 +1036,7 @@ mod tests {
         let mut camera_kept = 0u32;
         let mut duplicates = 0u32;
         let mut filtered = 0u32;
+        let mut last_open: Option<u64> = None;
 
         for record in records {
             if record.kind != Kind::UdpIn {
@@ -1033,25 +1046,40 @@ mod tests {
                 continue;
             };
             if packet.id == UseCircuitCode::ID {
+                let burst = match (circuits.last(), last_open) {
+                    (Some(last), Some(at)) if record.time_ms.saturating_sub(at) <= BURST_MS => {
+                        last.burst
+                    }
+                    (Some(last), _) => last.burst + 1,
+                    (None, _) => 0,
+                };
+                last_open = Some(record.time_ms);
                 let pose = login_pose();
                 circuits.push(Replay {
                     body: Body::new(&pose),
                     pose,
-                    reliable: std::collections::HashSet::from([packet.sequence]),
+                    seen: std::collections::HashSet::from([packet.sequence]),
+                    burst,
                     updates: 0,
                 });
                 continue;
             }
-            let Some(circuit) = circuits.last_mut() else {
+            let Some(latest) = circuits.last().map(|circuit| circuit.burst) else {
                 continue;
             };
-            if packet.reliable() && !circuit.reliable.insert(packet.sequence) {
+            let Some(circuit) = circuits
+                .iter_mut()
+                .rev()
+                .take_while(|circuit| circuit.burst == latest)
+                .find(|circuit| !circuit.seen.contains(&packet.sequence))
+            else {
                 if packet.id == AgentUpdate::ID {
                     agent_updates += 1;
                     duplicates += 1;
                 }
                 continue;
-            }
+            };
+            circuit.seen.insert(packet.sequence);
             if packet.id == AgentUpdate::ID {
                 let message = packet.decode::<AgentUpdate>().unwrap();
                 agent_updates += 1;
@@ -1102,9 +1130,11 @@ mod tests {
             }
         }
         let walked: Vec<&Replay> = circuits.iter().filter(|c| c.updates > 0).collect();
+        let bursts = circuits.last().map_or(0, |circuit| circuit.burst + 1);
         assert_eq!(
             (
                 circuits.len(),
+                bursts,
                 walked.len(),
                 agent_updates,
                 movement_kept,
@@ -1113,7 +1143,7 @@ mod tests {
                 filtered,
                 always_runs,
             ),
-            (9, 2, 9, 8, 3, 1, 0, 0)
+            (9, 7, 3, 9, 9, 4, 0, 0, 0)
         );
 
         // The walk circuit: seven held-forward updates, all kept for movement.
@@ -1131,20 +1161,24 @@ mod tests {
         assert!((view.target_velocity[1] - 0.104_168_13).abs() < 1.0e-5);
         assert_eq!(view.target_velocity[2], 0.0);
 
-        // The last circuit with updates stands: no controls held, no command.
-        let last = walked[1];
-        let view = last.body.view();
-        assert_eq!(last.updates, 1);
-        assert_eq!(last.pose.control_flags, view.control_flags);
-        assert_eq!(view.control_flags, 0);
-        assert_eq!(view.movement_flags, 0);
-        assert_eq!(view.target_velocity, [0.0, 0.0, 0.0]);
-        assert_eq!(view.delayed_stop_ms, -1);
-        assert!(!view.flying && !view.sit_ground && !view.always_run);
-        assert_eq!(view.flags, 0);
-        assert_eq!(view.state, 0);
-        assert_eq!(view.draw_distance, 128.0);
-        assert_eq!(last.pose.draw_distance, 128.0);
+        // The owner and the chat account of the build burst: each sends one
+        // standing update (the same sequence 7 on its own circuit), and each
+        // stands: no controls held, no command.
+        assert_eq!(walked[1].burst, walked[2].burst);
+        for stand in &walked[1..] {
+            let view = stand.body.view();
+            assert_eq!(stand.updates, 1);
+            assert_eq!(stand.pose.control_flags, view.control_flags);
+            assert_eq!(view.control_flags, 0);
+            assert_eq!(view.movement_flags, 0);
+            assert_eq!(view.target_velocity, [0.0, 0.0, 0.0]);
+            assert_eq!(view.delayed_stop_ms, -1);
+            assert!(!view.flying && !view.sit_ground && !view.always_run);
+            assert_eq!(view.flags, 0);
+            assert_eq!(view.state, 0);
+            assert_eq!(view.draw_distance, 128.0);
+            assert_eq!(stand.pose.draw_distance, 128.0);
+        }
     }
 
     #[test]

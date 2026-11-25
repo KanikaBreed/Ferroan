@@ -678,13 +678,39 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
-        SceneCall::Reuse => answered(frame.reuse_arrival(agent), |stored| {
-            stored.map(pose_reply).ok_or(SceneRefused)
-        }),
+        SceneCall::Arrive(pose) => answered(
+            frame.arrive(
+                agent,
+                ferroan_scene::Presence {
+                    position: pose.position,
+                    rotation: pose.rotation,
+                    velocity: pose.velocity,
+                    control_flags: pose.control_flags,
+                    draw_distance: pose.draw_distance,
+                },
+            ),
+            |stored| Ok(pose_reply(stored)),
+        ),
         SceneCall::Read => answered(frame.presence(agent), |stored| {
-            stored.map(pose_reply).ok_or(SceneRefused)
+            Ok(stored.map_or(SceneReply::Missing, pose_reply))
         }),
-        SceneCall::Flying => answered(frame.flying(agent), |flying| Ok(SceneReply::Flying(flying))),
+        SceneCall::Departure => answered(frame.departure(agent), |departure| {
+            let departure = departure.map_or(
+                ferroan_client::SceneDeparture {
+                    flying: false,
+                    pose: ferroan_client::HopPose::default(),
+                },
+                |departure| ferroan_client::SceneDeparture {
+                    flying: departure.flying,
+                    pose: ferroan_client::HopPose {
+                        center: departure.camera_center,
+                        head_rotation: departure.head_rotation,
+                        body_rotation: departure.body_rotation,
+                    },
+                },
+            );
+            Ok(SceneReply::Departure(departure))
+        }),
         SceneCall::Places(ids) => answered(frame.chat_positions(&ids), |places| {
             Ok(SceneReply::Places(places))
         }),
@@ -769,6 +795,8 @@ async fn serve_agent(
         grid_user,
         presence,
     } = clients;
+    // The guard goes first so even an early return or a panic removes the presence.
+    let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id);
     let mut root_arrived = false;
     let already_stopped = *stop.borrow_and_update();
     let (position, land) = if already_stopped {
@@ -981,9 +1009,7 @@ async fn serve_agent(
     // ghost and a later login of this agent posts a fresh pose and filter.
     // A same-agent replacement joins this task first, so this runs before
     // the new serve posts.
-    if let Some(frame) = terrain.as_ref() {
-        forget_presence(frame, agent.expect.agent_id).await;
-    }
+    forget.finish().await;
     // The reply is already out. Close the neighbour child before the harness
     // stops the proxy, the same moment a root logout closes known children.
     if agent.still_root() {
@@ -1006,13 +1032,39 @@ async fn serve_agent(
     .await;
 }
 
-async fn forget_presence(frame: &TerrainFrame, agent: Uuid) {
-    let removed = match frame.remove(agent) {
-        Ok(pending) => pending.wait().await,
-        Err(error) => Err(error),
-    };
-    if let Err(error) = removed {
-        tracing::debug!("ferroan-region: scene presence was not removed: {error}");
+/// Removes one agent's scene presence when its serve ends. `finish` awaits
+/// the removal. A serve that panics or is aborted drops this instead, which
+/// still queues the removal before a replacement can post.
+struct ForgetPresence {
+    frame: Option<Arc<TerrainFrame>>,
+    agent: Uuid,
+}
+
+impl ForgetPresence {
+    fn new(frame: Option<Arc<TerrainFrame>>, agent: Uuid) -> Self {
+        Self { frame, agent }
+    }
+
+    async fn finish(mut self) {
+        let Some(frame) = self.frame.take() else {
+            return;
+        };
+        let removed = match frame.remove(self.agent) {
+            Ok(pending) => pending.wait().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = removed {
+            tracing::debug!("ferroan-region: scene presence was not removed: {error}");
+        }
+    }
+}
+
+impl Drop for ForgetPresence {
+    fn drop(&mut self) {
+        if let Some(frame) = self.frame.take() {
+            // The frame applies this call before any later one; nothing waits for it.
+            let _ = frame.remove(self.agent);
+        }
     }
 }
 
@@ -1805,6 +1857,109 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_replaced_login_removes_the_old_presence_before_the_new_one_posts() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(Arc::clone(&frame)),
+        )
+        .await;
+        let first = harness.admit(false, false).await;
+        let agent = first.agent_id;
+        let old = open(&harness, first).await;
+        wait_packet(&old, RegionHandshake::ID).await;
+        movement(&old, first, 2).await;
+        wait_arrival(&old).await;
+        walk(&old, first, 50).await;
+        let mut run = SetAlwaysRun::default();
+        run.agent_data.agent_id = agent;
+        run.agent_data.session_id = first.session_id;
+        run.agent_data.always_run = true;
+        send(&old, &run, 51).await;
+        scene_until(
+            &frame,
+            |f| f.motion(agent).unwrap(),
+            |motion| motion.is_some_and(|motion| motion.always_run),
+        )
+        .await;
+        // A second login for the same agent replaces the first circuit. The
+        // old serve ends through `replaced()` and removes its presence; the
+        // new serve's seat then posts a fresh one.
+        let second = harness.admit(true, false).await;
+        wait_packet(&old, DisableSimulator::ID).await;
+        let seated = scene_until(
+            &frame,
+            |f| f.motion(agent).unwrap(),
+            |motion| motion.is_some_and(|motion| !motion.always_run),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seated.target_velocity, [0.0, 0.0, 0.0]);
+        let socket = open(&harness, second).await;
+        wait_packet(&socket, RegionHandshake::ID).await;
+        movement(&socket, second, 2).await;
+        wait_arrival(&socket).await;
+        walk(&socket, second, 3).await;
+        scene_until(
+            &frame,
+            |f| f.motion(agent).unwrap(),
+            |motion| motion.is_some_and(|motion| motion.control_flags == 1),
+        )
+        .await;
+        harness.finish().await.unwrap();
+        assert!(
+            frame
+                .presence(agent)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_serve_still_removes_its_presence() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let agent = Uuid::from_u128(77);
+        frame
+            .post_login(
+                agent,
+                ferroan_scene::Presence {
+                    position: [1.0, 2.0, 3.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0; 3],
+                    control_flags: 0,
+                    draw_distance: 255.0,
+                },
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        // A panicking or aborted serve never reaches `finish`.
+        drop(ForgetPresence::new(Some(Arc::clone(&frame)), agent));
+        assert!(
+            frame
+                .presence(agent)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // `finish` takes the frame, so the drop after it does nothing more.
+        ForgetPresence::new(Some(Arc::clone(&frame)), agent)
+            .finish()
+            .await;
+        ForgetPresence::new(None, agent).finish().await;
     }
 
     #[tokio::test]

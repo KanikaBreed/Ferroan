@@ -1079,9 +1079,8 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
     let Some(position) = json_vec3(args.get("position")) else {
         return false;
     };
-    let look_at = json_vec3(args.get("at_axis"))
-        .map(look_axis)
-        .unwrap_or([1.0, 0.0, 0.0]);
+    let velocity = json_vec3(args.get("velocity")).unwrap_or([0.0; 3]);
+    let look_at = arrival_look(json_vec3(args.get("at_axis")).unwrap_or([0.0; 3]), velocity);
     let origin = json_uuid(args.get("region_id")).unwrap_or_else(Uuid::nil);
     let callback = args
         .get("cb_uri")
@@ -1094,7 +1093,7 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
             position,
             look_at,
             origin,
-            velocity: json_vec3(args.get("velocity")).unwrap_or([0.0; 3]),
+            velocity,
             far: json_real(args.get("far")),
             body_rotation: json_quat(args.get("body_rotation")),
             head_rotation: json_quat(args.get("head_rotation")),
@@ -1237,16 +1236,37 @@ fn json_quat(value: Option<&Value>) -> [f32; 4] {
     parsed.unwrap_or([0.0, 0.0, 0.0, 1.0])
 }
 
-/// Flatten Z. A missing or near-zero heading stays the arrival default.
-fn look_axis(at_axis: [f32; 3]) -> [f32; 3] {
-    if at_axis[0].is_finite()
-        && at_axis[1].is_finite()
-        && at_axis[0].abs() + at_axis[1].abs() > 1.0e-6
-    {
-        [at_axis[0], at_axis[1], 0.0]
+/// OpenMetaverse `Vector3.Normalize` on x86-64 (the SSE4.1 path): a length
+/// squared above 1e-6 divides by the square root, anything else is zero.
+fn om_normalize(v: [f32; 3]) -> [f32; 3] {
+    let length_squared = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if length_squared > 1.0e-6 {
+        let length = length_squared.sqrt();
+        [v[0] / length, v[1] / length, v[2] / length]
     } else {
-        [1.0, 0.0, 0.0]
+        [0.0; 3]
     }
+}
+
+/// `CompleteMovement`'s arrival look (`ScenePresence.cs` 2343–2356 at pin
+/// `c401bceecd`): `Lookat` (the copied at axis with Z cleared, normalised),
+/// with Z cleared and normalised again; when that is under 0.01 in X and Y,
+/// the copied velocity the same way; when that is too, `(0.99, 0.042, 0)`.
+/// `AgentMovementComplete` sends it (2441) and the body turns to it (2405).
+/// A landmark teleport sends a zero look, which `SetLookAt` stores as unit Z
+/// (TB79), so it reaches the fallback.
+fn arrival_look(at_axis: [f32; 3], velocity: [f32; 3]) -> [f32; 3] {
+    let flat = |v: [f32; 3]| [v[0], v[1], 0.0];
+    let short = |v: [f32; 3]| v[0].abs() < 0.01 && v[1].abs() < 0.01;
+    let camera = om_normalize(flat(at_axis));
+    let mut look = om_normalize(flat(camera));
+    if short(look) {
+        look = om_normalize(flat(velocity));
+        if short(look) {
+            look = [0.99, 0.042, 0.0];
+        }
+    }
+    look
 }
 
 fn plain_flag(value: bool) -> Response {
@@ -3210,6 +3230,30 @@ mod tests {
             .unwrap();
         let response = handle(State(state.clone()), ConnectInfo(peer), not_object).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn the_arrival_look_falls_back_as_complete_movement_does() {
+        assert_eq!(
+            arrival_look([0.0, 2.0, 5.0], [9.0, 0.0, 0.0]),
+            [0.0, 1.0, 0.0]
+        );
+        let look = arrival_look([3.0, 4.0, 0.0], [0.0; 3]);
+        assert!((look[0] - 0.6).abs() < 1.0e-6 && (look[1] - 0.8).abs() < 1.0e-6);
+        // A landmark teleport: unit Z, so the copied velocity decides.
+        assert_eq!(
+            arrival_look([0.0, 0.0, 1.0], [0.0, -2.0, 1.0]),
+            [0.0, -1.0, 0.0]
+        );
+        // Neither: the fixed heading.
+        assert_eq!(arrival_look([0.0, 0.0, 1.0], [0.0; 3]), [0.99, 0.042, 0.0]);
+        // A short axis that still normalises keeps its heading; one too
+        // short to normalise is zero and falls through.
+        assert_eq!(arrival_look([0.005, 0.0, 0.0], [0.0; 3]), [1.0, 0.0, 0.0]);
+        assert_eq!(
+            arrival_look([0.0005, 0.0, 0.0], [0.0; 3]),
+            [0.99, 0.042, 0.0]
+        );
     }
 
     #[test]

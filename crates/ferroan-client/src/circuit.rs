@@ -240,27 +240,35 @@ pub struct AgentMotionUpdate {
 /// What the circuit asks the frame thread to do.
 #[derive(Clone, Debug)]
 pub enum SceneCall {
-    /// Store a full login pose. One inbound slot.
+    /// Seat a login pose for chat. The actor waits for the arrival.
     Pose(LoginPose),
-    /// `ChatFromViewer` forwarded so distance uses the stored poses. One inbound slot.
+    /// An arrival. An existing record keeps its position and gets an actor
+    /// at rest; with none, this pose is stored with an actor. One call.
+    Arrive(LoginPose),
+    /// `ChatFromViewer` forwarded so distance uses the stored poses.
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. The frame owns the landing
-    /// and adds `IsFlying` when the avatar flies. One inbound slot.
+    /// and adds `IsFlying` when the avatar flies.
     Teleport(TeleportRequest),
-    /// Hop completion with the returning `UpdateAgent`. One inbound slot.
+    /// Hop completion with the returning `UpdateAgent`.
     Complete(crate::return_hop::ReturnPose),
-    /// A later arrival that reuses the record. The position stays. The command
-    /// and the physics velocity return to rest. A miss is an error. One inbound slot.
-    Reuse,
-    /// `ScenePresence.Flying` for a source hop's teleport flags. One inbound slot.
-    Flying,
-    /// `AgentUpdate`. One inbound slot, no answer. A full queue drops the packet.
+    /// `ScenePresence.Flying` and the pose `CopyTo` sends, for a source hop.
+    Departure,
+    /// `AgentUpdate`. One inbound slot, no answer. A refused post waits on
+    /// the circuit (the latest only) and is posted again.
     AgentUpdate(AgentMotionUpdate),
-    /// `SetAlwaysRun`. One inbound slot, no answer. A refused post is kept
-    /// on the circuit and sent again.
+    /// `SetAlwaysRun`. One inbound slot, no answer. A refused post waits on
+    /// the circuit (the latest only) and is posted again first.
     AlwaysRun(bool),
-    /// The stored pose. A miss is an error. This does not take an inbound slot.
+    /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
+}
+
+/// The departing avatar for a source hop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneDeparture {
+    pub flying: bool,
+    pub pose: HopPose,
 }
 
 /// The frame's answer. A landing or a hop completion comes back as [`SceneReply::Pose`].
@@ -269,13 +277,15 @@ pub enum SceneReply {
     Pose(LoginPose),
     Places(HashMap<Uuid, [f32; 3]>),
     Moved(SceneMove),
-    Flying(bool),
+    Departure(SceneDeparture),
+    /// The frame has no record for this agent. Not a refusal.
+    Missing,
     /// A post with no answer was queued. No packet uses it.
     Applied,
 }
 
-/// The frame did not take a post (a full inbound queue or a stopped frame),
-/// or had no record to answer with.
+/// The frame did not take a post: a full inbound queue or a stopped frame.
+/// A missing record is [`SceneReply::Missing`], never this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneRefused;
 
@@ -506,12 +516,13 @@ struct State {
     /// The latest `SetAlwaysRun` the frame has not taken yet, for this agent.
     /// Sent again before the next `AgentUpdate` and on each maintenance pass.
     always_run: Option<(Uuid, bool)>,
+    /// The latest `AgentUpdate` the frame has not taken yet. It waits behind
+    /// a refused `SetAlwaysRun`, so it is never applied with the old value.
+    pending_update: Option<(Uuid, AgentMotionUpdate)>,
     /// A child `CompleteAgentMovement` is waiting for `UpdateAgent`.
     return_wait: bool,
     /// This demotion already started a promotion. Cleared once the agent is root.
     return_started: bool,
-    /// Last `AgentUpdate` camera and rotations. A hop copies this into `UpdateAgent`.
-    viewer_pose: HopPose,
 }
 impl State {
     #[cfg(test)]
@@ -571,9 +582,9 @@ impl State {
             return_slot,
             login_scene: None,
             always_run: None,
+            pending_update: None,
             return_wait: false,
             return_started: false,
-            viewer_pose: HopPose::default(),
         }
     }
 
@@ -612,7 +623,7 @@ impl State {
         wait
     }
     async fn maintain(&mut self, sock: &impl DatagramIo) -> Result<(), CircuitError> {
-        self.flush_always_run();
+        self.flush_motion();
         self.drain_hop(sock).await?;
         if self.leave {
             return Err(CircuitError::Departed);
@@ -1079,9 +1090,6 @@ impl State {
         let Some(scene) = self.login_scene.clone() else {
             return Ok(self.arrival.position);
         };
-        if let Ok(SceneReply::Pose(stored)) = scene(agent, SceneCall::Reuse).reply().await {
-            return Ok(stored.position);
-        }
         let pose = LoginPose {
             position: self.arrival.position,
             rotation: LOGIN_ROTATION,
@@ -1089,15 +1097,8 @@ impl State {
             control_flags: 0,
             draw_distance: LOGIN_DRAW_DISTANCE,
         };
-        // Both posts are made before either answer is awaited, so the
-        // release always follows the pose.
-        let posted = scene(agent, SceneCall::Pose(pose));
-        let released = scene(agent, SceneCall::Reuse);
-        match posted.reply().await {
-            Ok(SceneReply::Pose(stored)) => {
-                let _ = released.reply().await;
-                Ok(stored.position)
-            }
+        match scene(agent, SceneCall::Arrive(pose)).reply().await {
+            Ok(SceneReply::Pose(stored)) => Ok(stored.position),
             _ => Err(CircuitError::SceneInbound),
         }
     }
@@ -1149,47 +1150,39 @@ impl State {
         }
     }
 
-    /// `AgentUpdate` onto the frame, without waiting. A missing scene or a
-    /// full queue leaves the circuit up: the viewer sends another.
+    /// `AgentUpdate` onto the frame, without waiting. A missing scene leaves
+    /// the circuit up. A refused post waits here, the latest only.
     fn forward_agent_update(
         &mut self,
         expect: &CircuitExpect,
         sequence: u32,
         message: &AgentUpdate,
     ) {
-        self.viewer_pose = HopPose {
-            center: message.agent_data.camera_center.to_array(),
-            head_rotation: message.agent_data.head_rotation.to_array(),
-            body_rotation: message.agent_data.body_rotation.to_array(),
-        };
-        let Some(scene) = self.login_scene.clone() else {
+        if self.login_scene.is_none() {
             return;
-        };
-        // A SetAlwaysRun the frame refused goes first, so it applies to this update.
-        self.flush_always_run();
+        }
         let child = self
             .return_slot
             .as_ref()
             .is_some_and(|slot| slot.is_child());
-        let _ = scene(
-            expect.agent_id,
-            SceneCall::AgentUpdate(AgentMotionUpdate {
-                received: std::time::Instant::now(),
-                sequence,
-                child,
-                in_transit: self.in_transit,
-                body_rotation: message.agent_data.body_rotation.to_array(),
-                head_rotation: message.agent_data.head_rotation.to_array(),
-                state: message.agent_data.state,
-                camera_center: message.agent_data.camera_center.to_array(),
-                camera_at: message.agent_data.camera_at_axis.to_array(),
-                camera_left: message.agent_data.camera_left_axis.to_array(),
-                camera_up: message.agent_data.camera_up_axis.to_array(),
-                far: message.agent_data.far,
-                control_flags: message.agent_data.control_flags,
-                flags: message.agent_data.flags,
-            }),
-        );
+        let update = AgentMotionUpdate {
+            received: std::time::Instant::now(),
+            sequence,
+            child,
+            in_transit: self.in_transit,
+            body_rotation: message.agent_data.body_rotation.to_array(),
+            head_rotation: message.agent_data.head_rotation.to_array(),
+            state: message.agent_data.state,
+            camera_center: message.agent_data.camera_center.to_array(),
+            camera_at: message.agent_data.camera_at_axis.to_array(),
+            camera_left: message.agent_data.camera_left_axis.to_array(),
+            camera_up: message.agent_data.camera_up_axis.to_array(),
+            far: message.agent_data.far,
+            control_flags: message.agent_data.control_flags,
+            flags: message.agent_data.flags,
+        };
+        self.pending_update = Some((expect.agent_id, update));
+        self.flush_motion();
     }
 
     /// `SetAlwaysRun` onto the frame, without waiting. Only the latest value
@@ -1199,15 +1192,26 @@ impl State {
             return;
         }
         self.always_run = Some((expect.agent_id, always_run));
-        self.flush_always_run();
+        self.flush_motion();
     }
 
-    fn flush_always_run(&mut self) {
-        let (Some(scene), Some((agent, always_run))) = (&self.login_scene, self.always_run) else {
+    /// Post the waiting `SetAlwaysRun`, then the waiting `AgentUpdate`. The
+    /// update stays while the always-run is still refused, so it never
+    /// applies with the old speed.
+    fn flush_motion(&mut self) {
+        let Some(scene) = self.login_scene.clone() else {
             return;
         };
-        if !scene(agent, SceneCall::AlwaysRun(always_run)).refused() {
+        if let Some((agent, always_run)) = self.always_run {
+            if scene(agent, SceneCall::AlwaysRun(always_run)).refused() {
+                return;
+            }
             self.always_run = None;
+        }
+        if let Some((agent, update)) = self.pending_update
+            && !scene(agent, SceneCall::AgentUpdate(update)).refused()
+        {
+            self.pending_update = None;
         }
     }
 
@@ -1334,12 +1338,13 @@ impl State {
         if region.godlike {
             flags |= GODLIKE;
         }
-        // `else if (sp.Flying)`: asked now, so it sees every AgentUpdate the
-        // frame already queued. Later updates are dropped while in transit.
-        let flying = self
+        // `else if (sp.Flying)` and `CopyTo`'s camera center and rotations:
+        // asked now, so the answer follows every AgentUpdate already queued.
+        // Later updates are dropped while in transit.
+        let departure = self
             .login_scene
             .as_ref()
-            .map(|scene| scene(expect.agent_id, SceneCall::Flying));
+            .map(|scene| scene(expect.agent_id, SceneCall::Departure));
         let mut hop_request = HopRequest {
             agent_id: expect.agent_id,
             session_id: expect.session_id,
@@ -1348,17 +1353,20 @@ impl State {
             look_at: request.info.look_at.to_array(),
             flags,
             client_ip: to.ip().to_string(),
-            pose: self.viewer_pose,
+            pose: HopPose::default(),
         };
         self.in_transit = true;
         self.hop_agent = expect.agent_id;
         let out = HopOut::new(tx);
         tokio::spawn(async move {
             let _settle = SettleOnDrop(out.clone());
-            if let Some(flying) = flying
-                && let Ok(SceneReply::Flying(true)) = flying.reply().await
+            if let Some(departure) = departure
+                && let Ok(SceneReply::Departure(departure)) = departure.reply().await
             {
-                hop_request.flags |= IS_FLYING;
+                if departure.flying {
+                    hop_request.flags |= IS_FLYING;
+                }
+                hop_request.pose = departure.pose;
             }
             hop.start(hop_request, out).await;
         });
@@ -2582,8 +2590,15 @@ mod tests {
                     }))
                 }
                 SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) => Ok(SceneReply::Applied),
-                SceneCall::Flying => Ok(SceneReply::Flying(false)),
-                SceneCall::Read | SceneCall::Reuse => match poses.get(&agent).copied() {
+                SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
+                    flying: false,
+                    pose: crate::source_hop::HopPose::default(),
+                })),
+                SceneCall::Arrive(pose) => {
+                    let position = *poses.entry(agent).or_insert(pose.position);
+                    Ok(SceneReply::Pose(LoginPose { position, ..pose }))
+                }
+                SceneCall::Read => match poses.get(&agent).copied() {
                     Some(position) => Ok(SceneReply::Pose(LoginPose {
                         position,
                         rotation: LOGIN_ROTATION,
@@ -2591,7 +2606,7 @@ mod tests {
                         control_flags: 0,
                         draw_distance: LOGIN_DRAW_DISTANCE,
                     })),
-                    None => Err(crate::circuit::SceneRefused),
+                    None => Ok(SceneReply::Missing),
                 },
                 SceneCall::Places(ids) => {
                     let places = ids

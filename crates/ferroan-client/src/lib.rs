@@ -27,8 +27,8 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneMove, SceneRefused,
-    SceneReply, SceneResult, TeleportRequest, UdpCounters,
+    LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove,
+    SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
