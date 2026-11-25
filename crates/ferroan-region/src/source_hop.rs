@@ -46,9 +46,9 @@
 //! when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -65,7 +65,8 @@ use crate::config::RegionConfig;
 use crate::grid::{GridClient, GridError, LocatedRegion};
 use crate::simulation::SimulationState;
 use crate::simulation_client::{
-    AccessQuery, AgentData, Appearance, Circuit, RegionEnd, SimulationClient, TransferContext,
+    AccessQuery, AgentData, Appearance, Circuit, RegionEnd, SimulationClient, TransferAnimations,
+    TransferContext,
 };
 
 /// One accepted root, plus the region it is leaving.
@@ -84,6 +85,8 @@ struct HopSession {
     channel: String,
     mac: String,
     id0: String,
+    animations: Arc<Mutex<TransferAnimations>>,
+    service_urls: Vec<(String, String)>,
     appearance: Option<Appearance>,
 }
 
@@ -314,6 +317,8 @@ pub struct HopLogin {
     pub channel: String,
     pub mac: String,
     pub id0: String,
+    pub animations: Arc<Mutex<TransferAnimations>>,
+    pub service_urls: Vec<(String, String)>,
     pub appearance: Option<Appearance>,
 }
 
@@ -390,6 +395,8 @@ impl HopEnv {
             channel: login.channel,
             mac: login.mac,
             id0: login.id0,
+            animations: login.animations,
+            service_urls: login.service_urls,
             appearance: login.appearance,
         };
         let caps = self.caps.clone();
@@ -551,8 +558,8 @@ async fn perform(work: HopWork<'_>) {
     } else {
         None
     };
-    presence.demote(session.agent_id);
     let update = agent_update(session, request, position, callback);
+    presence.demote(session.agent_id);
     tracing::debug!("source hop: update");
     let arrived = match client
         .update_agent(&destination.end, &update, &context)
@@ -724,7 +731,11 @@ fn viewer_endpoint(endpoint: SocketAddr) -> Option<(Ipv4Addr, u16)> {
 fn access_query(session: &HopSession, position: [f32; 3]) -> AccessQuery {
     AccessQuery {
         agent_id: session.agent_id,
-        agent_home_uri: None,
+        agent_home_uri: session
+            .service_urls
+            .iter()
+            .find(|(key, _)| key == "HomeURI")
+            .map(|(_, value)| value.clone()),
         via_teleport: true,
         position,
         features: Vec::new(),
@@ -759,7 +770,7 @@ fn child_circuit(
         id0: session.id0.clone(),
         far: 0.0,
         appearance: session.appearance.clone(),
-        service_urls: Vec::new(),
+        service_urls: session.service_urls.clone(),
     }
 }
 
@@ -808,6 +819,10 @@ fn agent_update(
     callback: Option<String>,
 ) -> AgentData {
     let (at_axis, left_axis, up_axis) = look_axes(request.look_at);
+    let animations = session
+        .animations
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     AgentData {
         region_id: session.source.region_id,
         circuit_code: session.circuit_code,
@@ -829,11 +844,18 @@ fn agent_update(
         head_rotation: request.pose.head_rotation,
         body_rotation: request.pose.body_rotation,
         control_flags: fly_control(request.flags),
-        god_data: true,
+        // The region does not enable viewer god UI. Estate or admission rights alone never set it.
+        viewer_ui_is_god: Some(false),
+        always_run: request.pose.always_run,
+        // CopyTo(false) for teleports. Only CopyTo(true) for a crossing copies the group.
+        active_group_id: Uuid::nil(),
+        active_group_name: String::new(),
+        active_group_title: None,
+        animations: animations.extra.clone(),
         agent_access: 0,
-        default_animation: None,
-        animation_state: None,
-        motion_state: 0,
+        default_animation: Some(animations.default_animation),
+        animation_state: Some(animations.animation_state),
+        motion_state: i32::from(animations.motion_state),
         appearance: None,
         sit_offset: [0.0; 3],
         children_seeds: Vec::new(),
@@ -991,6 +1013,8 @@ mod tests {
             channel: "Ferroan Bot".to_string(),
             mac: "aabb".to_string(),
             id0: "ccdd".to_string(),
+            animations: Default::default(),
+            service_urls: vec![("HomeURI".into(), "/".into())],
             appearance: Some(crate::simulation_client::Appearance {
                 serial: 1,
                 height: 1.8,
@@ -1388,6 +1412,33 @@ mod tests {
         Some(SimulationClient::new().unwrap())
     }
 
+    #[test]
+    fn departure_copies_the_run_flag_and_current_animation_set() {
+        let session = session();
+        let extra = crate::simulation_client::Anim {
+            animation: Uuid::from_u128(123),
+            object_id: Uuid::from_u128(8),
+            sequence: 3,
+        };
+        session.animations.lock().unwrap().extra.push(extra);
+        let request = ferroan_client::HopRequest {
+            agent_id: session.agent_id,
+            session_id: session.session_id,
+            region_handle: HANDLE,
+            position: [128.0, 128.0, 30.0],
+            look_at: [1.0, 0.0, 0.0],
+            flags: ferroan_client::VIA_LOCATION,
+            client_ip: "127.0.0.1".into(),
+            pose: ferroan_client::HopPose {
+                always_run: true,
+                ..Default::default()
+            },
+        };
+        let data = super::agent_update(&session, &request, request.position, None);
+        assert!(data.always_run);
+        assert_eq!(data.animations, [extra]);
+    }
+
     #[tokio::test]
     async fn a_successful_hop_sends_start_then_the_finish_event() {
         let (listener, addr) = listen().await;
@@ -1438,11 +1489,13 @@ mod tests {
         let (method, _) = request_parts(&hits[0].header);
         assert_eq!(method, "QUERYACCESS");
         let query: Value = serde_json::from_slice(&hits[0].body).unwrap();
+        assert_eq!(query["agent_home_uri"], "/");
         assert_eq!(query["viaTeleport"], true);
         assert_eq!(query["position"], "<128, 128, 30>");
         let (method, _) = request_parts(&hits[1].header);
         assert_eq!(method, "POST");
         let create: Value = serde_json::from_slice(&plain(&hits[1])).unwrap();
+        assert_eq!(create["serviceurls"]["HomeURI"], "/");
         assert_eq!(create["child"], true);
         assert_eq!(create["teleport_flags"], "16");
         assert_eq!(create["start_pos"], "<128, 128, 30>");
@@ -1470,7 +1523,16 @@ mod tests {
         assert_eq!(update["region_id"], Uuid::from_u128(9).to_string());
         assert_ne!(update["region_id"], Uuid::from_u128(7).to_string());
         assert_eq!(update["far"].as_f64(), Some(255.0));
-        assert!(update["god_data"].is_object());
+        assert_eq!(update["god_data"], serde_json::json!({}));
+        assert!(update.get("god_level").is_none());
+        assert!(update.get("active_group_id").is_none());
+        assert!(update.get("active_group_name").is_none());
+        assert!(update.get("active_group_title").is_none());
+        let stand =
+            serde_json::json!({"animation":"2408fe9e-df1d-1d7d-f4ff-1384fa7b350f", "seq_num":1});
+        assert_eq!(update["default_animation"], stand);
+        assert_eq!(update["animation_state"], stand);
+        assert_eq!(update["motion_state"], 6);
         assert!(update.get("cb_uri").is_none());
         assert_eq!(*opened.position.lock().unwrap(), [128.0, 128.0, 25.0]);
         let event = poll_finish(&opened).await;
