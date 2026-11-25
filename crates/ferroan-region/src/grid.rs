@@ -40,6 +40,8 @@
 //   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
 //   Source/OpenSim.Services.Connectors/UserAccounts/UserAccountServicesConnector.cs (GetUserAccount)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// The getaccount locality field follows Source/OpenSim.Services.Interfaces/IUserAccountService.cs
+// at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -252,7 +254,11 @@ async fn service_form_within(
 /// `UserAccountServicesConnector.GetUserAccount` posts `METHOD=getaccount` to
 /// `{UserAccountServerURI}/accounts`. A missing service, a bad reply, or no
 /// `UserLevel` is `None` (not a grid god). The reply body is not logged.
-pub(crate) async fn account_user_level(uri: &str, scope: Uuid, agent: Uuid) -> Option<i32> {
+pub(crate) async fn account_user_level(
+    uri: &str,
+    scope: Uuid,
+    agent: Uuid,
+) -> Option<crate::staff::AccountLevel> {
     if uri.is_empty() || agent.is_nil() {
         return None;
     }
@@ -266,11 +272,22 @@ pub(crate) async fn account_user_level(uri: &str, scope: Uuid, agent: Uuid) -> O
     let Field::Map(result) = reply.get("result")? else {
         return None;
     };
-    match result.get("UserLevel") {
+    let level = match result.get("UserLevel") {
         Some(Field::Str(text)) => text.trim().parse().ok(),
         Some(Field::Int(value)) => Some(*value),
         _ => None,
-    }
+    }?;
+    // UserAccount defaults LocalToGrid to true; a present value uses Boolean.TryParse.
+    let local_to_grid = match result.get("LocalToGrid") {
+        None => true,
+        Some(Field::Bool(value)) => *value,
+        Some(Field::Str(value)) => value.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    };
+    Some(crate::staff::AccountLevel {
+        level,
+        local_to_grid,
+    })
 }
 
 pub(crate) fn service_fields(method: &str) -> FieldMap {
