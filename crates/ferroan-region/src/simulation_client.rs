@@ -290,6 +290,7 @@ pub struct AgentData {
     pub always_run: bool,
     pub active_group_id: Uuid,
     pub active_group_name: String,
+    pub active_group_title: Option<String>,
     pub animations: Vec<Anim>,
     pub agent_access: u32,
     pub default_animation: Option<Anim>,
@@ -980,11 +981,11 @@ fn pack_update(destination: &RegionEnd, data: &AgentData, context: &TransferCont
             Osd::Str(data.active_group_name.clone()),
         ),
     ]);
+    if let Some(title) = &data.active_group_title {
+        entries.push(("active_group_title", Osd::Str(title.clone())));
+    }
     if !data.children_seeds.is_empty() {
         entries.push(("children_seeds", pack_seeds(&data.children_seeds)));
-    }
-    if let Some(callback) = &data.callback {
-        entries.push(("cb_uri", Osd::Str(callback.clone())));
     }
     if !data.animations.is_empty() {
         entries.push((
@@ -1006,6 +1007,9 @@ fn pack_update(destination: &RegionEnd, data: &AgentData, context: &TransferCont
             "packed_appearance",
             pack_appearance(appearance, context.outbound),
         ));
+    }
+    if let Some(callback) = &data.callback {
+        entries.push(("cb_uri", Osd::Str(callback.clone())));
     }
     entries.push(("parent_part", Osd::Uuid(Uuid::nil())));
     entries.push(("sit_offset", Osd::Str(format_vec3(data.sit_offset))));
@@ -1454,7 +1458,9 @@ mod tests {
         data.always_run = true;
         data.active_group_id = group;
         data.active_group_name = "Fixture group".into();
+        data.active_group_title = Some("Fixture title".into());
         data.viewer_ui_is_god = Some(true);
+        data.callback = Some("http://example.invalid/release".into());
         data.animations = vec![
             Anim {
                 animation: agent,
@@ -1468,6 +1474,21 @@ mod tests {
             },
         ];
         let mut packed = pack_update(&sample_region(), &data, &TransferContext::negotiated());
+        let ordered_fields = [
+            "active_group_name",
+            "active_group_title",
+            "animations",
+            "cb_uri",
+            "sit_offset",
+        ];
+        let actual: Vec<_> = packed
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .filter(|key| ordered_fields.contains(key))
+            .collect();
+        assert_eq!(actual, ordered_fields);
         let binary = object(vec![("empty_binary", Osd::Bytes(Vec::new()))]);
         packed["empty_binary"] = binary["empty_binary"].clone();
         for (key, value) in transfer_fixture()["packed"].as_object().unwrap() {
@@ -1482,12 +1503,53 @@ mod tests {
             "always_run",
             "active_group_id",
             "active_group_name",
+            "active_group_title",
             "animations",
             "god_level",
             "throttles",
         ] {
             assert!(ordinary.get(key).is_none(), "{key}");
         }
+    }
+
+    #[test]
+    fn copy_from_resets_to_stand_and_keeps_the_sequence_for_the_same_default_id() {
+        let mut animations = TransferAnimations::default();
+        let incoming = Uuid::from_u128(20);
+        let implicit = Uuid::from_u128(21);
+        let object = Uuid::from_u128(22);
+        let data = json!({
+            "default_animation": {"animation": incoming.to_string(), "seq_num": 7, "object_id": object.to_string()},
+            "animation_state": {"animation": implicit.to_string(), "seq_num": 8, "object_id": object.to_string()}
+        });
+        animations.copy_from(data.as_object().unwrap());
+        assert_eq!(
+            animations.default_animation,
+            Anim {
+                animation: incoming,
+                sequence: 7,
+                object_id: Uuid::nil(),
+            }
+        );
+        assert_eq!(
+            animations.animation_state,
+            Anim {
+                animation: implicit,
+                sequence: 8,
+                object_id: Uuid::nil(),
+            }
+        );
+
+        // CopyFrom resets the prior animator even when the incoming data has no animations.
+        animations.copy_from(&Map::new());
+        assert_eq!(animations.default_animation, Anim::STAND);
+        assert_eq!(animations.animation_state, Anim::STAND);
+
+        // Reapplying STAND with another sequence keeps the sequence from the reset.
+        let stand = json!({"default_animation": {"animation": Anim::STAND.animation.to_string(), "seq_num": 99}});
+        animations.copy_from(stand.as_object().unwrap());
+        assert_eq!(animations.default_animation, Anim::STAND);
+        assert_eq!(animations.animation_state, Anim::STAND);
     }
 
     #[tokio::test]
@@ -1508,18 +1570,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tb89_transport_failures_keep_local_network_details_out_of_the_reason() {
+    async fn tb90_transport_failures_keep_local_network_details_out_of_the_reason() {
         let fixture = transfer_fixture();
         assert_eq!(
             fixture["refused_mentions_endpoint"], true,
-            "revisit TB89 and D73 if Pin8's result changes"
+            "revisit TB90 and D74 if Pin8's result changes"
         );
         assert!(
             fixture["timeout_reason"]
                 .as_str()
                 .unwrap()
                 .contains("HttpClient.Timeout"),
-            "revisit TB89 and D73 if the .NET timeout wording changes"
+            "revisit TB90 and D74 if the .NET timeout wording changes"
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2103,6 +2165,10 @@ mod tests {
             always_run: osd_bool(body.get("always_run")),
             active_group_id: uuid_of(body.get("active_group_id")),
             active_group_name: text_of(body.get("active_group_name")),
+            active_group_title: body
+                .get("active_group_title")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             animations: body
                 .get("animations")
                 .and_then(Value::as_array)
@@ -2294,6 +2360,7 @@ mod tests {
             always_run: false,
             active_group_id: Uuid::nil(),
             active_group_name: String::new(),
+            active_group_title: None,
             animations: Vec::new(),
             agent_access: 0,
             default_animation: None,

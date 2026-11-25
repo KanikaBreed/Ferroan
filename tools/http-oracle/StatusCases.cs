@@ -111,13 +111,13 @@ static class StatusCases
     static JsonObject SimulationTransfer()
     {
         AgentData agent = new() {
-            AlwaysRun = true, ActiveGroupID = Region, ActiveGroupName = "Fixture group",
+            AlwaysRun = true, ActiveGroupID = Region, ActiveGroupName = "Fixture group", ActiveGroupTitle = "Fixture title",
             GodData = new OSDMap { ["ViewerUiIsGod"] = true },
             Anims = [new OpenSim.Framework.Animation(Agent, 7, Region), new OpenSim.Framework.Animation(Session, 0, UUID.Zero)]
         };
         OSDMap packed = agent.Pack(new EntityTransferContext());
         OSDMap fields = new();
-        foreach (string key in new[] { "always_run", "active_group_id", "active_group_name", "god_data", "god_level", "animations" })
+        foreach (string key in new[] { "always_run", "active_group_id", "active_group_name", "active_group_title", "god_data", "god_level", "animations" })
             fields[key] = packed[key];
         fields["empty_binary"] = OSD.FromBinary([]);
         JsonObject result = new() { ["packed"] = JsonNode.Parse(OSDParser.SerializeJsonToBytes(fields)) };

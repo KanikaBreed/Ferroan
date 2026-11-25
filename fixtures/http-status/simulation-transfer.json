@@ -3,6 +3,7 @@
     "always_run": true,
     "active_group_id": "00000000-0000-4000-8000-000000000002",
     "active_group_name": "Fixture group",
+    "active_group_title": "Fixture title",
     "god_data": {
       "ViewerUiIsGod": true
     },

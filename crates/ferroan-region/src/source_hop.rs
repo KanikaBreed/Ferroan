@@ -850,6 +850,7 @@ fn agent_update(
         // CopyTo(false) for teleports. Only CopyTo(true) for a crossing copies the group.
         active_group_id: Uuid::nil(),
         active_group_name: String::new(),
+        active_group_title: None,
         animations: animations.extra.clone(),
         agent_access: 0,
         default_animation: Some(animations.default_animation),
@@ -1526,6 +1527,7 @@ mod tests {
         assert!(update.get("god_level").is_none());
         assert!(update.get("active_group_id").is_none());
         assert!(update.get("active_group_name").is_none());
+        assert!(update.get("active_group_title").is_none());
         let stand =
             serde_json::json!({"animation":"2408fe9e-df1d-1d7d-f4ff-1384fa7b350f", "seq_num":1});
         assert_eq!(update["default_animation"], stand);

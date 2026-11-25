@@ -3034,6 +3034,37 @@ mod tests {
         harness.finish().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn scene_departure_reads_always_run_from_the_frame() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(7);
+        let pose = ferroan_client::LoginPose {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        scene_call(&frame, agent, SceneCall::Arrive(pose, [1.0, 0.0, 0.0]))
+            .reply()
+            .await
+            .unwrap();
+        for enabled in [true, false] {
+            scene_call(&frame, agent, SceneCall::AlwaysRun(enabled))
+                .reply()
+                .await
+                .unwrap();
+            let SceneReply::Departure(departure) = scene_call(&frame, agent, SceneCall::Departure)
+                .reply()
+                .await
+                .unwrap()
+            else {
+                panic!("expected the frame's departure state");
+            };
+            assert_eq!(departure.pose.always_run, enabled);
+        }
+    }
+
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
     /// its appearance, and the kill.

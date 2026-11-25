@@ -636,14 +636,8 @@ pub(super) fn compare_neighbour_teleport(
     let neighbour_udp = check_udp_side(directory, &neighbour)?;
     let home_http = check_http_side(directory, &home)?;
     let neighbour_http = check_http_side(directory, &neighbour)?;
-    let transport_note = match home.server {
-        RegionServer::Ferroan => {
-            "\nknown difference (TB89, fault probe): Ferroan gives a generic transport failure reason"
-        }
-        RegionServer::CSharp => "",
-    };
     Ok(format!(
-        "teleport neighbour bytes: simulation service 0.8 both ways (TransferAgent_V2); QueryAccess viaTeleport at (128, 128, 30) x{}; CreateAgent child flags 16 x{}; UpdateAgent AgentData wait_for_root x{}; ReleaseAgent {}; CloseAgent {} on the neighbour; TeleportStart flags 16 x{}; event-queue TeleportFinish location 4 sim access 13 flags 16 size 256 x{}; AgentMovementComplete (128, 128, 30) look (1, 0, 0) x{}; UseCircuitCode {}; CrossedRegion {}; EnableSimulator {}; no UDP TeleportFinish; circuit HomeURI and standing animation both ways{transport_note}",
+        "teleport neighbour bytes: simulation service 0.8 both ways (TransferAgent_V2); QueryAccess viaTeleport at (128, 128, 30) x{}; CreateAgent child flags 16 x{}; UpdateAgent AgentData wait_for_root x{}; ReleaseAgent {}; CloseAgent {} on the neighbour; TeleportStart flags 16 x{}; event-queue TeleportFinish location 4 sim access 13 flags 16 size 256 x{}; AgentMovementComplete (128, 128, 30) look (1, 0, 0) x{}; UseCircuitCode {}; CrossedRegion {}; EnableSimulator {}; no UDP TeleportFinish; circuit HomeURI and standing animation both ways",
         home_http.queries + neighbour_http.queries,
         home_http.creates + neighbour_http.creates,
         home_http.updates + neighbour_http.updates,
