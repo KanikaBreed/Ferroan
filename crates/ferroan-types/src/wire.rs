@@ -294,8 +294,24 @@ fn pack_quaternion(q: Quat, get_bytes: bool) -> [f32; 3] {
     } else {
         1.0 / norm.sqrt()
     };
-    [scale * q.x, scale * q.y, scale * q.z]
+    let packed = [scale * q.x, scale * q.y, scale * q.z];
+    if q.is_nan() {
+        return packed;
+    }
+    // A NaN made from non-NaN inputs (the zero quaternion's `inf * 0`) gets
+    // x86-64's default NaN, sign bit set, on every machine (D71). ARM64's is
+    // positive. A NaN input is left to the hardware.
+    packed.map(|value| {
+        if value.is_nan() {
+            f32::from_bits(X86_DEFAULT_NAN)
+        } else {
+            value
+        }
+    })
 }
+
+/// x86-64 SSE's default NaN: quiet, sign bit set.
+const X86_DEFAULT_NAN: u32 = 0xFFC0_0000;
 
 pub fn write_quaternion_get_bytes(q: Quat, dest: &mut [u8]) -> Result<(), WireError> {
     write_packed(pack_quaternion(q, true), dest)
@@ -485,6 +501,17 @@ pub fn read_u16_value(src: &[u8]) -> Result<u16, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_zero_quaternion_writes_x86_default_nans_on_every_machine() {
+        let zero = Quat::from_xyzw(0.0, 0.0, 0.0, 0.0);
+        let expect = [0x00, 0x00, 0xC0, 0xFF].repeat(3);
+        let mut buf = [0u8; 12];
+        write_quaternion_to_bytes(zero, &mut buf).unwrap();
+        assert_eq!(buf.to_vec(), expect);
+        write_quaternion_get_bytes(zero, &mut buf).unwrap();
+        assert_eq!(buf.to_vec(), expect);
+    }
 
     #[test]
     fn a_short_buffer_is_an_error() {

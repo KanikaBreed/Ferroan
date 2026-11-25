@@ -567,6 +567,17 @@ mod tests {
     }
 
     #[test]
+    fn the_zero_quaternion_packs_to_x86_default_nans_on_every_machine() {
+        // 1 / sqrt(0) is infinite, and infinity times 0 is x86-64's default
+        // NaN, 0xFFC00000. ARM64's default is 0x7FC00000 (D71).
+        let packed = crate::pack_quat(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(le_bytes(packed), [0x00, 0x00, 0xC0, 0xFF].repeat(3));
+        // An infinite component also makes a NaN from non-NaN inputs.
+        let packed = crate::pack_quat(Quat::from_xyzw(f32::INFINITY, 0.0, 0.0, 1.0));
+        assert_eq!(packed[0].to_bits(), crate::X86_DEFAULT_NAN);
+    }
+
+    #[test]
     fn a_gap_of_five_millionths_is_outside_the_packing_tolerance() {
         // x just past 1 with y = z = 0: FromBytes sets w to 0, the length is
         // x², and ToBytes scales x back to 1. The gap is about 5e-6, inside

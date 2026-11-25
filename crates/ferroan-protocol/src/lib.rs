@@ -285,10 +285,31 @@ pub fn pack_quat(q: Quat) -> [f32; 3] {
         } else {
             1.0 / norm.sqrt()
         };
-        [scale * q.x, scale * q.y, scale * q.z]
+        x86_nan([scale * q.x, scale * q.y, scale * q.z], q)
     } else {
         [0.0, 0.0, 0.0]
     }
+}
+
+/// The NaN an x86-64 SSE operation writes when no operand is a NaN, such as
+/// `inf * 0`: quiet, with the sign bit set. ARM64 writes it positive
+/// (`0x7FC00000`).
+pub const X86_DEFAULT_NAN: u32 = 0xFFC0_0000;
+
+/// A NaN made from finite or infinite inputs, such as the zero quaternion's
+/// `(1 / sqrt(0)) * 0`, gets x86-64's bits on every machine (D71). A NaN input
+/// is left to the hardware: the oracle has none.
+fn x86_nan(packed: [f32; 3], q: Quat) -> [f32; 3] {
+    if q.is_nan() {
+        return packed;
+    }
+    packed.map(|value| {
+        if value.is_nan() {
+            f32::from_bits(X86_DEFAULT_NAN)
+        } else {
+            value
+        }
+    })
 }
 
 /// Little-endian body writer.
