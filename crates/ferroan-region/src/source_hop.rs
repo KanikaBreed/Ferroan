@@ -200,13 +200,22 @@ impl HopPresence {
         Self::Watch(watch)
     }
 
-    fn demote(&self, agent: Uuid) {
-        match self {
-            Self::Idle => {}
-            Self::Live(state) => state.demote_child(agent),
+    // Reserve before telling the viewer to leave. A failed create or enqueue
+    // releases the place without demoting the root.
+    fn prepare_demotion(&self, agent: Uuid) -> Result<impl FnOnce() + '_, &'static str> {
+        let reservation = match self {
+            Self::Live(state) => Some((state, state.reserve_child_place()?)),
+            _ => None,
+        };
+        Ok(move || {
+            if let Some((state, place)) = reservation {
+                state.demote_with_place(agent, place);
+            }
             #[cfg(test)]
-            Self::Watch(watch) => watch.demoted.store(true, Ordering::Release),
-        }
+            if let Self::Watch(watch) = self {
+                watch.demoted.store(true, Ordering::Release);
+            }
+        })
     }
 
     fn restore(&self, agent: Uuid) {
@@ -492,6 +501,13 @@ async fn perform(work: HopWork<'_>) {
         out.teleport_failed(&outcome.reason).await;
         return;
     }
+    let demote = match presence.prepare_demotion(session.agent_id) {
+        Ok(demote) => demote,
+        Err(reason) => {
+            out.teleport_failed(reason).await;
+            return;
+        }
+    };
     if !out.teleport_start(request.flags).await {
         return;
     }
@@ -551,7 +567,7 @@ async fn perform(work: HopWork<'_>) {
     } else {
         None
     };
-    presence.demote(session.agent_id);
+    demote();
     let update = agent_update(session, request, position, callback);
     tracing::debug!("source hop: update");
     let arrived = match client

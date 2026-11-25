@@ -61,7 +61,7 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{
-    ADMISSION_QUEUE, AcceptedAgent, DISPATCH_CAPACITY, SimulationState, release_callback,
+    AcceptedAgent, DISPATCH_CAPACITY, SimulationState, release_callback,
 };
 use ferroan_region::source_hop::{HopEnv, HopLogin, HopPresence};
 use ferroan_region::status::{
@@ -219,10 +219,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         Some(fetch.service()),
     )?;
     fetch.bind_uploader_routes(caps.uploader_routes());
-    // One queued accept per admitted root, including the staff and god bypass.
-    // The dispatcher spawns the circuit, so a same-agent replacement still fits
-    // while the old task is running.
-    let (accepted, agents) = mpsc::channel(ADMISSION_QUEUE);
+    // A full child share must leave room for queued roots as well as running ones.
+    let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.keep_objects(objects);
@@ -513,7 +511,6 @@ struct DispatchCtx {
     stop: watch::Receiver<bool>,
     /// Tests wait until a dequeued agent has passed same-agent cleanup.
     started: Arc<AtomicUsize>,
-    local_ids: Arc<ferroan_scene::LocalIds>,
     hop: HopEnv,
 }
 
@@ -684,10 +681,6 @@ async fn dispatch_circuits(
         circuit.set_login_scene(Arc::new(move |agent, call| scene_call(&frame, agent, call)));
     }
     let ctx = DispatchCtx {
-        local_ids: terrain
-            .as_ref()
-            .map(|frame| Arc::clone(&frame.local_ids))
-            .unwrap_or_default(),
         circuit,
         clients: LifecycleClients {
             grid_user: GridUserClient::new(&config.grid_user_server_uri),
@@ -778,7 +771,6 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         mut stop,
         clients,
         hop,
-        local_ids,
         ..
     } = ctx;
     let LifecycleClients {
@@ -845,7 +837,12 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         } else {
             None
         };
-        avatar.local_id = attached.unwrap_or_else(|| local_ids.allocate());
+        avatar.local_id = attached.unwrap_or_else(|| {
+            // The production region always has a frame. Isolated circuit tests can omit it.
+            terrain
+                .as_deref()
+                .map_or(1, TerrainFrame::allocate_local_id)
+        });
         arrival.avatar = Some(avatar);
         // TeleportAgentWithinRegion. Godlike needs a cached user level, so it
         // stays off. The frame owns the landing and IsFlying. A handle this
@@ -1958,8 +1955,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_arrivals_without_a_frame_have_distinct_object_local_ids() {
-        let mut harness = Harness::new(false, false).await;
+    async fn two_arrivals_with_the_region_frame_receive_distinct_object_local_ids() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(frame.clone()),
+        )
+        .await;
+        let previous_id = frame.allocate_local_id();
         let first = harness.admit(false, false).await;
         let second = harness.admit_other().await;
         let mut ids = Vec::new();
@@ -1976,8 +1983,9 @@ mod tests {
                             .decode::<ferroan_protocol::msgs::ObjectUpdate>()
                             .unwrap();
                         let block = &update.object_data[0];
-                        assert_eq!(block.full_id, expect.agent_id);
-                        break block.id;
+                        if block.full_id == expect.agent_id {
+                            break block.id;
+                        }
                     }
                 }
             })
@@ -1987,6 +1995,10 @@ mod tests {
             ids.push(id);
         }
         assert_ne!(ids[0], ids[1]);
+        // A serve that cannot attach draws its fallback from this same counter.
+        let fallback = frame.allocate_local_id();
+        assert_eq!(ids, [previous_id + 1, previous_id + 2]);
+        assert_eq!(fallback, previous_id + 3);
         harness.finish().await.unwrap();
     }
 
@@ -2655,7 +2667,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         drop(socket);
         tokio::time::timeout(Duration::from_secs(2), async {
             while harness.seed_status().await != reqwest::StatusCode::NOT_FOUND {
@@ -2723,7 +2735,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         harness.admit(true, false).await;
         let deadline = std::time::Instant::now() + Duration::from_millis(300);
         while std::time::Instant::now() < deadline {

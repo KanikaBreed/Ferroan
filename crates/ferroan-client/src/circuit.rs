@@ -1960,7 +1960,7 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
     }
     fan.pending.retain(|queued| queued.from != from);
     if fan.pending.len() >= PENDING_LOGINS {
-        ferroan_diag::refuse(
+        ferroan_diag::drop_bound(
             UDP_PENDING_LOGINS,
             Kind::Hard,
             PENDING_LOGINS as u64,

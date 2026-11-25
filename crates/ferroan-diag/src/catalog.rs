@@ -17,6 +17,7 @@ pub const INVENTORY_FETCH_ITEMS: &str = "inventory.fetch-items";
 pub const INVENTORY_FETCH_LLSD: &str = "inventory.fetch-llsd";
 pub const INVENTORY_REPLY: &str = "inventory.reply";
 pub const REGION_DISPATCH: &str = "region.dispatch";
+pub const REGION_DISPATCH_CHILDREN: &str = "region.dispatch-children";
 pub const REGION_OVERLAPPING_LOGINS: &str = "region.overlapping-logins";
 pub const UDP_CIRCUIT_INBOX: &str = "udp.circuit-inbox";
 pub const UDP_PENDING_LOGINS: &str = "udp.pending-logins";

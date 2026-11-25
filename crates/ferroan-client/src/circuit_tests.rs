@@ -992,8 +992,8 @@ fn use_circuit(expect: CircuitExpect) -> Vec<u8> {
     wire(&message, 1, &[])
 }
 
-fn limit_refusals(id: &str) -> u64 {
-    let prefix = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"refuse\"}} ");
+fn limit_hits(id: &str, action: &str) -> u64 {
+    let prefix = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"{action}\"}} ");
     ferroan_diag::metrics()
         .lines()
         .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
@@ -1003,14 +1003,14 @@ fn limit_refusals(id: &str) -> u64 {
 #[test]
 fn a_full_circuit_inbox_reports_and_keeps_the_first_128_datagrams() {
     let inbox = Inbox::new();
-    let before = limit_refusals(UDP_CIRCUIT_INBOX);
+    let before = limit_hits(UDP_CIRCUIT_INBOX, "refuse");
     for n in 0..=128 {
         inbox.push(Datagram {
             from: peer(),
             bytes: vec![n],
         });
     }
-    assert_eq!(limit_refusals(UDP_CIRCUIT_INBOX), before + 1);
+    assert_eq!(limit_hits(UDP_CIRCUIT_INBOX, "refuse"), before + 1);
     for n in 0..128 {
         assert_eq!(inbox.pop().unwrap().bytes, [n]);
     }
@@ -1021,7 +1021,7 @@ fn a_full_circuit_inbox_reports_and_keeps_the_first_128_datagrams() {
 async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
     let server = CircuitServer::bind().await.unwrap();
     let shared = &server.inner.shared;
-    let before = limit_refusals(UDP_PENDING_LOGINS);
+    let before = limit_hits(UDP_PENDING_LOGINS, "drop");
     let submit = |port: u16| {
         let from = SocketAddr::from(([127, 0, 0, 1], port));
         assert_eq!(
@@ -1037,9 +1037,9 @@ async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
         submit(port);
     }
     submit(1); // An existing endpoint moves to the back without displacing another.
-    assert_eq!(limit_refusals(UDP_PENDING_LOGINS), before);
+    assert_eq!(limit_hits(UDP_PENDING_LOGINS, "drop"), before);
     submit(62);
-    assert_eq!(limit_refusals(UDP_PENDING_LOGINS), before + 1);
+    assert_eq!(limit_hits(UDP_PENDING_LOGINS, "drop"), before + 1);
     let pending = &shared.fan.lock().unwrap().pending;
     let ports: Vec<_> = pending.iter().map(|d| d.from.port()).collect();
     assert_eq!(ports, (3..=61).chain([1, 62]).collect::<Vec<_>>());

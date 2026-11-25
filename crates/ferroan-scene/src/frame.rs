@@ -300,7 +300,7 @@ pub struct TerrainFrame {
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     has_map: bool,
-    pub local_ids: Arc<LocalIds>,
+    local_ids: Arc<LocalIds>,
     board: AvatarBoard,
 }
 
@@ -346,6 +346,11 @@ impl TerrainFrame {
             local_ids,
             board,
         })
+    }
+
+    /// Draw from the frame's single region-wide counter (`SceneBase.AllocateLocalId`).
+    pub fn allocate_local_id(&self) -> u32 {
+        self.local_ids.allocate()
     }
 
     /// A feed for one viewer, reading this frame's board.
@@ -931,7 +936,7 @@ fn first_local_id() -> u32 {
 
 /// One id space for the region, including its frame and outbound avatar packets.
 #[derive(Debug)]
-pub struct LocalIds(AtomicU32);
+struct LocalIds(AtomicU32);
 
 impl Default for LocalIds {
     fn default() -> Self {
@@ -941,7 +946,7 @@ impl Default for LocalIds {
 
 impl LocalIds {
     /// SceneBase.AllocateLocalId, Pin8 c401bceecd. Skip zero on wrap.
-    pub fn allocate(&self) -> u32 {
+    fn allocate(&self) -> u32 {
         loop {
             let id = self.0.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             if id != 0 {
