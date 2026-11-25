@@ -44,9 +44,9 @@
 //! fires, including a path whose bytes are still being stored. Dropping the
 //! POST clears that slot. An agent may hold more than one, up to 8, and the
 //! region keeps at most 128. A mesh fee keeps its URL; the model POST stores
-//! nothing. An offer body past 64 KiB is refused. The name is shortened to
-//! 64 characters and the description to 128, which is what the inventory
-//! columns keep.
+//! nothing. The name is shortened to 64 characters and the description to
+//! 128, which is what the inventory columns keep. The stored asset's
+//! description is empty. The capability body stays on the 8 MiB bound.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -78,8 +78,6 @@ const MAX_PENDING_UPLOADS: usize = 128;
 /// that agent's earlier waiting mesh-fee path. C# does not cap one agent.
 /// This stays under [`MAX_PENDING_UPLOADS`].
 const MAX_AGENT_UPLOADS: usize = 8;
-/// NewFileAgentInventory body. The later asset POST stays on `MAX_ASSET_BODY`.
-const MAX_UPLOAD_OFFER_BODY: usize = 64 * 1024;
 /// Inventory name column, in UTF-16 code units. A character that would not
 /// fit is left out whole.
 const MAX_UPLOAD_NAME_UNITS: usize = 64;
@@ -602,19 +600,6 @@ impl FetchCaps {
         if exchange.method != "POST" {
             return CapAnswer::miss();
         }
-        if exchange.body.len() > MAX_UPLOAD_OFFER_BODY {
-            let agent = exchange.agent_id.to_string();
-            ferroan_diag::hit(&ferroan_diag::Hit {
-                id: ferroan_diag::REGION_UPLOAD_OFFER_BYTES,
-                kind: Kind::Hard,
-                configured: MAX_UPLOAD_OFFER_BODY as u64,
-                observed: exchange.body.len() as u64,
-                action: ferroan_diag::Action::Refuse,
-                route: "NewFileAgentInventory",
-                agent_id: Some(&agent),
-            });
-            return upload_error("upload offer is too large");
-        }
         let Ok(body) = from_xml(&exchange.body) else {
             return upload_error("Could not parse the upload request");
         };
@@ -755,7 +740,7 @@ impl FetchCaps {
         let asset = Asset {
             id: pending.asset_id,
             name: pending.name.clone(),
-            description: pending.description.clone(),
+            description: String::new(),
             type_code: pending.asset_type,
             local: false,
             temporary: false,
@@ -1422,30 +1407,6 @@ mod tests {
         to_xml(&map)
     }
 
-    fn offer_of_len(len: usize) -> Vec<u8> {
-        let empty = offer_fields("cloth", "");
-        assert!(
-            empty.len() <= len,
-            "offer skeleton is {} bytes",
-            empty.len()
-        );
-        let padded = offer_fields("cloth", &" ".repeat(len - empty.len()));
-        assert_eq!(padded.len(), len);
-        padded
-    }
-
-    fn offer_byte_refuses() -> u64 {
-        ferroan_diag::metrics()
-            .lines()
-            .find_map(|line| {
-                let rest = line.strip_prefix(
-                    "ferroan_limit_hits_total{limit=\"region.upload-offer-bytes\",action=\"refuse\"} ",
-                )?;
-                rest.trim().parse().ok()
-            })
-            .unwrap_or(0)
-    }
-
     fn offer_harness(agent: Uuid, seed: &str) -> Arc<FetchCaps> {
         let caps = Arc::new(FetchCaps {
             inventory: None,
@@ -1473,6 +1434,26 @@ mod tests {
         map.insert("group_mask", 0);
         map.insert("everyone_mask", 0);
         to_xml(&map)
+    }
+
+    /// A worn-mesh fee carries `asset_resources`. The stand-in is long enough
+    /// that the XML is past 64 KiB, which is what the fee request looks like.
+    fn mesh_fee_over_64_kib() -> Vec<u8> {
+        let mut resources = Llsd::new_map();
+        resources.insert("mesh_list", "m".repeat(70 * 1024));
+        let mut map = Llsd::new_map();
+        map.insert("asset_type", "mesh");
+        map.insert("inventory_type", "object");
+        map.insert("name", "worn");
+        map.insert("description", "synthetic model");
+        map.insert("folder_id", Uuid::nil());
+        map.insert("next_owner_mask", 0);
+        map.insert("group_mask", 0);
+        map.insert("everyone_mask", 0);
+        map.insert("asset_resources", resources);
+        let body = to_xml(&map);
+        assert!(body.len() > 64 * 1024, "mesh fee is {} bytes", body.len());
+        body
     }
 
     fn exchange(agent: Uuid, name: &str, path: &str, body: Vec<u8>) -> CapExchange {
@@ -2209,6 +2190,8 @@ mod tests {
     async fn mesh_fee_then_texture_then_the_first_uploader_completes() {
         let stored = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let recorded = Arc::clone(&stored);
+        let inventory_posts = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded_items = Arc::clone(&inventory_posts);
         let assets = axum::Router::new()
             .route(
                 "/assets/",
@@ -2237,10 +2220,20 @@ mod tests {
                             .unwrap_or("")
                             .trim()
                             .to_owned();
+                        let description = if text.contains("<Description />") {
+                            String::new()
+                        } else {
+                            text.split("<Description>")
+                                .nth(1)
+                                .and_then(|rest| rest.split("</Description>").next())
+                                .unwrap_or("missing")
+                                .trim()
+                                .to_owned()
+                        };
                         recorded
                             .lock()
                             .unwrap()
-                            .push(format!("{name} {kind} {id}"));
+                            .push(format!("{name} {kind} {id} desc={description}"));
                         (
                             StatusCode::OK,
                             format!(
@@ -2252,8 +2245,15 @@ mod tests {
             )
             .route(
                 "/xinventory",
-                axum::routing::post(|| async {
-                    r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let recorded_items = Arc::clone(&recorded_items);
+                    async move {
+                        recorded_items
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&body).into_owned());
+                        r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                    }
                 }),
             );
         let asset_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -2329,10 +2329,21 @@ mod tests {
         );
         assert_eq!(post_bytes(&http, &mesh_uploader, b"again").await.0, 404);
         let seen = stored.lock().unwrap().clone();
-        assert!(seen.iter().any(|line| line.starts_with("cloth 0 ")));
+        assert!(
+            seen.iter()
+                .any(|line| line.starts_with("cloth 0 ") && line.ends_with(" desc=")),
+            "asset description should be empty, saw {seen:?}"
+        );
         assert!(
             seen.iter().all(|line| !line.starts_with("model ")),
             "mesh POST stored {seen:?}"
+        );
+        let items = inventory_posts.lock().unwrap().clone();
+        assert!(
+            items.iter().any(|body| {
+                body.contains("Name=cloth") && body.contains("Description=synthetic")
+            }),
+            "inventory item should keep the offer description, saw {items:?}"
         );
         caps_task.abort();
         assets_task.abort();
@@ -2438,36 +2449,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_offer_body_past_the_bound_is_refused() {
-        let agent = Uuid::from_u128(0x32);
-        let caps = offer_harness(agent, "/CAPS/000000320000/");
-        let exact = offer_of_len(MAX_UPLOAD_OFFER_BODY);
-        let accepted = caps.upload_offer(&exchange(
+    async fn a_mesh_fee_past_64_kib_still_offers_an_upload() {
+        let agent = Uuid::from_u128(0x33);
+        let caps = offer_harness(agent, "/CAPS/000000330000/");
+        let answer = caps.upload_offer(&exchange(
             agent,
             "NewFileAgentInventory",
             "/seed",
-            exact.clone(),
+            mesh_fee_over_64_kib(),
         ));
-        assert_eq!(
-            from_xml(&accepted.body).unwrap().get("state").as_str(),
-            "upload"
-        );
-        let before = offer_byte_refuses();
-        let mut over = exact;
-        over.push(b' ');
-        let refused = caps.upload_offer(&exchange(agent, "NewFileAgentInventory", "/seed", over));
-        let body = from_xml(&refused.body).unwrap();
-        assert_eq!(body.get("state").as_str(), "error");
-        assert_eq!(
-            body.get("error").get("message").as_str(),
-            "upload offer is too large"
-        );
-        assert_eq!(offer_byte_refuses(), before + 1);
+        let parsed = from_xml(&answer.body).unwrap();
+        assert_eq!(parsed.get("state").as_str(), "upload");
+        assert_eq!(parsed.get("data").get("resource_cost").as_f64(), 0.0);
         let slots = caps
             .upload
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].description.len(), MAX_UPLOAD_DESCRIPTION_UNITS);
+        assert!(slots[0].mesh);
+        assert_eq!(slots[0].description, "synthetic model");
     }
 }

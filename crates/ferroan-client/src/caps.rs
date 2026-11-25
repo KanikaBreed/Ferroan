@@ -59,7 +59,9 @@ use uuid::Uuid;
 
 const SEED_MIME: &str = "text/html;charset=UTF-8";
 
-/// Inventory and asset bodies. A seed stays on the smaller limit below.
+/// Inventory and asset bodies, including a mesh fee that carries the model.
+/// A seed stays on the smaller limit below. A body past this is
+/// `region.cap-body-bytes`.
 const CAP_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Where a granted capability is answered.
@@ -652,7 +654,25 @@ async fn call_cap(service: CapService, agent_id: Uuid, name: String, request: Re
         .map(str::to_owned);
     let bytes = match read_body(request.into_body(), CAP_BODY_LIMIT).await {
         Ok(bytes) => bytes,
-        Err(error) => return error.into_response(),
+        Err(error) => {
+            if let ferroan_http::HttpError::Limit { .. } = &error {
+                let route = if name.is_empty() {
+                    "uploader"
+                } else {
+                    name.as_str()
+                };
+                // `read_body` reports the bound plus one. It does not know the
+                // full length once the read has stopped.
+                ferroan_diag::refuse(
+                    ferroan_diag::REGION_CAP_BODY_BYTES,
+                    ferroan_diag::Kind::Hard,
+                    CAP_BODY_LIMIT as u64,
+                    (CAP_BODY_LIMIT as u64).saturating_add(1),
+                    route,
+                );
+            }
+            return error.into_response();
+        }
     };
     let answer = service(CapExchange {
         name,
@@ -1249,5 +1269,55 @@ mod tests {
         assert!(!routes.grant(agent, &uploader_path(0)));
         assert_eq!(agent_cap_refuses(), before);
         assert!(routes.grant(other, &uploader_path(90)));
+    }
+
+    fn cap_body_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.cap-body-bytes\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn a_capability_body_past_8_mib_is_refused() {
+        let service: CapService = Arc::new(|exchange| {
+            Box::pin(async move {
+                CapAnswer {
+                    handled: true,
+                    status: StatusCode::OK,
+                    content_type: SEED_MIME.to_owned(),
+                    body: exchange.body,
+                    content_range: None,
+                }
+            })
+        });
+        let before = cap_body_refuses();
+        let over = Request::builder()
+            .method(Method::POST)
+            .uri("/00000000-0000-4000-8000-000000000001")
+            .body(axum::body::Body::from(vec![b'x'; CAP_BODY_LIMIT + 1]))
+            .unwrap();
+        let refused = call_cap(Arc::clone(&service), Uuid::nil(), String::new(), over).await;
+        assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(cap_body_refuses(), before + 1);
+        let exact = Request::builder()
+            .method(Method::POST)
+            .uri("/00000000-0000-4000-8000-000000000001")
+            .body(axum::body::Body::from(vec![b'x'; CAP_BODY_LIMIT]))
+            .unwrap();
+        let accepted = call_cap(
+            service,
+            Uuid::nil(),
+            "NewFileAgentInventory".to_owned(),
+            exact,
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(cap_body_refuses(), before + 1);
     }
 }
