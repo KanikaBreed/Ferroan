@@ -209,7 +209,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (split into Q79a–Q79c) |
-| Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | READY |
+| Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | READY after Q79a |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | READY after Q79b |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c |

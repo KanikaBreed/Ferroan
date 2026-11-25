@@ -101,7 +101,7 @@ pub(super) struct ObservedAvatar {
 }
 
 impl ObservedAvatar {
-    fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
+    pub(super) fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
         let me = session.agent().agent_id;
         while let Some(packet) = session.poll_inbox() {
             self.record(&packet, me, other)?;
