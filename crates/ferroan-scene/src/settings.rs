@@ -142,6 +142,12 @@ pub async fn open_region_settings(
     let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"])
         .await
         .map_err(|error| ObjectError::Store(error.to_string()))?;
+    let result = read_region_settings(&pool, region).await;
+    pool.close().await;
+    result
+}
+
+async fn read_region_settings(pool: &Pool, region: Uuid) -> Result<SettingsSource, ObjectError> {
     let Some(sqlite) = pool.sqlite() else {
         return Err(ObjectError::Store("connection is not SQLite".to_owned()));
     };
@@ -541,6 +547,7 @@ fn falsy(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::objects::ObjectStoreKind;
+    use crate::test_store::CopiedStore;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
 
@@ -548,24 +555,6 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/regionstore/settings.json");
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-    }
-
-    fn copied_store() -> (std::path::PathBuf, String) {
-        let dir = std::env::temp_dir().join(format!(
-            "ferroan-settings-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("settings.db");
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/regionstore/settings.db");
-        std::fs::copy(fixture, &path).unwrap();
-        let connection = format!("Data Source={};Version=3", path.display());
-        (dir, connection)
     }
 
     fn loaded(source: SettingsSource) -> RegionSettings {
@@ -580,7 +569,8 @@ mod tests {
         let dump = dump();
         assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
         assert_eq!(dump["region"], REGION);
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let region = Uuid::parse_str(REGION).unwrap();
         let settings = loaded(
             open_region_settings(&connection, region, ObjectStoreKind::Sqlite)
@@ -729,25 +719,25 @@ mod tests {
             assert_eq!(point.pitch, dumped["pitch"].as_f64().unwrap() as f32);
             assert_eq!(point.distance, dumped["distance"].as_f64().unwrap() as f32);
         }
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn regionstore_missing_settings_share_one_persistent_cache_id() {
         assert_eq!(dump()["missing_cache_persists"], true);
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let load = || open_region_settings(&connection, Uuid::nil(), ObjectStoreKind::Sqlite);
         let (a, b) = tokio::join!(load(), load());
         let a = loaded(a.unwrap());
         assert!(a.cache_id.is_some_and(|id| !id.is_nil()));
         assert_eq!(a.cache_id, loaded(b.unwrap()).cache_id);
         assert_eq!(a.cache_id, loaded(load().await.unwrap()).cache_id);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn regionstore_empty_pbr_matches_the_csharp_scene_save() {
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let region = Uuid::parse_str(REGION).unwrap();
         let path = ferroan_db::sqlite_filename(&connection).unwrap();
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
@@ -781,12 +771,12 @@ mod tests {
         assert_ne!(reopened.terrain_textures, original.terrain_textures);
         assert_eq!(reopened.terrain_pbr, original.terrain_textures);
         pool.close().await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn regionstore_zero_classic_texture_is_saved_without_writing_partial_pbr() {
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let region = Uuid::parse_str(REGION).unwrap();
         let pool = settings_test_pool(&connection).await;
         sqlx::query(
@@ -815,12 +805,12 @@ mod tests {
         assert!(first.cache_id.is_some_and(|id| !id.is_nil()));
         assert_eq!(loaded(load().await.unwrap()).cache_id, first.cache_id);
         pool.close().await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn regionstore_first_insert_clears_only_its_orphan_spawn_points() {
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let pool = settings_test_pool(&connection).await;
         let new_region = Uuid::new_v4();
         sqlx::query(
@@ -845,12 +835,12 @@ mod tests {
                 .unwrap();
         assert_eq!(counts, [(REGION.to_owned(), 2)]);
         pool.close().await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn regionstore_terrain_save_rechecks_the_row_under_the_write_lock() {
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let pool = settings_test_pool(&connection).await;
         let region = Uuid::parse_str(REGION).unwrap();
         let texture = Uuid::new_v4();
@@ -885,7 +875,6 @@ mod tests {
         assert_eq!(fresh.terrain_pbr[0], texture);
         assert_eq!(fresh.cache_id, Some(cache));
         pool.close().await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     async fn settings_test_pool(connection: &str) -> sqlx::SqlitePool {
@@ -901,7 +890,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_null_covenant_keeps_the_region() {
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let path = ferroan_db::sqlite_filename(&connection).unwrap();
         let url = format!("sqlite://{}?mode=rwc", path.display());
         let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
@@ -923,7 +913,6 @@ mod tests {
         assert!(settings.covenant.is_nil());
         assert_eq!(settings.water_height, 42.5);
         assert_eq!(settings.spawn_points.len(), 2);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -974,7 +963,8 @@ mod tests {
         let dll = std::env::var("FERROAN_REGIONSTORE_ORACLE").unwrap();
         let dump = dump();
         let pin = dump["pin"].as_str().unwrap();
-        let (dir, connection) = copied_store();
+        let store = CopiedStore::new("regionstore/settings.db");
+        let connection = store.connection();
         let path = ferroan_db::sqlite_filename(&connection).unwrap();
         let output = std::process::Command::new("dotnet")
             .arg(&dll)
@@ -989,6 +979,5 @@ mod tests {
         );
         let fresh: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(fresh, dump);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

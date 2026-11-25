@@ -106,6 +106,24 @@ pub fn land_layers(map: &Heightmap) -> Vec<TerrainLayer> {
     layers
 }
 
+/// Each patch's bits as [`land_layers`] packs it, without the layer header
+/// and end marker, in the same order. C# packs several patches into one
+/// `LayerData`, so captured bodies are compared patch by patch.
+#[cfg(test)]
+pub(crate) fn land_patch_bits(map: &Heightmap) -> Vec<((i32, i32), Vec<bool>)> {
+    let large = map.width() > REGION || map.height() > REGION;
+    let quant = quantize_table();
+    let copy = copy_matrix();
+    spiral(map.width() / 16, map.height() / 16)
+        .into_iter()
+        .map(|(px, py)| {
+            let mut bits = BitPack::new();
+            write_patch(&mut bits, map, px, py, large, &quant, &copy);
+            ((px, py), bits.bits())
+        })
+        .collect()
+}
+
 fn write_patch(
     output: &mut BitPack,
     map: &Heightmap,
