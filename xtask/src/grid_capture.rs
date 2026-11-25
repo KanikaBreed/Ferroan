@@ -466,7 +466,7 @@ pub(super) fn compare_local_teleport(directory: &Path) -> Result<String, String>
         return Err("TeleportLocal agent is not the harness owner".into());
     }
     Ok(
-        "teleport bytes: TeleportStart flags 16, then TeleportLocal location 2 at (40.0,200.0,30.0) look (1.0,0.0,0.0) flags 16, reliable, not zero-coded; the live agent is the harness owner\nknown differences: a different region gets TeleportFailed and no map block (P2.0i); no post-teleport terse; IsFlying is not tracked; Godlike is not set on this path"
+        "teleport bytes: TeleportStart flags 16, then TeleportLocal location 2 at (40.0,200.0,30.0) look (1.0,0.0,0.0) flags 16, reliable, not zero-coded; the live agent is the harness owner\nknown differences: a different region gets TeleportFailed and no map block (P2.0i); no post-teleport terse; Godlike is not set on this path"
             .to_string(),
     )
 }

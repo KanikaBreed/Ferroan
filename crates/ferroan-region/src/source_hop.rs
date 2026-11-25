@@ -756,6 +756,20 @@ fn look_axes(look_at: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
     (at, [-at[1], at[0], 0.0], up)
 }
 
+/// `AgentManager.ControlFlags.AGENT_CONTROL_FLY`.
+const CONTROL_FLY: u32 = 1 << 13;
+
+/// A flying departure tells the destination to fly: `IsFlying` in the hop's
+/// teleport flags sets `AGENT_CONTROL_FLY` in the `AgentData` it sends
+/// (`EntityTransferModule.cs` lines 1171–1172 and 1401–1402).
+fn fly_control(teleport_flags: u32) -> u32 {
+    if teleport_flags & ferroan_client::IS_FLYING != 0 {
+        CONTROL_FLY
+    } else {
+        0
+    }
+}
+
 /// Position is the destination the viewer asked for. `region_id` is this
 /// region. The camera center and rotations are the last viewer update.
 fn agent_update(
@@ -785,7 +799,7 @@ fn agent_update(
         locomotion_state: 0,
         head_rotation: request.pose.head_rotation,
         body_rotation: request.pose.body_rotation,
-        control_flags: 0,
+        control_flags: fly_control(request.flags),
         god_data: true,
         agent_access: 0,
         default_animation: None,
@@ -1078,8 +1092,6 @@ mod tests {
             half_height: 0.9,
             allow_movement: true,
             godlike: false,
-            flying: false,
-            ground: Arc::new(|_, _| 21.0),
             position: Arc::clone(&position),
         };
         let expect = CircuitExpect {
@@ -1451,6 +1463,15 @@ mod tests {
         assert_eq!(body.get("SimPort").as_i32(), 9100);
         assert!(body.get("SeedCapability").as_str().contains("/CAPS/"));
         assert!(body.get("SeedCapability").as_str().ends_with("0000/"));
+    }
+
+    #[test]
+    fn a_flying_departure_sends_the_fly_control() {
+        assert_eq!(super::fly_control(ferroan_client::VIA_LOCATION), 0);
+        assert_eq!(
+            super::fly_control(ferroan_client::VIA_LOCATION | ferroan_client::IS_FLYING),
+            super::CONTROL_FLY
+        );
     }
 
     #[tokio::test]
