@@ -165,6 +165,7 @@ impl Api {
             .http
             .post(&self.url)
             .header("content-type", "application/x-www-form-urlencoded")
+            .timeout(api_timeout(command))
             .body(body)
             .send()
             .await
@@ -184,6 +185,18 @@ impl Api {
             bytes.extend_from_slice(&chunk);
         }
         parse_reply(&bytes, command)
+    }
+}
+
+/// `NearmeWithDetails` asks the region for names it has not cached and
+/// waits up to Ferrobot's `REQUEST_TIMEOUT` (10 s) for the answer. The
+/// Ferroan region does not answer `UUIDNameRequest` yet, so that command gets
+/// longer than the client's 5 s.
+fn api_timeout(command: &str) -> Duration {
+    if command == "NearmeWithDetails" {
+        Duration::from_secs(15)
+    } else {
+        Duration::from_secs(5)
     }
 }
 
@@ -327,11 +340,22 @@ fn start(config: &Config, harness: &Harness, secret: &str) -> Result<Process, St
 }
 
 pub(crate) async fn run(harness: &Harness, config: &Config) -> Result<String, String> {
+    run_with(harness, config, None).await
+}
+
+/// `companion_udp` is the region's own UDP address when a relay in front of
+/// it carries only Ferrobot's circuit. The companion connects there instead
+/// of the address its login reply names.
+pub(crate) async fn run_with(
+    harness: &Harness,
+    config: &Config,
+    companion_udp: Option<SocketAddr>,
+) -> Result<String, String> {
     // Ferrobot logs in from its own process. Settle the owner before it starts.
     (harness.before_login)(harness.owner.principal_id).await?;
     let secret = crate::live::generate_password()?;
     let mut process = start(config, harness, &secret)?;
-    let result = checks(harness, config, &secret, &mut process).await;
+    let result = checks(harness, config, &secret, &mut process, companion_udp).await;
     result.map_err(|error| {
         let tail = read_limited(&process.log, MAX_LOG)
             .map(|bytes| {
@@ -359,6 +383,7 @@ async fn checks(
     config: &Config,
     secret: &str,
     process: &mut Process,
+    companion_udp: Option<SocketAddr>,
 ) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(45);
     let http = reqwest::Client::builder()
@@ -422,9 +447,17 @@ async fn checks(
     if config.ferroan {
         lines.push("ferrobot local chat: pending (P2.0g)".into());
         lines.push("ferrobot IM: pending (region IM support)".into());
-    } else {
-        companion(harness, &api, agent.agent_id, &mut lines).await?;
     }
+    // The companion's chat and IM run on the C# region only.
+    companion(
+        harness,
+        &api,
+        agent.agent_id,
+        &mut lines,
+        !config.ferroan,
+        companion_udp,
+    )
+    .await?;
     process.terminate().await?;
     logout_evidence(&records(&config.udp_capture)?, agent)?;
     lines.push("ferrobot logout: pass (SIGTERM; LogoutReply)".into());
@@ -704,6 +737,8 @@ async fn companion(
     api: &Api,
     ferrobot: Uuid,
     lines: &mut Vec<String>,
+    chat: bool,
+    direct: Option<SocketAddr>,
 ) -> Result<(), String> {
     let http =
         ferroan_bot::login::http_client().map_err(|_| "could not create companion HTTP client")?;
@@ -721,7 +756,7 @@ async fn companion(
     .await
     .map_err(|error| format!("companion login failed: {error}"))?;
     let mut session = Session::connect(
-        SocketAddr::from((login.sim_ip, login.sim_port)),
+        direct.unwrap_or_else(|| SocketAddr::from((login.sim_ip, login.sim_port))),
         Agent {
             agent_id: login.agent_id,
             session_id: login.session_id,
@@ -744,11 +779,70 @@ async fn companion(
         let _ = session.logout(Duration::from_secs(10)).await;
         return Err(error);
     }
-    let result = exchange(&mut session, harness, api, ferrobot, lines).await;
+    let companion = session.agent().agent_id;
+    let mut result = wait_nearby(&mut session, api, companion).await;
+    if result.is_ok() {
+        lines.push("ferrobot nearby avatar: pass (the companion's ObjectUpdate)".into());
+        if chat {
+            result = exchange(&mut session, harness, api, ferrobot, lines).await;
+        }
+    }
     let logout = session.logout(Duration::from_secs(10)).await;
     result?;
     logout.map_err(|_| "companion LogoutReply was not received")?;
+    wait_gone(api, companion).await?;
+    lines.push("ferrobot nearby avatar gone: pass (KillObject on the companion's logout)".into());
     Ok(())
+}
+
+/// Ferrobot's `NearmeWithDetails` lists the avatars its object updates
+/// place, by id.
+async fn nearby(api: &Api) -> Result<Vec<Uuid>, String> {
+    let reply = api.command("NearmeWithDetails", &[]).await?;
+    let list: Vec<Value> =
+        serde_json::from_str(&reply).map_err(|_| "Ferrobot returned an invalid avatar list")?;
+    Ok(list
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect())
+}
+
+/// The companion arrived: Ferrobot got its full avatar update.
+async fn wait_nearby(session: &mut Session, api: &Api, companion: Uuid) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        session
+            .drive(STEP)
+            .await
+            .map_err(|_| "companion circuit failed while Ferrobot looked for it")?;
+        while session.poll_inbox().is_some() {}
+        match nearby(api).await {
+            Ok(list) if list.contains(&companion) => return Ok(()),
+            Ok(_) => {}
+            // One slow name lookup is not a failure until the deadline.
+            Err(error) => println!("ferrobot: NearmeWithDetails attempt failed: {error}"),
+        }
+        if Instant::now() >= deadline {
+            return Err("Ferrobot did not list the companion avatar nearby".into());
+        }
+    }
+}
+
+/// The companion left: Ferrobot got the kill and dropped it.
+async fn wait_gone(api: &Api, companion: Uuid) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match nearby(api).await {
+            Ok(list) if !list.contains(&companion) => return Ok(()),
+            Ok(_) => {}
+            Err(error) => println!("ferrobot: NearmeWithDetails attempt failed: {error}"),
+        }
+        if Instant::now() >= deadline {
+            return Err("Ferrobot still lists the companion avatar after it left".into());
+        }
+        tokio::time::sleep(STEP).await;
+    }
 }
 
 fn string_field(text: &str) -> Vec<u8> {
