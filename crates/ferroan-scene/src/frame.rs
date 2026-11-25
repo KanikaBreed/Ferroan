@@ -1373,6 +1373,21 @@ mod tests {
         (local_id, feed, seeds)
     }
 
+    /// Wait for a terse update in `feed`, then read the frame counter. The
+    /// update was offered in a tick the counter already includes, so the
+    /// reading bounds the frames that passed before it from above.
+    fn frames_at_first_terse(frame: &TerrainFrame, feed: &ViewerFeed) -> u64 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !feed.has_updates() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no terse update arrived"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        frames(frame)
+    }
+
     fn local_ids(blocks: &[[u8; crate::terse::AVATAR_TERSE_LEN]]) -> Vec<u32> {
         blocks
             .iter()
@@ -1402,10 +1417,18 @@ mod tests {
         walker_seeds.store(true, Ordering::Release);
         wait_frames(&frame, 8);
         assert!(!walker_feed.has_updates());
+        // The frame thread ticks on the wall clock, so frames are counted,
+        // not slept: the counter is read before the reply is posted, and the
+        // first test runs in the fifth frame after the reply is applied
+        // (four frames of `SendInitialData`'s wait, which return early).
+        let before = frames(&frame);
         frame.handshake_reply(walker).unwrap();
-        wait_frames(&frame, 2);
-        assert!(!walker_feed.has_updates(), "the first frames return early");
-        wait_frames(&frame, 4);
+        let seen = frames_at_first_terse(&frame, &walker_feed);
+        assert!(
+            seen >= before + 5,
+            "the first frames return early ({} frames)",
+            seen - before
+        );
         // The first test is due against the zero last values.
         assert_eq!(local_ids(&walker_feed.take_terse(0)), [walker_id]);
         assert_eq!(local_ids(&watcher_feed.take_terse(0)), [walker_id]);
@@ -1435,10 +1458,13 @@ mod tests {
         wait_frames(&frame, 6);
         assert!(!walker_feed.has_updates());
         // Root again: the wait starts over at the next reply, so a due walk
-        // is not sent for the frames `SendInitialData` takes.
-        frame.set_child(walker, false).unwrap();
-        reuse(&frame, walker);
+        // is not sent for the frames `SendInitialData` takes. The reply is
+        // posted before the arrival, which applies it first: had a tick run
+        // between the arrival and the reply, the stop after the walk would
+        // have been tested with the wait still over.
+        let before = frames(&frame);
         frame.handshake_reply(walker).unwrap();
+        reuse(&frame, walker);
         // A turn is due on every frame until it is sent.
         let mut turn = walking_update(clock_ms(Instant::now()), 3, 0);
         turn.body_rotation = [
@@ -1448,12 +1474,12 @@ mod tests {
             std::f32::consts::FRAC_1_SQRT_2,
         ];
         frame.agent_update(walker, turn).unwrap();
-        wait_frames(&frame, 2);
+        let seen = frames_at_first_terse(&frame, &walker_feed);
         assert!(
-            !walker_feed.has_updates(),
-            "the re-armed wait returns early"
+            seen >= before + 5,
+            "the re-armed wait returns early ({} frames)",
+            seen - before
         );
-        wait_frames(&frame, 4);
         assert_eq!(local_ids(&walker_feed.take_terse(0)), [walker_id]);
         // Leaving removes the viewer and its board entry.
         frame.remove(walker).unwrap().blocking_wait().unwrap();
