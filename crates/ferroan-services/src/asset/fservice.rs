@@ -408,8 +408,9 @@ impl FsAssetService {
 
     /// `HandleImportAssets`. A bad integer does not open the database.
     /// A failed connection logs and returns no `Import done` line.
-    /// The connection string is not logged. The remote console does not call this yet.
-    #[allow(dead_code)]
+    /// The live FSAssets harness invokes this library entry point with the operator
+    /// command arguments. ferroan-robust has yet to register the console command.
+    /// The connection string stays out of the log.
     pub async fn console_import(&self, args: &[&str]) -> Result<Vec<String>, StoreError> {
         let request = match parse_fs_import(args) {
             FsImportParse::Syntax => return Ok(vec![import_syntax_line()]),

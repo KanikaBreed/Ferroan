@@ -191,7 +191,7 @@ pub(super) async fn hashes(
     }
     let mut connection = match pool.acquire().await {
         Ok(connection) => connection,
-        Err(error) if mysql_will_not_open(&error) => {
+        Err(error) if mysql_driver_or_pool_error(&error) => {
             tracing::error!("fsassets mysql hashes: the database did not open");
             return Ok(vec![None; ids.len()]);
         }
@@ -235,7 +235,7 @@ pub(super) async fn delete(pool: &MySqlPool, table: &str, id: &str) -> Result<bo
     let sql = format!("DELETE FROM {table} WHERE id = ?");
     match sqlx::query(&sql).bind(id).execute(pool).await {
         Ok(_) => Ok(true),
-        Err(error) if mysql_will_not_open(&error) => {
+        Err(error) if mysql_driver_or_pool_error(&error) => {
             tracing::error!("fsassets mysql delete failed");
             Ok(false)
         }
@@ -336,9 +336,9 @@ pub(super) async fn clock(
     }))
 }
 
-/// An acquire failure. Access denied and an unknown database are
-/// `Error::Database` at this phase. A statement error is not passed here.
-fn mysql_will_not_open(error: &sqlx::Error) -> bool {
+/// MySQL driver and pool failures. The hash lookup checks acquisition errors
+/// here. Delete also checks errors returned while executing its statement.
+fn mysql_driver_or_pool_error(error: &sqlx::Error) -> bool {
     matches!(
         error,
         sqlx::Error::PoolClosed

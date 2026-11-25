@@ -9,12 +9,12 @@
 //!
 //! A read of 10,000 assets, each with its own hash and file, is timed on
 //! each side with `DaysBetweenAccessTimeUpdates` 365, so the interval does
-//! not also write `access_time`. Each side is timed once first and once
-//! second. Both SQL pools allow eight connections. The texture run leaves
+//! not also write `access_time`. After an untimed pass on each side,
+//! both orders are timed once. Both SQL pools allow eight connections. The texture run leaves
 //! the pin default of 0. The success line is `assets: match`.
 //!
 //! The force probe stores an existing id again through both HTTP services.
-//! An ordinary store keeps the old hash. A force import replaces it (TB45).
+//! An ordinary store keeps the old hash. The live force import replaces it.
 //! The import probe runs both services' ordinary and forced commands on one source
 //! table and compares the rows, with the times left out, and the decompressed
 //! files. A miss status, a row that differs, or a file that differs fails
@@ -204,51 +204,25 @@ fn compare_linux(db: FsassetDb) -> Result<String, String> {
         &csharp.report,
         &ferroan.report,
         left.lines().count(),
-        &ReadTimes {
-            csharp_first_ms: timed.csharp_first_ms,
-            ferroan_second_ms: timed.ferroan_second_ms,
-            ferroan_first_ms: timed.ferroan_first_ms,
-            csharp_second_ms: timed.csharp_second_ms,
-        },
-        &[],
+        &timed,
     ))
 }
 
-#[cfg(any(target_os = "linux", test))]
-struct ReadTimes {
-    csharp_first_ms: u128,
-    ferroan_second_ms: u128,
-    ferroan_first_ms: u128,
-    csharp_second_ms: u128,
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn success_report(
-    csharp: &str,
-    ferroan: &str,
-    records: usize,
-    times: &ReadTimes,
-    differences: &[&str],
-) -> String {
-    let mut text = format!(
+#[cfg(target_os = "linux")]
+fn success_report(csharp: &str, ferroan: &str, records: usize, times: &TimedCross) -> String {
+    format!(
         "{csharp}\n{ferroan}\nassets: match ({records} http records)\ncross-read ok\n\
-         10000-asset read: order csharp-then-ferroan {csharp_first} ms, {ferroan_second} ms; \
+         10000-asset read after one untimed warm-up pass per side: order csharp-then-ferroan {csharp_first} ms, {ferroan_second} ms; \
          order ferroan-then-csharp {ferroan_first} ms, {csharp_second} ms\n\
-         sequential HTTP GET /data, 10000 distinct hashes, release servers, pooled SQL (max 8), verified bodies, setup excluded",
+         sequential HTTP GET /data, 10000 distinct hashes, release servers, pooled SQL (max 8), verified bodies, setup excluded. Each figure is a single run, not a performance claim.",
         csharp_first = times.csharp_first_ms,
         ferroan_second = times.ferroan_second_ms,
         ferroan_first = times.ferroan_first_ms,
         csharp_second = times.csharp_second_ms,
-    );
-    if !differences.is_empty() {
-        text.push_str("\nknown differences: ");
-        text.push_str(&differences.join(", "));
-    }
-    text
+    )
 }
 
-/// A non-uuid get is a miss on both sides at Pin7. A status that differs is
-/// a failure, not a listed difference.
+/// A non-UUID GET returns 404 on both services at Pin8.
 #[cfg(any(target_os = "linux", test))]
 fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
     if csharp == 404 && ferroan == 404 {
@@ -260,7 +234,7 @@ fn classify_missing(csharp: u16, ferroan: u16) -> Result<(), String> {
 }
 
 /// Both probes are an ordinary `POST /assets` of an existing id. Each keeps
-/// the old hash. The force import (TB45) is compared by `asset fsassets-cross`.
+/// the old hash. The live import probe checks that force import replaces it.
 #[cfg(any(target_os = "linux", test))]
 fn classify_force(csharp_kept_hash: bool, ferroan_kept_hash: bool) -> Result<(), String> {
     match (csharp_kept_hash, ferroan_kept_hash) {
@@ -1013,6 +987,9 @@ fn time_and_cross(db: FsassetDb, target: &DbTarget, now: i64) -> Result<TimedCro
             csharp_port,
             &csharp_base,
         )?;
+        println!("live: fsassets warming up both services with {BULK_COUNT} reads each");
+        time_reads(csharp_port)?;
+        time_reads(rust_port)?;
         println!("live: fsassets reading {BULK_COUNT} assets, csharp then ferroan");
         let csharp_first_ms = time_reads(csharp_port)?;
         let ferroan_second_ms = time_reads(rust_port)?;
@@ -1720,9 +1697,6 @@ fn import_with_ferroan(
     fs::create_dir_all(&spool)
         .map_err(|error| format!("could not create {}: {error}", spool.display()))?;
     let url = std::env::var(db.env_name()).map_err(|_| format!("{} is unset", db.env_name()))?;
-    if url.is_empty() || url.contains([' ', '\n', '\r', '\0']) {
-        return Err("the database url cannot be passed to import".to_string());
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -1740,7 +1714,8 @@ fn import_with_ferroan(
         let files = ferroan_services::asset::FsFiles::new(base, &spool, false);
         let service =
             ferroan_services::asset::FsAssetService::new(store, files.clone(), None, true);
-        let args = ["force", "import", url.as_str(), IMPORT_TABLE];
+        let console = console_ado(db, target);
+        let args = ["force", "import", console.as_str(), IMPORT_TABLE];
         let command = if force { &args[..] } else { &args[1..] };
         let lines = service
             .console_import(command)
@@ -2084,34 +2059,6 @@ mod tests {
             port: 1,
             database: "assets".to_string(),
         }
-    }
-
-    #[test]
-    fn fsasset_success_line_names_only_the_ids_this_run_shows() {
-        let times = ReadTimes {
-            csharp_first_ms: 10,
-            ferroan_second_ms: 12,
-            ferroan_first_ms: 14,
-            csharp_second_ms: 11,
-        };
-        let mysql = success_report("csharp", "ferroan", 12, &times, &["TB45"]);
-        assert!(mysql.contains("assets: match (12 http records)"));
-        assert!(mysql.contains("cross-read ok"));
-        assert!(mysql.contains(
-            "10000-asset read: order csharp-then-ferroan 10 ms, 12 ms; \
-             order ferroan-then-csharp 14 ms, 11 ms"
-        ));
-        assert!(mysql.contains("known differences: TB45"));
-        assert!(!mysql.contains("TB39"));
-        assert!(!mysql.contains("TB40"));
-        let one = ReadTimes {
-            csharp_first_ms: 1,
-            ferroan_second_ms: 1,
-            ferroan_first_ms: 1,
-            csharp_second_ms: 1,
-        };
-        let clean = success_report("csharp", "ferroan", 1, &one, &[]);
-        assert!(!clean.contains("known differences"));
     }
 
     #[test]
