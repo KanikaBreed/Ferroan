@@ -195,7 +195,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
-| Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
+| Q76 | P2.10a: object-crossing fixtures from two C# regions | BLOCKED (Pin8 has no object QueryAccess; see Q76 below) |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
@@ -747,6 +747,17 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
+
+### Q76 object-crossing fixture scope
+
+Q76 BLOCKED (25 November 2026, `feat/q76-object-crossing`). P2.10a requires an object `QueryAccess`. At Pin8 `c401bceecd`, `SceneObjectGroup.cs` 1185 and 1265–1272 take a linkset without seated or standing riders from destination lookup to transfer. `EntityTransferModule.cs` 2916–2955 looks up the grid region by position, and 2968–2985 calls `CreateObject`. Across two simulators, `RemoteSimulationConnector.cs` 249–265 selects the remote connector. `SimulationServiceConnector.cs` 487–516 posts the object directly. Its `state` field is present only for a nonempty script-state snapshot (`SceneObjectGroup.Inventory.cs` 486–499).
+
+Proposed correction for the manager:
+
+1. Keep the two-way, riderless linkset edit as P2.10a. Place one observer on each side in separate Pin8 simulator processes. Record each edit, the corresponding object POST and answer, and the updates each viewer receives. Correlate the root and child aliases across the two hops. Replay the captured `sog` XML, `extra`, `modified`, destination and new position; check the presence and bytes of `state` against the seeded script state. Check that the edit sends no object access request. Preserve the README, redaction and mutation check in the acceptance.
+2. If the manager needs crossing-specific `QueryAccess` evidence, queue a separate rider fixture. `SceneObjectGroup.cs` 1275–1303 checks the seated avatar's access. `EntityTransferModule.cs` 1764–1777 passes that avatar's UUID to `QueryAccess`. `SimulationServiceConnector.cs` 300–315 addresses that request to `/agent/{avatar-id}/{destination-region-id}/`. Q18a already covers an avatar teleport. D39 defers rider support.
+
+The source trace establishes the row mismatch. The live crossings, HTTP and viewer captures, and replay remain pending.
 
 ## Found while working
 
