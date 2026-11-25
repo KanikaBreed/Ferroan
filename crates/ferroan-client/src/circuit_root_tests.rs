@@ -409,6 +409,7 @@ async fn a_parked_circuit_returns_with_one_handshake_and_the_update_pose() {
             position: [128.0, 128.0, 30.0],
             look_at: [1.0, 0.0, 0.0],
             origin,
+            ..crate::return_hop::ReturnPose::default()
         },
         None,
     ));
