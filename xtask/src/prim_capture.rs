@@ -262,10 +262,27 @@ mod tests {
                 emitter.path_taper_y,
                 emitter.path_skew
             ],
-            [-19, 7, -11, 13, -17, -23]
+            [-19, 7, -11, -13, -17, -23]
         );
         assert_eq!(emitter.text, "Lumière 雪\0".as_bytes());
         assert_eq!(speaker.text, format!("{}\0", "é".repeat(126)).as_bytes());
+        assert_eq!(
+            speaker.media_url,
+            format!("{:a<250}🌐\0", "https://example.invalid/").as_bytes()
+        );
+        assert_eq!(speaker.update_flags & 0x40, 0);
+        assert_eq!(speaker.flags, 1);
+        // A mesh root with AnimeshEnabled carries sculpt (0x30) followed by
+        // extended mesh flags (0x70, bit 0 set).
+        let mut animated = Reader::new(&blocks[7].extra_params);
+        assert_eq!(animated.u8().unwrap(), 2);
+        assert_eq!(animated.u16().unwrap(), 0x30);
+        assert_eq!(animated.u32().unwrap(), 17);
+        animated.fixed(17).unwrap();
+        assert_eq!(animated.u16().unwrap(), 0x70);
+        assert_eq!(animated.u32().unwrap(), 4);
+        assert_eq!(animated.u32().unwrap(), 1);
+        assert_eq!(animated.remaining(), 0);
         // Decode each extra parameter's type and length so disabling one in the
         // oracle cannot silently shrink coverage when the fixture is refreshed.
         let mut extra = Reader::new(&emitter.extra_params);

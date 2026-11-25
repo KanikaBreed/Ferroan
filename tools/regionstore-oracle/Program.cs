@@ -202,7 +202,7 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
     effects.PathTwist = -19;
     effects.PathTwistBegin = 7;
     effects.PathRadiusOffset = -11;
-    effects.PathTaperX = 13;
+    effects.PathTaperX = -13;
     effects.PathTaperY = -17;
     effects.PathSkew = -23;
     effects.FlexiEntry = true;
@@ -238,6 +238,11 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
     speaker.SoundFlags = 1;
     speaker.SoundGain = 0.375;
 
+    var animatedMesh = PrimitiveBaseShape.CreateMesh(1, Id(30));
+    animatedMesh.SetScale(0.5f);
+    animatedMesh.AnimeshEnabled = true;
+    var animated = Part(8, "extended mesh flags", animatedMesh, new Vector3(140, 128, 40), Vector3.Zero);
+
     string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
     var store = new SQLiteSimulationData();
     try
@@ -249,22 +254,24 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         store.StoreObject(RotatedVegetation(5, PCode.NewTree), region);
         store.StoreObject(new SceneObjectGroup(emitter), region);
         store.StoreObject(new SceneObjectGroup(speaker), region);
+        store.StoreObject(new SceneObjectGroup(animated), region);
     }
     finally
     {
         store.Dispose();
     }
-    // Text's setter limits the value before StoreObject can persist it. Exercise
-    // the same limit on restore from a store containing the longer source text.
+    // Exercise the restore path before the Text and MediaUrl setters cut to
+    // 254 UTF-8 bytes and Scene.LoadPrimsFromStorage clears Scripted on the root.
     using var db = new SQLiteConnection(connection);
     db.Open();
     using var update = db.CreateCommand();
-    update.CommandText = "UPDATE prims SET Text=@text WHERE UUID=@id";
-    update.Parameters.AddWithValue("@text", new string('é', 126) + "雪tail");
+    update.CommandText = "UPDATE prims SET Text=@text, MediaURL=@url, ObjectFlags=ObjectFlags | @scripted WHERE UUID=@id";
+    update.Parameters.AddWithValue("@text", new string('é', 126) + "雪");
+    update.Parameters.AddWithValue("@url", "https://example.invalid/".PadRight(250, 'a') + "🌐雪");
+    update.Parameters.AddWithValue("@scripted", (int)PrimFlags.Scripted);
     update.Parameters.AddWithValue("@id", speaker.UUID.ToString());
     if (update.ExecuteNonQuery() != 1)
         throw new InvalidDataException("missing sound prim in capture seed");
-
 }
 
 static void Seed(string path)

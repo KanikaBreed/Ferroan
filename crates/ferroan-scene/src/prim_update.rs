@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_store_preserves_the_mesh_hole_bits_and_untrimmed_hover_text() {
+    async fn capture_store_preserves_the_mesh_hole_bits_and_raw_root_fields() {
         let parts: BTreeMap<_, _> = load_capture_store()
             .await
             .into_iter()
@@ -425,7 +425,12 @@ mod tests {
         let mesh = &parts[&Uuid::from_u128(0x65000000_0000_4000_8000_000000000002)];
         let speaker = &parts[&Uuid::from_u128(0x65000000_0000_4000_8000_000000000007)];
         assert_eq!(mesh.shape.profile_curve, 0x30);
-        assert_eq!(speaker.text, format!("{}雪tail", "é".repeat(126)));
+        assert_eq!(speaker.text, format!("{}雪", "é".repeat(126)));
+        assert_eq!(
+            speaker.media_url,
+            format!("{:a<250}🌐雪", "https://example.invalid/")
+        );
+        assert_ne!(speaker.flags & 0x40, 0);
     }
 
     #[tokio::test]

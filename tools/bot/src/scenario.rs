@@ -27,7 +27,7 @@ const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 
 /// Number of parts in the persisted Pin8 prim-update capture scene.
-pub const PRIM_CAPTURE_COUNT: usize = 7;
+pub const PRIM_CAPTURE_COUNT: usize = 8;
 
 /// Called with the account's principal before [`login::login`].
 ///
