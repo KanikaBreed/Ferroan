@@ -1471,7 +1471,7 @@ mod tests {
     /// The agent ids of the full updates and appearances, and the kills, in
     /// the order a feed holds them.
     fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
-        feed.take_avatar_packets()
+        feed.take_avatar_packets(usize::MAX)
             .into_iter()
             .map(|packet| match packet {
                 AvatarPacket::Full(full) => ('F', full.agent.as_u128()),
@@ -1506,7 +1506,7 @@ mod tests {
             .blocking_wait()
             .unwrap();
         assert_eq!(arrived.rotation, look_rotation(look));
-        let announced = first_feed.take_avatar_packets();
+        let announced = first_feed.take_avatar_packets(usize::MAX);
         assert_eq!(announced.len(), 2);
         let AvatarPacket::Full(full) = &announced[0] else {
             panic!("the full update comes first");
@@ -1573,7 +1573,7 @@ mod tests {
             reuse(&frame, agent);
         }
         frame.set_child(child, true).unwrap();
-        let _ = feed.take_avatar_packets();
+        let _ = feed.take_avatar_packets(usize::MAX);
         feed.offer_terse(1, leaving_id);
         frame.remove(leaving).unwrap().blocking_wait().unwrap();
         assert_eq!(packet_kinds(&feed), [('K', u128::from(leaving_id))]);
@@ -1605,7 +1605,7 @@ mod tests {
             reuse(&frame, agent);
         }
         for feed in [&hopper_feed, &knows_feed, &unaware_feed] {
-            let _ = feed.take_avatar_packets();
+            let _ = feed.take_avatar_packets(usize::MAX);
         }
         frame.set_child(hopper, true).unwrap();
         let near = MovedAway {

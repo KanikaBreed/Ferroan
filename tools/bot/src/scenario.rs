@@ -154,10 +154,6 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = avatars_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
-    if name == "avatars" {
-        let line = avatars_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
     let Some(names) = selection(name) else {
         return Err(format!(
             "unknown scenario {name}; expected all or {}",
@@ -601,6 +597,9 @@ impl OtherAvatar {
                 && let Ok(message) = packet.decode::<AvatarAppearance>()
                 && message.sender.id == other
                 && !message.visual_param.is_empty()
+                // A viewer drops an appearance for an avatar it does not
+                // know yet: only one after the full update counts.
+                && self.local_id.is_some()
             {
                 self.appearance = true;
             }

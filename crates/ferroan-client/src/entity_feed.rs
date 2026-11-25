@@ -110,8 +110,9 @@ pub trait EntityUpdates: Send + Sync {
     fn has_updates(&self) -> bool;
     /// `ProcessEntityUpdates(max_bytes)` for avatar terse updates.
     fn take_terse(&self, max_bytes: i32) -> Vec<[u8; AVATAR_TERSE_LEN]>;
-    /// Every waiting avatar packet, in the order the region sent them.
-    fn take_avatar_packets(&self) -> Vec<AvatarPacket>;
+    /// At most `max` waiting avatar packets, the oldest first, in the order
+    /// the region sent them. The rest wait for a later pass.
+    fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket>;
 }
 
 /// The feed and the wake an offer notifies.

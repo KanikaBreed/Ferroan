@@ -62,6 +62,8 @@ use uuid::Uuid;
 
 /// Waiting avatar packets per viewer. C# writes them to the outbox with no
 /// bound; Ferroan refuses the next one past this (`region.avatar-packets`).
+/// The circuit takes them only while its reliable window has room, so a
+/// viewer that stops acknowledging leaves them here.
 pub const MAX_AVATAR_PACKETS: usize = 4096;
 
 /// What `CreateAvatarUpdateBlock` and `SendAppearance` read that the frame
@@ -131,8 +133,10 @@ impl AvatarPackets {
         true
     }
 
-    pub(crate) fn take(&mut self) -> Vec<AvatarPacket> {
-        self.waiting.drain(..).collect()
+    /// The oldest `max` packets, in order.
+    pub(crate) fn take(&mut self, max: usize) -> Vec<AvatarPacket> {
+        let count = max.min(self.waiting.len());
+        self.waiting.drain(..count).collect()
     }
 
     #[cfg(test)]
@@ -169,11 +173,13 @@ mod tests {
             assert!(packets.push(AvatarPacket::Kill(vec![id])));
         }
         assert!(!packets.push(AvatarPacket::Kill(vec![u32::MAX])));
-        let taken = packets.take();
-        assert_eq!(taken.len(), MAX_AVATAR_PACKETS);
-        assert_eq!(taken[0], AvatarPacket::Kill(vec![0]));
+        let first = packets.take(1);
+        assert_eq!(first, [AvatarPacket::Kill(vec![0])]);
+        let taken = packets.take(usize::MAX);
+        assert_eq!(taken.len(), MAX_AVATAR_PACKETS - 1);
+        assert_eq!(taken[0], AvatarPacket::Kill(vec![1]));
         assert_eq!(
-            taken[MAX_AVATAR_PACKETS - 1],
+            taken[MAX_AVATAR_PACKETS - 2],
             AvatarPacket::Kill(vec![MAX_AVATAR_PACKETS as u32 - 1])
         );
         assert!(packets.is_empty());

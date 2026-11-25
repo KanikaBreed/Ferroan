@@ -3621,18 +3621,18 @@ mod tests {
             feeds.push((local_id, feed));
         }
         for (_, feed) in &feeds {
-            let _ = feed.take_avatar_packets();
+            let _ = feed.take_avatar_packets(usize::MAX);
         }
         let hopper = Uuid::from_u128(80);
         // 81 has a child in the destination; 82 does not.
         state.note_open_child(Uuid::from_u128(81), end.clone());
         state.moved_away(hopper, true, &end).await;
-        assert!(feeds[1].1.take_avatar_packets().is_empty());
+        assert!(feeds[1].1.take_avatar_packets(usize::MAX).is_empty());
         assert_eq!(
-            feeds[2].1.take_avatar_packets(),
+            feeds[2].1.take_avatar_packets(usize::MAX),
             [ferroan_scene::AvatarPacket::Kill(vec![feeds[0].0])]
         );
-        assert!(feeds[0].1.take_avatar_packets().is_empty());
+        assert!(feeds[0].1.take_avatar_packets(usize::MAX).is_empty());
     }
 
     #[tokio::test]

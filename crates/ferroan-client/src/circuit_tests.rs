@@ -1730,9 +1730,57 @@ impl crate::EntityUpdates for BlockFeed {
         std::mem::take(&mut *self.blocks.lock().unwrap())
     }
 
-    fn take_avatar_packets(&self) -> Vec<crate::AvatarPacket> {
-        std::mem::take(&mut *self.packets.lock().unwrap())
+    fn take_avatar_packets(&self, max: usize) -> Vec<crate::AvatarPacket> {
+        let mut packets = self.packets.lock().unwrap();
+        let count = max.min(packets.len());
+        packets.drain(..count).collect()
     }
+}
+
+/// A circuit whose reliable window is full takes no avatar packets: they stay
+/// in the feed, where its bound applies. Freed room takes only that many.
+#[tokio::test]
+async fn a_stalled_circuit_leaves_avatar_packets_in_the_feed() {
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    // Exhaust the task bucket so the waiting packets stay.
+    let now = state.throttle_clock.now_secs();
+    assert!(state.throttle.try_spend(TASK, 10_000_000, now));
+    let mut ping = CompletePingCheck::default();
+    ping.ping_id.ping_id = 1;
+    for _ in 0..MAX_UNACKED {
+        state.enqueue_task(&ping).unwrap();
+    }
+    {
+        let mut packets = source.packets.lock().unwrap();
+        for id in 0..5 {
+            for kill in crate::kill_packets(&[id]) {
+                packets.push(crate::AvatarPacket::Kill(kill));
+            }
+        }
+    }
+    state.maintain(&io).await.unwrap();
+    assert_eq!(source.packets.lock().unwrap().len(), 5);
+    assert_eq!(state.pending_task.len(), MAX_UNACKED);
+    // Two slots free up: two packets move, the oldest first.
+    state.pending_task.pop_back();
+    state.pending_task.pop_back();
+    state.maintain(&io).await.unwrap();
+    assert_eq!(source.packets.lock().unwrap().len(), 3);
+    assert_eq!(state.pending_task.len(), MAX_UNACKED);
+    let crate::AvatarPacket::Kill(next) = &source.packets.lock().unwrap()[0] else {
+        panic!("a kill");
+    };
+    assert_eq!(next.object_data[0].id, 2);
 }
 
 /// Another avatar's full update, appearance and kill leave in the order the

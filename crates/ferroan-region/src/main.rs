@@ -1094,9 +1094,9 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         self.feed.take_terse(max_bytes)
     }
 
-    fn take_avatar_packets(&self) -> Vec<ferroan_client::AvatarPacket> {
+    fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
         let mut out = Vec::new();
-        for packet in self.feed.take_avatar_packets() {
+        for packet in self.feed.take_avatar_packets(max) {
             match packet {
                 ferroan_scene::AvatarPacket::Full(full) => {
                     let mut wire = avatar_wire(full.agent, &full.look);
@@ -2996,7 +2996,7 @@ mod tests {
                 feed,
                 region_handle: 77,
             };
-            let packets = scene_feed.take_avatar_packets();
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
             assert_eq!(packets.len(), 3);
             let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
                 panic!("the full update comes first");

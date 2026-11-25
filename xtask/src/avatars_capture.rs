@@ -91,7 +91,9 @@ fn body<M: Msg>(message: &M) -> Vec<u8> {
     writer.buf
 }
 
-/// A redacted update with the local id and Z masked. Ferroan's block must
+/// A redacted update with the local id and Z masked. Z differs for two
+/// reasons: the Ferroan home store has no terrain row, and C#'s landing ray
+/// cast stacks the second avatar on the first, which the stand-in does not. Ferroan's block must
 /// carry the unit-W plane; C#'s plane is masked with it, because physics
 /// sets one once the avatar lands.
 fn masked_full(update: &ObjectUpdate) -> ObjectUpdate {
@@ -241,7 +243,7 @@ pub(super) fn compare_avatars(directory: &Path) -> Result<String, String> {
         return Err("Ferroan killed the owner's avatar while it stayed".into());
     }
     Ok(format!(
-        "avatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked; Z and the collision plane are folded (the home store has no terrain row, and the stand-in sets no plane); known differences: C# also sends the kill to the leaving viewer after its LogoutReply ({} kill(s) in the C# capture), and AvatarAnimation is P2.3b1",
+        "avatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# also sends the kill to the leaving viewer after its LogoutReply ({} kill(s) in the C# capture), and AvatarAnimation is P2.3b1",
         ferroan.fulls.len(),
         ferroan.appearances.len(),
         kills.len(),

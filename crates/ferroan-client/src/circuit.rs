@@ -776,12 +776,19 @@ impl State {
     }
 
     /// Other avatars' full updates, appearances and kills, which C# writes
-    /// straight onto the task outbox, behind what is already there.
+    /// straight onto the task outbox, behind what is already there. Only
+    /// while the waiting task packets and the unacknowledged ones leave room
+    /// in the reliable window: a viewer that stops acknowledging leaves them
+    /// in the feed, whose bound (`region.avatar-packets`) then applies.
     fn take_avatar_packets(&mut self) -> Result<(), CircuitError> {
         let Some(feed) = self.feed.as_ref() else {
             return Ok(());
         };
-        for packet in feed.updates.take_avatar_packets() {
+        let room = MAX_UNACKED.saturating_sub(self.pending_task.len() + self.unacked.len());
+        if room == 0 {
+            return Ok(());
+        }
+        for packet in feed.updates.take_avatar_packets(room) {
             let payload = match &packet {
                 AvatarPacket::Full(update) => encode_payload(update)?,
                 AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,

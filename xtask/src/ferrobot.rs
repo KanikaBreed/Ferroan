@@ -822,8 +822,11 @@ async fn wait_nearby(session: &mut Session, api: &Api, companion: Uuid) -> Resul
             .await
             .map_err(|_| "companion circuit failed while Ferrobot looked for it")?;
         while session.poll_inbox().is_some() {}
-        if nearby(api).await?.contains(&companion) {
-            return Ok(());
+        match nearby(api).await {
+            Ok(list) if list.contains(&companion) => return Ok(()),
+            Ok(_) => {}
+            // One slow name lookup is not a failure until the deadline.
+            Err(error) => println!("ferrobot: NearmeWithDetails attempt failed: {error}"),
         }
         if Instant::now() >= deadline {
             return Err("Ferrobot did not list the companion avatar nearby".into());
@@ -835,8 +838,10 @@ async fn wait_nearby(session: &mut Session, api: &Api, companion: Uuid) -> Resul
 async fn wait_gone(api: &Api, companion: Uuid) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if !nearby(api).await?.contains(&companion) {
-            return Ok(());
+        match nearby(api).await {
+            Ok(list) if !list.contains(&companion) => return Ok(()),
+            Ok(_) => {}
+            Err(error) => println!("ferrobot: NearmeWithDetails attempt failed: {error}"),
         }
         if Instant::now() >= deadline {
             return Err("Ferrobot still lists the companion avatar after it left".into());

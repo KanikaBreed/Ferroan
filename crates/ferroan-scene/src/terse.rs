@@ -426,9 +426,10 @@ impl ViewerFeed {
         }
     }
 
-    /// Every waiting avatar packet, in the order the frame sent them.
-    pub fn take_avatar_packets(&self) -> Vec<AvatarPacket> {
-        self.packets().take()
+    /// The oldest `max` waiting avatar packets, in the order the frame sent
+    /// them. The rest stay for the next pass.
+    pub fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket> {
+        self.packets().take(max)
     }
 
     /// `SendEntityUpdate` for an avatar's terse flags. A full queue refuses
@@ -684,6 +685,29 @@ mod tests {
         assert_eq!(look_at([3.0, 4.0, 9.0]), [0.6, 0.8, 0.0]);
         assert_eq!(look_at([0.0, 0.0, 1.0]), [0.0; 3]);
         assert_eq!(look_at([0.0005, 0.0, 1.0]), [0.0; 3]);
+    }
+
+    /// A feed the circuit does not drain refuses the packet past its bound
+    /// and reports `region.avatar-packets`. A kill still drops its id's
+    /// waiting terse update.
+    #[test]
+    fn an_undrained_feed_refuses_past_its_bound_and_reports_it() {
+        let feed = ViewerFeed::new(AvatarBoard::default());
+        feed.offer_terse(1, 7);
+        for id in 0..crate::avatars::MAX_AVATAR_PACKETS as u32 {
+            feed.send_avatar_packet(AvatarPacket::Kill(vec![id + 100]));
+        }
+        assert!(feed.has_updates());
+        feed.send_avatar_packet(AvatarPacket::Kill(vec![7]));
+        assert!(ferroan_diag::metrics().contains("region.avatar-packets"));
+        assert!(
+            !feed.has_updates(),
+            "the kill still drops the waiting update"
+        );
+        assert!(feed.take_avatar_packets(0).is_empty());
+        let taken = feed.take_avatar_packets(usize::MAX);
+        assert_eq!(taken.len(), crate::avatars::MAX_AVATAR_PACKETS);
+        assert_eq!(taken.last(), Some(&AvatarPacket::Kill(vec![4195])));
     }
 
     #[test]
