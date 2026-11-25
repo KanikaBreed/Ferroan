@@ -26,25 +26,25 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Data.MySQL/MySQLXAssetData.cs
 //   Source/OpenSim.Data.MySQL/Resources/XAssetStore.migrations
-//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+//   Store race fix follows OpenSim-NGC/OpenSim-Tranquillity #542 @ 637611550d1db5bf6d3f036665031b71f214e66e
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `MySQLXAssetData` at the pin.
 //!
 //! `StoreAsset` is `REPLACE INTO XAssetsMeta`, so a second store of an id
-//! rewrites `CreateTime` and `AccessTime`, then inserts `XAssetsData` with
-//! `INSERT IGNORE` so a hash another store just wrote does not roll this one
-//! back (TB58, D43). The metadata replace, the data insert and the exists-hash
-//! read enlist the connection's transaction (TB27, #475). A failed metadata or
-//! data statement rolls back and the method returns. A hash-lookup error is
-//! returned. `GetAsset` joins the tables and masks flags. It calls
-//! `UpdateAccessTime` only when the stored access
+//! rewrites `CreateTime` and `AccessTime`. Read the hash before opening
+//! the transaction. A consistent read inside it can make MariaDB reject a
+//! concurrent writer with error 1020 (TB58, D43). Metadata and new data
+//! commit together. A failed write rolls back and returns, and a failed hash
+//! lookup returns its error. `GetAsset` joins the tables and masks flags.
+//! It calls `UpdateAccessTime` only when the stored access
 //! time is greater than 0. `AssetsExist` selects `XAssetsMeta` (TB28, #476).
 //! `Delete` removes the meta row, leaves the data row, and returns true
 //! whenever the statement runs.
 
-use sqlx::MySqlPool;
+use sqlx::{Connection, MySqlConnection, MySqlPool};
 use uuid::Uuid;
 
 use super::decode::{
@@ -90,12 +90,18 @@ pub(super) async fn get(pool: &MySqlPool, id: Uuid) -> Result<Option<Asset>, Sto
     Ok(Some(asset))
 }
 
-pub(super) async fn store(pool: &MySqlPool, asset: &Asset) -> Result<(), StoreError> {
+pub(super) async fn store(conn: &mut MySqlConnection, asset: &Asset) -> Result<(), StoreError> {
     let hash = content_hash(&asset.data);
     let now = mysql_unix_now();
     let name = asset.stored_name();
     let description = asset.stored_description();
-    let mut tx = pool.begin().await?;
+    let present = sqlx::query("SELECT Hash FROM XAssetsData WHERE Hash = ?")
+        .bind(hash.as_slice())
+        .fetch_optional(&mut *conn)
+        .await
+        .inspect_err(|error| tracing::error!(asset_id = %asset.id, %error, "xasset mysql hash lookup failed"))?
+        .is_some();
+    let mut tx = conn.begin().await?;
     let meta = sqlx::query(
         "REPLACE INTO XAssetsMeta(ID, Hash, Name, Description, AssetType, Local, Temporary, \
          CreateTime, AccessTime, AssetFlags, CreatorID) \
@@ -123,29 +129,20 @@ pub(super) async fn store(pool: &MySqlPool, asset: &Asset) -> Result<(), StoreEr
         tx.rollback().await?;
         return Ok(());
     }
-    let present = match sqlx::query("SELECT Hash FROM XAssetsData WHERE Hash = ?")
-        .bind(hash.as_slice())
-        .fetch_optional(&mut *tx)
-        .await
-    {
-        Ok(row) => row.is_some(),
-        Err(error) => {
-            tracing::error!(
-                asset_id = %asset.id,
-                error = %error,
-                "xasset mysql hash lookup failed"
-            );
-            tx.rollback().await?;
-            return Err(error.into());
-        }
-    };
     if !present {
-        let inserted = sqlx::query("INSERT IGNORE INTO XAssetsData(Hash, Data) VALUES (?, ?)")
+        let inserted = sqlx::query("INSERT INTO XAssetsData(Hash, Data) VALUES (?, ?)")
             .bind(hash.as_slice())
             .bind(&asset.data)
             .execute(&mut *tx)
             .await;
-        if let Err(error) = inserted {
+        // Hash is the only unique key. Another store can commit the bytes
+        // after our lookup. InnoDB rolls back just the duplicate statement.
+        if let Err(error) = inserted
+            && error
+                .as_database_error()
+                .and_then(|db| db.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+                .is_none_or(|db| db.number() != 1062)
+        {
             tracing::error!(
                 asset_id = %asset.id,
                 error = %error,

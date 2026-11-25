@@ -197,3 +197,23 @@ is released. The live grid run covers the same boundary against pinned C#.
 P0.10k checks standalone followed by grid mode and verifies three separate SQLite files, interruption during standalone startup followed by `live down`, forced proxy failure, and 200 repeated `grid_state` test runs with the default parallel test runner. CAPS fixture comparisons serve the production `CapsRegistry::router()`. The event-poll hold and proxy default timeout are checked against the C# manifest's measured hold; transport connection headers and event URL shape come from that capture too. Circuit, arrival and CAPS extraction require the pinned C# channel/version on the matching login circuit. P0.10l keeps that circuit only: a later `UseCircuitCode` cannot supply logout or handshake evidence, and the CAPS seed path must be the create-agent `caps_path` of that circuit. Login and region-parity fixture generation refuse a Ferroan channel even when the probe's own `source` label says `csharp`. The proxy capture stores the forwarded request (`Connection: close`), which is what C# copied onto `response_connection`. Harness probes send `X-Ferroan-Probe` and are not selected as fixtures. `live down` runs grid-state and standalone cleanup and reports every error. Each region links an allow-list of published static files, not `maptiles/`, `MeshCache/`, console history or the daily log. The full `xtask` test binary then passed 200 consecutive runs with the default parallel runner (100 tests and 1 ignored on each run, 254s). Two earlier failures in that series, an empty `/proc` cmdline just after exec and an ephemeral UDP port released before rebind, are recorded under Found while working and fixed before this run.
 
 A compile check proves the code builds. It does not prove a viewer can log in, a script behaves as it did in C#, or a grid stays up. Record those as pending until someone has seen them work, with the revision, viewer or grid, and result. A passing live-harness run is evidence of protocol behavior seen by its test client; it is not evidence that Firestorm renders the result, which the phase-gate check covers.
+
+For the MySQL XAsset race (R18), run the following against a disposable
+MySQL 8.4 or MariaDB 11.8 database with the pinned XAssetStore migrations.
+Use the engine's default REPEATABLE READ isolation. MariaDB 11.8 also
+defaults to `innodb_snapshot_isolation=ON`.
+
+```sh
+cargo test -p ferroan-services --lib xasset_plugins_match_the_pin
+cargo test -p ferroan-services --lib mysql_xasset_store_with_select_insert_on_data
+```
+
+Set `FERROAN_MYSQL_URL` for the first test. It clears the two XAsset tables.
+For the second, set `FERROAN_XASSET_LIMITED_MYSQL_URL` to a login with SELECT
+on migrations, SELECT/INSERT/DELETE on XAssetsMeta (metadata replacement)
+and SELECT/INSERT on XAssetsData. The test requires a denied data UPDATE,
+stores and reads fresh bytes, then holds one writer's commit until the other
+connection reaches its insert. It reads back both ids and counts the data
+rows for that hash. The [Pin8 oracle response](../fixtures/asset/pin8-xasset-race.json)
+records the corresponding C# result. The MySQL live HTTP report names TB58
+separately from its texture and inventory comparisons.
