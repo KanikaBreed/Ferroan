@@ -520,7 +520,10 @@ fn valid_vectors(node: &impl EnvironmentNode, fields: &[(&str, vector_text::Comp
 }
 
 /// DayCycle.FromOSD reads every frame and the water track plus four sky tracks.
-/// It skips absent or differently typed containers, but requires maps inside them.
+/// It skips missing or differently typed containers and requires map entries
+/// inside the containers it reads. String values for vector and quaternion
+/// fields must pass OpenMetaverse's Vector2, Vector3 or Quaternion parser.
+/// An empty JSON string is undefined and skips parsing.
 fn valid_day_cycle(env: &impl EnvironmentNode) -> bool {
     use vector_text::Components::{Pair, Rotation, Triple};
     let cycle = env.field("day_cycle");

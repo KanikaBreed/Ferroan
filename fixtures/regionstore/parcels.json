@@ -242,6 +242,18 @@
       "version": null
     },
     {
+      "text": "\u003C? llsd/notation ?\u003E{\u0027env_version\u0027:i5,\u0027day_cycle\u0027:{\u0027frames\u0027:{\u0027s\u0027:{\u0027type\u0027:\u0027sky\u0027,\u0027glow\u0027:\u0027x\u0027}}}}",
+      "version": null
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E5\u003C/integer\u003E\u003Ckey\u003Eday_cycle\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Eframes\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Es\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Etype\u003C/key\u003E\u003Curi\u003Esky\u003C/uri\u003E\u003Ckey\u003Eglow\u003C/key\u003E\u003Cstring\u003Ex\u003C/string\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": null
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E5\u003C/integer\u003E\u003Ckey\u003Eday_cycle\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Eframes\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Es\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Etype\u003C/key\u003E\u003Curi\u003Esky\u003C/uri\u003E\u003Ckey\u003Eglow\u003C/key\u003E\u003Curi\u003Ex\u003C/uri\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": 5
+    },
+    {
       "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E42\u003C/integer\u003E\u003C/map\u003E\u003C/llsd\u003E",
       "version": 42
     },
@@ -364,6 +376,42 @@
     {
       "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u0022\\u003C1,2,3,4\\u003Etail\u0022}}}}",
       "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022moon_rotation\u0022:\u00221,2,3\\u003E\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2, 3\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,3\\u0000\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2, \\u221E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u00A0\\u221E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u00A03\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u002211,2,\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_scroll_rate\u0022:\u002211,2,\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_scroll_rate\u0022:\u002212,\u0022}}}}",
+      "version": null
     },
     {
       "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:[1,2]}}}}",

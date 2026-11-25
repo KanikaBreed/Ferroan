@@ -1515,6 +1515,9 @@ static void LoadParcels(string path, string seed, string region, string pin)
             """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","rayleigh_config":[7]}}}}""",
             "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>sky</key><map><key>type</key><string>sky</string><key>glow</key><string/></map></map></map></map></llsd>",
             "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'tracks':[[i7]]}}",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'frames':{'s':{'type':'sky','glow':'x'}}}}",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><string>x</string></map></map></map></map></llsd>",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><uri>x</uri></map></map></map></map></llsd>",
             "<llsd><map><key>env_version</key><integer>42</integer></map></llsd>"
         };
         void VectorProbe(string type, string key, object value, bool haze = false)
@@ -1536,6 +1539,11 @@ static void LoadParcels(string path, string seed, string region, string pin)
             VectorProbe("water", "wave1_direction", value);
         foreach (string value in new[] { "bad", "<1,2,3>", "1,2,3", "1,2,3,4", "<1,2,3,4>tail" })
             VectorProbe("sky", "sun_rotation", value);
+        VectorProbe("sky", "moon_rotation", "1,2,3>");
+        foreach (string value in new[] { "1,2, 3", "1,2,3\0", "1,2, ∞", "1,2,\u00a0∞", "1,2,\u00a03", "11,2," })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "11,2,", "12," })
+            VectorProbe("sky", "cloud_scroll_rate", value);
         VectorProbe("sky", "glow", new[] { 1, 2 });
         Console.WriteLine(JsonSerializer.Serialize(new {
             pin, region, parcels = parcels.Select(ParcelFields), defaults = ParcelFields(defaults),
