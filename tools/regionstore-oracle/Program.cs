@@ -1508,6 +1508,11 @@ static void LoadParcels(string path, string seed, string region, string pin)
         string[] environments = {
             "{}", "null", "unknown", "{\"env_version\":2.5}", "{\"env_version\":true}",
             "{\"env_version\":\"-1.6\"}", "{\"env_version\":2147483649}",
+            """{"env_version":5,"day_cycle":{"frames":{"bad":7}}}""",
+            """{"env_version":5,"day_cycle":{"tracks":[[],[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","absorption_config":[{},7]}}}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","mie_config":[{},7]}},"tracks":[[{}],0,[],[],[],[7]]}}""",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'tracks':[[i7]]}}",
             "<llsd><map><key>env_version</key><integer>42</integer></map></llsd>"
         };
         Console.WriteLine(JsonSerializer.Serialize(new {

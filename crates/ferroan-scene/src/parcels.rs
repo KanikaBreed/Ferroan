@@ -25,7 +25,7 @@
 //
 // Ported to Rust for Ferroan from:
 //   Source/OpenSim.Data.SQLite/SQLiteSimulationData.cs
-//   Source/OpenSim.Framework/{LandData,ViewerEnvironment}.cs
+//   Source/OpenSim.Framework/{LandData,ViewerDaycycle,ViewerEnvironment,ViewerSky}.cs
 //   Source/OpenSim.Region.CoreModules/World/Land/{LandObject,LandManagementModule}.cs
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors
@@ -38,7 +38,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ferroan_db::{Backend, Pool};
 use ferroan_diag::{Kind, REGION_PARCEL_ACCESS, REGION_PARCEL_BYTES, REGION_PARCELS};
+use ferroan_llsd::Llsd;
 use futures_util::TryStreamExt;
+use serde_json::Value;
 use sqlx::{Row, SqliteConnection, SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
@@ -191,69 +193,65 @@ impl ParcelMap {
         self.parcels.get(id.checked_sub(1)? as usize)
     }
 
-    fn assemble(
-        size: [u32; 2],
-        estate: Uuid,
-        now: i32,
-        rows: Vec<StoredParcel>,
-    ) -> Result<Self, ParcelError> {
+    fn empty(size: [u32; 2]) -> Result<Self, ParcelError> {
         for side in size {
             crate::height::check_edge(i32::try_from(side).unwrap_or(i32::MAX))?;
         }
         let width = size[0] as usize / 4;
         let count = width * (size[1] as usize / 4);
-        let mut cells = vec![0; count];
-        let mut parcels = Vec::new();
-        for StoredParcel { mut data, bitmap } in rows {
-            let indices = bitmap_cells(&bitmap, width, count);
-            if indices.clone().any(|i| cells[i] != 0) {
-                log::warn!("ignoring overlapping parcel {}", data.id);
-                continue;
-            }
-            data.local_id = parcels.len() as i32 + 1;
-            if data.group_owned {
-                data.group = data.owner;
-            }
-            data.area = 0;
-            for i in indices {
-                cells[i] = data.local_id as u32;
-                data.area += 16;
-            }
-            parcels.push(data);
-        }
+        Ok(Self {
+            width,
+            cells: vec![0; count],
+            parcels: Vec::new(),
+        })
+    }
 
-        let unclaimed = cells.iter().filter(|id| **id == 0).count();
+    fn insert(&mut self, StoredParcel { mut data, bitmap }: StoredParcel) {
+        let indices = bitmap_cells(&bitmap, self.width, self.cells.len());
+        if indices.clone().any(|i| self.cells[i] != 0) {
+            log::warn!("ignoring overlapping parcel {}", data.id);
+            return;
+        }
+        data.local_id = self.parcels.len() as i32 + 1;
+        if data.group_owned {
+            data.group = data.owner;
+        }
+        data.area = 0;
+        for i in indices {
+            self.cells[i] = data.local_id as u32;
+            data.area += 16;
+        }
+        self.parcels.push(data);
+    }
+
+    fn fill_unclaimed(&mut self, estate: Uuid, now: i32) {
+        let unclaimed = self.cells.iter().filter(|id| **id == 0).count();
         if unclaimed > 0 {
-            let id = if parcels.len() == 1 {
+            let id = if self.parcels.len() == 1 {
                 // D80: the area and the final live cell map agree.
-                parcels[0].area = (count * 16) as i32;
+                self.parcels[0].area = (self.cells.len() * 16) as i32;
                 1
             } else {
                 let mut parcel = Parcel::estate_land(estate, now);
-                parcel.local_id = parcels.len() as i32 + 1;
+                parcel.local_id = self.parcels.len() as i32 + 1;
                 parcel.area = (16 * unclaimed) as i32;
                 let id = parcel.local_id as u32;
-                parcels.push(parcel);
+                self.parcels.push(parcel);
                 id
             };
-            for cell in &mut cells {
+            for cell in &mut self.cells {
                 if *cell == 0 {
                     *cell = id;
                 }
             }
         }
         let mut owned_area = HashMap::new();
-        for parcel in &parcels {
+        for parcel in &self.parcels {
             *owned_area.entry(parcel.owner).or_insert(0) += parcel.area;
         }
-        for parcel in &mut parcels {
+        for parcel in &mut self.parcels {
             parcel.simwide_area = owned_area[&parcel.owner];
         }
-        Ok(Self {
-            width,
-            cells,
-            parcels,
-        })
     }
 }
 
@@ -288,7 +286,7 @@ pub async fn open_parcels(
     size: [u32; 2],
     estate: Uuid,
 ) -> Result<ParcelMap, ParcelError> {
-    let mut rows = Vec::new();
+    let mut map = ParcelMap::empty(size)?;
     if let Some(connection) = connection
         && ferroan_db::sqlite_filename(connection)?
             .try_exists()
@@ -296,20 +294,23 @@ pub async fn open_parcels(
     {
         let pool = Pool::open(Backend::Sqlite, connection, &["RegionStore"]).await?;
         let result = match pool.sqlite() {
-            Some(sqlite) => load_rows(sqlite, region).await,
+            Some(sqlite) => {
+                load_rows(sqlite, region, map.cells.len() / 8, |row| map.insert(row)).await
+            }
             None => Err(ParcelError::Column("SQLite provider")),
         };
         pool.close().await;
-        rows = result?;
+        result?;
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i32;
-    ParcelMap::assemble(size, estate, now, rows)
+    map.fill_unclaimed(estate, now);
+    Ok(map)
 }
 
-const LAND_COLUMNS: &str = "UUID,LocalLandID,Bitmap,Name,Desc,OwnerUUID,IsGroupOwned,Area,AuctionID,Category,ClaimDate,ClaimPrice,GroupUUID,SalePrice,LandStatus,LandFlags,LandingType,MediaAutoScale,MediaTextureUUID,MediaURL,MusicURL,PassHours,PassPrice,SnapshotUUID,Dwell,MediaType,MediaDescription,MediaSize,MediaLoop,ObscureMedia,ObscureMusic,SeeAVs,AnyAVSounds,GroupAVSounds,UserLocationX,UserLocationY,UserLocationZ,UserLookAtX,UserLookAtY,UserLookAtZ,AuthbuyerID,OtherCleanTime,environment";
+const LAND_COLUMNS: &str = "UUID,LocalLandID,Name,Desc,OwnerUUID,IsGroupOwned,Area,AuctionID,Category,ClaimDate,ClaimPrice,GroupUUID,SalePrice,LandStatus,LandFlags,LandingType,MediaAutoScale,MediaTextureUUID,MediaURL,MusicURL,PassHours,PassPrice,SnapshotUUID,Dwell,MediaType,MediaDescription,MediaSize,MediaLoop,ObscureMedia,ObscureMusic,SeeAVs,AnyAVSounds,GroupAVSounds,UserLocationX,UserLocationY,UserLocationZ,UserLookAtX,UserLookAtY,UserLookAtZ,AuthbuyerID,OtherCleanTime,environment";
 const REGION_LAND: &str = "FROM land WHERE RegionUUID = ? COLLATE NOCASE";
 const REGION_ACCESS: &str = "FROM landaccesslist AS a JOIN land AS l ON a.LandUUID = l.UUID COLLATE NOCASE WHERE l.RegionUUID = ? COLLATE NOCASE";
 
@@ -345,7 +346,12 @@ async fn row_budget(
     Ok(bytes)
 }
 
-async fn load_rows(pool: &SqlitePool, region: Uuid) -> Result<Vec<StoredParcel>, ParcelError> {
+async fn load_rows(
+    pool: &SqlitePool,
+    region: Uuid,
+    bitmap_bytes: usize,
+    mut visit: impl FnMut(StoredParcel),
+) -> Result<(), ParcelError> {
     let region = region.to_string();
     let mut tx = pool.begin().await?;
     let land_bytes = row_budget(
@@ -368,37 +374,43 @@ async fn load_rows(pool: &SqlitePool, region: Uuid) -> Result<Vec<StoredParcel>,
     .await?;
     check_limit(REGION_PARCEL_BYTES, MAX_BYTES, land_bytes + access_bytes)?;
 
-    let mut rows = Vec::new();
-    let mut indices = HashMap::new();
-    {
-        let query = format!("SELECT {LAND_COLUMNS} {REGION_LAND} ORDER BY rowid");
-        let mut stream = sqlx::query(&query).bind(&region).fetch(&mut *tx);
-        while let Some(row) = stream.try_next().await? {
-            let data = build_land_data(&row)?;
-            indices.insert(data.id, rows.len());
-            rows.push(StoredParcel {
-                data,
-                bitmap: required(&row, "Bitmap")?,
-            });
-        }
-    }
+    let mut access = HashMap::<Uuid, Vec<LandAccess>>::new();
     {
         let query =
             format!("SELECT a.LandUUID,a.AccessUUID,a.Flags {REGION_ACCESS} ORDER BY a.rowid");
         let mut stream = sqlx::query(&query).bind(&region).fetch(&mut *tx);
         while let Some(row) = stream.try_next().await? {
-            let parcel = uuid(&row, "LandUUID")?;
-            if let Some(index) = indices.get(&parcel) {
-                rows[*index].data.access.push(LandAccess {
+            access
+                .entry(uuid(&row, "LandUUID")?)
+                .or_default()
+                .push(LandAccess {
                     agent: uuid(&row, "AccessUUID")?,
                     flags: integer(&row, "Flags")?,
                     expires: 0,
                 });
-            }
+        }
+    }
+    {
+        // SQLite substr on an empty blob returns NULL. Preserve the empty
+        // bitmap and keep a real NULL subject to the required-column check.
+        let query = format!(
+            "SELECT {LAND_COLUMNS}, CASE WHEN length(Bitmap)=0 THEN Bitmap ELSE substr(Bitmap,1,?) END AS Bitmap {REGION_LAND} ORDER BY rowid"
+        );
+        let mut stream = sqlx::query(&query)
+            .bind(bitmap_bytes as i64)
+            .bind(&region)
+            .fetch(&mut *tx);
+        while let Some(row) = stream.try_next().await? {
+            let mut data = build_land_data(&row)?;
+            data.access = access.remove(&data.id).unwrap_or_default();
+            visit(StoredParcel {
+                data,
+                bitmap: required(&row, "Bitmap")?,
+            });
         }
     }
     tx.commit().await?;
-    Ok(rows)
+    Ok(())
 }
 
 fn required<'r, T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>>(
@@ -447,6 +459,83 @@ fn media_size(text: &str) -> Result<[i32; 2], ParcelError> {
     Ok([parse(w)?, parse(h)?])
 }
 
+/// Borrow the same day-cycle containers from either stored encoding.
+trait EnvironmentNode: Sized {
+    fn field(&self, key: &str) -> &Self;
+    fn values(&self) -> Option<impl Iterator<Item = &Self>>;
+    fn elements(&self) -> &[Self];
+    fn text(&self) -> &str;
+}
+
+impl EnvironmentNode for Llsd {
+    fn field(&self, key: &str) -> &Self {
+        self.get(key)
+    }
+    fn values(&self) -> Option<impl Iterator<Item = &Self>> {
+        self.as_map().map(|m| m.values())
+    }
+    fn elements(&self) -> &[Self] {
+        self.as_array()
+    }
+    fn text(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl EnvironmentNode for Value {
+    fn field(&self, key: &str) -> &Self {
+        &self[key]
+    }
+    fn values(&self) -> Option<impl Iterator<Item = &Self>> {
+        self.as_object().map(|m| m.values())
+    }
+    fn elements(&self) -> &[Self] {
+        self.as_array().map(Vec::as_slice).unwrap_or_default()
+    }
+    fn text(&self) -> &str {
+        self.as_str().unwrap_or_default()
+    }
+}
+
+/// DayCycle.FromOSD reads every frame and the water track plus four sky tracks.
+/// It skips absent or differently typed containers, but requires maps inside them.
+fn valid_day_cycle(env: &impl EnvironmentNode) -> bool {
+    let cycle = env.field("day_cycle");
+    if let Some(frames) = cycle.field("frames").values() {
+        for frame in frames {
+            if frame.values().is_none() {
+                return false;
+            }
+            if frame.field("type").text() == "sky" {
+                // SkyData reads the first two absorption layers and one layer
+                // each for Mie and Rayleigh scattering, when supplied.
+                for (key, count) in [
+                    ("absorption_config", 2),
+                    ("mie_config", 1),
+                    ("rayleigh_config", 1),
+                ] {
+                    if frame
+                        .field(key)
+                        .elements()
+                        .iter()
+                        .take(count)
+                        .any(|v| v.values().is_none())
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    cycle
+        .field("tracks")
+        .elements()
+        .iter()
+        .take(5)
+        .flat_map(|track| track.elements())
+        .all(|entry| entry.values().is_some())
+}
+
 fn environment_version(text: &str) -> Option<i32> {
     if text.is_empty() {
         return None;
@@ -465,7 +554,9 @@ fn environment_version(text: &str) -> Option<i32> {
         ferroan_llsd::from_xml(prefix).ok()?
     } else {
         let json: serde_json::Value = serde_json::from_str(text).ok()?;
-        use serde_json::Value;
+        if !valid_day_cycle(&json) {
+            return None;
+        }
         let map = match json {
             Value::Object(map) => map,
             Value::Array(_) | Value::Number(_) => return Some(0),
@@ -482,6 +573,9 @@ fn environment_version(text: &str) -> Option<i32> {
             _ => 0,
         });
     };
+    if !valid_day_cycle(&osd) {
+        return None;
+    }
     Some(if !osd.is_map() {
         0
     } else if osd.has("env_version") {
@@ -593,13 +687,33 @@ mod tests {
             sqlx::raw_sql(SEED).execute(sqlite).await.unwrap();
         }
         let dump: serde_json::Value = serde_json::from_str(DUMP).unwrap();
+        // Exercise the same row decoder as a normal load, including clearing
+        // the stored text and setting version -1 after a failed parse.
+        let update_env =
+            format!("UPDATE land SET environment=? WHERE Name='West' RETURNING {LAND_COLUMNS}");
+        let mut tx = sqlite.begin().await.unwrap();
         for probe in dump["environments"].as_array().unwrap() {
             let text = probe["text"].as_str().unwrap();
             let version: Option<i32> = serde_json::from_value(probe["version"].clone()).unwrap();
-            assert_eq!(environment_version(text), version, "{text}");
+            let row = sqlx::query(&update_env)
+                .bind(text)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            let parcel = build_land_data(&row).unwrap();
+            assert_eq!(
+                parcel.environment.as_deref(),
+                version.map(|_| text),
+                "{text}"
+            );
+            assert_eq!(parcel.environment_version, version.unwrap_or(-1), "{text}");
         }
+        tx.rollback().await.unwrap();
         let region = dump["region"].as_str().unwrap().parse().unwrap();
-        let rows = load_rows(sqlite, region).await.unwrap();
+        let mut rows = Vec::new();
+        load_rows(sqlite, region, 4, |row| rows.push(row))
+            .await
+            .unwrap();
         let expected = dump["parcels"].as_array().unwrap();
         assert_eq!(rows.len(), expected.len());
         for (i, (row, json)) in rows.into_iter().zip(expected).enumerate() {
@@ -669,6 +783,20 @@ mod tests {
         pool.close().await;
     }
 
+    fn assemble(
+        size: [u32; 2],
+        estate: Uuid,
+        now: i32,
+        rows: Vec<StoredParcel>,
+    ) -> Result<ParcelMap, ParcelError> {
+        let mut map = ParcelMap::empty(size)?;
+        for row in rows {
+            map.insert(row);
+        }
+        map.fill_unclaimed(estate, now);
+        Ok(map)
+    }
+
     fn stored(name: &str, bitmap: Vec<u8>) -> StoredParcel {
         let data = Parcel {
             name: name.into(),
@@ -691,7 +819,7 @@ mod tests {
             .unwrap();
         let region = "11111111-1111-1111-1111-111111111111".parse().unwrap();
         assert!(matches!(
-            load_rows(sqlite, region).await,
+            load_rows(sqlite, region, 4, |_| {}).await,
             Err(ParcelError::Column("OwnerUUID"))
         ));
         pool.close().await;
@@ -733,12 +861,82 @@ mod tests {
         pool.close().await;
     }
 
+    #[tokio::test]
+    async fn large_region_loads_513_parcels_with_region_sized_bitmaps() {
+        let copy = CopiedStore::new("regionstore/objects.db");
+        let connection = copy.connection();
+        let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        sqlx::raw_sql(SEED).execute(sqlite).await.unwrap();
+        let region = Uuid::from_u128(513);
+        let bitmap_bytes = 1024 * 1024 / 8;
+        // Each parcel owns the first cell of a different byte. Its remaining
+        // zero bits are stored too, just as in C#'s full region-sized bitmap.
+        let fields = LAND_COLUMNS.strip_prefix("UUID,").unwrap();
+        let insert = format!(
+            "WITH RECURSIVE parcels(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM parcels WHERE n<512)
+             INSERT INTO land ({LAND_COLUMNS},RegionUUID,Bitmap)
+             SELECT printf('00000000-0000-4000-8000-%012x',n),{fields},?,
+                    CAST(zeroblob(n) || x'01' || zeroblob(?-n-1) AS BLOB)
+             FROM parcels CROSS JOIN land WHERE land.Name='West'"
+        );
+        sqlx::query(&insert)
+            .bind(region.to_string())
+            .bind(bitmap_bytes)
+            .execute(sqlite)
+            .await
+            .unwrap();
+        pool.close().await;
+        let map = open_parcels(Some(&connection), region, [4096, 4096], Uuid::nil())
+            .await
+            .unwrap();
+        assert_eq!(map.parcels().len(), 514);
+        for n in 0..513 {
+            let parcel = map.at_cell(n * 8 % 1024, n * 8 / 1024).unwrap();
+            assert_eq!(
+                parcel.id,
+                Uuid::from_u128(0x00000000_0000_4000_8000_000000000000 + n as u128)
+            );
+            assert_eq!(parcel.area, 16);
+        }
+        let rest = map.at_cell(1023, 1023).unwrap();
+        assert_eq!(
+            (rest.name.as_str(), rest.area),
+            ("Your Parcel", 4096 * 4096 - 513 * 16)
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_returns_only_the_bitmap_prefix_and_preserves_empty_blobs() {
+        let copy = CopiedStore::new("regionstore/objects.db");
+        let pool = Pool::open(Backend::Sqlite, &copy.connection(), &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        sqlx::raw_sql(SEED).execute(sqlite).await.unwrap();
+        sqlx::query(
+            "UPDATE land SET Bitmap = CASE Name WHEN 'West' THEN x'820102030405' ELSE x'' END",
+        )
+        .execute(sqlite)
+        .await
+        .unwrap();
+        let region = "11111111-1111-1111-1111-111111111111".parse().unwrap();
+        let mut bitmaps = Vec::new();
+        load_rows(sqlite, region, 4, |row| bitmaps.push(row.bitmap))
+            .await
+            .unwrap();
+        assert_eq!(bitmaps, [vec![0x82, 1, 2, 3], vec![]]);
+        pool.close().await;
+    }
+
     #[test]
     fn clipped_512_byte_bitmap_keeps_its_legacy_stride() {
         let mut bitmap = vec![0; 512];
         bitmap[8] = 1;
         bitmap[511] = 0x80;
-        let map = ParcelMap::assemble(
+        let map = assemble(
             [512, 256],
             Uuid::nil(),
             42,
@@ -757,14 +955,14 @@ mod tests {
     #[test]
     fn one_parcel_expands_and_multiple_parcels_leave_the_remainder_to_the_estate() {
         let owner = Uuid::from_u128(17);
-        let one = ParcelMap::assemble([16, 16], owner, 42, vec![stored("one", vec![1])]).unwrap();
+        let one = assemble([16, 16], owner, 42, vec![stored("one", vec![1])]).unwrap();
         assert_eq!(one.parcels().len(), 1);
         assert_eq!(one.at_cell(3, 3).unwrap().name, "one");
         assert_eq!(
             (one.parcels()[0].area, one.parcels()[0].simwide_area),
             (256, 256)
         );
-        let multi = ParcelMap::assemble(
+        let multi = assemble(
             [16, 16],
             owner,
             42,

@@ -209,6 +209,26 @@
       "version": -2147483647
     },
     {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022bad\u0022:7}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022tracks\u0022:[[],[],[],[],[7]]}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022sky\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022absorption_config\u0022:[{},7]}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022sky\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022mie_config\u0022:[{},7]}},\u0022tracks\u0022:[[{}],0,[],[],[],[7]]}}",
+      "version": 5
+    },
+    {
+      "text": "\u003C? llsd/notation ?\u003E{\u0027env_version\u0027:i5,\u0027day_cycle\u0027:{\u0027tracks\u0027:[[i7]]}}",
+      "version": null
+    },
+    {
       "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E42\u003C/integer\u003E\u003C/map\u003E\u003C/llsd\u003E",
       "version": 42
     }
