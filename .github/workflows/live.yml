@@ -79,6 +79,7 @@ jobs:
           cargo xtask asset verify
           cargo xtask pin3 verify
           cargo xtask throttle verify
+          cargo xtask presence verify
           cargo xtask access verify
       - name: Run the live harness
         run: |

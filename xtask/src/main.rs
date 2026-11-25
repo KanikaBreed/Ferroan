@@ -83,6 +83,7 @@ mod docker;
 mod dotnet_ci;
 mod ferrobot;
 mod ferrobot_build;
+mod fixture_oracle;
 mod fsasset_live;
 mod grid;
 mod grid_smoke;
@@ -104,7 +105,6 @@ mod region_report;
 mod regionstore;
 mod schema;
 mod signal;
-mod throttle_oracle;
 mod trailing_fixtures;
 mod twice;
 mod xasset_live;
@@ -134,6 +134,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask presence generate
+       cargo xtask presence verify
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -247,8 +249,10 @@ fn main() -> ExitCode {
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
         ["http", "status-generate"] => http_oracle::status_generate(),
         ["http", "status-verify"] => http_oracle::status_verify(),
-        ["throttle", "generate"] => throttle_oracle::generate(),
-        ["throttle", "verify"] => throttle_oracle::verify(),
+        ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
+        ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
+        ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),

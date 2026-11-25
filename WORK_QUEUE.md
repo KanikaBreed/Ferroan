@@ -222,7 +222,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | DONE (#172) |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
-| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | READY after Q26b |
+| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
