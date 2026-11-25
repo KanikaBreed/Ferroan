@@ -99,7 +99,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker, host networking kept where it is the host network | DONE (this PR) |
 | QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |
-| QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | READY |
+| QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | DONE (this PR) |
 | QR19 | R19: the region store follows the batch-5 upstream choices (dynamic attributes, forced root id) at the next pin move | READY after the pin move that carries the batch-5 PRs |
 | QR20 | R20: teleport review fixes: a hop never logs Presence out, `TeleportFinish` U32 fields as binary, `CloseAgent` into Ferroan, DNS neighbours, varregion handles, source `region_id` | DONE (this PR) |
 | QR21 | R21: frame and movement review fixes: presences removed at logout, `IsFlying` in teleport flags, per-circuit AgentUpdate replay, no blocking scene round trip on tokio workers, hop completion takes the returning AgentData | DONE (this PR) |
