@@ -2128,9 +2128,7 @@ fn stop_child(child: &mut std::process::Child) {
         return;
     }
     let pid = child.id();
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = Instant::now();
     while started.elapsed() < STOP_TIMEOUT {
         match child.try_wait() {
@@ -2138,9 +2136,7 @@ fn stop_child(child: &mut std::process::Child) {
             Ok(Some(_)) | Err(_) => return,
         }
     }
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     // Also target the owned child if signaling its group failed. Preserve its
     // recorded identity if even KILL cannot finish it within this bound.
     let _ = child.kill();
@@ -2158,17 +2154,13 @@ fn stop_pid(pid: u32) -> Result<(), String> {
     if !region_pid_live(pid) {
         return Ok(());
     }
-    let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status();
+    let _ = crate::signal::signal_group(crate::signal::Signal::Term, pid);
     let started = Instant::now();
     while region_pid_live(pid) && started.elapsed() < STOP_TIMEOUT {
         thread::sleep(Duration::from_millis(200));
     }
     if region_pid_live(pid) {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .status();
+        let _ = crate::signal::signal_group(crate::signal::Signal::Kill, pid);
     }
     let started = Instant::now();
     while region_pid_live(pid) && started.elapsed() < Duration::from_secs(5) {
