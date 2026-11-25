@@ -6,6 +6,10 @@ It holds, in order: the owner's arrival, its own full avatar `ObjectUpdate` (loc
 
 `cargo xtask live run avatars grid --region ferroan` compares the Ferroan run with this file (`xtask/src/avatars_capture.rs`), and `the_csharp_capture_has_both_avatars_and_the_kill` checks the file itself.
 
+## Names capture
+
+`names.cap` is the home region's UDP from a later `cargo xtask live run avatars grid` at the same pin and with the same capture patch, after the scenario gained its `UUIDNameRequest` step (Q84). The run printed `avatars: pass (each bot saw the other's local id and appearance and got its name; the unknown id got no reply; KillObject on leave)`. The raw file passed `ferroan-capture check` (151 records) and was then redacted the same way; the names in each `UUIDNameReply` are `Redacted`. It holds what `avatars.cap` holds, then: one `UUIDNameRequest` from each bot for the other and for `UNKNOWN_NAME_ID` (`tools/bot/src/scenario.rs`); one `UUIDNameReply` naming each bot, reliable and not zero-coded, one block each; no reply for the unknown id; and, after the owner asks for the unknown id again, one reply for it (C# answers `Unknown` and the id from the miss it cached). In this recording, and in a second one made to check, the leaving viewer did not get its own `KillObject` after its `LogoutReply`: that kill (TB87) races the circuit's close. `avatars.cap` keeps it, so the avatar compare stays on that file and only the name compare reads this one. `the_csharp_capture_names_each_bot_and_the_cached_miss` checks this file. Record it the way `avatars.cap` is recorded, redacting into `fixtures/avatars/names.cap`.
+
 To record it again, under the live lock with a free port base:
 
 ```

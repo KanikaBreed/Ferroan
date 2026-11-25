@@ -102,6 +102,9 @@ pub struct RegionConfig {
     pub region_manager_is_god: bool,
     /// `[UserAccountService] UserAccountServerURI`. Empty skips the level lookup.
     pub user_account_server_uri: String,
+    /// This grid's gatekeeper, which tells a GridUser visitor's name from a
+    /// resident's for `UUIDNameRequest`.
+    pub grid_home: crate::names::GridHome,
     /// SQLite estate connection, resolved like `EstateDataService`: DatabaseService
     /// `ConnectionString`, then `EstateConnectionString`, then
     /// `[EstateDataStore] ConnectionString`. Absent means no estate tables.
@@ -345,6 +348,7 @@ impl RegionConfig {
             );
         let user_account_server_uri =
             optional_uri(server, "UserAccountService", "UserAccountServerURI")?;
+        let grid_home = crate::names::GridHome::from_config(server, &server_uri);
         let mut handshake = HandshakeConfig::for_region(id);
         handshake.sim_name = name.to_owned();
         handshake.product_name = product_name.to_owned();
@@ -368,6 +372,7 @@ impl RegionConfig {
             region_owner_is_god,
             region_manager_is_god,
             user_account_server_uri,
+            grid_home,
             estate_store: estate_connection(server),
             handshake,
             circuit_timing: circuit_timing(server)?,

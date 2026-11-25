@@ -40,6 +40,7 @@
 //   Source/OpenSim.Region.Framework/Scenes/Scene.LoginArrivals.cs
 //   Source/OpenSim.Services.Connectors/UserAccounts/UserAccountServicesConnector.cs (GetUserAccount)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+//   (account names and the GridUser UserID read at c401bceecd1684832ae8ba86a31b5ee01a4ded7b)
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -169,6 +170,21 @@ impl GridUserClient {
         service_result(&service_form(&self.endpoint, &fields).await?)
     }
 
+    /// `GetGridUserInfo`'s `UserID`: a plain id for a resident, a universal
+    /// identifier for a visitor. `None` when GridUser has no row.
+    pub async fn user_id(&self, agent_id: Uuid) -> Result<Option<String>, GridError> {
+        let mut fields = service_fields("getgriduserinfo");
+        fields.insert("UserID".into(), Field::Str(agent_id.to_string()));
+        let reply = service_form(&self.endpoint, &fields).await?;
+        let Some(Field::Map(info)) = reply.get("result") else {
+            return Ok(None);
+        };
+        Ok(match info.get("UserID") {
+            Some(Field::Str(value)) => Some(value.clone()),
+            _ => None,
+        })
+    }
+
     pub async fn location(&self, agent_id: Uuid) -> Result<Option<GridUserLocation>, GridError> {
         let mut fields = service_fields("getgriduserinfo");
         fields.insert("UserID".into(), Field::Str(agent_id.to_string()));
@@ -253,6 +269,32 @@ async fn service_form_within(
 /// `{UserAccountServerURI}/accounts`. A missing service, a bad reply, or no
 /// `UserLevel` is `None` (not a grid god). The reply body is not logged.
 pub(crate) async fn account_user_level(uri: &str, scope: Uuid, agent: Uuid) -> Option<i32> {
+    let result = get_account(uri, scope, agent, ACCOUNT_LEVEL_TIMEOUT).await?;
+    match result.get("UserLevel") {
+        Some(Field::Str(text)) => text.trim().parse().ok(),
+        Some(Field::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+/// `UserAccountServicesConnector.GetUserAccount`: the account's first and
+/// last name. A missing service, a failed call or no account is `None`.
+pub async fn account_name(uri: &str, scope: Uuid, agent: Uuid) -> Option<(String, String)> {
+    let result = get_account(uri, scope, agent, std::time::Duration::from_secs(30)).await?;
+    let text = |key: &str| match result.get(key) {
+        Some(Field::Str(value)) => value.clone(),
+        _ => String::new(),
+    };
+    Some((text("FirstName"), text("LastName")))
+}
+
+/// The `result` map of `METHOD=getaccount`. The reply body is not logged.
+async fn get_account(
+    uri: &str,
+    scope: Uuid,
+    agent: Uuid,
+    timeout: std::time::Duration,
+) -> Option<FieldMap> {
     if uri.is_empty() || agent.is_nil() {
         return None;
     }
@@ -260,15 +302,11 @@ pub(crate) async fn account_user_level(uri: &str, scope: Uuid, agent: Uuid) -> O
     let mut fields = service_fields("getaccount");
     fields.insert("ScopeID".into(), Field::Str(scope.to_string()));
     fields.insert("UserID".into(), Field::Str(agent.to_string()));
-    let reply = service_form_within(&endpoint, &fields, ACCOUNT_LEVEL_TIMEOUT)
+    let mut reply = service_form_within(&endpoint, &fields, timeout)
         .await
         .ok()?;
-    let Field::Map(result) = reply.get("result")? else {
-        return None;
-    };
-    match result.get("UserLevel") {
-        Some(Field::Str(text)) => text.trim().parse().ok(),
-        Some(Field::Int(value)) => Some(*value),
+    match reply.shift_remove("result")? {
+        Field::Map(result) => Some(result),
         _ => None,
     }
 }

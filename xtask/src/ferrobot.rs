@@ -780,12 +780,15 @@ async fn companion(
         return Err(error);
     }
     let companion = session.agent().agent_id;
-    let mut result = wait_nearby(&mut session, api, companion).await;
-    if result.is_ok() {
-        lines.push("ferrobot nearby avatar: pass (the companion's ObjectUpdate)".into());
-        if chat {
-            result = exchange(&mut session, harness, api, ferrobot, lines).await;
-        }
+    let mut result = wait_nearby(&mut session, api, companion).await.map(|timing| {
+        lines.push(format!(
+            "ferrobot nearby avatar: pass (the companion's ObjectUpdate; NearmeWithDetails took {} ms, {} ms after the companion was ready)",
+            timing.call.as_millis(),
+            timing.listed.as_millis()
+        ));
+    });
+    if result.is_ok() && chat {
+        result = exchange(&mut session, harness, api, ferrobot, lines).await;
     }
     let logout = session.logout(Duration::from_secs(10)).await;
     result?;
@@ -808,17 +811,37 @@ async fn nearby(api: &Api) -> Result<Vec<Uuid>, String> {
         .collect())
 }
 
+/// How long Ferrobot took to list the companion.
+struct NearbyTiming {
+    /// The `NearmeWithDetails` call that listed it. Ferrobot waits there for
+    /// the avatar names it asked the region for.
+    call: Duration,
+    /// From the companion's handshake to that answer.
+    listed: Duration,
+}
+
 /// The companion arrived: Ferrobot got its full avatar update.
-async fn wait_nearby(session: &mut Session, api: &Api, companion: Uuid) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+async fn wait_nearby(
+    session: &mut Session,
+    api: &Api,
+    companion: Uuid,
+) -> Result<NearbyTiming, String> {
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(30);
     loop {
         session
             .drive(STEP)
             .await
             .map_err(|_| "companion circuit failed while Ferrobot looked for it")?;
         while session.poll_inbox().is_some() {}
+        let asked = Instant::now();
         match nearby(api).await {
-            Ok(list) if list.contains(&companion) => return Ok(()),
+            Ok(list) if list.contains(&companion) => {
+                return Ok(NearbyTiming {
+                    call: asked.elapsed(),
+                    listed: started.elapsed(),
+                });
+            }
             Ok(_) => {}
             // One slow name lookup is not a failure until the deadline.
             Err(error) => println!("ferrobot: NearmeWithDetails attempt failed: {error}"),
