@@ -71,7 +71,7 @@ const DEFAULT_LANDING: [f32; 3] = [128.0, 128.0, 30.0];
 pub const FAIL_PROCESS: &str = "Could not process the teleport";
 pub const FAIL_FROZEN: &str = "You are frozen";
 /// `SetInTransit` refused a second teleport. Also used when the task queue
-/// cannot take another packet without passing `udp.unacked`.
+/// already holds the maximum number of unsent local teleport replies.
 pub const FAIL_INCOMPLETE: &str = "Previous teleport process incomplete.  Please retry shortly.";
 /// A child agent is only a copy. The avatar is in its root region.
 pub const FAIL_CHILD: &str = "You are not in this region. Please try again in a moment.";
