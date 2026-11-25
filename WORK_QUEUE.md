@@ -107,6 +107,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR23 | R23: region settings and object XML writer review fixes: maturity to SimAccess, terrain PBR fill, FixedSun (withdraw D52), a stable CacheID, SoundGain as double, XML and JSON escaping as C# | READY after QR22 |
 | QR24 | R24: services review fixes: an interrupted upload never blocks the agent, the mesh upload answers as C# or refuses cleanly, session ids out of UpdateAgent excerpts, FSAssets import pages by key | READY |
 | QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | READY |
+| QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | READY after QR21 |
+| QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | READY after QR24 |
+| QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -628,6 +631,8 @@ Home1 stopped (maintainer, 24 November 2026): "Lets stop the home thing, it has 
 Q10ak unblocked (manager, 24 November 2026): the maintainer registered two dedicated runners, anubis and osiris, beside Home1, all with the labels `self-hosted, Linux, X64, ferroan`, and asked that CI use all of them. anubis failed its first images job on a missing `rustup` (#235 makes the live setup install it). Q10ak is how every runner gets the same environment: the live jobs run inside one CI image, so a runner needs only Docker; the pool label and `cargo xtask runner doctor` as the item says. Q10ak goes before Q10aj: with three machines, parallel jobs need the pool first. Fork PRs never reach self-hosted runners.
 
 QR20 to QR25 (manager, 24 November 2026): the maintainer asked for a code review of everything merged on 24 November. Six reviewers covered #190 to #229 against the C# at the pin; the manager verified the top findings (the `TeleportFinish` field types against `fixtures/neighbour-teleport/proxy-home.cap`, the hard-coded SimAccess 13, OpenMetaverse's SSE4.1 `DotProduct` norm). Each item's TASKS row lists what to fix; the manager's brief to the coder carries the full findings with file:line, failure scenarios and the C# references. They take priority over new Phase 2 rows on the same track, QR20 first: a far hop or a timed-out child currently logs the user's Presence session out, and the viewer may read the teleport's flags, location and region size as 0. G2's teleport step should wait for QR20.
+
+QR26 to QR28 (manager, 24 November 2026): the last four merged PRs that had no review (#185, #188, #191, #209) were reviewed. QR28 matters most: three of #188's probes never ran Ferroan against C# (the import probe compares two harness SQL strings, the force probe checks the harness's own UPDATE, the cross-read compares only data bytes), so the live FSAssets compare passes without proving those paths. Each TASKS row lists the findings; the manager's brief carries file:line and scenarios.
 
 ## Found while working
 
