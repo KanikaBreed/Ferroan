@@ -150,6 +150,16 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = uploads_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
+    if name == "prim-capture" {
+        let (mut session, _) = enter(&http, harness, &harness.owner).await?;
+        let result = wait_for_stored_prims(&mut session).await;
+        leave(harness, &mut session, &harness.owner).await?;
+        result?;
+        return Ok(
+            "prim-capture: viewer received three distinct full prim updates\nlive: run passed"
+                .into(),
+        );
+    }
     if name == "avatars" {
         let line = avatars_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
@@ -189,6 +199,40 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     lines.push("live: run passed".to_string());
     Ok(lines.join("\n"))
+}
+
+/// The fixture contains one linkset of two prims and one tree.
+async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
+    let mut ids = std::collections::BTreeSet::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        session
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id == ObjectUpdate::ID {
+                let update = packet
+                    .decode::<ObjectUpdate>()
+                    .map_err(|error| error.to_string())?;
+                for block in update.object_data {
+                    if block.p_code != 47 {
+                        ids.insert(block.full_id);
+                        if ids.len() > 3 {
+                            return Err("unexpected fourth stored prim".into());
+                        }
+                    }
+                }
+            }
+        }
+        if ids.len() == 3 {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "expected three stored prims, received {}",
+        ids.len()
+    ))
 }
 
 async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
