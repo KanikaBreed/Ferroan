@@ -139,10 +139,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q43 | P2.1c: throttles, the `AgentThrottle` token buckets | READY after Q40c |
 | Q44 | P2.2a: `AgentUpdate` into movement intent | DONE (#228) |
 | Q45 | P2.2b1: the walking stand-in's integrator, from BasicPhysics (D38), and the `--physics basicphysics` C# variant | DONE (this PR) |
-| Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | BLOCKED |
-| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46 |
+| Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | SPLIT into Q46a to Q46c |
+| Q46a | P2.2b2a: C# walk fixture: record `live run walk grid --physics basicphysics` into `fixtures/walk/` and replay it through the Q45 stepper and the C# change thresholds (closes Q45's AWAITING VALIDATION) | READY |
+| Q46b | P2.2b2b: terse updates on Ferroan to self and others through the per-viewer queue and Q43's throttle, GridUser's real last position and look, `walk: pass` on Ferroan in live.yml | READY after Q46a and Q43 |
+| Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | READY after Q46b and Q48 |
+| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46b |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | READY after Q42 |
-| Q49 | P2.3b1: the animation state machine | READY after Q46 and Q48 |
+| Q49 | P2.3b1: the animation state machine | READY after Q46b and Q48 |
 | Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
@@ -159,7 +162,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | READY after Q18a |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46 |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | READY after Q18a |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60 |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
@@ -177,7 +180,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
-| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46 |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
@@ -647,6 +650,8 @@ QR27 (24 November 2026, `fix/upload-offer-bounds`): An offer shortens the name t
 QR20 to QR25 (manager, 24 November 2026): the maintainer asked for a code review of everything merged on 24 November. Six reviewers covered #190 to #229 against the C# at the pin; the manager verified the top findings (the `TeleportFinish` field types against `fixtures/neighbour-teleport/proxy-home.cap`, the hard-coded SimAccess 13, OpenMetaverse's SSE4.1 `DotProduct` norm). Each item's TASKS row lists what to fix; the manager's brief to the coder carries the full findings with file:line, failure scenarios and the C# references. They take priority over new Phase 2 rows on the same track, QR20 first: a far hop or a timed-out child currently logs the user's Presence session out, and the viewer may read the teleport's flags, location and region size as 0. G2's teleport step should wait for QR20.
 
 QR26 to QR28 (manager, 24 November 2026): the last four merged PRs that had no review (#185, #188, #191, #209) were reviewed. QR28 matters most: three of #188's probes never ran Ferroan against C# (the import probe compares two harness SQL strings, the force probe checks the harness's own UPDATE, the cross-read compares only data bytes), so the live FSAssets compare passes without proving those paths. Each TASKS row lists the findings; the manager's brief carries file:line and scenarios.
+
+Q46 split (manager, 24 November 2026): the block is right; its three parts are Q46a to Q46c as the note above proposes. Q46b drains through Q43's throttle (no interim per-tick send): it waits for Q43, which is in its review-fix round. Q46c's observer is used by walk and avatars first; `build` moves onto it when the build rows need it. P2.2b2 stays TODO until all three are DONE.
 
 ## Found while working
 
