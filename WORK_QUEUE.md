@@ -92,7 +92,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | READY after QR6 |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | READY after QR7 |
-| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
+| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | DONE (this PR) |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | READY after QR9 |
 | QR13 | R13: authentication matches C# on the remaining edge cases | READY after QR10 |
 | QR14 | R14: the FSAssets file store's remaining durability and test gaps | READY after Q23e |

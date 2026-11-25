@@ -404,16 +404,21 @@ async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
 }
 
 async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let text = "ferroan harness chat";
+    const SAY: &str = "ferroan harness chat";
+    const DEBUG: &str = "ferroan harness debug";
     let (mut listener, _) = enter(http, harness, &harness.chat).await?;
     let (mut speaker, _) = enter(http, harness, &harness.owner).await?;
     let speaker_id = speaker.agent();
-    let chat = world::say(speaker_id, text);
-    speaker
-        .send(&chat, true)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut heard = false;
+    for (channel, text) in [(0, SAY), (i32::MAX, DEBUG)] {
+        let mut chat = world::say(speaker_id, text);
+        chat.chat_data.channel = channel;
+        speaker
+            .send(&chat, true)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let mut heard_say = false;
+    let mut heard_debug = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         speaker
@@ -427,22 +432,24 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
         while let Some(packet) = listener.poll_inbox() {
             if let Some((name, source, chat_type, message)) = world::chat_heard(&packet)
                 && source == speaker_id.agent_id
-                && chat_type == world::CHAT_SAY
-                && message == text
                 && name.contains("Test")
                 && name.contains("User")
             {
-                heard = true;
+                heard_say |= chat_type == world::CHAT_SAY && message == SAY;
+                heard_debug |= chat_type == 6 && message == DEBUG;
             }
         }
-        if heard {
+        if heard_say && heard_debug {
             break;
         }
     }
     let speaker_out = leave(harness, &mut speaker, &harness.owner).await;
     let listener_out = leave(harness, &mut listener, &harness.chat).await;
-    if !heard {
+    if !heard_say {
         return Err("the second bot did not hear the say on channel 0".to_string());
+    }
+    if !heard_debug {
+        return Err("the second bot did not hear type 6 on DEBUG_CHANNEL".to_string());
     }
     speaker_out?;
     listener_out?;
