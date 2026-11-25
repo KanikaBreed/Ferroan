@@ -54,6 +54,8 @@
 // Throttle setup, SetThrottles, the resend and category send gate,
 // TokenBucket.cs, ThrottleRates.cs and the scene bucket in LLUDPServer.cs
 // were read at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
+// Chat registration follows HandleUseCircuitCode in LLUDPServer.cs and
+// Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs at the same Pin8 revision.
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -62,7 +64,7 @@
 //! Established ACKs are queued. Reliable packets remain until acknowledgment or
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
-use crate::chat::{ChatSeat, RegionChat, ViewerBound};
+use crate::chat::{ChatSeat, DEBUG_CHANNEL, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
     AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
@@ -520,8 +522,9 @@ struct State {
     /// on this queue, behind terse updates already built, so a moving avatar
     /// cannot snap back to the pre-teleport position.
     pending_task: VecDeque<Payload>,
-    /// Channel 0 chat for this region. Absent when the serve was not seated.
-    chat: Option<RegionChat>,
+    /// Accepted logins acquire their chat queue only once the viewer connects.
+    pending_chat: Option<(RegionChat, String)>,
+    chat: Option<ChatSeat>,
     /// Set before the source hop is spawned. Cleared when that task settles.
     in_transit: bool,
     /// A far hop asked this circuit to stop without a viewer kick.
@@ -626,6 +629,7 @@ impl State {
             published_unacked: 0,
             pending_land,
             pending_task: VecDeque::new(),
+            pending_chat: None,
             chat: None,
             in_transit: false,
             leave: false,
@@ -1045,6 +1049,9 @@ impl State {
                 return Ok(false);
             }
             self.peer = Some(from);
+            if let Some((hub, name)) = self.pending_chat.take() {
+                self.chat = Some(hub.seat(expect.agent_id, name));
+            }
             self.last_received = Instant::now();
             if let Some(connected) = self.connection_opened.take() {
                 let _ = connected.send(());
@@ -1168,14 +1175,17 @@ impl State {
                 self.send_message(sock, from, &reply, false).await?;
             }
         } else if packet.id == ChatFromViewer::ID {
-            // Only channel 0 is delivered here, so other channels never ask the frame.
-            if let Some(chat) = self.chat.clone()
+            // Private channels have no viewer recipients and need no frame lookup.
+            if let Some(seat) = &self.chat
                 && let Ok(incoming) = packet.decode::<ChatFromViewer>()
-                && incoming.chat_data.channel == 0
+                && matches!(incoming.chat_data.channel, 0 | DEBUG_CHANNEL)
             {
                 let text = ferroan_protocol::field_str(&incoming.chat_data.message);
-                let places = self.chat_places(&chat, expect.agent_id).await;
-                chat.publish(
+                let audience = seat.hub.audience();
+                let places = self
+                    .chat_places(audience.seated_ids(), expect.agent_id)
+                    .await;
+                audience.publish(
                     expect.agent_id,
                     incoming.chat_data.type_,
                     incoming.chat_data.channel,
@@ -1398,14 +1408,11 @@ impl State {
     }
 
     /// Forward the seated ids. The frame answers with the poses it has.
-    async fn chat_places(&self, chat: &RegionChat, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
+    async fn chat_places(&self, ids: Vec<Uuid>, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
         let Some(scene) = self.login_scene.clone() else {
             return HashMap::new();
         };
-        match scene(speaker, SceneCall::Places(chat.seated_ids()))
-            .reply()
-            .await
-        {
+        match scene(speaker, SceneCall::Places(ids)).reply().await {
             Ok(SceneReply::Places(places)) => places,
             _ => HashMap::new(),
         }
@@ -1837,8 +1844,8 @@ struct CircuitInner {
     scene_throttle: Mutex<Arc<SceneThrottle>>,
     /// Shared by every serve on this socket. Empty until [`CircuitServer::enable_chat`].
     chat: Mutex<Option<RegionChat>>,
-    /// Seats waiting for the serve that owns that agent.
-    waiting_seats: Mutex<HashMap<Uuid, ChatSeat>>,
+    /// Login metadata awaiting its serve. It cannot receive chat.
+    waiting_chat: Mutex<HashMap<Uuid, (RegionChat, String)>>,
     /// Login posts its landed pose here and reads that record back.
     login_scene: Mutex<Option<LoginScene>>,
 }
@@ -2016,7 +2023,7 @@ impl CircuitServer {
                 next_id: AtomicU64::new(1),
                 scene_throttle: Mutex::new(SceneThrottle::configured(CircuitThrottle::default())),
                 chat: Mutex::new(None),
-                waiting_seats: Mutex::new(HashMap::new()),
+                waiting_chat: Mutex::new(HashMap::new()),
                 login_scene: Mutex::new(None),
             }),
         })
@@ -2038,7 +2045,7 @@ impl CircuitServer {
         Ok(())
     }
 
-    /// Turn on channel 0 chat for every serve that later calls [`Self::attach_chat`].
+    /// Turn on local chat for every serve that later calls [`Self::attach_chat`].
     pub fn enable_chat(&self) {
         let mut chat = self
             .inner
@@ -2050,7 +2057,7 @@ impl CircuitServer {
         }
     }
 
-    /// Seat one accepted avatar. The matching serve takes the seat when it starts.
+    /// Record the login pose and name. A valid UseCircuitCode seats the viewer for chat.
     pub fn attach_chat(&self, agent: Uuid, name: String, position: [f32; 3]) {
         let chat = self
             .inner
@@ -2077,17 +2084,16 @@ impl CircuitServer {
             };
             let _ = scene(agent, SceneCall::Pose(pose));
         }
-        let seat = chat.seat(agent, name);
         self.inner
-            .waiting_seats
+            .waiting_chat
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(agent, seat);
+            .insert(agent, (chat, name));
     }
 
-    fn take_waiting_seat(&self, agent: Uuid) -> Option<ChatSeat> {
+    fn take_waiting_chat(&self, agent: Uuid) -> Option<(RegionChat, String)> {
         self.inner
-            .waiting_seats
+            .waiting_chat
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove(&agent)
@@ -2246,7 +2252,7 @@ impl CircuitServer {
         connected: Option<oneshot::Sender<()>>,
         stop: Option<oneshot::Receiver<CircuitStop>>,
     ) -> Result<(), CircuitError> {
-        let chat = self.take_waiting_seat(expect.agent_id);
+        let chat = self.take_waiting_chat(expect.agent_id);
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
         }
@@ -2306,7 +2312,7 @@ struct ServeExtra<'a> {
     connected: Option<oneshot::Sender<()>>,
     pending: Option<&'a PendingUseCircuit>,
     stop: Option<oneshot::Receiver<CircuitStop>>,
-    chat: Option<ChatSeat>,
+    chat: Option<(RegionChat, String)>,
     login_scene: Option<LoginScene>,
 }
 
@@ -2371,8 +2377,7 @@ async fn serve_socket_reporting(
     state.login_scene = extra.login_scene;
     let mut hop_rx = state.hop_rx.take();
     let entity_wake = state.feed.as_ref().map(|feed| Arc::clone(&feed.wake));
-    let mut seated = extra.chat;
-    state.chat = seated.as_ref().map(|seat| seat.hub.clone());
+    state.pending_chat = extra.chat;
     // One byte past the cap so Linux `recvfrom` can report an oversize datagram
     // instead of silently truncating it to `MAX_DATAGRAM`.
     let mut buf = [0u8; MAX_DATAGRAM + 1];
@@ -2443,11 +2448,11 @@ async fn serve_socket_reporting(
                 continue;
             }
             bound = async {
-                match seated.as_mut() {
+                match state.chat.as_mut() {
                     Some(seat) => seat.rx.recv().await,
                     None => std::future::pending().await,
                 }
-            }, if seated.is_some() && state.peer.is_some() => {
+            }, if state.chat.is_some() => {
                 if let Some(bound) = bound
                     && let Some(peer) = state.peer
                 {
@@ -2460,6 +2465,8 @@ async fn serve_socket_reporting(
                             state.enqueue_task(&message)?;
                         }
                     }
+                } else {
+                    state.chat = None;
                 }
                 continue;
             }
@@ -2889,36 +2896,52 @@ mod tests {
         let left = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let right = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         send(&left, addr, 1, &use_circuit(1, 2, 42), true).await;
-        send(&right, addr, 1, &use_circuit(3, 4, 43), true).await;
         let mut buf = [0u8; 4096];
         assert!(wait_for(&left, &mut buf, RegionHandshake::ID).await);
-        assert!(wait_for(&right, &mut buf, RegionHandshake::ID).await);
         let mut said = ChatFromViewer::default();
         said.agent_data.agent_id = speaker.agent_id;
         said.agent_data.session_id = speaker.session_id;
-        said.chat_data.message = str_field("ferroan harness chat");
+        said.chat_data.message = str_field("before connect");
         said.chat_data.type_ = 1;
         said.chat_data.channel = 0;
         send(&left, addr, 2, &said, true).await;
-        let heard_left = wait_for_chat(&left, &mut buf).await;
-        let heard_right = wait_for_chat(&right, &mut buf).await;
-        for packet in [&heard_left, &heard_right] {
-            assert!(packet.reliable());
-            assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
-            let decoded = packet.decode::<ChatFromSimulator>().unwrap();
-            assert_eq!(field_str(&decoded.chat_data.from_name), "Test User");
-            assert_eq!(decoded.chat_data.source_id, speaker.agent_id);
-            assert_eq!(decoded.chat_data.owner_id, speaker.agent_id);
-            assert_eq!(decoded.chat_data.source_type, 1);
-            assert_eq!(decoded.chat_data.chat_type, 1);
-            assert_eq!(decoded.chat_data.audible, 1);
-            assert_eq!(decoded.chat_data.message, b"ferroan harness chat\0");
-            assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
+        // The echo establishes that publication finished while the second
+        // login had a pose but had not sent UseCircuitCode.
+        let echo = wait_for_chat(&left, addr, &mut buf).await;
+        assert_eq!(
+            echo.decode::<ChatFromSimulator>()
+                .unwrap()
+                .chat_data
+                .message,
+            b"before connect\0"
+        );
+        send(&right, addr, 1, &use_circuit(3, 4, 43), true).await;
+        assert!(wait_for(&right, &mut buf, RegionHandshake::ID).await);
+        for (seq, channel, text, expected_type) in
+            [(3, 0, "ferroan harness chat", 1), (4, i32::MAX, "debug", 6)]
+        {
+            said.chat_data.channel = channel;
+            said.chat_data.message = str_field(text);
+            send(&left, addr, seq, &said, true).await;
+            for viewer in [&left, &right] {
+                let packet = wait_for_chat(viewer, addr, &mut buf).await;
+                assert!(packet.reliable());
+                assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+                let decoded = packet.decode::<ChatFromSimulator>().unwrap();
+                assert_eq!(field_str(&decoded.chat_data.from_name), "Test User");
+                assert_eq!(decoded.chat_data.source_id, speaker.agent_id);
+                assert_eq!(decoded.chat_data.owner_id, speaker.agent_id);
+                assert_eq!(decoded.chat_data.source_type, 1);
+                assert_eq!(decoded.chat_data.chat_type, expected_type);
+                assert_eq!(decoded.chat_data.audible, 1);
+                assert_eq!(decoded.chat_data.message, str_field(text));
+                assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
+            }
         }
         let mut request = LogoutRequest::default();
         request.agent_data.agent_id = speaker.agent_id;
         request.agent_data.session_id = speaker.session_id;
-        send(&left, addr, 3, &request, true).await;
+        send(&left, addr, 5, &request, true).await;
         request.agent_data.agent_id = listener.agent_id;
         request.agent_data.session_id = listener.session_id;
         send(&right, addr, 2, &request, true).await;
@@ -2940,12 +2963,23 @@ mod tests {
         false
     }
 
-    async fn wait_for_chat(sock: &UdpSocket, buf: &mut [u8]) -> ferroan_protocol::IncomingPacket {
+    async fn wait_for_chat(
+        sock: &UdpSocket,
+        addr: SocketAddr,
+        buf: &mut [u8],
+    ) -> ferroan_protocol::IncomingPacket {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
             if let Some(packet) = recv(sock, buf, Duration::from_millis(200)).await
                 && packet.id == ChatFromSimulator::ID
             {
+                let ack = PacketAck {
+                    packets: vec![ferroan_protocol::msgs::packet_ack::Packets {
+                        id: packet.sequence,
+                    }],
+                    ..Default::default()
+                };
+                send(sock, addr, 0, &ack, false).await;
                 return packet;
             }
         }
