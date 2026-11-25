@@ -388,7 +388,7 @@ async fn load_stored_settings(
     config: &mut RegionConfig,
 ) -> Result<Option<std::sync::Arc<ferroan_scene::RegionSettings>>, RunError> {
     ferroan_region::settings::apply_stored_settings(
-        config.object_store.as_deref(),
+        config.object_store.as_ref(),
         config.id,
         &mut config.handshake,
     )
@@ -400,7 +400,7 @@ async fn load_stored_objects(
     config: &RegionConfig,
 ) -> Result<Arc<Vec<ferroan_scene::ObjectGroup>>, RunError> {
     let stored =
-        ferroan_region::objects::load_stored_objects(config.object_store.as_deref(), config.id)
+        ferroan_region::objects::load_stored_objects(config.object_store.as_ref(), config.id)
             .await
             .map_err(RunError::Objects)?;
     let (objects, prims) = {
@@ -415,15 +415,33 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let map = match config.terrain_store.as_deref() {
-        Some(connection) => {
+    let map = match (config.terrain_store.as_deref(), config.terrain_kind) {
+        (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
-            ferroan_scene::open_terrain(connection, config.id, width, height)
-                .await
-                .map_err(|error| RunError::Terrain(error.to_string()))?
+            ferroan_scene::open_terrain(
+                connection,
+                config.id,
+                width,
+                height,
+                ferroan_scene::ObjectStoreKind::Sqlite,
+            )
+            .await
+            .map_err(|error| RunError::Terrain(error.to_string()))?
         }
-        None => None,
+        (Some(_), Some(_)) => {
+            tracing::info!(
+                "ferroan-region: MySQL and PostgreSQL stores have no saved heightmap yet"
+            );
+            None
+        }
+        (Some(_), None) => {
+            tracing::info!(
+                "ferroan-region: the database service is not a SQLite terrain store; no saved heightmap"
+            );
+            None
+        }
+        (None, _) => None,
     };
     let frame = match map {
         Some(map) => {
@@ -1259,6 +1277,63 @@ fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mysql_storage_provider_startup_does_not_open_sqlite() {
+        let server = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
+             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+        )
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\n",
+        )
+        .unwrap();
+        let mut config = RegionConfig::from_configs(&server, &regions).unwrap();
+        assert_eq!(
+            config.object_store.as_ref().map(|store| store.kind),
+            Some(ferroan_scene::ObjectStoreKind::Mysql)
+        );
+        assert_eq!(
+            config.terrain_kind,
+            Some(ferroan_scene::ObjectStoreKind::Mysql)
+        );
+        assert!(
+            config
+                .terrain_store
+                .as_deref()
+                .unwrap()
+                .contains("Data Source=")
+        );
+        let settings = load_stored_settings(&mut config).await.unwrap();
+        assert!(settings.is_none());
+        let terrain = load_terrain(&config).await.unwrap().unwrap();
+        assert!(!terrain.has_map());
+
+        let bare = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\n\
+             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+        )
+        .unwrap();
+        let bare_config = RegionConfig::from_configs(&bare, &regions).unwrap();
+        assert!(bare_config.object_store.is_none());
+        assert!(bare_config.terrain_kind.is_none());
+        assert!(bare_config.terrain_store.is_some());
+        let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
+        assert!(!bare_terrain.has_map());
+    }
     use ferroan_client::CircuitExpect;
     use ferroan_http::{Field, FieldMap};
     use ferroan_protocol::msgs::{

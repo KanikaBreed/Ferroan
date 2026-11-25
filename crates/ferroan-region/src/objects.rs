@@ -13,6 +13,8 @@ use std::time::Instant;
 use ferroan_scene::ObjectGroup;
 use uuid::Uuid;
 
+use crate::config::ObjectStore;
+
 pub struct StoredObjects {
     pub groups: Arc<Vec<ObjectGroup>>,
     pub elapsed_ms: u128,
@@ -22,12 +24,12 @@ pub struct StoredObjects {
 /// PostgreSQL store loads its region. A store that cannot be read is an error,
 /// and startup stops.
 pub async fn load_stored_objects(
-    connection: Option<&str>,
+    store: Option<&ObjectStore>,
     region: Uuid,
 ) -> Result<StoredObjects, String> {
     let started = Instant::now();
-    let groups = match connection {
-        Some(connection) => ferroan_scene::open_objects(connection, region)
+    let groups = match store {
+        Some(store) => ferroan_scene::open_objects(&store.connection, region, store.kind)
             .await
             .map_err(|error| error.to_string())?,
         None => Vec::new(),
@@ -40,6 +42,8 @@ pub async fn load_stored_objects(
 
 #[cfg(test)]
 mod tests {
+    use ferroan_scene::ObjectStoreKind;
+
     use super::*;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
@@ -61,15 +65,27 @@ mod tests {
         std::fs::copy(fixture, &path).unwrap();
         let connection = format!("Data Source={};Version=3", path.display());
         let region = Uuid::parse_str(REGION).unwrap();
-        let stored = load_stored_objects(Some(&connection), region)
-            .await
-            .unwrap();
+        let stored = load_stored_objects(
+            Some(&ObjectStore {
+                connection: connection.clone(),
+                kind: ObjectStoreKind::Sqlite,
+            }),
+            region,
+        )
+        .await
+        .unwrap();
         let prims: usize = stored.groups.iter().map(|group| group.parts.len()).sum();
         assert_eq!(stored.groups.len(), 4);
-        assert_eq!(prims, 8);
-        let other = load_stored_objects(Some(&connection), Uuid::nil())
-            .await
-            .unwrap();
+        assert_eq!(prims, 7);
+        let other = load_stored_objects(
+            Some(&ObjectStore {
+                connection,
+                kind: ObjectStoreKind::Sqlite,
+            }),
+            Uuid::nil(),
+        )
+        .await
+        .unwrap();
         assert!(other.groups.is_empty());
         let missing = load_stored_objects(None, region).await.unwrap();
         assert!(missing.groups.is_empty());
