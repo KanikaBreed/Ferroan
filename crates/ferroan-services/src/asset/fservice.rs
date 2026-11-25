@@ -279,7 +279,7 @@ impl FsAssetService {
 
     /// `Store`. `Err` is the object cleanup throwing. `Ok` is the id text,
     /// including the zero UUID when the asset was not stored.
-    pub async fn store_asset(&self, asset: &mut Asset, id_text: &str) -> Result<String, ()> {
+    pub(crate) async fn store_asset(&self, asset: &mut Asset, id_text: &str) -> Result<String, ()> {
         self.store_asset_inner(asset, id_text, false).await
     }
 
@@ -345,7 +345,8 @@ impl FsAssetService {
     }
 
     /// `Delete`. Answers what the plugin answers (TB50, #501): a PostgreSQL
-    /// non-uuid is false. `Err` is a statement that failed.
+    /// non-uuid is false, and a MySQL database error is false. `Err` is any
+    /// other failure.
     pub async fn delete(&self, id: &str) -> Result<bool, StoreError> {
         self.store.delete(id).await
     }

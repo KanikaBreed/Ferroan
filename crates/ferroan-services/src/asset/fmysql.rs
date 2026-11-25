@@ -27,6 +27,7 @@
 //   Source/OpenSim.Data.MySQL/MySQLFSAssetData.cs
 //   Source/OpenSim.Data.MySQL/Resources/FSAssetStore.migrations
 //   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+//   Delete and ExecuteNonQuery checked at dev-build @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -38,9 +39,9 @@
 //! returned (TB22, #481). The pin drops those characters and returns the
 //! insert's result. An existing id is not rewritten unless `force` is set,
 //! which updates `hash` and `access_time` only (TB45). `Delete` returns true
-//! when the statement runs. `AssetsExist` and `Count` read this table. The
-//! hash query reads `id`, `hash` and `type` once and does not update
-//! `access_time`. When the connection cannot be acquired, including access
+//! when the statement runs, and false for a database error. `AssetsExist`
+//! and `Count` read this table. The hash query reads `id`, `hash` and `type`
+//! without updating `access_time`. When the connection cannot be acquired, including access
 //! denied and an unknown database, that query answers a null hash for each
 //! id. A statement error after the connection is open is returned. `Import`
 //! reads one source row at a time by the last id.
@@ -227,10 +228,19 @@ pub(super) async fn count(pool: &MySqlPool, table: &str) -> Result<i64, StoreErr
     row.i64_col("n")
 }
 
+/// True when the statement runs, including when no row matched. A database
+/// error, including a missing table and a refused login, is false. A pool
+/// acquisition or execution failure from the MySQL driver is false as well.
 pub(super) async fn delete(pool: &MySqlPool, table: &str, id: &str) -> Result<bool, StoreError> {
     let sql = format!("DELETE FROM {table} WHERE id = ?");
-    sqlx::query(&sql).bind(id).execute(pool).await?;
-    Ok(true)
+    match sqlx::query(&sql).bind(id).execute(pool).await {
+        Ok(_) => Ok(true),
+        Err(error) if mysql_will_not_open(&error) => {
+            tracing::error!("fsassets mysql delete failed");
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// The stored id text at `offset` in id order. The selected column is the id
