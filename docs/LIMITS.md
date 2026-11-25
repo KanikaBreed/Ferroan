@@ -24,6 +24,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `udp.zero-expansion` | 256 KiB | `crates/ferroan-protocol/src/packet.rs` | hard | no | OpenMetaverse does not cap zero-expansion. See [PROTOCOL.md](PROTOCOL.md). |
 | `udp.unacked` | 256 packets | `crates/ferroan-protocol/src/reliability.rs` | soft | no | C# keeps unacked packets until the client times out. Ferroan refuses a new reliable send at 256. High-water is 205 packets. |
 | `udp.retries` | 4 by default | `crates/ferroan-protocol/src/reliability.rs` | soft | no | C# retries until inactivity, with no count. This drop is the bot policy. The server keeps `retry_limit` unset. The observed value is that packet's retry count, the total that crossed the limit. |
+| `client.chat-queue` | 64 queued local chat lines or freeze alerts per viewer | `crates/ferroan-client/src/chat.rs` | hard | no | Pin8 sends through the client UDP server. Ferroan drops the newest message for a viewer whose queue is full. |
 | `event.bytes` | 64 KiB | `crates/ferroan-client/src/event_queue.rs` | hard | no | One event has no matching cap. |
 | `event.queue` | 256 events | `crates/ferroan-client/src/event_queue.rs` | soft | no | The queue is not capped. |
 | `event.queue-bytes` | 1 MiB | `crates/ferroan-client/src/event_queue.rs` | soft | no | The queue is not capped. |

@@ -31,6 +31,7 @@
 //   KanikaBreed/OpenSim-Tranquillity @ c70fee205f64ee8672a8d607cef6a733931da951
 // Viewer chat channels and delivery to active clients follow ChatModule.cs and
 // Source/OpenSim.Framework/ChatTypeEnum.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
+// Chat message bytes follow LLClientView.SendChatMessage at the same Pin8 revision.
 // The seat map and the outbound queue are new Rust. Parcel hide, the god
 // prefix, object chat and instant messages are not ported. Distances are the
 // ChatModule defaults (whisper 10 m, say 20 m, shout 100 m), not INI keys.
@@ -85,6 +86,20 @@ struct Seat {
     name: String,
     frozen: bool,
     tx: mpsc::Sender<ViewerBound>,
+}
+
+impl Seat {
+    fn send(&self, packet: ViewerBound) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(packet) {
+            ferroan_diag::drop_bound(
+                ferroan_diag::CLIENT_CHAT_QUEUE,
+                ferroan_diag::Kind::Hard,
+                OUTBOUND_QUEUE as u64,
+                OUTBOUND_QUEUE as u64 + 1,
+                "local chat",
+            );
+        }
+    }
 }
 
 struct Hub {
@@ -224,7 +239,7 @@ impl ChatAudience {
             // is not delivered and is not alerted, as C# does since TB37 was
             // fixed (#488, Pin7 `1052cbae82`).
             if !is_typing(chat_type) {
-                let _ = speaker.tx.try_send(ViewerBound::Alert(freeze_alert(from)));
+                speaker.send(ViewerBound::Alert(freeze_alert(from)));
             }
             return;
         }
@@ -245,7 +260,7 @@ impl ChatAudience {
             if let Some(&to) = places.get(id)
                 && !limit.is_some_and(|max_sq| distance_squared(from_pos, to) > max_sq)
             {
-                let _ = seat.tx.try_send(ViewerBound::Chat(packet.clone()));
+                seat.send(ViewerBound::Chat(packet.clone()));
             }
         }
     }
@@ -303,7 +318,10 @@ fn chat_packet(
     packet.chat_data.chat_type = chat_type;
     packet.chat_data.audible = AUDIBLE_FULLY;
     packet.chat_data.position = Vec3::from_array(position);
-    packet.chat_data.message = str_field(message);
+    if !message.is_empty() {
+        // StringToBytes1024 reserves the last byte for the terminator.
+        packet.chat_data.message = str_field(&message[..message.floor_char_boundary(1023)]);
+    }
     packet
 }
 
@@ -480,13 +498,54 @@ mod tests {
         hub.audience().publish(speaker_id, SAY, 0, &kept, &here);
         let kept_items = take(&mut listener.rx);
         let heard = chat_of(&kept_items);
-        assert_eq!(field_str(&heard[0].chat_data.message), kept);
+        assert_eq!(heard[0].chat_data.message, str_field(&"a".repeat(1023)));
         let _ = take(&mut speaker.rx);
         let long = "b".repeat(1101);
         hub.audience().publish(speaker_id, SAY, 0, &long, &here);
         let cut_items = take(&mut listener.rx);
         let heard = chat_of(&cut_items);
-        assert_eq!(field_str(&heard[0].chat_data.message), "b".repeat(1000));
+        assert_eq!(heard[0].chat_data.message, str_field(&"b".repeat(1000)));
+    }
+
+    #[test]
+    fn multibyte_chat_ends_at_a_utf8_boundary_before_the_nul() {
+        let prefix = format!("{}a", "界".repeat(340));
+        let message = format!("{prefix}界");
+        let packet = chat_packet(Uuid::nil(), "Test User", [0.0; 3], SAY, &message);
+        assert_eq!(packet.chat_data.message, str_field(&prefix));
+    }
+
+    #[test]
+    fn empty_typing_messages_have_zero_wire_length() {
+        for kind in [START_TYPING, STOP_TYPING] {
+            let packet = chat_packet(Uuid::nil(), "Test User", [0.0; 3], kind, "");
+            assert!(packet.chat_data.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_full_chat_queue_reports_the_drop_only_for_that_viewer() {
+        let (hub, mut speaker, mut listener, from, to) = seat_pair();
+        let here = places(&[(from, [0.0; 3]), (to, [0.0; 3])]);
+        let audience = hub.audience();
+        for _ in 0..OUTBOUND_QUEUE {
+            audience.publish(from, SAY, 0, "queued", &here);
+            speaker.rx.try_recv().unwrap();
+        }
+        audience.publish(from, SAY, 0, "overflow", &here);
+        let delivered = take(&mut speaker.rx);
+        assert_eq!(chat_of(&delivered)[0].chat_data.message, b"overflow\0");
+        let queued = take(&mut listener.rx);
+        assert_eq!(queued.len(), OUTBOUND_QUEUE);
+        assert!(
+            chat_of(&queued)
+                .iter()
+                .all(|p| p.chat_data.message == b"queued\0")
+        );
+        assert!(
+            ferroan_diag::metrics().lines().any(|line| line
+                == r#"ferroan_limit_hits_total{limit="client.chat-queue",action="drop"} 1"#)
+        );
     }
 
     #[test]

@@ -1352,6 +1352,47 @@ async fn chat_on_another_channel_does_not_ask_the_scene() {
     }
 }
 
+#[tokio::test]
+async fn a_viewer_connecting_during_the_pose_lookup_does_not_hear_the_line() {
+    let expect = identity(Uuid::from_u128(1));
+    let late_id = Uuid::from_u128(2);
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let chat = RegionChat::new();
+    state.chat = Some(chat.seat(expect.agent_id, "Test User".into()));
+    let late = Arc::new(Mutex::new(None));
+    let (hub, slot) = (chat.clone(), Arc::clone(&late));
+    state.login_scene = Some(Arc::new(move |_agent, _call| {
+        *slot.lock().unwrap() = Some(hub.seat(late_id, "Chat Bot".into()));
+        Ok(SceneReply::Places(HashMap::from([
+            (expect.agent_id, [0.0; 3]),
+            (late_id, [0.0; 3]),
+        ])))
+        .into()
+    }));
+    let mut message = ChatFromViewer::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.chat_data.type_ = 1;
+    message.chat_data.message = ferroan_protocol::str_field("before connect");
+    let bytes = wire(&message, 4, &[]);
+    state
+        .handle(
+            &FakeIo::default(),
+            peer(),
+            &expect,
+            &parse_packet(&bytes).unwrap(),
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let mut seat = late.lock().unwrap().take().unwrap();
+    assert!(matches!(
+        seat.rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
 fn logout(expect: CircuitExpect, acks: &[u32]) -> Vec<u8> {
     let mut message = LogoutRequest::default();
     message.agent_data.agent_id = expect.agent_id;
