@@ -180,7 +180,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
-| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | READY after Q65b and QR9 |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (proposed split below) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
@@ -700,6 +700,16 @@ The manager approved Q60a through Q60c. Their dependencies and acceptance checks
 **BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
 
 The manager approved Q65a through Q65d on 25 November. Their dependencies and acceptance checks are in TASKS.md.
+
+### Q65c review and proposed split
+
+**BLOCKED (25 November 2026, `feat/q65c-prim-delivery`).** Estimated two to three days including the two-viewer capture and live comparison. The Q65b fixture stores one decoded block per UUID. In two Pin8 BasicPhysics recordings of that seed, the first two full prim datagrams carried parts 1–6 and 7–8 in fixture numbering. Later datagrams carried 1, 3–6 and then 7–8 again, with the resend flag clear. Sorting distinct blocks loses both the packet boundaries and those later updates. The region capture records direction, time and bytes. It omits the receiving circuit and the server's throttle category. Q46c observes avatars and currently skips prim blocks.
+
+1. **Capture the arrival on two viewer circuits** (about half a day, after Q65b and the Q46c observer). Extend the observer to record ordered prim blocks per datagram, the parent and local IDs, reliability, and intervening avatar terse updates. Keep each circuit's account alias and record first deliveries separately from repeats. Reopen the small Q65b store on Pin8 with the cache disabled. Vary Task independently of the other channels and demonstrate delayed delivery and resumption. Correlate category with a test-only observation at the C# send point if timing alone is ambiguous. Commit redacted evidence and a replay check that detects moving a block across a packet boundary.
+2. **Prepare the stored linksets and feed each arriving viewer** (about one day, after the capture and QR9). The region currently retains groups on `SimulationState`. Allocate every part ID once from the frame, resolve child parents, and apply the stored-object admission scale settings identified in Q65b. At `ScenePresence.SendInitialData` (4337–4385), schedule the root then its children in link order as `SceneObjectGroup.SendFullAnimUpdateToClient` does (3285–3314). Use Q42 priorities and preserve both full and terse entries in the bounded feed. Today `ViewerFeed::take_terse` discards dequeued full entries. Check two arriving feeds against the captured identities and order, including a walking avatar and an unrelated region's stored objects.
+3. **Send and verify the mixed feed on Task** (about one day, after both parts). Port the full-update drain in Pin8 `LLClientView.ProcessEntityUpdates` (4996–5431). It budgets estimated bytes for dequeue, then splits full packets when the incremental zero encoder's position reaches 900, preserving any pending zero run. Q43 currently asks for terse blocks only. Check reliable full sends, the split on either side of the boundary, and that a single unsendable block cannot stall the next update. Include the separate material-override send when required (5731 onward). Replay the captured batches, then run the two viewers on Ferroan to check parent and local IDs, coexistence with terse movement, Task throttling and resumption against Pin8.
+
+The store swap and the 500-prim acceptance remain in Q65d. The proposed parts complete P2.5a3 together.
 
 ## Found while working
 
