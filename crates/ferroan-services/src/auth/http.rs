@@ -25,7 +25,7 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Server.Handlers/Authentication/AuthenticationServerPostHandler.cs
-//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -334,7 +334,9 @@ fn field_text(field: &Field) -> Option<String> {
         Field::Bool(true) => Some("True".to_string()),
         Field::Bool(false) => Some("False".to_string()),
         Field::Int(number) => Some(number.to_string()),
-        Field::List(_) | Field::Map(_) | Field::Null => None,
+        // ServerUtils.ParseQueryString returns a List<string> for name[].
+        Field::List(_) => Some("System.Collections.Generic.List`1[System.String]".to_owned()),
+        Field::Map(_) | Field::Null => None,
     }
 }
 
