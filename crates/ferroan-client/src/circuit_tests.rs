@@ -495,6 +495,7 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying,
                 pose: crate::source_hop::HopPose {
+                    always_run: true,
                     center: [1.0, 2.0, 3.0],
                     head_rotation: [0.0, 0.0, 0.6, 0.8],
                     body_rotation: [0.0, 0.0, 0.8, 0.6],
@@ -519,6 +520,7 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
         let (sent, pose) = flags.lock().unwrap().unwrap();
         assert_eq!(sent, expected);
         // The frame's kept values, not the last raw AgentUpdate.
+        assert!(pose.always_run);
         assert_eq!(pose.center, [1.0, 2.0, 3.0]);
         assert_eq!(pose.head_rotation, [0.0, 0.0, 0.6, 0.8]);
         assert_eq!(pose.body_rotation, [0.0, 0.0, 0.8, 0.6]);

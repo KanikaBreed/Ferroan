@@ -128,6 +128,7 @@ fn u32_binary(value: u32) -> Llsd {
 /// Camera and body from the last viewer update. Rotations start as identity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HopPose {
+    pub always_run: bool,
     pub center: [f32; 3],
     pub head_rotation: [f32; 4],
     pub body_rotation: [f32; 4],
@@ -136,6 +137,7 @@ pub struct HopPose {
 impl Default for HopPose {
     fn default() -> Self {
         Self {
+            always_run: false,
             center: [0.0; 3],
             head_rotation: [0.0, 0.0, 0.0, 1.0],
             body_rotation: [0.0, 0.0, 0.0, 1.0],
