@@ -95,9 +95,25 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
+fn valid_root_attribute(attribute: &::xml::attribute::OwnedAttribute) -> bool {
+    if attribute.name.namespace.as_deref() != Some("http://www.w3.org/2001/XMLSchema-instance") {
+        return true;
+    }
+    match attribute.name.local_name.as_str() {
+        "type" => attribute.value == "AuthorizationRequest",
+        // A true nil deserializes to null, which the handler cannot use.
+        "nil" => matches!(
+            attribute.value.trim_matches([' ', '\t', '\r', '\n']),
+            "false" | "0"
+        ),
+        _ => true,
+    }
+}
+
 /// Pin8's XmlSerializer reads the first unqualified occurrence of each string
 /// property. Unknown and duplicate subtrees are skipped as complete XML.
 fn read_id(bytes: &[u8]) -> Result<String, ()> {
+    use ::xml::common::XmlVersion;
     use ::xml::reader::{ParserConfig, XmlEvent};
     use ferroan_http::MAX_XML_DEPTH;
 
@@ -122,6 +138,9 @@ fn read_id(bytes: &[u8]) -> Result<String, ()> {
     let mut id = String::new();
     for event in reader {
         match event.map_err(|_| ())? {
+            XmlEvent::StartDocument { version, .. } if version != XmlVersion::Version10 => {
+                return Err(());
+            }
             XmlEvent::StartElement {
                 name, attributes, ..
             } => {
@@ -150,10 +169,15 @@ fn read_id(bytes: &[u8]) -> Result<String, ()> {
                     None => keep_root_space,
                 };
                 match depth {
-                    1 if name.namespace.is_some() || name.local_name != "AuthorizationRequest" => {
-                        return Err(());
+                    1 => {
+                        if name.namespace.is_some()
+                            || name.local_name != "AuthorizationRequest"
+                            || !attributes.iter().all(valid_root_attribute)
+                        {
+                            return Err(());
+                        }
+                        keep_root_space = preserve;
                     }
-                    1 => keep_root_space = preserve,
                     2 if name.namespace.is_none() => {
                         if let Some(index) = FIELDS.iter().position(|&key| key == name.local_name)
                             && !seen[index]

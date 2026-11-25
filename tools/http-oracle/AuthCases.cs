@@ -81,7 +81,7 @@ static class AuthCases
     {
         Authorization handler = new();
         List<object> xml = [];
-        foreach (string content in new[] {
+        string[] children = [
             "<Extension><Nested><ID>hidden</ID></Nested></Extension><ID>direct</ID>",
             "<!--before--><ID>a<!--inside-->b</ID><!--after-->",
             "<ID>a<![CDATA[<&>]]>b</ID>", "<![CDATA[unused]]><ID>direct</ID>",
@@ -91,11 +91,28 @@ static class AuthCases
             "<ID>  </ID>", "<ID> a </ID>", "<ID><![CDATA[  ]]></ID>",
             "<ID xml:space='preserve'>  </ID>", "<ID>  <![CDATA[a]]>  </ID>",
             "<ID>first</ID><ID><ignored/></ID>", "<ID> a <!--c--> b </ID>"
-        })
+        ];
+        const string xsi = "http://www.w3.org/2001/XMLSchema-instance";
+        string WithAttributes(string attributes) =>
+            $"<AuthorizationRequest xmlns:i='{xsi}' {attributes}><ID>root</ID></AuthorizationRequest>";
+        string[] roots = [
+            "<?xml version='1.1'?><AuthorizationRequest/>",
+            WithAttributes("i:type='Other'"),
+            WithAttributes("xmlns:t='urn:other' i:type='t:AuthorizationRequest'"),
+            WithAttributes("i:nil='bogus'"), WithAttributes("i:nil='true'"), WithAttributes("i:nil='1'"),
+            WithAttributes("i:type='AuthorizationRequest' i:nil='false'"),
+            WithAttributes("i:nil=' 0 '"), WithAttributes("xmlns:u='urn:other' u:nil='true'"),
+            WithAttributes("i:type=' AuthorizationRequest '"),
+            "<AuthorizationRequest><ID xmlns:i='" + xsi + "' i:nil='true'>child</ID></AuthorizationRequest>"
+        ];
+        foreach (string request in children.Select(content => "<AuthorizationRequest>" + content + "</AuthorizationRequest>").Concat(roots))
         {
-            string request = "<AuthorizationRequest>" + content + "</AuthorizationRequest>";
             try { xml.Add(new { request, status = 200, body = handler.Post(request) }); }
-            catch (InvalidOperationException) { xml.Add(new { request, status = 500, body = "" }); }
+            // BaseHttpServer maps a deserialization failure or a null request to 500.
+            catch (Exception e) when (e is InvalidOperationException or NullReferenceException)
+            {
+                xml.Add(new { request, status = 500, body = "" });
+            }
         }
         UUID id = new("11111111-1111-4111-8111-111111111111");
         MemoryStore store = new();

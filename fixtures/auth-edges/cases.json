@@ -90,6 +90,61 @@
       "request": "\u003CAuthorizationRequest\u003E\u003CID\u003E a \u003C!--c--\u003E b \u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
       "status": 200,
       "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003E a  b  has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003C?xml version=\u00271.1\u0027?\u003E\u003CAuthorizationRequest/\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:type=\u0027Other\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 xmlns:t=\u0027urn:other\u0027 i:type=\u0027t:AuthorizationRequest\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:nil=\u0027bogus\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:nil=\u0027true\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:nil=\u00271\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:type=\u0027AuthorizationRequest\u0027 i:nil=\u0027false\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Eroot has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:nil=\u0027 0 \u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Eroot has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 xmlns:u=\u0027urn:other\u0027 u:nil=\u0027true\u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Eroot has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
+    },
+    {
+      "request": "\u003CAuthorizationRequest xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:type=\u0027 AuthorizationRequest \u0027\u003E\u003CID\u003Eroot\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "request": "\u003CAuthorizationRequest\u003E\u003CID xmlns:i=\u0027http://www.w3.org/2001/XMLSchema-instance\u0027 i:nil=\u0027true\u0027\u003Echild\u003C/ID\u003E\u003C/AuthorizationRequest\u003E",
+      "status": 200,
+      "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Echild has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
     }
   ],
   "list": {

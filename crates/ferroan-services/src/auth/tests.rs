@@ -417,6 +417,20 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
             .unwrap();
     }
     let store = AuthStore::new(pool, "auth").unwrap();
+    let row = webkey_row();
+    assert!(store.store(&row).await.unwrap());
+    assert!(
+        store
+            .consume_web_key(row.principal_id, &row.web_login_key)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .consume_web_key(row.principal_id, &row.web_login_key)
+            .await
+            .unwrap()
+    );
     let service = AuthService::new(store, AuthKind::Password);
     let id = principal();
     assert!(service.set_password(id, "harness-secret").await.unwrap());
@@ -477,26 +491,68 @@ async fn auth_list_field_updates_the_row_as_in_pin8() {
     )));
 }
 
+fn webkey_row() -> AuthRow {
+    AuthRow {
+        principal_id: principal(),
+        password_hash: String::new(),
+        password_salt: String::new(),
+        web_login_key: Uuid::new_v4().to_string(),
+        account_type: "fixture".into(),
+    }
+}
+
+async fn sqlite_webkey_fixture() -> (AuthService, sqlx::SqlitePool, AuthRow) {
+    let pool = ferroan_db::open_sqlite_file(&scratch_auth(), &["AuthStore"])
+        .await
+        .unwrap();
+    let sqlite = pool.sqlite().unwrap().clone();
+    let store = AuthStore::new(pool, "auth").unwrap();
+    let row = webkey_row();
+    assert!(store.store(&row).await.unwrap());
+    (AuthService::new(store, AuthKind::Webkey), sqlite, row)
+}
+
+#[tokio::test]
+async fn racing_webkey_authentications_issue_exactly_one_token() {
+    let (service, sqlite, row) = sqlite_webkey_fixture().await;
+    let mut held = Vec::new();
+    for _ in 0..sqlite.options().get_max_connections() {
+        held.push(sqlite.acquire().await.unwrap());
+    }
+    // Poll both authentications into the pool's FIFO before releasing one
+    // connection. Both SELECTs see the original key before either UPDATE.
+    let authenticate = || service.authenticate(row.principal_id, &row.web_login_key, 30);
+    let (first, second, ()) = tokio::join!(biased; authenticate(), authenticate(), async {
+        drop(held.pop().unwrap());
+    });
+    drop(held);
+    let results = [first.unwrap(), second.unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_empty()).count(), 1);
+    let token = results.iter().find(|result| !result.is_empty()).unwrap();
+    assert!(service.verify(row.principal_id, token, 30).await.unwrap());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tokens")
+        .fetch_one(&sqlite)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        service
+            .get(row.principal_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .web_login_key,
+        ZERO_KEY
+    );
+}
+
 #[tokio::test]
 async fn refused_webkey_clear_does_not_issue_a_token() {
     let reference = &pin8_auth_edges()["clear_refused"];
     assert_eq!(reference["clear_attempts"], 1);
     assert_eq!(reference["token_issued"], true);
 
-    let pool = ferroan_db::open_sqlite_file(&scratch_auth(), &["AuthStore"])
-        .await
-        .unwrap();
-    let sqlite = pool.sqlite().unwrap().clone();
-    let store = AuthStore::new(pool, "auth").unwrap();
-    let id = principal();
-    let row = AuthRow {
-        principal_id: id,
-        password_hash: String::new(),
-        password_salt: String::new(),
-        web_login_key: Uuid::new_v4().to_string(),
-        account_type: "fixture".into(),
-    };
-    assert!(store.store(&row).await.unwrap());
+    let (service, sqlite, row) = sqlite_webkey_fixture().await;
     // Model Store returning false (zero rows changed), separately from a SQL exception.
     sqlx::query(
         "CREATE TRIGGER refuse_clear BEFORE UPDATE ON auth BEGIN SELECT RAISE(IGNORE); END",
@@ -504,10 +560,9 @@ async fn refused_webkey_clear_does_not_issue_a_token() {
     .execute(&sqlite)
     .await
     .unwrap();
-    let service = AuthService::new(store, AuthKind::Webkey);
     assert!(
         service
-            .authenticate(id, &row.web_login_key, 30)
+            .authenticate(row.principal_id, &row.web_login_key, 30)
             .await
             .unwrap()
             .is_empty()

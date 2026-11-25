@@ -40,10 +40,9 @@
 //! token. Impersonation (user flag bit 6, level >= 200) runs only when that
 //! service is injected, which this process does not do.
 //!
-//! `new UUID(password)` throws when the text is shorter than 32 characters or
-//! is not a UUID (TB41). A normal login hash is 32 hex digits and does not
-//! throw. This service treats the throw as a failed web-key check, so
-//! `WebkeyOrPassword` can still try the password.
+//! Pin8 rejects malformed and zero web keys. `WebkeyOrPassword` tries the
+//! password after a failed web-key check. D79 requires a successful conditional
+//! clear before issuing a token for a matching key.
 
 use uuid::Uuid;
 
@@ -196,14 +195,17 @@ impl AuthService {
                 Ok(String::new())
             }
             Presented::Key => {
-                let Some(mut row) = self.store.get(principal).await? else {
+                let Some(row) = self.store.get(principal).await? else {
                     tracing::debug!("authentication: principal {principal} or its data not found");
                     return Ok(String::new());
                 };
                 if row.web_login_key == password {
-                    row.web_login_key = ZERO_KEY.to_string();
                     // D79: a web login key must be consumed before issuing its token.
-                    if !self.store.store(&row).await? {
+                    if !self
+                        .store
+                        .consume_web_key(principal, &row.web_login_key)
+                        .await?
+                    {
                         return Ok(String::new());
                     }
                     self.issue(principal, lifetime).await
