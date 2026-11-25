@@ -1,0 +1,716 @@
+{
+  "revision": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "cases": [
+    {
+      "name": "defaults",
+      "clients": 1,
+      "apply": false,
+      "factor": 1,
+      "blob": "",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1199726336,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1199726336
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1199726336,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1199726336
+      },
+      "categories": [
+        {
+          "requested_drip": 1171195904,
+          "drip": 1171195904,
+          "requested_burst": 1115979776,
+          "burst": 1115979776,
+          "total": 1171195904
+        },
+        {
+          "requested_drip": 1175360512,
+          "drip": 1175360512,
+          "requested_burst": 1119256576,
+          "burst": 1119256576,
+          "total": 1175360512
+        },
+        {
+          "requested_drip": 1155186688,
+          "drip": 1155186688,
+          "requested_burst": 1099694080,
+          "burst": 1099694080,
+          "total": 1155186688
+        },
+        {
+          "requested_drip": 1155186688,
+          "drip": 1155186688,
+          "requested_burst": 1099694080,
+          "burst": 1099694080,
+          "total": 1155186688
+        },
+        {
+          "requested_drip": 1183877120,
+          "drip": 1183877120,
+          "requested_burst": 1127809024,
+          "burst": 1127809024,
+          "total": 1183877120
+        },
+        {
+          "requested_drip": 1183877120,
+          "drip": 1183877120,
+          "requested_burst": 1127809024,
+          "burst": 1127809024,
+          "total": 1183877120
+        },
+        {
+          "requested_drip": 1176768512,
+          "drip": 1176768512,
+          "requested_burst": 1121058816,
+          "burst": 1121058816,
+          "total": 1176768512
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "bot_6000",
+      "clients": 1,
+      "apply": true,
+      "factor": 1,
+      "blob": "000016490000c8480000a0470000a0470020004a0020004a00003949",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1226588159,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1226588159
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1226588159,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1226588159
+      },
+      "categories": [
+        {
+          "requested_drip": 1199177728,
+          "drip": 1199177728,
+          "requested_burst": 1142947840,
+          "burst": 1142947840,
+          "total": 1199177728
+        },
+        {
+          "requested_drip": 1193716394,
+          "drip": 1193716394,
+          "requested_burst": 1138054484,
+          "burst": 1138054484,
+          "total": 1193716394
+        },
+        {
+          "requested_drip": 1174754645,
+          "drip": 1174754645,
+          "requested_burst": 1118481066,
+          "burst": 1118481066,
+          "total": 1174754645
+        },
+        {
+          "requested_drip": 1174754645,
+          "drip": 1174754645,
+          "requested_burst": 1118481066,
+          "burst": 1118481066,
+          "total": 1174754645
+        },
+        {
+          "requested_drip": 1213565610,
+          "drip": 1213565610,
+          "requested_burst": 1158195882,
+          "burst": 1158195882,
+          "total": 1213565610
+        },
+        {
+          "requested_drip": 1213565610,
+          "drip": 1213565610,
+          "requested_burst": 1158195882,
+          "burst": 1158195882,
+          "total": 1213565610
+        },
+        {
+          "requested_drip": 1201285802,
+          "drip": 1201285802,
+          "requested_burst": 1145394516,
+          "burst": 1145394516,
+          "total": 1201285802
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "floors",
+      "clients": 1,
+      "apply": true,
+      "factor": 1,
+      "blob": "0000803f0000803f0000803f0000803f0000803f0000803f0000803f",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1168072704,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1168072704
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1168072704,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1168072704
+      },
+      "categories": [
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "half",
+      "clients": 1,
+      "apply": true,
+      "factor": 0.5,
+      "blob": "000016490000c8480000a0470000a0470020004a0020004a00003949",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1220247552,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1220247552
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1220247552,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1220247552
+      },
+      "categories": [
+        {
+          "requested_drip": 1192624128,
+          "drip": 1192624128,
+          "requested_burst": 1136656384,
+          "burst": 1136656384,
+          "total": 1192624128
+        },
+        {
+          "requested_drip": 1187512320,
+          "drip": 1187512320,
+          "requested_burst": 1132462080,
+          "burst": 1132462080,
+          "total": 1187512320
+        },
+        {
+          "requested_drip": 1168113664,
+          "drip": 1168113664,
+          "requested_burst": 1112329420,
+          "burst": 1112329420,
+          "total": 1168113664
+        },
+        {
+          "requested_drip": 1168113664,
+          "drip": 1168113664,
+          "requested_burst": 1112329420,
+          "burst": 1112329420,
+          "total": 1168113664
+        },
+        {
+          "requested_drip": 1207967744,
+          "drip": 1207967744,
+          "requested_burst": 1151598592,
+          "burst": 1151598592,
+          "total": 1207967744
+        },
+        {
+          "requested_drip": 1207967744,
+          "drip": 1207967744,
+          "requested_burst": 1151598592,
+          "burst": 1151598592,
+          "total": 1207967744
+        },
+        {
+          "requested_drip": 1194917888,
+          "drip": 1194917888,
+          "requested_burst": 1139592396,
+          "burst": 1139592396,
+          "total": 1194917888
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "ten_clients",
+      "clients": 10,
+      "apply": true,
+      "factor": 1,
+      "blob": "000016490000c8480000a0470000a0470020004a0020004a00003949",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1254013984,
+        "requested_burst": 1172987904,
+        "burst": 1172627905,
+        "total": 1254313983
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1226348160,
+        "requested_burst": 1170735104,
+        "burst": 1170427906,
+        "total": 1226588159
+      },
+      "categories": [
+        {
+          "requested_drip": 1199177728,
+          "drip": 1198793730,
+          "requested_burst": 1142947840,
+          "burst": 1142702081,
+          "total": 1199177728
+        },
+        {
+          "requested_drip": 1193716394,
+          "drip": 1193460395,
+          "requested_burst": 1138054484,
+          "burst": 1137726806,
+          "total": 1193716394
+        },
+        {
+          "requested_drip": 1174754645,
+          "drip": 1174549846,
+          "requested_burst": 1118481066,
+          "burst": 1118218923,
+          "total": 1174754645
+        },
+        {
+          "requested_drip": 1174754645,
+          "drip": 1174549846,
+          "requested_burst": 1118481066,
+          "burst": 1118218923,
+          "total": 1174754645
+        },
+        {
+          "requested_drip": 1213565610,
+          "drip": 1213237612,
+          "requested_burst": 1158195882,
+          "burst": 1157985963,
+          "total": 1213565610
+        },
+        {
+          "requested_drip": 1213565610,
+          "drip": 1213237612,
+          "requested_burst": 1158195882,
+          "burst": 1157985963,
+          "total": 1213565610
+        },
+        {
+          "requested_drip": 1201285802,
+          "drip": 1201049003,
+          "requested_burst": 1145394516,
+          "burst": 1145091414,
+          "total": 1201285802
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "infinities",
+      "clients": 1,
+      "apply": true,
+      "factor": 1,
+      "blob": "0000807f000080ff0000807f000080ff0000807f000080ff0000807f",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1226588160,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1226588160
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1226588160,
+        "requested_burst": 1170735104,
+        "burst": 1170735102,
+        "total": 1226588161
+      },
+      "categories": [
+        {
+          "requested_drip": 1209802751,
+          "drip": 1209802750,
+          "requested_burst": 1153947401,
+          "burst": 1153947399,
+          "total": 1209802751
+        },
+        {
+          "requested_drip": 1132055755,
+          "drip": 1140457472,
+          "requested_burst": 1075830586,
+          "burst": 1075830586,
+          "total": 1132055755
+        },
+        {
+          "requested_drip": 1209802751,
+          "drip": 1209802750,
+          "requested_burst": 1153947401,
+          "burst": 1153947399,
+          "total": 1209802751
+        },
+        {
+          "requested_drip": 1095227144,
+          "drip": 1140457472,
+          "requested_burst": 1040173967,
+          "burst": 1040173967,
+          "total": 1095227144
+        },
+        {
+          "requested_drip": 1209802751,
+          "drip": 1209802750,
+          "requested_burst": 1153947401,
+          "burst": 1153947399,
+          "total": 1209802751
+        },
+        {
+          "requested_drip": 1132055755,
+          "drip": 1140457472,
+          "requested_burst": 1075830586,
+          "burst": 1075830586,
+          "total": 1132055755
+        },
+        {
+          "requested_drip": 1209802751,
+          "drip": 1209802750,
+          "requested_burst": 1153947401,
+          "burst": 1153947399,
+          "total": 1209802751
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "nan_task",
+      "clients": 2,
+      "apply": true,
+      "factor": 1,
+      "blob": "000016490000c8480000a0470000a0470000c0ff0020004a00003949",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 4290772992,
+        "requested_burst": 1172987904,
+        "burst": 4290772992,
+        "total": 4290772992
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 4290772992,
+        "requested_burst": 1170735104,
+        "burst": 4290772992,
+        "total": 4290772992
+      },
+      "categories": [
+        {
+          "requested_drip": 1201012736,
+          "drip": 4290772992,
+          "requested_burst": 1145044992,
+          "burst": 4290772992,
+          "total": 1201012736
+        },
+        {
+          "requested_drip": 1195900928,
+          "drip": 4290772992,
+          "requested_burst": 1140850688,
+          "burst": 4290772992,
+          "total": 1195900928
+        },
+        {
+          "requested_drip": 1176502272,
+          "drip": 4290772992,
+          "requested_burst": 1120718028,
+          "burst": 4290772992,
+          "total": 1176502272
+        },
+        {
+          "requested_drip": 1176502272,
+          "drip": 4290772992,
+          "requested_burst": 1120718028,
+          "burst": 4290772992,
+          "total": 1176502272
+        },
+        {
+          "requested_drip": 4290772992,
+          "drip": 4290772992,
+          "requested_burst": 4290772992,
+          "burst": 4290772992,
+          "total": 4290772992
+        },
+        {
+          "requested_drip": 1216356352,
+          "drip": 4290772992,
+          "requested_burst": 1159987200,
+          "burst": 4290772992,
+          "total": 1216356352
+        },
+        {
+          "requested_drip": 1203306496,
+          "drip": 4290772992,
+          "requested_burst": 1147981004,
+          "burst": 4290772992,
+          "total": 1203306496
+        },
+        {
+          "requested_drip": 0,
+          "drip": 4290772992,
+          "requested_burst": 0,
+          "burst": 4290772992,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "short_0",
+      "clients": 1,
+      "apply": true,
+      "factor": 1,
+      "blob": "",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1168072704,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1168072704
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1168072704,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1168072704
+      },
+      "categories": [
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "short_8",
+      "clients": 1,
+      "apply": true,
+      "factor": 1,
+      "blob": "000016490000c848",
+      "scene": {
+        "requested_drip": 1254013984,
+        "drip": 1207961344,
+        "requested_burst": 1172987904,
+        "burst": 1172987904,
+        "total": 1207961344
+      },
+      "client": {
+        "requested_drip": 1226588160,
+        "drip": 1207961344,
+        "requested_burst": 1170735104,
+        "burst": 1170735104,
+        "total": 1207961344
+      },
+      "categories": [
+        {
+          "requested_drip": 1201012736,
+          "drip": 1201012736,
+          "requested_burst": 1145044992,
+          "burst": 1145044992,
+          "total": 1201012736
+        },
+        {
+          "requested_drip": 1195900928,
+          "drip": 1195900928,
+          "requested_burst": 1140850688,
+          "burst": 1140850688,
+          "total": 1195900928
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1112014848,
+          "drip": 1140457472,
+          "requested_burst": 1056964608,
+          "burst": 1056964608,
+          "total": 1112014848
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 1148846080,
+          "drip": 1148846080,
+          "requested_burst": 1092616192,
+          "burst": 1092616192,
+          "total": 1148846080
+        },
+        {
+          "requested_drip": 0,
+          "drip": 1140457472,
+          "requested_burst": 0,
+          "burst": 0,
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

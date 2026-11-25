@@ -190,6 +190,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         .await?
         .with_handshake(config.handshake.clone())
         .with_timing(config.circuit_timing)?
+        .with_throttle(config.circuit_throttle)
         .with_udp_counters(meters.udp());
     if let Some(path) = &config.udp_capture
         && let Err(error) = circuit.open_datagram_log(path)
@@ -1379,7 +1380,8 @@ mod tests {
                 .await
                 .unwrap()
                 .with_timing(config.circuit_timing)
-                .unwrap();
+                .unwrap()
+                .with_throttle(config.circuit_throttle);
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
             let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(state.clone()));
