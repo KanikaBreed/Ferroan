@@ -150,10 +150,15 @@ impl ArrivalConfig {
 }
 
 fn channel_version(text: &str) -> Vec<u8> {
-    // Utils.StringToBytes stops at the first NUL, keeps whole UTF-8 characters,
-    // then appends a terminator. The 1024-byte limit includes that terminator.
+    string_to_bytes(text, 1024)
+}
+
+/// `Utils.StringToBytes(str, maxlen)`: stops at the first NUL, keeps whole
+/// UTF-8 characters, then appends a terminator. `maxlen` includes that
+/// terminator. An empty result has no terminator.
+pub(crate) fn string_to_bytes(text: &str, maxlen: usize) -> Vec<u8> {
     let text = text.split('\0').next().unwrap_or_default();
-    let mut end = text.len().min(1023);
+    let mut end = text.len().min(maxlen.saturating_sub(1));
     while !text.is_char_boundary(end) {
         end -= 1;
     }

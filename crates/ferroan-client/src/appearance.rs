@@ -152,10 +152,10 @@ pub struct StoredAppearance {
 
 impl AvatarWire {
     /// Constructor defaults: `SetDefaultParams`, `SetDefaultTexture`, `SetSize(0.45, 0.6, 1.9)`.
-    pub fn standing(agent_id: Uuid, first_name: &str, last_name: &str) -> Self {
+    pub fn standing(agent_id: Uuid, local_id: u32, first_name: &str, last_name: &str) -> Self {
         Self {
             agent_id,
-            local_id: 1,
+            local_id,
             first_name: first_name.to_owned(),
             last_name: last_name.to_owned(),
             title: String::new(),
@@ -340,7 +340,7 @@ mod tests {
     /// velocity and rotation; everything else is the arrival block.
     #[test]
     fn a_live_update_writes_the_presence_values() {
-        let wire = AvatarWire::standing(Uuid::from_u128(7), "Test", "User");
+        let wire = AvatarWire::standing(Uuid::from_u128(7), 7, "Test", "User");
         let look = [0.99, 0.042, 0.0];
         let arrival = wire.object_update(99, [128.0, 128.0, 25.96], look);
         let half = (0.99f32 / (0.99f32 * 0.99 + 0.042 * 0.042).sqrt()).acos() * 0.5;
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn standing_packets_use_defaults_and_omit_the_bake_block() {
-        let wire = AvatarWire::standing(Uuid::from_u128(7), "Test", "User");
+        let wire = AvatarWire::standing(Uuid::from_u128(7), 7, "Test", "User");
         assert_eq!(wire.visual_params, DEFAULT_VISUAL_PARAMS);
         assert!(wire.visual_params.len() <= 255);
         let update = wire.object_update(99, [128.0, 128.0, 25.0], [0.99, 0.042, 0.0]);
@@ -415,8 +415,7 @@ mod tests {
         let captured_params = include_bytes!("../../../fixtures/appearance/visual-params.bin");
         assert_eq!(captured_params, DEFAULT_VISUAL_PARAMS);
         let agent = Uuid::parse_str("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55").unwrap();
-        let mut wire = AvatarWire::standing(agent, "Test", "User");
-        wire.local_id = 0;
+        let wire = AvatarWire::standing(agent, 0, "Test", "User");
         let appearance = wire.appearance();
         let mut encoded = ferroan_protocol::Writer::new();
         appearance.encode_body(&mut encoded);

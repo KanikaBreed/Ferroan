@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
     return 2;
 }
 
@@ -61,6 +61,9 @@ try
             return 0;
         case "load" when args.Length == 4:
             Load(args[1], args[2], args[3]);
+            return 0;
+        case "prim-seed" when args.Length == 4:
+            SeedPrimUpdates(args[1], new UUID(args[2]), new UUID(args[3]));
             return 0;
         case "bulk" when args.Length == 4:
             Bulk(args[1], args[2], args[3]);
@@ -110,7 +113,7 @@ try
             SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
             return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
             return 2;
     }
 }
@@ -150,6 +153,68 @@ static void Bulk(string path, string region, string countText)
         BasePrim(id, region, id, "prim").Insert(db, "prims");
     }
     tx.Commit();
+}
+
+// Exercise SQLiteSimulationData.StoreObject at Pin8 c401bceecd. Only synthetic
+// objects enter this database. The live C# region opens a disposable copy.
+static void SeedPrimUpdates(string path, UUID region, UUID owner)
+{
+    if (File.Exists(path))
+        throw new IOException("prim-seed needs a fresh database");
+    UUID Id(int n) => new UUID($"65000000-0000-4000-8000-{n:x12}");
+    SceneObjectPart Part(int n, string name, PrimitiveBaseShape shape, Vector3 position, Vector3 offset)
+    {
+        return new SceneObjectPart(owner, shape, position, Quaternion.Identity, offset)
+        {
+            UUID = Id(n), Name = name, CreationDate = 1700000000, PseudoCRC = 6500 + n
+        };
+    }
+
+    Vector3 position = new Vector3(130, 128, 40);
+    PrimitiveBaseShape box = PrimitiveBaseShape.Default;
+    var textures = new Primitive.TextureEntry(Id(21));
+    textures.CreateFace(1).MaterialID = Id(22);
+    box.Textures = textures;
+    SceneObjectPart root = Part(1, "box", box, position, Vector3.Zero);
+    root.Text = "Pin8 box";
+    root.Color = 0xd04080ff;
+    root.MediaUrl = "https://example.invalid/prim";
+    root.Sound = Id(23);
+    root.SoundFlags = 1;
+    root.SoundGain = 0.25;
+    root.SoundRadius = 12;
+    root.ParticleSystem = new Primitive.ParticleSystem { BurstPartCount = 3, PartMaxAge = 2, Texture = Id(24) }.GetBytes();
+    root.TextureAnimation = new byte[] { 1, 0, 2, 2, 0, 0, 0, 0, 0, 0, 128, 64, 0, 0, 128, 63 };
+    SceneObjectGroup group = new SceneObjectGroup(root);
+
+    PrimitiveBaseShape mesh = PrimitiveBaseShape.CreateMesh(2, Id(25));
+    mesh.SetScale(0.75f);
+    mesh.ProfileBegin = mesh.ProfileHollow = 1;
+    mesh.PathScaleY = 100;
+    mesh.RenderMaterials = new Primitive.RenderMaterials {
+        entries = new[] { new Primitive.RenderMaterials.RenderMaterialEntry { te_index = 1, id = Id(26) } }
+    };
+    var child = Part(2, "mesh", mesh, position, new Vector3(1, 2, 0.5f));
+    child.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 0.5f);
+    group.AddPart(child);
+
+    PrimitiveBaseShape tree = PrimitiveBaseShape.Default;
+    tree.PCode = (byte)PCode.Tree;
+    tree.State = 4;
+    tree.SetScale(2);
+    var vegetation = new SceneObjectGroup(Part(3, "tree", tree, new Vector3(134, 128, 40), Vector3.Zero));
+    string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
+    var store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise(connection);
+        store.StoreObject(group, region);
+        store.StoreObject(vegetation, region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
 }
 
 static void Seed(string path)

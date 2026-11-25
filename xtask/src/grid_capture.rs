@@ -1428,7 +1428,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
     Ok(Value::Object(output))
 }
 
-fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
