@@ -34,7 +34,7 @@ pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};
 pub use source_hop::{
-    CONNECT_INNER, FinishEvent, HopOut, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED, SourceHop,
-    caps_seed, connect_reason, offline_map_block, teleport_finish_event,
+    CONNECT_INNER, FinishEvent, HopOut, HopPose, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED,
+    SourceHop, caps_seed, connect_reason, offline_map_block, teleport_finish_event,
 };
 pub use teleport::{GroundSample, TeleportRegion};

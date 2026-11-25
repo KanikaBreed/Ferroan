@@ -802,6 +802,11 @@ async fn serve_agent(
             circuit_code: expect.circuit_code,
             first_name: agent.first_name.clone(),
             last_name: agent.last_name.clone(),
+            viewer: agent.viewer.clone(),
+            channel: agent.channel.clone(),
+            mac: agent.mac.clone(),
+            id0: agent.id0.clone(),
+            appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
@@ -836,10 +841,17 @@ async fn serve_agent(
                         break;
                     }
                 }
-                _ = agent.replaced() => {
-                    tracing::info!("ferroan-region: circuit replaced by a new login");
+                kind = agent.replaced() => {
+                    match kind {
+                        CircuitStop::Quiet => {
+                            tracing::info!("ferroan-region: CloseAgent closed the circuit")
+                        }
+                        CircuitStop::Disable | CircuitStop::Shutdown => {
+                            tracing::info!("ferroan-region: circuit replaced by a new login")
+                        }
+                    }
                     if let Some(tx) = close_tx.take() {
-                        let _ = tx.send(CircuitStop::Disable);
+                        let _ = tx.send(kind);
                     }
                     match (&mut serving).await {
                         Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
@@ -958,14 +970,16 @@ async fn serve_agent(
             .await;
     }
     let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
-    // A demoted child and a far-hop close leave the grid presence where it is.
-    let tell_grid = root_arrived && agent.still_root();
+    // A far hop, a demoted child and a child that never rooted leave Presence
+    // where it is. Failed login is a ViaLogin session that never rooted. A
+    // root that was still root when another Presence session replaced it
+    // still logs that session out. A demoted or departed generation does not.
     settle(
         &grid_user,
         &presence,
         &config,
         agent,
-        tell_grid,
+        root_arrived,
         logout_position,
     )
     .await;
@@ -976,15 +990,20 @@ async fn settle(
     presence: &PresenceClient,
     config: &RegionConfig,
     agent: AcceptedAgent,
-    root_arrived: bool,
+    became_root: bool,
     position: [f32; 3],
 ) {
     // Keep the generation lease and admission gate throughout both HTTP
     // calls. A stale generation must never mark its replacement offline.
     let guard = agent.lock_lifecycle().await;
-    let result = if root_arrived {
+    let failed_login = !became_root && agent.via_login && !config.login_connect_wait.is_zero();
+    // The replacement is the current generation, so this does not mark it offline.
+    // `became_root` stays set after a demotion. The session flag is the root
+    // bit at the moment this generation was removed.
+    let replaced = became_root && agent.replaced_by_other_session();
+    let result = if became_root && agent.still_root() {
         notify_logout(grid_user, presence, config, &agent, position).await
-    } else if !config.login_connect_wait.is_zero() {
+    } else if failed_login || replaced {
         notify_failed_login(grid_user, presence, &agent).await
     } else {
         Ok(())
@@ -1434,6 +1453,53 @@ mod tests {
                 .await
                 .unwrap();
             assert!(response.status().is_success());
+            let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+            assert_eq!(value["success"], true, "{value}");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.started.load(Ordering::Acquire) == started {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            CircuitExpect {
+                agent_id: body["agent_id"].as_str().unwrap().parse().unwrap(),
+                session_id: body["session_id"].as_str().unwrap().parse().unwrap(),
+                circuit_code: body["circuit_code"].as_str().unwrap().parse().unwrap(),
+                region_id: "00000000-0000-4000-8000-000000000002".parse().unwrap(),
+            }
+        }
+
+        async fn admit_child(&self) -> CircuitExpect {
+            let mut body: Value = serde_json::from_str(include_str!(
+                "../../../fixtures/region-login/create-agent.request.json"
+            ))
+            .unwrap();
+            body["child"] = json!(true);
+            body["teleport_flags"] = json!("16");
+            body["caps_path"] = json!(Uuid::from_u128(30).to_string());
+            let session_id = body["session_id"].as_str().unwrap().to_owned();
+            let agent_id = body["agent_id"].as_str().unwrap().to_owned();
+            self.sessions.lock().unwrap().insert(session_id.clone());
+            self.users.lock().unwrap().insert(session_id, agent_id);
+            self.online
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let started = self.started.load(Ordering::Acquire);
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap()
+                .post(format!(
+                    "{}/agent/{}/",
+                    self.base,
+                    body["agent_id"].as_str().unwrap()
+                ))
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success(), "{}", response.status());
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true, "{value}");
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -2016,6 +2082,170 @@ mod tests {
                     .await;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_far_hop_does_not_log_presence_out() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+        harness.state.close_departed(expect.agent_id);
+        harness.finish().await.unwrap();
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_demoted_child_timeout_does_not_log_presence_out() {
+        let mut harness = Harness::new(true, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        harness.state.demote_child(expect.agent_id);
+        drop(socket);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.seed_status().await != reqwest::StatusCode::NOT_FOUND {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the demoted child did not time out");
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+        harness.finish().await.unwrap();
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_child_that_never_roots_does_not_log_presence_out() {
+        let mut harness =
+            Harness::with_settings(false, false, false, None, Duration::from_secs(1)).await;
+        harness.admit_child().await;
+        let seed = format!("{}/CAPS/{}0000/", harness.base, Uuid::from_u128(30));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let before = client
+            .post(&seed)
+            .header("content-type", "application/llsd+xml")
+            .body("<llsd><array/></llsd>")
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(before, reqwest::StatusCode::OK);
+        elapse(Duration::from_secs(2)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let status = client
+                    .post(&seed)
+                    .header("content-type", "application/llsd+xml")
+                    .body("<llsd><array/></llsd>")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the child seed was not released");
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+        harness.finish().await.unwrap();
+        assert_eq!(harness.count("logout"), 0);
+        assert_eq!(harness.count("loggedout"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_demoted_child_replaced_by_another_session_does_not_log_presence_out() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        harness.state.demote_child(expect.agent_id);
+        harness.admit(true, false).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            assert_eq!(harness.count("logout"), 0);
+            assert_eq!(harness.count("loggedout"), 0);
+            tokio::task::yield_now().await;
+        }
+        harness.finish().await.unwrap();
+        let old = Field::Str(expect.session_id.to_string());
+        let logged_old = harness.requests.lock().unwrap().iter().any(|fields| {
+            fields.get("METHOD") == Some(&Field::Str("logout".into()))
+                && fields.get("SessionID") == Some(&old)
+        });
+        assert!(!logged_old);
+    }
+
+    #[tokio::test]
+    async fn close_agent_of_a_root_still_logs_presence_out() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        let denied = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .delete(format!(
+                "{}/agent/{}/{}/?auth=not-the-session",
+                harness.base, expect.agent_id, expect.region_id
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::OK);
+        assert_eq!(harness.count("logout"), 0);
+        let closed = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .delete(format!(
+                "{}/agent/{}/{}/?auth={}",
+                harness.base, expect.agent_id, expect.region_id, expect.session_id
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(closed.status(), reqwest::StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("CloseAgent did not log the root out");
+        assert_eq!(harness.count("loggedout"), 1);
+        let mut saw_disable = false;
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(40), socket.recv(&mut buf)).await {
+                Ok(Ok(len)) => {
+                    if parse_packet(&buf[..len]).unwrap().id == DisableSimulator::ID {
+                        saw_disable = true;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(!saw_disable, "CloseAgent must not send DisableSimulator");
+        harness.finish().await.unwrap();
     }
 
     #[tokio::test]
