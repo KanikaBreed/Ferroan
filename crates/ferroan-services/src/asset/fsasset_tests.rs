@@ -41,6 +41,137 @@ async fn mysql_hashes_are_absent_when_the_database_will_not_open() {
     pool.close().await;
 }
 
+/// Access denied and an unknown database fail while the connection is
+/// acquired, so every id is absent. A missing table fails after the
+/// connection is open, so that error is returned.
+#[tokio::test]
+async fn mysql_hashes_split_an_open_failure_from_a_query_error() {
+    let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL is unset; mysql hash phase split was not run");
+        return;
+    };
+    if url.is_empty() {
+        eprintln!("FERROAN_MYSQL_URL is empty; mysql hash phase split was not run");
+        return;
+    }
+    let options = match url.parse::<sqlx::mysql::MySqlConnectOptions>() {
+        Ok(options) => options,
+        Err(_) => {
+            eprintln!("FERROAN_MYSQL_URL is not a mysql url; mysql hash phase split was not run");
+            return;
+        }
+    };
+    let denied = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options.clone().password("ferroan-qr24-wrong"));
+    let rows = super::super::fmysql::hashes(&denied, "fsassets", &[Uuid::nil()])
+        .await
+        .expect("access denied is absent");
+    assert_eq!(rows, vec![None]);
+    denied.close().await;
+
+    let unknown = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options.clone().database("ferroan_qr24_no_such_db"));
+    let rows = super::super::fmysql::hashes(&unknown, "fsassets", &[Uuid::nil()])
+        .await
+        .expect("unknown database is absent");
+    assert_eq!(rows, vec![None]);
+    unknown.close().await;
+
+    let open = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(8))
+        .connect_lazy_with(options);
+    let query =
+        super::super::fmysql::hashes(&open, "ferroan_qr24_no_such_table", &[Uuid::nil()]).await;
+    assert!(query.is_err(), "a missing table is a query error");
+    open.close().await;
+}
+
+/// A 32-hex id and an uppercase id stay in stored-text order. Each row is
+/// visited once. `count == -1` still skips `start` rows.
+#[tokio::test]
+async fn mysql_import_walks_a_hyphenless_id_and_mixed_case_once() {
+    let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL is unset; mysql import cursor was not run");
+        return;
+    };
+    if url.is_empty() || !url.starts_with("mysql:") {
+        eprintln!("FERROAN_MYSQL_URL is not a mysql url; mysql import cursor was not run");
+        return;
+    }
+    let _guard = FSASSET_MYSQL.lock().await;
+    let Some(store) = open_url("FERROAN_MYSQL_URL", "MySQL").await else {
+        return;
+    };
+    let pool = store.pool().mysql().expect("mysql");
+    sqlx::query("DROP TABLE IF EXISTS ferroan_qr24_cursor")
+        .execute(pool)
+        .await
+        .expect("drop cursor");
+    sqlx::query(
+        "CREATE TABLE ferroan_qr24_cursor (
+            id varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+            name varchar(64) NOT NULL DEFAULT '',
+            description varchar(64) NOT NULL DEFAULT '',
+            assetType tinyint NOT NULL,
+            create_time int NOT NULL DEFAULT 0,
+            data longblob NOT NULL,
+            PRIMARY KEY (id)
+        ) ENGINE=InnoDB",
+    )
+    .execute(pool)
+    .await
+    .expect("cursor table");
+    // Stored-text order under a binary collation: '0' < '5' < 'F' < 'e' < 'f'.
+    let spellings = [
+        "00000000-0000-0000-0000-0000000000aa",
+        "50000000000000000000000000000001",
+        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFF0",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1",
+        "ffffffff-ffff-ffff-ffff-fffffffffff1",
+    ];
+    for (index, id) in spellings.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO ferroan_qr24_cursor \
+             (id, name, description, assetType, create_time, data) \
+             VALUES (?, '', '', ?, 0, ?)",
+        )
+        .bind(*id)
+        .bind(i32::try_from(index).expect("index"))
+        .bind(vec![u8::try_from(index).expect("byte")])
+        .execute(pool)
+        .await
+        .expect("cursor row");
+    }
+    let parsed: Vec<Uuid> = spellings
+        .iter()
+        .map(|text| Uuid::parse_str(text).expect("spelling"))
+        .collect();
+    let walked = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        store.import_reader("ferroan_qr24_cursor", 0, -1),
+    )
+    .await
+    .expect("import cursor did not finish")
+    .expect("import");
+    assert_eq!(walked.iter().map(|row| row.id).collect::<Vec<_>>(), parsed);
+    let from_second = store
+        .import_reader("ferroan_qr24_cursor", 2, -1)
+        .await
+        .expect("start");
+    assert_eq!(from_second.len(), spellings.len() - 2);
+    assert_eq!(from_second[0].id, parsed[2]);
+    sqlx::query("DROP TABLE IF EXISTS ferroan_qr24_cursor")
+        .execute(pool)
+        .await
+        .expect("drop cursor");
+    store.close().await;
+}
+
 #[tokio::test]
 async fn postgres_hashes_fail_when_the_database_will_not_open() {
     let pool = sqlx::postgres::PgPoolOptions::new()

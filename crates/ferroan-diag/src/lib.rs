@@ -268,7 +268,8 @@ pub fn log_boundary(route: &str, message: &str) {
 /// `error`. They do not keep the body. The hex excerpt is only the debug
 /// line, and only when every secret field of that message is masked.
 /// CreateAgent masks `session_id`, `secure_session_id`, `service_session_id`,
-/// `circuit_code`, `caps_path` and each `children_seeds` `seed`. Unencoded
+/// `circuit_code`, `caps_path` and each `children_seeds` `seed`. UpdateAgent
+/// on the same route masks `session_uuid`. Unencoded
 /// UseCircuitCode masks `Code` and `SessionID`. Any other route, a zerocoded
 /// datagram, or a datagram that is not UseCircuitCode has no excerpt: those
 /// messages carry a session id or a capability whose offset is not known.
@@ -559,9 +560,10 @@ fn malformed_record(route: &str, bytes: &[u8], error: &str) -> (String, String) 
 
 /// Mask secret fields before the debug hex excerpt.
 ///
-/// `None` means the excerpt is omitted. `/agent` is a CreateAgent JSON body,
-/// which may already be malformed. `seed` is the child capability written
-/// next to `caps_path`. `udp` is a datagram. UseCircuitCode
+/// `None` means the excerpt is omitted. `/agent` is a CreateAgent or
+/// UpdateAgent JSON body, which may already be malformed. `seed` is the
+/// child capability written next to `caps_path`. UpdateAgent carries
+/// `session_uuid`. `udp` is a datagram. UseCircuitCode
 /// (`message_template.msg`, Low 3, unencoded) is message number
 /// `ff ff 00 03` after the 6-byte header and its extra bytes (`packet.rs`),
 /// then `Code` U32 and `SessionID` LLUUID. The agent id that follows is not
@@ -575,6 +577,7 @@ fn mask_known_fields(route: &str, bytes: &[u8]) -> Option<Vec<u8>> {
             &[
                 b"service_session_id",
                 b"secure_session_id",
+                b"session_uuid",
                 b"session_id",
                 b"circuit_code",
                 b"caps_path",
@@ -925,6 +928,19 @@ mod tests {
         );
         assert!(!other_route.contains("hex="), "{other_route}");
         assert!(!other_route.contains(child), "{other_route}");
+        let session_uuid = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+        let update = format!(
+            "{{\"session_uuid\":\"{session_uuid}\",\"agent_id\":\"00000000-0000-0000-0000-000000000001\"}}"
+        );
+        let (_ring, update_debug) = malformed_record("/agent", update.as_bytes(), "expected value");
+        assert!(update_debug.contains("hex="));
+        assert!(!update_debug.contains(session_uuid), "{update_debug}");
+        assert!(
+            !update_debug.contains(&hex_excerpt(session_uuid.as_bytes())),
+            "{update_debug}"
+        );
+        assert!(update_debug.contains(&"2a".repeat(session_uuid.len())));
+        assert!(update_debug.contains(&hex_excerpt(b"00000000-0000-0000-0000-000000000001")));
         assert!(panic_text.contains("panic: unit"));
         assert!(dump_text.contains("error=expected value"));
         let _ = std::fs::remove_file(dump);

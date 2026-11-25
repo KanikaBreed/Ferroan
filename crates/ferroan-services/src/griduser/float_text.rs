@@ -453,6 +453,7 @@ mod tests {
 
     #[test]
     fn float_text_matches_the_en_us_capture() {
+        // The sample's provenance is the header of fixtures/griduser/float-text.txt.
         let captured = include_str!("../../../../fixtures/griduser/float-text.txt");
         let mut rows = 0usize;
         for (number, line) in captured.lines().enumerate() {

@@ -40,9 +40,10 @@
 //! which updates `hash` and `access_time` only (TB45). `Delete` returns true
 //! when the statement runs. `AssetsExist` and `Count` read this table. The
 //! hash query reads `id`, `hash` and `type` once and does not update
-//! `access_time`. When the database will not open, that query answers a null
-//! hash for each id. A later statement error is returned. `Import` reads one
-//! source row at a time, still `ORDER BY id LIMIT start, count`.
+//! `access_time`. When the connection cannot be acquired, including access
+//! denied and an unknown database, that query answers a null hash for each
+//! id. A statement error after the connection is open is returned. `Import`
+//! reads one source row at a time by the last id.
 
 use std::collections::HashMap;
 
@@ -52,8 +53,8 @@ use uuid::Uuid;
 
 use super::decode::{ReadColumn, column_bytes, column_i32, column_string, column_uuid};
 use super::fsasset::{
-    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_row_within_bound,
-    import_suffix, sql_ident, utf8mb3,
+    FsAsset, FsClock, FsHash, FsImportRow, FsMetadata, access_is_due, import_keyset_sql,
+    import_row_within_bound, import_seek_sql, utf8mb3,
 };
 use super::model::KNOWN_FLAGS;
 use super::store::StoreError;
@@ -169,7 +170,8 @@ pub(super) async fn exists(
 }
 
 /// One hash query. A missing id, or a null hash, is `None`. This does not
-/// update `access_time`. When the database will not open, every id is `None`.
+/// update `access_time`. When the connection cannot be acquired, every id is
+/// `None`. That is the open, including access denied and an unknown database.
 /// A statement error after the connection is open is returned.
 pub(super) async fn hashes(
     pool: &MySqlPool,
@@ -186,12 +188,16 @@ pub(super) async fn hashes(
     for id in ids {
         query = query.bind(id.to_string());
     }
-    let rows = match query.fetch_all(pool).await {
-        Ok(rows) => rows,
+    let mut connection = match pool.acquire().await {
+        Ok(connection) => connection,
         Err(error) if mysql_will_not_open(&error) => {
             tracing::error!("fsassets mysql hashes: the database did not open");
             return Ok(vec![None; ids.len()]);
         }
+        Err(error) => return Err(error.into()),
+    };
+    let rows = match query.fetch_all(&mut *connection).await {
+        Ok(rows) => rows,
         Err(error) => return Err(error.into()),
     };
     let mut by_id = HashMap::with_capacity(rows.len());
@@ -227,35 +233,71 @@ pub(super) async fn delete(pool: &MySqlPool, table: &str, id: &str) -> Result<bo
     Ok(true)
 }
 
-/// One page of the legacy import table. `count == 0` reads nothing. A `data`
-/// value past the import bound is refused and is not returned.
-pub(super) async fn import_page(
+/// The stored id text at `offset` in id order. The selected column is the id
+/// only, and the text is not rewritten into canonical form.
+pub(super) async fn import_seek(
     pool: &MySqlPool,
     table: &str,
-    start: i32,
-    count: i32,
-) -> Result<Vec<FsImportRow>, StoreError> {
-    sql_ident(table)?;
-    if count == 0 {
-        return Ok(Vec::new());
+    offset: i32,
+) -> Result<Option<String>, StoreError> {
+    let sql = import_seek_sql(table, false, offset)?;
+    let row = sqlx::query(&sql).fetch_optional(pool).await?;
+    match row {
+        Some(row) => Ok(Some(mysql_id_text(&row)?)),
+        None => Ok(None),
     }
-    let suffix = import_suffix(start, count, false)?;
-    let sql = format!("SELECT * FROM {table}{suffix}");
-    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+}
+
+/// The next legacy rows after `after`, in id order. `after` is the stored id
+/// text from the previous row. A `data` value past the import bound is
+/// refused and is not returned. Each row keeps that same stored text.
+pub(super) async fn import_keyset(
+    pool: &MySqlPool,
+    table: &str,
+    after: Option<&str>,
+    limit: i32,
+) -> Result<Vec<(FsImportRow, String)>, StoreError> {
+    let sql = import_keyset_sql(table, false, after.is_some(), limit)?;
+    let mut query = sqlx::query(&sql);
+    if let Some(id) = after {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(pool).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
-        let parsed = FsImportRow {
-            id: column_uuid(row, "id")?,
+        let (parsed, stored) = mysql_import_row(row)?;
+        import_row_within_bound(parsed.data.len())?;
+        out.push((parsed, stored));
+    }
+    Ok(out)
+}
+
+/// The stored id characters. A binary collation comes back as bytes. The
+/// text is not rewritten into canonical form.
+fn mysql_id_text(row: &sqlx::mysql::MySqlRow) -> Result<String, StoreError> {
+    if let Ok(value) = row.try_get::<String, _>("id") {
+        return Ok(value);
+    }
+    if let Ok(value) = row.try_get::<Vec<u8>, _>("id") {
+        return String::from_utf8(value).map_err(|_| StoreError::Row("id is not text".into()));
+    }
+    Err(StoreError::Row("id is not text".into()))
+}
+
+fn mysql_import_row(row: &sqlx::mysql::MySqlRow) -> Result<(FsImportRow, String), StoreError> {
+    let stored = mysql_id_text(row)?;
+    let id = Uuid::parse_str(stored.trim()).map_err(|_| StoreError::Row(stored.clone()))?;
+    Ok((
+        FsImportRow {
+            id,
             name: column_string(row, "name")?,
             description: column_string(row, "description")?,
             type_code: column_i32(row, "assetType")? as i8,
             create_time: column_i32(row, "create_time")?,
             data: column_bytes(row, "data")?,
-        };
-        import_row_within_bound(parsed.data.len())?;
-        out.push(parsed);
-    }
-    Ok(out)
+        },
+        stored,
+    ))
 }
 
 pub(super) async fn clock(
@@ -284,6 +326,8 @@ pub(super) async fn clock(
     }))
 }
 
+/// An acquire failure. Access denied and an unknown database are
+/// `Error::Database` at this phase. A statement error is not passed here.
 fn mysql_will_not_open(error: &sqlx::Error) -> bool {
     matches!(
         error,
@@ -293,6 +337,8 @@ fn mysql_will_not_open(error: &sqlx::Error) -> bool {
             | sqlx::Error::Io(_)
             | sqlx::Error::Tls(_)
             | sqlx::Error::Configuration(_)
+            | sqlx::Error::Protocol(_)
+            | sqlx::Error::Database(_)
     )
 }
 
