@@ -32,11 +32,15 @@ pub(crate) struct LoginCircuit {
 }
 
 pub(crate) fn prove(records: &[Record]) -> Result<LoginCircuit, String> {
-    let selected = select(records)?;
+    prove_at(records, PIN)
+}
+
+fn prove_at(records: &[Record], revision: &str) -> Result<LoginCircuit, String> {
+    let selected = select(records, revision)?;
     Ok(LoginCircuit {
         value: json!({
             "marker": "AgentMovementComplete.SimData.ChannelVersion",
-            "channel_version": String::from_utf8_lossy(CSHARP_CHANNEL).trim_end_matches('\0'),
+            "channel_version": selected.channel_version,
             "region_handle": selected.manifest["arrival"]["region_handle"],
             "checked": "matching local test circuit, movement request, home handshake and reliable C# arrival",
         }),
@@ -47,8 +51,32 @@ pub(crate) fn prove(records: &[Record]) -> Result<LoginCircuit, String> {
     })
 }
 
-pub(crate) fn csharp_provenance(records: &[Record]) -> Result<Value, String> {
-    Ok(prove(records)?.value)
+pub(crate) fn csharp_provenance(records: &[Record], revision: &str) -> Result<Value, String> {
+    Ok(prove_at(records, revision)?.value)
+}
+
+/// VersionInfo.GetVersionString and Scene's runtime suffix identify a local C# release build.
+pub(crate) fn pinned_channel<'a>(bytes: &'a [u8], revision: &str) -> Result<&'a str, String> {
+    let error = "arrival lacks the pinned C# channel/version marker";
+    let channel = bytes
+        .strip_suffix(&[0])
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or(error)?;
+    let (version, commit) = channel
+        .strip_prefix("OpenSim-NGC Tranquillity Release ")
+        .and_then(|s| s.strip_suffix(" (X64/Unix/DotNet)"))
+        .and_then(|s| s.split_once('+'))
+        .ok_or(error)?;
+    if version.is_empty()
+        || !version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        || Some(commit) != revision.get(..10)
+        || (revision == PIN && bytes != CSHARP_CHANNEL)
+    {
+        return Err(error.into());
+    }
+    Ok(channel)
 }
 
 pub fn generate(path: &Path) -> Result<String, String> {
@@ -60,7 +88,7 @@ pub fn generate(path: &Path) -> Result<String, String> {
         return Err("arrival capture exceeds 64 MiB".to_string());
     }
     let records = read_capture(&bytes).map_err(|error| error.to_string())?;
-    let selected = select(&records)?;
+    let selected = select(&records, PIN)?;
     let trace = selected.trace;
     let manifest = selected.manifest;
     let target = crate::repo_root().join("fixtures/arrival");
@@ -85,6 +113,7 @@ pub fn generate(path: &Path) -> Result<String, String> {
 }
 
 struct Selected {
+    channel_version: String,
     trace: Vec<Record>,
     manifest: Value,
     circuit_code: u32,
@@ -93,7 +122,7 @@ struct Selected {
     arrival_index: usize,
 }
 
-fn select(records: &[Record]) -> Result<Selected, String> {
+fn select(records: &[Record], revision: &str) -> Result<Selected, String> {
     check_udp(records).map_err(|error| error.to_string())?;
     let mut circuit = None;
     let mut circuit_code = 0u32;
@@ -173,9 +202,6 @@ fn select(records: &[Record]) -> Result<Selected, String> {
             {
                 return Err("arrival identity does not match the captured circuit".to_string());
             }
-            if movement.sim_data.channel_version != CSHARP_CHANNEL {
-                return Err("arrival lacks the pinned C# channel/version marker".to_string());
-            }
             if movement.data.region_handle != HOME_HANDLE
                 || !packet.reliable()
                 || packet.resent()
@@ -217,8 +243,9 @@ fn select(records: &[Record]) -> Result<Selected, String> {
     }
     last.bytes[74..78].fill(0);
     check_udp(&trace).map_err(|error| error.to_string())?;
+    let channel_version = pinned_channel(&arrival.sim_data.channel_version, revision)?.to_owned();
     let manifest = json!({
-        "tranquillity":PIN,
+        "tranquillity":revision,
         "source":"cargo xtask live run login grid",
         "redaction":"P0.10d scrub_datagram identities; arrival timestamp=0; capture timestamps relative to circuit open; all other fields retained",
         "selected_records":selected,
@@ -233,6 +260,7 @@ fn select(records: &[Record]) -> Result<Selected, String> {
         }
     });
     Ok(Selected {
+        channel_version,
         trace,
         manifest,
         circuit_code,
@@ -296,7 +324,7 @@ pub(crate) mod tests {
     #[test]
     fn arrival_extraction_folds_only_identities_and_time() {
         let records = source_records();
-        let selected = select(&records).unwrap();
+        let selected = select(&records, PIN).unwrap();
         let trace = selected.trace;
         let manifest = selected.manifest;
         assert_eq!(
@@ -323,7 +351,7 @@ pub(crate) mod tests {
     fn arrival_extraction_refuses_missing_request_and_reply() {
         let mut records = source_records();
         records.pop();
-        let error = match select(&records) {
+        let error = match select(&records, PIN) {
             Err(error) => error,
             Ok(_) => panic!("expected a missing arrival to be refused"),
         };
@@ -332,7 +360,7 @@ pub(crate) mod tests {
             .into_iter()
             .filter(|record| parse_packet(&record.bytes).unwrap().id != CompleteAgentMovement::ID)
             .collect();
-        let error = match select(&records) {
+        let error = match select(&records, PIN) {
             Err(error) => error,
             Ok(_) => panic!("expected a missing movement request to be refused"),
         };
@@ -359,7 +387,7 @@ pub(crate) mod tests {
                 &packet.acks,
                 &mut record.bytes,
             );
-            let error = match select(&records) {
+            let error = match select(&records, PIN) {
                 Err(error) => error,
                 Ok(_) => panic!("expected a mismatched arrival to be refused"),
             };
@@ -369,6 +397,41 @@ pub(crate) mod tests {
                 "home-region"
             }));
         }
+    }
+
+    #[test]
+    fn grid_provenance_requires_the_requested_revision_in_the_captured_channel() {
+        const PIN8: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+        let walk = read_capture(include_bytes!("../../fixtures/walk/walk.cap")).unwrap();
+        let channel = walk
+            .iter()
+            .filter(|r| r.kind == Kind::UdpOut)
+            .map(|r| parse_packet(&r.bytes).unwrap())
+            .find(|p| p.id == AgentMovementComplete::ID)
+            .unwrap()
+            .decode::<AgentMovementComplete>()
+            .unwrap()
+            .sim_data
+            .channel_version;
+        let mut records = source_records();
+        assert!(csharp_provenance(&records, PIN8).is_err());
+        let record = records.last_mut().unwrap();
+        let packet = parse_packet(&record.bytes).unwrap();
+        let mut movement = packet.decode::<AgentMovementComplete>().unwrap();
+        movement.sim_data.channel_version.clone_from(&channel);
+        build_packet(
+            &movement,
+            packet.sequence,
+            packet.reliable(),
+            packet.resent(),
+            &packet.acks,
+            &mut record.bytes,
+        );
+        assert_eq!(
+            csharp_provenance(&records, PIN8).unwrap()["channel_version"],
+            std::str::from_utf8(channel.strip_suffix(&[0]).unwrap()).unwrap()
+        );
+        assert!(csharp_provenance(&records, PIN).is_err());
     }
 
     #[test]
@@ -392,13 +455,13 @@ pub(crate) mod tests {
                 &mut record.bytes,
             );
             assert!(
-                csharp_provenance(&records)
+                csharp_provenance(&records, PIN)
                     .unwrap_err()
                     .contains("pinned C# channel/version")
             );
         }
         assert_eq!(
-            csharp_provenance(&source_records()).unwrap()["region_handle"],
+            csharp_provenance(&source_records(), PIN).unwrap()["region_handle"],
             HOME_HANDLE
         );
     }
