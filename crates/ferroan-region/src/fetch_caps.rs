@@ -44,7 +44,9 @@
 //! fires, including a path whose bytes are still being stored. Dropping the
 //! POST clears that slot. An agent may hold more than one, up to 8, and the
 //! region keeps at most 128. A mesh fee keeps its URL; the model POST stores
-//! nothing.
+//! nothing. An offer body past 64 KiB is refused. The name is shortened to
+//! 64 characters and the description to 128, which is what the inventory
+//! columns keep.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -76,6 +78,13 @@ const MAX_PENDING_UPLOADS: usize = 128;
 /// that agent's earlier waiting mesh-fee path. C# does not cap one agent.
 /// This stays under [`MAX_PENDING_UPLOADS`].
 const MAX_AGENT_UPLOADS: usize = 8;
+/// NewFileAgentInventory body. The later asset POST stays on `MAX_ASSET_BODY`.
+const MAX_UPLOAD_OFFER_BODY: usize = 64 * 1024;
+/// Inventory name column, in UTF-16 code units. A character that would not
+/// fit is left out whole.
+const MAX_UPLOAD_NAME_UNITS: usize = 64;
+/// Inventory description column, in UTF-16 code units.
+const MAX_UPLOAD_DESCRIPTION_UNITS: usize = 128;
 const LSL_ON_LUAU: u32 = 0x0100_0000;
 const FLAGS_FETCH2: u32 = 0xff;
 const PERM_ALL: u32 = 0x8e000;
@@ -593,6 +602,19 @@ impl FetchCaps {
         if exchange.method != "POST" {
             return CapAnswer::miss();
         }
+        if exchange.body.len() > MAX_UPLOAD_OFFER_BODY {
+            let agent = exchange.agent_id.to_string();
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: ferroan_diag::REGION_UPLOAD_OFFER_BYTES,
+                kind: Kind::Hard,
+                configured: MAX_UPLOAD_OFFER_BODY as u64,
+                observed: exchange.body.len() as u64,
+                action: ferroan_diag::Action::Refuse,
+                route: "NewFileAgentInventory",
+                agent_id: Some(&agent),
+            });
+            return upload_error("upload offer is too large");
+        }
         let Ok(body) = from_xml(&exchange.body) else {
             return upload_error("Could not parse the upload request");
         };
@@ -611,8 +633,11 @@ impl FetchCaps {
             path: path.clone(),
             asset_id,
             item_id,
-            name: body.get("name").as_str().to_owned(),
-            description: body.get("description").as_str().to_owned(),
+            name: truncate_utf16(body.get("name").as_str(), MAX_UPLOAD_NAME_UNITS),
+            description: truncate_utf16(
+                body.get("description").as_str(),
+                MAX_UPLOAD_DESCRIPTION_UNITS,
+            ),
             folder: body.get("folder_id").as_uuid(),
             asset_type: asset_code,
             inv_type: i32::from(inv_code),
@@ -935,6 +960,20 @@ fn mesh_fee_data() -> Llsd {
     data.insert("physics_cost", 0.0);
     data.insert("upload_price_breakdown", breakdown);
     data
+}
+
+fn truncate_utf16(text: &str, units: usize) -> String {
+    let mut count = 0;
+    let mut end = 0;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if count + width > units {
+            break;
+        }
+        count += width;
+        end += ch.len_utf8();
+    }
+    text[..end].to_string()
 }
 
 fn upload_error(message: &str) -> CapAnswer {
@@ -1367,16 +1406,60 @@ mod tests {
     }
 
     fn offer_body(name: &str) -> Vec<u8> {
+        offer_fields(name, "synthetic")
+    }
+
+    fn offer_fields(name: &str, description: &str) -> Vec<u8> {
         let mut map = Llsd::new_map();
         map.insert("asset_type", "texture");
         map.insert("inventory_type", "texture");
         map.insert("name", name);
-        map.insert("description", "synthetic");
+        map.insert("description", description);
         map.insert("folder_id", Uuid::nil());
         map.insert("next_owner_mask", 0);
         map.insert("group_mask", 0);
         map.insert("everyone_mask", 0);
         to_xml(&map)
+    }
+
+    fn offer_of_len(len: usize) -> Vec<u8> {
+        let empty = offer_fields("cloth", "");
+        assert!(
+            empty.len() <= len,
+            "offer skeleton is {} bytes",
+            empty.len()
+        );
+        let padded = offer_fields("cloth", &" ".repeat(len - empty.len()));
+        assert_eq!(padded.len(), len);
+        padded
+    }
+
+    fn offer_byte_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.upload-offer-bytes\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    fn offer_harness(agent: Uuid, seed: &str) -> Arc<FetchCaps> {
+        let caps = Arc::new(FetchCaps {
+            inventory: None,
+            assets: None,
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: "http://127.0.0.1:9".into(),
+        });
+        let registry = ferroan_client::CapsRegistry::new("http://127.0.0.1:9/").unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        registry.register_agent(seed, agent).unwrap();
+        caps
     }
 
     fn mesh_fee_body(name: &str) -> Vec<u8> {
@@ -2301,5 +2384,90 @@ mod tests {
         let status = response.status().as_u16();
         let bytes = response.bytes().await.unwrap().to_vec();
         (status, bytes)
+    }
+
+    #[tokio::test]
+    async fn an_offer_shortens_the_name_and_the_description() {
+        let agent = Uuid::from_u128(0x31);
+        let caps = offer_harness(agent, "/CAPS/000000310000/");
+        let emoji_name = format!("{}{}", "a".repeat(63), "😀");
+        let emoji_desc = format!("{}{}", "b".repeat(127), "😀");
+        let answer = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&emoji_name, &emoji_desc),
+        ));
+        assert_eq!(
+            from_xml(&answer.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let kept = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&"n".repeat(64), &"d".repeat(128)),
+        ));
+        assert_eq!(
+            from_xml(&kept.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let cut = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&"n".repeat(80), &"d".repeat(200)),
+        ));
+        assert_eq!(from_xml(&cut.body).unwrap().get("state").as_str(), "upload");
+        let slots = caps
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert_eq!(slots[0].name, "a".repeat(63));
+        assert_eq!(slots[0].description, "b".repeat(127));
+        assert_eq!(slots[1].name, "n".repeat(64));
+        assert_eq!(slots[1].description, "d".repeat(128));
+        assert_eq!(slots[2].name, "n".repeat(64));
+        assert_eq!(slots[2].description, "d".repeat(128));
+        assert!(slots[0].name.is_char_boundary(slots[0].name.len()));
+        assert!(
+            slots[0]
+                .description
+                .is_char_boundary(slots[0].description.len())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offer_body_past_the_bound_is_refused() {
+        let agent = Uuid::from_u128(0x32);
+        let caps = offer_harness(agent, "/CAPS/000000320000/");
+        let exact = offer_of_len(MAX_UPLOAD_OFFER_BODY);
+        let accepted = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            exact.clone(),
+        ));
+        assert_eq!(
+            from_xml(&accepted.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let before = offer_byte_refuses();
+        let mut over = exact;
+        over.push(b' ');
+        let refused = caps.upload_offer(&exchange(agent, "NewFileAgentInventory", "/seed", over));
+        let body = from_xml(&refused.body).unwrap();
+        assert_eq!(body.get("state").as_str(), "error");
+        assert_eq!(
+            body.get("error").get("message").as_str(),
+            "upload offer is too large"
+        );
+        assert_eq!(offer_byte_refuses(), before + 1);
+        let slots = caps
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].description.len(), MAX_UPLOAD_DESCRIPTION_UNITS);
     }
 }

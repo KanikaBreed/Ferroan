@@ -144,7 +144,9 @@ const SEED_BODY_LIMIT: usize = 64 * 1024;
 const MAX_SEED_NAMES: usize = 256;
 /// One capability name. The bot's names are shorter.
 const MAX_SEED_NAME_LEN: usize = 128;
-/// Named seed caps plus one uploader path. A second uploader replaces the first.
+/// Granted caps one agent may hold, counting the named seed caps and every
+/// uploader path. Each uploader path stays until that upload is posted or its
+/// 120 second timer fires. A further uploader path is refused.
 const MAX_AGENT_CAPS: usize = 64;
 
 /// Failure to bind the capability listener.
@@ -402,6 +404,17 @@ impl UploaderRoutes {
             return false;
         };
         if registered.state.granted.len() >= MAX_AGENT_CAPS {
+            let agent = agent_id.to_string();
+            let observed = registered.state.granted.len() as u64 + 1;
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: ferroan_diag::REGION_AGENT_CAPS,
+                kind: ferroan_diag::Kind::Hard,
+                configured: MAX_AGENT_CAPS as u64,
+                observed,
+                action: ferroan_diag::Action::Refuse,
+                route: "uploader",
+                agent_id: Some(&agent),
+            });
             return false;
         }
         registered.state.granted.push(GrantedCap {
@@ -1191,5 +1204,50 @@ mod tests {
 
         session.logout(Duration::from_secs(8)).await.unwrap();
         running.await.unwrap().unwrap();
+    }
+
+    fn agent_cap_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.agent-caps\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    fn uploader_path(n: u32) -> String {
+        format!("/{n:08x}-0000-4000-8000-{n:012x}")
+    }
+
+    #[test]
+    fn an_agent_past_the_cap_bound_is_refused() {
+        let registry = CapsRegistry::new("http://127.0.0.1:9/").unwrap();
+        let routes = registry.uploader_routes();
+        let agent = Uuid::from_u128(0x21);
+        let other = Uuid::from_u128(0x22);
+        registry
+            .register_agent("/CAPS/000000210000/", agent)
+            .unwrap();
+        registry
+            .register_agent("/CAPS/000000220000/", other)
+            .unwrap();
+        for n in 0..MAX_AGENT_CAPS as u32 {
+            assert!(
+                routes.grant(agent, &uploader_path(n)),
+                "grant {n} should fit"
+            );
+        }
+        let before = agent_cap_refuses();
+        assert!(!routes.grant(agent, &uploader_path(MAX_AGENT_CAPS as u32)));
+        assert_eq!(agent_cap_refuses(), before + 1);
+        let before = agent_cap_refuses();
+        assert!(!routes.grant(agent, "not-a-uuid"));
+        assert!(!routes.grant(Uuid::from_u128(0x99), &uploader_path(90)));
+        assert!(!routes.grant(agent, &uploader_path(0)));
+        assert_eq!(agent_cap_refuses(), before);
+        assert!(routes.grant(other, &uploader_path(90)));
     }
 }
