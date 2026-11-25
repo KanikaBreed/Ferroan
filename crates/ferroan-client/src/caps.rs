@@ -59,7 +59,9 @@ use uuid::Uuid;
 
 const SEED_MIME: &str = "text/html;charset=UTF-8";
 
-/// Inventory and asset bodies. A seed stays on the smaller limit below.
+/// Inventory and asset bodies, including a mesh fee that carries the model.
+/// A seed stays on the smaller limit below. A body past this is
+/// `region.cap-body-bytes`.
 const CAP_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Where a granted capability is answered.
@@ -144,7 +146,9 @@ const SEED_BODY_LIMIT: usize = 64 * 1024;
 const MAX_SEED_NAMES: usize = 256;
 /// One capability name. The bot's names are shorter.
 const MAX_SEED_NAME_LEN: usize = 128;
-/// Named seed caps plus one uploader path. A second uploader replaces the first.
+/// Granted caps one agent may hold, counting the named seed caps and every
+/// uploader path. Each uploader path stays until that upload is posted or its
+/// 120 second timer fires. A further uploader path is refused.
 const MAX_AGENT_CAPS: usize = 64;
 
 /// Failure to bind the capability listener.
@@ -402,6 +406,17 @@ impl UploaderRoutes {
             return false;
         };
         if registered.state.granted.len() >= MAX_AGENT_CAPS {
+            let agent = agent_id.to_string();
+            let observed = registered.state.granted.len() as u64 + 1;
+            ferroan_diag::hit(&ferroan_diag::Hit {
+                id: ferroan_diag::REGION_AGENT_CAPS,
+                kind: ferroan_diag::Kind::Hard,
+                configured: MAX_AGENT_CAPS as u64,
+                observed,
+                action: ferroan_diag::Action::Refuse,
+                route: "uploader",
+                agent_id: Some(&agent),
+            });
             return false;
         }
         registered.state.granted.push(GrantedCap {
@@ -639,7 +654,25 @@ async fn call_cap(service: CapService, agent_id: Uuid, name: String, request: Re
         .map(str::to_owned);
     let bytes = match read_body(request.into_body(), CAP_BODY_LIMIT).await {
         Ok(bytes) => bytes,
-        Err(error) => return error.into_response(),
+        Err(error) => {
+            if let ferroan_http::HttpError::Limit { .. } = &error {
+                let route = if name.is_empty() {
+                    "uploader"
+                } else {
+                    name.as_str()
+                };
+                // `read_body` reports the bound plus one. It does not know the
+                // full length once the read has stopped.
+                ferroan_diag::refuse(
+                    ferroan_diag::REGION_CAP_BODY_BYTES,
+                    ferroan_diag::Kind::Hard,
+                    CAP_BODY_LIMIT as u64,
+                    (CAP_BODY_LIMIT as u64).saturating_add(1),
+                    route,
+                );
+            }
+            return error.into_response();
+        }
     };
     let answer = service(CapExchange {
         name,
@@ -1191,5 +1224,100 @@ mod tests {
 
         session.logout(Duration::from_secs(8)).await.unwrap();
         running.await.unwrap().unwrap();
+    }
+
+    fn agent_cap_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.agent-caps\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    fn uploader_path(n: u32) -> String {
+        format!("/{n:08x}-0000-4000-8000-{n:012x}")
+    }
+
+    #[test]
+    fn an_agent_past_the_cap_bound_is_refused() {
+        let registry = CapsRegistry::new("http://127.0.0.1:9/").unwrap();
+        let routes = registry.uploader_routes();
+        let agent = Uuid::from_u128(0x21);
+        let other = Uuid::from_u128(0x22);
+        registry
+            .register_agent("/CAPS/000000210000/", agent)
+            .unwrap();
+        registry
+            .register_agent("/CAPS/000000220000/", other)
+            .unwrap();
+        for n in 0..MAX_AGENT_CAPS as u32 {
+            assert!(
+                routes.grant(agent, &uploader_path(n)),
+                "grant {n} should fit"
+            );
+        }
+        let before = agent_cap_refuses();
+        assert!(!routes.grant(agent, &uploader_path(MAX_AGENT_CAPS as u32)));
+        assert_eq!(agent_cap_refuses(), before + 1);
+        let before = agent_cap_refuses();
+        assert!(!routes.grant(agent, "not-a-uuid"));
+        assert!(!routes.grant(Uuid::from_u128(0x99), &uploader_path(90)));
+        assert!(!routes.grant(agent, &uploader_path(0)));
+        assert_eq!(agent_cap_refuses(), before);
+        assert!(routes.grant(other, &uploader_path(90)));
+    }
+
+    fn cap_body_refuses() -> u64 {
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| {
+                let rest = line.strip_prefix(
+                    "ferroan_limit_hits_total{limit=\"region.cap-body-bytes\",action=\"refuse\"} ",
+                )?;
+                rest.trim().parse().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn a_capability_body_past_8_mib_is_refused() {
+        let service: CapService = Arc::new(|exchange| {
+            Box::pin(async move {
+                CapAnswer {
+                    handled: true,
+                    status: StatusCode::OK,
+                    content_type: SEED_MIME.to_owned(),
+                    body: exchange.body,
+                    content_range: None,
+                }
+            })
+        });
+        let before = cap_body_refuses();
+        let over = Request::builder()
+            .method(Method::POST)
+            .uri("/00000000-0000-4000-8000-000000000001")
+            .body(axum::body::Body::from(vec![b'x'; CAP_BODY_LIMIT + 1]))
+            .unwrap();
+        let refused = call_cap(Arc::clone(&service), Uuid::nil(), String::new(), over).await;
+        assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(cap_body_refuses(), before + 1);
+        let exact = Request::builder()
+            .method(Method::POST)
+            .uri("/00000000-0000-4000-8000-000000000001")
+            .body(axum::body::Body::from(vec![b'x'; CAP_BODY_LIMIT]))
+            .unwrap();
+        let accepted = call_cap(
+            service,
+            Uuid::nil(),
+            "NewFileAgentInventory".to_owned(),
+            exact,
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(cap_body_refuses(), before + 1);
     }
 }

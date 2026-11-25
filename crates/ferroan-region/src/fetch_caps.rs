@@ -44,7 +44,9 @@
 //! fires, including a path whose bytes are still being stored. Dropping the
 //! POST clears that slot. An agent may hold more than one, up to 8, and the
 //! region keeps at most 128. A mesh fee keeps its URL; the model POST stores
-//! nothing.
+//! nothing. The name is shortened to 64 characters and the description to
+//! 128, which is what the inventory columns keep. The stored asset's
+//! description is empty. The capability body stays on the 8 MiB bound.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -76,6 +78,11 @@ const MAX_PENDING_UPLOADS: usize = 128;
 /// that agent's earlier waiting mesh-fee path. C# does not cap one agent.
 /// This stays under [`MAX_PENDING_UPLOADS`].
 const MAX_AGENT_UPLOADS: usize = 8;
+/// Inventory name column, in UTF-16 code units. A character that would not
+/// fit is left out whole.
+const MAX_UPLOAD_NAME_UNITS: usize = 64;
+/// Inventory description column, in UTF-16 code units.
+const MAX_UPLOAD_DESCRIPTION_UNITS: usize = 128;
 const LSL_ON_LUAU: u32 = 0x0100_0000;
 const FLAGS_FETCH2: u32 = 0xff;
 const PERM_ALL: u32 = 0x8e000;
@@ -611,8 +618,11 @@ impl FetchCaps {
             path: path.clone(),
             asset_id,
             item_id,
-            name: body.get("name").as_str().to_owned(),
-            description: body.get("description").as_str().to_owned(),
+            name: truncate_utf16(body.get("name").as_str(), MAX_UPLOAD_NAME_UNITS),
+            description: truncate_utf16(
+                body.get("description").as_str(),
+                MAX_UPLOAD_DESCRIPTION_UNITS,
+            ),
             folder: body.get("folder_id").as_uuid(),
             asset_type: asset_code,
             inv_type: i32::from(inv_code),
@@ -730,7 +740,7 @@ impl FetchCaps {
         let asset = Asset {
             id: pending.asset_id,
             name: pending.name.clone(),
-            description: pending.description.clone(),
+            description: String::new(),
             type_code: pending.asset_type,
             local: false,
             temporary: false,
@@ -935,6 +945,20 @@ fn mesh_fee_data() -> Llsd {
     data.insert("physics_cost", 0.0);
     data.insert("upload_price_breakdown", breakdown);
     data
+}
+
+fn truncate_utf16(text: &str, units: usize) -> String {
+    let mut count = 0;
+    let mut end = 0;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if count + width > units {
+            break;
+        }
+        count += width;
+        end += ch.len_utf8();
+    }
+    text[..end].to_string()
 }
 
 fn upload_error(message: &str) -> CapAnswer {
@@ -1367,16 +1391,36 @@ mod tests {
     }
 
     fn offer_body(name: &str) -> Vec<u8> {
+        offer_fields(name, "synthetic")
+    }
+
+    fn offer_fields(name: &str, description: &str) -> Vec<u8> {
         let mut map = Llsd::new_map();
         map.insert("asset_type", "texture");
         map.insert("inventory_type", "texture");
         map.insert("name", name);
-        map.insert("description", "synthetic");
+        map.insert("description", description);
         map.insert("folder_id", Uuid::nil());
         map.insert("next_owner_mask", 0);
         map.insert("group_mask", 0);
         map.insert("everyone_mask", 0);
         to_xml(&map)
+    }
+
+    fn offer_harness(agent: Uuid, seed: &str) -> Arc<FetchCaps> {
+        let caps = Arc::new(FetchCaps {
+            inventory: None,
+            assets: None,
+            library: Library::absent(),
+            bad: Mutex::new(Vec::new()),
+            upload: Mutex::new(Vec::new()),
+            routes: std::sync::OnceLock::new(),
+            public_base: "http://127.0.0.1:9".into(),
+        });
+        let registry = ferroan_client::CapsRegistry::new("http://127.0.0.1:9/").unwrap();
+        caps.bind_uploader_routes(registry.uploader_routes());
+        registry.register_agent(seed, agent).unwrap();
+        caps
     }
 
     fn mesh_fee_body(name: &str) -> Vec<u8> {
@@ -1390,6 +1434,26 @@ mod tests {
         map.insert("group_mask", 0);
         map.insert("everyone_mask", 0);
         to_xml(&map)
+    }
+
+    /// A worn-mesh fee carries `asset_resources`. The stand-in is long enough
+    /// that the XML is past 64 KiB, which is what the fee request looks like.
+    fn mesh_fee_over_64_kib() -> Vec<u8> {
+        let mut resources = Llsd::new_map();
+        resources.insert("mesh_list", "m".repeat(70 * 1024));
+        let mut map = Llsd::new_map();
+        map.insert("asset_type", "mesh");
+        map.insert("inventory_type", "object");
+        map.insert("name", "worn");
+        map.insert("description", "synthetic model");
+        map.insert("folder_id", Uuid::nil());
+        map.insert("next_owner_mask", 0);
+        map.insert("group_mask", 0);
+        map.insert("everyone_mask", 0);
+        map.insert("asset_resources", resources);
+        let body = to_xml(&map);
+        assert!(body.len() > 64 * 1024, "mesh fee is {} bytes", body.len());
+        body
     }
 
     fn exchange(agent: Uuid, name: &str, path: &str, body: Vec<u8>) -> CapExchange {
@@ -2126,6 +2190,8 @@ mod tests {
     async fn mesh_fee_then_texture_then_the_first_uploader_completes() {
         let stored = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let recorded = Arc::clone(&stored);
+        let inventory_posts = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded_items = Arc::clone(&inventory_posts);
         let assets = axum::Router::new()
             .route(
                 "/assets/",
@@ -2154,10 +2220,20 @@ mod tests {
                             .unwrap_or("")
                             .trim()
                             .to_owned();
+                        let description = if text.contains("<Description />") {
+                            String::new()
+                        } else {
+                            text.split("<Description>")
+                                .nth(1)
+                                .and_then(|rest| rest.split("</Description>").next())
+                                .unwrap_or("missing")
+                                .trim()
+                                .to_owned()
+                        };
                         recorded
                             .lock()
                             .unwrap()
-                            .push(format!("{name} {kind} {id}"));
+                            .push(format!("{name} {kind} {id} desc={description}"));
                         (
                             StatusCode::OK,
                             format!(
@@ -2169,8 +2245,15 @@ mod tests {
             )
             .route(
                 "/xinventory",
-                axum::routing::post(|| async {
-                    r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let recorded_items = Arc::clone(&recorded_items);
+                    async move {
+                        recorded_items
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&body).into_owned());
+                        r#"<?xml version="1.0"?><ServerResponse><RESULT>True</RESULT></ServerResponse>"#
+                    }
                 }),
             );
         let asset_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -2246,10 +2329,21 @@ mod tests {
         );
         assert_eq!(post_bytes(&http, &mesh_uploader, b"again").await.0, 404);
         let seen = stored.lock().unwrap().clone();
-        assert!(seen.iter().any(|line| line.starts_with("cloth 0 ")));
+        assert!(
+            seen.iter()
+                .any(|line| line.starts_with("cloth 0 ") && line.ends_with(" desc=")),
+            "asset description should be empty, saw {seen:?}"
+        );
         assert!(
             seen.iter().all(|line| !line.starts_with("model ")),
             "mesh POST stored {seen:?}"
+        );
+        let items = inventory_posts.lock().unwrap().clone();
+        assert!(
+            items.iter().any(|body| {
+                body.contains("Name=cloth") && body.contains("Description=synthetic")
+            }),
+            "inventory item should keep the offer description, saw {items:?}"
         );
         caps_task.abort();
         assets_task.abort();
@@ -2301,5 +2395,78 @@ mod tests {
         let status = response.status().as_u16();
         let bytes = response.bytes().await.unwrap().to_vec();
         (status, bytes)
+    }
+
+    #[tokio::test]
+    async fn an_offer_shortens_the_name_and_the_description() {
+        let agent = Uuid::from_u128(0x31);
+        let caps = offer_harness(agent, "/CAPS/000000310000/");
+        let emoji_name = format!("{}{}", "a".repeat(63), "😀");
+        let emoji_desc = format!("{}{}", "b".repeat(127), "😀");
+        let answer = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&emoji_name, &emoji_desc),
+        ));
+        assert_eq!(
+            from_xml(&answer.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let kept = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&"n".repeat(64), &"d".repeat(128)),
+        ));
+        assert_eq!(
+            from_xml(&kept.body).unwrap().get("state").as_str(),
+            "upload"
+        );
+        let cut = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            offer_fields(&"n".repeat(80), &"d".repeat(200)),
+        ));
+        assert_eq!(from_xml(&cut.body).unwrap().get("state").as_str(), "upload");
+        let slots = caps
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert_eq!(slots[0].name, "a".repeat(63));
+        assert_eq!(slots[0].description, "b".repeat(127));
+        assert_eq!(slots[1].name, "n".repeat(64));
+        assert_eq!(slots[1].description, "d".repeat(128));
+        assert_eq!(slots[2].name, "n".repeat(64));
+        assert_eq!(slots[2].description, "d".repeat(128));
+        assert!(slots[0].name.is_char_boundary(slots[0].name.len()));
+        assert!(
+            slots[0]
+                .description
+                .is_char_boundary(slots[0].description.len())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mesh_fee_past_64_kib_still_offers_an_upload() {
+        let agent = Uuid::from_u128(0x33);
+        let caps = offer_harness(agent, "/CAPS/000000330000/");
+        let answer = caps.upload_offer(&exchange(
+            agent,
+            "NewFileAgentInventory",
+            "/seed",
+            mesh_fee_over_64_kib(),
+        ));
+        let parsed = from_xml(&answer.body).unwrap();
+        assert_eq!(parsed.get("state").as_str(), "upload");
+        assert_eq!(parsed.get("data").get("resource_cost").as_f64(), 0.0);
+        let slots = caps
+            .upload
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].mesh);
+        assert_eq!(slots[0].description, "synthetic model");
     }
 }
