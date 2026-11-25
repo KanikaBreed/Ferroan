@@ -577,16 +577,19 @@ pub(super) enum RegionServer {
 /// How far below `LANDING` a C# region's arrival may report the avatar, in metres.
 ///
 /// At Pin8 `c401bceecd`, `ScenePresence.CompleteMovement` calls `MakeRootAgent`,
-/// which adds the avatar's physics actor (ScenePresence.cs about line 1618),
-/// before `MoveAgentIntoRegion` samples `AbsolutePosition` (about line 2441).
-/// The actor can step in between, so the avatar has begun to fall: ubODE's
-/// gravity is 9.8 m/s² (`gravityz`, ODEScene.cs line 210) and a scene frame is
-/// 0.0908 s (`FrameTime`, Scene.cs line 863), so one frame drops it about
-/// 0.04 m. PR #242's run 45556306815 sent Z 29.9676, 0.032 m. Half a metre is
-/// free fall from rest for 0.32 s, three and a half frames: a larger drop is not
-/// this race. A Ferroan region holds its actor until the arrival samples the
-/// pose (QR29), so its arrivals get no window.
-const CSHARP_LANDING_FALL: f32 = 0.5;
+/// which adds the avatar's physics actor (`AddToPhysicalScene`, ScenePresence.cs
+/// lines 1619 and 1623) before `MoveAgentIntoRegion` samples `AbsolutePosition`
+/// (line 2441). In between, `TriggerOnMakeRootAgent` (line 1649) makes two
+/// synchronous Robust calls on a teleport arrival: Presence `ReportAgent`
+/// (PresenceDetector.cs line 86) and GridUser `SetLastPosition`
+/// (ActivityDetector.cs line 89). The avatar falls under ubODE's 9.8 m/s²
+/// (`gravityz`, ODEScene.cs line 210) for that wall time, which grows on a slow
+/// runner. PR #242's run 45556306815 sent Z 29.9676: 0.032 m, about 81 ms of
+/// free fall from rest. One metre is about 0.45 s, five times that, and still
+/// catches a landing at ground height (about 25 m). A Ferroan region holds its
+/// actor until the arrival samples the pose (QR29), so its arrivals get no
+/// window.
+const CSHARP_LANDING_FALL: f32 = 1.0;
 
 struct NeighbourSide {
     label: &'static str,
@@ -2180,15 +2183,24 @@ mod tests {
                 "{server:?} look"
             );
             assert!(
-                !is_landing([128.0, 128.0, 29.4], look, server),
+                !is_landing([128.0, 128.0, 28.9], look, server),
                 "{server:?} far"
+            );
+            assert!(
+                !is_landing([128.0, 128.0, 25.0], look, server),
+                "{server:?} ground"
             );
         }
         assert!(is_landing(fallen, look, RegionServer::CSharp));
         assert!(is_landing(
-            [128.0, 128.0, 29.51],
+            [128.0, 128.0, 29.01],
             look,
             RegionServer::CSharp
+        ));
+        assert!(!is_landing(
+            [128.0, 128.0, 29.4],
+            look,
+            RegionServer::Ferroan
         ));
         assert!(!is_landing(fallen, look, RegionServer::Ferroan));
         assert!(!is_landing(

@@ -18,11 +18,12 @@
 //! shuts down only its write side still receives the response.
 //!
 //! The owner calls `ProxyStatus::upstream_stopping` when it begins to stop
-//! the upstream server on purpose. A request that arrives after that and whose
-//! upstream connect is refused stays in the capture with no response, is
+//! the upstream server on purpose. A request that arrives after that and finds
+//! the upstream gone (its connect refused, or the connection reset, closed or
+//! broken before any response byte) stays in the capture with no response, is
 //! counted by `ProxyStatus::refused_after_stop`, and is not a failure: another
-//! server still running sent it to one the owner has shut down. A refused
-//! connect before that call still fails the proxy.
+//! server still running sent it to one the owner is shutting down. The same
+//! errors before that call still fail the proxy.
 //!
 //! Timeout reference (no C# code copied): EventQueueGetModule.cs, KEEPALIVE,
 //! VIEWERKEEPALIVE and OnRegisterCaps, under
@@ -70,7 +71,7 @@ struct StatusInner {
     failures: AtomicU64,
     /// Set by the owner when it begins stopping the upstream server.
     upstream_stopping: AtomicBool,
-    /// Requests refused by the upstream after `upstream_stopping` was set.
+    /// Requests that found the upstream gone after `upstream_stopping` was set.
     refused_after_stop: AtomicU64,
     stopping: AtomicBool,
     finished: AtomicBool,
@@ -83,13 +84,13 @@ impl ProxyStatus {
     }
 
     /// Mark the upstream as being stopped on purpose. From now on a request
-    /// whose upstream connect is refused is not a failure. Call it just before
+    /// that finds the upstream gone before any response byte is not a failure. Call it just before
     /// the upstream server is told to stop, never while it is meant to be up.
     pub fn upstream_stopping(&self) {
         self.0.upstream_stopping.store(true, Ordering::Release);
     }
 
-    /// Requests that arrived after `upstream_stopping` and were refused.
+    /// Requests that arrived after `upstream_stopping` and found the upstream gone.
     pub fn refused_after_stop(&self) -> u64 {
         self.0.refused_after_stop.load(Ordering::Acquire)
     }
@@ -428,14 +429,14 @@ async fn forward(
     }])?;
     let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
         Ok(Reply::Response(response)) => response,
-        Ok(Reply::Refused(_)) if upstream_stopping => {
+        Ok(Reply::Gone(_)) if upstream_stopping => {
             // The upstream was shut down on purpose before this request came.
             // Keep the request as evidence; the client sees a closed socket.
             status.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
             capture.flushed().await?;
             return Ok(());
         }
-        Ok(Reply::Refused(error)) => {
+        Ok(Reply::Gone(error)) => {
             // The upstream is meant to be up: a failed exchange.
             let _ = capture.flushed().await;
             return Err(error);
@@ -480,8 +481,17 @@ enum Reply {
     Response(Vec<u8>),
     /// The client went away while the upstream held the reply.
     ClientLeft,
-    /// The upstream connect was refused: nothing listens there.
-    Refused(io::Error),
+    /// The upstream is gone before any response byte: the connect was refused,
+    /// or the connection was reset, closed or broken.
+    Gone(io::Error),
+}
+
+/// An upstream error that means the server went away, not a bad message.
+fn upstream_went_away(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe
+    )
 }
 
 async fn exchange(
@@ -496,17 +506,35 @@ async fn exchange(
     let mut server = match connected {
         Ok(server) => server,
         Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-            return Ok(Reply::Refused(error));
+            return Ok(Reply::Gone(error));
         }
         Err(error) => return Err(error),
     };
     // The socket exists only after connect. C# sets NoDelay before ConnectAsync;
     // the following writes see the same option.
     set_tcp_nodelay(&server)?;
-    write_message(&mut server, forwarded).await?;
+    if let Err(error) = write_message(&mut server, forwarded).await {
+        return if upstream_went_away(&error) {
+            Ok(Reply::Gone(error))
+        } else {
+            Err(error)
+        };
+    }
+    let read = async {
+        let mut progress = ReadProgress::new();
+        let result = read_with_progress(&mut server, false, reply_timeout, &mut progress).await;
+        // Nothing of the response has arrived, not even an interim one.
+        let nothing = progress.stage == "headers" && progress.received == 0;
+        (result, nothing)
+    };
     tokio::select! {
         biased;
-        response = read_message(&mut server, false, reply_timeout) => response.map(Reply::Response),
+        (result, nothing) = read => match result {
+            Ok(Some(response)) => Ok(Reply::Response(response)),
+            Ok(None) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "no HTTP response was sent")),
+            Err(error) if nothing && upstream_went_away(&error) => Ok(Reply::Gone(error)),
+            Err(error) => Err(error),
+        },
         _ = client_left(client) => Ok(Reply::ClientLeft),
     }
 }
@@ -568,6 +596,7 @@ fn close_connection(message: &[u8]) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
+#[cfg(test)]
 async fn read_message(
     stream: &mut TcpStream,
     request: bool,
@@ -584,17 +613,33 @@ struct ReadProgress {
     expected: Option<usize>,
 }
 
+impl ReadProgress {
+    fn new() -> Self {
+        Self {
+            stage: "headers",
+            received: 0,
+            expected: None,
+        }
+    }
+}
+
 async fn read_message_or_unused(
     stream: &mut TcpStream,
     request: bool,
     wait: Duration,
 ) -> io::Result<Option<Vec<u8>>> {
-    let mut progress = ReadProgress {
-        stage: "headers",
-        received: 0,
-        expected: None,
-    };
-    let result = timeout(wait, read_message_inner(stream, request, &mut progress))
+    read_with_progress(stream, request, wait, &mut ReadProgress::new()).await
+}
+
+/// Read one message; `progress` keeps how far it got, including on error.
+/// `received` counts every byte read, interim responses included.
+async fn read_with_progress(
+    stream: &mut TcpStream,
+    request: bool,
+    wait: Duration,
+    progress: &mut ReadProgress,
+) -> io::Result<Option<Vec<u8>>> {
+    let result = timeout(wait, read_message_inner(stream, request, progress))
         .await
         .unwrap_or_else(|_| {
             Err(io::Error::new(
@@ -1089,7 +1134,12 @@ mod tests {
             tracked_proxy(closed_port().await, Duration::from_secs(1)).await;
         assert!(request(address).await.is_empty());
         assert_eq!(
-            task.await.unwrap().unwrap_err().kind(),
+            timeout(IO_WAIT, task)
+                .await
+                .expect("proxy did not stop")
+                .unwrap()
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::ConnectionRefused
         );
         assert_eq!(status.failures(), 1);
@@ -1139,6 +1189,85 @@ mod tests {
                 Kind::HttpRequest
             ]
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An upstream that accepts, reads the request and closes without a byte.
+    async fn closing_upstream() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+        });
+        (address, server)
+    }
+
+    #[tokio::test]
+    async fn an_upstream_closing_before_a_response_fails_only_while_it_is_meant_to_be_up() {
+        for stopping in [false, true] {
+            let (upstream, server) = closing_upstream().await;
+            let (address, status, task, path) =
+                tracked_proxy(upstream, Duration::from_secs(1)).await;
+            if stopping {
+                status.upstream_stopping();
+            }
+            assert!(request(address).await.is_empty());
+            server.await.unwrap();
+            if stopping {
+                assert_eq!(status.failures(), 0);
+                assert_eq!(status.refused_after_stop(), 1);
+                status.finish(IO_WAIT).await.unwrap();
+                timeout(IO_WAIT, task)
+                    .await
+                    .expect("proxy did not stop")
+                    .unwrap()
+                    .unwrap();
+            } else {
+                assert_eq!(
+                    timeout(IO_WAIT, task)
+                        .await
+                        .expect("proxy did not stop")
+                        .unwrap()
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::UnexpectedEof
+                );
+                assert_eq!(status.failures(), 1);
+                assert_eq!(status.refused_after_stop(), 0);
+            }
+            let records = read_capture(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].kind, Kind::HttpRequest);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_partial_response_after_the_mark_still_fails() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            read_message(&mut socket, true, IO_WAIT).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\n").await.unwrap();
+        });
+        let (address, status, task, path) =
+            tracked_proxy(upstream_addr, Duration::from_secs(1)).await;
+        status.upstream_stopping();
+        assert!(request(address).await.is_empty());
+        server.await.unwrap();
+        assert_eq!(
+            timeout(IO_WAIT, task)
+                .await
+                .expect("proxy did not stop")
+                .unwrap()
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(status.failures(), 1);
+        assert_eq!(status.refused_after_stop(), 0);
         std::fs::remove_file(path).unwrap();
     }
 

@@ -68,8 +68,9 @@ impl Proxies {
 
     /// The harness is about to stop the upstream of bind `index` on purpose.
     ///
-    /// A request that reaches that proxy afterwards and finds nothing listening
-    /// is kept in its capture and is not a failure. In the grid, the C#
+    /// A request that reaches that proxy afterwards and finds the upstream gone
+    /// (refused, or reset, closed or broken before any response byte) is kept
+    /// in its capture and is not a failure. In the grid, the C#
     /// neighbour closes its child agent on the home region after the bot logs
     /// out of the neighbour, on its own thread; that DELETE can come after the
     /// home region has been stopped (PR #249's run 45546454682). A refusal
