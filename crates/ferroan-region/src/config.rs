@@ -37,6 +37,8 @@
 //   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
 // Permission settings follow Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs
+// and the startup checks in Source/OpenSim.Server.RegionServer/OpenSimBase.cs and
+// Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs
 // at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -68,6 +70,8 @@ pub enum RegionConfigError {
         key: &'static str,
         reason: &'static str,
     },
+    #[error("required permission module {0:?} was not found")]
+    MissingPermissionModule(String),
     #[error("regionload_regionsdir must define exactly one region across all INI files")]
     RegionCount,
     #[error("XML region files are not supported; use INI region configuration")]
@@ -846,10 +850,25 @@ impl StaffPermissions {
             .get("Permissions", "permissionmodules")
             .or_else(|| config.get("Startup", "permissionmodules"))
             .unwrap_or("DefaultPermissionsModule");
-        if !modules
-            .split(',')
-            .any(|name| name.trim() == "DefaultPermissionsModule")
-        {
+        let secure = config.get("Startup", "SecurePermissionsLoading").is_none()
+            || boolean(config, "Startup", "SecurePermissionsLoading")?;
+        let mut default_loaded = false;
+        for name in modules.split(',').map(str::trim) {
+            let loaded = match name {
+                "DefaultPermissionsModule" => {
+                    config.get("Modules", "Setup_DefaultPermissionsModule") != Some("disabled")
+                }
+                "PrimLimitsModule" => {
+                    config.get("Modules", "Setup_PrimLimitsModule") != Some("disabled")
+                }
+                _ => false,
+            };
+            if secure && !loaded {
+                return Err(RegionConfigError::MissingPermissionModule(name.to_owned()));
+            }
+            default_loaded |= loaded && name == "DefaultPermissionsModule";
+        }
+        if !default_loaded {
             return Ok(Self::NoModule);
         }
         if permission_flag(config, "serverside_object_permissions", true)? {
@@ -1346,6 +1365,17 @@ mod tests {
                     },
                 );
             }
+            // These four captures run the module in isolation. A region with
+            // secure loading enabled would reject their required module list.
+            if matches!(
+                name,
+                "default-module-absent"
+                    | "default-module-empty"
+                    | "default-module-case-sensitive"
+                    | "default-module-in-list"
+            ) {
+                config.set("Startup", "SecurePermissionsLoading", "false");
+            }
             let region = RegionConfig::from_configs(&config, &regions()).unwrap();
             let mut gate = crate::staff::StaffGate::from_config(&region);
             gate.set_managers(vec![manager]);
@@ -1382,17 +1412,72 @@ mod tests {
         assert_eq!(mode(&server), StaffPermissions::Bypass);
         server.set("Permissions", "serverside_object_permissions", "true");
         assert_eq!(mode(&server), StaffPermissions::Enforce);
-        server.set("Startup", "permissionmodules", "Other");
+        server.set("Startup", "permissionmodules", "PrimLimitsModule");
         assert_eq!(mode(&server), StaffPermissions::NoModule);
         server.set(
             "Permissions",
             "permissionmodules",
-            "Other, DefaultPermissionsModule",
+            "PrimLimitsModule, DefaultPermissionsModule ",
         );
         assert_eq!(mode(&server), StaffPermissions::Enforce);
-        server.set("Permissions", "permissionmodules", "");
+        server.set("Permissions", "permissionmodules", "PrimLimitsModule");
         server.set("Permissions", "serverside_object_permissions", "unused");
+        server.set("Permissions", "allow_grid_gods", "unused");
         assert_eq!(mode(&server), StaffPermissions::NoModule);
+    }
+
+    #[test]
+    fn secure_permissions_loading_names_the_first_missing_module() {
+        let mut server = server();
+        server.set("Permissions", "SecurePermissionsLoading", "false");
+        for (list, missing) in [
+            ("Other", "Other"),
+            ("", ""),
+            ("defaultpermissionsmodule", "defaultpermissionsmodule"),
+            ("DefaultPermissionsModule, First, Last", "First"),
+        ] {
+            server.set("Startup", "permissionmodules", list);
+            assert!(
+                matches!(
+                    RegionConfig::from_configs(&server, &regions()),
+                    Err(RegionConfigError::MissingPermissionModule(name)) if name == missing
+                ),
+                "{list:?}"
+            );
+        }
+        server.set("Startup", "SecurePermissionsLoading", "false");
+        server.set("Startup", "permissionmodules", "Other");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+    }
+
+    #[test]
+    fn a_disabled_required_module_is_missing_at_startup() {
+        let mut server = server();
+        server.set("Modules", "Setup_DefaultPermissionsModule", "disabled");
+        assert!(matches!(
+            RegionConfig::from_configs(&server, &regions()),
+            Err(RegionConfigError::MissingPermissionModule(name)) if name == "DefaultPermissionsModule"
+        ));
+        server.set("Startup", "SecurePermissionsLoading", "false");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+
+        server.set("Startup", "SecurePermissionsLoading", "true");
+        server.set("Startup", "permissionmodules", "PrimLimitsModule");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+        server.set("Modules", "Setup_PrimLimitsModule", "disabled");
+        assert!(matches!(
+            StaffPermissions::read(&server),
+            Err(RegionConfigError::MissingPermissionModule(name)) if name == "PrimLimitsModule"
+        ));
     }
 
     #[test]

@@ -35,8 +35,10 @@
 //!
 //! At pin `c401bceecd`, `Scene.CheckLandPositionAccess` returns true for
 //! `Permissions.IsGod` and `Permissions.IsEstateManager` before the root-agent
-//! count. An absent default module leaves both handlers empty. Disabling
-//! server-side object permissions grants the bypass to non-nil users.
+//! count. Secure startup requires every listed module to be available (D75).
+//! If the region starts without the default handler, empty callbacks admit
+//! ordinary agents. Disabling server-side object permissions grants the bypass
+//! to non-nil users.
 //! `DefaultPermissionsModule.IsEstateManager` is
 //! `EstateSettings.IsEstateManagerOrOwner`. `IsGod` is `IsAdministrator`: a
 //! nil user is never an administrator; the estate owner and managers are gods
@@ -288,7 +290,9 @@ mod tests {
         assert_eq!(gate.cached_level(new), Some(200));
         assert_eq!(gate.cached_level(Uuid::from_u128(1)), None);
         assert_eq!(gate.cached_level(younger), Some(199));
-        tokio::time::advance(Duration::from_secs(300)).await;
+        tokio::time::advance(Duration::from_secs(200)).await;
+        assert_eq!(gate.cached_level(younger), Some(199));
+        tokio::time::advance(Duration::from_secs(100)).await;
         assert_eq!(gate.cached_level(younger), None);
     }
 
