@@ -750,6 +750,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                 |departure| ferroan_client::SceneDeparture {
                     flying: departure.flying,
                     pose: ferroan_client::HopPose {
+                        always_run: departure.always_run,
                         center: departure.camera_center,
                         head_rotation: departure.head_rotation,
                         body_rotation: departure.body_rotation,
@@ -855,6 +856,9 @@ async fn serve_agent(
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
+    // `LLClientView.IsActive`: the frame sends minimap dots only once the
+    // viewer's `UseCircuitCode` has opened the circuit.
+    let circuit_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if !already_stopped {
         let mut avatar = ferroan_region::avatar::load(
             &config.avatar_server_uri,
@@ -874,6 +878,7 @@ async fn serve_agent(
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
+                circuit_open: Arc::clone(&circuit_open),
                 look: Arc::new(ferroan_scene::AvatarLook {
                     first_name: avatar.first_name.clone(),
                     last_name: avatar.last_name.clone(),
@@ -929,6 +934,8 @@ async fn serve_agent(
             channel: agent.channel.clone(),
             mac: agent.mac.clone(),
             id0: agent.id0.clone(),
+            service_urls: agent.service_urls.clone(),
+            animations: Arc::clone(&agent.animations),
             appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();
@@ -982,7 +989,10 @@ async fn serve_agent(
                     }
                     break;
                 }
-                _ = &mut opening, if !connected => { connected = true; }
+                _ = &mut opening, if !connected => {
+                    connected = true;
+                    circuit_open.store(true, std::sync::atomic::Ordering::Release);
+                }
                 _ = tokio::time::sleep_until(deadline), if !connected && !config.login_connect_wait.is_zero() => {
                     tracing::error!("ferroan-region: login viewer did not connect before its deadline");
                     break;
@@ -1166,6 +1176,16 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                             .into_iter()
                             .map(ferroan_client::AvatarPacket::Kill),
                     );
+                }
+                ferroan_scene::AvatarPacket::Coarse(coarse) => {
+                    out.push(ferroan_client::AvatarPacket::Coarse(
+                        ferroan_client::coarse_update(
+                            &coarse.locations,
+                            coarse.you,
+                            coarse.prey,
+                            &coarse.agents,
+                        ),
+                    ));
                 }
             }
         }
@@ -3040,6 +3060,37 @@ mod tests {
         harness.finish().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn scene_departure_reads_always_run_from_the_frame() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(7);
+        let pose = ferroan_client::LoginPose {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        scene_call(&frame, agent, SceneCall::Arrive(pose, [1.0, 0.0, 0.0]))
+            .reply()
+            .await
+            .unwrap();
+        for enabled in [true, false] {
+            scene_call(&frame, agent, SceneCall::AlwaysRun(enabled))
+                .reply()
+                .await
+                .unwrap();
+            let SceneReply::Departure(departure) = scene_call(&frame, agent, SceneCall::Departure)
+                .reply()
+                .await
+                .unwrap()
+            else {
+                panic!("expected the frame's departure state");
+            };
+            assert_eq!(departure.pose.always_run, enabled);
+        }
+    }
+
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
     /// its appearance, and the kill.
@@ -3060,12 +3111,14 @@ mod tests {
         let link = ferroan_scene::ViewerLink {
             feed: frame.new_feed(),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
             feed: Arc::clone(&feed),
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()

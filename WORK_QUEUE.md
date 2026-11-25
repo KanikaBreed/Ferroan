@@ -99,20 +99,21 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR15 | R15: harness evidence carries the right pin and never hides a duplicate or a bad record | READY after QR11 |
 | QR16 | R16: `cargo xtask docker smoke` runs under rootless Docker, host networking kept where it is the host network | DONE (this PR) |
 | QR17 | R17: a waiting asset uploader stays until it is used or times out, as C# does, so the two-step mesh upload works (D45 withdrawn) | DONE (#229) |
-| QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | READY |
+| QR18 | R18: XAsset stores keep both ids under MariaDB 11.6+ snapshot isolation and need no UPDATE privilege | DONE (this PR) |
 | QR19 | R19: the region store follows the batch-5 upstream choices (dynamic attributes, forced root id) at the next pin move | READY after the pin move that carries the batch-5 PRs |
 | QR20 | R20: teleport review fixes: a hop never logs Presence out, `TeleportFinish` U32 fields as binary, `CloseAgent` into Ferroan, DNS neighbours, varregion handles, source `region_id` | DONE (this PR) |
 | QR21 | R21: frame and movement review fixes: presences removed at logout, `IsFlying` in teleport flags, per-circuit AgentUpdate replay, no blocking scene round trip on tokio workers, hop completion takes the returning AgentData | DONE (this PR) |
 | QR22 | R22: region store load review fixes: stream only this region's rows (startup peak), one creator-identification rule for all three stores, MySQL backend from `StorageProvider`, AllowUnsit and ScriptedSitOnly, region-filtered shape queries | DONE (this PR) |
-| QR23 | R23: region settings and object XML writer review fixes: maturity to SimAccess, terrain PBR fill, FixedSun (withdraw D52), a stable CacheID, SoundGain as double, XML and JSON escaping as C# | READY after QR22 |
+| QR23 | R23: region settings and object XML writer review fixes: maturity to SimAccess, terrain PBR fill, FixedSun (withdraw D52), a stable CacheID, SoundGain as double, XML and JSON escaping as C# | DONE (this PR) |
 | QR24 | R24: services review fixes: an interrupted upload never blocks the agent, the mesh upload answers as C# or refuses cleanly, session ids out of UpdateAgent excerpts, FSAssets import pages by key | DONE (this PR) |
-| QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | READY |
-| QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | READY after QR21 |
+| QR25 | R25: protocol and harness review fixes: `pack_quat` sums the norm as OpenMetaverse does on x86-64, quaternion re-encode in captures, port bases outside the ephemeral range | DONE (this PR) |
+| QR26 | R26: outbound connector review fixes: AgentData carries always-run, the active group and animations; teleport failure reasons as C#; connector docs and limits | DONE (this PR) |
 | QR27 | R27: upload offers are bounded (name, description, body) and the uploads scenario is documented | DONE (this PR) |
 | QR28 | R28: the live FSAssets compare really compares Ferroan with C# (import, force and cross-read probes; separate base directories; a like-for-like timing) and a failed MySQL delete answers as C# | READY after QR27 |
 | QR29 | R29: the intermittent "UDP TeleportFinish 0, landing 0" in live services' teleport both ways with Ferroan as home | DONE (this PR) |
 | QR30 | R30: two live-harness flakes: a C# arrival that has begun to fall, and a late request to a region the harness has stopped | DONE (this PR) |
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
+| QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -148,7 +149,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | READY after Q46b and Q48 |
 | Q82 | P2.0e2: default terrain: a store with no `terrain` row gets C#'s `pinhead-island` (or the stored baked map), written back as both rows on SQLite, so the Ferroan walk runs at C#'s height | DONE (this PR) |
 | Q83 | P2.0e3: terrain load and the default-terrain writes on MySQL and PostgreSQL | READY after Q82 and QR22 |
-| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | READY after Q46b |
+| Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | DONE (this PR) |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | DONE (this PR) |
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | READY after Q48 |
 | Q49 | P2.3b1: the animation state machine | READY after Q46b and Q48 |

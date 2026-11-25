@@ -29,7 +29,7 @@ The region generated that map at startup because the harness store has no `terra
 To record it again, under the live lock with a free port base:
 
 ```
-FERROAN_LIVE_PORT_BASE=23600 cargo xtask live run walk grid --physics basicphysics
+FERROAN_LIVE_PORT_BASE=23584 cargo xtask live run walk grid --physics basicphysics
 cargo run -p ferroan-capture -- check .scratch/live/runs/<base>-<pid>/grid/capture-udp.cap
 cargo run -p ferroan-capture -- redact --in .scratch/live/runs/<base>-<pid>/grid/capture-udp.cap --out fixtures/walk/walk.cap
 sqlite3 .scratch/live/runs/<base>-<pid>/grid/home/OpenSim.db "select writefile('fixtures/walk/terrain.bin', Heightfield) from terrain"

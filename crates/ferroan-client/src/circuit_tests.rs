@@ -187,6 +187,7 @@ async fn a_task_flood_stays_within_the_viewer_task_rate() {
         state.pending_task.push_back(Payload {
             bytes: body.clone(),
             zerocoded: false,
+            reliable: true,
         });
     }
     let io = FakeIo::default();
@@ -230,6 +231,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
         let payload = Payload {
             bytes: vec![0xff, 0xff, 0x00, 0x01, 1, 2, 3],
             zerocoded: false,
+            reliable: true,
         };
         state
             .send_payload(&io, peer(), payload, true)
@@ -241,6 +243,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
         zerocoded: false,
+        reliable: true,
     });
     state
         .pending_land
@@ -323,6 +326,7 @@ async fn a_nan_throttle_blob_keeps_the_circuit_sending() {
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
         zerocoded: false,
+        reliable: true,
     });
     release_throttled(&mut state, &io).await;
 }
@@ -494,6 +498,7 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying,
                 pose: crate::source_hop::HopPose {
+                    always_run: true,
                     center: [1.0, 2.0, 3.0],
                     head_rotation: [0.0, 0.0, 0.6, 0.8],
                     body_rotation: [0.0, 0.0, 0.8, 0.6],
@@ -518,6 +523,7 @@ async fn a_source_hop_takes_flight_and_pose_from_the_scene_departure() {
         let (sent, pose) = flags.lock().unwrap().unwrap();
         assert_eq!(sent, expected);
         // The frame's kept values, not the last raw AgentUpdate.
+        assert!(pose.always_run);
         assert_eq!(pose.center, [1.0, 2.0, 3.0]);
         assert_eq!(pose.head_rotation, [0.0, 0.0, 0.6, 0.8]);
         assert_eq!(pose.body_rotation, [0.0, 0.0, 0.8, 0.6]);
@@ -1849,6 +1855,76 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
         .decode::<ferroan_protocol::msgs::KillObject>()
         .unwrap();
     assert_eq!(kill.object_data[0].id, 77);
+}
+
+/// `SendCoarseLocationUpdate` writes its own header: no flags (unreliable,
+/// not zero-coded), Medium 6, then the counts, `You` and `Prey` little
+/// endian, and the agent ids. It waits behind a kill on the task outbox and
+/// never enters the reliable window.
+#[tokio::test]
+async fn a_coarse_location_update_leaves_unreliable_with_the_csharp_layout() {
+    use ferroan_protocol::msgs::coarse_location_update::{AgentData, Index, Location};
+    let source = Arc::new(BlockFeed::default());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source.clone(),
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let first = Uuid::from_u128(0x0102);
+    let second = Uuid::from_u128(0x0304);
+    let coarse = ferroan_protocol::msgs::CoarseLocationUpdate {
+        location: vec![
+            Location {
+                x: 128,
+                y: 128,
+                z: 6,
+            },
+            Location {
+                x: 131,
+                y: 40,
+                z: 6,
+            },
+        ],
+        index: Index { you: 1, prey: -1 },
+        agent_data: vec![
+            AgentData { agent_id: first },
+            AgentData { agent_id: second },
+        ],
+        omitted_trailing_blocks: 0,
+    };
+    {
+        let mut packets = source.packets.lock().unwrap();
+        for kill in crate::kill_packets(&[77]) {
+            packets.push(crate::AvatarPacket::Kill(kill));
+        }
+        packets.push(crate::AvatarPacket::Coarse(coarse));
+    }
+    for _ in 0..20 {
+        state.maintain(&io).await.unwrap();
+        if io.sent.lock().unwrap().len() >= 2 {
+            break;
+        }
+        state.advance_throttle(Duration::from_millis(200));
+    }
+    let sent = io.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        parse_packet(&sent[0]).unwrap().id,
+        ferroan_protocol::msgs::KillObject::ID
+    );
+    let bytes = &sent[1];
+    assert_eq!(bytes[0], 0, "unreliable, not zero-coded, no acks");
+    assert_eq!(bytes[5], 0);
+    let mut body = vec![0xff, 6, 2, 128, 128, 6, 131, 40, 6, 1, 0, 0xff, 0xff, 2];
+    body.extend_from_slice(first.as_bytes());
+    body.extend_from_slice(second.as_bytes());
+    assert_eq!(&bytes[6..], &body[..]);
+    assert_eq!(state.unacked.len(), 1, "only the kill waits for an ack");
 }
 
 #[tokio::test]
