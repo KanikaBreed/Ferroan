@@ -37,7 +37,9 @@
 //! Avatar names for `UUIDNameRequest`.
 //!
 //! A cached entry that has been looked up is answered at once, including an
-//! id the lookup did not find, which answers `Unknown` and the id. Any other
+//! id the lookup did not find, which answers `Unknown` and the id: C# answers
+//! that cached miss although its first lookup sent nothing (TB89), and
+//! Ferroan copies both so every region on a grid answers alike (D73). Any other
 //! id waits for a lookup on one region queue served by two workers: the
 //! account service, then GridUser. A found id is answered; an id neither
 //! service knows gets no reply and is cached as unknown. A resident whose
@@ -61,9 +63,12 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-/// `JobEngine`'s `BoundedCapacity`. A job past it is not recorded.
+/// `JobEngine.m_jobQueue`, a `BlockingCollection` of 5000 (`JobEngine.cs`
+/// line 66). A job past it is not recorded. The queue really holds 5,001:
+/// `serve_lookups` holds one job while it waits for a worker.
 pub const MAX_NAME_LOOKUPS: usize = 5000;
-/// `new JobEngine("ServiceThrottle", ..., 5000, 2)`: two lookups at a time.
+/// `new JobEngine("ServiceThrottle", "ServiceThrottle", 5000, 2)`: two
+/// lookups at a time. The 5000 there is the worker's idle timeout in ms.
 const LOOKUP_WORKERS: usize = 2;
 /// Lookups one circuit may have waiting. C# has no per-client bound.
 pub const MAX_CIRCUIT_LOOKUPS: usize = 512;
@@ -265,7 +270,7 @@ impl RegionNames {
 
     /// One circuit's handle and the receiver its replies arrive on.
     pub(crate) fn circuit(&self) -> (CircuitNames, mpsc::Receiver<(Uuid, UserName)>) {
-        let (replies, rx) = mpsc::channel(MAX_CIRCUIT_LOOKUPS);
+        let (replies, rx) = mpsc::channel(crate::circuit::MAX_NAME_REPLIES);
         (
             CircuitNames {
                 region: self.clone(),
@@ -306,6 +311,21 @@ pub(crate) enum Requested {
     Queued,
     /// A bound refused the lookup. No reply will come.
     Refused,
+}
+
+#[cfg(test)]
+impl RegionNames {
+    /// A looked-up entry, as `GetUser` leaves a found id.
+    pub(crate) fn cache_found(&self, id: Uuid, name: UserName) {
+        let entry = Entry {
+            name,
+            tried: true,
+            unknown: false,
+            local: true,
+            expires: Instant::now(),
+        };
+        self.shared.put(id, entry, LOOKED_UP_FOR);
+    }
 }
 
 /// One circuit's side of the region names.
@@ -361,8 +381,8 @@ impl CircuitNames {
             drop_bound(
                 ferroan_diag::REGION_NAME_REPLIES,
                 Kind::Hard,
-                MAX_CIRCUIT_LOOKUPS as u64,
-                MAX_CIRCUIT_LOOKUPS as u64 + 1,
+                crate::circuit::MAX_NAME_REPLIES as u64,
+                crate::circuit::MAX_NAME_REPLIES as u64 + 1,
                 "names",
             );
         }

@@ -9,10 +9,16 @@
 //! That check has to pass on the raw file, before redaction. The redacted
 //! datagram is then `scrub_datagram` of those bytes, so the committed file
 //! still round-trips and no longer carries the session.
+//!
+//! One name stays: a `UUIDNameReply` block that names its own id `Unknown`
+//! and the id, which is what C# sends for an id no grid service knows (TB89).
+//! It names nobody, and the fixture's bytes then show that reply.
 
+use ferroan_protocol::msgs::UUIDNameReply;
+use ferroan_protocol::packet::build_raw;
 use ferroan_protocol::{
-    client_datagram_within_quat_packing, message_info, parse_packet, reencode_datagram,
-    scrub_datagram,
+    Msg, PacketFlags, Writer, client_datagram_within_quat_packing, message_info, parse_packet,
+    reencode_datagram, scrub_datagram, str_field,
 };
 use std::path::{Path, PathBuf};
 
@@ -184,11 +190,12 @@ pub fn redact_records(records: &[Record]) -> Result<Vec<Record>, RedactError> {
     let mut out = Vec::with_capacity(records.len());
     for record in records {
         let bytes = if is_udp(record.kind) {
-            scrub_datagram(&record.bytes).map_err(|error| RedactError::Udp {
+            let scrubbed = scrub_datagram(&record.bytes).map_err(|error| RedactError::Udp {
                 index: out.len(),
                 kind: kind_name(record.kind),
                 detail: error.to_string(),
-            })?
+            })?;
+            keep_unknown_names(&record.bytes, scrubbed)
         } else {
             redact_http(&record.bytes)
         };
@@ -199,6 +206,54 @@ pub fn redact_records(records: &[Record]) -> Result<Vec<Record>, RedactError> {
         });
     }
     Ok(out)
+}
+
+/// Put back the names of each `UUIDNameReply` block that reads `Unknown`
+/// and its own id. Anything that does not parse is left as scrubbed.
+fn keep_unknown_names(original: &[u8], scrubbed: Vec<u8>) -> Vec<u8> {
+    let (Ok(raw), Ok(packet)) = (parse_packet(original), parse_packet(&scrubbed)) else {
+        return scrubbed;
+    };
+    if raw.id != UUIDNameReply::ID {
+        return scrubbed;
+    }
+    let (Ok(raw_reply), Ok(mut reply)) = (
+        raw.decode::<UUIDNameReply>(),
+        packet.decode::<UUIDNameReply>(),
+    ) else {
+        return scrubbed;
+    };
+    let mut kept = false;
+    for (raw_block, block) in raw_reply
+        .uuid_name_block
+        .iter()
+        .zip(reply.uuid_name_block.iter_mut())
+    {
+        if raw_block.first_name == b"Unknown\0"
+            && raw_block.last_name == str_field(&raw_block.id.to_string())
+        {
+            block.first_name = raw_block.first_name.clone();
+            block.last_name = raw_block.last_name.clone();
+            kept = true;
+        }
+    }
+    if !kept {
+        return scrubbed;
+    }
+    let mut payload = Writer::new();
+    UUIDNameReply::ID.encode(&mut payload.buf);
+    reply.encode_body(&mut payload);
+    let mut out = Vec::new();
+    build_raw(
+        &payload.buf,
+        packet.flags & PacketFlags::ZEROCODED != 0,
+        packet.sequence,
+        packet.reliable(),
+        packet.resent(),
+        &packet.acks,
+        &mut out,
+    );
+    out
 }
 
 fn is_udp(kind: Kind) -> bool {
@@ -458,6 +513,44 @@ mod tests {
     use uuid::Uuid;
 
     use crate::format::{Kind, write_capture};
+
+    #[test]
+    fn an_unknown_name_reply_keeps_its_placeholder_and_a_real_name_does_not() {
+        use ferroan_protocol::msgs::uuid_name_reply::UUIDNameBlock;
+        let unknown = uuid::Uuid::from_u128(0x84);
+        let named = uuid::Uuid::from_u128(0x85);
+        let reply = UUIDNameReply {
+            uuid_name_block: vec![
+                UUIDNameBlock {
+                    id: unknown,
+                    first_name: str_field("Unknown"),
+                    last_name: str_field(&unknown.to_string()),
+                },
+                UUIDNameBlock {
+                    id: named,
+                    first_name: str_field("Unknown"),
+                    last_name: str_field("Person"),
+                },
+            ],
+            ..UUIDNameReply::default()
+        };
+        let mut bytes = Vec::new();
+        ferroan_protocol::build_packet(&reply, 7, true, false, &[], &mut bytes);
+        let record = Record {
+            kind: Kind::UdpOut,
+            time_ms: 0,
+            bytes,
+        };
+        let out = redact_records(&[record]).unwrap();
+        let packet = parse_packet(&out[0].bytes).unwrap();
+        assert!(packet.reliable());
+        assert_eq!(packet.sequence, 7);
+        let blocks = packet.decode::<UUIDNameReply>().unwrap().uuid_name_block;
+        assert_eq!(blocks[0].first_name, str_field("Unknown"));
+        assert_eq!(blocks[0].last_name, str_field(&unknown.to_string()));
+        assert_eq!(blocks[1].first_name, b"Redacted");
+        assert_eq!(blocks[1].last_name, b"Redacted");
+    }
 
     #[test]
     fn a_circuit_packet_loses_its_identity_and_still_matches() {

@@ -3022,6 +3022,55 @@ mod tests {
         listener_task.await.unwrap().unwrap();
     }
 
+    fn name_request_packet(id: Uuid) -> ferroan_protocol::IncomingPacket {
+        use ferroan_protocol::msgs::{UUIDNameRequest, uuid_name_request};
+        let mut request = UUIDNameRequest::default();
+        request
+            .uuid_name_block
+            .push(uuid_name_request::UUIDNameBlock { id });
+        let mut bytes = Vec::new();
+        build_packet(&request, 1, true, false, &[], &mut bytes);
+        parse_packet(&bytes).unwrap()
+    }
+
+    fn named_state(id: Uuid) -> super::State {
+        let region =
+            crate::names::RegionNames::start(Arc::new(crate::names::tests::Fake::default()));
+        region.cache_found(id, crate::names::UserName::new("Chat", "Bot"));
+        let mut state = super::State::new(
+            crate::HandshakeConfig::for_region(Uuid::nil()),
+            crate::ArrivalConfig::default(),
+        );
+        state.names = Some(region.circuit().0);
+        state
+    }
+
+    /// A cached name is answered on the task outbox, until it holds
+    /// `MAX_NAME_REPLIES` packets.
+    #[tokio::test]
+    async fn a_name_reply_waits_on_the_task_outbox_up_to_its_bound() {
+        let id = Uuid::from_u128(0x79);
+        let mut state = named_state(id);
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), 1);
+        while state.pending_task.len() < super::MAX_NAME_REPLIES {
+            let payload = state.pending_task[0].clone();
+            state.pending_task.push_back(payload);
+        }
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), super::MAX_NAME_REPLIES);
+    }
+
+    /// `HandleUUIDNameRequest` ignores a presence in transit.
+    #[tokio::test]
+    async fn a_name_request_in_transit_is_ignored() {
+        let id = Uuid::from_u128(0x7a);
+        let mut state = named_state(id);
+        state.in_transit = true;
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert!(state.pending_task.is_empty());
+    }
+
     /// `UUIDNameRequest` with a known and an unknown id: one reliable,
     /// plain `UUIDNameReply` for the known one, none for the other.
     #[tokio::test]

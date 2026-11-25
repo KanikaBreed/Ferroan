@@ -148,41 +148,48 @@ fn compare_names(
         agents[1],
         (UNKNOWN_NAME_ID, ("Unknown", unknown.as_str())),
     ] {
+        // The second bot's first request for the unknown id can come after
+        // the owner's miss is cached, and is then answered too (TB89).
+        let most = if id == UNKNOWN_NAME_ID { 2 } else { 1 };
         let reference = replies_for(&csharp.names, id);
-        let [reference] = reference[..] else {
+        let Some(reference) = reference.first().filter(|_| reference.len() <= most) else {
             return Err(format!(
-                "the C# capture has {} UUIDNameReply for {id}, not one",
+                "the C# capture has {} UUIDNameReply for {id}, not 1 to {most}",
                 reference.len()
             ));
         };
         let sent = replies_for(&ferroan.names, id);
-        let [sent] = sent[..] else {
+        let redacted_sent = replies_for(&redacted.names, id);
+        if sent.is_empty() || sent.len() > most {
             return Err(format!(
-                "Ferroan sent {} UUIDNameReply for {id}; C# sent one",
+                "Ferroan sent {} UUIDNameReply for {id}, not 1 to {most}",
                 sent.len()
             ));
-        };
-        let block = &sent.message.uuid_name_block;
-        let want = (str_field(names.0), str_field(names.1));
-        if block.len() != 1 || (block[0].first_name.clone(), block[0].last_name.clone()) != want {
-            return Err(format!(
-                "Ferroan's UUIDNameReply for {id} does not carry {names:?}"
-            ));
         }
-        let [redacted_sent] = replies_for(&redacted.names, id)[..] else {
+        if redacted_sent.len() != sent.len() {
             return Err("redaction changed which name replies the run holds".into());
-        };
-        if sent.flags & 0xc0 != reference.flags & 0xc0 {
-            return Err(format!(
-                "the UUIDNameReply header for {id} differs from the C# capture"
-            ));
         }
-        if body(&redacted_sent.message) != body(&reference.message) {
-            return Err(format!(
-                "the UUIDNameReply for {id} differs from the C# capture"
-            ));
+        for (sent, redacted_sent) in sent.iter().zip(&redacted_sent) {
+            let block = &sent.message.uuid_name_block;
+            let want = (str_field(names.0), str_field(names.1));
+            if block.len() != 1 || (block[0].first_name.clone(), block[0].last_name.clone()) != want
+            {
+                return Err(format!(
+                    "Ferroan's UUIDNameReply for {id} does not carry {names:?}"
+                ));
+            }
+            if sent.flags & 0xc0 != reference.flags & 0xc0 {
+                return Err(format!(
+                    "the UUIDNameReply header for {id} differs from the C# capture"
+                ));
+            }
+            if body(&redacted_sent.message) != body(&reference.message) {
+                return Err(format!(
+                    "the UUIDNameReply for {id} differs from the C# capture"
+                ));
+            }
+            compared += 1;
         }
-        compared += 1;
     }
     Ok(compared)
 }
@@ -412,8 +419,14 @@ mod tests {
             assert_eq!(seen.flags & 0xc0, PacketFlags::RELIABLE);
             let block = &seen.message.uuid_name_block;
             assert_eq!(block.len(), 1);
-            assert_eq!(block[0].first_name, b"Redacted");
-            assert_eq!(block[0].last_name, b"Redacted");
+            // The redactor keeps C#'s placeholder for an unknown id (TB89).
+            let (first, last) = if id == UNKNOWN_NAME_ID {
+                (str_field("Unknown"), str_field(&id.to_string()))
+            } else {
+                (b"Redacted".to_vec(), b"Redacted".to_vec())
+            };
+            assert_eq!(block[0].first_name, first);
+            assert_eq!(block[0].last_name, last);
         }
     }
 
@@ -456,8 +469,10 @@ mod tests {
                 .map(|seen| {
                     let mut message = seen.message.clone();
                     for block in &mut message.uuid_name_block {
-                        block.first_name = b"Redacted".to_vec();
-                        block.last_name = b"Redacted".to_vec();
+                        if block.id != UNKNOWN_NAME_ID {
+                            block.first_name = b"Redacted".to_vec();
+                            block.last_name = b"Redacted".to_vec();
+                        }
                     }
                     Seen {
                         flags: seen.flags,
@@ -477,7 +492,15 @@ mod tests {
         let wrong = live(&[good[0], (chat, "Other", "Name"), good[2]]);
         assert!(compare_names(&csharp, &wrong, &redact(&wrong), agents).is_err());
         let twice = live(&[good[0], good[1], good[1], good[2]]);
+        // Two for the unknown id is the cached-miss race, and passes.
+        let unknown_twice = live(&[good[0], good[1], good[2], good[2]]);
+        assert_eq!(
+            compare_names(&csharp, &unknown_twice, &redact(&unknown_twice), agents),
+            Ok(4)
+        );
         assert!(compare_names(&csharp, &twice, &redact(&twice), agents).is_err());
+        let other_unknown = live(&[good[0], good[1], (UNKNOWN_NAME_ID, "Unknown", "User")]);
+        assert!(compare_names(&csharp, &other_unknown, &redact(&other_unknown), agents).is_err());
         let missing = live(&good[..2]);
         assert!(compare_names(&csharp, &missing, &redact(&missing), agents).is_err());
     }

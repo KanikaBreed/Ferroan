@@ -296,3 +296,32 @@ async fn a_looked_up_entry_lasts_30_minutes() {
     reply(&mut rx).await;
     assert_eq!(fake.calls("account"), 2);
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_cache_drops_the_entry_that_expires_soonest() {
+    let region = RegionNames::start(Arc::new(Fake::default()));
+    let soonest = Uuid::from_u128(1);
+    region.add_arrival(soonest, "First", "Last");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for n in 1..MAX_NAME_CACHE {
+        region.add_arrival(Uuid::from_u128(n as u128 + 1), "First", "Last");
+    }
+    region.add_arrival(Uuid::from_u128(u128::MAX), "First", "Last");
+    let cache = region.shared.cache.lock().unwrap();
+    assert_eq!(cache.len(), MAX_NAME_CACHE);
+    assert!(!cache.contains_key(&soonest));
+    assert!(cache.contains_key(&Uuid::from_u128(MAX_NAME_CACHE as u128)));
+}
+
+#[tokio::test]
+async fn a_lookup_of_a_tried_entry_reads_the_cache() {
+    let id = Uuid::from_u128(16);
+    let fake = Arc::new(Fake::with_account(id, "Chat", "Bot"));
+    let region = RegionNames::start(fake.clone());
+    region.cache_found(id, UserName::new("Cached", "Name"));
+    assert_eq!(
+        region.shared.get_user(id).await,
+        Some(UserName::new("Cached", "Name"))
+    );
+    assert_eq!(fake.calls("account"), 0);
+}

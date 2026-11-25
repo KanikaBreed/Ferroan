@@ -733,7 +733,7 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
         ));
     }
     Ok(
-        "avatars: pass (each bot saw the other's local id and appearance and got its name; the unknown id got no reply; KillObject on leave)"
+        "avatars: pass (each bot saw the other's local id and appearance and got its name; the unknown id was answered only from the cached miss; KillObject on leave)"
             .to_string(),
     )
 }
@@ -753,9 +753,11 @@ fn name_request(ids: &[Uuid]) -> UUIDNameRequest {
 
 /// Each bot asks for the other's name and for [`UNKNOWN_NAME_ID`], in one
 /// `UUIDNameRequest`. Each must get one `UUIDNameReply` with the other's
-/// account names, and none for the unknown id within a second after that.
-/// Then the owner asks for the unknown id again: `GetUser` cached the miss,
-/// and the cache answers it as `Unknown` and the id.
+/// account names. The first request for the unknown id to be looked up gets
+/// no reply; the other bot's may come after that miss is cached and then
+/// gets `Unknown` and the id (TB89), so at most one of the two is answered,
+/// only that way. Then the owner asks for the unknown id again and must get
+/// `Unknown` and the id from the cached miss.
 async fn exchange_names(
     harness: &Harness,
     owner: (&mut Session, &mut OtherAvatar),
@@ -779,14 +781,7 @@ async fn exchange_names(
         chat.drive(STEP).await.map_err(|error| error.to_string())?;
         owner_saw.note(owner, chat_id)?;
         chat_saw.note(chat, owner_id)?;
-        for (saw, name) in [
-            (&*owner_saw, UNKNOWN_NAME_ID),
-            (&*chat_saw, UNKNOWN_NAME_ID),
-        ] {
-            if !saw.named(name).is_empty() {
-                return Err("the region answered UUIDNameRequest for an unknown id".into());
-            }
-        }
+        unknown_answers(owner_saw, chat_saw, 1)?;
         let both = !owner_saw.named(chat_id).is_empty() && !chat_saw.named(owner_id).is_empty();
         match settle_until {
             None if both => {
@@ -814,22 +809,39 @@ async fn exchange_names(
             ));
         }
     }
+    let before = owner_saw.named(UNKNOWN_NAME_ID).len();
     owner
         .send(&name_request(&[UNKNOWN_NAME_ID]), true)
         .await
         .map_err(|error| error.to_string())?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while owner_saw.named(UNKNOWN_NAME_ID).is_empty() && std::time::Instant::now() < deadline {
+    while owner_saw.named(UNKNOWN_NAME_ID).len() == before && std::time::Instant::now() < deadline {
         owner.drive(STEP).await.map_err(|error| error.to_string())?;
         chat.drive(STEP).await.map_err(|error| error.to_string())?;
         owner_saw.note(owner, chat_id)?;
         chat_saw.note(chat, owner_id)?;
     }
-    let want = vec![("Unknown".to_string(), UNKNOWN_NAME_ID.to_string())];
-    if owner_saw.named(UNKNOWN_NAME_ID) != want {
+    if owner_saw.named(UNKNOWN_NAME_ID).len() != before + 1 {
         return Err(format!(
-            "the second request for the unknown id got {:?}, not {want:?} from the cached miss",
+            "the second request for the unknown id got {:?}, not Unknown and the id from the cached miss",
             owner_saw.named(UNKNOWN_NAME_ID)
+        ));
+    }
+    unknown_answers(owner_saw, chat_saw, 2)
+}
+
+/// Every reply for [`UNKNOWN_NAME_ID`] is `Unknown` and the id, and the two
+/// bots got at most `most` of them.
+fn unknown_answers(owner: &OtherAvatar, chat: &OtherAvatar, most: usize) -> Result<(), String> {
+    let want = ("Unknown".to_string(), UNKNOWN_NAME_ID.to_string());
+    let answers: Vec<_> = owner
+        .named(UNKNOWN_NAME_ID)
+        .into_iter()
+        .chain(chat.named(UNKNOWN_NAME_ID))
+        .collect();
+    if answers.len() > most || answers.iter().any(|answer| *answer != want) {
+        return Err(format!(
+            "the region answered the unknown id {answers:?}; at most {most} reply, each Unknown and the id"
         ));
     }
     Ok(())
