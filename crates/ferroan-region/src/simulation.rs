@@ -100,7 +100,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use ferroan_client::{CapsError, CapsRegistry, CircuitExpect, ROOT_WAIT, ReturnPose, ReturnSlot};
+use ferroan_client::{
+    CapsError, CapsRegistry, CircuitExpect, CircuitStop, ROOT_WAIT, ReturnPose, ReturnSlot,
+};
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
@@ -182,7 +184,9 @@ struct ActiveSession {
     child: bool,
     /// Set when a far hop closes the agent here. Logout must not tell the grid.
     departed: Arc<AtomicBool>,
-    cancel: Option<oneshot::Sender<()>>,
+    /// Set when this generation is removed while it is still the root.
+    rooted_when_replaced: Arc<AtomicBool>,
+    cancel: Option<oneshot::Sender<CircuitStop>>,
     /// Taken by a failed root-replacement verify. Dropping `AcceptedAgent`
     /// completes it after logout notification.
     logout_done: Option<oneshot::Receiver<()>>,
@@ -213,7 +217,7 @@ pub struct AcceptedAgent {
     pub appearance: Option<Appearance>,
     /// Same gate the session stores. The circuit waits on it for a return.
     pub return_slot: ReturnSlot,
-    cancelled: oneshot::Receiver<()>,
+    cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
 }
 
@@ -232,9 +236,13 @@ impl AcceptedAgent {
     }
 
     /// This root was replaced by a login that holds a different Presence session.
-    /// The old session is logged out. A same-session replay, a far hop and a
-    /// demotion are not this case.
+    /// The old session is logged out only when this generation was still the
+    /// root. A demoted child, a departed agent, a same-session replay and a
+    /// far hop are not this case.
     pub fn replaced_by_other_session(&self) -> bool {
+        if !self._lease.rooted_when_replaced.load(Ordering::Acquire) {
+            return false;
+        }
         self._lease
             .sessions
             .lock()
@@ -258,10 +266,11 @@ impl AcceptedAgent {
                     || session.session_id != self.expect.session_id
             })
     }
-    /// Completes when a new login replaces this circuit. The dispatcher must
-    /// drop the old UDP-serving future before starting the replacement.
-    pub async fn replaced(&mut self) {
-        let _ = (&mut self.cancelled).await;
+    /// Completes when a new login or CloseAgent stops this circuit. The
+    /// dispatcher must drop the old UDP-serving future before starting a
+    /// replacement. A dropped sender is a disable, matching the old close.
+    pub async fn replaced(&mut self) -> CircuitStop {
+        (&mut self.cancelled).await.unwrap_or(CircuitStop::Disable)
     }
 
     /// The circuit report is in hand and this generation is still the active one.
@@ -323,6 +332,7 @@ struct SessionLease {
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     meters: Arc<RegionMeters>,
     departed: Arc<AtomicBool>,
+    rooted_when_replaced: Arc<AtomicBool>,
     open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
 }
 
@@ -532,8 +542,11 @@ impl SimulationState {
             .try_reserve()
             .map_err(|_| "Region is not accepting logins")?;
         if let Some(mut previous) = sessions.remove(&fields.agent_id) {
+            if previous.root && !previous.departed.load(Ordering::Acquire) {
+                previous.rooted_when_replaced.store(true, Ordering::Release);
+            }
             if let Some(cancel) = previous.cancel.take() {
-                let _ = cancel.send(());
+                let _ = cancel.send(CircuitStop::Disable);
             }
             self.caps.clear_agent(fields.agent_id);
         }
@@ -558,6 +571,7 @@ impl SimulationState {
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = oneshot::channel();
         let slot = ReturnSlot::new(fields.child);
+        let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
             fields.agent_id,
             ActiveSession {
@@ -566,6 +580,7 @@ impl SimulationState {
                 root: false,
                 child: fields.child,
                 departed: Arc::clone(&departed),
+                rooted_when_replaced: Arc::clone(&rooted_when_replaced),
                 cancel: Some(cancel),
                 logout_done: Some(logout_wait),
                 slot: slot.clone(),
@@ -581,6 +596,7 @@ impl SimulationState {
             lifecycle: self.lifecycle.clone(),
             meters: self.meters.clone(),
             departed,
+            rooted_when_replaced,
             open_children: self.open_children.clone(),
         };
         let accepted = AcceptedAgent {
@@ -636,7 +652,7 @@ impl SimulationState {
             return None;
         }
         if let Some(cancel) = session.cancel.take() {
-            let _ = cancel.send(());
+            let _ = cancel.send(CircuitStop::Disable);
         }
         session.logout_done.take()
     }
@@ -829,7 +845,7 @@ impl SimulationState {
             return;
         }
         if let Some(cancel) = session.cancel.take() {
-            let _ = cancel.send(());
+            let _ = cancel.send(CircuitStop::Quiet);
         }
     }
 
@@ -854,6 +870,9 @@ async fn handle(
         return bare(StatusCode::NOT_FOUND);
     };
     let region = path.get(2).and_then(|s| Uuid::parse_str(s).ok());
+    if method == "DELETE" && (agent.is_nil() || region.is_none_or(|id| id.is_nil())) {
+        return bare(StatusCode::BAD_REQUEST);
+    }
     if method == "DELETE" && path.get(3).copied() == Some("release") {
         if region == Some(state.region_id) {
             state.note_release(agent);
@@ -3243,11 +3262,94 @@ mod tests {
         assert!(accepted.still_root());
         let closed = delete_agent(&state, peer, agent, region, &session.to_string()).await;
         assert_eq!(closed, format!("OpenSim agent {agent}"));
-        tokio::time::timeout(Duration::from_secs(1), accepted.replaced())
+        let kind = tokio::time::timeout(Duration::from_secs(1), accepted.replaced())
             .await
             .unwrap();
+        assert_eq!(kind, CircuitStop::Quiet);
         assert!(accepted.is_current());
         assert!(accepted.still_root());
+    }
+
+    #[tokio::test]
+    async fn a_nil_agent_or_region_delete_answers_false() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let state = SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let agent = Uuid::from_u128(1);
+        let peer = "127.0.0.1:9".parse().unwrap();
+        for uri in [
+            format!("/agent/{}/", Uuid::nil()),
+            format!("/agent/{agent}/"),
+            format!("/agent/{agent}/{}/", Uuid::nil()),
+            format!("/agent/{}/{region}/", Uuid::nil()),
+        ] {
+            let request = Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+            assert_eq!(body.as_ref(), b"false");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_demoted_or_departed_generation_is_not_a_replaced_root() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        let login = synthetic_agent();
+        state.accept(login.clone()).unwrap();
+        let mut rooted = receiver.recv().await.unwrap();
+        rooted.mark_root();
+        let mut other = login.clone();
+        other.session_id = Uuid::from_u128(70);
+        other.secure_session_id = Uuid::from_u128(71);
+        other.circuit_code = 70;
+        other.caps_path = Uuid::from_u128(72).to_string();
+        state.accept(other.clone()).unwrap();
+        assert!(rooted.replaced_by_other_session());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rooted.replaced())
+                .await
+                .unwrap(),
+            CircuitStop::Disable
+        );
+        drop(rooted);
+        drop(receiver.recv().await.unwrap());
+
+        state.accept(login.clone()).unwrap();
+        let demoted = receiver.recv().await.unwrap();
+        demoted.mark_root();
+        state.demote_child(login.agent_id);
+        let mut next = other.clone();
+        next.session_id = Uuid::from_u128(73);
+        next.secure_session_id = Uuid::from_u128(74);
+        next.circuit_code = 73;
+        next.caps_path = Uuid::from_u128(75).to_string();
+        state.accept(next).unwrap();
+        assert!(!demoted.replaced_by_other_session());
+        drop(demoted);
+        drop(receiver.recv().await.unwrap());
+
+        state.accept(login.clone()).unwrap();
+        let departed = receiver.recv().await.unwrap();
+        departed.mark_root();
+        state.close_departed(login.agent_id);
+        let mut after = other;
+        after.session_id = Uuid::from_u128(76);
+        after.secure_session_id = Uuid::from_u128(77);
+        after.circuit_code = 76;
+        after.caps_path = Uuid::from_u128(78).to_string();
+        state.accept(after).unwrap();
+        assert!(!departed.replaced_by_other_session());
     }
 
     #[tokio::test]

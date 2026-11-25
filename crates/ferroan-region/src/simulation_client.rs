@@ -1224,8 +1224,13 @@ pub(crate) fn appearance_from_json(value: &Value) -> Appearance {
         aphz: json_f32(value.get("aphz")),
         has_texture: value.get("te8").is_some()
             || value.get("textures").is_some()
-            || value.get("wearables").is_some(),
-        wearables: wearables_from(value.get("wearables")),
+            || value.get("wearables").is_some()
+            || value.get("wrbls8").is_some(),
+        wearables: {
+            let mut slots = wearables_from(value.get("wearables"));
+            slots.extend(wearables_from(value.get("wrbls8")));
+            slots
+        },
         te8: byte_list(value.get("te8")),
         textures: uuid_values(value.get("textures")),
         baked: baked_from(value.get("bakedcache"))
@@ -1307,6 +1312,7 @@ mod tests {
     use super::*;
     use ferroan_capture::{Kind, read_complete_prefix};
     use flate2::read::GzDecoder;
+    use serde_json::json;
     use std::io::Read;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1349,6 +1355,33 @@ mod tests {
         assert_eq!(created["teleport_flags"], "16");
         assert_eq!(format_vec3([-0.0, 1.0, 0.0]), "<-0, 1, 0>");
         assert_eq!(real_json(255.0).to_string(), "255.0");
+    }
+
+    #[test]
+    fn appearance_appends_the_seventeenth_wearable_slot() {
+        let mut wearables = Vec::new();
+        for slot in 0..16 {
+            wearables.push(json!([{
+                "item": Uuid::from_u128(slot + 1).to_string(),
+                "asset": Uuid::from_u128(slot + 100).to_string(),
+            }]));
+        }
+        let value = json!({
+            "serial": 3,
+            "height": 1.8,
+            "wearables": wearables,
+            "wrbls8": [[{
+                "item": Uuid::from_u128(17).to_string(),
+                "asset": Uuid::from_u128(117).to_string(),
+            }]],
+            "te8": [1, 2, 3, 4],
+        });
+        let appearance = appearance_from_json(&value);
+        assert_eq!(appearance.wearables.len(), 17);
+        assert_eq!(appearance.wearables[16][0].item, Uuid::from_u128(17));
+        assert_eq!(appearance.wearables[16][0].asset, Uuid::from_u128(117));
+        assert_eq!(appearance.wearables[0][0].item, Uuid::from_u128(1));
+        assert!(appearance.has_texture);
     }
 
     #[test]

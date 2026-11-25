@@ -286,6 +286,8 @@ pub enum CircuitStop {
     Disable,
     /// `Scene.Close`: reliable `KickUser`, then `DisableSimulator`.
     Shutdown,
+    /// `CloseAgent(id, false, token)`: `Close(false, false)` sends no packet.
+    Quiet,
 }
 
 type PendingUseCircuit = Mutex<Option<(SocketAddr, Vec<u8>)>>;
@@ -759,10 +761,16 @@ impl State {
         kind: CircuitStop,
     ) -> Result<(), CircuitError> {
         if let Some(peer) = self.peer {
-            if kind == CircuitStop::Shutdown {
-                self.send_kick(sock, peer, expect).await?;
+            match kind {
+                CircuitStop::Shutdown => {
+                    self.send_kick(sock, peer, expect).await?;
+                    self.send_disable(sock, peer).await?;
+                }
+                CircuitStop::Disable => {
+                    self.send_disable(sock, peer).await?;
+                }
+                CircuitStop::Quiet => {}
             }
-            self.send_disable(sock, peer).await?;
         }
         Err(CircuitError::Closed)
     }

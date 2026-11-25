@@ -823,10 +823,17 @@ async fn serve_agent(
                         break;
                     }
                 }
-                _ = agent.replaced() => {
-                    tracing::info!("ferroan-region: circuit replaced by a new login");
+                kind = agent.replaced() => {
+                    match kind {
+                        CircuitStop::Quiet => {
+                            tracing::info!("ferroan-region: CloseAgent closed the circuit")
+                        }
+                        CircuitStop::Disable | CircuitStop::Shutdown => {
+                            tracing::info!("ferroan-region: circuit replaced by a new login")
+                        }
+                    }
                     if let Some(tx) = close_tx.take() {
-                        let _ = tx.send(CircuitStop::Disable);
+                        let _ = tx.send(kind);
                     }
                     match (&mut serving).await {
                         Ok(()) => tracing::info!("ferroan-region: LogoutReply sent"),
@@ -947,7 +954,8 @@ async fn serve_agent(
     let logout_position = *landed.lock().unwrap_or_else(|poison| poison.into_inner());
     // A far hop, a demoted child and a child that never rooted leave Presence
     // where it is. Failed login is a ViaLogin session that never rooted. A
-    // root replaced by another Presence session still logs that session out.
+    // root that was still root when another Presence session replaced it
+    // still logs that session out. A demoted or departed generation does not.
     settle(
         &grid_user,
         &presence,
@@ -972,6 +980,8 @@ async fn settle(
     let guard = agent.lock_lifecycle().await;
     let failed_login = !became_root && agent.via_login && !config.login_connect_wait.is_zero();
     // The replacement is the current generation, so this does not mark it offline.
+    // `became_root` stays set after a demotion. The session flag is the root
+    // bit at the moment this generation was removed.
     let replaced = became_root && agent.replaced_by_other_session();
     let result = if became_root && agent.still_root() {
         notify_logout(grid_user, presence, config, &agent, position).await
@@ -2083,6 +2093,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_demoted_child_replaced_by_another_session_does_not_log_presence_out() {
+        let mut harness = Harness::new(false, false).await;
+        let expect = harness.admit(false, false).await;
+        let socket = open(&harness, expect).await;
+        movement(&socket, expect, 2).await;
+        wait_arrival(&socket).await;
+        harness.state.demote_child(expect.agent_id);
+        harness.admit(true, false).await;
+        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            assert_eq!(harness.count("logout"), 0);
+            assert_eq!(harness.count("loggedout"), 0);
+            tokio::task::yield_now().await;
+        }
+        harness.finish().await.unwrap();
+        let old = Field::Str(expect.session_id.to_string());
+        let logged_old = harness.requests.lock().unwrap().iter().any(|fields| {
+            fields.get("METHOD") == Some(&Field::Str("logout".into()))
+                && fields.get("SessionID") == Some(&old)
+        });
+        assert!(!logged_old);
+    }
+
+    #[tokio::test]
     async fn close_agent_of_a_root_still_logs_presence_out() {
         let mut harness = Harness::new(false, false).await;
         let expect = harness.admit(false, false).await;
@@ -2122,6 +2156,20 @@ mod tests {
         .await
         .expect("CloseAgent did not log the root out");
         assert_eq!(harness.count("loggedout"), 1);
+        let mut saw_disable = false;
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(40), socket.recv(&mut buf)).await {
+                Ok(Ok(len)) => {
+                    if parse_packet(&buf[..len]).unwrap().id == DisableSimulator::ID {
+                        saw_disable = true;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(!saw_disable, "CloseAgent must not send DisableSimulator");
         harness.finish().await.unwrap();
     }
 

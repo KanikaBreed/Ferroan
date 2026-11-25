@@ -338,6 +338,63 @@ mod tests {
     }
 
     #[test]
+    fn teleport_finish_event_matches_the_captured_event() {
+        let bytes = include_bytes!("../../../fixtures/neighbour-teleport/proxy-home.cap");
+        let records = ferroan_capture::read_complete_prefix(bytes).unwrap();
+        let mut captured = None;
+        for record in records {
+            if record.kind != ferroan_capture::Kind::HttpResponse {
+                continue;
+            }
+            let Some(body) = http_body(&record.bytes) else {
+                continue;
+            };
+            if !body.windows(14).any(|part| part == b"TeleportFinish") {
+                continue;
+            }
+            let value = ferroan_llsd::from_xml(body).unwrap();
+            for event in value.get("events").as_array() {
+                if event.get("message").as_str() == "TeleportFinish" {
+                    captured = Some(event.clone());
+                }
+            }
+        }
+        let captured = captured.expect("proxy-home.cap TeleportFinish");
+        let info = captured.get("body").get("Info").at(0);
+        let octets: [u8; 4] = info.get("SimIP").as_binary().try_into().unwrap();
+        let built = teleport_finish_event(&FinishEvent {
+            agent: info.get("AgentID").as_uuid(),
+            handle: info.get("RegionHandle").as_u64(),
+            endpoint: Ipv4Addr::from(octets),
+            port: u16::try_from(info.get("SimPort").as_i32()).unwrap(),
+            flags: info.get("TeleportFlags").as_u32(),
+            seed: info.get("SeedCapability").as_str().to_owned(),
+            size_x: info.get("RegionSizeX").as_u32(),
+            size_y: info.get("RegionSizeY").as_u32(),
+        });
+        assert_eq!(built, captured);
+        let built_info = built.get("body").get("Info").at(0);
+        let keys = |value: &Llsd| value.as_map().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&built), keys(&captured));
+        assert_eq!(keys(built_info), keys(info));
+    }
+
+    fn http_body(bytes: &[u8]) -> Option<&[u8]> {
+        let split = bytes.windows(4).position(|part| part == b"\r\n\r\n")?;
+        let head = &bytes[..split];
+        let body = &bytes[split + 4..];
+        let length = head.split(|&byte| byte == b'\n').find_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let rest = line.strip_prefix(b"Content-Length:")?;
+            std::str::from_utf8(rest).ok()?.trim().parse::<usize>().ok()
+        });
+        match length {
+            Some(length) if length <= body.len() => Some(&body[..length]),
+            _ => Some(body),
+        }
+    }
+
+    #[test]
     fn an_offline_map_block_has_one_down_tile_and_a_zero_size_count() {
         let agent = Uuid::from_u128(3);
         let handle = (256_u64 << 32) | 512;

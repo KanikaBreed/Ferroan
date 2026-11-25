@@ -734,18 +734,24 @@ fn child_circuit(
     }
 }
 
-/// Horizontal look, normalised. A zero look keeps the forward axis and sets
-/// the up axis. The pinned server writes that up vector into the at axis (TB77).
+/// Horizontal look, normalised the way OpenMetaverse normalises a vector.
+/// A length squared at or below 1e-6, or a non-finite component, is a zero
+/// look: unit X, unit Y and unit Z. The division is skipped, so a tiny look
+/// cannot underflow to infinity. The pinned server stores unit Z as the at
+/// axis and keeps the up axis `CopyTo` already stored (TB79, D64).
 fn look_axes(look_at: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let up = [0.0, 0.0, 1.0];
-    if !look_at[0].is_finite()
-        || !look_at[1].is_finite()
-        || (look_at[0] == 0.0 && look_at[1] == 0.0)
-    {
-        // Left is (-at.Y, at.X, 0). at.Y is +0, so the wire form is `<-0, 1, 0>`.
-        return ([1.0, 0.0, 0.0], [-0.0, 1.0, 0.0], up);
+    let zero = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], up);
+    if !look_at[0].is_finite() || !look_at[1].is_finite() {
+        return zero;
     }
-    let length = (look_at[0] * look_at[0] + look_at[1] * look_at[1]).sqrt();
+    let length_squared = look_at[0] * look_at[0] + look_at[1] * look_at[1];
+    // OpenMetaverse `Normalize` treats a length squared that is not above 1e-6
+    // as the zero vector and does not divide.
+    if length_squared <= 1.0e-6 {
+        return zero;
+    }
+    let length = length_squared.sqrt();
     let at = [look_at[0] / length, look_at[1] / length, 0.0];
     (at, [-at[1], at[0], 0.0], up)
 }
@@ -847,9 +853,18 @@ mod tests {
         let (at, left, up) = super::look_axes([0.0, 0.0, 1.0]);
         assert_eq!(at, [1.0, 0.0, 0.0]);
         assert_ne!(at, [0.0, 0.0, 1.0]);
-        assert!(left[0].is_sign_negative());
-        assert_eq!(left, [-0.0, 1.0, 0.0]);
+        assert!(!left[0].is_sign_negative());
+        assert_eq!(left, [0.0, 1.0, 0.0]);
         assert_eq!(up, [0.0, 0.0, 1.0]);
+        let (at, left, up) = super::look_axes([1.0e-4, 0.0, 0.0]);
+        assert_eq!(
+            (at, left, up),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+        );
+        let (at, left, up) = super::look_axes([0.002, 0.0, 0.0]);
+        assert_eq!(at, [1.0, 0.0, 0.0]);
+        assert!(left[0].is_finite() && left[1].is_finite() && up[2].is_finite());
+        assert!(!at[0].is_nan() && !left.iter().any(|part| part.is_nan()));
         let (at, _, up) = super::look_axes([f32::NAN, 1.0, 0.0]);
         assert_eq!(at, [1.0, 0.0, 0.0]);
         assert_eq!(up, [0.0, 0.0, 1.0]);

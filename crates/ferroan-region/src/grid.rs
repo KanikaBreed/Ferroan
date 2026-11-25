@@ -47,10 +47,18 @@
 //! Transport has a 30 second deadline and ferroan-http's bounded XML reader.
 //! No retries: startup fails when registration is refused or unconfirmed.
 
+use std::future::Future;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
+use ferroan_diag::{Kind, NEIGHBOUR_DNS};
 use ferroan_http::{Field, FieldMap};
 use uuid::Uuid;
+
+/// A neighbour name is looked up for at most this long. `Dns.GetHostEntry` waits
+/// without a timeout. `Util.getEndPoint` keeps a result for 300 seconds.
+const NEIGHBOUR_DNS_WAIT: Duration = Duration::from_secs(2);
 
 use crate::config::RegionConfig;
 
@@ -398,32 +406,62 @@ impl GridClient {
 
 /// A literal address is used as written. A name is looked up for at most two
 /// seconds, and an IPv4 answer wins. An empty name is not looked up.
+/// `0.0.0.0` is not an endpoint. A timed-out lookup is `region.neighbour-dns`.
 async fn endpoint_for(host: &str, port: u16) -> SocketAddr {
+    let owned = host.to_owned();
+    bounded_endpoint(host, port, async move {
+        let addrs = tokio::net::lookup_host((owned.as_str(), port)).await?;
+        Ok(addrs.collect())
+    })
+    .await
+}
+
+fn unspecified(port: u16) -> SocketAddr {
+    SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))
+}
+
+async fn bounded_endpoint(
+    host: &str,
+    port: u16,
+    lookup: impl Future<Output = io::Result<Vec<SocketAddr>>>,
+) -> SocketAddr {
     if host.is_empty() {
-        return SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+        return unspecified(port);
     }
     if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        if ip.is_unspecified() {
+            tracing::warn!("neighbour address {host} is not usable");
+            return unspecified(port);
+        }
         return SocketAddr::from((ip, port));
     }
     if let Ok(ip) = host.parse::<Ipv6Addr>() {
         return SocketAddr::from((ip, port));
     }
-    let lookup = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::net::lookup_host((host, port)),
-    )
-    .await;
-    let Ok(Ok(addrs)) = lookup else {
-        return SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+    let addrs = match tokio::time::timeout(NEIGHBOUR_DNS_WAIT, lookup).await {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(error)) => {
+            tracing::warn!("neighbour DNS failed for {host}: {error}");
+            return unspecified(port);
+        }
+        Err(_elapsed) => {
+            let waited = u64::try_from(NEIGHBOUR_DNS_WAIT.as_millis()).unwrap_or(u64::MAX);
+            ferroan_diag::refuse(NEIGHBOUR_DNS, Kind::Hard, waited, waited, "neighbour");
+            tracing::warn!("neighbour DNS timed out for {host}");
+            return unspecified(port);
+        }
     };
-    let addrs: Vec<SocketAddr> = addrs.collect();
+    if addrs.is_empty() {
+        tracing::warn!("neighbour DNS failed for {host}: no address");
+        return unspecified(port);
+    }
     if let Some(address) = addrs.iter().find(|address| address.is_ipv4()) {
         return *address;
     }
     addrs
         .into_iter()
         .next()
-        .unwrap_or_else(|| SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))
+        .unwrap_or_else(|| unspecified(port))
 }
 
 fn located_host(map: &FieldMap) -> Option<String> {
@@ -1433,6 +1471,31 @@ mod tests {
             endpoint_for("ferroan.invalid", 9100).await,
             SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
         );
+        assert_eq!(
+            endpoint_for("0.0.0.0", 9100).await,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_neighbour_dns_timeout_is_refused() {
+        let before = neighbour_dns_refusals();
+        let address = bounded_endpoint(
+            "stuck.example",
+            9100,
+            std::future::pending::<std::io::Result<Vec<SocketAddr>>>(),
+        )
+        .await;
+        assert_eq!(address, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 9100)));
+        assert!(neighbour_dns_refusals() > before);
+    }
+
+    fn neighbour_dns_refusals() -> u64 {
+        let prefix = "ferroan_limit_hits_total{limit=\"region.neighbour-dns\",action=\"refuse\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix)?.parse().ok())
+            .unwrap_or(0)
     }
 
     #[tokio::test]
