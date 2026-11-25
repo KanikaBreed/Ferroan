@@ -52,9 +52,11 @@ The current pin is `1.100.0`. On 19 November 2026, with `channel` still `stable`
 
 `cargo xtask griduser service` builds the same oracle and runs one `POST /griduser` sequence on a new SQLite file: `loggedin`, `loggedout`, `loggedoutregion`, `sethome`, `setposition`, `getgriduserinfo`, `getgriduserinfos`, and the two console commands. The committed bytes are [fixtures/griduser/service.json](../fixtures/griduser/service.json). `ferroan-services` replays that file on every platform. Login and logout in the XML are dates; the replay folds the process-culture spelling and the invariant spelling to the same token (D37). Console text stays the stored integers. The command does not run in CI and does not start a server or the live harness. `live compare` is Q26f.
 
-## Avatar stores
+## Avatar service and stores
 
 `cargo xtask avatar cross` builds [tools/avatar-oracle](../tools/avatar-oracle/README.md) and calls the pinned `SQLiteAvatarData`, `MySQLAvatarData` and `PGSQLAvatarData`. Rust and C# read each other's rows on SQLite, MySQL and PostgreSQL. SQLite uses a copy of `fixtures/db/sqlite/Avatar.db`. MySQL and PostgreSQL use the schema-server containers. The Rust plugin tests run in ordinary CI when `FERROAN_MYSQL_URL` and `FERROAN_POSTGRES_URL` are set, and skip with a printed reason otherwise. The cross-read does not run in CI and does not start a server or the live harness. Get is by `PrincipalID`. Upsert is on `(PrincipalID, Name)`. Delete is by principal, and by principal and name. The store writes the value it is given. Height parsing and the preserve-and-replace rules are the avatar service. PostgreSQL binds `PrincipalID` as `uuid`. `Name` and `Value` are not trimmed.
+
+`cargo xtask avatar service-generate` records 29 HTTP replies from Pin8's avatar handler and SQLite service. `cargo xtask avatar service-verify` checks them on a fresh database. Both commands start a loopback listener on the private Robust port and use the shared live lock on the development host. The Rust test `avatar_http_matches_pin8_server_replies` replays the sequence against Ferroan and compares the status, content type and exact XML bytes, including responses to refused writes. [Avatar HTTP fixture](../fixtures/avatar/service.json)
 
 ## Region store objects
 

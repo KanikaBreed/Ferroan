@@ -12,6 +12,8 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `http.asset-body` | 50,000,000 bytes | `crates/ferroan-services/src/asset/http.rs` | hard | no | `ServerUtils.cs` sets `XmlReaderSettings.MaxCharactersInDocument` to 50,000,000. |
 | `http.xml-chars` | 50,000,000 characters | `crates/ferroan-http/src/xml.rs`, asset parser | hard | no | Same `MaxCharactersInDocument`. The asset parser measures bytes. |
 | `http.xml-depth` | 64 | `crates/ferroan-http/src/xml.rs` | hard | no | Tranquillity's reader has no depth cap. |
+| `avatar.rows` | 4,096 stored rows per principal read | `crates/ferroan-services/src/avatar/store.rs` | hard | no | Pin8 reads all rows. A Ferroan service read above the bound returns Failure. Reset can still remove every row. |
+| `avatar.row-bytes` | 1 MiB of name and value bytes per principal read | `crates/ferroan-services/src/avatar/store.rs` | hard | no | Pin8 reads the full values. Ferroan leaves oversized cells in the database. The reported size for one oversized cell is a lower bound. Appearance cleanup reads only names. |
 | `http.query-bytes` | 1 MiB | `crates/ferroan-http/src/query.rs` | hard | no | Query strings are not capped. |
 | `http.fields` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | Query fields are not capped. |
 | `http.list-items` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | A `[]` list is not capped. |

@@ -11,3 +11,7 @@ cargo xtask avatar cross
 ```
 
 `get` returns `{rows:[{principal_id, name, value}]}`. `upsert` returns `{stored}`. `delete` and `delete-principal` return `{deleted}`. The store writes the value it is given. Height parsing and the preserve-and-replace rules are the avatar service.
+
+## Avatar service HTTP
+
+`cargo xtask avatar service-generate` writes [the HTTP fixture](../../fixtures/avatar/service.json). `cargo xtask avatar service-verify` checks it against a newly migrated SQLite database. Both start Pin8's HTTP server on loopback at the private Robust port for `FERROAN_LIVE_PORT_BASE`. On a shared development host run them under the live lock. Each case records the connector form, status, content type and response text decoded as strict UTF-8, retaining every byte including any BOM. When a case names a refused key, the database adapter returns false for that store only. Subsequent reads go through the real handler and SQLite plugin.

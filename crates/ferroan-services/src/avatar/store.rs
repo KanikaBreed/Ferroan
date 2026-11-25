@@ -52,6 +52,8 @@ use super::model::{AvatarRow, DEFAULT_REALM};
 pub enum StoreError {
     #[error("avatar table name is not an identifier")]
     Realm,
+    #[error("avatar rows exceed the service read limit")]
+    Limit,
     #[error("this avatar store is not {0}")]
     Backend(&'static str),
     #[error("avatar database: {0}")]
@@ -96,6 +98,90 @@ impl AvatarStore {
     pub async fn get(&self, principal_id: &str) -> Result<Vec<AvatarRow>, StoreError> {
         let sql = select_sql(self.backend(), &self.realm);
         self.fetch(&sql, principal_id).await
+    }
+
+    pub(super) fn pool_occupancy(&self) -> (u32, u32) {
+        self.pool.occupancy()
+    }
+
+    /// Read only bounded service data. The SQL projection keeps even one
+    /// oversized database cell out of the driver. Cleanup needs names only.
+    pub(super) async fn service_rows(
+        &self,
+        principal: &str,
+        names_only: bool,
+    ) -> Result<Vec<AvatarRow>, StoreError> {
+        use ferroan_http::{MAX_FIELDS, MAX_QUERY_BYTES};
+        use futures_util::TryStreamExt;
+        let backend = self.backend();
+        let name = qcol(backend, "Name");
+        let value = if names_only {
+            "''".to_owned()
+        } else {
+            qcol(backend, "Value")
+        };
+        let bytes = |col: &str| match backend {
+            Backend::Sqlite => format!("length(CAST({col} AS BLOB))"),
+            _ => format!("octet_length({col})"),
+        };
+        let length = format!(
+            "coalesce({},0) + coalesce({},0)",
+            bytes(&name),
+            bytes(&value)
+        );
+        let sql = format!(
+            "SELECT CASE WHEN {length} <= {MAX_QUERY_BYTES} THEN {name} END AS {name},
+                    CASE WHEN {length} <= {MAX_QUERY_BYTES} THEN {value} END AS {},
+                    CASE WHEN {length} > {MAX_QUERY_BYTES} THEN '1' ELSE '0' END AS oversize
+             FROM {} WHERE {} LIMIT {}",
+            qcol(backend, "Value"),
+            qtable(backend, &self.realm),
+            principal_eq(backend, 1),
+            MAX_FIELDS + 1
+        );
+        let mut result = Vec::new();
+        let mut total = 0usize;
+        macro_rules! collect_rows {
+            ($pool:expr) => {{
+                let mut stream = sqlx::query(&sql).bind(principal).fetch($pool);
+                while let Some(row) = stream.try_next().await? {
+                    if result.len() == MAX_FIELDS {
+                        ferroan_diag::refuse(
+                            ferroan_diag::AVATAR_ROWS,
+                            ferroan_diag::Kind::Hard,
+                            MAX_FIELDS as u64,
+                            (MAX_FIELDS + 1) as u64,
+                            "avatar",
+                        );
+                        return Err(StoreError::Limit);
+                    }
+                    let key = cell(&row, "Name")?;
+                    let val = cell(&row, "Value")?;
+                    total += key.len() + val.len();
+                    if cell(&row, "oversize")? == "1" || total > MAX_QUERY_BYTES {
+                        ferroan_diag::refuse(
+                            ferroan_diag::AVATAR_ROW_BYTES,
+                            ferroan_diag::Kind::Hard,
+                            MAX_QUERY_BYTES as u64,
+                            total.max(MAX_QUERY_BYTES + 1) as u64,
+                            "avatar",
+                        );
+                        return Err(StoreError::Limit);
+                    }
+                    result.push(AvatarRow {
+                        principal_id: principal.to_owned(),
+                        name: key,
+                        value: val,
+                    });
+                }
+            }};
+        }
+        match backend {
+            Backend::Sqlite => collect_rows!(self.sqlite()?),
+            Backend::Mysql => collect_rows!(self.mysql()?),
+            Backend::Postgres => collect_rows!(self.postgres()?),
+        }
+        Ok(result)
     }
 
     /// Insert or replace the row for `(principal_id, name)`.

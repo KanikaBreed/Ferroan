@@ -56,6 +56,7 @@ pub use model::{BATCH_SIZE, DATA_COLUMNS, DEFAULT_REALM, GridUser, ONLINE_TRUE};
 pub use open::GridUserError;
 pub use store::{GridUserStore, StoreError};
 pub use wire::format_f32;
+pub(crate) use wire::{FAILURE_XML, SUCCESS_XML};
 
 #[cfg(test)]
 mod service_tests;
