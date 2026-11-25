@@ -6,6 +6,9 @@ using OpenMetaverse;
 using OpenSim.Data;
 using OpenSim.Data.Null;
 
+if (args.Length == 3 && args[0] == "mysql")
+    return MysqlCross.Run(args[1], args[2]);
+
 if (args.Length != 4 || args[0] is not ("generate" or "verify") || args[2] != "--revision")
     return 2;
 

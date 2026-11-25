@@ -121,3 +121,5 @@ The parcel vector text parser in `crates/ferroan-scene/src/parcels/vector_text.r
 
 
 The Presence row and in-memory store in `crates/ferroan-services/src/presence` follow `Source/OpenSim.Data/IPresenceData.cs` and `Source/OpenSim.Data.Null/NullPresenceData.cs` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
+
+The MySQL Presence v4 store follows `Source/OpenSim.Data.MySQL/MySQLPresenceData.cs`, `MySQLGenericTableHandler.cs`, `MySQLFramework.cs` and `Resources/Presence.migrations` at the same Pin8 revision (BSD-3-Clause, copyright OpenSimulator contributors).

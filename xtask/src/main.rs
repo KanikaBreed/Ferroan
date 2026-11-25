@@ -30,6 +30,7 @@
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
+//! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
@@ -141,6 +142,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask throttle verify
        cargo xtask presence generate
        cargo xtask presence verify
+       cargo xtask presence cross mysql
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -266,6 +268,7 @@ fn main() -> ExitCode {
         ["http", "status-verify"] => http_oracle::status_verify(),
         ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
+        ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
