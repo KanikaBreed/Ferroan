@@ -46,6 +46,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::ObjectError;
+use crate::objects::ObjectStoreKind;
 
 const MIN_TERRAIN: f64 = -100.0;
 const MAX_TERRAIN: f64 = 4000.0;
@@ -120,13 +121,14 @@ pub enum SettingsSource {
 }
 
 /// Open the region store and load one region's settings. A missing SQLite file
-/// or a missing row is `Sqlite(None)`. A MySQL or PostgreSQL string is
+/// or a missing row is `Sqlite(None)`. A MySQL or PostgreSQL provider is
 /// `OtherDatabase` and is not opened. A SQLite store that cannot be read is an error.
 pub async fn open_region_settings(
     connection: &str,
     region: Uuid,
+    kind: ObjectStoreKind,
 ) -> Result<SettingsSource, ObjectError> {
-    if mysql_connection(connection) || postgres_connection(connection) {
+    if kind != ObjectStoreKind::Sqlite {
         return Ok(SettingsSource::OtherDatabase);
     }
     let path = ferroan_db::sqlite_filename(connection)
@@ -427,33 +429,10 @@ fn falsy(text: &str) -> bool {
     text.eq_ignore_ascii_case("false") || text == "0"
 }
 
-fn mysql_connection(connection: &str) -> bool {
-    let lower = connection.trim().to_ascii_lowercase();
-    if lower.starts_with("mysql:") {
-        return true;
-    }
-    if lower.contains("version=3") || lower.contains("uri=file:") || lower.contains("ssl mode=") {
-        return false;
-    }
-    lower.contains("server=") && lower.contains("database=")
-}
-
-fn postgres_connection(connection: &str) -> bool {
-    let lower = connection.trim().to_ascii_lowercase();
-    if lower.starts_with("postgres:") || lower.starts_with("postgresql:") {
-        return true;
-    }
-    if mysql_connection(connection) {
-        return false;
-    }
-    let host = lower.contains("host=") || lower.contains("server=");
-    let database = lower.contains("database=") || lower.contains("db=");
-    host && database
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::objects::ObjectStoreKind;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
 
@@ -495,7 +474,11 @@ mod tests {
         assert_eq!(dump["region"], REGION);
         let (dir, connection) = copied_store();
         let region = Uuid::parse_str(REGION).unwrap();
-        let settings = loaded(open_region_settings(&connection, region).await.unwrap());
+        let settings = loaded(
+            open_region_settings(&connection, region, ObjectStoreKind::Sqlite)
+                .await
+                .unwrap(),
+        );
         assert_eq!(settings.region_id, region);
         assert_eq!(
             settings.allow_damage,
@@ -642,7 +625,7 @@ mod tests {
             assert_eq!(point.distance, dumped["distance"].as_f64().unwrap() as f32);
         }
         assert!(matches!(
-            open_region_settings(&connection, Uuid::nil())
+            open_region_settings(&connection, Uuid::nil(), ObjectStoreKind::Sqlite)
                 .await
                 .unwrap(),
             SettingsSource::Sqlite(None)
@@ -663,9 +646,13 @@ mod tests {
             .unwrap();
         pool.close().await;
         let settings = loaded(
-            open_region_settings(&connection, Uuid::parse_str(REGION).unwrap())
-                .await
-                .unwrap(),
+            open_region_settings(
+                &connection,
+                Uuid::parse_str(REGION).unwrap(),
+                ObjectStoreKind::Sqlite,
+            )
+            .await
+            .unwrap(),
         );
         assert!(settings.covenant.is_nil());
         assert_eq!(settings.water_height, 42.5);
@@ -685,21 +672,29 @@ mod tests {
         ));
         let connection = format!("Data Source={};Version=3", path.display());
         assert!(matches!(
-            open_region_settings(&connection, Uuid::from_u128(1))
+            open_region_settings(&connection, Uuid::from_u128(1), ObjectStoreKind::Sqlite)
                 .await
                 .unwrap(),
             SettingsSource::Sqlite(None)
         ));
         assert!(matches!(
-            open_region_settings("Server=127.0.0.1;Database=ferroan;", Uuid::nil())
-                .await
-                .unwrap(),
+            open_region_settings(
+                "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused",
+                Uuid::nil(),
+                ObjectStoreKind::Mysql,
+            )
+            .await
+            .unwrap(),
             SettingsSource::OtherDatabase
         ));
         assert!(matches!(
-            open_region_settings("Host=127.0.0.1;Database=ferroan;", Uuid::nil())
-                .await
-                .unwrap(),
+            open_region_settings(
+                "Host=127.0.0.1;Database=ferroan;",
+                Uuid::nil(),
+                ObjectStoreKind::Postgres,
+            )
+            .await
+            .unwrap(),
             SettingsSource::OtherDatabase
         ));
     }

@@ -1059,6 +1059,8 @@ fn blank_part() -> ObjectPart {
         linkset: None,
         items: Vec::new(),
         inventory_serial: None,
+        allow_unsit: true,
+        scripted_sit_only: false,
     }
 }
 

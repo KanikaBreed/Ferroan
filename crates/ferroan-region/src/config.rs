@@ -133,12 +133,16 @@ pub struct RegionConfig {
     /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
     pub logs: ferroan_log::Settings,
     /// `[DatabaseService] ConnectionString` when it is present and not empty.
-    /// Absent, or a SQLite file that is not on disk, means no saved heightmap.
+    /// Absent means no saved heightmap. [`Self::terrain_kind`] says whether the
+    /// string is SQLite. MySQL and PostgreSQL have no saved heightmap yet.
     pub terrain_store: Option<String>,
+    /// Driver for [`Self::terrain_store`], from `[DatabaseService]` only.
+    /// `[SimulationDataStore]` does not change this.
+    pub terrain_kind: Option<ferroan_scene::ObjectStoreKind>,
     /// Region store for prims. `[SimulationDataStore]` replaces
-    /// `[DatabaseService]` when its key is present. A SQLite or MySQL provider
-    /// is kept. A null provider and a PostgreSQL provider leave this empty.
-    pub object_store: Option<String>,
+    /// `[DatabaseService]` when its key is present. SQLite, MySQL and
+    /// PostgreSQL providers are kept. A null provider leaves this empty.
+    pub object_store: Option<ObjectStore>,
     /// `[ClientStack.LindenUDP] CaptureFile`. Empty leaves datagram capture off.
     pub udp_capture: Option<PathBuf>,
     /// `[InterestManagement] UpdatePrioritizationScheme` when that key is set.
@@ -391,6 +395,7 @@ impl RegionConfig {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
+            terrain_kind: database_service_kind(server),
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -849,9 +854,16 @@ fn nonempty<'a>(config: &'a Config, section: &str, key: &str) -> Option<&'a str>
         .filter(|text| !text.is_empty())
 }
 
+/// Connection and driver for the region object store. The driver is `StorageProvider`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectStore {
+    pub connection: String,
+    pub kind: ferroan_scene::ObjectStoreKind,
+}
+
 /// `[SimulationDataStore]` replaces `[DatabaseService]` for a key that is present.
 /// A SQLite provider, a MySQL provider, a PostgreSQL provider, or a SQLite connection with no provider, is the object store.
-fn object_store(config: &Config) -> Option<String> {
+fn object_store(config: &Config) -> Option<ObjectStore> {
     let mut provider = nonempty(config, "DatabaseService", "StorageProvider").map(str::to_owned);
     let mut connection = nonempty(config, "DatabaseService", "ConnectionString").map(str::to_owned);
     if config
@@ -867,18 +879,39 @@ fn object_store(config: &Config) -> Option<String> {
         connection = nonempty(config, "SimulationDataStore", "ConnectionString").map(str::to_owned);
     }
     let connection = connection?;
-    match provider.as_deref() {
+    let kind = provider_kind(provider.as_deref(), &connection)?;
+    Some(ObjectStore { connection, kind })
+}
+
+/// Terrain uses `[DatabaseService]` even when `[SimulationDataStore]` replaces the object store.
+fn database_service_kind(config: &Config) -> Option<ferroan_scene::ObjectStoreKind> {
+    let connection = nonempty(config, "DatabaseService", "ConnectionString")?;
+    provider_kind(
+        nonempty(config, "DatabaseService", "StorageProvider"),
+        connection,
+    )
+}
+
+fn provider_kind(
+    provider: Option<&str>,
+    connection: &str,
+) -> Option<ferroan_scene::ObjectStoreKind> {
+    match provider {
         Some(provider) if provider.to_ascii_lowercase().contains("null") => None,
-        Some(provider) if provider.to_ascii_lowercase().contains("sqlite") => Some(connection),
-        Some(provider) if provider.to_ascii_lowercase().contains("mysql") => Some(connection),
+        Some(provider) if provider.to_ascii_lowercase().contains("sqlite") => {
+            Some(ferroan_scene::ObjectStoreKind::Sqlite)
+        }
+        Some(provider) if provider.to_ascii_lowercase().contains("mysql") => {
+            Some(ferroan_scene::ObjectStoreKind::Mysql)
+        }
         Some(provider)
             if provider.to_ascii_lowercase().contains("pgsql")
                 || provider.to_ascii_lowercase().contains("postgres") =>
         {
-            Some(connection)
+            Some(ferroan_scene::ObjectStoreKind::Postgres)
         }
         Some(_) => None,
-        None if sqlite_connection(&connection) => Some(connection),
+        None if sqlite_connection(connection) => Some(ferroan_scene::ObjectStoreKind::Sqlite),
         None => None,
     }
 }
@@ -1287,8 +1320,15 @@ mod tests {
         );
         let config = RegionConfig::from_configs(&server, &regions()).unwrap();
         assert_eq!(
-            config.object_store.as_deref(),
+            config
+                .object_store
+                .as_ref()
+                .map(|store| store.connection.as_str()),
             Some("URI=file:OpenSim.db;UseUTF16Encoding=True")
+        );
+        assert_eq!(
+            config.object_store.as_ref().map(|store| store.kind),
+            Some(ferroan_scene::ObjectStoreKind::Sqlite)
         );
         server.set(
             "SimulationDataStore",
@@ -1297,7 +1337,10 @@ mod tests {
         );
         let config = RegionConfig::from_configs(&server, &regions()).unwrap();
         assert_eq!(
-            config.object_store.as_deref(),
+            config
+                .object_store
+                .as_ref()
+                .map(|store| store.connection.as_str()),
             Some("Data Source=prims.db;Version=3")
         );
         server.set(
@@ -1321,13 +1364,26 @@ mod tests {
             "ConnectionString",
             "Server=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None",
         );
+        let mysql = RegionConfig::from_configs(&server, &regions())
+            .unwrap()
+            .object_store
+            .unwrap();
         assert_eq!(
-            RegionConfig::from_configs(&server, &regions())
-                .unwrap()
-                .object_store
-                .as_deref(),
-            Some("Server=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None")
+            mysql.connection,
+            "Server=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan;SslMode=None"
         );
+        assert_eq!(mysql.kind, ferroan_scene::ObjectStoreKind::Mysql);
+        server.set(
+            "SimulationDataStore",
+            "ConnectionString",
+            "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=ferroan",
+        );
+        let shipped = RegionConfig::from_configs(&server, &regions())
+            .unwrap()
+            .object_store
+            .unwrap();
+        assert_eq!(shipped.kind, ferroan_scene::ObjectStoreKind::Mysql);
+        assert!(shipped.connection.contains("Data Source="));
         server.set(
             "SimulationDataStore",
             "StorageProvider",
@@ -1338,14 +1394,54 @@ mod tests {
             "ConnectionString",
             "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable",
         );
+        let postgres = RegionConfig::from_configs(&server, &regions())
+            .unwrap()
+            .object_store
+            .unwrap();
         assert_eq!(
-            RegionConfig::from_configs(&server, &regions())
+            postgres.connection,
+            "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
+        );
+        assert_eq!(postgres.kind, ferroan_scene::ObjectStoreKind::Postgres);
+    }
+
+    #[test]
+    fn terrain_kind_follows_database_service_only() {
+        let mut server = server();
+        server.set(
+            "DatabaseService",
+            "StorageProvider",
+            "OpenSim.Data.SQLite.dll",
+        );
+        server.set(
+            "DatabaseService",
+            "ConnectionString",
+            "URI=file:OpenSim.db;UseUTF16Encoding=True",
+        );
+        server.set(
+            "SimulationDataStore",
+            "StorageProvider",
+            "OpenSim.Data.MySQL.dll",
+        );
+        server.set(
+            "SimulationDataStore",
+            "ConnectionString",
+            "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused",
+        );
+        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
+        assert_eq!(
+            config.object_store.unwrap().kind,
+            ferroan_scene::ObjectStoreKind::Mysql
+        );
+        assert_eq!(
+            config.terrain_kind,
+            Some(ferroan_scene::ObjectStoreKind::Sqlite)
+        );
+        assert!(
+            config
+                .terrain_store
                 .unwrap()
-                .object_store
-                .as_deref(),
-            Some(
-                "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
-            )
+                .contains("URI=file:OpenSim.db")
         );
     }
 

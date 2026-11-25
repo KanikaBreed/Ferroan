@@ -18,7 +18,9 @@
           "sit_name": "sit",
           "touch_name": "touch",
           "flags": 17409,
-          "creator_id": "00000000-0000-0000-0000-000000000004",
+          "creator_id": "00000000-0000-0000-0000-000000000004;https://host/agent/;Unknown User",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -496,7 +498,9 @@
           "sit_name": "",
           "touch_name": "",
           "flags": 0,
-          "creator_id": "00000000-0000-0000-0000-000000000004",
+          "creator_id": "00000000-0000-0000-0000-000000000004;https://host/;Name",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -655,289 +659,6 @@
           }
         },
         {
-          "uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
-          "link_num": 2,
-          "local_id": 0,
-          "parent_id": 0,
-          "creation_date": 1700000000,
-          "name": "child-two",
-          "text": "",
-          "color": 0,
-          "description": "",
-          "sit_name": "",
-          "touch_name": "",
-          "flags": 0,
-          "creator_id": "00000000-0000-0000-0000-000000000004",
-          "owner_id": "00000000-0000-0000-0000-000000000001",
-          "group_id": "00000000-0000-0000-0000-000000000003",
-          "last_owner_id": "00000000-0000-0000-0000-000000000002",
-          "rezzer_id": "00000000-0000-0000-0000-000000000000",
-          "owner_mask": 0,
-          "next_owner_mask": 0,
-          "group_mask": 0,
-          "everyone_mask": 0,
-          "base_mask": 0,
-          "offset": [
-            0,
-            0,
-            0
-          ],
-          "group_position": [
-            0,
-            0,
-            0
-          ],
-          "velocity": [
-            0,
-            0,
-            0
-          ],
-          "angular_velocity": [
-            0,
-            0,
-            0
-          ],
-          "acceleration": [
-            0,
-            0,
-            0
-          ],
-          "rotation": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "sit_target_position": [
-            0,
-            0,
-            0
-          ],
-          "sit_target_rotation": [
-            0,
-            0,
-            0,
-            0
-          ],
-          "sit_target_active": true,
-          "stand_offset": [
-            0,
-            0,
-            0
-          ],
-          "sit_active_range": 0,
-          "click_action": 0,
-          "pay_price": [
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "sound": "00000000-0000-0000-0000-000000000000",
-          "sound_gain": 0,
-          "sound_flags": 0,
-          "texture_animation": "",
-          "particles": "",
-          "camera_eye": [
-            0,
-            0,
-            0
-          ],
-          "camera_at": [
-            0,
-            0,
-            0
-          ],
-          "force_mouselook": false,
-          "script_access_pin": 0,
-          "allowed_drop": false,
-          "die_at_edge": false,
-          "sale_price": 0,
-          "sale_type": 0,
-          "material": 3,
-          "collision_sound": "00000000-0000-0000-0000-000000000000",
-          "collision_sound_volume": 0,
-          "volume_detect": false,
-          "media_url": "",
-          "attached_pos": [
-            0,
-            0,
-            0
-          ],
-          "physics_shape_type": 0,
-          "density": 1000,
-          "gravity_modifier": 1,
-          "friction": 0.6,
-          "restitution": 0.5,
-          "pass_collisions": false,
-          "pass_touches": false,
-          "rotation_axis_locks": 0,
-          "pseudo_crc": null,
-          "shape": {
-            "default_box": false,
-            "scale": [
-              1,
-              1,
-              1
-            ],
-            "pcode": 9,
-            "path_begin": 0,
-            "path_end": 0,
-            "path_scale_x": 100,
-            "path_scale_y": 100,
-            "path_shear_x": 0,
-            "path_shear_y": 0,
-            "path_skew": 0,
-            "path_curve": 16,
-            "path_radius_offset": 0,
-            "path_revolutions": 0,
-            "path_taper_x": 0,
-            "path_taper_y": 0,
-            "path_twist": 0,
-            "path_twist_begin": 0,
-            "profile_begin": 0,
-            "profile_end": 0,
-            "profile_curve": 1,
-            "profile_hollow": 0,
-            "state": 0,
-            "last_attach_point": 0,
-            "texture": "010203",
-            "extra_params": "00",
-            "media_entries": null,
-            "materials": {
-              "overrides": null
-            }
-          },
-          "dyn_attrs": {},
-          "keyframe": null,
-          "vehicle": {
-            "type": 0,
-            "flags": 0,
-            "linear_motor_direction": [
-              0,
-              0,
-              0
-            ],
-            "linear_friction_timescale": [
-              0,
-              0,
-              0
-            ],
-            "linear_motor_decay_timescale": 0,
-            "linear_motor_timescale": 0,
-            "linear_motor_offset": [
-              0,
-              0,
-              0
-            ],
-            "angular_motor_direction": [
-              0,
-              0,
-              0
-            ],
-            "angular_motor_timescale": 0,
-            "angular_motor_decay_timescale": 0,
-            "angular_friction_timescale": [
-              0,
-              0,
-              0
-            ],
-            "angular_deflection_efficiency": 0,
-            "angular_deflection_timescale": 0,
-            "linear_deflection_efficiency": 0,
-            "linear_deflection_timescale": 0,
-            "banking_efficiency": 0,
-            "banking_mix": 0,
-            "banking_timescale": 0,
-            "hover_height": 0,
-            "hover_efficiency": 0,
-            "hover_timescale": 0,
-            "buoyancy": 0,
-            "vertical_attraction_efficiency": 0,
-            "vertical_attraction_timescale": 0,
-            "reference_frame": [
-              0,
-              0,
-              0,
-              0
-            ],
-            "linear_motor_timescale_axes": null,
-            "linear_motor_decay_timescale_axes": null,
-            "angular_motor_timescale_axes": null,
-            "angular_motor_decay_timescale_axes": null,
-            "mouselook_azimuth": 0.7853982,
-            "mouselook_altitude": 0.7853982,
-            "banking_azimuth": 1.5707964,
-            "disable_motors_above": 0,
-            "disable_motors_after": 0,
-            "inverted_banking_modifier": 1,
-            "linear_wind_efficiency": null,
-            "angular_wind_efficiency": null,
-            "linear_motor_run_age": null,
-            "linear_motor_run_direction": null,
-            "linear_motor_run_target": null,
-            "angular_motor_run_age": null,
-            "angular_motor_run_direction": null,
-            "angular_motor_run_target": null
-          },
-          "phys_inertia": {
-            "mass": 0,
-            "center": [
-              0,
-              0,
-              0
-            ],
-            "inertia": [
-              0,
-              0,
-              0
-            ],
-            "rotation": [
-              0,
-              0,
-              0,
-              0
-            ]
-          },
-          "animations": [],
-          "linkset": null,
-          "items": [
-            {
-              "item_id": "b2222222-2222-2222-2222-222222222222",
-              "parent_part_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
-              "asset_id": "00000000-0000-0000-0000-0000000000b2",
-              "parent_id": "00000000-0000-0000-0000-0000000000e2",
-              "inv_type": 3,
-              "asset_type": 3,
-              "name": "mark",
-              "description": "child",
-              "creation_date": 1700000104,
-              "creator_id": "00000000-0000-0000-0000-000000000004;;Unknown User",
-              "owner_id": "00000000-0000-0000-0000-000000000001",
-              "last_owner_id": "00000000-0000-0000-0000-000000000002",
-              "group_id": "00000000-0000-0000-0000-000000000003",
-              "next_permissions": 7,
-              "current_permissions": 7,
-              "base_permissions": 7,
-              "everyone_permissions": 0,
-              "group_permissions": 0,
-              "flags": 1,
-              "experience_id": "00000000-0000-0000-0000-000000000000"
-            }
-          ],
-          "raw": {
-            "media": "\u003COSMedia type=\u0022none\u0022\u003E\u003C/OSMedia\u003E",
-            "mat_ovrd": "00",
-            "dyn_attrs": "\u003Cllsd\u003E\u003Cmap\u003E\u003C/map\u003E\u003C/llsd\u003E",
-            "keyframe_motion": "01020304",
-            "vehicle": "\u003CVehicle\u003E\u003C/Vehicle\u003E",
-            "phys_inertia": "\u003CPhysicsInertia\u003E\u003C/PhysicsInertia\u003E",
-            "sopanims": "00",
-            "linkset_data": "not-json"
-          }
-        },
-        {
           "uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3",
           "link_num": 3,
           "local_id": 0,
@@ -951,6 +672,8 @@
           "touch_name": "",
           "flags": 0,
           "creator_id": "00000000-0000-0000-0000-000000000004",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -1127,6 +850,8 @@
           "touch_name": "",
           "flags": 0,
           "creator_id": "00000000-0000-0000-0000-000000000004",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -1298,6 +1023,8 @@
           "touch_name": "",
           "flags": 0,
           "creator_id": "00000000-0000-0000-0000-000000000004",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -1469,6 +1196,8 @@
           "touch_name": "",
           "flags": 0,
           "creator_id": "00000000-0000-0000-0000-000000000004",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",
@@ -1645,6 +1374,8 @@
           "touch_name": "",
           "flags": 0,
           "creator_id": "00000000-0000-0000-0000-000000000004",
+          "allow_unsit": true,
+          "scripted_sit_only": false,
           "owner_id": "00000000-0000-0000-0000-000000000001",
           "group_id": "00000000-0000-0000-0000-000000000003",
           "last_owner_id": "00000000-0000-0000-0000-000000000002",

@@ -437,7 +437,13 @@ fn home_terrain_cell(directory: &Path, arrival: [f32; 3]) -> Result<f32, String>
         .enable_all()
         .build()
         .map_err(|error| format!("could not read the home terrain: {error}"))?;
-    match runtime.block_on(ferroan_scene::open_terrain(&connection, region, 256, 256)) {
+    match runtime.block_on(ferroan_scene::open_terrain(
+        &connection,
+        region,
+        256,
+        256,
+        ferroan_scene::ObjectStoreKind::Sqlite,
+    )) {
         Ok(Some(map)) => Ok(map.standing_cell(arrival[0] as i32, arrival[1] as i32)),
         Ok(None) => Ok(0.0),
         Err(error) => Err(format!("could not read the home terrain: {error}")),
@@ -565,8 +571,36 @@ const LANDING_POS: &str = "<128, 128, 30>";
 const SERVICE_08: f64 = 0.8;
 const SERVICE_03: f64 = 0.3;
 
+/// Which server runs a region whose captures a check reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RegionServer {
+    /// Tranquillity at the pin.
+    CSharp,
+    /// `ferroan-region`.
+    Ferroan,
+}
+
+/// How far below `LANDING` a C# region's arrival may report the avatar, in metres.
+///
+/// At Pin8 `c401bceecd`, `ScenePresence.CompleteMovement` calls `MakeRootAgent`,
+/// which adds the avatar's physics actor (`AddToPhysicalScene`, ScenePresence.cs
+/// lines 1619 and 1623) before `MoveAgentIntoRegion` samples `AbsolutePosition`
+/// (line 2441). In between, `TriggerOnMakeRootAgent` (line 1649) makes two
+/// synchronous Robust calls on a teleport arrival: Presence `ReportAgent`
+/// (PresenceDetector.cs line 86) and GridUser `SetLastPosition`
+/// (ActivityDetector.cs line 89). The avatar falls under ubODE's 9.8 m/s²
+/// (`gravityz`, ODEScene.cs line 210) for that wall time, which grows on a slow
+/// runner. PR #242's run 45556306815 sent Z 29.9676: 0.032 m, about 81 ms of
+/// free fall from rest. One metre is about 0.45 s, five times that, and still
+/// catches a landing at ground height (about 25 m). A Ferroan region holds its
+/// actor until the arrival samples the pose (QR29), so its arrivals get no
+/// window.
+const CSHARP_LANDING_FALL: f32 = 1.0;
+
 struct NeighbourSide {
     label: &'static str,
+    /// The server that runs this side's region and sends its viewer packets.
+    server: RegionServer,
     udp_file: &'static str,
     http_file: &'static str,
     region_id: &'static str,
@@ -589,9 +623,14 @@ struct NeighbourSide {
 /// Both directions of `cargo xtask live run neighbour grid` at pin `1d7abb8337`.
 ///
 /// The same checks run on the committed redacted files and on a fresh capture.
-/// Ports, capability paths and session ids are not compared.
-pub(super) fn compare_neighbour_teleport(directory: &Path) -> Result<String, String> {
-    let home = side_home();
+/// Ports, capability paths and session ids are not compared. `home` is the
+/// server that ran the home region (`--region ferroan` makes it Ferroan); the
+/// neighbour region is always C#.
+pub(super) fn compare_neighbour_teleport(
+    directory: &Path,
+    home: RegionServer,
+) -> Result<String, String> {
+    let home = side_home(home);
     let neighbour = side_neighbour();
     let home_udp = check_udp_side(directory, &home)?;
     let neighbour_udp = check_udp_side(directory, &neighbour)?;
@@ -613,9 +652,10 @@ pub(super) fn compare_neighbour_teleport(directory: &Path) -> Result<String, Str
     ))
 }
 
-fn side_home() -> NeighbourSide {
+fn side_home(server: RegionServer) -> NeighbourSide {
     NeighbourSide {
         label: "home",
+        server,
         udp_file: "capture-udp.cap",
         http_file: "proxy-home.cap",
         region_id: crate::live::REGION_UUID,
@@ -636,6 +676,7 @@ fn side_home() -> NeighbourSide {
 fn side_neighbour() -> NeighbourSide {
     NeighbourSide {
         label: "neighbour",
+        server: RegionServer::CSharp,
         udp_file: "capture-udp-neighbour.cap",
         http_file: "proxy-neighbour.cap",
         region_id: super::NEIGHBOUR_UUID,
@@ -732,7 +773,7 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
             let position = decoded.data.position.to_array();
             let look_at = decoded.data.look_at.to_array();
             arrivals.push(format!("{position:?} look {look_at:?}"));
-            if near_vec(position, LANDING) && near_vec(look_at, LANDING_LOOK) {
+            if is_landing(position, look_at, side.server) {
                 landings += 1;
             }
         }
@@ -1144,10 +1185,28 @@ fn known_agent(id: uuid::Uuid) -> bool {
     id == uuid::Uuid::from_u128(1) || id.to_string() == crate::live::ESTATE_OWNER
 }
 
+/// Whether an arrival's `AgentMovementComplete` is the landing at `LANDING`
+/// facing `LANDING_LOOK`.
+///
+/// X, Y and the look are exact to 0.001 on every region, and so is Z on a
+/// Ferroan region. On a C# region Z may lie up to `CSHARP_LANDING_FALL` below
+/// the landing point, never above it.
+fn is_landing(position: [f32; 3], look_at: [f32; 3], server: RegionServer) -> bool {
+    let [x, y, z] = position;
+    let [landing_x, landing_y, landing_z] = LANDING;
+    let z_ok = match server {
+        RegionServer::Ferroan => (z - landing_z).abs() < NEAR,
+        RegionServer::CSharp => z < landing_z + NEAR && z > landing_z - CSHARP_LANDING_FALL,
+    };
+    near_vec([x, y, 0.0], [landing_x, landing_y, 0.0]) && z_ok && near_vec(look_at, LANDING_LOOK)
+}
+
+const NEAR: f32 = 0.001;
+
 fn near_vec(got: [f32; 3], expected: [f32; 3]) -> bool {
     got.iter()
         .zip(expected)
-        .all(|(got, expected)| (got - expected).abs() < 0.001)
+        .all(|(got, expected)| (got - expected).abs() < NEAR)
 }
 
 /// Presence `logoutregion` at Ferroan region start and stop.
@@ -2094,12 +2153,72 @@ mod tests {
             let auth_placeholders = text.matches(auth.as_str()).count();
             assert_eq!(auth_values, auth_placeholders, "{name} CloseAgent auth");
         }
-        let line = compare_neighbour_teleport(&directory).unwrap();
+        let line = compare_neighbour_teleport(&directory, RegionServer::CSharp).unwrap();
         assert!(line.contains("ReleaseAgent 0"), "{line}");
         assert!(line.contains("CloseAgent 1"), "{line}");
         assert!(line.contains("CrossedRegion 0"), "{line}");
         assert!(line.contains("UseCircuitCode 2"), "{line}");
         assert!(line.contains("no UDP TeleportFinish"), "{line}");
+    }
+
+    #[test]
+    fn landing_allows_a_short_fall_on_csharp_regions_only() {
+        let look = LANDING_LOOK;
+        // PR #242's run 45556306815: the C# neighbour's arrival.
+        let fallen = [128.0, 128.0, 29.967_642];
+        for server in [RegionServer::CSharp, RegionServer::Ferroan] {
+            assert!(is_landing(LANDING, look, server), "{server:?} exact");
+            assert!(
+                !is_landing([128.0, 128.0, 30.1], look, server),
+                "{server:?} above"
+            );
+            assert!(
+                !is_landing([128.0, 128.0, 30.002], look, server),
+                "{server:?} above"
+            );
+            assert!(
+                !is_landing([128.01, 128.0, 30.0], look, server),
+                "{server:?} x"
+            );
+            assert!(
+                !is_landing([128.0, 127.99, 30.0], look, server),
+                "{server:?} y"
+            );
+            assert!(
+                !is_landing(LANDING, [0.0, 1.0, 0.0], server),
+                "{server:?} look"
+            );
+            assert!(
+                !is_landing([128.0, 128.0, 28.9], look, server),
+                "{server:?} far"
+            );
+            assert!(
+                !is_landing([128.0, 128.0, 25.0], look, server),
+                "{server:?} ground"
+            );
+        }
+        assert!(is_landing(fallen, look, RegionServer::CSharp));
+        assert!(is_landing(
+            [128.0, 128.0, 29.01],
+            look,
+            RegionServer::CSharp
+        ));
+        assert!(!is_landing(
+            [128.0, 128.0, 29.4],
+            look,
+            RegionServer::Ferroan
+        ));
+        assert!(!is_landing(fallen, look, RegionServer::Ferroan));
+        assert!(!is_landing(
+            [128.0, 128.0, 29.998],
+            look,
+            RegionServer::Ferroan
+        ));
+        assert!(!is_landing(
+            [128.01, 128.0, 29.97],
+            look,
+            RegionServer::CSharp
+        ));
     }
 
     #[test]
@@ -2127,7 +2246,12 @@ mod tests {
         info.insert("SimIP", ferroan_llsd::Llsd::Binary(vec![127, 0, 0, 1]));
         info.insert(
             "RegionHandle",
-            ferroan_llsd::Llsd::Binary(side_home().entering.to_be_bytes().to_vec()),
+            ferroan_llsd::Llsd::Binary(
+                side_home(RegionServer::CSharp)
+                    .entering
+                    .to_be_bytes()
+                    .to_vec(),
+            ),
         );
         info.insert(
             "SeedCapability",
@@ -2143,7 +2267,9 @@ mod tests {
         events.push(event);
         let mut root = ferroan_llsd::Llsd::new_map();
         root.insert("events", events);
-        let error = check_teleport_finish(root.get("events").at(0), &side_home()).unwrap_err();
+        let error =
+            check_teleport_finish(root.get("events").at(0), &side_home(RegionServer::CSharp))
+                .unwrap_err();
         assert!(
             error.contains("LocationID is not a 4-byte binary integer"),
             "{error}"

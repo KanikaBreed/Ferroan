@@ -572,6 +572,41 @@ impl Drop for Proc {
     }
 }
 
+/// Indexes of the grid's capture proxies, in the order `run_linux` starts them.
+const PROXY_ROBUST_PRIVATE: usize = 0;
+const PROXY_ROBUST_PUBLIC: usize = 1;
+const PROXY_HOME: usize = 2;
+const PROXY_NEIGHBOUR: usize = 3;
+
+/// The proxies in front of home, the neighbour and Robust, in the order
+/// `Grid::stop` stops those servers.
+const STOP_ORDER: [&[usize]; 3] = [
+    &[PROXY_HOME],
+    &[PROXY_NEIGHBOUR],
+    &[PROXY_ROBUST_PRIVATE, PROXY_ROBUST_PUBLIC],
+];
+
+/// Stop each started server in `STOP_ORDER`, marking its proxies first.
+///
+/// A server still running may call one already gone (the C# neighbour's
+/// CloseAgent to home after the bot logs out of it); that proxy then keeps the
+/// request without failing. The mark comes just before the stop, so a refusal
+/// while the server is meant to be up still fails the run.
+#[cfg(target_os = "linux")]
+fn stop_in_order<T>(slots: [&mut Option<T>; 3], proxies: Option<&crate::live_proxy::Proxies>) {
+    for (slot, indexes) in slots.into_iter().zip(STOP_ORDER) {
+        if slot.is_none() {
+            continue;
+        }
+        if let Some(proxies) = proxies {
+            for index in indexes {
+                proxies.upstream_stopping(*index);
+            }
+        }
+        drop(slot.take());
+    }
+}
+
 #[cfg(target_os = "linux")]
 struct Grid {
     robust: Option<Proc>,
@@ -586,9 +621,10 @@ struct Grid {
 #[cfg(target_os = "linux")]
 impl Grid {
     fn stop(&mut self) -> Result<(), String> {
-        for slot in [&mut self.home, &mut self.neighbour, &mut self.robust] {
-            drop(slot.take());
-        }
+        stop_in_order(
+            [&mut self.home, &mut self.neighbour, &mut self.robust],
+            self.proxies.as_ref(),
+        );
         drop(self.rust_assets.take());
         self.proxies
             .take()
@@ -756,6 +792,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         home: root.join("proxy-home.cap"),
         neighbour: root.join("proxy-neighbour.cap"),
     };
+    // In the order of PROXY_ROBUST_PRIVATE, PROXY_ROBUST_PUBLIC, PROXY_HOME
+    // and PROXY_NEIGHBOUR, which STOP_ORDER uses.
     grid.proxies = Some(start_proxies(&[
         (
             SocketAddr::from((ADVERTISED, private_proxy)),
@@ -1234,7 +1272,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             report.lines
         ))
     } else if ferroan && scenario == "neighbour" {
-        let comparison = login_capture::compare_neighbour_teleport(&root)?;
+        let comparison =
+            login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::Ferroan)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
             &report.http,
@@ -1257,7 +1296,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             report.lines
         ))
     } else if scenario == "neighbour" {
-        let comparison = login_capture::compare_neighbour_teleport(&root)?;
+        let comparison =
+            login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::CSharp)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
             &report.http,
@@ -2513,6 +2553,83 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in server whose stop sends one request through a proxy, as the
+    /// C# neighbour's late CloseAgent does.
+    #[cfg(target_os = "linux")]
+    struct LateCaller(SocketAddr);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for LateCaller {
+        fn drop(&mut self) {
+            use std::io::{Read, Write};
+            let mut client = TcpStream::connect(self.0).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .write_all(b"DELETE /agent/x/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut response = Vec::new();
+            let _ = client.read_to_end(&mut response);
+            assert!(response.is_empty());
+        }
+    }
+
+    /// Four proxies on closed upstreams, in `run_linux` order: Robust private,
+    /// Robust public, home, neighbour. Literal indexes, so a swapped constant
+    /// shows.
+    #[cfg(target_os = "linux")]
+    fn grid_proxies(name: &str) -> (Vec<SocketAddr>, crate::live_proxy::Proxies, Vec<PathBuf>) {
+        let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> =
+            ["private", "public", "home", "neighbour"]
+                .iter()
+                .map(|which| {
+                    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+                        .unwrap()
+                        .local_addr()
+                        .unwrap();
+                    let path = crate::repo_root().join(".scratch").join(format!(
+                        "stop-order-{name}-{which}-{}.cap",
+                        uuid::Uuid::new_v4()
+                    ));
+                    ("127.0.0.1:0".parse().unwrap(), closed, path)
+                })
+                .collect();
+        let (addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
+        (
+            addresses,
+            proxies,
+            binds.into_iter().map(|(_, _, path)| path).collect(),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn each_server_is_marked_just_before_it_stops() {
+        // Each server's stop sends through its own proxy: all are marked.
+        let (addresses, proxies, paths) = grid_proxies("own");
+        let mut home = Some(LateCaller(addresses[2]));
+        let mut neighbour = Some(LateCaller(addresses[3]));
+        let mut robust = Some(LateCaller(addresses[0]));
+        stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
+        assert!(home.is_none() && neighbour.is_none() && robust.is_none());
+        proxies.finish().unwrap();
+        for path in paths {
+            let _ = fs::remove_file(path);
+        }
+        // Home's stop calls the neighbour, which is still meant to be up.
+        let (addresses, proxies, paths) = grid_proxies("early");
+        let mut home = Some(LateCaller(addresses[3]));
+        let mut neighbour: Option<LateCaller> = None;
+        let mut robust: Option<LateCaller> = None;
+        stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
+        let error = proxies.finish().unwrap_err();
+        assert!(error.contains("recorded 1 failure(s)"), "{error}");
+        for path in paths {
+            let _ = fs::remove_file(path);
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

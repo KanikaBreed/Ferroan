@@ -107,7 +107,7 @@ pub use height::{Heightmap, movement_z};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
-    ObjectShape, load_objects, load_objects_limited, open_objects,
+    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
 };
 pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
