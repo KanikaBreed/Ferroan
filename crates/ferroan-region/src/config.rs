@@ -36,6 +36,10 @@
 //   Source/OpenSim.Framework/ServiceAuth/ServiceAuth.cs (Create)
 //   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// Permission settings follow Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs
+// and the startup checks in Source/OpenSim.Server.RegionServer/OpenSimBase.cs and
+// Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs
+// at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -66,6 +70,8 @@ pub enum RegionConfigError {
         key: &'static str,
         reason: &'static str,
     },
+    #[error("required permission module {0:?} was not found")]
+    MissingPermissionModule(String),
     #[error("regionload_regionsdir must define exactly one region across all INI files")]
     RegionCount,
     #[error("XML region files are not supported; use INI region configuration")]
@@ -92,6 +98,7 @@ pub struct RegionConfig {
     pub grid_user_server_uri: String,
     pub control_plane: ControlPlaneAccess,
     pub estate_owner: Uuid,
+    pub staff_permissions: StaffPermissions,
     /// `allow_grid_gods` after `force_grid_gods_only`. Code default is false.
     /// `RegionServerDefaults.ini` sets it true, and a region process loads that
     /// file as inimaster.
@@ -335,13 +342,18 @@ impl RegionConfig {
         }
         // RegionSettings is not an INI section. The handshake owner stays the
         // INI estate owner. Admission may replace it from the estate tables.
+        let staff_permissions = StaffPermissions::read(server)?;
         let (allow_grid_gods, region_owner_is_god, region_manager_is_god) =
-            crate::staff::fold_god_flags(
-                permission_flag(server, "allow_grid_gods", false)?,
-                permission_flag(server, "region_owner_is_god", false)?,
-                permission_flag(server, "region_manager_is_god", false)?,
-                permission_flag(server, "force_grid_gods_only", false)?,
-            );
+            if staff_permissions == StaffPermissions::NoModule {
+                (false, false, false)
+            } else {
+                crate::staff::fold_god_flags(
+                    permission_flag(server, "allow_grid_gods", false)?,
+                    permission_flag(server, "region_owner_is_god", false)?,
+                    permission_flag(server, "region_manager_is_god", false)?,
+                    permission_flag(server, "force_grid_gods_only", false)?,
+                )
+            };
         let user_account_server_uri =
             optional_uri(server, "UserAccountService", "UserAccountServerURI")?;
         let mut handshake = HandshakeConfig::for_region(id);
@@ -363,6 +375,7 @@ impl RegionConfig {
             grid_user_server_uri: grid_user_server_uri.to_owned(),
             control_plane: ControlPlaneAccess::from_config(server)?,
             estate_owner,
+            staff_permissions,
             allow_grid_gods,
             region_owner_is_god,
             region_manager_is_god,
@@ -821,6 +834,49 @@ fn metrics_listen_address(server: &Config) -> Result<SocketAddr, RegionConfigErr
     }
 }
 
+/// Which Pin8 permissions handlers participate in full-region admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StaffPermissions {
+    NoModule,
+    Bypass,
+    Enforce,
+}
+
+impl StaffPermissions {
+    pub(crate) fn read(config: &Config) -> Result<Self, RegionConfigError> {
+        let modules = config
+            .get("Permissions", "permissionmodules")
+            .or_else(|| config.get("Startup", "permissionmodules"))
+            .unwrap_or("DefaultPermissionsModule");
+        let secure = config.get("Startup", "SecurePermissionsLoading").is_none()
+            || boolean(config, "Startup", "SecurePermissionsLoading")?;
+        let mut default_loaded = false;
+        for name in modules.split(',').map(str::trim) {
+            let loaded = match name {
+                "DefaultPermissionsModule" => {
+                    config.get("Modules", "Setup_DefaultPermissionsModule") != Some("disabled")
+                }
+                "PrimLimitsModule" => {
+                    config.get("Modules", "Setup_PrimLimitsModule") != Some("disabled")
+                }
+                _ => false,
+            };
+            if secure && !loaded {
+                return Err(RegionConfigError::MissingPermissionModule(name.to_owned()));
+            }
+            default_loaded |= loaded && name == "DefaultPermissionsModule";
+        }
+        if !default_loaded {
+            return Ok(Self::NoModule);
+        }
+        if permission_flag(config, "serverside_object_permissions", true)? {
+            Ok(Self::Enforce)
+        } else {
+            Ok(Self::Bypass)
+        }
+    }
+}
+
 /// `[Permissions]` overwrites `[Startup]`, as `GetConfigVarFromSections` does.
 /// A missing key keeps `default`. Only `true` and `false` are accepted.
 fn permission_flag(
@@ -1256,6 +1312,178 @@ mod tests {
         assert_eq!(arrival.region_handle, (256000u64 << 32) | 256256);
         assert_eq!(arrival.channel_version, "Configured server identity");
         assert!(arrival.teleport.is_none());
+    }
+
+    #[test]
+    fn captured_full_region_bypass_matches_the_staff_gate() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/access/full-region.json"))
+                .unwrap();
+        assert_eq!(
+            fixture["pin"].as_str().unwrap(),
+            "c401bceecd1684832ae8ba86a31b5ee01a4ded7b"
+        );
+        assert_eq!(fixture["agent_limit"].as_u64().unwrap(), 0);
+        let owner = Uuid::parse_str(fixture["owner"].as_str().unwrap()).unwrap();
+        let manager = Uuid::parse_str(fixture["manager"].as_str().unwrap()).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 20);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let mut config = server();
+            config.set("Estates", "DefaultEstateOwnerUUID", &owner.to_string());
+            for (section, modules, permissions) in [
+                (
+                    "Startup",
+                    "permissionmodules",
+                    "serverside_object_permissions",
+                ),
+                (
+                    "Permissions",
+                    "permissions_modules_override",
+                    "permissions_serverside_override",
+                ),
+            ] {
+                if let Some(value) = case[modules].as_str() {
+                    config.set(section, "permissionmodules", value);
+                }
+                if let Some(value) = case[permissions].as_bool() {
+                    config.set(
+                        section,
+                        "serverside_object_permissions",
+                        if value { "true" } else { "false" },
+                    );
+                }
+            }
+            for key in [
+                "allow_grid_gods",
+                "region_owner_is_god",
+                "region_manager_is_god",
+                "force_grid_gods_only",
+            ] {
+                config.set(
+                    "Permissions",
+                    key,
+                    if case[key].as_bool().unwrap() {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+            }
+            // These four captures run the module in isolation. A region with
+            // secure loading enabled would reject their required module list.
+            if matches!(
+                name,
+                "default-module-absent"
+                    | "default-module-empty"
+                    | "default-module-case-sensitive"
+                    | "default-module-in-list"
+            ) {
+                config.set("Startup", "SecurePermissionsLoading", "false");
+            }
+            let region = RegionConfig::from_configs(&config, &regions()).unwrap();
+            let mut gate = crate::staff::StaffGate::from_config(&region);
+            gate.set_managers(vec![manager]);
+            let agent = Uuid::parse_str(case["agent"].as_str().unwrap()).unwrap();
+            let level = i32::try_from(case["user_level"].as_i64().unwrap()).unwrap();
+            if region.staff_permissions != StaffPermissions::Enforce {
+                assert!(!gate.needs_account_level(agent), "{name}");
+            }
+            let success = case["success"].as_bool().unwrap();
+            assert_eq!(
+                gate.bypasses(agent, Some(level)),
+                success,
+                "{name} disagreed with CheckLandPositionAccess"
+            );
+            let reason = case["reason"].as_str().unwrap();
+            if success {
+                assert_eq!(reason, "", "{name}");
+            } else {
+                assert_eq!(reason, "The region is full", "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn full_region_permissions_follow_the_selected_module_and_section_order() {
+        let mut server = server();
+        let mode = |server: &Config| {
+            RegionConfig::from_configs(server, &regions())
+                .unwrap()
+                .staff_permissions
+        };
+        assert_eq!(mode(&server), StaffPermissions::Enforce);
+        server.set("Startup", "serverside_object_permissions", "false");
+        assert_eq!(mode(&server), StaffPermissions::Bypass);
+        server.set("Permissions", "serverside_object_permissions", "true");
+        assert_eq!(mode(&server), StaffPermissions::Enforce);
+        server.set("Startup", "permissionmodules", "PrimLimitsModule");
+        assert_eq!(mode(&server), StaffPermissions::NoModule);
+        server.set(
+            "Permissions",
+            "permissionmodules",
+            "PrimLimitsModule, DefaultPermissionsModule ",
+        );
+        assert_eq!(mode(&server), StaffPermissions::Enforce);
+        server.set("Permissions", "permissionmodules", "PrimLimitsModule");
+        server.set("Permissions", "serverside_object_permissions", "unused");
+        server.set("Permissions", "allow_grid_gods", "unused");
+        assert_eq!(mode(&server), StaffPermissions::NoModule);
+    }
+
+    #[test]
+    fn secure_permissions_loading_names_the_first_missing_module() {
+        let mut server = server();
+        server.set("Permissions", "SecurePermissionsLoading", "false");
+        for (list, missing) in [
+            ("Other", "Other"),
+            ("", ""),
+            ("defaultpermissionsmodule", "defaultpermissionsmodule"),
+            ("DefaultPermissionsModule, First, Last", "First"),
+        ] {
+            server.set("Startup", "permissionmodules", list);
+            assert!(
+                matches!(
+                    RegionConfig::from_configs(&server, &regions()),
+                    Err(RegionConfigError::MissingPermissionModule(name)) if name == missing
+                ),
+                "{list:?}"
+            );
+        }
+        server.set("Startup", "SecurePermissionsLoading", "false");
+        server.set("Startup", "permissionmodules", "Other");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+    }
+
+    #[test]
+    fn a_disabled_required_module_is_missing_at_startup() {
+        let mut server = server();
+        server.set("Modules", "Setup_DefaultPermissionsModule", "disabled");
+        assert!(matches!(
+            RegionConfig::from_configs(&server, &regions()),
+            Err(RegionConfigError::MissingPermissionModule(name)) if name == "DefaultPermissionsModule"
+        ));
+        server.set("Startup", "SecurePermissionsLoading", "false");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+
+        server.set("Startup", "SecurePermissionsLoading", "true");
+        server.set("Startup", "permissionmodules", "PrimLimitsModule");
+        assert_eq!(
+            StaffPermissions::read(&server).unwrap(),
+            StaffPermissions::NoModule
+        );
+        server.set("Modules", "Setup_PrimLimitsModule", "disabled");
+        assert!(matches!(
+            StaffPermissions::read(&server),
+            Err(RegionConfigError::MissingPermissionModule(name)) if name == "PrimLimitsModule"
+        ));
     }
 
     #[test]
