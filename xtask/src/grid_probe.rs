@@ -22,7 +22,6 @@ const SERVICE_DEADLINE: Duration = Duration::from_secs(10);
 /// One private POST. `probe.service-attempt`. A socket that does not answer
 /// is abandoned so the next attempt opens a new connection.
 const SERVICE_ATTEMPT: Duration = Duration::from_secs(1);
-const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
 const CASES: &[&str] = &[
@@ -63,12 +62,11 @@ pub async fn online(
                 _ => None,
             };
             if online_matches(grid, presence, &arrival) {
-                let observation = json!({"source":if ferroan {"ferroan"} else {"csharp"},"revision":PIN,"online":true,"presence_region":REGION,"last_region":REGION,"last_position":position,"last_look_at":look,"arrival_position":arrival.position,"arrival_look_at":arrival.look_at,"arrival_handle":arrival.region_handle});
-                fs::write(
-                    directory.join("root-arrival-online.json"),
-                    serde_json::to_vec_pretty(&observation).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
+                let observation = write_observation(
+                    &directory.join("root-arrival-online.json"),
+                    ferroan,
+                    json!({"online":true,"presence_region":REGION,"last_region":REGION,"last_position":position,"last_look_at":look,"arrival_position":arrival.position,"arrival_look_at":arrival.look_at,"arrival_handle":arrival.region_handle}),
+                )?;
                 if ferroan {
                     let baseline =
                         read(&crate::repo_root().join("fixtures/root-arrival/exchanges.json"))?;
@@ -558,12 +556,11 @@ pub async fn probe(home_uri: &str, directory: &Path, ferroan: bool) -> Result<St
             serde_json::from_str(&folded).map_err(|error| error.to_string())?,
         );
     }
-    let report = json!({"source": if ferroan {"ferroan"} else {"csharp"}, "revision":PIN,"exchanges":exchanges});
-    fs::write(
-        directory.join("region-parity.json"),
-        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    let report = write_observation(
+        &directory.join("region-parity.json"),
+        ferroan,
+        json!({"exchanges":exchanges}),
+    )?;
     if ferroan {
         let expected = read(&crate::repo_root().join("fixtures/region-parity/exchanges.json"))?;
         if report["exchanges"] != expected["exchanges"] {
@@ -592,22 +589,40 @@ fn read(path: &Path) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
-pub fn generate(directory: &Path) -> Result<String, String> {
-    let mut report = read(&directory.join("region-parity.json"))?;
-    // The probe writes `source` itself. The C#-only proof is the pinned channel
-    // on this directory's login circuit, the same marker login fixtures require.
-    let provenance = crate::arrival_fixtures::csharp_provenance(&super::login_capture::records(
-        &directory.join("capture-udp.cap"),
-    )?)?;
-    if report["source"] != "csharp" || report["revision"] != PIN {
-        return Err("region parity fixtures require a capture from pinned C#".into());
+fn write_observation(path: &Path, ferroan: bool, mut report: Value) -> Result<Value, String> {
+    report["source"] = json!(if ferroan { "ferroan" } else { "csharp" });
+    report["revision"] = json!(crate::live::read_pin()?);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(report)
+}
+
+fn require_csharp_revision(report: &Value, pin: &str) -> Result<(), String> {
+    if report["source"] != "csharp" || report["revision"] != pin {
+        return Err(format!("fixture requires a C# observation at {pin}"));
     }
-    report["provenance"] = provenance;
+    Ok(())
+}
+
+pub fn generate(directory: &Path) -> Result<String, String> {
+    let pin = crate::live::read_pin()?;
+    let mut report = read(&directory.join("region-parity.json"))?;
+    require_csharp_revision(&report, &pin)?;
     if report["exchanges"].as_object().is_none_or(|exchanges| {
         exchanges.len() != CASES.len() || CASES.iter().any(|case| !exchanges.contains_key(*case))
     }) {
         return Err("region parity capture is incomplete".into());
     }
+    // The probe writes `source` itself. The C#-only proof is the pinned channel
+    // on this directory's login circuit, the same marker login fixtures require.
+    let provenance = crate::arrival_fixtures::csharp_provenance(
+        &super::login_capture::records(&directory.join("capture-udp.cap"))?,
+        &pin,
+    )?;
+    report["provenance"] = provenance;
     report["services"] = super::login_capture::service_exchanges(directory)?;
     let target = crate::repo_root().join("fixtures/region-parity");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
@@ -623,11 +638,10 @@ pub fn generate(directory: &Path) -> Result<String, String> {
 }
 
 pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
+    let pin = crate::live::read_pin()?;
     let online = read(&directory.join("root-arrival-online.json"))?;
-    if online["source"] != "csharp" || online["revision"] != PIN {
-        return Err("root-arrival fixtures require pinned C# observations".into());
-    }
-    let marker = super::login_capture::root_arrival_marker(directory)?;
+    require_csharp_revision(&online, &pin)?;
+    let marker = super::login_capture::root_arrival_marker(directory, &pin)?;
     for key in ["arrival_position", "arrival_look_at", "arrival_handle"] {
         if marker[key] != online[key] {
             return Err(format!(
@@ -635,7 +649,7 @@ pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
             ));
         }
     }
-    let root_arrival = json!({"source":"csharp", "revision":PIN,"channel_version":marker["channel_version"],"services":super::login_capture::root_arrival_exchanges(directory)?,"online":online});
+    let root_arrival = json!({"source":"csharp", "revision":pin,"channel_version":marker["channel_version"],"services":super::login_capture::root_arrival_exchanges(directory)?,"online":online});
     let target = crate::repo_root().join("fixtures/root-arrival");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     fs::write(
@@ -1078,6 +1092,32 @@ mod tests {
     }
 
     #[test]
+    fn observations_use_the_reference_pin_and_extractors_refuse_stale_reports() {
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let pin =
+            crate::asset_oracle::pinned_revision(include_str!("../../docs/REFERENCES.md")).unwrap();
+        for name in ["region-parity.json", "root-arrival-online.json"] {
+            let path = directory.join(name);
+            write_observation(&path, false, json!({"online": true})).unwrap();
+            let report = read(&path).unwrap();
+            assert_eq!(report["revision"], pin);
+            assert_eq!(report["source"], "csharp");
+            fs::write(
+                path,
+                br#"{"source":"csharp","revision":"0000000000000000000000000000000000000000"}"#,
+            )
+            .unwrap();
+        }
+        for result in [generate(&directory), generate_root_arrival(&directory)] {
+            assert!(result.unwrap_err().contains(&pin));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn fixture_generator_rejects_rust_and_incomplete_captures() {
         let directory = crate::repo_root()
             .join(".scratch")
@@ -1087,17 +1127,28 @@ mod tests {
         for case in CASES {
             complete.insert((*case).to_string(), json!({}));
         }
-        for report in [
-            json!({"source":"ferroan","revision":PIN}),
-            json!({"source":"csharp","revision":PIN,"exchanges":{}}),
-            json!({"source":"csharp","revision":PIN,"exchanges":complete}),
+        let pin = crate::live::read_pin().unwrap();
+        for (report, reason) in [
+            (
+                json!({"source":"ferroan","revision":pin}),
+                "requires a C# observation",
+            ),
+            (
+                json!({"source":"csharp","revision":pin,"exchanges":{}}),
+                "capture is incomplete",
+            ),
+            (
+                json!({"source":"csharp","revision":pin,"exchanges":complete}),
+                "capture-udp.cap",
+            ),
         ] {
             fs::write(
                 directory.join("region-parity.json"),
                 serde_json::to_vec(&report).unwrap(),
             )
             .unwrap();
-            assert!(generate(&directory).is_err());
+            let error = generate(&directory).unwrap_err();
+            assert!(error.contains(reason), "{error}");
         }
         fs::remove_dir_all(directory).unwrap();
     }

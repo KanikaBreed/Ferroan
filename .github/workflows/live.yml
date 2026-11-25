@@ -81,6 +81,7 @@ jobs:
           cargo xtask throttle verify
           cargo xtask presence verify
           cargo xtask access verify
+          cargo xtask permissions verify
       - name: Run the live harness
         run: |
           set -euo pipefail

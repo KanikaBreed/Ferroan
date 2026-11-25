@@ -399,6 +399,7 @@ dependencies = [
  "ferroan-http",
  "ferroan-llsd",
  "ferroan-protocol",
+ "ferroan-scene",
  "glam",
  "serde_json",
  "thiserror",
