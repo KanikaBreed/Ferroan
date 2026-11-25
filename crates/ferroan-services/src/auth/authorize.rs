@@ -27,7 +27,7 @@
 //   Source/OpenSim.Server.Handlers/Authorization/AuthorizationServerPostHandler.cs
 //   Source/OpenSim.Services.Interfaces/IAuthorizationService.cs
 //   Source/OpenSim.Server.Base/ServerUtils.cs SerializeResult
-//   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -95,197 +95,121 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
-/// The `ID` text, or empty when the element is absent.
+fn valid_root_attribute(attribute: &::xml::attribute::OwnedAttribute) -> bool {
+    if attribute.name.namespace.as_deref() != Some("http://www.w3.org/2001/XMLSchema-instance") {
+        return true;
+    }
+    match attribute.name.local_name.as_str() {
+        "type" => attribute.value == "AuthorizationRequest",
+        // A true nil deserializes to null, which the handler cannot use.
+        "nil" => matches!(
+            attribute.value.trim_matches([' ', '\t', '\r', '\n']),
+            "false" | "0"
+        ),
+        _ => true,
+    }
+}
+
+/// Pin8's XmlSerializer reads the first unqualified occurrence of each string
+/// property. Unknown and duplicate subtrees are skipped as complete XML.
 fn read_id(bytes: &[u8]) -> Result<String, ()> {
-    let text = std::str::from_utf8(bytes).map_err(|_| ())?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut scan = Scan { text, index: 0 };
-    scan.skip_ws();
-    scan.skip_declaration()?;
-    scan.skip_ws();
-    let (name, empty) = scan.start_tag()?;
-    if name != "AuthorizationRequest" {
-        return Err(());
-    }
-    if empty {
-        return Ok(String::new());
-    }
-    let mut id = None;
-    loop {
-        scan.skip_ws();
-        if scan.starts_with("</") {
-            break;
-        }
-        if !scan.starts_with("<") {
-            return Err(());
-        }
-        let (child, child_empty) = scan.start_tag()?;
-        if !is_request_field(&child) {
-            return Err(());
-        }
-        let value = if child_empty {
-            String::new()
-        } else {
-            let raw = scan.text_until_markup()?;
-            let end = format!("</{child}>");
-            if !scan.consume(&end) {
+    use ::xml::common::XmlVersion;
+    use ::xml::reader::{ParserConfig, XmlEvent};
+    use ferroan_http::MAX_XML_DEPTH;
+
+    const FIELDS: [&str; 6] = [
+        "ID",
+        "FirstName",
+        "SurName",
+        "Email",
+        "RegionName",
+        "RegionID",
+    ];
+    let reader = ParserConfig::new()
+        .allow_multiple_root_elements(false)
+        .ignore_comments(false)
+        .coalesce_characters(false)
+        .create_reader(bytes);
+    let mut seen = [false; FIELDS.len()];
+    let mut field = None;
+    let mut depth = 0;
+    let mut keep_root_space = false;
+    let mut keep_field_space = false;
+    let mut id = String::new();
+    for event in reader {
+        match event.map_err(|_| ())? {
+            XmlEvent::StartDocument { version, .. } if version != XmlVersion::Version10 => {
                 return Err(());
             }
-            decode_text(&raw)?
-        };
-        if child == "ID" {
-            if id.is_some() {
-                return Err(());
-            }
-            id = Some(value);
-        }
-    }
-    if !scan.consume("</AuthorizationRequest>") {
-        return Err(());
-    }
-    scan.skip_ws();
-    if scan.index != scan.text.len() {
-        return Err(());
-    }
-    Ok(id.unwrap_or_default())
-}
-
-fn is_request_field(name: &str) -> bool {
-    matches!(
-        name,
-        "ID" | "FirstName" | "SurName" | "Email" | "RegionName" | "RegionID"
-    )
-}
-
-struct Scan<'a> {
-    text: &'a str,
-    index: usize,
-}
-
-impl Scan<'_> {
-    fn rest(&self) -> &str {
-        &self.text[self.index..]
-    }
-
-    fn starts_with(&self, prefix: &str) -> bool {
-        self.rest().starts_with(prefix)
-    }
-
-    fn consume(&mut self, prefix: &str) -> bool {
-        if self.starts_with(prefix) {
-            self.index += prefix.len();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn skip_ws(&mut self) {
-        while let Some(c) = self.rest().chars().next() {
-            if c.is_whitespace() {
-                self.index += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn skip_declaration(&mut self) -> Result<(), ()> {
-        if self.starts_with("<?") {
-            let Some(end) = self.rest().find("?>") else {
-                return Err(());
-            };
-            self.index += end + 2;
-        }
-        Ok(())
-    }
-
-    fn start_tag(&mut self) -> Result<(String, bool), ()> {
-        if !self.consume("<") {
-            return Err(());
-        }
-        let name = self.read_name()?;
-        let mut quote = None;
-        while self.index < self.text.len() {
-            let c = self.rest().chars().next().ok_or(())?;
-            let width = c.len_utf8();
-            if let Some(mark) = quote {
-                if c == mark {
-                    quote = None;
-                }
-                self.index += width;
-                continue;
-            }
-            match c {
-                '"' | '\'' => {
-                    quote = Some(c);
-                    self.index += width;
-                }
-                '/' => {
-                    if self.consume("/>") {
-                        return Ok((name, true));
-                    }
+            XmlEvent::StartElement {
+                name, attributes, ..
+            } => {
+                depth += 1;
+                if depth > MAX_XML_DEPTH {
+                    ferroan_diag::refuse(
+                        ferroan_diag::HTTP_XML_DEPTH,
+                        ferroan_diag::Kind::Hard,
+                        MAX_XML_DEPTH as u64,
+                        depth as u64,
+                        "authorization",
+                    );
                     return Err(());
                 }
-                '>' => {
-                    self.index += 1;
-                    return Ok((name, false));
+                let space = attributes
+                    .iter()
+                    .find(|attribute| {
+                        attribute.name.namespace.as_deref() == Some(::xml::namespace::NS_XML_URI)
+                            && attribute.name.local_name == "space"
+                    })
+                    .map(|attribute| attribute.value.as_str());
+                let preserve = match space {
+                    Some("preserve") => true,
+                    Some("default") => false,
+                    Some(_) => return Err(()),
+                    None => keep_root_space,
+                };
+                match depth {
+                    1 => {
+                        if name.namespace.is_some()
+                            || name.local_name != "AuthorizationRequest"
+                            || !attributes.iter().all(valid_root_attribute)
+                        {
+                            return Err(());
+                        }
+                        keep_root_space = preserve;
+                    }
+                    2 if name.namespace.is_none() => {
+                        if let Some(index) = FIELDS.iter().position(|&key| key == name.local_name)
+                            && !seen[index]
+                        {
+                            seen[index] = true;
+                            field = Some(index);
+                            keep_field_space = preserve;
+                        }
+                    }
+                    3 if field.is_some() => return Err(()),
+                    _ => {}
                 }
-                _ => self.index += width,
             }
-        }
-        Err(())
-    }
-
-    fn read_name(&mut self) -> Result<String, ()> {
-        let mut name = String::new();
-        while let Some(c) = self.rest().chars().next() {
-            if !(c.is_ascii_alphanumeric() || c == '_' || c == ':' || c == '-') {
-                break;
+            XmlEvent::EndElement { .. } => {
+                if depth == 2 {
+                    field = None;
+                }
+                depth -= 1;
             }
-            name.push(c);
-            self.index += c.len_utf8();
-        }
-        if name.is_empty() { Err(()) } else { Ok(name) }
-    }
-
-    fn text_until_markup(&mut self) -> Result<String, ()> {
-        let Some(at) = self.rest().find('<') else {
-            return Err(());
-        };
-        let text = self.rest()[..at].to_string();
-        self.index += at;
-        Ok(text)
-    }
-}
-
-fn decode_text(raw: &str) -> Result<String, ()> {
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        if let Some(entity) = rest.strip_prefix("&amp;") {
-            out.push('&');
-            rest = entity;
-        } else if let Some(entity) = rest.strip_prefix("&lt;") {
-            out.push('<');
-            rest = entity;
-        } else if let Some(entity) = rest.strip_prefix("&gt;") {
-            out.push('>');
-            rest = entity;
-        } else if let Some(entity) = rest.strip_prefix("&quot;") {
-            out.push('"');
-            rest = entity;
-        } else if let Some(entity) = rest.strip_prefix("&apos;") {
-            out.push('\'');
-            rest = entity;
-        } else {
-            return Err(());
+            XmlEvent::CData(value) if field == Some(0) => id.push_str(&value),
+            XmlEvent::Characters(value) | XmlEvent::Whitespace(value)
+                if field == Some(0)
+                    && (keep_field_space
+                        || !value.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))) =>
+            {
+                id.push_str(&value);
+            }
+            XmlEvent::Doctype { .. } => return Err(()),
+            _ => {}
         }
     }
-    out.push_str(rest);
-    Ok(out)
+    Ok(id)
 }
 
 fn xml(status: StatusCode, body: Vec<u8>) -> Response {
@@ -319,6 +243,22 @@ mod tests {
     }
 
     #[test]
+    fn depth_limit_includes_ignored_extension_children() {
+        for (depth, allowed) in [
+            (ferroan_http::MAX_XML_DEPTH, true),
+            (ferroan_http::MAX_XML_DEPTH + 1, false),
+        ] {
+            let inner = depth - 1;
+            let document = format!(
+                "<AuthorizationRequest>{}{}</AuthorizationRequest>",
+                "<X>".repeat(inner),
+                "</X>".repeat(inner)
+            );
+            assert_eq!(authorization_body(document.as_bytes()).is_ok(), allowed);
+        }
+    }
+
+    #[test]
     fn a_missing_id_is_an_empty_prefix_and_junk_is_rejected() {
         let empty = authorization_body(
             b"<?xml version=\"1.0\" encoding=\"utf-8\"?><AuthorizationRequest></AuthorizationRequest>",
@@ -328,7 +268,7 @@ mod tests {
         assert!(text.contains("<Message> has been authorized</Message>"));
         assert!(authorization_body(b"<nope/>").is_err());
         assert!(
-            authorization_body(b"<AuthorizationRequest><Other></Other></AuthorizationRequest>")
+            authorization_body(b"<AuthorizationRequest><Other></Broken></AuthorizationRequest>")
                 .is_err()
         );
         let escaped =
