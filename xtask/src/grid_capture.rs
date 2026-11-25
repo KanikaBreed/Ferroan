@@ -674,6 +674,8 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
     let mut udp_finish = 0usize;
     let mut landings = 0usize;
     let mut movement = 0usize;
+    // Each arrival's position and look, so a failed run names what it sent.
+    let mut arrivals = Vec::new();
     for record in &captured {
         let Ok(packet) = parse_packet(&record.bytes) else {
             continue;
@@ -727,9 +729,10 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
                 ));
             }
             movement += 1;
-            if near_vec(decoded.data.position.to_array(), LANDING)
-                && near_vec(decoded.data.look_at.to_array(), LANDING_LOOK)
-            {
+            let position = decoded.data.position.to_array();
+            let look_at = decoded.data.look_at.to_array();
+            arrivals.push(format!("{position:?} look {look_at:?}"));
+            if near_vec(position, LANDING) && near_vec(look_at, LANDING_LOOK) {
                 landings += 1;
             }
         }
@@ -741,8 +744,9 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
         || movement != side.movement_complete
     {
         return Err(format!(
-            "{} viewer sequence: UseCircuitCode {circuits}, TeleportStart {starts}, UDP TeleportFinish {udp_finish}, landing {landings}, AgentMovementComplete {movement}",
-            side.label
+            "{} viewer sequence: UseCircuitCode {circuits}, TeleportStart {starts}, UDP TeleportFinish {udp_finish}, landing {landings}, AgentMovementComplete {movement} (at {})",
+            side.label,
+            arrivals.join("; ")
         ));
     }
     Ok(UdpCounts {

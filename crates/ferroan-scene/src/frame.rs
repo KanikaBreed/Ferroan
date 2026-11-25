@@ -307,7 +307,8 @@ impl TerrainFrame {
     }
 
     /// A hop completion: the returning `UpdateAgent` as `CopyFrom` stores it,
-    /// then the new root actor at rest facing the look.
+    /// then the new root at rest facing the look. Its actor waits for the
+    /// next `arrive`, so the position stays the one this answer carries.
     pub fn complete_hop(
         &self,
         agent: Uuid,
@@ -556,7 +557,7 @@ fn answer(
             avatar
                 .body
                 .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
-            arrive_at_rest(avatar);
+            hold_for_arrival(avatar);
             let _ = reply.send(avatar.pose);
         }
         Request::Departure { agent, reply } => {
@@ -586,7 +587,7 @@ impl Avatar {
     }
 }
 
-/// A new physics actor on arrival or return: `MakeRootAgent` adds one at rest
+/// A new physics actor on arrival: `MakeRootAgent` adds one at rest
 /// for a teleport. The record stays; the command does not. The tick may run
 /// after this returns.
 fn arrive_at_rest(avatar: &mut Avatar) {
@@ -594,6 +595,18 @@ fn arrive_at_rest(avatar: &mut Avatar) {
     avatar.body.halt_command();
     avatar.body.set_child(false);
     avatar.body.set_actor(true);
+}
+
+/// A hop completion: root and at rest, as `arrive_at_rest`, but the actor
+/// waits for the arrival packet's sample (`Request::Arrive`), as a login
+/// pose does. The circuit reports this position to GridUser and Presence
+/// before it sends `AgentMovementComplete`. A tick in between would move
+/// the avatar, and the packet would not carry the landing GridUser got.
+fn hold_for_arrival(avatar: &mut Avatar) {
+    avatar.pose.velocity = [0.0, 0.0, 0.0];
+    avatar.body.halt_command();
+    avatar.body.set_child(false);
+    avatar.body.set_actor(false);
 }
 
 fn fresh(position: [f32; 3]) -> Presence {
@@ -1282,6 +1295,9 @@ mod tests {
         assert_eq!(view.head_rotation, [0.0, 0.0, 0.25, 0.75]);
         assert_eq!(view.target_velocity, [0.0, 0.0, 0.0]);
         assert_eq!(view.draw_distance, 200.0);
+        // The actor flies once the arrival packet has sampled the pose.
+        assert!(!flying(&frame, agent));
+        assert_eq!(reuse(&frame, agent).position, [20.0, 30.0, 40.0]);
         assert!(flying(&frame, agent));
         // A far below 32 is clamped as `DrawDistance` is.
         let mut near = standing_return([20.0, 30.0, 40.0]);
@@ -1337,6 +1353,40 @@ mod tests {
         assert_eq!(home.position[0], parked[0]);
         assert_eq!(home.position[1], parked[1]);
         assert_eq!(home.velocity, [0.0, 0.0, 0.0]);
+    }
+
+    /// QR29: the circuit reports the completion's position to GridUser and
+    /// Presence, then samples it for `AgentMovementComplete`. Ticks in between
+    /// must not move it, or the return lands at the snapped height.
+    #[test]
+    fn a_hop_completion_holds_the_landing_until_the_arrival_samples_it() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(29);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        frame.set_child(agent, true).unwrap();
+        let landing = [128.0, 128.0, 30.0];
+        assert_eq!(
+            complete(&frame, agent, standing_return(landing)).position,
+            landing
+        );
+        wait_frames(&frame, 3);
+        assert_eq!(read(&frame, agent).position, landing);
+        // A walk posted before the sample is dropped by the arrival.
+        frame
+            .agent_update(agent, walking_update(3_000, 3, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 2);
+        assert_eq!(read(&frame, agent).position, landing);
+        let sampled = reuse(&frame, agent);
+        assert_eq!(sampled.position, landing);
+        assert_eq!(sampled.velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(motion(&frame, agent).target_velocity, [0.0, 0.0, 0.0]);
+        // After the sample the actor is stepped again.
+        wait_frames(&frame, 2);
+        let stepped = read(&frame, agent).position;
+        assert_eq!([stepped[0], stepped[1]], [128.0, 128.0]);
+        assert_eq!(stepped[2], AVATAR_SIZE_Z);
     }
 
     #[test]
