@@ -75,9 +75,7 @@ impl AvatarService {
         };
         for row in rows {
             if row.name == "AvatarType" {
-                data.avatar_type = row
-                    .value
-                    .trim()
+                data.avatar_type = numeric_text(&row.value)
                     .parse()
                     .map_err(|_| StoreError::Row("invalid AvatarType".into()))?;
             } else {
@@ -207,8 +205,12 @@ fn check_bound(id: &'static str, limit: usize, used: usize) -> Result<(), StoreE
     Ok(())
 }
 
+pub(super) fn numeric_text(raw: &str) -> &str {
+    raw.trim_matches(|c| matches!(c, '\t'..='\r' | ' '))
+}
+
 fn rectified_height(raw: &str) -> f32 {
-    let text = raw.trim();
+    let text = numeric_text(raw);
     let value = if !text.contains('.') && text.matches(',').count() == 1 {
         text.replace(',', ".").parse::<f32>().ok()
     } else if text.contains(',') {

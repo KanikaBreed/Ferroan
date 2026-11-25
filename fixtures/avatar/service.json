@@ -261,6 +261,168 @@
       "Status": 200,
       "ContentType": "application/xml",
       "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E1\u003C/AvatarType\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-integer-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=0%2C001.5",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-integer-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.5\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-repeated-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=0%2C0%2C2.5",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-repeated-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E2.5\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-fraction-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=1.5%2C0",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-fraction-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.771488\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-out-of-range-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=1%2C2.5",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-out-of-range-group",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.771488\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-ascii-space",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=%091%2C8%0D",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-ascii-space",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.8\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-no-break-space",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=%C2%A01.5",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-no-break-space",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.771488\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "height-next-line",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarHeight=%C2%851.5",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-height-next-line",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CAvatarHeight\u003E1.771488\u003C/AvatarHeight\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "ascii-space-type",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarType=%205",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-ascii-space-type",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E5\u003C/AvatarType\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "no-break-space-type",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarType=%C2%A05",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-no-break-space-type",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003EFailure\u003C/result\u003E\n\u003C/ServerResponse\u003E"
     }
   ]
 }

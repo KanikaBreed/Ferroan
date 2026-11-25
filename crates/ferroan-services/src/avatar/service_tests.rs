@@ -33,14 +33,7 @@ impl Drop for CopiedStore {
 
 #[tokio::test]
 async fn avatar_http_matches_pin8_server_replies() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/avatar/service.json");
-    let fixture: Value = serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-    assert_eq!(
-        fixture["pin"],
-        ferroan_http::REFERENCE_TRANQUILLITY_REVISION
-    );
-    let cases = fixture["observations"].as_array().unwrap();
-    assert_eq!(cases.len(), 29);
+    let cases = observations("service.json", 47);
     let copy = CopiedStore::new();
     let pool = ferroan_db::open_sqlite_file(&copy.path(), &["Avatar"])
         .await
@@ -69,7 +62,6 @@ async fn avatar_http_matches_pin8_server_replies() {
     );
     let router = AvatarHttp::open(&config).await.unwrap().into_router();
     for case in cases {
-        let label = case["Label"].as_str().unwrap();
         sqlx::query("DELETE FROM RefusedStore")
             .execute(db)
             .await
@@ -81,43 +73,102 @@ async fn avatar_http_matches_pin8_server_replies() {
                 .await
                 .unwrap();
         }
-        let mut post = Request::post("/avatar")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
-        if case["Shard"].as_bool().unwrap() {
-            post = post.header("X-SecondLife-Shard", "fixture");
-        }
-        let response = router
-            .clone()
-            .oneshot(
-                post.body(Body::from(case["Body"].as_str().unwrap().to_owned()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            u64::from(response.status().as_u16()),
-            case["Status"].as_u64().unwrap(),
-            "{label}"
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .map(|v| v.to_str().unwrap()),
-            case["ContentType"].as_str(),
-            "{label}"
-        );
-        let body = to_bytes(response.into_body(), ferroan_http::MAX_QUERY_BYTES)
-            .await
-            .unwrap();
-        assert_eq!(
-            std::str::from_utf8(&body).unwrap(),
-            case["Reply"].as_str().unwrap(),
-            "{label}"
-        );
+        compare_reply(&router, &case).await;
     }
     drop(router);
     pool.close().await;
+}
+
+fn observations(file: &str, count: usize) -> Vec<Value> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/avatar")
+        .join(file);
+    let mut fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(
+        fixture["pin"],
+        ferroan_http::REFERENCE_TRANQUILLITY_REVISION
+    );
+    let Value::Array(cases) = fixture["observations"].take() else {
+        panic!("expected observations")
+    };
+    assert_eq!(cases.len(), count);
+    cases
+}
+
+async fn compare_reply(router: &axum::Router, case: &Value) {
+    let label = case["Label"].as_str().unwrap();
+    let mut post =
+        Request::post("/avatar").header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if case["Shard"].as_bool().unwrap() {
+        post = post.header("X-SecondLife-Shard", "fixture");
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            post.body(Body::from(case["Body"].as_str().unwrap().to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        u64::from(response.status().as_u16()),
+        case["Status"].as_u64().unwrap(),
+        "{label}"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap()),
+        case["ContentType"].as_str(),
+        "{label}"
+    );
+    let body = to_bytes(response.into_body(), ferroan_http::MAX_QUERY_BYTES)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&body).unwrap(),
+        case["Reply"].as_str().unwrap(),
+        "{label}"
+    );
+}
+
+#[tokio::test]
+async fn mysql_failed_appearance_and_delete_match_pin8_replies() {
+    let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL unset; MySQL avatar HTTP replay skipped");
+        return;
+    };
+    let pool = ferroan_db::Pool::connect_sqlx_url(&url).await.unwrap();
+    pool.require_stores(&["Avatar"]).await.unwrap();
+    let db = pool.mysql().unwrap().clone();
+    let realm = format!("AvatarHttp_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE TABLE {realm} LIKE Avatars"))
+        .execute(&db)
+        .await
+        .unwrap();
+    let store = AvatarStore::new(pool, &realm).unwrap();
+    let router = AvatarHttp::new(AvatarService::new(store), true).into_router();
+    let cases = observations("service-mysql.json", 5);
+    let (failed_delete, appearance_cases) = cases.split_last().unwrap();
+    assert_eq!(failed_delete["Label"], "failed-delete");
+    for case in appearance_cases {
+        compare_reply(&router, case).await;
+    }
+    sqlx::query(&format!("DROP TABLE {realm}"))
+        .execute(&db)
+        .await
+        .unwrap();
+    compare_reply(&router, failed_delete).await;
+
+    // The same request fails if the store cannot acquire a connection.
+    db.close().await;
+    let mut closed = failed_delete.clone();
+    closed["Label"] = "closed-pool-delete".into();
+    closed["Reply"] = std::str::from_utf8(crate::griduser::FAILURE_XML)
+        .unwrap()
+        .into();
+    compare_reply(&router, &closed).await;
 }
 
 #[tokio::test]

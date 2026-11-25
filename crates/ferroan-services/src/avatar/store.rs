@@ -31,6 +31,8 @@
 //   Source/OpenSim.Data.MySQL/MySQLGenericTableHandler.cs
 //   Source/OpenSim.Data.PGSQL/PGSQLGenericTableHandler.cs
 //   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+// MySQL write errors follow Source/OpenSim.Data.MySQL/MySQLFramework.cs
+// at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -308,10 +310,15 @@ impl AvatarStore {
                 .execute(self.sqlite()?)
                 .await?
                 .rows_affected(),
-            Backend::Mysql => bind_all(sqlx::query(sql), values)
-                .execute(self.mysql()?)
-                .await?
-                .rows_affected(),
+            Backend::Mysql => {
+                // Pin8 opens before ExecuteNonQueryWithConnection: only a
+                // failure executing the write counts as zero affected rows.
+                let mut connection = self.mysql()?.acquire().await?;
+                bind_all(sqlx::query(sql), values)
+                    .execute(&mut *connection)
+                    .await
+                    .map_or(0, |result| result.rows_affected())
+            }
             Backend::Postgres => bind_all(sqlx::query(sql), values)
                 .execute(self.postgres()?)
                 .await?

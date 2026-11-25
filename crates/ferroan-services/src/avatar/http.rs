@@ -141,7 +141,9 @@ async fn dispatch(service: &AvatarService, mut fields: FieldMap) -> Option<Vec<u
                     _ => return None,
                 };
                 if name == "AvatarType" {
-                    data.avatar_type = value.trim().parse().unwrap_or_default();
+                    data.avatar_type = super::service::numeric_text(&value)
+                        .parse()
+                        .unwrap_or_default();
                 }
                 data.fields.push((name, value));
             }

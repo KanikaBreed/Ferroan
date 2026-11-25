@@ -11,9 +11,9 @@ using OpenSim.Data;
 
 const int MaxPayload = 1024 * 1024;
 
-if (args.Length == 5 && args[0] == "service" && ushort.TryParse(args[3], out var port) && port != 0)
+if (args.Length == 5 && args[0] is ("service" or "service-mysql") && ushort.TryParse(args[3], out var port) && port != 0)
 {
-    try { return ServiceCases.Run(args[1], args[2], port, args[4]); }
+    try { return ServiceCases.Run(args[1], args[2], port, args[4], args[0] == "service-mysql"); }
     catch (Exception error)
     {
         Console.Error.WriteLine(Scrub(error.Message));

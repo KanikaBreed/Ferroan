@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using MySqlConnector;
 using Nini.Config;
 using OpenMetaverse;
 using OpenSim.Data;
@@ -14,8 +16,8 @@ using OpenSim.Services.AvatarService;
 
 static class ServiceCases
 {
-    // Only the selected Store returns false. All other reads, writes and deletes
-    // go through Pin8's SQLite plugin, including failed-appearance cleanup.
+    // A selected SQLite Store can return false. Every other call, including
+    // cleanup and all MySQL writes, goes through the pinned database plugin.
     sealed class StoreProbe(IAvatarData db) : IAvatarData
     {
         public string Refuse;
@@ -33,13 +35,15 @@ static class ServiceCases
     sealed class Service(IConfigSource source, IAvatarData store) : AvatarService(source, store);
     record Observation(string Label, string Body, string Refuse, bool Shard, int Status, string ContentType, string Reply);
 
-    public static int Run(string action, string pin, uint port, string path)
+    public static int Run(string action, string pin, uint port, string path, bool mysql)
     {
         string dir = Directory.CreateTempSubdirectory("avatar-http-").FullName;
         try
         {
-            using var db = new Database($"Data Source={Path.Combine(dir, "Avatar.db")};Pooling=False;");
-            var probe = new StoreProbe(db);
+            CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+            using var sqlite = mysql ? null : new Database($"Data Source={Path.Combine(dir, "Avatar.db")};Pooling=False;");
+            using var table = mysql ? new MysqlTable() : null;
+            var probe = new StoreProbe(mysql ? table.Store : sqlite);
             var config = new IniConfigSource();
             config.AddConfig("AvatarService");
             var http = new BaseHttpServer(port) { ListenIPAddress = IPAddress.Loopback };
@@ -49,8 +53,6 @@ static class ServiceCases
             {
                 using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(10) };
                 var observations = new List<Observation>();
-                const string user = "11111111-1111-4111-8111-111111111111";
-                string Form(string method, string more = "") => $"VERSIONMIN=0&VERSIONMAX=0&METHOD={method}&UserID={user}{more}";
                 void Post(string label, string body, string refuse = null, bool shard = false)
                 {
                     probe.Refuse = refuse;
@@ -61,35 +63,10 @@ static class ServiceCases
                     string reply = new UTF8Encoding(false, true).GetString(response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult());
                     observations.Add(new(label, body, refuse, shard, (int)response.StatusCode, response.Content.Headers.ContentType?.ToString(), reply));
                 }
-                Post("absent", Form("getavatar"));
-                Post("missing-user", "METHOD=getavatar");
-                Post("bad-user", "METHOD=setavatar&UserID=bad");
-                Post("missing-method", $"UserID={user}");
-                Post("unknown-method", Form("GetAvatar"));
-                Post("shard", Form("getavatar"), shard: true);
-                Post("reset-absent", Form("resetavatar"));
-                Post("set-bake-index", Form("setitems", "&Names[]=Bake%3AHead&Values[]=cached&Names[]=BakeHash%3AHead&Values[]=hash&Names[]=BakeCOFVersion&Values[]=3&Names[]=BakeSize&Values[]=512&Names[]=BakeUpdated&Values[]=99&Names[]=bake&Values[]=old"));
-                Post("only-items", Form("getavatar"));
-                Post("first-appearance", Form("setavatar", "&AvatarType=1&AvatarHeight=1%2C8&Wearable+4%3A0=shirt&_ap_1=item&Notes=A%26B%3C"));
-                Post("first-read", Form("getavatar"));
-                Post("replace", Form("setavatar", "&AvatarType=2&AvatarHeight=12&Bake%3AHead=new"));
-                Post("read-replaced", Form("getavatar"));
-                Post("mixed-lists", Form("setitems", "&Names[]=Extra&Values=text"));
-                Post("different-counts", Form("setitems", "&Names[]=Extra&Names[]=Missing&Values[]=text"));
-                Post("two-items", Form("setitems", "&Names[]=Extra&Names[]=Other&Values[]=value&Values[]=abc"));
-                Post("scalar-remove", Form("removeitems", "&Names=Extra"));
-                Post("remove", Form("removeitems", "&Names[]=Other&Names[]=Missing&Names[]=BakeHash%3AHead"));
-                Post("read-items", Form("getavatar"));
-                Post("fail-later-write", Form("setavatar", "&Serial=3&Reject=bad"), "Reject");
-                Post("read-after-failure", Form("getavatar"));
-                Post("raw-values", Form("setavatar", "&AvatarType=01&AvatarHeight=bad&List[]=a&List[]=b"));
-                Post("read-raw-values", Form("getavatar"));
-                Post("fail-type-write", Form("setavatar", "&Serial=4"), "AvatarType");
-                Post("read-after-type-failure", Form("getavatar"));
-                Post("partial-setitems", Form("setitems", "&Names[]=First&Values[]=kept&Names[]=Reject&Values[]=bad"), "Reject");
-                Post("read-partial-setitems", Form("getavatar"));
-                Post("reset", Form("resetavatar"));
-                Post("read-reset", Form("getavatar"));
+                if (mysql)
+                    MysqlCases(Post, table);
+                else
+                    SqliteCases(Post);
                 var output = JsonSerializer.Serialize(new { pin, observations }, new JsonSerializerOptions { WriteIndented = true }) + "\n";
                 if (action == "generate")
                 {
@@ -115,11 +92,102 @@ static class ServiceCases
                     }
                 }
                 else throw new ArgumentException("expected generate or verify");
-                Console.WriteLine($"avatar: {observations.Count} pinned HTTP replies {action} passed");
+                Console.WriteLine($"avatar ({(mysql ? "MySQL" : "SQLite")}): {observations.Count} pinned HTTP replies {action} passed");
                 return 0;
             }
             finally { http.Stop(true); }
         }
         finally { Directory.Delete(dir, true); }
+    }
+
+    const string User = "11111111-1111-4111-8111-111111111111";
+    static string Form(string method, string more = "") => $"VERSIONMIN=0&VERSIONMAX=0&METHOD={method}&UserID={User}{more}";
+    delegate void Send(string label, string body, string refuse = null, bool shard = false);
+
+    static void SqliteCases(Send Post)
+    {
+        Post("absent", Form("getavatar"));
+        Post("missing-user", "METHOD=getavatar");
+        Post("bad-user", "METHOD=setavatar&UserID=bad");
+        Post("missing-method", $"UserID={User}");
+        Post("unknown-method", Form("GetAvatar"));
+        Post("shard", Form("getavatar"), shard: true);
+        Post("reset-absent", Form("resetavatar"));
+        Post("set-bake-index", Form("setitems", "&Names[]=Bake%3AHead&Values[]=cached&Names[]=BakeHash%3AHead&Values[]=hash&Names[]=BakeCOFVersion&Values[]=3&Names[]=BakeSize&Values[]=512&Names[]=BakeUpdated&Values[]=99&Names[]=bake&Values[]=old"));
+        Post("only-items", Form("getavatar"));
+        Post("first-appearance", Form("setavatar", "&AvatarType=1&AvatarHeight=1%2C8&Wearable+4%3A0=shirt&_ap_1=item&Notes=A%26B%3C"));
+        Post("first-read", Form("getavatar"));
+        Post("replace", Form("setavatar", "&AvatarType=2&AvatarHeight=12&Bake%3AHead=new"));
+        Post("read-replaced", Form("getavatar"));
+        Post("mixed-lists", Form("setitems", "&Names[]=Extra&Values=text"));
+        Post("different-counts", Form("setitems", "&Names[]=Extra&Names[]=Missing&Values[]=text"));
+        Post("two-items", Form("setitems", "&Names[]=Extra&Names[]=Other&Values[]=value&Values[]=abc"));
+        Post("scalar-remove", Form("removeitems", "&Names=Extra"));
+        Post("remove", Form("removeitems", "&Names[]=Other&Names[]=Missing&Names[]=BakeHash%3AHead"));
+        Post("read-items", Form("getavatar"));
+        Post("fail-later-write", Form("setavatar", "&Serial=3&Reject=bad"), "Reject");
+        Post("read-after-failure", Form("getavatar"));
+        Post("raw-values", Form("setavatar", "&AvatarType=01&AvatarHeight=bad&List[]=a&List[]=b"));
+        Post("read-raw-values", Form("getavatar"));
+        Post("fail-type-write", Form("setavatar", "&Serial=4"), "AvatarType");
+        Post("read-after-type-failure", Form("getavatar"));
+        Post("partial-setitems", Form("setitems", "&Names[]=First&Values[]=kept&Names[]=Reject&Values[]=bad"), "Reject");
+        Post("read-partial-setitems", Form("getavatar"));
+        Post("reset", Form("resetavatar"));
+        Post("read-reset", Form("getavatar"));
+        foreach (var (label, input) in new[] {
+            ("integer-group", "0,001.5"), ("repeated-group", "0,0,2.5"),
+            ("fraction-group", "1.5,0"), ("out-of-range-group", "1,2.5"),
+            ("ascii-space", "\t1,8\r"), ("no-break-space", "\u00a01.5"),
+            ("next-line", "\u00851.5")
+        })
+        {
+            Post($"height-{label}", Form("setavatar", "&AvatarHeight=" + Uri.EscapeDataString(input)));
+            Post($"read-height-{label}", Form("getavatar"));
+        }
+        Post("ascii-space-type", Form("setavatar", "&AvatarType=%205"));
+        Post("read-ascii-space-type", Form("getavatar"));
+        Post("no-break-space-type", Form("setavatar", "&AvatarType=%C2%A05"));
+        Post("read-no-break-space-type", Form("getavatar"));
+    }
+
+    // A private copy of the migrated table preserves its real varchar(32)
+    // constraint. Dropping just this copy supplies a failed DELETE statement.
+    sealed class MysqlTable : IDisposable
+    {
+        readonly MySqlConnection connection;
+        readonly string realm = "AvatarHttp_" + Guid.NewGuid().ToString("N");
+        public IAvatarData Store { get; }
+
+        public MysqlTable()
+        {
+            var ado = Environment.GetEnvironmentVariable("FERROAN_AVATAR_ADO_MYSQL");
+            Store = new OpenSim.Data.MySQL.MySQLAvatarData(ado, realm);
+            connection = new MySqlConnection(ado);
+            connection.Open();
+            using var create = new MySqlCommand($"CREATE TABLE {realm} LIKE Avatars", connection);
+            create.ExecuteNonQuery();
+        }
+
+        public void Drop()
+        {
+            using var drop = new MySqlCommand($"DROP TABLE IF EXISTS {realm}", connection);
+            drop.ExecuteNonQuery();
+        }
+
+        public void Dispose()
+        {
+            try { Drop(); } finally { connection.Dispose(); }
+        }
+    }
+
+    static void MysqlCases(Send Post, MysqlTable table)
+    {
+        Post("cache-bake", Form("setitems", "&Names[]=Bake%3AHead&Values[]=cached"));
+        Post("first-appearance", Form("setavatar", "&AvatarType=1&Wearable+4%3A0=shirt&Serial=1"));
+        Post("oversize-name", Form("setavatar", "&AvatarType=1&Serial=2&" + new string('x', 33) + "=bad"));
+        Post("read-after-failure", Form("getavatar"));
+        table.Drop();
+        Post("failed-delete", Form("removeitems", "&Names[]=Bake%3AHead"));
     }
 }

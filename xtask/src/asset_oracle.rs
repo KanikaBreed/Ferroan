@@ -150,18 +150,26 @@ pub fn avatar_service(writing: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let action = if writing { "generate" } else { "verify" };
-    let status = crate::dotnet_ci::command("dotnet")
-        .arg(dll)
-        .args(["service", action, &pin, &port.to_string()])
-        .arg(crate::repo_root().join("fixtures/avatar/service.json"))
-        .status();
-    match status {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        other => {
-            eprintln!("avatar: HTTP oracle failed: {other:?}");
-            ExitCode::FAILURE
+    let fixtures = crate::repo_root().join("fixtures/avatar");
+    for (mode, file) in [
+        ("service", "service.json"),
+        ("service-mysql", "service-mysql.json"),
+    ] {
+        if mode == "service-mysql" && std::env::var_os("FERROAN_AVATAR_ADO_MYSQL").is_none() {
+            println!("avatar: MySQL HTTP oracle skipped (FERROAN_AVATAR_ADO_MYSQL unset)");
+            continue;
+        }
+        let status = crate::dotnet_ci::command("dotnet")
+            .arg(&dll)
+            .args([mode, action, &pin, &port.to_string()])
+            .arg(fixtures.join(file))
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            eprintln!("avatar: {mode} HTTP oracle failed: {status:?}");
+            return ExitCode::FAILURE;
         }
     }
+    ExitCode::SUCCESS
 }
 
 fn build_plugin_oracle(target: &PluginCross) -> Result<(PathBuf, String), ExitCode> {
