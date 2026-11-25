@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+use ferroan_bot::scenario::PRIM_CAPTURE_COUNT;
 use ferroan_capture::{Kind, Record, read_capture};
 use ferroan_protocol::msgs::{
     ObjectUpdate,
@@ -48,7 +49,7 @@ fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, Str
                     return Err(format!("different initial blocks for {id}"));
                 }
             } else {
-                if parts.len() == 3 {
+                if parts.len() == PRIM_CAPTURE_COUNT {
                     return Err("capture contains unexpected prims".into());
                 }
                 parts.insert(id, block);
@@ -86,8 +87,8 @@ fn validate_ids(
     parts: &BTreeMap<Uuid, ObjectData>,
     roots: &BTreeMap<Uuid, Uuid>,
 ) -> Result<(), String> {
-    if roots.len() != 3 || !parts.keys().eq(roots.keys()) {
-        return Err("captured prim UUIDs differ from the three stored prims".into());
+    if roots.is_empty() || !parts.keys().eq(roots.keys()) {
+        return Err("captured prim UUIDs differ from the stored prims".into());
     }
     let mut ids = BTreeSet::new();
     for (uuid, part) in parts {
@@ -116,6 +117,12 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
         .build()
         .map_err(|e| e.to_string())?
         .block_on(stored_roots(&run.join("home/OpenSim.db")))?;
+    if roots.len() != PRIM_CAPTURE_COUNT {
+        return Err(format!(
+            "expected {PRIM_CAPTURE_COUNT} stored parts, found {}",
+            roots.len()
+        ));
+    }
     validate_ids(&parts, &roots)?;
     let dir = run.join("prim-updates");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -153,7 +160,8 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
     let json = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
     fs::write(dir.join("map.json"), format!("{json}\n")).map_err(|e| e.to_string())?;
     Ok(format!(
-        "prim-capture: three C# blocks, unique local IDs and matching parent links; fixture in {}",
+        "prim-capture: {} C# blocks, unique local IDs and matching parent links; fixture in {}",
+        roots.len(),
         dir.display()
     ))
 }
@@ -171,7 +179,7 @@ mod tests {
         let _ = fs::remove_file(temp);
         let map: Vec<serde_json::Value> =
             serde_json::from_slice(&fs::read(fixture.join("map.json")).unwrap()).unwrap();
-        assert_eq!(map.len(), 3);
+        assert_eq!(map.len(), 5);
         let mut parts = BTreeMap::new();
         let mut capture_uuids = BTreeSet::new();
         for entry in map {
@@ -210,6 +218,12 @@ mod tests {
             (9375, 27500, 150)
         );
         assert_eq!(tree.data, [4]);
+        let (grass, new_tree) = (blocks[3], blocks[4]);
+        assert_eq!((grass.p_code, new_tree.p_code), (95, 111));
+        assert_eq!(grass.data, [3]);
+        assert_eq!(new_tree.data, [3]);
+        assert_eq!(grass.object_data[12..], [0; 48]);
+        assert_ne!(new_tree.object_data[36..48], [0; 12]);
         // The face's legacy material and the mesh's glTF material survive the store and the wire.
         for (bytes, suffix) in [(&root.texture_entry, 22), (&mesh.extra_params, 26)] {
             let id = format!("65000000-0000-4000-8000-{suffix:012x}")

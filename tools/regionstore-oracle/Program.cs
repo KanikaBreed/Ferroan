@@ -189,6 +189,15 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
     tree.State = 4;
     tree.SetScale(2);
     var vegetation = new SceneObjectGroup(Part(3, "tree", tree, new Vector3(134, 128, 40), Vector3.Zero));
+    SceneObjectGroup RotatedVegetation(int n, PCode code)
+    {
+        var shape = PrimitiveBaseShape.Default;
+        shape.PCode = (byte)code;
+        shape.State = 3;
+        var part = Part(n, code.ToString(), shape, new Vector3(132 + n, 128, 40), Vector3.Zero);
+        part.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.75f);
+        return new SceneObjectGroup(part);
+    }
     string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
     var store = new SQLiteSimulationData();
     try
@@ -196,6 +205,8 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         store.Initialise(connection);
         store.StoreObject(group, region);
         store.StoreObject(vegetation, region);
+        store.StoreObject(RotatedVegetation(4, PCode.Grass), region);
+        store.StoreObject(RotatedVegetation(5, PCode.NewTree), region);
     }
     finally
     {
