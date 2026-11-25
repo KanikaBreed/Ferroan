@@ -9,7 +9,11 @@ cargo xtask http generate
 cargo xtask http verify
 cargo xtask http status-generate
 cargo xtask http status-verify
+cargo xtask http auth-generate
+cargo xtask http auth-verify
 ```
+
+The auth commands call Pin8's authorization and authentication handlers and its web-key service with an isolated data plugin. See the [authentication edge fixtures](../../fixtures/auth-edges/README.md).
 
 The status commands also capture Pin8 simulation transfer fields and neighbour refusal reasons in `simulation-transfer.json`.
 
