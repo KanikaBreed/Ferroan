@@ -29,6 +29,7 @@
 //   Source/OpenSim.Services.AuthenticationService/WebkeyAuthenticationService.cs
 //   Source/OpenSim.Services.AuthenticationService/WebkeyOrPasswordAuthenticationService.cs
 //   OpenSim-NGC/OpenSim-Tranquillity @ 1d7abb8337a477842fe1d7dd84beffe389ee52ac
+// Webkey clear reviewed against KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b (D79).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -39,10 +40,9 @@
 //! token. Impersonation (user flag bit 6, level >= 200) runs only when that
 //! service is injected, which this process does not do.
 //!
-//! `new UUID(password)` throws when the text is shorter than 32 characters or
-//! is not a UUID (TB41). A normal login hash is 32 hex digits and does not
-//! throw. This service treats the throw as a failed web-key check, so
-//! `WebkeyOrPassword` can still try the password.
+//! Pin8 rejects malformed and zero web keys. `WebkeyOrPassword` tries the
+//! password after a failed web-key check. D79 requires a successful conditional
+//! clear before issuing a token for a matching key.
 
 use uuid::Uuid;
 
@@ -195,13 +195,17 @@ impl AuthService {
                 Ok(String::new())
             }
             Presented::Key => {
-                let Some(mut row) = self.store.get(principal).await? else {
+                let Some(row) = self.store.get(principal).await? else {
                     tracing::debug!("authentication: principal {principal} or its data not found");
                     return Ok(String::new());
                 };
                 if row.web_login_key == password {
-                    row.web_login_key = ZERO_KEY.to_string();
-                    if !self.store.store(&row).await? {
+                    // D79: a web login key must be consumed before issuing its token.
+                    if !self
+                        .store
+                        .consume_web_key(principal, &row.web_login_key)
+                        .await?
+                    {
                         return Ok(String::new());
                     }
                     self.issue(principal, lifetime).await
@@ -231,8 +235,7 @@ enum Presented {
     Key,
 }
 
-/// `new UUID(text)` throws below 32 characters or when the text is not a UUID.
-/// `UUID.Zero` is a rejected key, not a throw.
+/// Pin8 rejects malformed and zero UUIDs before looking up the key.
 fn classify_webkey(password: &str) -> Presented {
     if password.len() < 32 {
         return Presented::Invalid;
