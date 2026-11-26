@@ -10,7 +10,7 @@ publish.workspace = true
 # Single precision: `double-precision` stays off. `prebuilt` is required so
 # `JOLTC_PREBUILT=require` in `.cargo/config.toml` can use the SHA-checked
 # archive. That value is the repository default. `JOLTC_PREBUILT=off` builds
-# from source. `build.rs` checks the hashes beside D8 against `prebuilt.txt`
+# from source. `build.rs` checks its SHA constants against `prebuilt.txt`
 # and refuses `JOLTC_LIB_DIR`. The safe `oxijolt` crate is not a dependency.
 # No other Ferroan crate depends on `oxijolt-sys`.
 [dependencies]
