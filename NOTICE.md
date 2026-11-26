@@ -77,14 +77,21 @@ Q59's `crates/ferroan-scene/src/coalesced.rs` follows `CoalescedSceneObjectsSeri
 
 Q79b follows `Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs`, `Source/OpenSim.Region.Framework/Scenes/Scene.cs` and `ScenePresence.cs`, `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`, `Source/OpenSim.Services.Connectors/Grid/GridServicesConnector.cs` and `Simulation/SimulationServiceConnector.cs`, and `Source/OpenSim.Framework/AgentCircuitData.cs`, `AvatarAppearance.cs`, `AvatarWearable.cs` and `ChildAgentDataUpdate.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause).
 
-Q101's `crates/ferroan-physics/src/substep.rs` ports `Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (MPL-2.0, Copyright (c) 2026 Legion Builds). The file keeps that notice and remains available under MPL-2.0. The C# source is not copied. `tools/jolt-oracle` compiles that pinned file for the step-count fixture and is new Ferroan code. No native library is linked.
+Q101's `crates/ferroan-physics/src/substep.rs` ports `Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (MPL-2.0, Copyright (c) 2026 Legion Builds). The file keeps that notice and remains available under MPL-2.0. The C# source is not copied. `tools/jolt-oracle` compiles that pinned file for the step-count fixture and is new Ferroan code. That port does not link a native library.
 
-## Native libraries (planned)
+## Native libraries
 
-- [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).
-- Linden Lab's [SLua engine](https://github.com/secondlife/slua), MIT (copyright Linden Lab), a fork of Luau (MIT, copyright Roblox).
+`ferroan-physics` links [Jolt Physics](https://github.com/jrouwe/JoltPhysics) 5.6.0 (commit `e77f175595e64cb44218cc9d9d56fc365ad0e36a`) through [`oxijolt-sys`](https://github.com/pockerhead/oxijolt) 1.6.0 (tag `v1.6.0`). The crate is MIT OR Apache-2.0, copyright Artem Balashow. Jolt is MIT, copyright Jorrit Rouwe. The build uses `JOLTC_PREBUILT=require` and `cross-platform-deterministic`, single precision. The safe `oxijolt` crate is not a dependency. Only `ferroan-physics` depends on `oxijolt-sys`.
 
-Their licence texts will be added when they become dependencies.
+| Name | Licence | Text |
+| --- | --- | --- |
+| `oxijolt-sys` 1.6.0 | MIT OR Apache-2.0 | [licenses/oxijolt-sys-MIT.txt](licenses/oxijolt-sys-MIT.txt), [licenses/oxijolt-sys-Apache-2.0.txt](licenses/oxijolt-sys-Apache-2.0.txt) |
+| Jolt Physics 5.6.0 | MIT | [licenses/Jolt-Physics-MIT.txt](licenses/Jolt-Physics-MIT.txt) |
+| joltc `886e0886` | MIT | [licenses/joltc-MIT.txt](licenses/joltc-MIT.txt) |
+
+The published `oxijolt-sys` 1.6.0 crate ships Jolt's `vendor/JoltPhysics/LICENSE` and joltc's `vendor/joltc/LICENSE`. It has no `LICENSE-MIT` or `LICENSE-APACHE`. Those `oxijolt-sys` licence texts are at the repository root of tag `v1.6.0` and at the root of each release archive. Checked against that tag and the crate's vendored Jolt licence. joltc is MIT, copyright Amer Koleci and Contributors. The crate's `vendor/joltc/LICENSE` is identical to joltc commit `886e088675bae3a086f8318c7803f8ee962c2f2c`. `native/joltc_ext` revision 30 is compiled into the same archive. Each file there is MIT, like joltc, and is an `oxijolt-sys` source (copyright Artem Balashow). The extension has no separate licence file.
+
+Linden Lab's [SLua engine](https://github.com/secondlife/slua), MIT (copyright Linden Lab), a fork of Luau (MIT, copyright Roblox), is still planned. Its licence text will be added when that dependency lands.
 
 ## Not used as sources
 

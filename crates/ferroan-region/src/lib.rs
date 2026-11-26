@@ -14,6 +14,7 @@ pub mod fetch_caps;
 pub mod grid;
 pub mod groups;
 pub mod inventory;
+pub mod land_properties;
 pub mod library;
 pub mod names;
 pub mod objects;

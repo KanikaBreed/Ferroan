@@ -66,7 +66,7 @@ These crates were checked on 17 November 2026; versions move.
 | --- | --- |
 | Async runtime, HTTP | tokio, axum, hyper, reqwest |
 | Databases | sqlx 0.9 (MySQL, PostgreSQL, SQLite) |
-| Physics | oxijolt-sys 1.5 (Jolt 5.6 through joltc) |
+| Physics | oxijolt-sys 1.6.0 (Jolt 5.6 through joltc) |
 | Convex decomposition | parry3d's V-HACD |
 | JPEG 2000 | j2k (pure Rust, encode and decode) |
 | 2D drawing | tiny-skia, plus a font crate (tiny-skia has no text) |
