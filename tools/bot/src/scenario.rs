@@ -63,7 +63,13 @@ pub enum Moment {
     /// A stored-prim run's viewer has received every stored part, before it
     /// logs out.
     Scene,
+    /// Both `roots` bots are in and have been driven for [`SETTLE`], before
+    /// either logs out.
+    Settled,
 }
+
+/// How long `roots` drives both bots before its [`Moment::Settled`] hook.
+pub const SETTLE: Duration = Duration::from_secs(2);
 
 /// One account the region already has. The password is not printed.
 pub struct Account {
@@ -811,6 +817,14 @@ async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
     };
     refuse_chat(&mut owner)?;
     refuse_chat(&mut chat)?;
+    if let Some(hook) = &harness.after_login {
+        if let Err(error) = drive_both(&mut chat, &mut owner, SETTLE).await {
+            let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
+            let _ = leave(harness, &mut owner, &harness.owner).await;
+            return Err(error);
+        }
+        hook(harness.owner.principal_id, Moment::Settled);
+    }
     if let Some(metrics) = &harness.metrics {
         let mut sessions: [&mut Session; 2] = [&mut chat, &mut owner];
         if let Err(error) = await_root_agents(http, metrics, 2, &mut sessions).await {
@@ -1165,6 +1179,29 @@ fn unknown_answers(
         return Err(format!(
             "the region answered the unknown id {answers:?}; at most {most} reply, each Unknown and the id"
         ));
+    }
+    Ok(())
+}
+
+/// Drive both circuits for `span`, refusing any chat either one hears.
+async fn drive_both(
+    first: &mut Session,
+    second: &mut Session,
+    span: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + span;
+    while tokio::time::Instant::now() < deadline {
+        // In turn, so neither drive is cancelled part way.
+        first
+            .drive(STEP / 2)
+            .await
+            .map_err(|error| error.to_string())?;
+        second
+            .drive(STEP / 2)
+            .await
+            .map_err(|error| error.to_string())?;
+        refuse_chat(first)?;
+        refuse_chat(second)?;
     }
     Ok(())
 }

@@ -6,19 +6,23 @@
 //!
 //! One C# Robust serves every step. Each step starts one region process,
 //! waits [`super::IDLE_SETTLE`] after its last `INITIALIZATION COMPLETE` line,
-//! reads `VmRSS` and `VmHWM`, and stops it. The steps:
+//! reads `VmRSS` and `VmHWM`, and stops it. The first line names the CPU
+//! count and the C# GC mode, since C#'s Server GC sizes its heaps by CPU
+//! count. The steps:
 //!
 //! - each server on the empty region, then on the 500-part store P2.5a's
 //!   `prim-load` delivers (`fixtures/prim-load/README.md`, written by the pin's
-//!   `SQLiteSimulationData.StoreObject`). Points: `idle`; `online 1` and
-//!   `online 2` as the two `roots` bots log in on the empty region, or
-//!   `online 1` and `scene received` once the `prim-load` bot has all 500
-//!   parts; then `after logout`;
-//! - four C# regions in one process at idle, which gives the C# cost of each
-//!   extra region against the empty C# region's idle point;
+//!   `SQLiteSimulationData.StoreObject`). Points: `idle`; `handshake 1` and
+//!   `handshake 2` as the two `roots` bots finish their handshakes, before the
+//!   region sends the scene, then `settled` once both have been driven for two
+//!   seconds; or `handshake 1` and `scene arrived` once the `prim-load` bot
+//!   has all 500 parts; then `after logout`;
+//! - one and four C# regions in one process at idle, [`REPEATS`] times each in
+//!   turn, which gives the median C# cost of each extra region and its range;
 //! - with `--bulk`, both servers at idle on the `regionstore bulk` stores
 //!   QR22 measured (single-prim groups with no shape row, [`PRIMS`]), and the
-//!   idle growth per prim.
+//!   idle growth per prim over the median one-region C# idle and the empty
+//!   Ferroan region.
 //!
 //! The Ferroan region is the release build. The C# regions run BasicPhysics
 //! and Ferroan has no physics or scripts yet, so no prim has a physics body or
@@ -42,6 +46,9 @@ pub(super) const PRIMS: [u32; 5] = [500, 1_000, 5_000, 10_000, 40_000];
 
 /// Regions in the one C# process of the per-region step.
 const REGIONS: usize = 4;
+
+/// One-region and four-region C# starts, in turn, for `per extra region`.
+const REPEATS: usize = 3;
 
 /// The scenes the bots visit: the label, the home store and the bot scenario.
 const SCENES: [(&str, RegionStore, &str); 2] = [
@@ -201,34 +208,47 @@ fn measure(
 ) -> Result<Vec<String>, String> {
     let robust = Meter::new();
     robust.watch("robust", "csharp", robust_pid);
+    // The accounts were just provisioned; settle as the regions do.
+    thread::sleep(super::IDLE_SETTLE);
     robust.point("idle")?;
-    let mut lines = Vec::new();
-    let mut empty = [None, None];
+    let mut lines = vec![memory::machine_line(&live::publish_dir())];
+    let mut ferroan_empty = None;
     for (scene, store, bot) in SCENES {
-        for (index, (server, ferroan)) in SERVERS.into_iter().enumerate() {
+        for (server, ferroan) in SERVERS {
             let (line, idle) = visit(step, scene, store, bot, server, ferroan)?;
-            println!("{line}");
             lines.push(line);
-            if store == RegionStore::Standard {
-                empty[index] = Some(idle);
+            if ferroan && store == RegionStore::Standard {
+                ferroan_empty = Some(idle);
             }
             robust.point(&format!("after {server} {scene}"))?;
         }
     }
-    let [Some(csharp_empty), Some(ferroan_empty)] = empty else {
-        return Err("the empty region was not measured".to_string());
-    };
-    let four = idle(
-        step,
-        "csharp-4",
-        false,
-        &RegionExtras {
-            more,
-            ..RegionExtras::default()
-        },
-    )?;
-    lines.push(per_region_line(csharp_empty, four));
-    robust.point("after 4 regions")?;
+    let ferroan_empty = ferroan_empty.ok_or("the empty Ferroan region was not measured")?;
+    // One and four C# regions in turn, so a slow first start or a drift of
+    // the machine falls on both sides.
+    let mut one = Vec::with_capacity(REPEATS);
+    let mut four = Vec::with_capacity(REPEATS);
+    for index in 1..=REPEATS {
+        one.push(idle(
+            step,
+            &format!("csharp-1-{index}"),
+            false,
+            &RegionExtras::default(),
+        )?);
+        four.push(idle(
+            step,
+            &format!("csharp-4-{index}"),
+            false,
+            &RegionExtras {
+                more,
+                ..RegionExtras::default()
+            },
+        )?);
+    }
+    let (one_line, four_line, csharp_empty) = region_count_lines(&one, &four);
+    lines.push(one_line);
+    lines.push(four_line);
+    robust.point("after the region-count steps")?;
     let mut largest = None;
     for (store, count) in stores {
         let mut pair = [None, None];
@@ -256,9 +276,9 @@ fn measure(
     }
     if let Some((count, csharp, rust)) = largest {
         lines.push(format!(
-            "memory: per prim at {count} bulk prims against the empty region: csharp {}, ferroan {}",
-            per_prim(csharp_empty, csharp, count),
-            per_prim(ferroan_empty, rust, count)
+            "memory: per prim at {count} bulk prims over the empty region (C#: median 1-region idle): csharp {}, ferroan {}",
+            per_prim(csharp_empty, csharp.rss_kib, count),
+            per_prim(ferroan_empty.rss_kib, rust.rss_kib, count)
         ));
         robust.point("after the bulk stores")?;
     }
@@ -307,7 +327,7 @@ fn visit(
     runtime.block_on(ferroan_bot::scenario::run(bot, &harness))?;
     drop(runtime);
     thread::sleep(super::IDLE_SETTLE);
-    meter.point("after logout")?;
+    meter.last_point("after logout")?;
     let idle = meter
         .points(0)
         .first()
@@ -378,23 +398,67 @@ fn start(
     )
 }
 
-/// `memory: region csharp (4 regions) idle …, peak …, per extra region …`.
-fn per_region_line(one: Sample, four: Sample) -> String {
-    let extra = four.rss_kib.saturating_sub(one.rss_kib) / (REGIONS as u64 - 1);
+/// The one-region and four-region C# lines, and the median one-region idle
+/// `VmRSS` in KiB. `per extra region` is the median over the runs of a third
+/// of each four-region idle over the one-region idle started just before it.
+fn region_count_lines(one: &[Sample], four: &[Sample]) -> (String, String, u64) {
+    let rss = |samples: &[Sample]| {
+        samples
+            .iter()
+            .map(|sample| sample.rss_kib)
+            .collect::<Vec<_>>()
+    };
+    let peak = |samples: &[Sample]| {
+        samples
+            .iter()
+            .map(|sample| sample.hwm_kib.max(sample.rss_kib))
+            .max()
+            .unwrap_or(0)
+    };
+    let extra: Vec<u64> = one
+        .iter()
+        .zip(four)
+        .map(|(one, four)| four.rss_kib.saturating_sub(one.rss_kib) / (REGIONS as u64 - 1))
+        .collect();
+    let base = spread(&rss(one));
+    let one_line = format!(
+        "memory: region csharp (1 region) idle {}, peak {}",
+        spread_text(base, one.len()),
+        memory::mib(peak(one))
+    );
+    let four_line = format!(
+        "memory: region csharp ({REGIONS} regions) idle {}, peak {}, per extra region {}",
+        spread_text(spread(&rss(four)), four.len()),
+        memory::mib(peak(four)),
+        spread_text(spread(&extra), extra.len())
+    );
+    (one_line, four_line, base.0)
+}
+
+/// Median, smallest and largest of `values`; the lower middle for an even
+/// count, and zeros for none.
+fn spread(values: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    match (sorted.first(), sorted.last()) {
+        (Some(min), Some(max)) => (sorted[(sorted.len() - 1) / 2], *min, *max),
+        _ => (0, 0, 0),
+    }
+}
+
+/// `18.0 MiB (median of 3, 8.6-19.9)`.
+fn spread_text((median, min, max): (u64, u64, u64), count: usize) -> String {
     format!(
-        "{}, per extra region {}",
-        memory::line(
-            "region",
-            &format!("csharp ({REGIONS} regions)"),
-            &[("idle".to_string(), four)]
-        ),
-        memory::mib(extra)
+        "{} (median of {count}, {}-{})",
+        memory::mib(median),
+        memory::mib_number(min),
+        memory::mib_number(max)
     )
 }
 
 /// Idle growth per prim, in KiB with one decimal.
-fn per_prim(empty: Sample, loaded: Sample, count: u32) -> String {
-    let grown = loaded.rss_kib.saturating_sub(empty.rss_kib) * 10;
+fn per_prim(empty_kib: u64, loaded_kib: u64, count: u32) -> String {
+    let grown = loaded_kib.saturating_sub(empty_kib) * 10;
     let tenths = grown / u64::from(count.max(1));
     format!("{}.{} KiB", tenths / 10, tenths % 10)
 }
@@ -411,16 +475,24 @@ mod tests {
     }
 
     #[test]
-    fn the_extra_region_cost_is_a_third_of_the_growth_to_four() {
+    fn the_extra_region_cost_is_the_median_of_alternating_runs() {
+        let one = [kib(300 * 1024), kib(330 * 1024), kib(290 * 1024)];
+        let four = [kib(354 * 1024), kib(355 * 1024), kib(350 * 1024)];
+        let (one_line, four_line, base) = region_count_lines(&one, &four);
+        assert_eq!(base, 300 * 1024);
         assert_eq!(
-            per_region_line(kib(300 * 1024), kib(360 * 1024)),
-            "memory: region csharp (4 regions) idle 360.0 MiB, peak 360.0 MiB, per extra region 20.0 MiB"
+            one_line,
+            "memory: region csharp (1 region) idle 300.0 MiB (median of 3, 290.0-330.0), peak 330.1 MiB"
+        );
+        assert_eq!(
+            four_line,
+            "memory: region csharp (4 regions) idle 354.0 MiB (median of 3, 350.0-355.0), peak 355.1 MiB, per extra region 18.0 MiB (median of 3, 8.3-20.0)"
         );
     }
 
     #[test]
     fn the_prim_cost_is_the_growth_over_the_empty_region() {
-        assert_eq!(per_prim(kib(17_000), kib(97_000), 40_000), "2.0 KiB");
-        assert_eq!(per_prim(kib(17_000), kib(16_000), 500), "0.0 KiB");
+        assert_eq!(per_prim(17_000, 97_000, 40_000), "2.0 KiB");
+        assert_eq!(per_prim(17_000, 16_000, 500), "0.0 KiB");
     }
 }

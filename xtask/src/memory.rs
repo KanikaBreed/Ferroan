@@ -30,7 +30,9 @@ use std::sync::{Arc, Mutex};
 /// Bytes read from one `/proc/<pid>/status`. Linux writes about 1.5 KiB.
 pub(crate) const STATUS_BYTES: usize = 16 * 1024;
 
-/// Points kept for one process in one run. A run takes three or four.
+/// Points kept for one process in one run. The last slot is kept for the
+/// run's final point ([`Meter::last_point`]), so a run with many logins keeps
+/// `idle`, its first logins and `after logout`.
 pub(crate) const MAX_POINTS: usize = 16;
 
 /// One read of `/proc/<pid>/status`, in KiB as the kernel reports it.
@@ -110,9 +112,11 @@ pub(crate) fn sample(_pid: u32) -> Result<Sample, String> {
 /// `server` is `csharp` or `ferroan`.
 struct Watched {
     role: String,
-    server: &'static str,
+    server: String,
     pid: u32,
     points: Vec<(String, Sample)>,
+    /// Points not kept because of [`MAX_POINTS`].
+    dropped: usize,
 }
 
 #[derive(Default)]
@@ -150,29 +154,38 @@ impl Meter {
 
     /// Sample this process at every later point. `pid` is a process the
     /// harness started and still owns.
-    pub(crate) fn watch(&self, role: &str, server: &'static str, pid: u32) {
+    pub(crate) fn watch(&self, role: &str, server: &str, pid: u32) {
         self.lock().watched.push(Watched {
             role: role.to_string(),
-            server,
+            server: server.to_string(),
             pid,
             points: Vec::new(),
+            dropped: 0,
         });
     }
 
-    /// Sample every watched process now, under `label`.
+    /// Sample every watched process now, under `label`. Past
+    /// `MAX_POINTS - 1` points the sample is not taken and is counted on the
+    /// line and through `live.memory-points`.
     pub(crate) fn point(&self, label: &str) -> Result<(), String> {
-        self.point_with(label, sample)
+        self.point_with(label, MAX_POINTS - 1, sample)
+    }
+
+    /// The run's final point (`after logout`), which may use the last slot.
+    pub(crate) fn last_point(&self, label: &str) -> Result<(), String> {
+        self.point_with(label, MAX_POINTS, sample)
     }
 
     fn point_with(
         &self,
         label: &str,
+        room: usize,
         mut read: impl FnMut(u32) -> Result<Sample, String>,
     ) -> Result<(), String> {
         let mut state = self.lock();
         let mut failures = Vec::new();
         for watched in &mut state.watched {
-            if watched.points.len() >= MAX_POINTS {
+            if watched.points.len() >= room {
                 ferroan_diag::drop_bound(
                     ferroan_diag::LIVE_MEMORY_POINTS,
                     ferroan_diag::Kind::Hard,
@@ -180,12 +193,7 @@ impl Meter {
                     watched.points.len() as u64 + 1,
                     "memory point",
                 );
-                failures.push(format!(
-                    "memory: {} {} already has {MAX_POINTS} points; {label} was not kept (limit {})",
-                    watched.role,
-                    watched.server,
-                    ferroan_diag::LIVE_MEMORY_POINTS
-                ));
+                watched.dropped += 1;
                 continue;
             }
             match read(watched.pid) {
@@ -204,19 +212,22 @@ impl Meter {
         }
     }
 
-    /// The point taken right after a bot finished logging in (`online 1`,
-    /// `online 2`, ... in login order across the run), or once a stored-prim
-    /// viewer has every part (`scene received`). A failure is kept and
-    /// returned by [`Meter::lines`], since the hook cannot fail the login.
+    /// The point a bot hook takes: `handshake 1`, `handshake 2`, ... right
+    /// after each login's handshake, in login order across the run, before
+    /// the region has sent the scene; `scene arrived` once a stored-prim
+    /// viewer has every part; `settled` once both `roots` bots have been
+    /// driven for two seconds. A failure is kept and returned by
+    /// [`Meter::lines`], since the hook cannot fail the login.
     pub(crate) fn online(&self, moment: ferroan_bot::scenario::Moment) {
         let label = {
             let mut state = self.lock();
             match moment {
                 ferroan_bot::scenario::Moment::Login => {
                     state.online += 1;
-                    format!("online {}", state.online)
+                    format!("handshake {}", state.online)
                 }
-                ferroan_bot::scenario::Moment::Scene => "scene received".to_string(),
+                ferroan_bot::scenario::Moment::Scene => "scene arrived".to_string(),
+                ferroan_bot::scenario::Moment::Settled => "settled".to_string(),
             }
         };
         let _ = self.point(&label);
@@ -232,13 +243,25 @@ impl Meter {
         Ok(state
             .watched
             .iter()
-            .map(|watched| match &state.scene {
-                Some(scene) => line(
-                    &watched.role,
-                    &format!("{} ({scene})", watched.server),
-                    &watched.points,
-                ),
-                None => line(&watched.role, watched.server, &watched.points),
+            .map(|watched| {
+                let server = match &state.scene {
+                    Some(scene) => format!("{} ({scene})", watched.server),
+                    None => watched.server.clone(),
+                };
+                let mut text = line(&watched.role, &server, &watched.points);
+                if watched.dropped > 0 {
+                    text.push_str(&format!(
+                        ", {} {} dropped (limit {})",
+                        watched.dropped,
+                        if watched.dropped == 1 {
+                            "point"
+                        } else {
+                            "points"
+                        },
+                        ferroan_diag::LIVE_MEMORY_POINTS
+                    ));
+                }
+                text
             })
             .collect())
     }
@@ -279,9 +302,53 @@ pub(crate) fn line(role: &str, server: &str, points: &[(String, Sample)]) -> Str
     text
 }
 
-/// KiB as MiB with one decimal.
+/// KiB as MiB, rounded to the nearest tenth.
 pub(crate) fn mib(kib: u64) -> String {
-    format!("{}.{} MiB", kib / 1024, (kib % 1024) * 10 / 1024)
+    format!("{} MiB", mib_number(kib))
+}
+
+/// [`mib`] without the unit.
+pub(crate) fn mib_number(kib: u64) -> String {
+    let tenths = (kib * 10 + 512) / 1024;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+/// `memory: machine <n> CPUs, C# GC <mode>`. C#'s Server GC sizes its heaps by
+/// the CPU count, so its numbers are only comparable on the same machine
+/// shape. `publish` is the C# region's publish directory.
+pub(crate) fn machine_line(publish: &std::path::Path) -> String {
+    let cpus = std::thread::available_parallelism()
+        .map(|count| count.get().to_string())
+        .unwrap_or_else(|_| "an unknown number of".to_string());
+    let path = publish.join("OpenSim.Server.RegionServer.runtimeconfig.json");
+    let gc = match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() > 64 * 1024 => "unknown (runtimeconfig over 64 KiB)".to_string(),
+        Ok(_) => std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| gc_mode(&text))
+            .unwrap_or_else(|error| format!("unknown ({error})")),
+        Err(error) => format!("unknown ({error})"),
+    };
+    format!("memory: machine {cpus} CPUs, C# GC {gc}")
+}
+
+/// The GC mode a .NET runtimeconfig asks for. Without the keys .NET uses
+/// workstation, concurrent GC.
+fn gc_mode(text: &str) -> Result<String, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| "the runtimeconfig is not JSON".to_string())?;
+    let properties = &json["runtimeOptions"]["configProperties"];
+    let server = properties["System.GC.Server"].as_bool().unwrap_or(false);
+    let concurrent = properties["System.GC.Concurrent"].as_bool().unwrap_or(true);
+    Ok(format!(
+        "{}, {}",
+        if server { "server" } else { "workstation" },
+        if concurrent {
+            "concurrent"
+        } else {
+            "not concurrent"
+        }
+    ))
 }
 
 /// Append the lines under a heading to the GitHub job summary, when the run
@@ -350,14 +417,18 @@ mod tests {
                 hwm_kib: 600 * 1024,
             })
         };
-        meter.point_with("idle", &mut read).unwrap();
-        meter.point_with("online 1", &mut read).unwrap();
-        meter.point_with("after logout", &mut read).unwrap();
+        meter.point_with("idle", MAX_POINTS - 1, &mut read).unwrap();
+        meter
+            .point_with("handshake 1", MAX_POINTS - 1, &mut read)
+            .unwrap();
+        meter
+            .point_with("after logout", MAX_POINTS, &mut read)
+            .unwrap();
         assert_eq!(
             meter.lines().unwrap(),
             vec![
-                "memory: region csharp idle 401.0 MiB, online 1 403.0 MiB, after logout 405.0 MiB, peak 600.0 MiB",
-                "memory: robust ferroan idle 402.1 MiB, online 1 404.1 MiB, after logout 406.1 MiB, peak 600.0 MiB",
+                "memory: region csharp idle 401.1 MiB, handshake 1 403.1 MiB, after logout 405.1 MiB, peak 600.0 MiB",
+                "memory: robust ferroan idle 402.2 MiB, handshake 1 404.2 MiB, after logout 406.2 MiB, peak 600.0 MiB",
             ]
         );
     }
@@ -366,7 +437,7 @@ mod tests {
     fn the_peak_is_never_below_a_resident_sample() {
         let points = [
             (
-                "scene received".to_string(),
+                "scene arrived".to_string(),
                 Sample {
                     rss_kib: 262_760,
                     hwm_kib: 262_760,
@@ -382,34 +453,66 @@ mod tests {
         ];
         assert_eq!(
             line("region", "csharp", &points),
-            "memory: region csharp scene received 256.6 MiB, after logout 243.6 MiB, peak 256.6 MiB"
+            "memory: region csharp scene arrived 256.6 MiB, after logout 243.7 MiB, peak 256.6 MiB"
         );
     }
 
     #[test]
-    fn a_failed_sample_fails_the_lines_and_the_point_bound_holds() {
+    fn past_the_bound_points_are_counted_and_after_logout_is_kept() {
         let meter = Meter::new();
         meter.watch("region", "ferroan", 100);
-        for index in 0..MAX_POINTS {
+        let one = |_| {
+            Ok(Sample {
+                rss_kib: 1024,
+                hwm_kib: 1024,
+            })
+        };
+        for index in 0..MAX_POINTS + 2 {
             meter
-                .point_with(&format!("p{index}"), |_| {
-                    Ok(Sample {
-                        rss_kib: 1,
-                        hwm_kib: 1,
-                    })
-                })
+                .point_with(&format!("p{index}"), MAX_POINTS - 1, one)
                 .unwrap();
         }
+        meter.point_with("after logout", MAX_POINTS, one).unwrap();
+        let lines = meter.lines().unwrap();
+        let points = meter.points(0);
+        assert_eq!(points.len(), MAX_POINTS);
+        assert_eq!(points[0].0, "p0");
+        assert_eq!(points[MAX_POINTS - 1].0, "after logout");
+        assert!(
+            lines[0].ends_with(", peak 1.0 MiB, 3 points dropped (limit live.memory-points)"),
+            "{}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn a_failed_sample_fails_the_lines() {
+        let meter = Meter::new();
+        meter.watch("region", "ferroan", 100);
         let error = meter
-            .point_with("one more", |_| {
-                Ok(Sample {
-                    rss_kib: 1,
-                    hwm_kib: 1,
-                })
-            })
+            .point_with("idle", MAX_POINTS - 1, |_| Err("gone".to_string()))
             .unwrap_err();
-        assert!(error.contains("live.memory-points"), "{error}");
+        assert!(error.contains("region ferroan at idle: gone"), "{error}");
         assert!(meter.lines().is_err());
+    }
+
+    #[test]
+    fn the_gc_mode_comes_from_the_runtimeconfig() {
+        let pin8 = r#"{"runtimeOptions":{"configProperties":{"System.GC.Server":true,"System.GC.Concurrent":true}}}"#;
+        assert_eq!(gc_mode(pin8).unwrap(), "server, concurrent");
+        assert_eq!(
+            gc_mode(r#"{"runtimeOptions":{}}"#).unwrap(),
+            "workstation, concurrent"
+        );
+        assert!(gc_mode("not json").is_err());
+    }
+
+    #[test]
+    fn mebibytes_round_to_the_nearest_tenth() {
+        assert_eq!(mib(0), "0.0 MiB");
+        assert_eq!(mib(1023), "1.0 MiB");
+        assert_eq!(mib(1024 + 51), "1.0 MiB");
+        assert_eq!(mib(1024 + 52), "1.1 MiB");
     }
 
     #[test]

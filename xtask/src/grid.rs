@@ -1104,7 +1104,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         docker,
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
-    let meter = watch_grid(&grid, ferroan)?;
+    let meter = watch_grid(&grid, ferroan, docker)?;
     if ferroan {
         let extra = docker.then(|| crate::docker::host_log_dir(crate::docker::NAME_HOME));
         ferroan_bot::set_log_redaction_check(true, extra);
@@ -1265,10 +1265,14 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(Vec::new())
     } else {
         meter
-            .point("after logout")
+            .last_point("after logout")
             .and_then(|()| meter.lines())
+            .map(|mut lines| {
+                lines.insert(0, memory::machine_line(&publish));
+                lines
+            })
             .and_then(|lines| {
-                memory::publish_summary(&run_title(spec), &lines)?;
+                memory::publish_summary(&run_title(spec, docker), &lines)?;
                 Ok(lines)
             })
     };
@@ -1454,12 +1458,19 @@ const IDLE_SETTLE: Duration = Duration::from_secs(2);
 
 /// Watch every server the grid started and take the `idle` point.
 #[cfg(target_os = "linux")]
-fn watch_grid(grid: &Grid, ferroan: bool) -> Result<std::sync::Arc<memory::Meter>, String> {
+fn watch_grid(
+    grid: &Grid,
+    ferroan: bool,
+    docker: bool,
+) -> Result<std::sync::Arc<memory::Meter>, String> {
     let meter = memory::Meter::new();
     let home = require_started(&grid.home, "home region")?;
+    // Host grid runs build the Ferroan servers with the dev profile; `live
+    // memory` compares the release build.
+    let rust = if docker { "ferroan" } else { "ferroan (debug)" };
     meter.watch(
         "region",
-        if ferroan { "ferroan" } else { "csharp" },
+        if ferroan { rust } else { "csharp" },
         home.listen_pid,
     );
     meter.watch(
@@ -1473,7 +1484,7 @@ fn watch_grid(grid: &Grid, ferroan: bool) -> Result<std::sync::Arc<memory::Meter
         require_started(&grid.robust, "Robust")?.listen_pid,
     );
     if let Some(services) = &grid.rust_assets {
-        meter.watch("robust", "ferroan", services.listen_pid());
+        meter.watch("robust", rust, services.listen_pid());
     }
     thread::sleep(IDLE_SETTLE);
     meter.point("idle")?;
@@ -1481,7 +1492,7 @@ fn watch_grid(grid: &Grid, ferroan: bool) -> Result<std::sync::Arc<memory::Meter
 }
 
 /// The command line a grid run was started with, for the job summary.
-fn run_title(spec: &crate::live_args::RunSpec) -> String {
+fn run_title(spec: &crate::live_args::RunSpec, docker: bool) -> String {
     let mut title = format!("live run {} grid", spec.scenario);
     if spec.ferroan_region {
         title.push_str(" --region ferroan");
@@ -1491,6 +1502,9 @@ fn run_title(spec: &crate::live_args::RunSpec) -> String {
     }
     if spec.basic_physics {
         title.push_str(" --physics basicphysics");
+    }
+    if !docker && (spec.ferroan_region || !spec.rust_services.is_empty()) {
+        title.push_str(" (debug Ferroan builds)");
     }
     title
 }

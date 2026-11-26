@@ -140,13 +140,45 @@ jobs:
           cargo xtask live run ferrobot
           cargo xtask live run ferrobot grid
           cargo xtask live run ferrobot grid --region ferroan
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-ferrobot
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  memory:
+    name: live memory
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          # Its own key, so the release ferroan-region build is saved here
+          # and not lost to whichever job saves the shared key first.
+          rust-key: rust-live-memory-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
+          rust-restore: |
+            rust-live-memory-${{ runner.os }}-
+            rust-live-${{ runner.os }}-
       - name: Compare C# and Ferroan region memory with bots, objects and four C# regions
         run: cargo xtask live memory
       - name: Upload live logs and diagnostic dumps
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: live-logs-ferrobot
+          name: live-logs-memory
           path: |
             .scratch/live/**/*.log
             .scratch/live/diag/**
@@ -418,7 +450,7 @@ jobs:
 
   live:
     name: live (ubuntu-latest)
-    needs: [scope, scenarios, ferrobot, services_region, services_grid, services_assets, images]
+    needs: [scope, scenarios, ferrobot, memory, services_region, services_grid, services_assets, images]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -447,6 +479,7 @@ jobs:
           DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
           SCENARIOS: ${{ needs.scenarios.result }}
           FERROBOT: ${{ needs.ferrobot.result }}
+          MEMORY: ${{ needs.memory.result }}
           SERVICES_REGION: ${{ needs.services_region.result }}
           SERVICES_GRID: ${{ needs.services_grid.result }}
           SERVICES_ASSETS: ${{ needs.services_assets.result }}
