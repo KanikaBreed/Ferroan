@@ -240,8 +240,8 @@ fn enable(
     // fire-and-forget HTTP. An arrival notice does not settle, so this leaves
     // the arrival stamp in place.
     finish(frame, notice, true);
-    // Stage before the task starts. Aborting that task, or stopping the
-    // process, must still leave every close this pass already decided.
+    // Stage before the task starts. The guard lives in the future before
+    // the first poll, so aborting an unpolled task releases every close.
     for (end, session) in &closes {
         book.stage_decided_close(notice.agent, *session, end.clone());
     }
@@ -251,7 +251,11 @@ fn enable(
         client: client.clone(),
         notice: notice.clone(),
         identity: identity.clone(),
-        closes,
+        closes: OwnedCloses {
+            book: Arc::clone(&book),
+            agent: notice.agent,
+            pending: closes.into(),
+        },
         steps,
     };
     simulation.track_admission(notice.agent, tokio::spawn(pass.run()));
@@ -263,15 +267,15 @@ struct EnableHttp {
     client: SimulationClient,
     notice: ChildNotice,
     identity: ChildIdentity,
-    closes: Vec<(RegionEnd, Uuid)>,
+    closes: OwnedCloses,
     steps: Vec<EnableStep>,
 }
 
 impl EnableHttp {
     async fn run(mut self) {
-        let book = self.simulation.child_book();
-        let closes = std::mem::take(&mut self.closes);
-        send_decided_closes(book, &self.client, self.notice.agent, closes).await;
+        let idle = self.closes.idle();
+        let closes = std::mem::replace(&mut self.closes, idle);
+        send_decided_closes(&self.client, closes).await;
         // Take the steps so each admission can still borrow this pass.
         for step in std::mem::take(&mut self.steps) {
             match step {
@@ -452,25 +456,22 @@ fn spawn_detached_closes(
     for (end, session) in &closes {
         book.stage_decided_close(agent, *session, end.clone());
     }
+    let pending = OwnedCloses {
+        book,
+        agent,
+        pending: closes.into(),
+    };
     tokio::spawn(async move {
-        send_decided_closes(book, &client, agent, closes).await;
+        send_decided_closes(&client, pending).await;
     });
 }
 
 /// Closes staged before this task started. A far hop's take leaves an
 /// in-flight one alone. Aborting the await acks a DELETE already handed to
 /// HTTP and releases one that had not started, so serve end sends that one.
-async fn send_decided_closes(
-    book: Arc<crate::children::ChildBook>,
-    client: &SimulationClient,
-    agent: Uuid,
-    closes: Vec<(RegionEnd, Uuid)>,
-) {
-    let mut pending = OwnedCloses {
-        book: Arc::clone(&book),
-        agent,
-        pending: closes.into(),
-    };
+async fn send_decided_closes(client: &SimulationClient, mut pending: OwnedCloses) {
+    let agent = pending.agent;
+    let book = Arc::clone(&pending.book);
     while let Some((end, session)) = pending.next_close() {
         let mut handed = HandedClose::begin(Arc::clone(&book), agent, session, end.clone());
         close_child(client, &end, agent, session).await;
@@ -489,6 +490,14 @@ struct OwnedCloses {
 }
 
 impl OwnedCloses {
+    fn idle(&self) -> Self {
+        Self {
+            book: Arc::clone(&self.book),
+            agent: self.agent,
+            pending: VecDeque::new(),
+        }
+    }
+
     fn next_close(&mut self) -> Option<(RegionEnd, Uuid)> {
         self.pending.pop_front()
     }
@@ -1527,6 +1536,111 @@ mod tests {
         assert_eq!(deletes.load(Ordering::SeqCst), 2);
         assert_eq!(state.child_book().staged_outstanding(agent), 0);
         assert!(state.take_staged_closes(agent).is_empty());
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// Aborting the enable before its first poll must release both closes.
+    /// On the current-thread runtime the spawned task is not polled until
+    /// this test yields, so the abort drops it unpolled.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_abort_before_the_enable_is_polled_returns_both_closes() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let second = Uuid::from_u128(42);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = {
+            let deletes = Arc::clone(&deletes);
+            tokio::spawn(async move {
+                let app = axum::Router::new().fallback(move |request: Request| {
+                    let deletes = Arc::clone(&deletes);
+                    async move {
+                        let method = request.method().clone();
+                        let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                        if method == axum::http::Method::DELETE {
+                            deletes.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (
+                            axum::http::StatusCode::OK,
+                            r#"{"success":true,"reason":""}"#,
+                        )
+                    }
+                });
+                axum::serve(neighbour_listener, app).await.unwrap();
+            })
+        };
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let neighbours = [
+            neighbour_at(&neighbour_uri, 41, port, [256, 256]),
+            VisibleNeighbour::at(
+                RegionEnd {
+                    server_uri: neighbour_uri,
+                    region_id: second,
+                    name: "Neighbour Two".into(),
+                    loc_x: 256_512,
+                    loc_y: 256_000,
+                },
+                [256, 256],
+                "127.0.0.1",
+                port,
+            ),
+        ];
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        apply_notice(&state, &config, &frame, &client, &enable_notice(agent), &[]).await;
+        state.abort_admissions(agent).await;
+        assert_eq!(deletes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.child_book().staged_outstanding(agent), 2);
+        assert_eq!(state.take_staged_closes(agent).len(), 2);
+        assert_eq!(state.child_book().staged_outstanding(agent), 0);
         drop(accepted_rx);
         home_server.abort();
         neighbour_server.abort();
