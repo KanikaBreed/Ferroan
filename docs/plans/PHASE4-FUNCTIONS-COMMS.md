@@ -2,7 +2,7 @@
 
 Planning only. This file splits the communication functions from [PHASE4-SCRIPTING.md](PHASE4-SCRIPTING.md) section 2 into day-sized rows. It does not add a `TASKS.md` row or a `WORK_QUEUE.md` row, and it does not edit the ledger. The pin is `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. [D124](../DECISIONS.md) is settled: Phlox is the reference for the queue, the sleeps, and the `iw*` functions. A YEngine difference is recorded here and is not the pass rule.
 
-The placeholders this file takes from, when the queue is next edited, are all of P4.S3 (20), `llMessageLinked` from P4.S4, the HTTP eight from P4.S5, the notecard reads from P4.S6, the three notecard reads from P4.S19, all of P4.S24 (3), all of P4.S25 (2), and four notecard reads from P4.S27. Stage 2 may split a family. It does not move a method into a second family and add it again. An id is a label. Each row below is about a day. A row that overruns a day is split before the next id starts.
+The placeholders this file takes from are all of P4.S3 (20), `llMessageLinked` from P4.S4, the HTTP eight from P4.S5, the notecard reads from P4.S6, the three notecard reads from P4.S19, all of P4.S24 (3), all of P4.S25 (2), and four notecard reads from P4.S27. Stage 2 may split a family. It does not move a method into a second family and add it again. An id is a label. Each row below is about a day. A row that overruns a day is split before the next id starts.
 
 C# paths are under `Source/` in the pin. `LSLSystemAPI.cs`, `PhloxEngine.cs`, `PhloxListenManager.cs`, `PhloxExecutionScheduler.cs`, `OsslGate.cs` and `SlConst.cs` are in `Source/Phlox.ScriptEngine/`. The HTTP plugin is `Source/Phlox.ScriptEngine/AsyncCommand/Plugins/HttpRequest.cs`. `Encoding.cs` is `Source/InWorldz.Phlox/Util/Encoding.cs`. `SyscallContext.cs` and `SyscallShim.cs` are in `Source/InWorldz.Phlox/Glue/`. `ChatModule.cs` is `Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs`. `LLClientView.cs` is `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`. `ChatTypeEnum.cs` is `Source/OpenSim.Framework/ChatTypeEnum.cs`. `LSL_Api.cs` is `Source/OpenSim.Region.ScriptEngine.Shared/Api/LSL_Api.cs` and `ILSL_Api.cs` is `Source/OpenSim.Region.ScriptEngine.Shared/Api/Interfaces/ILSL_Api.cs`. `HttpRequestModule.cs` is `Source/OpenSim.Region.CoreModules/Scripting/HttpRequest/HttpRequestModule.cs`. `UrlModule.cs` is `Source/OpenSim.Region.CoreModules/Scripting/LSLHttp/UrlModule.cs`. `LSL_Constants.cs` is `Source/OpenSim.Region.ScriptEngine.Shared/Api/ScriptBase/LSL_Constants.cs`. The shipped OSSL file is `Source/OpenSim.Server.RegionServer/AppData/config-include/osslDefaultEnable.ini`. The shipped function caps are `Source/OpenSim.Server.RegionServer/AppData/RegionServerDefaults.ini`.
 
@@ -19,7 +19,7 @@ C# paths are under `Source/` in the pin. `LSLSystemAPI.cs`, `PhloxEngine.cs`, `P
 | `os` notecard reads | 3 | P4.F3.12 |
 | `iw` notecard reads | 4 | P4.F3.11 |
 
-20 + 1 + 8 + 6 + 2 + 3 + 3 + 4 = 47. The overloads counted above are `llMapBeacon` (2), `llTargetedEmail` (2) and `llFindNotecardTextSync` (2). No `iw*` name is overloaded.
+20 + 1 + 8 + 6 + 2 + 3 + 3 + 4 = 47. The overloads counted above are `llMapBeacon` (2), `llTargetedEmail` (2) and `llFindNotecardTextSync` (2). No `iw*` name is overloaded. P4.F3.4a is an extra day for that same 20. It adds no method.
 
 P4.S4 keeps the 13 `llLinksetData*` methods. P4.S5 keeps the five XML-RPC methods (`llOpenRemoteDataChannel`, `llSendRemoteData`, `llRemoteDataReply`, `llCloseRemoteDataChannel`, `llRemoteDataSetRegion`) and the 16 experience and experience key-value methods. P4.S6 keeps give, rez, derez and transfer. P4.S19 keeps `osMakeNotecard` (both) and the other inventory names. P4.S27 keeps `iwMakeNotecard`. The pure-function rows already take 24 `iw*` names and leave 61; these four are four of that 61. `osRegionNotice` (both), `osNpcSay` (both) and every `bot*` name stay in their own placeholders. Other `dataserver` producers stay in their own families: `llRequestAgentData`, `llRequestInventoryData`, `llRequestSimulatorData`, `llRequestUsername`, `llRequestDisplayName`, `llRequestUserKey`.
 
@@ -77,7 +77,7 @@ YEngine stores no `iw*`. It declares the list form of `llMapBeacon` and the thre
 
 Viewer chat today is avatar-only. `crates/ferroan-client/src/chat.rs` drops a channel other than 0 and `DEBUG_CHANNEL` (228–229), sends source type agent (66, 317), and sets the owner id to the speaker (316). The file header says object chat and instant messages are not ported (35–37). P4.1d adds channel-0 object say. Object whisper, shout, region say, owner say, direct say, and a non-zero channel that still reaches a script listen, are this file. The 1100-to-1000 character cut (289–304) is the viewer-line cut. A script's say, shout, whisper or region say is cut in the API before that (`LSLSystemAPI.cs` 1532–1591). `llOwnerSay` is not cut there.
 
-Dialogs, a text box, load-URL, the map beacon and the map destination are viewer UI. They are not ported. Map tiles in [PLAN.md](../PLAN.md) are a different surface. Instant messages need `IMessageTransferModule`. Email needs `IEmailModule`. Neither module is a named row in that plan. This file does not invent a Phase 5 id. With the module absent, Phlox still returns as the bodies below say. HTTP out needs `IHttpRequestModule` and an HTTP client. HTTP in needs `IUrlModule`. Notecard bytes need the asset service. Task inventory is already on the part from Phases 1 and 2. A worn attachment, for the parcel-hide case, is P4.1f.
+Dialogs, a text box, load-URL, the map beacon and the map destination are viewer UI. The host call and the sleep stay on P4.F3.4. The viewer packets are P4.F3.4a. Map tiles in [PLAN.md](../PLAN.md) are a different surface. Instant messages need the region's `IMessageTransferModule` sender, P4.30. Email needs `IEmailModule`, P4.31. HTTP out needs `IHttpRequestModule`, P4.32. HTTP in needs `IUrlModule`, P4.33. With the module absent, Phlox still returns as the bodies below say. Notecard bytes need the asset service. Task inventory is already on the part from Phases 1 and 2. A worn attachment, for the parcel-hide case, is P4.1f. This file does not invent a Phase 5 id.
 
 `ChatTypeEnum` (`ChatTypeEnum.cs` 30–42) is Whisper 0, Say 1, Shout 2, DebugChannel 6, Region 7, Owner 8, Direct 9. `DEBUG_CHANNEL` is 2147483647 (`SlConst.cs` 77). `ChatSourceType.Object` is 2.
 
@@ -121,7 +121,7 @@ Oracle: `llRegionSay` on channel 0 (the shout, no second packet, 15 ms). `llRegi
 
 ### P4.F3.3 Listen handles and `osListenRegex`
 
-Depends on P4.1c, P4.7, P4.16, P4.19, P4.19c. Filter order, the 64 and 1000 caps, the 20 per second rate, self-mute, and the exact-range miss are the P4.19c recording. This row does not add a second copy of those cases. Saved handles across a persist are P4.13c and P4.19k.
+Depends on P4.1c, P4.7, P4.16, P4.19, P4.19c, and on the engine in [D131](../DECISIONS.md) (P4.34 through P4.34f). Filter order, the 64 and 1000 caps, the 20 per second rate, self-mute, and the exact-range miss are the P4.19c recording. This row does not add a second copy of those cases. Saved handles across a persist are P4.13c and P4.19k.
 
 Functions: `llListen`, `llListenControl`, `llListenRemove`, `osListenRegex`.
 
@@ -139,7 +139,7 @@ Oracle: two identical `llListen` calls (one handle). The lowest free handle afte
 
 ### P4.F3.4 Dialog, text box, load URL, map
 
-Depends on P4.1c, P4.19. `llDialog` also depends on P4.21 when `NeedsService` defers it. The viewer packets are not ported. The harness records the host call and the sleep. It does not require a viewer.
+Depends on P4.1c, P4.19. `llDialog` also depends on P4.21 when `NeedsService` defers it. The viewer packets are P4.F3.4a. This row records the host call and the sleep. It does not require a viewer.
 
 Functions: `llDialog`, `llTextBox`, `llLoadURL`, `llMapDestination`, `llMapBeacon` (list), `llMapBeacon` (agent).
 
@@ -155,11 +155,19 @@ YEngine returns when the dialog module is missing (8699–8700). A bad or zero k
 
 The list `llMapBeacon` sleeps 1000 ms and sends nothing (10548–10550). The comment says that is on purpose. The agent form parses the key, returns on a bad key or an absent or child agent, and logs. It sends no packet and does not sleep (21478–21495). The comment above the log talks about an IM. The body does not send one. Question 2.
 
-Oracle: `llDialog` with a bad key, 13 buttons, a blank label, a 25-character label, an empty list (the button is `OK`), an absent avatar, and a present avatar (the packet fields, including texture zero, and 1000 ms). `llTextBox` with a bad key (the shout names `llDialog`), with `NULL_KEY` (1000 ms, no packet), with a message of 1024 characters and one more, and a normal send. `llLoadURL` with a module and with none (100 ms either way). `llMapDestination` from a touch, from an attachment with no detect, and with no target (1000 ms each). The list beacon (1000 ms, no packet). The agent beacon for a present avatar, a child, and a bad key (no packet, no sleep). YEngine's `Ok`, its 512-byte shout that still sends, and its texture key are recorded and are not a pass failure.
+Oracle: `llDialog` with a bad key, 13 buttons, a blank label, a 25-character label, an empty list (the button is `OK`), an absent avatar, and a present avatar (the host-call fields, including texture zero, and 1000 ms). `llTextBox` with a bad key (the shout names `llDialog`), with `NULL_KEY` (1000 ms, no packet), with a message of 1024 characters and one more, and a normal send. `llLoadURL` with a module and with none (100 ms either way). `llMapDestination` from a touch, from an attachment with no detect, and with no target (1000 ms each). The list beacon (1000 ms, no packet). The agent beacon for a present avatar, a child, and a bad key (no packet, no sleep). YEngine's `Ok`, its 512-byte shout that still sends, and its texture key are recorded and are not a pass failure.
+
+### P4.F3.4a Viewer dialog, load URL, and map beacon
+
+Depends on P4.F3.4, P4.1d and P4.7. About a day. This row adds the dialog module to `tools/script-oracle`, following `Tests/InWorldz.Phlox.Tests/RecordingDialogs.cs`. Without this path, `llDialog` and `llTextBox` do nothing for a viewer on a Ferroan region.
+
+Out: `ScriptDialog` from `SendDialog` (`LLClientView.cs` 3259), `LoadURL` from `SendLoadURL` (3246), and `ScriptTeleportRequest` from `SendScriptTeleportRequest` (3871). In: `ScriptDialogReply` (`HandlerScriptDialogReply`, 9108–9124) becomes client chat on `OnChatFromClient`, type Region, on the dialog channel, with the button label as the message. `PhloxEngine.OnChatFromClient` (1048) delivers that chat. `DeliverSceneChat` (1058–1067) sets the speaker key from the client when `SenderUUID` is zero, so a key-filtered listen still matches.
+
+Oracle: a present avatar receives `ScriptDialog` with texture zero and the button labels. The viewer's `ScriptDialogReply` is heard by a listen on that channel, including a listen filtered to the avatar's key. `llLoadURL` produces `LoadURL`. `llMapDestination` produces `ScriptTeleportRequest` with options 0. The list `llMapBeacon` produces no packet. The agent `llMapBeacon` produces no packet.
 
 ### P4.F3.5 Instant message
 
-Depends on P4.1c, P4.19, P4.21, P4.19n. The 2000 ms is the P4.19o recording. Implementing it is P4.23. The grid send needs `IMessageTransferModule`. This file does not invent a row for that module. The no-module case is in the oracle.
+Depends on P4.1c, P4.19, P4.21, P4.19n, and on P4.30. The 2000 ms is the P4.19o recording. Implementing it is P4.23. Until P4.30 is done, this row proves the no-module return. This row adds the transfer module to `tools/script-oracle`.
 
 Functions: `llInstantMessage`.
 
@@ -173,7 +181,7 @@ Oracle: a normal send (the grid fields above, wake 2000 ms). An empty message (s
 
 ### P4.F3.6 Email
 
-Depends on P4.1c, P4.19, P4.21, P4.19n. The pause is the P4.19o recording. Implementing it is P4.23. The send needs `IEmailModule`. This file does not invent a row for that module.
+Depends on P4.1c, P4.19, P4.21, P4.19n, and on P4.31. The pause is the P4.19o recording. Implementing it is P4.23. Until P4.31 is done, this row proves the no-module return. This row adds the email module to `tools/script-oracle`.
 
 Functions: `llEmail`, `llGetNextEmail`, `llTargetedEmail` (three arguments), `llTargetedEmail` (four arguments).
 
@@ -213,7 +221,7 @@ Oracle: `LINK_THIS`, `LINK_SET`, `LINK_ALL_OTHERS`, `LINK_ALL_CHILDREN`, `0`, li
 
 ### P4.F3.8 `llHTTPRequest`
 
-Depends on P4.1c, P4.2, P4.19, P4.19o. The 80 ms and the pressure sleep are that recording. Implementing them is P4.23. The worker cap of 6 on P4.21 is not this burst. The call needs `IHttpRequestModule`. A completed request becomes `http_response` in the plugin (`AsyncCommand/Plugins/HttpRequest.cs` 88–110).
+Depends on P4.1c, P4.2, P4.19, P4.19o, and on P4.32. The 80 ms and the pressure sleep are that recording. Implementing them is P4.23. The worker cap of 6 on P4.21 is not this burst. Until P4.32 is done, a missing module is the case this row can prove. A completed request becomes `http_response` in the plugin (`AsyncCommand/Plugins/HttpRequest.cs` 88–110).
 
 Functions: `llHTTPRequest`.
 
@@ -233,7 +241,7 @@ Oracle: a normal request (the returned key, the simulator headers, a later `http
 
 ### P4.F3.9 URL request and release
 
-Depends on P4.1c, P4.16, P4.19. `osRequestURL` and `osRequestSecureURL` also depend on P4.21 only in that the URL module may post `http_request` off the call. The calls themselves are inline (`SyscallShim.cs` 4405–4408 and 8282–8285). The listener needs `IUrlModule`.
+Depends on P4.1c, P4.16, P4.19, and on P4.33. The calls themselves are inline (`SyscallShim.cs` 4405–4408 and 8282–8285). The URL module posts `http_request` from its own thread. That post is not the service lane, so this row does not depend on P4.21. Until P4.33 is done, this row proves the no-module returns.
 
 Functions: `llRequestURL`, `llRequestSecureURL`, `llReleaseURL`, `llGetFreeURLs`, `osRequestURL`, `osRequestSecureURL`.
 
@@ -247,7 +255,7 @@ Oracle: a request with the listener enabled (the key, then `http_request` with t
 
 ### P4.F3.10 HTTP response and content type
 
-Depends on P4.1c, P4.16, P4.19. The body needs a URL the P4.F3.9 request created.
+Depends on P4.1c, P4.16, P4.19, and on P4.33 for a live request id. The body needs a URL the P4.F3.9 request created.
 
 Functions: `llHTTPResponse`, `llGetHTTPHeader`, `llSetContentType`, `osSetContentType`.
 
@@ -289,7 +297,7 @@ Oracle: a cached line 0, a negative line (`""`), a line past the end (`\n\n\n`),
 
 ### P4.F3.12 Synchronous and `os` notecard reads
 
-Depends on P4.1c, P4.16, P4.19, P4.21, P4.19n. A cache miss on these reads is the service lane (`NeedsService` 157–170). A missing name or a cached asset stays inline. The asset bytes are Phases 1 and 2.
+Depends on P4.1c, P4.16, P4.19, P4.21, P4.19n, and on the engine in [D131](../DECISIONS.md) (P4.34 through P4.34f) for the notecard patterns. A cache miss on these reads is the service lane (`NeedsService` 157–170). A missing name or a cached asset stays inline. The asset bytes are Phases 1 and 2.
 
 Functions: `llGetNotecardLineSync`, `llFindNotecardTextSync` (integer), `llFindNotecardTextSync` (list), `llFindNotecardTextCount`, `osGetNotecardLine`, `osGetNotecard`, `osGetNumberOfNotecardLines`.
 
@@ -332,5 +340,6 @@ The earlier questions in [PHASE4-SCRIPTING.md](PHASE4-SCRIPTING.md) section 6 st
 7. Uncaught throws. Section 1 kills the script on a gate denial and on an exception that leaves a body. An HTTP or notecard error that shouts and returns `NULL_KEY`, `""`, `-1` or NAK leaves the script running. The other choice is to catch a denial and return a value. This plan reproduces the kill.
 8. `http_response` metadata. P4.F3.8 reproduces the empty list (`HttpRequest.cs` 98). `HTTP_BODY_TRUNCATED` is not implemented.
 9. `llOwnerSay` owner id. P4.F3.2 reproduces the prim UUID in the packet owner field (TB174). The other choice is the avatar id. A group-owned prim sends no packet and still sleeps 15 ms. YEngine returns immediately in that case. That difference is recorded with the row.
+10. Regex engine. Decided by the maintainer on 26 November 2026. [D131](../DECISIONS.md). This is the same decision as the pure-function rows, for listen regex and notecard pattern. Ferroan ports the needed part of .NET's `System.Text.RegularExpressions`. `osListenRegex` (`LSLSystemAPI.cs` 14061–14062) shouts the fixed sentences `Name regex is invalid.` and `Message regex is invalid.` Those sentences do not include the engine's message. `NotecardPattern` (10383–10388), which `llFindNotecardTextSync` and `llFindNotecardTextCount` use, shouts `invalid regular expression: ` plus the engine's message. A match that times out shouts `regex timed out`. The timeout is 250 ms and it is the engine's clock (`ScriptRegex.cs` 21–26). The rows are P4.34 through P4.34f. Each derived file keeps the original copyright line and the MIT notice.
 
 Linkset data, XML-RPC, experience permissions, experience key-value, notecard writes, `osRegionNotice`, `osNpcSay` and `bot*` stay out of this file. Channel-0 object say of the default script stays P4.1d.
