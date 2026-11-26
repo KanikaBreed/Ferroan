@@ -930,6 +930,35 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_raw_queues_only_when_one_agent_is_registered() {
+        let element = b"<map><key>Name</key><string>Bob&apos;s Place</string></map>";
+        let none = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        assert!(matches!(
+            none.enqueue_raw(element),
+            Err(EventQueueError::Closed)
+        ));
+
+        let one = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let agent = Uuid::from_u128(1);
+        one.register_agent(&format!("/CAPS/{agent}0000/"), agent)
+            .unwrap();
+        one.enqueue_raw(element).unwrap();
+        assert_eq!(one.queued_events(agent).unwrap(), vec![element.to_vec()]);
+
+        let two = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        two.register_agent(&format!("/CAPS/{first}0000/"), first)
+            .unwrap();
+        two.register_agent(&format!("/CAPS/{second}0000/"), second)
+            .unwrap();
+        assert!(matches!(
+            two.enqueue_raw(element),
+            Err(EventQueueError::Closed)
+        ));
+    }
+
+    #[test]
     fn seed_capability_lookup_uses_osd_as_string_and_ignores_unknown_types() {
         assert!(wants_event_queue(&[Llsd::Uri("EventQueueGet".into())]).unwrap());
         assert!(

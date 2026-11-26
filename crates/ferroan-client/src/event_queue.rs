@@ -52,8 +52,13 @@ use uuid::Uuid;
 
 pub(crate) const HOLD: Duration = Duration::from_secs(58);
 const MAX_EVENTS: usize = 256;
-const MAX_EVENT_BYTES: usize = 64 * 1024;
-const MAX_QUEUE_BYTES: usize = 1024 * 1024;
+/// A default 4096 m `ParcelProperties` element is 177,823 bytes. 256 KiB is
+/// the next power of two above that element, so the element and some parcel
+/// text both fit. One event has no C# cap.
+const MAX_EVENT_BYTES: usize = 256 * 1024;
+/// Sixteen maximum events. The previous 1 MiB held five 4096 m elements and
+/// refused the sixth.
+const MAX_QUEUE_BYTES: usize = 16 * MAX_EVENT_BYTES;
 const MAX_PENDING_POLLS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]

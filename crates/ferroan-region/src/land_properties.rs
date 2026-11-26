@@ -94,6 +94,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_4096_metre_element_fits_on_the_queue() {
+        let map = open_parcels_at(None, REGION, [4096, 4096], ESTATE, CLAIM)
+            .await
+            .unwrap();
+        let local_id = map.parcels()[0].local_id;
+        let send = ParcelPropertiesSend {
+            sequence_id: 0,
+            snap_selection: false,
+            request_result: 0,
+            region_flags: 0,
+            tax_free: false,
+            object_capacity: 15_000,
+            object_bonus: 1.0,
+            prims: PrimCounts::default(),
+            agent_environment_version: 0,
+            heightmap: None,
+        };
+        let agent = Uuid::from_u128(9);
+        let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        caps.register_agent(&format!("/CAPS/{agent}0000/"), agent)
+            .unwrap();
+        for _ in 0..6 {
+            enqueue_land_properties(&caps, agent, &map, local_id, &send).unwrap();
+        }
+        let queued = caps.queued_events(agent).unwrap();
+        assert_eq!(queued.len(), 6);
+        assert!(queued.iter().all(|element| element.len() == 177_823));
+    }
+
     fn send<'a>(sequence: i32, result: i32, height: &'a Heightmap) -> ParcelPropertiesSend<'a> {
         ParcelPropertiesSend {
             sequence_id: sequence,
