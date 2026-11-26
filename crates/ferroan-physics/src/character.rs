@@ -137,8 +137,8 @@ pub struct Intent {
     pub factors: SpeedFactors,
 }
 
-/// `DesiredVelocity`. Walk and run scale X and Y only. Flight scales all three,
-/// and a negative target Z uses the fly-down factor.
+/// `DesiredVelocity`. Walk and run scale X and Y only. Flight scales all three
+/// and ignores always-run. A negative target Z uses the fly-down factor.
 #[must_use]
 pub fn desired_velocity(intent: Intent) -> [f32; 3] {
     let target = intent.target;

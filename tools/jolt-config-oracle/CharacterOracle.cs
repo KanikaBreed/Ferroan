@@ -152,6 +152,11 @@ static class CharacterOracle
             IntentCase(true, false, 0f, 0f, 4f);
             IntentCase(true, false, 1f, 2f, -4f);
             IntentCase(true, false, 1f, 0f, 0f);
+            // Flying ignores always-run. Both signs of Z are recorded with it on.
+            Set("SetAlwaysRun", true);
+            IntentCase(true, true, 4.096f * 4f, 0f, 1f);
+            IntentCase(true, true, 1f, 2f, -4f);
+            Set("SetAlwaysRun", false);
             Set("Flying", false);
             object config = Config();
             config.GetType().GetField("AvatarWalkSpeedFactor").SetValue(config, 2f);
