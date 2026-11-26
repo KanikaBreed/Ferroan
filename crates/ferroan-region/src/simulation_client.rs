@@ -1667,18 +1667,26 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let client = SimulationClient::new().unwrap();
-        let request = || Outbound {
+        let request = |timeout| Outbound {
             method: query_method(),
             url: format!("http://{addr}/agent/"),
             body: None,
             compress: false,
             keepalive: false,
-            timeout: Duration::from_millis(150),
+            timeout,
         };
         // The listener leaves the request unanswered, then closes for the second call.
-        let timeout = client.execute(request()).await.unwrap();
+        let timeout = client
+            .execute(request(Duration::from_millis(150)))
+            .await
+            .unwrap();
         drop(listener);
-        let refused = client.execute(request()).await.unwrap();
+        // Linux and macOS refuse a closed localhost port at once. Windows retries
+        // that connect for about a second, so the budget has to outlast the retry.
+        let refused = client
+            .execute(request(Duration::from_secs(5)))
+            .await
+            .unwrap();
         assert!(matches!(timeout, Attempt::TimedOut));
         assert!(matches!(refused, Attempt::Failed(_)));
         for result in [timeout, refused] {
