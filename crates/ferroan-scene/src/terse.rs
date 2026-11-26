@@ -502,7 +502,7 @@ impl ViewerFeed {
     /// waiting updates for those ids (`SendKillObject` removes them from
     /// `m_entityUpdates` and `m_entityProps`). The entity lock is released
     /// before the property lock.
-    pub(crate) fn send_avatar_packet(&self, packet: AvatarPacket) {
+    pub fn send_avatar_packet(&self, packet: AvatarPacket) {
         if let AvatarPacket::Kill(ids) = &packet {
             self.queue().remove(ids);
             self.drop_properties(ids);

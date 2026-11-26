@@ -522,6 +522,12 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         config.server.clone(),
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;
+    frame
+        .set_fly_slow(config.fly_slow)
+        .map_err(|error| RunError::Terrain(error.to_string()))?
+        .wait()
+        .await
+        .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -658,6 +664,36 @@ fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::Motion
     }
 }
 
+/// A returning `UpdateAgent`'s animator fields for the frame's `CopyFrom`.
+fn scene_animations(sent: ferroan_client::AgentAnimations) -> ferroan_scene::AnimationTransfer {
+    let anim = |anim: ferroan_client::Anim| ferroan_scene::Anim {
+        animation: anim.animation,
+        sequence: anim.sequence,
+        object_id: anim.object_id,
+    };
+    ferroan_scene::AnimationTransfer {
+        animations: sent.animations.into_iter().map(anim).collect(),
+        default_animation: sent.default_animation.map(anim),
+        animation_state: sent.animation_state.map(anim),
+        motion_state: sent.motion_state,
+    }
+}
+
+/// The frame's animator for a departure's `CopyTo`.
+fn agent_animations(live: ferroan_scene::AnimationTransfer) -> ferroan_client::AgentAnimations {
+    let anim = |anim: ferroan_scene::Anim| ferroan_client::Anim {
+        animation: anim.animation,
+        object_id: anim.object_id,
+        sequence: anim.sequence,
+    };
+    ferroan_client::AgentAnimations {
+        animations: live.animations.into_iter().map(anim).collect(),
+        default_animation: live.default_animation.map(anim),
+        animation_state: live.animation_state.map(anim),
+        motion_state: live.motion_state,
+    }
+}
+
 fn pose_reply(stored: ferroan_scene::Presence) -> SceneReply {
     SceneReply::Pose(ferroan_client::LoginPose {
         position: stored.position,
@@ -743,6 +779,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         head_rotation: pose.head_rotation,
                         control_flags: pose.control_flags,
                         always_run: pose.always_run,
+                        animations: scene_animations(pose.animations),
                     },
                 },
             ),
@@ -779,6 +816,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         center: departure.camera_center,
                         head_rotation: departure.head_rotation,
                         body_rotation: departure.body_rotation,
+                        animations: agent_animations(departure.animations),
                     },
                 },
             );
@@ -789,6 +827,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         }),
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+        SceneCall::AgentAnimation(changes) => queued(frame.agent_animation(agent, changes)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
         SceneCall::ParcelRequest(query) => answered(
             frame.parcel_request(
@@ -1072,7 +1111,6 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             mac: agent.mac.clone(),
             id0: agent.id0.clone(),
             service_urls: agent.service_urls.clone(),
-            animations: Arc::clone(&agent.animations),
             appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();
@@ -1366,6 +1404,19 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
                         avatar_wire(agent, 0, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Animations { agent, animations } => {
+                    let set: Vec<ferroan_client::Anim> = animations
+                        .iter()
+                        .map(|anim| ferroan_client::Anim {
+                            animation: anim.animation,
+                            object_id: anim.object_id,
+                            sequence: anim.sequence,
+                        })
+                        .collect();
+                    out.push(ferroan_client::AvatarPacket::Animation(
+                        ferroan_client::avatar_animation(self.viewer, agent, &set),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -3528,6 +3579,55 @@ mod tests {
         }
     }
 
+    /// A returning `UpdateAgent`'s animator fields go through the frame's
+    /// `CopyFrom`, and the next departure's `CopyTo` reads them back.
+    #[tokio::test]
+    async fn a_return_animation_set_reaches_the_next_departure_through_the_frame() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(8);
+        let fly = Uuid::from_u128(0xaec4610c_757f_bc4e_c092_c6e9caf18daf);
+        let extra = ferroan_client::Anim {
+            animation: Uuid::from_u128(5),
+            object_id: Uuid::from_u128(6),
+            sequence: 41,
+        };
+        let sent = ferroan_client::Anim {
+            animation: fly,
+            object_id: Uuid::from_u128(9),
+            sequence: 40,
+        };
+        let pose = ferroan_client::ReturnPose {
+            origin: Uuid::from_u128(70),
+            animations: ferroan_client::AgentAnimations {
+                animations: vec![extra],
+                default_animation: Some(sent),
+                animation_state: None,
+                motion_state: 1,
+            },
+            ..Default::default()
+        };
+        scene_call(&frame, agent, SceneCall::Complete(pose))
+            .reply()
+            .await
+            .unwrap();
+        let SceneReply::Departure(departure) = scene_call(&frame, agent, SceneCall::Departure)
+            .reply()
+            .await
+            .unwrap()
+        else {
+            panic!("expected the frame's departure state");
+        };
+        let copied = ferroan_client::Anim {
+            object_id: Uuid::nil(),
+            ..sent
+        };
+        let animations = departure.pose.animations;
+        assert_eq!(animations.default_animation, Some(copied));
+        assert_eq!(animations.animation_state, Some(copied));
+        assert_eq!(animations.animations, [extra]);
+        assert_eq!(animations.motion_state, 1);
+    }
+
     #[tokio::test]
     async fn the_scene_feed_delivers_the_child_in_the_same_drain_as_a_refused_root() {
         use ferroan_protocol::msgs::ObjectUpdate;
@@ -3624,7 +3724,74 @@ mod tests {
 
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
-    /// its appearance, and the kill.
+    /// its appearance, its animations as another viewer gets them, and the
+    /// kill.
+    /// `SendAnimations` picks the layout by the viewer the feed belongs to:
+    /// the agent's own viewer gets an animation that names another object
+    /// first, with that object, and any other viewer gets the set in order
+    /// with no objects. No set the frame makes today names another object,
+    /// so the set is queued on the feed directly.
+    #[test]
+    fn the_scene_feed_gives_only_the_agents_own_viewer_the_object_layout() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(95);
+        let other = Uuid::from_u128(96);
+        let object = Uuid::from_u128(97);
+        let stand = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
+            sequence: 1,
+            object_id: agent,
+        };
+        let held = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0xa11),
+            sequence: 9,
+            object_id: object,
+        };
+        let packets_for = |viewer: Uuid| {
+            let feed = frame.new_feed();
+            feed.send_avatar_packet(ferroan_scene::AvatarPacket::Animations {
+                agent,
+                animations: vec![stand, held],
+            });
+            let scene_feed = SceneFeed {
+                viewer,
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+                feed,
+                region_handle: 77,
+                events: None,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 1);
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[0] else {
+                panic!("an AvatarAnimation");
+            };
+            assert_eq!(animation.sender.id, agent);
+            let list: Vec<(Uuid, i32)> = animation
+                .animation_list
+                .iter()
+                .map(|block| (block.anim_id, block.anim_sequence_id))
+                .collect();
+            let sources: Vec<Uuid> = animation
+                .animation_source_list
+                .iter()
+                .map(|block| block.object_id)
+                .collect();
+            (list, sources)
+        };
+        assert_eq!(
+            packets_for(agent),
+            (
+                vec![(held.animation, 9), (stand.animation, 1)],
+                vec![object]
+            )
+        );
+        assert_eq!(
+            packets_for(other),
+            (vec![(stand.animation, 1), (held.animation, 9)], Vec::new())
+        );
+    }
+
     #[test]
     fn the_scene_feed_writes_another_avatars_packets() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3682,7 +3849,7 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
-                viewer: agent,
+                viewer: watcher,
                 object_animations: Arc::default(),
                 supports_pbr: Arc::default(),
                 feed,
@@ -3690,7 +3857,7 @@ mod tests {
                 events: None,
             };
             let packets = scene_feed.take_avatar_packets(usize::MAX);
-            assert_eq!(packets.len(), 3);
+            assert_eq!(packets.len(), 4);
             let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
                 panic!("the full update comes first");
             };
@@ -3709,7 +3876,18 @@ mod tests {
             };
             assert_eq!(appearance.sender.id, agent);
             assert_eq!(appearance.visual_param.len(), 2);
-            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[2] else {
+                panic!("the animations follow");
+            };
+            assert_eq!(animation.sender.id, agent);
+            assert_eq!(animation.animation_list.len(), 1);
+            assert_eq!(
+                animation.animation_list[0].anim_id,
+                Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f)
+            );
+            assert_eq!(animation.animation_list[0].anim_sequence_id, 1);
+            assert!(animation.animation_source_list.is_empty());
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[3] else {
                 panic!("the kill comes last");
             };
             assert_eq!(kill.object_data[0].id, local_id);

@@ -103,6 +103,9 @@ enum Command {
         bind: Option<String>,
     },
     PersistentGridCheck,
+    Memory {
+        bulk: bool,
+    },
     Down,
     Run(RunSpec),
     RecordTwice,
@@ -221,6 +224,7 @@ fn execute(command: Command) -> ExitCode {
             }
         }
         Command::PersistentGridCheck => crate::grid_smoke::run(),
+        Command::Memory { bulk } => grid::memory(bulk),
         Command::Down => live::down(),
         Command::Run(spec) => run_spec(spec),
         Command::RecordTwice => live::record_twice(),
@@ -343,6 +347,8 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
             Ok(Command::UpGrid { bind: flags.bind })
         }
         ["persistent-grid-check"] => Ok(Command::PersistentGridCheck),
+        ["memory"] => Ok(Command::Memory { bulk: false }),
+        ["memory", "--bulk"] => Ok(Command::Memory { bulk: true }),
         ["down"] => Ok(Command::Down),
         ["diag", rest @ ..] => Ok(Command::Diag {
             urls: rest.iter().map(|url| (*url).to_owned()).collect(),

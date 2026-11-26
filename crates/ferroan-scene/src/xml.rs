@@ -731,7 +731,7 @@ fn utf8_limit(text: &str, max: usize) -> Vec<u8> {
     out
 }
 
-fn part_creator(identification: &str) -> (Uuid, Option<String>) {
+pub(crate) fn part_creator(identification: &str) -> (Uuid, Option<String>) {
     if identification.is_empty() {
         return (Uuid::nil(), None);
     }
@@ -749,7 +749,7 @@ fn part_creator(identification: &str) -> (Uuid, Option<String>) {
     (id, Some(data))
 }
 
-fn item_creator(identification: &str) -> (Uuid, Option<String>) {
+pub(crate) fn item_creator(identification: &str) -> (Uuid, Option<String>) {
     if identification.is_empty() {
         return (Uuid::nil(), None);
     }

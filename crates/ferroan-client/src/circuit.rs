@@ -86,9 +86,9 @@ use ferroan_diag::{
     UDP_UNACKED,
 };
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
-    CompletePingCheck, DeRezObject, DisableSimulator, KickUser, LayerData, LogoutReply,
-    LogoutRequest, ObjectSelect, PacketAck, ParcelOverlay, ParcelPropertiesRequest,
+    AgentAnimation, AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer,
+    CompleteAgentMovement, CompletePingCheck, DeRezObject, DisableSimulator, KickUser, LayerData,
+    LogoutReply, LogoutRequest, ObjectSelect, PacketAck, ParcelOverlay, ParcelPropertiesRequest,
     RegionHandshakeReply, RequestObjectPropertiesFamily, SetAlwaysRun, StartPingCheck,
     TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply,
     packet_ack, start_ping_check,
@@ -335,6 +335,9 @@ pub enum SceneCall {
     /// `SetAlwaysRun`. One inbound slot, no answer. A refused post waits on
     /// the circuit (the latest only) and is posted again first.
     AlwaysRun(bool),
+    /// `AgentAnimation`: each block's id and `StartAnim`. One inbound slot,
+    /// no answer. A refused post is dropped with the inbound readout.
+    AgentAnimation(Vec<(Uuid, bool)>),
     /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
     /// inbound slot, no answer. A refused post waits on the circuit.
     HandshakeReply,
@@ -363,7 +366,7 @@ pub struct ParcelQuery {
 }
 
 /// The departing avatar for a source hop.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneDeparture {
     pub flying: bool,
     pub pose: HopPose,
@@ -911,6 +914,7 @@ impl State {
                 AvatarPacket::Full(update) => encode_payload(update)?,
                 AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,
                 AvatarPacket::Kill(kill) => encode_payload(kill)?,
+                AvatarPacket::Animation(animation) => encode_payload(animation)?,
                 // `CoarseLocationUpdateHeader` leaves the reliable flag off.
                 AvatarPacket::Coarse(coarse) => Payload {
                     reliable: false,
@@ -1449,6 +1453,10 @@ impl State {
             if let Ok(update) = packet.decode::<AgentUpdate>() {
                 self.forward_agent_update(expect, packet.sequence, &update);
             }
+        } else if packet.id == AgentAnimation::ID {
+            if let Ok(animation) = packet.decode::<AgentAnimation>() {
+                self.forward_agent_animation(expect, &animation);
+            }
         } else if packet.id == SetAlwaysRun::ID {
             if let Ok(update) = packet.decode::<SetAlwaysRun>() {
                 self.forward_always_run(expect, update.agent_data.always_run);
@@ -1649,6 +1657,20 @@ impl State {
         };
         self.pending_update = Some((expect.agent_id, update));
         self.flush_motion();
+    }
+
+    /// `HandleAgentAnimation` onto the frame, without waiting. The frame
+    /// refuses a child. The ids were checked with the packet.
+    fn forward_agent_animation(&mut self, expect: &CircuitExpect, message: &AgentAnimation) {
+        let Some(scene) = self.login_scene.clone() else {
+            return;
+        };
+        let changes = message
+            .animation_list
+            .iter()
+            .map(|block| (block.anim_id, block.start_anim))
+            .collect();
+        let _ = scene(expect.agent_id, SceneCall::AgentAnimation(changes));
     }
 
     /// `SetAlwaysRun` onto the frame, without waiting. Only the latest value
@@ -1962,10 +1984,8 @@ impl State {
         // A full inbound queue does not stop the return. The arrival packet
         // reads the frame. This token carries the position the frame stored,
         // or the mailbox position when the frame did not accept the post.
-        let position = self
-            .complete_scene(agent, pose)
-            .await
-            .unwrap_or(pose.position);
+        let mailbox = pose.position;
+        let position = self.complete_scene(agent, pose).await.unwrap_or(mailbox);
         self.arrival.position = position;
         let Some(slot) = self.return_slot.clone() else {
             self.return_started = false;
@@ -3488,6 +3508,7 @@ mod tests {
                 }
                 SceneCall::AgentUpdate(_)
                 | SceneCall::AlwaysRun(_)
+                | SceneCall::AgentAnimation(_)
                 | SceneCall::HandshakeReply
                 | SceneCall::InitialLand
                 | SceneCall::ParcelRequest(_)

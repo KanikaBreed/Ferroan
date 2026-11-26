@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 use uuid::Uuid;
 
+use crate::agent_animations::AgentAnimations;
 use crate::circuit::RootArrival;
 
 /// How long `CompleteMovement` waits for the child update.
@@ -24,8 +25,9 @@ pub const ROOT_WAIT: Duration = Duration::from_secs(25);
 
 /// Position and heading the return arrival packet uses, the source region,
 /// and the movement fields `CopyFrom` takes from the returning `UpdateAgent`.
-/// The frame stores those on the presence when the child becomes root.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The frame stores those, and the animator fields, on the presence when
+/// the child becomes root.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReturnPose {
     pub position: [f32; 3],
     pub look_at: [f32; 3],
@@ -36,6 +38,7 @@ pub struct ReturnPose {
     pub head_rotation: [f32; 4],
     pub control_flags: u32,
     pub always_run: bool,
+    pub animations: AgentAnimations,
 }
 
 impl Default for ReturnPose {
@@ -51,6 +54,7 @@ impl Default for ReturnPose {
             head_rotation: [0.0, 0.0, 0.0, 0.0],
             control_flags: 0,
             always_run: false,
+            animations: AgentAnimations::default(),
         }
     }
 }
@@ -158,7 +162,7 @@ impl ReturnSlot {
 
     /// The stored update, or the defaults before one arrives.
     pub fn pose(&self) -> ReturnPose {
-        *self.pose_mut()
+        self.pose_mut().clone()
     }
 
     /// Take the release URI once. The caller must not log it.
@@ -243,7 +247,7 @@ impl ReturnSlot {
         if !self.inner.ready.load(Ordering::Acquire) {
             return None;
         }
-        let pose = *self.pose_mut();
+        let pose = self.pose_mut().clone();
         if pose.origin.is_nil() {
             None
         } else {

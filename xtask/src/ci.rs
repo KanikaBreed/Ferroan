@@ -117,9 +117,10 @@ fn write_docs_only(docs_only: bool) -> Result<(), String> {
     Ok(())
 }
 
-const LIVE_JOBS: [&str; 6] = [
+const LIVE_JOBS: [&str; 7] = [
     "SCENARIOS",
     "FERROBOT",
+    "MEMORY",
     "SERVICES_REGION",
     "SERVICES_GRID",
     "SERVICES_ASSETS",

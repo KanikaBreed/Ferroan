@@ -4,8 +4,9 @@
 //! Build and run the Jolt oracles against the pinned checkout.
 //! Build output goes under `.scratch/`, never into the checkout.
 //!
-//! `jolt generate` and `jolt verify` stay with the harness wrapper (P3.0).
+//! `jolt generate` and `jolt verify` stay with the matched-native harness (P3.0).
 //! `jolt file` calls one pinned method and does not start native code.
+//! `jolt record` runs the pinned harness in-process and does not start a region.
 
 use std::fs;
 use std::path::Path;
@@ -23,69 +24,102 @@ pub(crate) fn substeps(writing: bool) -> ExitCode {
 }
 
 pub(crate) fn config(writing: bool) -> ExitCode {
-    run(
+    run(Job {
         writing,
-        "fixtures/jolt-config",
-        "generate",
-        "verify",
-        "jolt-config",
-    )
+        fixture_rel: "fixtures/jolt-config",
+        write_action: "generate",
+        check_action: "verify",
+        label: "jolt-config",
+        project_rel: "tools/jolt-config-oracle/JoltConfigOracle.csproj",
+        artifacts_rel: ".scratch/jolt-config-oracle/artifacts",
+        clear_physics_rate: false,
+    })
 }
 
 pub(crate) fn file(writing: bool) -> ExitCode {
-    run(
+    run(Job {
         writing,
-        "fixtures/jolt-file",
-        "file-generate",
-        "file-verify",
-        "jolt-file",
-    )
+        fixture_rel: "fixtures/jolt-file",
+        write_action: "file-generate",
+        check_action: "file-verify",
+        label: "jolt-file",
+        project_rel: "tools/jolt-config-oracle/JoltConfigOracle.csproj",
+        artifacts_rel: ".scratch/jolt-config-oracle/artifacts",
+        clear_physics_rate: false,
+    })
 }
 
-fn run(
+pub(crate) fn record(writing: bool) -> ExitCode {
+    run(Job {
+        writing,
+        fixture_rel: "fixtures/jolt-record",
+        write_action: "generate",
+        check_action: "verify",
+        label: "jolt-record",
+        project_rel: "tools/jolt-config-oracle/JoltRecordOracle.csproj",
+        artifacts_rel: ".scratch/jolt-record-oracle/artifacts",
+        clear_physics_rate: true,
+    })
+}
+
+struct Job {
     writing: bool,
-    fixture_rel: &str,
-    write_action: &str,
-    check_action: &str,
-    label: &str,
-) -> ExitCode {
+    fixture_rel: &'static str,
+    write_action: &'static str,
+    check_action: &'static str,
+    label: &'static str,
+    project_rel: &'static str,
+    artifacts_rel: &'static str,
+    clear_physics_rate: bool,
+}
+
+fn run(job: Job) -> ExitCode {
     let root = crate::repo_root();
     let reference =
         match crate::http_oracle::reference_root().and_then(crate::oracle_reference::prepare) {
             Ok(path) => path,
             Err(error) => {
-                eprintln!("{label}: {error}");
+                eprintln!("{}: {error}", job.label);
                 return ExitCode::FAILURE;
             }
         };
     let revision = match crate::http_oracle::pinned_and_checked(&root, &reference) {
         Ok(revision) => revision,
         Err(error) => {
-            eprintln!("{label}: {error}");
+            eprintln!("{}: {error}", job.label);
             return ExitCode::FAILURE;
         }
     };
-    let artifacts = root.join(".scratch/jolt-config-oracle/artifacts");
+    let artifacts = root.join(job.artifacts_rel);
     let tmp = root.join(".scratch/tmp");
     if let Err(error) = fs::create_dir_all(&artifacts).and_then(|_| fs::create_dir_all(&tmp)) {
-        eprintln!("{label}: could not create {}: {error}", artifacts.display());
+        eprintln!(
+            "{}: could not create {}: {error}",
+            job.label,
+            artifacts.display()
+        );
         return ExitCode::FAILURE;
     }
-    let project = root.join("tools/jolt-config-oracle/JoltConfigOracle.csproj");
-    let fixture = root.join(fixture_rel);
-    let action = if writing { write_action } else { check_action };
+    let project = root.join(job.project_rel);
+    let fixture = root.join(job.fixture_rel);
+    let action = if job.writing {
+        job.write_action
+    } else {
+        job.check_action
+    };
     let dotnet = Dotnet {
         root: &root,
         reference: &reference,
         artifacts: &artifacts,
         project: &project,
-        label,
+        label: job.label,
+        clear_physics_rate: job.clear_physics_rate,
     };
     if !dotnet.run("build", false, &[]) {
-        return fail_if_dirty(&root, &reference, label);
+        return fail_if_dirty(&root, &reference, job.label);
     }
     if let Err(error) = crate::http_oracle::pinned_and_checked(&root, &reference) {
-        eprintln!("{label}: {error}");
+        eprintln!("{}: {error}", job.label);
         return ExitCode::FAILURE;
     }
     let args = vec![
@@ -97,13 +131,13 @@ fn run(
         reference.display().to_string(),
     ];
     if !dotnet.run("run", true, &args) {
-        return fail_if_dirty(&root, &reference, label);
+        return fail_if_dirty(&root, &reference, job.label);
     }
     if let Err(error) = crate::http_oracle::pinned_and_checked(&root, &reference) {
-        eprintln!("{label}: {error}");
+        eprintln!("{}: {error}", job.label);
         return ExitCode::FAILURE;
     }
-    println!("{label}: {action} passed against {revision}");
+    println!("{}: {action} passed against {revision}", job.label);
     ExitCode::SUCCESS
 }
 
@@ -120,6 +154,7 @@ struct Dotnet<'a> {
     artifacts: &'a Path,
     project: &'a Path,
     label: &'a str,
+    clear_physics_rate: bool,
 }
 
 impl Dotnet<'_> {
@@ -130,8 +165,11 @@ impl Dotnet<'_> {
             .current_dir(self.root)
             .env("TMPDIR", &tmp)
             .env("TMP", &tmp)
-            .env("TEMP", &tmp)
-            .arg(action);
+            .env("TEMP", &tmp);
+        if self.clear_physics_rate {
+            command.env_remove("JOLT_HARNESS_PHYSICS_RATE");
+        }
+        command.arg(action);
         if action == "run" {
             command.arg("--project").arg(self.project);
         } else {
