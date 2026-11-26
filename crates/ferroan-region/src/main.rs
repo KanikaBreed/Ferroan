@@ -3642,6 +3642,7 @@ mod tests {
                         height: 1.8,
                         hover: 0.0,
                     }),
+                    teleport_flags: 1 << 7,
                 },
             )
             .unwrap()
