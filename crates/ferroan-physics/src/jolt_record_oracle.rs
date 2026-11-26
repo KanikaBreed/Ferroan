@@ -77,7 +77,7 @@ fn drop_recording_keeps_the_pinned_structure() {
     assert_eq!(value(&provenance, "samples "), "31");
     assert_eq!(value(&provenance, "events "), "16");
     assert_eq!(value(&provenance, "phases "), "19");
-    assert_eq!(value(&provenance, "provider_calls "), "0");
+    assert_eq!(value(&provenance, "provider_calls "), "6");
     assert_eq!(value(&provenance, "stock_providers "), "0");
     assert_eq!(value(&provenance, "seam_calls "), "6");
     assert_eq!(value(&provenance, "seam_forwarded "), "6");
@@ -100,6 +100,9 @@ fn drop_recording_keeps_the_pinned_structure() {
     assert_eq!(sample_lines.len(), 31);
     for line in &sample_lines {
         assert!(line.contains(" steps=1 "), "{line}");
+        assert!(line.contains(" awake_bodies=1 "), "{line}");
+        assert!(line.contains(" awake=1 "), "{line}");
+        assert!(!line.contains(" active="), "{line}");
     }
     assert!(sample_lines[0].contains(&format!(" t={dt} ")));
 

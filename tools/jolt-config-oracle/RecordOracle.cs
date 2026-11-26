@@ -181,6 +181,7 @@ static class RecordOracle
         if (Directory.Exists(cacheDir))
             Directory.Delete(cacheDir, true);
         var host = new Host();
+        host.NoteFilesBefore(CacheFiles(cacheDir).Count);
         Scenario source = Harness.Find(ScenarioName);
         var scenario = new Scenario
         {
@@ -305,7 +306,8 @@ static class RecordOracle
             text.Append(" qz=").Append(F(sample.Rotation.Z));
             text.Append(" qw=").Append(F(sample.Rotation.W));
             text.Append(" touching=").Append(sample.Touching ? "1" : "0");
-            text.Append(" active=").Append(sample.Active.ToString(CultureInfo.InvariantCulture));
+            text.Append(" awake_bodies=").Append(sample.Active.ToString(CultureInfo.InvariantCulture));
+            text.Append(" awake=").Append(captured.Awake[i] ? "1" : "0");
             text.Append(" ox=").Append(F(sample.Other.X));
             text.Append(" oy=").Append(F(sample.Other.Y));
             text.Append(" oz=").Append(F(sample.Other.Z));
@@ -376,8 +378,8 @@ static class RecordOracle
     {
         var text = new StringBuilder();
         text.Append(FormatLine).Append('\n');
-        text.Append("cold true\n");
-        text.Append("files_before 0\n");
+        text.Append("cold ").Append(captured.FilesBefore == 0 ? "true" : "false").Append('\n');
+        text.Append("files_before ").Append(captured.FilesBefore.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("files_after ").Append(captured.CacheFiles.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("content_sha256 ").Append(captured.CacheHash).Append('\n');
         return text.ToString();
@@ -404,12 +406,12 @@ static class RecordOracle
         text.Append("package ").Append(JoltNative.PackageId).Append('\n');
         text.Append("package_version ").Append(JoltNative.PackageVersion).Append('\n');
         text.Append("harness_commit ").Append(captured.Revision).Append('\n');
-        text.Append("first_heartbeat 0\n");
+        text.Append("first_heartbeat ").Append(captured.FirstHeartbeat.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("first_t ").Append(D(captured.Samples[0].T)).Append('\n');
         text.Append("samples ").Append(captured.Samples.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("events ").Append(captured.Events.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("phases ").Append(captured.Phases.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
-        text.Append("provider_calls 0\n");
+        text.Append("provider_calls ").Append(captured.ProviderCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("stock_providers ").Append(captured.StockProviders.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("seam_calls ").Append(captured.SeamCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("seam_forwarded ").Append(captured.SeamForwarded.ToString(CultureInfo.InvariantCulture)).Append('\n');
@@ -420,13 +422,13 @@ static class RecordOracle
         text.Append("effective_note ").Append(captured.EffectiveNote ?? "none").Append('\n');
         text.Append("body_local ").Append(captured.BodyLocal.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("body_handle ").Append(captured.BodyHandle.ToString(CultureInfo.InvariantCulture)).Append('\n');
-        text.Append("material_pins false\n");
-        text.Append("use_defaults false\n");
-        text.Append("shipped_config true\n");
-        text.Append("warm_up true\n");
-        text.Append("simulator_prims true\n");
-        text.Append("region_mesher true\n");
-        text.Append("presets_before_setup empty_scene\n");
+        text.Append("material_pins ").Append(captured.MaterialPins ? "true" : "false").Append('\n');
+        text.Append("use_defaults ").Append(captured.UseDefaults ? "true" : "false").Append('\n');
+        text.Append("shipped_config ").Append(captured.ShippedConfig ? "true" : "false").Append('\n');
+        text.Append("warm_up ").Append(captured.WarmUp ? "true" : "false").Append('\n');
+        text.Append("simulator_prims ").Append(captured.SimulatorPrims ? "true" : "false").Append('\n');
+        text.Append("region_mesher ").Append(captured.RegionMesher ? "true" : "false").Append('\n');
+        text.Append("presets_before_setup ").Append(captured.PresetsBeforeSetup).Append('\n');
         foreach (string name in new[] { "samples", "events", "providers", "clock", "config", "materials", "assets", "cache" })
         {
             text.Append("channel ").Append(name).Append(' ');
@@ -535,6 +537,20 @@ static class RecordOracle
         float _simulateDt;
         int _seamCalls;
         int _seamForwarded;
+        int _providerCalls;
+        int _filesBefore;
+        int _firstHeartbeat;
+        bool _sawHeartbeat;
+        bool _materialPins;
+        bool _useDefaults;
+        bool _shippedConfig;
+        bool _warmUp;
+        bool _simulatorPrims;
+        bool _regionMesher;
+        string _presetsBeforeSetup = "";
+        readonly List<bool> _awake = new();
+
+        internal void NoteFilesBefore(int count) => _filesBefore = count;
         Func<DateTime> _clock;
         readonly List<string> _phases = new();
         CollisionWatch _watch;
@@ -543,6 +559,17 @@ static class RecordOracle
 
         internal Action<Run> Setup(Action<Run> source) => run =>
         {
+            HarnessOptions options = run.Options;
+            _presetsBeforeSetup = options.VehicleRoute == VehicleRoute.None
+                && options.VehicleParams.Count == 0
+                && options.VehicleFlags.Count == 0
+                ? "empty_scene"
+                : options.VehicleRoute.ToString();
+            _useDefaults = options.UseDefaults;
+            _shippedConfig = options.ShippedConfig;
+            _warmUp = options.WarmUpStep;
+            _simulatorPrims = options.SimulatorPrims;
+            _materialPins = MaterialPins.Enabled;
             JoltScene scene = Scene(run);
             _warmupSteps = StepCount(scene);
             _substepping = IsSubstepping(scene);
@@ -563,6 +590,7 @@ static class RecordOracle
             _providerNames.AddRange(ProviderNames(Backend(_actor)));
             _materials = Materials(_actor);
             _config = ConfigText(scene);
+            _regionMesher = run.Mesher != null;
             (_effectiveRate, _effectiveWarning, _effectiveNote) = Effective(scene, (float)run.Dt);
             _dt = run.Dt;
             run.Cleanups.Add(() => OnCleanup(run));
@@ -570,8 +598,17 @@ static class RecordOracle
 
         internal Action<Run> Input(Action<Run> source) => run =>
         {
+            // The previous heartbeat's step has already been read. The next
+            // input has not moved the body yet, so this is that sample's awake flag.
+            if (_sawHeartbeat)
+                _awake.Add(BodyAwake());
             source?.Invoke(run);
             _heartbeat++;
+            if (!_sawHeartbeat)
+            {
+                _firstHeartbeat = _heartbeat;
+                _sawHeartbeat = true;
+            }
             JoltScene scene = Scene(run);
             _marks.Add(StepCount(scene));
             _substepMarks.Add(SubstepTotal(scene));
@@ -593,10 +630,13 @@ static class RecordOracle
                 throw new InvalidOperationException("drop heartbeat was not 11 Hz");
             if (result.PhysicsRateHz != 0.0)
                 throw new InvalidOperationException("drop physics rate was not 0");
+            if (_awake.Count != result.Samples.Count)
+                throw new InvalidOperationException("awake flags and samples differ");
         }
 
         void OnCleanup(Run run)
         {
+            _awake.Add(BodyAwake());
             foreach ((double t, string ev, uint id) in _watch.Log)
                 _phases.Add("phase t=" + D(t) + " event=" + ev.Replace(' ', '-') + " id=" + id.ToString(CultureInfo.InvariantCulture));
             JoltScene scene = Scene(run);
@@ -719,9 +759,27 @@ static class RecordOracle
                 SimulateDt = _simulateDt,
                 SeamCalls = _seamCalls,
                 SeamForwarded = _seamForwarded,
+                ProviderCalls = _providerCalls,
+                Awake = _awake,
+                FilesBefore = _filesBefore,
+                FirstHeartbeat = _firstHeartbeat,
+                MaterialPins = _materialPins,
+                UseDefaults = _useDefaults,
+                ShippedConfig = _shippedConfig,
+                WarmUp = _warmUp,
+                SimulatorPrims = _simulatorPrims,
+                RegionMesher = _regionMesher,
+                PresetsBeforeSetup = _presetsBeforeSetup,
                 CacheFiles = cacheFiles,
                 CacheHash = cacheHash,
             };
+        }
+
+        bool BodyAwake()
+        {
+            object backend = Backend(_actor);
+            object body = _actor.GetType().GetField("_body", Inst).GetValue(_actor);
+            return (bool)backend.GetType().GetMethod("IsBodyAwake").Invoke(backend, new object[] { body });
         }
 
         void ProveSeam(JoltScene scene, PhysicsActor actor)
@@ -749,7 +807,11 @@ static class RecordOracle
             var original = (IStepForceProvider)providerField.GetValue(entry);
             if (!ReferenceEquals(original, stock))
                 throw new InvalidOperationException("the attached provider was not the stock provider");
-            var wrapper = new RecordingStepForceProvider { Inner = original };
+            var wrapper = new RecordingStepForceProvider
+            {
+                Inner = original,
+                OnStock = () => Interlocked.Increment(ref _providerCalls),
+            };
             providerField.SetValue(entry, wrapper);
             // OnStep reads the provider list with Volatile.Read. The fence pairs with that acquire.
             Thread.MemoryBarrier();
@@ -907,6 +969,7 @@ sealed class RecordingStepForceProvider : IStepForceProvider
     internal IStepForceProvider Inner;
     internal int Calls;
     internal int Forwarded;
+    internal Action OnStock;
 
     public void OnStep(in StepBody body, in StepInfo step)
     {
@@ -915,6 +978,8 @@ sealed class RecordingStepForceProvider : IStepForceProvider
             return;
         Inner.OnStep(in body, in step);
         Interlocked.Increment(ref Forwarded);
+        if (Inner is not RecordingStepForceProvider)
+            OnStock?.Invoke();
     }
 }
 
@@ -945,6 +1010,17 @@ sealed class Captured
     internal float SimulateDt;
     internal int SeamCalls;
     internal int SeamForwarded;
+    internal int ProviderCalls;
+    internal List<bool> Awake;
+    internal int FilesBefore;
+    internal int FirstHeartbeat;
+    internal bool MaterialPins;
+    internal bool UseDefaults;
+    internal bool ShippedConfig;
+    internal bool WarmUp;
+    internal bool SimulatorPrims;
+    internal bool RegionMesher;
+    internal string PresetsBeforeSetup;
     internal int CacheFiles;
     internal string CacheHash;
 }
