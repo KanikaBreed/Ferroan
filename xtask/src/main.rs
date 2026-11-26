@@ -37,9 +37,11 @@
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
 //! `regionstore read` reads that XML back through the pin and writes the fields.
-//! `regionstore verify` reloads the object fixture. `regionstore cross`
-//! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
-//! the containers. None of them starts a server or the live harness.
+//! `regionstore verify` reloads the object fixture. `regionstore scales` writes
+//! the admitted-scale fixture, and `regionstore scales-verify` checks it.
+//! `regionstore cross` reloads SQLite and throwaway MySQL and PostgreSQL
+//! containers, then removes the containers. None of them starts a server or
+//! the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -167,6 +169,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask regionstore scales
+       cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
@@ -314,6 +318,8 @@ fn main() -> ExitCode {
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "scales"] => regionstore::scales(true),
+        ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),

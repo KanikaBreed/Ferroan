@@ -120,7 +120,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
-| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | READY |
 | QR42 | R42: live scenarios register in one table | READY |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
