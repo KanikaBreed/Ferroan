@@ -80,6 +80,8 @@ mod child_capture;
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[path = "material_override.rs"]
+mod material_override;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
@@ -731,11 +733,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "neighbour"
                 | "walk"
                 | "prim-arrival"
+                | "material-override"
                 | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override and report scenarios"
                 .to_string(),
         );
     }
@@ -758,12 +761,13 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "store-handoff"
             | "prim-capture"
             | "prim-arrival"
+            | "material-override"
             | "report"
     ) && ParcelSeed::scenario(scenario).is_none()
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1025,11 +1029,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             RegionStore::LoadFixture
         } else if scenario == "store-handoff" {
             RegionStore::EditPrimFixture
-        } else if matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross") {
+        } else if matches!(
+            scenario,
+            "prim-capture" | "prim-arrival" | "object-cross" | "material-override"
+        ) {
             RegionStore::PrimFixture
         } else {
             RegionStore::Standard
         },
+        patch_materials: scenario == "material-override",
         basic_physics: spec.basic_physics && !ferroan,
     };
     if matches!(scenario, "store-handoff" | "prim-load") {
@@ -1085,6 +1093,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 "object-cross" => RegionStore::EmptyPrimCapture,
                 _ => RegionStore::Standard,
             },
+            patch_materials: false,
             parcel_seed: None,
             basic_physics: spec.basic_physics,
         },
@@ -1296,6 +1305,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else if scenario == "prim-arrival" {
         let fixture =
             prim_arrival::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if scenario == "material-override" {
+        let fixture =
+            material_override::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "report" {
         // The capture still has to pass check, redact and replay. Its packet
@@ -2087,6 +2100,7 @@ struct RegionStart {
     basic_physics: bool,
     store: RegionStore,
     parcel_seed: Option<ParcelSeed>,
+    patch_materials: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -2144,6 +2158,9 @@ fn start_region(
             seed.install(cwd)?;
         } else if spec.ferroan {
             install_seeded_region_store(cwd)?;
+        }
+        if spec.patch_materials {
+            material_override::install_store(&cwd.join("OpenSim.db"))?;
         }
     }
     let mut rewrites = Vec::new();

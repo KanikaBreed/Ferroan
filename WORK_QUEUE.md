@@ -200,7 +200,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
-| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |

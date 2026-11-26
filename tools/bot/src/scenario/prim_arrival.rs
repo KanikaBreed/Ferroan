@@ -23,6 +23,10 @@ pub(super) struct ObservedPrims {
 }
 
 impl ObservedPrims {
+    pub(super) fn len(&self) -> usize {
+        self.parts.len()
+    }
+
     pub(super) fn note(&mut self, packet: &IncomingPacket) -> Result<(), String> {
         if packet.id == ObjectUpdate::ID {
             for block in packet
@@ -47,7 +51,7 @@ fn part_count(observer: &ObserverSession) -> Result<usize, String> {
         .seen
         .prim_arrival
         .as_ref()
-        .map(|seen| seen.parts.len())
+        .map(|seen| seen.len())
         .ok_or_else(|| "missing prim observer".into())
 }
 
