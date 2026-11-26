@@ -25,11 +25,10 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
 use ferroan_client::UdpCounters;
+use ferroan_http::HTTP_404;
 use uuid::Uuid;
 
 use crate::config::MonitoringSettings;
-
-const HTTP_404: &str = "<HTML><HEAD><TITLE>404 Page not found</TITLE><BODY><BR /><H1>Ooops!</H1><P>The page you requested has been obsconded with by knomes. Find hippos quick!</P></BODY></HTML>";
 
 /// Content type OSWebServer applies when a simple stream handler sets none.
 const DEFAULT_HTML: &str = "text/html;charset=UTF-8";

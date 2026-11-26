@@ -154,26 +154,35 @@ pub fn presence_postgres_cross() -> ExitCode {
 
 /// Record or check the pinned loopback HTTP responses for the five avatar forms.
 pub fn avatar_service(writing: bool) -> ExitCode {
+    avatar_http(
+        writing,
+        &[
+            ("service", "service.json"),
+            ("service-mysql", "service-mysql.json"),
+        ],
+    )
+}
+
+/// Record or verify the XBakes HTTP responses, directory contents and console output.
+pub fn avatar_bakes(writing: bool) -> ExitCode {
+    avatar_http(writing, &[("bakes", "bakes.json")])
+}
+
+fn avatar_http(writing: bool, modes: &[(&str, &str)]) -> ExitCode {
     let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
         Ok(result) => result,
         Err(code) => return code,
     };
-    let plan = match crate::ports::Plan::resolve(None) {
-        Ok(plan) => plan,
+    let port = match crate::ports::alloc(crate::ports::Slot::RobustPrivate) {
+        Ok(port) => port,
         Err(error) => {
             eprintln!("avatar: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let Some(port) = plan.today_or_base(crate::ports::Slot::RobustPrivate) else {
-        return ExitCode::FAILURE;
-    };
     let action = if writing { "generate" } else { "verify" };
     let fixtures = crate::repo_root().join("fixtures/avatar");
-    for (mode, file) in [
-        ("service", "service.json"),
-        ("service-mysql", "service-mysql.json"),
-    ] {
+    for &(mode, file) in modes {
         if mode == "service-mysql" && std::env::var_os("FERROAN_AVATAR_ADO_MYSQL").is_none() {
             println!("avatar: MySQL HTTP oracle skipped (FERROAN_AVATAR_ADO_MYSQL unset)");
             continue;
