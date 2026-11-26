@@ -7,7 +7,7 @@ Ferroan is a Cargo workspace. Crates move from Planned to Implemented when their
 | Crate | What it holds |
 | --- | --- |
 | `ferroan-types` | UUID, vectors, quaternions, colours, texture entries, extra parameters, prim shape fields and permission masks in OpenMetaverse and Tranquillity packet order. The Tranquillity revision constant stays |
-| `ferroan-db` | sqlx pools for SQLite, MySQL and PostgreSQL. Checks Tranquillity's `migrations` versions and refuses to start when they differ. Does not migrate |
+| `ferroan-db` | sqlx pools for SQLite, MySQL and PostgreSQL. Checks Tranquillity's `migrations` versions and refuses to start when they differ. Does not migrate. Sessions use the server zone or Npgsql's `Timezone=` (D104) |
 | `ferroan-config` | Tranquillity INI loading: Nini's parser, includes, and `${Section|key}` substitution. The region and grid loaders keep their different include order |
 | `ferroan-llsd` | LLSD in XML, binary and notation, matching OpenMetaverse. Maps keep insertion order. Dates are tick counts, because one `f64` cannot hold both the XML text and the binary `AddSeconds` result |
 | `ferroan-http` | Robust form bodies, `<ServerResponse>` XML and LLSD over HTTP, on axum and reqwest. A form call follows `MakeRequest` (non-2xx is an error) or `MakePostRequest` (the body is parsed either way). `accepted_nodelay` sets `TCP_NODELAY` on every accepted socket, matching `HttpListener.cs`. reqwest keeps its default `tcp_nodelay(true)`, matching `OutboundUrlFilter` |
