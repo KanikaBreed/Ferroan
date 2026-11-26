@@ -413,7 +413,8 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
             SceneCall::AgentUpdate(_)
             | SceneCall::AlwaysRun(_)
             | SceneCall::HandshakeReply
-            | SceneCall::InitialLand => Ok(SceneReply::Applied),
+            | SceneCall::InitialLand
+            | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),

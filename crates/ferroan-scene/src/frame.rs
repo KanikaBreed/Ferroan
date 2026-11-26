@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferroan_config::Config;
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
@@ -284,6 +284,12 @@ enum Request {
         region: crate::parcels::ParcelRegion,
         reply: oneshot::Sender<()>,
     },
+    /// `ParcelPropertiesRequest`. The answer follows the queued elements.
+    ParcelProperties {
+        agent: Uuid,
+        query: crate::parcels::PropertiesRequest,
+        reply: oneshot::Sender<()>,
+    },
     Wake,
     Stop,
 }
@@ -341,6 +347,8 @@ struct Scene {
     /// Prim counts for the admitted groups. Filled on the first element.
     /// The set does not change after startup.
     admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
+    /// `LandObject.m_lastSeqId` for each local id, shared by every client.
+    parcel_seq: HashMap<i32, i32>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -444,6 +452,7 @@ impl TerrainFrame {
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
+            parcel_seq: HashMap::new(),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -486,6 +495,21 @@ impl TerrainFrame {
     ) -> Result<Pending<()>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::ParcelRegion { region, reply })?;
+        Ok(answer)
+    }
+
+    /// `ParcelPropertiesRequest`. The elements are queued before the answer.
+    pub fn parcel_request(
+        &self,
+        agent: Uuid,
+        query: crate::parcels::PropertiesRequest,
+    ) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::ParcelProperties {
+            agent,
+            query,
+            reply,
+        })?;
         Ok(answer)
     }
 
@@ -965,6 +989,14 @@ fn answer(
             scene.parcel_region = region;
             let _ = reply.send(());
         }
+        Request::ParcelProperties {
+            agent,
+            query,
+            reply,
+        } => {
+            scene.answer_parcel(agent, query);
+            let _ = reply.send(());
+        }
         Request::Wake => {}
         Request::Stop => return false,
     }
@@ -1320,9 +1352,16 @@ impl Scene {
         if let Some(avatar) = self.presences.get_mut(&agent) {
             avatar.parcel = Some(id);
         }
-        let Some(element) = self.parcel_element(local_id, id) else {
+        self.deliver_notify(agent, local_id, id);
+    }
+
+    /// `SendLandUpdateToClient` calls `SendLandProperties(0, false, 0)`, which
+    /// stores sequence 0 on that parcel (`LandObject.cs` 509–519).
+    fn deliver_notify(&mut self, agent: Uuid, local_id: i32, parcel_id: Uuid) {
+        let Some(element) = self.parcel_element(local_id, parcel_id) else {
             return;
         };
+        self.parcel_seq.insert(local_id, 0);
         self.emit_parcel(agent, &element);
     }
 
@@ -1345,6 +1384,22 @@ impl Scene {
     fn emit_parcel(&self, agent: Uuid, element: &[u8]) {
         if let Some(send) = &self.parcel_out {
             send(agent, element);
+        }
+    }
+
+    /// `ClientOnParcelPropertiesRequest`. A child is not special: the packet
+    /// handler does not check one. The sequence clock is the land object's.
+    fn answer_parcel(&mut self, agent: Uuid, query: crate::parcels::PropertiesRequest) {
+        let Some(parcels) = self.parcels.clone() else {
+            return;
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i32;
+        let elements = parcels.properties_request(agent, query, now, &mut self.parcel_seq);
+        for element in &elements {
+            self.emit_parcel(agent, element);
         }
     }
 
@@ -1555,9 +1610,7 @@ fn note_parcel_crossings(scene: &mut Scene) {
         crossed.push((agent, id, local_id));
     }
     for (agent, id, local_id) in crossed {
-        if let Some(element) = scene.parcel_element(local_id, id) {
-            scene.emit_parcel(agent, &element);
-        }
+        scene.deliver_notify(agent, local_id, id);
     }
 }
 
@@ -2276,6 +2329,7 @@ mod tests {
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::default(),
             admitted_counts: None,
+            parcel_seq: HashMap::new(),
         }
     }
 
@@ -2672,6 +2726,170 @@ mod tests {
             }
         }
         assert!(differed);
+    }
+
+    /// One cell, the two-parcel span and a snap reuse the land sequence.
+    /// An out-of-range bound sends nothing.
+    #[tokio::test]
+    async fn a_parcel_request_sends_the_captured_cell_and_span() {
+        let parcels = loaded_region_parcels().await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/parcel-properties");
+        let cell = std::fs::read(root.join("request-cell.bin")).unwrap();
+        let west = std::fs::read(root.join("request-span-west.bin")).unwrap();
+        let east = std::fs::read(root.join("request-span-east.bin")).unwrap();
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
+        let ask = |scene: &mut Scene, query: crate::parcels::PropertiesRequest| {
+            let (reply, _answer) = oneshot::channel();
+            assert!(answer(
+                Request::ParcelProperties {
+                    agent,
+                    query,
+                    reply
+                },
+                scene,
+                None,
+                &[],
+                0,
+                no_physics(),
+            ));
+        };
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 5.0,
+                south: 1.0,
+                east: 6.0,
+                north: 2.0,
+                sequence_id: 7,
+                snap_selection: false,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().as_slice(), &[cell]);
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 4.0,
+                south: 0.0,
+                east: 12.0,
+                north: 4.0,
+                sequence_id: 8,
+                snap_selection: false,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().as_slice(), &[west, east]);
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 5.0,
+                south: 1.0,
+                east: 6.0,
+                north: 2.0,
+                sequence_id: 0,
+                snap_selection: true,
+            },
+        );
+        let snap = sent.lock().unwrap()[0].clone();
+        let xml = String::from_utf8(snap).unwrap();
+        assert!(
+            xml.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>SnapSelection</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: -1.0,
+                south: 0.0,
+                east: 4.0,
+                north: 4.0,
+                sequence_id: 9,
+                snap_selection: false,
+            },
+        );
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    /// A request stores sequence 8. Arrival stores 0, so the next snap reads 0.
+    #[tokio::test]
+    async fn an_arrival_resets_the_parcel_sequence_before_a_snap() {
+        let parcels = loaded_region_parcels().await;
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
+        let ask = |scene: &mut Scene, sequence_id: i32, snap_selection: bool| {
+            let (reply, _answer) = oneshot::channel();
+            assert!(answer(
+                Request::ParcelProperties {
+                    agent,
+                    query: crate::parcels::PropertiesRequest {
+                        west: 128.0,
+                        south: 128.0,
+                        east: 132.0,
+                        north: 132.0,
+                        sequence_id,
+                        snap_selection,
+                    },
+                    reply,
+                },
+                scene,
+                None,
+                &[],
+                0,
+                no_physics(),
+            ));
+        };
+        ask(&mut scene, 8, false);
+        let requested = String::from_utf8(sent.lock().unwrap()[0].clone()).unwrap();
+        assert!(
+            requested.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{requested}"
+        );
+        sent.lock().unwrap().clear();
+        arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        assert!(sent.lock().unwrap().is_empty());
+        scene.send_parcel_at(agent);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        sent.lock().unwrap().clear();
+        ask(&mut scene, 0, true);
+        let snap = String::from_utf8(sent.lock().unwrap()[0].clone()).unwrap();
+        assert!(snap.contains("<key>SequenceID</key><integer />"), "{snap}");
+        assert!(
+            !snap.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{snap}"
+        );
+    }
+
+    /// Arrival uses the same text bound as a request and a walk (D127).
+    #[tokio::test]
+    async fn an_oversized_arrival_is_refused() {
+        let mut map = region_parcel_map().await;
+        let local_id = map.at_metres(128.0, 128.0).unwrap().local_id;
+        map.set_description(local_id, "x".repeat(9_000));
+        let parcels = Arc::new(map);
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = Uuid::from_u128(21);
+        let _ = open_viewer_flags(&mut scene, agent, true, 1 << 7);
+        arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        assert!(sent.lock().unwrap().is_empty());
+        let _guard = crate::parcels::limits_lock();
+        let before = crate::parcels::limit_hits("parcel.text", "refuse");
+        scene.send_parcel_at(agent);
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(
+            crate::parcels::limit_hits("parcel.text", "refuse"),
+            before + 1
+        );
+        drop(_guard);
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {

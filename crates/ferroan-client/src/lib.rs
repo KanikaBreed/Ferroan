@@ -39,9 +39,9 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, RootArrival,
-    SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply, SceneResult,
-    TeleportRequest, UdpCounters,
+    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, ParcelQuery,
+    RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply,
+    SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
     AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,

@@ -1668,10 +1668,7 @@ fn run_bot(
             {
                 harness_ref
                     .http_trace
-                    .scope(ferroan_bot::scenario::parcel_properties(
-                        harness_ref,
-                        !ferroan,
-                    ))
+                    .scope(ferroan_bot::scenario::parcel_properties(harness_ref, true))
                     .await
             } else if let Some(seed) = ParcelSeed::scenario(selected) {
                 let captures = harness_ref

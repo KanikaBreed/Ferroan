@@ -88,9 +88,9 @@ use ferroan_diag::{
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, ParcelOverlay, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocal,
-    TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack,
-    start_ping_check,
+    PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply, SetAlwaysRun,
+    StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode,
+    logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -300,8 +300,21 @@ pub enum SceneCall {
     /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
     /// inbound slot, no answer. A refused post waits on the circuit.
     HandshakeReply,
+    /// `ParcelPropertiesRequest`. The frame queues the elements, then answers.
+    ParcelRequest(ParcelQuery),
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
+}
+
+/// Bounds from `ParcelPropertiesRequest`. `MathF.Round` happens on the frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ParcelQuery {
+    pub west: f32,
+    pub south: f32,
+    pub east: f32,
+    pub north: f32,
+    pub sequence_id: i32,
+    pub snap_selection: bool,
 }
 
 /// The departing avatar for a source hop.
@@ -1344,6 +1357,10 @@ impl State {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
             }
+        } else if packet.id == ParcelPropertiesRequest::ID {
+            if let Ok(request) = packet.decode::<ParcelPropertiesRequest>() {
+                self.forward_parcel_request(expect, &request).await?;
+            }
         } else if packet.id == RegionHandshakeReply::ID {
             if packet.decode::<RegionHandshakeReply>().is_ok() {
                 self.forward_handshake_reply(expect);
@@ -1565,6 +1582,34 @@ impl State {
         {
             self.pending_update = None;
         }
+    }
+
+    /// `ParcelPropertiesRequest`. The frame queues every element before this
+    /// returns. No scene, or a stopped frame, sends nothing: the packet has
+    /// no failure reply.
+    async fn forward_parcel_request(
+        &self,
+        expect: &CircuitExpect,
+        request: &ParcelPropertiesRequest,
+    ) -> Result<(), CircuitError> {
+        let Some(scene) = self.login_scene.clone() else {
+            return Ok(());
+        };
+        let data = &request.parcel_data;
+        let _ = scene(
+            expect.agent_id,
+            SceneCall::ParcelRequest(ParcelQuery {
+                west: data.west,
+                south: data.south,
+                east: data.east,
+                north: data.north,
+                sequence_id: data.sequence_id,
+                snap_selection: data.snap_selection,
+            }),
+        )
+        .reply()
+        .await;
+        Ok(())
     }
 
     /// Forward the seated ids. The frame answers with the poses it has.
@@ -3302,7 +3347,8 @@ mod tests {
                 SceneCall::AgentUpdate(_)
                 | SceneCall::AlwaysRun(_)
                 | SceneCall::HandshakeReply
-                | SceneCall::InitialLand => Ok(SceneReply::Applied),
+                | SceneCall::InitialLand
+                | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),
