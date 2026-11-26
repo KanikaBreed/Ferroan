@@ -50,6 +50,8 @@ The live workflow runs `cargo xtask http auth-verify` in its "Verify the oracles
 
 ## Presence stores
 
+The live workflow checks the six Presence forms with `cargo xtask presence service-verify` on Null and PostgreSQL. The Rust integration tests replay the local logins and HTTP forms and compare status, content type and all body bytes. Both providers return an online user after 1024 misses in one GetAgents form. The PostgreSQL run also checks the fresh-row default (D84) and a refused local store (TB126, D95). A MySQL check runs the service in a custom realm and verifies that a refused insert leaves the session offline. It uses a trigger, or a table check constraint when binary logging restricts trigger creation to administrators. [Oracle instructions](../tools/presence-oracle/README.md)
+
 `cargo xtask presence generate` records the Pin8 Null provider's calls and results. `cargo xtask presence verify` repeats them with two provider instances in one process. The live workflow runs `cargo xtask presence verify`. The Rust test `two_null_providers_match_the_pin8_sequence` replays the committed operations and compares every result, including row order and held references. [Fixture and commands](../fixtures/presence/README.md).
 
 `cargo xtask presence cross mysql` runs the Pin8 Presence migration and exercises both write directions on one MySQL 8.4 database. It checks session replacement, field lookup and delete, secure-session verification, selective region logout, the database clock on insert and report, and the fetched timestamp on re-store (TB104, D84). The Linux workspace check exercises the 1024-row lookup limit and bulk logout on the Pin8 schema. [Connection settings](../tools/presence-oracle/README.md)
