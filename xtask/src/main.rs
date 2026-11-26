@@ -30,8 +30,10 @@
 //! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
 //!
 //! `jolt substeps` and `jolt substeps-verify` run the pinned
-//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. Neither
-//! starts a region. `jolt generate` and `jolt verify` stay with the harness.
+//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
+//! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
+//! and compare `fixtures/jolt-config`. Neither starts a region. `jolt
+//! generate` and `jolt verify` stay with the harness.
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
@@ -156,6 +158,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask throttle verify
        cargo xtask jolt substeps
        cargo xtask jolt substeps-verify
+       cargo xtask jolt config
+       cargo xtask jolt config-verify
        cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
@@ -317,6 +321,8 @@ fn main() -> ExitCode {
         ),
         ["jolt", "substeps"] => jolt::substeps(true),
         ["jolt", "substeps-verify"] => jolt::substeps(false),
+        ["jolt", "config"] => jolt::config(true),
+        ["jolt", "config-verify"] => jolt::config(false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run(
             "presence",

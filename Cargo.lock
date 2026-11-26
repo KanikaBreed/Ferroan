@@ -491,9 +491,11 @@ dependencies = [
 name = "ferroan-physics"
 version = "0.1.0"
 dependencies = [
+ "ferroan-config",
  "ferroan-diag",
  "oxijolt-sys",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

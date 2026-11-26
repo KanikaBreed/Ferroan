@@ -288,7 +288,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
 | Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
-| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | DONE (this PR) |
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
 | Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q141, Q157, Q122 and Q123 |
@@ -361,7 +361,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
 | Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
 
-Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
+Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 and Q102 to Q104 are blocked for a later upgrade. Q101, Q105, Q106, Q107 and Q108a are done. Q108 is split. Q108b waits on the rows named in its status. The other rows wait on the queue items named in their status, in the plan's dependency order.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 

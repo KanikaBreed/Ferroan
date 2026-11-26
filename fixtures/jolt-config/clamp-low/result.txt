@@ -1,0 +1,84 @@
+format 1
+heartbeat	3DBA29C7
+test_commands	false
+effective	00000000
+effective_presets	Documented
+step_warning	
+step_note	
+field	AllowUnrecordedNative	bool	false
+field	AvatarEnhancedEdgeRemoval	bool	false
+field	AvatarFlyDownSpeedFactor	f32	3DCCCCCD	0.1
+field	AvatarFlySpeedFactor	f32	3DCCCCCD	0.1
+field	AvatarJumpSpeed	f32	00000000	0
+field	AvatarObjectPushMaxForce	f32	00000000	0
+field	AvatarObjectPushPerMomentum	f32	00000000	0
+field	AvatarPushMaxSpeed	f32	00000000	0
+field	AvatarPushRecovery	f32	00000000	0
+field	AvatarRunSpeedFactor	f32	3DCCCCCD	0.1
+field	AvatarWalkSpeedFactor	f32	3DCCCCCD	0.1
+field	BasicForcesBehaviour	enum	InWorldz
+field	BodyEnhancedEdgeRemoval	bool	false
+field	BodyMaxAngularSpeed	f32	3DCCCCCD	0.1
+field	BodyMaxLinearSpeed	f32	3F800000	1
+field	BodyUpdateBufferMax	i32	1
+field	CameraRayBudgetMs	f32	00000000	0
+field	CapacityLogIntervalSeconds	f32	3DCCCCCD	0.1
+field	CharacterUpdateBufferMax	i32	1
+field	CollisionSteps	i32	1
+field	ContactBufferMax	i32	0
+field	DeterministicMode	bool	false
+field	FrictionCombine	enum	Min
+field	Gravity	f32	C47A0000	-1000
+field	HonourConvexMesh	bool	false
+field	JobPoolFairHandoff	bool	false
+field	JobPools	i32	1
+field	KeyframedMotionCarriesRiders	bool	false
+field	MaxBodies	i32	0
+field	MaxBodyPairs	i32	1
+field	MaxContactConstraints	i32	1
+field	MaxPhysicalComplexity	i32	0
+field	MetricsLogIntervalSeconds	f32	00000000	0
+field	MovedPrimsCarryRiders	bool	false
+field	PhysicsSit	bool	false
+field	PhysicsStepCollisionSteps	i32	1
+field	PhysicsStepRate	f32	00000000	0
+field	PhysicsStepRateSet	bool	true
+field	PositionIterations	i32	1
+field	PrimAngularDamping	f32	00000000	0
+field	PrimLinearDamping	f32	00000000	0
+field	RayCastBudgetMs	f32	3DCCCCCD	0.1
+field	RayCastMaxHits	i32	1
+field	RayCastMaxTestedHits	i32	1
+field	RayCastSimulatorBudgetMs	f32	3DCCCCCD	0.1
+field	RestitutionCombine	enum	Min
+field	ScaleCapsWithArea	bool	false
+field	SledContactFriction	f32	00000000	0
+field	SleepVelocityThreshold	f32	3A83126F	0.001
+field	SpeculativeContactDistance	f32	00000000	0
+field	TerrainFriction	f32	00000000	0
+field	TerrainRestitution	f32	00000000	0
+field	ThreadCount	i32	0
+field	TwoSidedMeshCollision	bool	false
+field	VehicleAngularLimiterFloor	f32	00000000	0
+field	VehicleBehaviour	enum	SecondLife
+field	VehicleContactFriction	f32?	00000000	0
+field	VehicleGroundGravityFactor	f32	00000000	0
+field	VehicleMaxAngularSpeed	f32	3DCCCCCD	0.1
+field	VehicleMaxAttractTimescale	f32	3F800000	1
+field	VehicleMaxDecayTimescale	f32	3F800000	1
+field	VehicleMaxDecayTimescaleSet	bool	true
+field	VehicleMaxHoverHeight	f32	461C4000	10000
+field	VehicleMaxHoverTimescale	f32	3F800000	1
+field	VehicleMaxLinearSpeed	f32	3F800000	1
+field	VehicleMaxMotorOffset	f32	00000000	0
+field	VehicleMaxTimescale	f32	3F800000	1
+field	VehicleMinHoverHeight	f32	C3000000	-128
+field	VehicleMinTimescale	f32	3A83126F	0.001
+field	VehicleMotorTargetOnUndrivenAxes	bool	false
+field	VehiclePresets	enum	Documented
+field	VehiclePresetsSet	bool	true
+field	VehicleReferenceSpeed	f32	3DCCCCCD	0.1
+field	VehicleRestSpeed	f32	00000000	0
+field	VehicleSledAssist	f32	00000000	0
+field	VehicleSpikeMitigation	bool?	false
+field	VelocityIterations	i32	1
