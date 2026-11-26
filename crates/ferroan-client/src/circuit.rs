@@ -279,6 +279,9 @@ pub enum SceneCall {
     /// turns to the look `AgentMovementComplete` carries (`RotateToLookAt`),
     /// and the other viewers are told of it. One call.
     Arrive(LoginPose, [f32; 3]),
+    /// The parcel element `sendClientInitialLandInfo` queues after
+    /// `AgentMovementComplete` is sent (`ScenePresence.cs` 2441, then 2475).
+    InitialLand,
     /// `ChatFromViewer` forwarded so distance uses the stored poses.
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. The frame owns the landing
@@ -1391,6 +1394,12 @@ impl State {
         let look_at = self.arrival.look_at;
         reply.data.position = position.into();
         self.send_message(sock, to, &reply, true).await?;
+        // `MoveAgentIntoRegion` has gone out. `sendClientInitialLandInfo`
+        // queues the parcel element next (`ScenePresence.cs` 2441, then 2475).
+        // A refused post does not stop the rest of this arrival.
+        if let Some(scene) = self.login_scene.clone() {
+            let _ = scene(expect.agent_id, SceneCall::InitialLand).reply().await;
+        }
         // CompleteMovement queues the avatar full update, then appearance, on
         // the task category (`SendEntityFullUpdateImmediate`, `SendAppearance`).
         // Land stays queued until its bucket and the reliable window have room.
@@ -3290,9 +3299,10 @@ mod tests {
                         flags: request.flags,
                     }))
                 }
-                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
-                    Ok(SceneReply::Applied)
-                }
+                SceneCall::AgentUpdate(_)
+                | SceneCall::AlwaysRun(_)
+                | SceneCall::HandshakeReply
+                | SceneCall::InitialLand => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),

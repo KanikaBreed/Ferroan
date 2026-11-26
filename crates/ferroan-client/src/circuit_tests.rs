@@ -410,9 +410,10 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
                     flags: request.flags,
                 }))
             }
-            SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
-                Ok(SceneReply::Applied)
-            }
+            SceneCall::AgentUpdate(_)
+            | SceneCall::AlwaysRun(_)
+            | SceneCall::HandshakeReply
+            | SceneCall::InitialLand => Ok(SceneReply::Applied),
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),
@@ -2834,24 +2835,54 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     };
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
+    let io = Arc::new(FakeIo::default());
+    let during = Arc::clone(&io);
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&order);
     state.login_scene = Some(Arc::new(move |agent, call| {
-        // The fresh login is one arrival call: no separate pose and release.
-        let SceneCall::Arrive(pose, look_at) = call else {
-            return Err(crate::circuit::SceneRefused).into();
-        };
-        assert_eq!(agent, expect.agent_id);
-        assert_eq!(look_at, [0.99, 0.042, 0.0]);
-        assert_eq!(pose.position, [10.0, 20.0, 30.0]);
-        assert_eq!(pose.rotation, LOGIN_ROTATION);
-        assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
-        assert_eq!(pose.control_flags, 0);
-        assert_eq!(pose.draw_distance, LOGIN_DRAW_DISTANCE);
-        let mut stored = pose;
-        stored.position[2] = 41.5;
-        Ok(SceneReply::Pose(stored)).into()
+        // The fresh login is the arrival, then the parcel element. No
+        // separate pose and release. The parcel call runs after
+        // AgentMovementComplete is already on the socket.
+        let mut steps = seen.lock().unwrap();
+        match call {
+            SceneCall::Arrive(pose, look_at) => {
+                assert!(steps.is_empty(), "{steps:?}");
+                assert!(during.sent.lock().unwrap().is_empty());
+                steps.push("arrive");
+                assert_eq!(agent, expect.agent_id);
+                assert_eq!(look_at, [0.99, 0.042, 0.0]);
+                assert_eq!(pose.position, [10.0, 20.0, 30.0]);
+                assert_eq!(pose.rotation, LOGIN_ROTATION);
+                assert_eq!(pose.velocity, [0.0, 0.0, 0.0]);
+                assert_eq!(pose.control_flags, 0);
+                assert_eq!(pose.draw_distance, LOGIN_DRAW_DISTANCE);
+                let mut stored = pose;
+                stored.position[2] = 41.5;
+                Ok(SceneReply::Pose(stored)).into()
+            }
+            SceneCall::InitialLand => {
+                assert_eq!(steps.as_slice(), ["arrive"]);
+                steps.push("land");
+                drop(steps);
+                let sent = during.sent.lock().unwrap();
+                assert!(
+                    sent.iter().any(|bytes| {
+                        parse_packet(bytes).ok().is_some_and(|packet| {
+                            packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID
+                        })
+                    }),
+                    "AgentMovementComplete is already sent"
+                );
+                Ok(SceneReply::Applied).into()
+            }
+            _ => Err(crate::circuit::SceneRefused).into(),
+        }
     }));
-    let io = FakeIo::default();
-    state.send_arrival(&io, peer(), &expect).await.unwrap();
+    state
+        .send_arrival(io.as_ref(), peer(), &expect)
+        .await
+        .unwrap();
+    assert_eq!(order.lock().unwrap().as_slice(), ["arrive", "land"]);
     release_throttled(&mut state, &io).await;
     assert_eq!(state.arrival.position, [10.0, 20.0, 30.0]);
     let sent = io.sent.lock().unwrap();

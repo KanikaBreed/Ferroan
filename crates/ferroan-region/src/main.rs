@@ -747,6 +747,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
+        SceneCall::InitialLand => answered(frame.initial_land(agent), |()| Ok(SceneReply::Applied)),
         SceneCall::Read => answered(frame.presence(agent), |stored| {
             Ok(stored.map_or(SceneReply::Missing, pose_reply))
         }),

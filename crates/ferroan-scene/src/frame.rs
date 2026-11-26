@@ -22,9 +22,10 @@
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
 //! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
-//! A root arrival, a zero-flag initial-data gate and a walk onto another
-//! parcel each queue one `ParcelProperties` element. The box was stored when
-//! the land was loaded. The frame and circuit share avatar local IDs as in
+//! The circuit queues one `ParcelProperties` element after
+//! `AgentMovementComplete`. A zero-flag initial-data gate and a walk onto
+//! another parcel each queue one as well. The box was stored when the land
+//! was loaded. The frame and circuit share avatar local IDs as in
 //! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
 //! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 
@@ -230,6 +231,11 @@ enum Request {
         pose: Presence,
         look_at: [f32; 3],
         reply: oneshot::Sender<Presence>,
+    },
+    /// The parcel element after `AgentMovementComplete`.
+    InitialLand {
+        agent: Uuid,
+        reply: oneshot::Sender<()>,
     },
     /// A hop away reached its destination.
     MovedAway {
@@ -545,6 +551,15 @@ impl TerrainFrame {
         Ok(answer)
     }
 
+    /// The parcel element `sendClientInitialLandInfo` queues after
+    /// `AgentMovementComplete` (`ScenePresence.cs` 2441, then 2475). A child,
+    /// or no parcel, queues nothing.
+    pub fn initial_land(&self, agent: Uuid) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::InitialLand { agent, reply })?;
+        Ok(answer)
+    }
+
     /// A hop away reached its destination: the kills C# sends then. The
     /// child flag was already set before the update. A missing viewer is
     /// left alone.
@@ -828,10 +843,14 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             let pose = avatar.pose;
             scene.announce(agent);
-            // `sendClientInitialLandInfo` queues the element before the overlay.
-            // The circuit enqueues the overlay only after this reply.
-            scene.send_parcel_at(agent);
+            // The parcel element follows `AgentMovementComplete`. The circuit
+            // posts `InitialLand` after that datagram (`ScenePresence.cs` 2441,
+            // then 2475).
             let _ = reply.send(pose);
+        }
+        Request::InitialLand { agent, reply } => {
+            scene.send_parcel_at(agent);
+            let _ = reply.send(());
         }
         Request::MovedAway { agent, away, reply } => {
             scene.moved_away(agent, &away);
@@ -1208,7 +1227,8 @@ impl Scene {
 
     /// `SendLandUpdateToClient`: one sequence-0 element for the parcel under
     /// the avatar. A child, or no parcel, sends nothing and leaves the stored
-    /// id alone. Arrival and the initial-data gate both call this.
+    /// id alone. The circuit posts this after `AgentMovementComplete`, and
+    /// the zero-flag initial-data gate posts it for a root.
     fn send_parcel_at(&mut self, agent: Uuid) {
         let position = {
             let Some(avatar) = self.presences.get(&agent) else {
@@ -2165,10 +2185,10 @@ mod tests {
         }
     }
 
-    /// Arrival, the zero-flag gate and a GlobalID change each queue one element.
-    /// Heights are the samples stored at land load, so the bytes match the
-    /// Q61a files. A held login, a same-parcel move, the teleport itself and a
-    /// child send nothing.
+    /// The follow-up after arrival, the zero-flag gate and a GlobalID change
+    /// each queue one element. `Arrive` itself queues none. Heights are the
+    /// samples stored at land load, so the bytes match the Q61a files. A held
+    /// login, a same-parcel move, the teleport itself and a child send nothing.
     #[tokio::test]
     async fn parcel_properties_follow_arrival_the_gate_and_a_walk() {
         let parcels = loaded_region_parcels().await;
@@ -2196,6 +2216,8 @@ mod tests {
         note_parcel_crossings(&mut scene);
         assert!(sent.lock().unwrap().is_empty());
         arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        assert!(sent.lock().unwrap().is_empty());
+        scene.send_parcel_at(agent);
         assert_eq!(
             sent.lock().unwrap().as_slice(),
             std::slice::from_ref(&arrival)
@@ -2267,6 +2289,8 @@ mod tests {
         let root_agent = Uuid::from_u128(2);
         let (feed, _) = open_viewer_flags(&mut gated, root_agent, true, 0);
         arrive_in(&mut gated, root_agent, [128.0, 128.0, 25.0]);
+        assert!(gated_sent.lock().unwrap().is_empty());
+        gated.send_parcel_at(root_agent);
         arm_initial(&mut gated, root_agent);
         {
             let queued = gated_sent.lock().unwrap();
@@ -2281,6 +2305,8 @@ mod tests {
         let login_agent = Uuid::from_u128(3);
         let (feed, _) = open_viewer_flags(&mut login, login_agent, true, 1 << 7);
         arrive_in(&mut login, login_agent, [128.0, 128.0, 25.0]);
+        assert!(login_sent.lock().unwrap().is_empty());
+        login.send_parcel_at(login_agent);
         arm_initial(&mut login, login_agent);
         assert_eq!(login_sent.lock().unwrap().as_slice(), &[arrival]);
         assert!(!feed.take_land_pass());
@@ -2371,6 +2397,8 @@ mod tests {
         let agent = Uuid::from_u128(11);
         let _ = open_viewer_flags(&mut scene, agent, true, 1 << 7);
         arrive_in(&mut scene, agent, [7.8, 2.0, 30.0]);
+        assert!(sent.lock().unwrap().is_empty());
+        scene.send_parcel_at(agent);
         let arrived = sent.lock().unwrap().len();
         assert_eq!(arrived, 1);
         scene.presences.get_mut(&agent).unwrap().pose.position = [8.4, 2.0, 30.0];
@@ -2427,7 +2455,12 @@ mod tests {
             &[],
             0,
         ));
-        scene.presences.get_mut(&agent).unwrap().body.set_child(true);
+        scene
+            .presences
+            .get_mut(&agent)
+            .unwrap()
+            .body
+            .set_child(true);
         arm_initial(&mut scene, agent);
         assert!(sent.lock().unwrap().is_empty());
         assert!(feed.take_land_pass());
