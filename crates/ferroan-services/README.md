@@ -4,6 +4,8 @@ Grid services. This crate holds the asset service and the user-account service, 
 
 The avatar service exposes `get_appearance` and `set_appearance` over the configured avatar store. An empty record yields the constructor outfit. A nonempty record restores missing body parts, reads legacy item/asset pairs and applies indexed layers in numeric order. Malformed appearance rows return `Ok(None)`; store and size errors propagate to the caller. Attachment rows retain item order within each point and omit asset IDs. Heights are written with a decimal point and read with either decimal separator (TB44).
 
+The XBakes file cache serves GET and POST at `/bakes/<id>`. It preserves the region's upload bytes at `BaseDirectory/id[0..2]/id[2..4]/id[4..6]/id[6..10]/id`. A missing file returns an empty 200. A replacement publishes one complete file, and `delete bakes <ID>` removes it. The cache is independent of the avatar database and the asset service. [Pin8 HTTP and file observations](../../fixtures/avatar/bakes.json)
+
 The asset service is what a Tranquillity region calls on Robust.
 
 The routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`:

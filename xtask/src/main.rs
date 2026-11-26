@@ -149,6 +149,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset fsassets-files
        cargo xtask griduser cross
        cargo xtask griduser service
+       cargo xtask avatar bakes-generate|bakes-verify
        cargo xtask avatar service-generate|service-verify
        cargo xtask avatar appearance-generate|appearance-verify
        cargo xtask avatar cross
@@ -282,6 +283,8 @@ fn main() -> ExitCode {
         ["griduser", "service"] => asset_oracle::griduser_service(),
         ["avatar", "appearance-generate"] => asset_oracle::avatar_appearance(true),
         ["avatar", "appearance-verify"] => asset_oracle::avatar_appearance(false),
+        ["avatar", "bakes-generate"] => asset_oracle::avatar_bakes(true),
+        ["avatar", "bakes-verify"] => asset_oracle::avatar_bakes(false),
         ["avatar", "service-generate"] => asset_oracle::avatar_service(true),
         ["avatar", "service-verify"] => asset_oracle::avatar_service(false),
         ["avatar", "cross"] => asset_oracle::avatar_cross(),

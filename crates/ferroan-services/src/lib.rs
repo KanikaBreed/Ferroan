@@ -18,6 +18,7 @@ pub mod alias;
 pub mod asset;
 pub mod auth;
 pub mod avatar;
+pub mod bakes;
 pub mod griduser;
 pub mod presence;
 
