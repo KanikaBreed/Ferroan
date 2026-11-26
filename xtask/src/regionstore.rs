@@ -93,6 +93,60 @@ pub fn verify() -> ExitCode {
     dispatch(false)
 }
 
+/// Regenerate the SQLite parcel load from the same schema and seed as the Rust test.
+pub fn parcels() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let result = (|| -> Result<(), String> {
+        let pin = pinned_revision(
+            &fs::read_to_string(root.join("docs/REFERENCES.md")).map_err(|e| e.to_string())?,
+        )?;
+        let db = root.join(".scratch/regionstore-oracle/parcels.db");
+        fs::copy(root.join(FIXTURE), &db).map_err(|e| e.to_string())?;
+        let json = oracle_stdout(
+            &dll,
+            &[
+                "parcels",
+                &db.to_string_lossy(),
+                "fixtures/regionstore/parcels.sql",
+                REGION,
+                &pin,
+            ],
+        )
+        .ok_or("parcel oracle failed")?;
+        fs::write(root.join("fixtures/regionstore/parcels.json"), json)
+            .map_err(|e| e.to_string())?;
+        let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .current_dir(&root)
+            .env("FERROAN_PARCEL_ORACLE_DB", db)
+            .args([
+                "test",
+                "--locked",
+                "-p",
+                "ferroan-scene",
+                "--lib",
+                "regionstore_parcels_match_pin8_load_and_access_entries",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("SQLite parcel comparison exited with {status}"))
+        }
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Seed a SQLite region store and write the settings dump for one region.
 pub fn settings() -> ExitCode {
     let root = crate::repo_root();
