@@ -30,8 +30,10 @@
 //! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
 //!
 //! `jolt substeps` and `jolt substeps-verify` run the pinned
-//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. Neither
-//! starts a region. `jolt generate` and `jolt verify` stay with the harness.
+//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
+//! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
+//! and compare `fixtures/jolt-config`. Neither starts a region. `jolt
+//! generate` and `jolt verify` stay with the harness.
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
@@ -136,7 +138,8 @@ use std::process::{Command, ExitCode};
 /// Directories never searched for Markdown files.
 const SKIP_DIRS: &[&str] = &[".git", "target", ".scratch"];
 
-const USAGE: &str = "\
+fn usage() -> String {
+    const HEAD: &str = "\
 usage: cargo xtask check [--docs-only]
        cargo xtask oracle build
        cargo xtask oracle generate [fixture-dir]
@@ -156,6 +159,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask throttle verify
        cargo xtask jolt substeps
        cargo xtask jolt substeps-verify
+       cargo xtask jolt config
+       cargo xtask jolt config-verify
        cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
@@ -198,41 +203,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
-       cargo xtask live run object-cross grid --physics basicphysics
-       cargo xtask live object-cross-fixtures <capture-dir>
-       cargo xtask live run parcel-timing grid --physics basicphysics
-       cargo xtask live run parcel-timing grid --region ferroan
-       cargo xtask live parcel-timing-fixtures <capture-dir>
-       cargo xtask live run parcel-properties grid --physics basicphysics
-       cargo xtask live parcel-properties-fixtures <capture-dir>
-       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
-       cargo xtask live run prim-load grid --physics basicphysics
-       cargo xtask live run store-handoff grid --physics basicphysics
-       cargo xtask live run prim-capture grid --physics basicphysics
-       cargo xtask live run child-view grid --physics basicphysics
-       cargo xtask live run prim-arrival grid --region ferroan
-       cargo xtask live run prim-arrival grid --physics basicphysics
-       cargo xtask live run material-override grid --physics basicphysics
-       cargo xtask live run material-override grid --region ferroan
-       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
-       cargo xtask live run login grid --region ferroan
-       cargo xtask live run limits grid --region ferroan
-       cargo xtask live run caps grid [--region ferroan]
-       cargo xtask live run ferrobot [grid [--region ferroan]]
-       cargo xtask live run assets grid --region ferroan
-       cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]
-       cargo xtask live run login grid --rust accounts
-       cargo xtask live run login grid --rust auth
-       cargo xtask live run login grid --rust assets,accounts
-       cargo xtask live caps-fixtures <capture-dir>
-       cargo xtask live login-fixtures <capture-dir>
-       cargo xtask live region-parity-fixtures <capture-dir>
-       cargo xtask live root-arrival-fixtures <capture-dir>
-       cargo xtask live circuit-fixtures <udp-capture>
-       cargo xtask live arrival-fixtures <udp-capture>
-       cargo xtask live trailing-fixtures <udp-capture>
-       cargo xtask live run assets --running
-       cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
+";
+    const TAIL: &str = "       cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
        cargo xtask live compare region
        cargo xtask live assets [--db sqlite|mysql|pgsql]
        cargo xtask live assets --backend xasset --db mysql|pgsql
@@ -246,6 +218,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask ci gate
        cargo xtask ci ensure-sqlite
        cargo xtask ci ensure-db-clients";
+    format!("{HEAD}{}{TAIL}", ferroan_bot::register::live_run_help())
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -254,7 +228,7 @@ fn main() -> ExitCode {
         return match live_args::dispatch(&refs[1..]) {
             live_args::Outcome::Exit(code) => code,
             live_args::Outcome::Usage => {
-                eprintln!("{USAGE}");
+                eprintln!("{}", usage());
                 ExitCode::from(2)
             }
         };
@@ -317,6 +291,8 @@ fn main() -> ExitCode {
         ),
         ["jolt", "substeps"] => jolt::substeps(true),
         ["jolt", "substeps-verify"] => jolt::substeps(false),
+        ["jolt", "config"] => jolt::config(true),
+        ["jolt", "config-verify"] => jolt::config(false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run(
             "presence",
@@ -372,7 +348,7 @@ fn main() -> ExitCode {
         ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),
         ["ci", "ensure-db-clients"] => ci::ensure_db_clients(),
         _ => {
-            eprintln!("{USAGE}");
+            eprintln!("{}", usage());
             ExitCode::from(2)
         }
     }
@@ -683,5 +659,53 @@ mod tests {
         assert!(setup.contains("cargo xtask ci ensure-sqlite"));
         assert!(!setup.contains("apt-get"));
         assert!(!live.contains("apt-get"));
+    }
+
+    #[test]
+    fn scenario_help_matches_the_lines_from_before_the_table() {
+        let help = ferroan_bot::register::live_run_help();
+        let expected = concat!(
+            "       cargo xtask live run object-cross grid --physics basicphysics\n",
+            "       cargo xtask live object-cross-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-timing grid --physics basicphysics\n",
+            "       cargo xtask live run parcel-timing grid --region ferroan\n",
+            "       cargo xtask live parcel-timing-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-properties grid --physics basicphysics\n",
+            "       cargo xtask live parcel-properties-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics\n",
+            "       cargo xtask live run prim-load grid --physics basicphysics\n",
+            "       cargo xtask live run store-handoff grid --physics basicphysics\n",
+            "       cargo xtask live run prim-capture grid --physics basicphysics\n",
+            "       cargo xtask live run child-view grid --physics basicphysics\n",
+            "       cargo xtask live run prim-arrival grid --region ferroan\n",
+            "       cargo xtask live run prim-arrival grid --physics basicphysics\n",
+            "       cargo xtask live run material-override grid --physics basicphysics\n",
+            "       cargo xtask live run material-override grid --region ferroan\n",
+            "       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]\n",
+            "       cargo xtask live run login grid --region ferroan\n",
+            "       cargo xtask live run limits grid --region ferroan\n",
+            "       cargo xtask live run caps grid [--region ferroan]\n",
+            "       cargo xtask live run ferrobot [grid [--region ferroan]]\n",
+            "       cargo xtask live run assets grid --region ferroan\n",
+            "       cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]\n",
+            "       cargo xtask live run login grid --rust accounts\n",
+            "       cargo xtask live run login grid --rust auth\n",
+            "       cargo xtask live run login grid --rust assets,accounts\n",
+            "       cargo xtask live caps-fixtures <capture-dir>\n",
+            "       cargo xtask live login-fixtures <capture-dir>\n",
+            "       cargo xtask live region-parity-fixtures <capture-dir>\n",
+            "       cargo xtask live root-arrival-fixtures <capture-dir>\n",
+            "       cargo xtask live circuit-fixtures <udp-capture>\n",
+            "       cargo xtask live arrival-fixtures <udp-capture>\n",
+            "       cargo xtask live trailing-fixtures <udp-capture>\n",
+            "       cargo xtask live run assets --running\n",
+        );
+        assert_eq!(help, expected);
+        let usage = super::usage();
+        assert!(usage.contains(&help));
+        assert!(usage.contains("cargo xtask live down\n       cargo xtask live run object-cross"));
+        assert!(usage.contains(
+            "cargo xtask live run assets --running\n       cargo xtask live compare <service>"
+        ));
     }
 }

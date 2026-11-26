@@ -8,4 +8,6 @@ The three XML files are original HTTP response bodies from Pin8 Robust (`c401bce
 | Non-member | `RESULT=NULL` and an empty list on the region. |
 | Owner | East grants 18,446,744,073,709,551,615 from its owners role, whose stored mask is zero. |
 
+The Local SQLite reader opens this same seed. `local_memberships_match_the_pin8_store` compares its three maps with the maps decoded from these XML bodies.
+
 Run `cargo xtask live build` and `cargo xtask live group-memberships` under the shared live lock with a free port base and `UseSharedCompilation=false`. The region reader calls the pinned GroupsServiceRobustConnector through the capture proxy. The harness checks all three returned maps and the method, path and form bytes on every request. It saves the original response bodies in the reported scratch directory. To refresh the fixtures, copy its three XML files here. Replay them with `cargo test -p ferroan-region groups::tests`.

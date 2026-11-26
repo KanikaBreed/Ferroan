@@ -24,6 +24,8 @@
 use std::error::Error;
 use std::fmt;
 
+use ferroan_diag::{Kind, PHYSICS_STEPS_PER_FRAME, drop_bound};
+
 /// The most physics steps one heartbeat runs.
 pub const MAX_STEPS_PER_FRAME: i32 = 16;
 
@@ -103,7 +105,8 @@ impl SubstepAccumulator {
     ///
     /// A frame that is not finite and greater than zero returns 0 and changes
     /// nothing. A frame that would run more than [`MAX_STEPS_PER_FRAME`] steps
-    /// runs that many, drops the rest, and counts the frame.
+    /// runs that many, drops the rest, counts the frame, and reports
+    /// `physics.steps-per-frame`.
     pub fn advance(&mut self, frame_seconds: f64) -> i32 {
         if non_positive(frame_seconds, 0.0) || frame_seconds.is_infinite() {
             return 0;
@@ -116,6 +119,14 @@ impl SubstepAccumulator {
         let n = if whole > f64::from(MAX_STEPS_PER_FRAME) {
             self.carry = 0.0;
             self.capped_frames += 1;
+            // The observed value is the step count before the cap.
+            drop_bound(
+                PHYSICS_STEPS_PER_FRAME,
+                Kind::Hard,
+                u64::try_from(MAX_STEPS_PER_FRAME).unwrap_or(u64::MAX),
+                steps_observed(whole),
+                "physics",
+            );
             MAX_STEPS_PER_FRAME
         } else {
             let n = whole as i32;
@@ -132,6 +143,17 @@ fn non_positive<T: PartialOrd>(value: T, zero: T) -> bool {
     !matches!(value.partial_cmp(&zero), Some(std::cmp::Ordering::Greater))
 }
 
+/// Steps a heartbeat asked for, as the limit's observed value.
+///
+/// A non-finite or out-of-range count is reported as the largest `u64`.
+fn steps_observed(whole: f64) -> u64 {
+    if whole.is_finite() && whole > 0.0 && whole < (u64::MAX as f64) {
+        whole as u64
+    } else {
+        u64::MAX
+    }
+}
+
 /// `Math.Max(0.0, value)`. A negative remainder, including `-0.0`, becomes `+0.0`.
 fn non_negative(value: f64) -> f64 {
     if value.is_nan() || value > 0.0 {
@@ -146,6 +168,7 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     fn fixture() -> Value {
         let path =
@@ -382,5 +405,152 @@ mod tests {
                 hex_u64(str_field(case, "carry_bits"))
             );
         }
+    }
+
+    /// The diagnostics ring keeps the first hit of a limit id for a minute.
+    /// Record the 45 Hz case before any other step-cap report.
+    fn reported_step_cap() -> String {
+        static GUARD: Mutex<Option<String>> = Mutex::new(None);
+        let mut slot = GUARD.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(text) = slot.clone() {
+            return text;
+        }
+        let mut acc = SubstepAccumulator::new(45.0).unwrap();
+        assert_eq!(acc.advance(1.0), MAX_STEPS_PER_FRAME);
+        let text = ferroan_diag::render();
+        *slot = Some(text.clone());
+        text
+    }
+
+    #[test]
+    fn a_step_past_the_cap_is_dropped_and_reported() {
+        let report = reported_step_cap();
+        assert!(
+            report.contains(
+                "limit physics.steps-per-frame hard drop configured=16 observed=45 route=physics"
+            ),
+            "{report}"
+        );
+        let mut acc = SubstepAccumulator::new(45.0).unwrap();
+        assert_eq!(acc.advance(1.0), MAX_STEPS_PER_FRAME);
+        assert_eq!(acc.capped_frames(), 1);
+        assert_eq!(acc.carry(), 0.0);
+        assert_eq!(acc.steps(), i64::from(MAX_STEPS_PER_FRAME));
+        let metrics = ferroan_diag::metrics();
+        assert!(
+            metrics.contains(
+                "ferroan_limit_hits_total{limit=\"physics.steps-per-frame\",action=\"drop\"}"
+            ),
+            "{metrics}"
+        );
+    }
+
+    #[test]
+    fn steps_observed_keeps_the_count_and_maps_infinity_to_u64_max() {
+        assert_eq!(steps_observed(17.0), 17);
+        assert_eq!(steps_observed(45.0), 45);
+        assert_eq!(steps_observed(4_294_967_296.0), 4_294_967_296);
+        assert_eq!(steps_observed(f64::INFINITY), u64::MAX);
+        assert_eq!(steps_observed(f64::NAN), u64::MAX);
+    }
+
+    #[test]
+    fn outside_numbers_stay_inside_the_step_cap() {
+        reported_step_cap();
+        for rate in f32_samples() {
+            let finite_positive = rate.is_finite() && rate > 0.0;
+            let built = SubstepAccumulator::new(rate);
+            assert_eq!(
+                built.is_ok(),
+                finite_positive,
+                "rate bits {:08x}",
+                rate.to_bits()
+            );
+            let Ok(mut acc) = built else {
+                continue;
+            };
+            for frame in f64_samples() {
+                let before = (acc.carry().to_bits(), acc.steps(), acc.capped_frames());
+                let got = acc.advance(frame);
+                assert!(
+                    (0..=MAX_STEPS_PER_FRAME).contains(&got),
+                    "rate {rate} frame {frame} returned {got}"
+                );
+                if non_positive(frame, 0.0) || frame.is_infinite() {
+                    assert_eq!(got, 0);
+                    assert_eq!(
+                        (acc.carry().to_bits(), acc.steps(), acc.capped_frames()),
+                        before,
+                        "a non-finite heartbeat changed the accumulator"
+                    );
+                } else if acc.capped_frames() != before.2 {
+                    assert_eq!(got, MAX_STEPS_PER_FRAME);
+                    assert_eq!(acc.carry(), 0.0);
+                    assert_eq!(acc.capped_frames(), before.2 + 1);
+                }
+            }
+        }
+    }
+
+    fn f32_samples() -> Vec<f32> {
+        let mut out = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            11.0,
+            45.0,
+            90.0,
+            f32::MIN,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            f32::from_bits(0x7fc0_0001),
+            f32::from_bits(0xffc0_0001),
+            f32::from_bits(0x7f80_0001),
+            f32::from_bits(0x0000_0001),
+            f32::from_bits(0x8000_0001),
+        ];
+        for exp in 1u32..255 {
+            for mant in [0u32, 1, 0x40_0000, 0x7f_ffff] {
+                let bits = (exp << 23) | mant;
+                out.push(f32::from_bits(bits));
+                out.push(f32::from_bits(bits | 0x8000_0000));
+            }
+        }
+        out
+    }
+
+    fn f64_samples() -> Vec<f64> {
+        let mut out = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.0909,
+            16.0 / 45.0,
+            17.0 / 45.0,
+            1.0e20,
+            f64::MIN,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            f64::from_bits(0xfff8_0000_0000_0001),
+            f64::from_bits(0x0000_0000_0000_0001),
+        ];
+        for exp in [1u64, 10, 100, 500, 1000, 1500, 2000, 2046] {
+            for mant in [0u64, 1, 0x8_0000_0000_0000] {
+                let bits = (exp << 52) | mant;
+                out.push(f64::from_bits(bits));
+                out.push(f64::from_bits(bits | 0x8000_0000_0000_0000));
+            }
+        }
+        out
     }
 }

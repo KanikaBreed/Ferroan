@@ -83,6 +83,7 @@ jobs:
           cargo xtask pin3 verify
           cargo xtask throttle verify
           cargo xtask jolt substeps-verify
+          cargo xtask jolt config-verify
           cargo xtask presence verify
           cargo xtask access verify
           cargo xtask permissions verify

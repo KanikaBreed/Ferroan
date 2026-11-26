@@ -122,9 +122,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
 | QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
-| QR42 | R42: live scenarios register in one table | READY |
+| QR42 | R42: live scenarios register in one table | DONE (this PR) |
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
-| Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
+| QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
+| Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -189,7 +190,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
 | Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
 | Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | DONE (this PR) |
-| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | BLOCKED (split into Q61c1–Q61c2) |
+| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | READY |
+| Q61c2 | P2.6b3b: `ParcelPropertiesRequest`, the multi-parcel reply cap and the text bound | READY after Q61c1 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
@@ -284,9 +287,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
-| Q106 | P3.1b: notices and the vendored-fork fallback | READY after Q105 |
-| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
-| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | DONE (this PR) |
+| Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
+| Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
+| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q141, Q157, Q122 and Q123 |
 | Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
 | Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
@@ -356,7 +361,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
 | Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
 
-Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
+Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 and Q102 to Q104 are blocked for a later upgrade. Q101, Q105, Q106, Q107 and Q108a are done. Q108 is split. Q108b waits on the rows named in its status. The other rows wait on the queue items named in their status, in the plan's dependency order.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -875,6 +880,25 @@ Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each p
 1. **Capture the Pin8 elements** (about a day). On the Q60b store, record the `ParcelProperties` element on arrival, on a one-cell `ParcelPropertiesRequest`, on a span that covers two parcels, and on a walk across a parcel border. Publish those original bytes. When the extractor rebuilds a body, assert first that re-encoding the unredacted original reproduces the captured bytes, as `xtask/src/prim_capture.rs` does, and take the body from the capture. Keep the poll id out of the fixture. No Ferroan sender.
 2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
 3. **Deliver and compare** (about a day, after 1, 2 and Q60c3). Send on arrival, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. Handle `ParcelPropertiesRequest` for one cell, for several parcels, for a banned parcel and for a bound the handler ignores. Send again when a walk changes the parcel `GlobalID`. The bot reads the parcel flags from the arrival element. Live-compare those moments with the capture. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them. Ban lines, ban enforcement and avatar hiding stay out.
+
+### Q61c proposed split
+
+**BLOCKED, 26 November 2026** (`docs/q61c-split`). The approved delivery day is item 3 above. The brief for that day also includes three decisions from the Q61b review. Together that is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
+
+The delivery day sends on arrival before the overlay (`LandManagementModule.sendClientInitialLandInfo`, 492–507), and again at the initial-data gate only when teleport flags are `<= 0` (`ScenePresence` 4343). Ferroan already requests the overlay from `send_initial_data` when `teleport_flags == 0`, and queues staged land when `land_at_complete` is true. It handles `ClientOnParcelPropertiesRequest` (1594–1646) for one cell, several parcels, a banned parcel and a bound the handler ignores, and it sends when a walk changes `GlobalID` (`EventManagerOnClientMovement` 536–553, `EventManagerOnAvatarEnteringNewParcel` 449–466). The live compare uses the Q61a captures. The bot reads the parcel flags.
+
+The three decisions are a second day of work on top of that wiring and the live compare:
+
+A. Pin8 sends one element per parcel with no cap (1594–1646). Its event queue is an unbounded `Queue<byte[]>` per agent (`EventQueueGetModule.cs` 67, enqueue at 212, drain at 455–468). Ferroan's 4 MiB queue is per agent and holds 23 elements at 4096 m. Cap one multi-parcel reply at `(edge/64)^2` elements, and at 256, and report the hit through a stable limit id. [LIMITS.md](docs/LIMITS.md) says that `event.queue-bytes` is per agent.
+
+B. The per-event bound is the largest bitmap plus the fixed fields plus a recorded text bound. Pin8 stores parcel text with no length check: the `ParcelPropertiesUpdate` capability copies `Desc` through (`LandManagementModule.cs` 2110–2160), and `osSetParcelDetails` writes `PARCEL_DETAILS_DESC` straight onto `Description` (`OSSL_Api.cs` 1878–1884). A parcel over the bound is refused with a limit id. A and B share one D entry.
+
+C. Bounding-box heights are set when the parcel is loaded. `ForceUpdateLandInfo` (`LandObject.cs` 1188) calls `UpdateGeometryValues` (1203), and land load calls that at `LandManagementModule.cs` 818. The stored Z values are the heightmap samples at 1306–1327. Q61b samples the heightmap on every encode (`crates/ferroan-scene/src/parcels/properties.rs`). `CapsServer::enqueue_raw` (`crates/ferroan-client/src/caps.rs`) records every queue hit as `event-queue`. It takes the caller, and that name is what the limit readout shows.
+
+Proposed split. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until both are `DONE`.
+
+1. **Arrival, the initial-data gate and the walk, with heights taken at land load** (about a day). One element on each send, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. A child skips properties. On a walk, send when `GlobalID` changes. Store the bounding-box heights when the parcel is loaded, and encode those stored values, so `arrival.bin` and `walk.bin` still match. `CapsServer::enqueue_raw` takes its caller. Live-compare those two captures. The bot reads the parcel flags from the arrival element. Ban lines, ban enforcement and avatar hiding stay out.
+2. **`ParcelPropertiesRequest`, the reply cap and the text bound** (about a day, after 1). One cell, several parcels, a banned parcel, and a bound the handler ignores. Live-compare `request-cell.bin`, `request-span-west.bin` and `request-span-east.bin`. Cap one multi-parcel reply at `(edge/64)^2` elements, and at 256, through a stable limit id. Refuse a parcel whose element would pass the per-event bound, through a limit id. One D entry covers both divergences from Pin8. [LIMITS.md](docs/LIMITS.md) says the queue limit is per agent. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them.
 
 ### Q65 split
 
