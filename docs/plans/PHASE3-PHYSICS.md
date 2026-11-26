@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and forbids unsafe code. Nothing in the workspace depends on `oxijolt-sys`. The workspace forbids unsafe code. [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys` as planned. Their licence texts, and joltc's, are added when the dependency lands (P3.1b).
+`ferroan-physics` holds the substep accumulator (P3.0b) and forbids unsafe code. Nothing in the workspace depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys` as planned. Their licence texts, and joltc's, are added when the dependency lands (P3.1b).
 
 What touches motion today:
 

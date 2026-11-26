@@ -9,10 +9,10 @@
   },
   "also_rates": [
     {
-    "rate_hz_bits": "42700000",
-    "step_bits": "3f91111111111111",
-    "step_seconds_bits": "3c888889"
-  }
+      "rate_hz_bits": "42700000",
+      "step_bits": "3f91111111111111",
+      "step_seconds_bits": "3c888889"
+    }
   ],
   "sequence": {
     "rate_hz_bits": "42340000",

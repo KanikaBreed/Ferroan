@@ -23,7 +23,7 @@ static class Program
         {
             if (args[i] == "--revision" && i + 1 < args.Length)
                 revision = args[++i];
-            else if (args[i] == "generate" || args[i] == "verify")
+            else if (args[i] == "substeps-generate" || args[i] == "substeps-verify")
                 action = args[i];
             else if (!args[i].StartsWith("--"))
                 fixture = args[i];
@@ -45,7 +45,7 @@ static class Program
         }
 
         var json = Document(revision);
-        if (action == "generate")
+        if (action == "substeps-generate")
         {
             var directory = Path.GetDirectoryName(fixture);
             if (!string.IsNullOrEmpty(directory))
@@ -71,7 +71,8 @@ static class Program
 
     static void Usage()
     {
-        Console.Error.WriteLine("usage: JoltOracle generate|verify <file> --revision <sha>");
+        Console.Error.WriteLine(
+            "usage: JoltOracle substeps-generate|substeps-verify <file> --revision <sha>");
     }
 
     static bool IsRevision(string revision)
@@ -113,10 +114,10 @@ static class Program
         sb.Append(Inv(SubstepAccumulator.MaxStepsPerFrame));
         sb.Append(",\n");
         sb.Append("  \"rate\": ");
-        RateObject(sb, primary);
+        RateObject(sb, primary, 2);
         sb.Append(",\n");
         sb.Append("  \"also_rates\": [\n    ");
-        RateObject(sb, sixty);
+        RateObject(sb, sixty, 3);
         sb.Append("\n  ],\n");
         sb.Append("  \"sequence\": ");
         SequenceObject(sb, sequence);
@@ -294,13 +295,14 @@ static class Program
         }
     }
 
-    static void RateObject(StringBuilder sb, SubstepAccumulator acc)
+    static void RateObject(StringBuilder sb, SubstepAccumulator acc, int indent)
     {
         sb.Append("{\n");
-        Field(sb, "rate_hz_bits", Hex32(acc.RateHz), 2, true);
-        Field(sb, "step_bits", Hex64(StepOf(acc)), 2, true);
-        Field(sb, "step_seconds_bits", Hex32(acc.StepSeconds), 2, false);
-        sb.Append("  }");
+        Field(sb, "rate_hz_bits", Hex32(acc.RateHz), indent, true);
+        Field(sb, "step_bits", Hex64(StepOf(acc)), indent, true);
+        Field(sb, "step_seconds_bits", Hex32(acc.StepSeconds), indent, false);
+        sb.Append(' ', (indent - 1) * 2);
+        sb.Append('}');
     }
 
     static void SequenceObject(StringBuilder sb, SequenceRun run)
