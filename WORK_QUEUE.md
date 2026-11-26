@@ -119,6 +119,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
+| QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
+| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | READY |
+| QR42 | R42: live scenarios register in one table | READY |
+| Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -211,8 +216,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (split into Q79a–Q79c) |
 | Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | READY after Q79a |
-| Q79c | P2.11a3: maintain each root's children and compare live visibility | READY after Q79b |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c |
+| Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
+| Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | READY after Q79b |
+| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | READY after Q79c1 |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2 |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
@@ -734,6 +741,8 @@ Q84 DONE (25 November 2026, `feat/q84-uuid-names`): `UUIDNameRequest` is answere
 Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 and Q83 come from Q46b's note that the Ferroan harness walk runs at Z 0: C# builds and stores a default terrain when the store has none, Ferroan leaves the ground at 0. Q82 does SQLite, generation and the harness; Q83 does MySQL and PostgreSQL, after QR22 settles how the region picks its backend from `StorageProvider`. Q84: Ferroan never answers `UUIDNameRequest`, which costs Ferrobot about 10 s per `nearby` call; it needs Q48 so that Ferrobot sees the other avatars at all. Q85 is Q43's child-throttle note; it waits for the child-agent items Q79 and Q80, and for QR26, which changes the same outgoing AgentData. Each item's scope, C# lines at `c401bceecd`, evidence and size are on its TASKS.md row. A fifth gap was not queued: C# `MakeRootAgent` lands a newcomer on another avatar's capsule with a filtered ray cast (`ScenePresence.cs` 1543–1602, `PrimsNonPhantomAgents`), but only when the physics engine supports filtered ray casts. BasicPhysics does not (`PhysicsScene.cs` 347–350 returns false, and BasicPhysics does not override it), so a `--physics basicphysics` C# region lands at ground height as the D38 stand-in does, and there is nothing in Phase 2 to match. It is recorded as a Phase 3 note in [docs/PLAN.md](docs/PLAN.md).
 
 QR35 to QR38 and Q76b (manager, 25 November 2026): from the 25 November reviews. QR35 and QR36 come from QR13's and Q26c3's found notes (the database session time zone, and a password reset racing a web-key consume). QR37 holds the Q10aj review's follow-ups. QR38 removes the last personal path, found by the Q76 review. Q76b is the seated-avatar crossing the manager split from Q76.
+
+QR39 to QR42, Q86 and the Q79c split (manager, 25 November 2026): from the evening's reviews. QR39 is the `setauthinfo` read-modify-write the QR36 review found (TB136). QR40 comes from Q65d2's found note: a zero-scale stored prim is sent as (0,0,0) where Pin8 sends 0.001. QR41 is the `grid::tests::each_server_is_marked_just_before_it_stops` flake seen on #297 (its stand-in caller can connect after the proxy stopped). QR42 moves live-scenario registration (the scenario lists, flags, seeds, Docker policy and help in `grid.rs`, `live_args.rs`, `grid_up.rs`, `login_gate.rs` and `main.rs`) into one table, since every capture item conflicted with every other there. Q86 adds the Local groups reader that Q60c1 refuses at startup for now. The manager approved Q79c's split into Q79c1 (one owner for each child: a bounded set of destinations and seeds per root circuit generation, refusal, and closing a child accepted after logout) and Q79c2 (enable children at the eligible root arrival and re-evaluate from frame position, draw distance and Pin8's significant-movement thresholds, `ScenePresence.cs` 2575, 4398 and 4751–4828, then compare the home and child circuits with Q79a's capture); Q80 waits for Q79c2.
 
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
 
