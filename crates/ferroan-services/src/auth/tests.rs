@@ -416,6 +416,8 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
             .await
             .unwrap();
     }
+    let mysql = pool.mysql().cloned();
+    let pg = pool.postgres().cloned();
     let store = AuthStore::new(pool, "auth").unwrap();
     let row = webkey_row();
     assert!(store.store(&row).await.unwrap());
@@ -431,7 +433,13 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
             .await
             .unwrap()
     );
-    let service = AuthService::new(store, AuthKind::Password);
+    let service = AuthService::new(store, AuthKind::WebkeyOrPassword);
+    if let Some(pool) = mysql {
+        reset_racing_a_consume(&pool, &service).await;
+    }
+    if let Some(pool) = pg {
+        reset_racing_a_consume(&pool, &service).await;
+    }
     let id = principal();
     assert!(service.set_password(id, "harness-secret").await.unwrap());
     let row = service.get(id).await.unwrap().unwrap();
@@ -510,6 +518,59 @@ async fn sqlite_webkey_fixture() -> (AuthService, sqlx::SqlitePool, AuthRow) {
     let row = webkey_row();
     assert!(store.store(&row).await.unwrap());
     (AuthService::new(store, AuthKind::Webkey), sqlite, row)
+}
+
+#[tokio::test]
+async fn sqlite_reset_racing_a_consume_keeps_the_key_spent() {
+    let (service, pool, _) = sqlite_webkey_fixture().await;
+    reset_racing_a_consume(&pool, &service).await;
+}
+
+async fn reset_racing_a_consume<DB: sqlx::Database>(pool: &sqlx::Pool<DB>, service: &AuthService) {
+    let pin = &pin8_auth_edges()["reset_fields"];
+    assert_eq!(
+        pin["writes_previous_key"], true,
+        "TB136: revisit D79 if Pin8 stops storing the previous key"
+    );
+    let mut row = webkey_row();
+    row.account_type = pin["account_type"].as_str().unwrap().into();
+    assert!(service.set_info(&row).await.unwrap());
+    let mut held = Vec::new();
+    for _ in 0..pool.options().get_max_connections() {
+        held.push(pool.acquire().await.unwrap());
+    }
+    // Queue both calls before returning one connection to the FIFO. A reset
+    // that reads a snapshot would now read the old key before its consumption.
+    let (reset, consume, ()) = tokio::join!(biased;
+        service.set_password(row.principal_id, "reset fixture"),
+        service.authenticate(row.principal_id, &row.web_login_key, 30),
+        async { drop(held.pop().unwrap()); }
+    );
+    drop(held);
+    assert_eq!(reset.unwrap(), pin["stored"].as_bool().unwrap());
+    assert!(!consume.unwrap().is_empty());
+    let saved = service.get(row.principal_id).await.unwrap().unwrap();
+    assert!(
+        saved.web_login_key == ZERO_KEY,
+        "the consumed key must stay cleared"
+    );
+    assert_eq!(saved.account_type, row.account_type);
+    assert_eq!(
+        saved.password_hash.len() as u64,
+        pin["hash_length"].as_u64().unwrap()
+    );
+    assert_eq!(
+        saved.password_salt.len() as u64,
+        pin["salt_length"].as_u64().unwrap()
+    );
+    assert!(saved.password_hash == hash::stored_hash("reset fixture", &saved.password_salt));
+    assert!(
+        service
+            .authenticate(row.principal_id, &row.web_login_key, 30)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

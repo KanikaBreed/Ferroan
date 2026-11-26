@@ -91,6 +91,8 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 | Profiles (P1.11) | `[UserProfilesService] LocalServiceModule` loads the service, which then loads `UserAccountService`. | The account key is the accounts row above. The harness does not load profiles. |
 | Estates and experiences (P1.12) | Off in the shipped GridServer config. Experience's own section loads `UserAccountService` when the service is on. | `EstateServerURI` and `ExperienceServerURI`. |
 
+A password reset creates a missing principal with account type `UserAccount` and the zero web key. For an existing principal, resetting the password preserves the current account type and any concurrent consumption of the web key (D79).
+
 ## Presence rows
 
 The service can use `dyn PresenceStore` for all seven asynchronous operations. A store returns `Ok(false)` when it writes nothing. Bound and database errors have distinct variants. After a successful region report the service can call `set_region_id` on its cached row, including a detached row fetched from SQL.
