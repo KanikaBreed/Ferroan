@@ -118,7 +118,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
 | QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
-| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
+| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | DONE (this PR) |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
 | QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
