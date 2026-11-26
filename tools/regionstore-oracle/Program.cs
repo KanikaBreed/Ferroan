@@ -2054,7 +2054,7 @@ static string SampleEnvironment()
         ["day_cycle"] = new OSDMap
         {
             ["frames"] = new OSDMap(),
-            ["name"] = "probe-day",
+            ["name"] = "probé-day",
             ["tracks"] = new OSDArray
             {
                 new OSDArray(),

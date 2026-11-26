@@ -15,7 +15,10 @@
 //! migrations. SQLite version 31 stores `region_id` as varchar and
 //! `llsd_settings` as text. MySQL version 31 does the same and version 62
 //! widens the settings column to `MEDIUMTEXT`. PostgreSQL version 37 stores
-//! `region_id` as uuid and `llsd_settings` as varchar. Ferroan does not run
+//! `region_id` as uuid and `llsd_settings` as varchar. SQLite and PostgreSQL
+//! declare `llsd_settings NOT NULL`, and `region_id` is the primary key on
+//! each backend. MySQL version 62's `MODIFY llsd_settings MEDIUMTEXT` drops
+//! `NOT NULL`, so only MySQL can hold a NULL cell. Ferroan does not run
 //! those migrations. A store it opens is already at the pinned `RegionStore`
 //! version, which includes the table.
 //!
@@ -24,12 +27,18 @@
 //! loads as an empty string. MySQL `REPLACE`s the row. SQLite updates the
 //! existing row or inserts one; Ferroan deletes and inserts in one
 //! transaction, which leaves the same cells. PostgreSQL deletes and then
-//! inserts on two connections. Ferroan runs those two statements in one
-//! transaction, so a failed insert does not leave the row missing.
+//! inserts on two connections (TB205). Ferroan runs those two statements in
+//! one transaction (D140), and the terrain writer already does the same, so
+//! a failed insert does not leave the row missing. A cell longer than
+//! [`ENVIRONMENT_BYTES`] is refused (`region.environment-bytes`).
 
 use ferroan_db::Pool;
+use ferroan_diag::{Kind, REGION_ENVIRONMENT_BYTES};
 use thiserror::Error;
 use uuid::Uuid;
+
+/// MySQL `MEDIUMTEXT` holds at most this many bytes. Pin8 has no matching cap.
+pub const ENVIRONMENT_BYTES: usize = 16_777_215;
 
 /// A region-environment read or write failed.
 #[derive(Debug, Error)]
@@ -38,56 +47,101 @@ pub enum EnvironmentError {
     /// the three region stores.
     #[error("region environment store: {0}")]
     Store(String),
+    /// `llsd_settings` is longer than [`ENVIRONMENT_BYTES`].
+    #[error("region environment settings exceed {ENVIRONMENT_BYTES} bytes")]
+    TooLarge,
 }
 
+fn refuse_settings(observed: u64) {
+    ferroan_diag::refuse(
+        REGION_ENVIRONMENT_BYTES,
+        Kind::Hard,
+        ENVIRONMENT_BYTES as u64,
+        observed,
+        "region",
+    );
+}
+
+/// Byte length, and the cell when that length is within the cap. NULL is `None`.
+type EnvironmentRow = (Option<i64>, Option<String>);
+
 /// `LoadRegionEnvironmentSettings`. A missing row is an empty string.
+/// The cell is selected only when its byte length is within
+/// [`ENVIRONMENT_BYTES`]; a longer one is refused before sqlx reads it.
 pub async fn load_region_environment(
     pool: &Pool,
     region: Uuid,
 ) -> Result<String, EnvironmentError> {
     let id = region.as_hyphenated().to_string();
     let failed = |error: sqlx::Error| EnvironmentError::Store(error.to_string());
+    let cap = i64::try_from(ENVIRONMENT_BYTES).unwrap_or(i64::MAX);
     // A NULL cell is `Convert.ToString` on MySQL and PostgreSQL, which is
-    // empty. SQLite casts the cell to string and throws.
-    let cell: Option<Option<String>> = if let Some(sqlite) = pool.sqlite() {
-        sqlx::query_scalar("SELECT llsd_settings FROM regionenvironment WHERE region_id = ?1")
-            .bind(&id)
-            .fetch_optional(sqlite)
-            .await
-            .map_err(failed)?
+    // empty. SQLite casts the cell to string and throws. Only MySQL can
+    // store NULL: version 62 drops `NOT NULL`. SQLite and PostgreSQL declare
+    // it, so that error cannot occur on a pinned store of those backends.
+    let (cell, null_errors) = if let Some(sqlite) = pool.sqlite() {
+        // `length()` counts characters for TEXT. The cast measures bytes.
+        let cell: Option<EnvironmentRow> = sqlx::query_as(
+            "SELECT length(CAST(llsd_settings AS BLOB)), CASE WHEN length(CAST(llsd_settings AS BLOB)) <= ?2 THEN llsd_settings END FROM regionenvironment WHERE region_id = ?1",
+        )
+        .bind(&id)
+        .bind(cap)
+        .fetch_optional(sqlite)
+        .await
+        .map_err(failed)?;
+        (cell, true)
     } else if let Some(mysql) = pool.mysql() {
-        sqlx::query_scalar("SELECT llsd_settings FROM regionenvironment WHERE region_id = ?")
-            .bind(&id)
-            .fetch_optional(mysql)
-            .await
-            .map_err(failed)?
+        let cell: Option<EnvironmentRow> = sqlx::query_as(
+            "SELECT CAST(LENGTH(llsd_settings) AS SIGNED), CASE WHEN LENGTH(llsd_settings) <= ? THEN llsd_settings END FROM regionenvironment WHERE region_id = ?",
+        )
+        .bind(cap)
+        .bind(&id)
+        .fetch_optional(mysql)
+        .await
+        .map_err(failed)?;
+        (cell, false)
     } else if let Some(postgres) = pool.postgres() {
-        sqlx::query_scalar("SELECT llsd_settings FROM regionenvironment WHERE region_id = $1")
-            .bind(region)
-            .fetch_optional(postgres)
-            .await
-            .map_err(failed)?
+        let cell: Option<EnvironmentRow> = sqlx::query_as(
+            "SELECT octet_length(llsd_settings)::int8, CASE WHEN octet_length(llsd_settings) <= $2 THEN llsd_settings END FROM regionenvironment WHERE region_id = $1",
+        )
+        .bind(region)
+        .bind(cap)
+        .fetch_optional(postgres)
+        .await
+        .map_err(failed)?;
+        (cell, false)
     } else {
         return Err(EnvironmentError::Store(
             "connection is not SQLite, MySQL or PostgreSQL".to_owned(),
         ));
     };
     match cell {
-        Some(Some(text)) => Ok(text),
-        Some(None) if pool.sqlite().is_some() => {
+        // The CASE withheld the cell, so this length is past the cap.
+        Some((Some(length), None)) => {
+            refuse_settings(u64::try_from(length).unwrap_or(u64::MAX));
+            Err(EnvironmentError::TooLarge)
+        }
+        Some((Some(_), Some(text))) => Ok(text),
+        Some((None, _)) if null_errors => {
             Err(EnvironmentError::Store("llsd_settings is null".to_owned()))
         }
-        None | Some(None) => Ok(String::new()),
+        None | Some((None, _)) => Ok(String::new()),
     }
 }
 
 /// `StoreRegionEnvironmentSettings`. MySQL uses `REPLACE`. SQLite and
-/// PostgreSQL delete the region's row and insert the new one.
+/// PostgreSQL delete the region's row and insert the new one, in one
+/// transaction (D140). A value longer than [`ENVIRONMENT_BYTES`] is refused
+/// before any write.
 pub async fn store_region_environment(
     pool: &Pool,
     region: Uuid,
     settings: &str,
 ) -> Result<(), EnvironmentError> {
+    if settings.len() > ENVIRONMENT_BYTES {
+        refuse_settings(u64::try_from(settings.len()).unwrap_or(u64::MAX));
+        return Err(EnvironmentError::TooLarge);
+    }
     let id = region.as_hyphenated().to_string();
     let failed = |error: sqlx::Error| EnvironmentError::Store(error.to_string());
     if let Some(sqlite) = pool.sqlite() {
@@ -169,8 +223,12 @@ pub async fn remove_region_environment(pool: &Pool, region: Uuid) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::{load_region_environment, remove_region_environment, store_region_environment};
+    use super::{
+        ENVIRONMENT_BYTES, EnvironmentError, load_region_environment, remove_region_environment,
+        store_region_environment,
+    };
     use ferroan_db::{Backend, Pool};
+    use ferroan_diag::REGION_ENVIRONMENT_BYTES;
     use uuid::Uuid;
 
     use crate::objects::ObjectStoreKind;
@@ -266,6 +324,64 @@ mod tests {
         let (dir, connection) = scratch_store("unit");
         let pool = open(ObjectStoreKind::Sqlite, &connection).await;
         round_trip(&pool).await;
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_environment_past_the_byte_cap_is_refused() {
+        let (dir, connection) = scratch_store("cap");
+        let pool = open(ObjectStoreKind::Sqlite, &connection).await;
+        let before = crate::parcels::limit_hits(REGION_ENVIRONMENT_BYTES, "refuse");
+        let at_cap = "a".repeat(ENVIRONMENT_BYTES);
+        store_region_environment(&pool, REGION, &at_cap)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_region_environment(&pool, REGION).await.unwrap(),
+            at_cap
+        );
+        drop(at_cap);
+        remove_region_environment(&pool, REGION).await.unwrap();
+        assert_eq!(count(&pool, REGION).await, 0);
+
+        match store_region_environment(&pool, REGION, &"b".repeat(ENVIRONMENT_BYTES + 1)).await {
+            Err(EnvironmentError::TooLarge) => {}
+            Err(error) => panic!("store: {error}"),
+            Ok(()) => panic!("store wrote past the cap"),
+        }
+        assert_eq!(count(&pool, REGION).await, 0);
+        assert_eq!(
+            crate::parcels::limit_hits(REGION_ENVIRONMENT_BYTES, "refuse"),
+            before + 1
+        );
+
+        // One past the cap in bytes, and half that in characters: `length()`
+        // on the text would accept it. Each U+00E9 is two UTF-8 bytes.
+        let characters = i64::try_from(ENVIRONMENT_BYTES.div_ceil(2)).unwrap();
+        assert_eq!(
+            characters * 2,
+            i64::try_from(ENVIRONMENT_BYTES).unwrap() + 1
+        );
+        sqlx::query(
+            "INSERT INTO regionenvironment (region_id, llsd_settings) VALUES (?1, replace(hex(zeroblob(?2)), '00', char(233)))",
+        )
+        .bind(REGION.as_hyphenated().to_string())
+        .bind(characters)
+        .execute(pool.sqlite().unwrap())
+        .await
+        .unwrap();
+        assert_eq!(count(&pool, REGION).await, 1);
+        match load_region_environment(&pool, REGION).await {
+            Err(EnvironmentError::TooLarge) => {}
+            Err(error) => panic!("load: {error}"),
+            Ok(text) => panic!("load returned {} bytes", text.len()),
+        }
+        assert_eq!(count(&pool, REGION).await, 1);
+        assert_eq!(
+            crate::parcels::limit_hits(REGION_ENVIRONMENT_BYTES, "refuse"),
+            before + 2
+        );
         pool.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -404,6 +520,33 @@ mod tests {
         remove_region_environment(&pool, OTHER).await.unwrap();
         round_trip(&pool).await;
         pin_swap(&pool, &cross.ado, cross.prefix, &dll).await;
+        // Migration 62 drops NOT NULL. Pin8's Convert.ToString of that cell
+        // is empty, and so is Ferroan's load. SQLite and PostgreSQL declare
+        // NOT NULL, so this step is MySQL only.
+        if cross.kind == ObjectStoreKind::Mysql {
+            let region = REGION.as_hyphenated().to_string();
+            let pin = ferroan_db::TRANQUILLITY_REVISION;
+            sqlx::query(
+                "INSERT INTO regionenvironment (region_id, llsd_settings) VALUES (?, NULL)",
+            )
+            .bind(&region)
+            .execute(pool.mysql().unwrap())
+            .await
+            .unwrap();
+            assert_eq!(load_region_environment(&pool, REGION).await.unwrap(), "");
+            let loaded = oracle(
+                &dll,
+                &[
+                    &format!("{}environment-load", cross.prefix),
+                    &cross.ado,
+                    &region,
+                    pin,
+                ],
+            );
+            assert_eq!(row_of(&loaded, pin, &region), "");
+            remove_region_environment(&pool, REGION).await.unwrap();
+            assert_eq!(count(&pool, REGION).await, 0);
+        }
         pool.close().await;
     }
 
