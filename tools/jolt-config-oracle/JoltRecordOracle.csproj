@@ -6,7 +6,7 @@
     <Nullable>disable</Nullable>
     <RootNamespace>Ferroan.JoltConfigOracle</RootNamespace>
     <AssemblyName>JoltRecordOracle</AssemblyName>
-    <Description>In-process Pin8 harness recordings. Separate from the no-native config and file commands.</Description>
+    <Description>In-process harness recordings at the pin. Separate from the no-native config and file commands.</Description>
     <AnalysisLevel>none</AnalysisLevel>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -38,4 +38,7 @@
     </ProjectReference>
     <Content Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.RegionServer/AppData/RegionServerDefaults.ini" Link="RegionServerDefaults.ini" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!-- The pinned harness and region server import this: it puts the deterministic linux-x64 joltc over the package file. -->
+  <Import Project="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt.Backend/JoltNative.targets" />
 </Project>

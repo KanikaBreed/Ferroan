@@ -1,4 +1,4 @@
-# Pin8 c401bceecd Shape.Scale.ToBytes after AddRestoredSceneObject(group, false, true, false).
+# Pin8 41f18f983b Shape.Scale.ToBytes after AddRestoredSceneObject(group, false, true, false).
 # Scene(RegionInfo): ClampPrimSize false and CollidablePrims true unless the row says otherwise.
 # Size fields start at Scene's defaults unless the row names them. CreatePrimUpdateBlock writes these
 # twelve bytes with AddVector3 at offset 28 of ObjectUpdate.ObjectData.

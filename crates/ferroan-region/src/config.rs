@@ -1648,7 +1648,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             fixture["pin"].as_str().unwrap(),
-            "c401bceecd1684832ae8ba86a31b5ee01a4ded7b"
+            "41f18f983bb2bfc82e033fed410d361ba57d5aa4"
         );
         assert_eq!(fixture["agent_limit"].as_u64().unwrap(), 0);
         let owner = Uuid::parse_str(fixture["owner"].as_str().unwrap()).unwrap();

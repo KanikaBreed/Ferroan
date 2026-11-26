@@ -1072,7 +1072,9 @@ mod tests {
     use crate::objects::{MAX_LINKSET_PRIMS, MAX_OBJECT_XML_BYTES, MAX_TASK_ITEMS};
     use crate::xml::{to_original_xml, to_xml2};
 
-    const PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+    const PIN: &str = "41f18f983bb2bfc82e033fed410d361ba57d5aa4";
+    /// The probe file is a direct oracle run at Pin8; Pin9 leaves the serializer unchanged.
+    const PROBES_PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
 
     fn fixture(name: &str) -> serde_json::Value {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1169,7 +1171,7 @@ mod tests {
     #[test]
     fn regionstore_xml_reader_matches_the_probe_oracle() {
         let probes = fixture("objects-xml-probes.json");
-        assert_eq!(probes["pin"], PIN);
+        assert_eq!(probes["pin"], PROBES_PIN);
         let clean = fixture("objects-xml-read.json");
         let clean_xml2 = clean["groups"][0]["xml2"].as_str().unwrap();
         let cases = probes["cases"].as_array().unwrap();

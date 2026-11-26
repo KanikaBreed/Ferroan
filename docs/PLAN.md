@@ -9,7 +9,7 @@ Effort is in person-months, estimated at 3,000 to 6,000 lines of C# ported per p
 | 0. Foundations | 6 to 12 | Every packet captured from a C# region session decodes and re-encodes byte for byte; LLSD round-trips in all three encodings |
 | 1. Grid services | 16 to 32 | A live grid runs on Rust services with C# regions, and hypergrid visits work both ways |
 | 2. Region simulator core | 25 to 49 | In Firestorm and Aurora, a user logs in to a Rust region, walks, builds, chats and teleports to and from C# regions next door |
-| 3. Physics (beside 4) | 6 to 11 | Vehicle, walking and collision tests give the same results as the C# Jolt module |
+| 3. Physics (beside 4) | 6 to 11 | Vehicle, walking and collision tests give bit-identical traces to the C# Jolt module at Pin9 or later, both on the deterministic joltc `886e0886` (Jolt `e77f1755`, 5.6) when the calls match ([D144](DECISIONS.md)) |
 | 4. Scripts (beside 3) | 7 to 13 | The SLua engine plan's conformance suite passes on a Rust region |
 | 5. Region modules and content (beside 6) | 24 to 47 | OAR and IAR round trips match the C# server's, and the feature checklist reaches parity |
 | 6. Add-ons (beside 5) | 7 to 14 | Voice, search and offline IM work in Rust regions |

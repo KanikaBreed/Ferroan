@@ -752,7 +752,7 @@ mod tests {
         let document: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             document["revision"].as_str(),
-            Some("c401bceecd1684832ae8ba86a31b5ee01a4ded7b")
+            Some("41f18f983bb2bfc82e033fed410d361ba57d5aa4")
         );
         let cases = document["cases"].as_array().unwrap();
         let bot = ferroan_bot::throttle::initial_throttle_bytes();
