@@ -7,6 +7,7 @@
 
 pub mod avatar;
 pub mod caps_policy;
+pub mod children;
 pub mod config;
 pub mod control_plane;
 pub mod fetch_caps;

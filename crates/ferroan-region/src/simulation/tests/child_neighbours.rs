@@ -77,7 +77,8 @@ async fn visible_child_requests_match_the_two_region_capture() {
         .accept(AgentFields::parse(&incoming, agent, home.region_id).unwrap())
         .unwrap();
     let root = arrivals.recv().await.unwrap();
-    let mut child = root.visible_child_circuit(&home, &dest, [200., 128., 6.916], 255., 1.9);
+    let path = Uuid::new_v4().to_string();
+    let mut child = root.visible_child_circuit(&home, &dest, [200., 128., 6.916], 255., 1.9, &path);
     let seed = Uuid::parse_str(&child.caps_path).unwrap();
     assert_eq!(seed.get_version_num(), 4);
     assert_ne!(child.caps_path, root.caps_path);
@@ -344,12 +345,122 @@ async fn each_visible_child_gets_a_fresh_seed_and_the_original_travel_session() 
         .accept(AgentFields::parse(&incoming, fixture_uuid(1), home.region_id).unwrap())
         .unwrap();
     let root = arrivals.recv().await.unwrap();
-    let circuit = || root.visible_child_circuit(&home, &dest, [13., 48., 75.], 128., 2.3);
-    let first = circuit();
-    assert_ne!(first.caps_path, circuit().caps_path);
-    assert_eq!(first.start_pos, [269., -464., 75.]);
-    assert_eq!(first.service_session_id, travel);
-    assert_eq!(first.appearance.unwrap().height, 2.3);
+    let agent = root.expect.agent_id;
+    let generation = state.root_generation(agent).unwrap();
+    let far = RegionEnd {
+        region_id: fixture_uuid(9),
+        ..dest
+    };
+    let near = RegionEnd {
+        region_id: fixture_uuid(10),
+        loc_x: 512,
+        loc_y: 1024,
+        name: "Near".into(),
+        ..home.clone()
+    };
+    let crate::children::Claim::New { seed: far_seed } =
+        state.claim_child(agent, generation, far.clone())
+    else {
+        panic!("the far destination was not claimed");
+    };
+    let crate::children::Claim::New { seed: near_seed } =
+        state.claim_child(agent, generation, near.clone())
+    else {
+        panic!("the near destination was not claimed");
+    };
+    assert_ne!(far_seed, near_seed);
+    let far_child = root.visible_child_circuit(&home, &far, [13., 48., 75.], 128., 2.3, &far_seed);
+    let near_child =
+        root.visible_child_circuit(&home, &near, [13., 48., 75.], 128., 2.3, &near_seed);
+    assert_eq!(far_child.caps_path, far_seed);
+    assert_eq!(near_child.caps_path, near_seed);
+    assert_ne!(far_child.caps_path, near_child.caps_path);
+    assert_eq!(far_child.start_pos, [269., -464., 75.]);
+    assert_eq!(far_child.service_session_id, travel);
+    assert_eq!(near_child.service_session_id, travel);
+    assert_eq!(far_child.appearance.unwrap().height, 2.3);
+}
+
+#[tokio::test]
+async fn a_visible_child_posts_the_claimed_seed() {
+    let (sent, mut received) = mpsc::channel(1);
+    let app = axum::Router::new().fallback(
+        move |method: axum::http::Method, uri: axum::http::Uri, bytes: axum::body::Bytes| {
+            let sent = sent.clone();
+            async move {
+                let mut json = Vec::new();
+                flate2::read::GzDecoder::new(bytes.as_ref())
+                    .read_to_end(&mut json)
+                    .unwrap();
+                sent.send((
+                    method.to_string(),
+                    uri.path().to_owned(),
+                    serde_json::from_slice::<Value>(&json).unwrap(),
+                ))
+                .await
+                .unwrap();
+                r#"{"success":true,"reason":"Authorized"}"#
+            }
+        },
+    );
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}/", socket.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+    let home = RegionEnd {
+        server_uri: "http://home.invalid/".into(),
+        region_id: fixture_uuid(2),
+        name: "Home".into(),
+        loc_x: 256,
+        loc_y: 256,
+    };
+    let dest = RegionEnd {
+        server_uri: uri,
+        region_id: fixture_uuid(9),
+        name: "Neighbour".into(),
+        loc_x: 512,
+        loc_y: 256,
+    };
+    let agent = fixture_uuid(4);
+    let mut incoming: Map<String, Value> = serde_json::from_str(CREATE_REQUEST).unwrap();
+    incoming.insert("agent_id".into(), json!(agent.to_string()));
+    let (tx, mut arrivals) = mpsc::channel(1);
+    let state = SimulationState::new(
+        &test_config(&home.server_uri, home.region_id),
+        CapsRegistry::new(&home.server_uri).unwrap(),
+        tx,
+    );
+    state
+        .accept(AgentFields::parse(&incoming, agent, home.region_id).unwrap())
+        .unwrap();
+    let root = arrivals.recv().await.unwrap();
+    let generation = state.root_generation(agent).unwrap();
+    let claimed = state.claim_child(agent, generation, dest.clone());
+    let crate::children::Claim::New { seed } = claimed else {
+        panic!("the visibility admission did not own the destination");
+    };
+    assert!(matches!(
+        state.claim_child(agent, generation, dest.clone()),
+        crate::children::Claim::Existing { seed: ref again } if again == &seed
+    ));
+    let mut child = root.visible_child_circuit(&home, &dest, [10., 20., 30.], 255., 1.9, &seed);
+    assert!(
+        SimulationClient::new()
+            .unwrap()
+            .create_visible_child(&dest, &mut child)
+            .await
+            .unwrap()
+            .success
+    );
+    let (method, path, body) = received.recv().await.unwrap();
+    assert_eq!(method, "POST");
+    assert_eq!(path, format!("/agent/{agent}/"));
+    assert_eq!(body["caps_path"], seed);
+    assert_eq!(body["child"], true);
+    assert!(matches!(
+        state.finish_child(agent, generation, dest.region_id),
+        crate::children::Admission::Announce { seed: announced, .. } if announced == seed
+    ));
+    server.abort();
 }
 
 #[test]
