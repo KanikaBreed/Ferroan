@@ -282,7 +282,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
-| Q106 | P3.1b: notices and the vendored-fork fallback | READY after Q105 |
+| Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
 | Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
 | Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
