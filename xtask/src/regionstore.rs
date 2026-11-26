@@ -57,6 +57,24 @@ pub fn generate() -> ExitCode {
     dispatch(true)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn seed_prim_load(db: &Path) -> Result<(), String> {
+    let dll = build_oracle().map_err(|_| "could not build the pinned region store oracle")?;
+    if oracle(
+        &dll,
+        &[
+            "prim-load-seed",
+            db.to_str().ok_or("invalid store path")?,
+            crate::live::REGION_UUID,
+            crate::live::ESTATE_OWNER,
+        ],
+    ) {
+        Ok(())
+    } else {
+        Err("could not persist the 500-part store".into())
+    }
+}
+
 /// Seed only the store. The C# grid opens a copy and records the wire fixture.
 pub fn prim_seed() -> ExitCode {
     let dll = match build_oracle() {

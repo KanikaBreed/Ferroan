@@ -14,12 +14,21 @@ use ferroan_protocol::msgs::{
     ObjectUpdate,
     object_update::{ObjectData, RegionData},
 };
-use ferroan_protocol::{Msg, PacketFlags, Reader, Writer, parse_packet};
+use ferroan_protocol::{IncomingPacket, Msg, PacketFlags, Reader, Writer, parse_packet};
 use ferroan_scene::{ObjectStoreKind, open_objects};
 use serde_json::json;
 use uuid::Uuid;
 
 pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
+    read_blocks(records, PRIM_CAPTURE_COUNT, |_, _, _| {})
+}
+
+/// The receipt callback sees each non-avatar block, including retransmissions.
+pub(super) fn read_blocks(
+    records: &[Record],
+    max: usize,
+    mut receipt: impl FnMut(Uuid, u64, &IncomingPacket),
+) -> Result<BTreeMap<Uuid, ObjectData>, String> {
     let mut parts = BTreeMap::<Uuid, ObjectData>::new();
     for record in records.iter().filter(|r| r.kind == Kind::UdpOut) {
         let packet = parse_packet(&record.bytes).map_err(|e| e.to_string())?;
@@ -52,11 +61,12 @@ pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, Objec
                     return Err(format!("different initial blocks for {id}"));
                 }
             } else {
-                if parts.len() == PRIM_CAPTURE_COUNT {
+                if parts.len() == max {
                     return Err("capture contains unexpected prims".into());
                 }
                 parts.insert(id, block);
             }
+            receipt(id, record.time_ms, &packet);
         }
         if reader.remaining() != 0 {
             return Err("trailing ObjectUpdate bytes".into());

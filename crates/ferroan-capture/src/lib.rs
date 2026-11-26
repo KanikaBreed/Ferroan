@@ -16,7 +16,9 @@ mod format;
 mod proxy;
 mod redact;
 
-pub use format::{Kind, Record, read_capture, read_complete_prefix, write_capture};
+pub use format::{
+    Kind, Record, read_capture, read_capture_limited, read_complete_prefix, write_capture,
+};
 pub use proxy::{
     DEFAULT_REPLY_TIMEOUT, ProxyStatus, serve, serve_on, serve_on_with_status,
     serve_on_with_timeout, serve_with_timeout,
