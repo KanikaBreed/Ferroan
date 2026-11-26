@@ -46,7 +46,7 @@
 //! per simulator. A position update goes only to an open child, so a PUT
 //! cannot land before the child exists.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -206,8 +206,9 @@ fn enable(
             .collect::<Vec<_>>(),
     );
     if simulation.admission_full(notice.agent) {
+        // No task owns these yet, so serve end can still send them.
         for (end, session) in closes {
-            book.stage_decided_close(notice.agent, session, end);
+            book.stage_ready_close(notice.agent, session, end);
         }
         finish(frame, notice, true);
         return;
@@ -269,14 +270,9 @@ struct EnableHttp {
 
 impl EnableHttp {
     async fn run(mut self) {
-        for (end, session) in &self.closes {
-            close_child(&self.client, end, self.notice.agent, *session).await;
-            // A cancel at the await above skips this ack, so the close stays
-            // staged. A returned DELETE, including a transport error, does not.
-            self.simulation
-                .child_book()
-                .ack_decided_close(self.notice.agent, *session, end);
-        }
+        let book = self.simulation.child_book();
+        let closes = std::mem::take(&mut self.closes);
+        send_decided_closes(book, &self.client, self.notice.agent, closes).await;
         // Take the steps so each admission can still borrow this pass.
         for step in std::mem::take(&mut self.steps) {
             match step {
@@ -363,8 +359,11 @@ async fn admit_one(
         Admission::Close { end, session } => {
             let session = *session;
             book.stage_decided_close(pass.notice.agent, session, end.clone());
+            let mut handed =
+                HandedClose::begin(Arc::clone(&book), pass.notice.agent, session, end.clone());
             close_child(&pass.client, end, pass.notice.agent, session).await;
-            book.ack_decided_close(pass.notice.agent, session, end);
+            handed.returned();
+            handed.ack();
         }
         Admission::Quiet => {}
     }
@@ -436,6 +435,111 @@ async fn put_position(
 async fn close_child(client: &SimulationClient, end: &RegionEnd, agent: Uuid, session: Uuid) {
     if let Err(error) = client.close_agent(end, agent, &session.to_string()).await {
         tracing::debug!("child close was not sent: {error}");
+    }
+}
+
+/// Closes staged before this task started. A far hop's take leaves an
+/// in-flight one alone. Aborting the await acks a DELETE already handed to
+/// HTTP and releases one that had not started, so serve end sends that one.
+async fn send_decided_closes(
+    book: Arc<crate::children::ChildBook>,
+    client: &SimulationClient,
+    agent: Uuid,
+    closes: Vec<(RegionEnd, Uuid)>,
+) {
+    let mut pending = OwnedCloses {
+        book: Arc::clone(&book),
+        agent,
+        pending: closes.into(),
+    };
+    while let Some((end, session)) = pending.next_close() {
+        let mut handed = HandedClose::begin(Arc::clone(&book), agent, session, end.clone());
+        close_child(client, &end, agent, session).await;
+        // The ack is what drops an answered close. Without it the close stays
+        // staged and a later take sends the DELETE again.
+        handed.returned();
+        handed.ack();
+    }
+}
+
+/// Closes this task has not started. Drop releases them for a later take.
+struct OwnedCloses {
+    book: Arc<crate::children::ChildBook>,
+    agent: Uuid,
+    pending: VecDeque<(RegionEnd, Uuid)>,
+}
+
+impl OwnedCloses {
+    fn next_close(&mut self) -> Option<(RegionEnd, Uuid)> {
+        self.pending.pop_front()
+    }
+}
+
+impl Drop for OwnedCloses {
+    fn drop(&mut self) {
+        for (end, session) in self.pending.drain(..) {
+            self.book.release_unsent_close(self.agent, session, &end);
+        }
+    }
+}
+
+/// One decided close this task has handed to HTTP.
+///
+/// Dropped during the send: the neighbour may already have the DELETE, so it
+/// is acked and not sent again. Dropped after [`Self::returned`] without
+/// [`Self::ack`]: the DELETE came back and a later take may send it.
+#[must_use = "dropping a handed close before ack treats the DELETE as finished"]
+struct HandedClose {
+    book: Arc<crate::children::ChildBook>,
+    agent: Uuid,
+    session: Uuid,
+    end: RegionEnd,
+    returned: bool,
+    acked: bool,
+}
+
+impl HandedClose {
+    fn begin(
+        book: Arc<crate::children::ChildBook>,
+        agent: Uuid,
+        session: Uuid,
+        end: RegionEnd,
+    ) -> Self {
+        book.begin_decided_close(agent, session, &end);
+        Self {
+            book,
+            agent,
+            session,
+            end,
+            returned: false,
+            acked: false,
+        }
+    }
+
+    /// `close_child` returned, including a transport error.
+    fn returned(&mut self) {
+        self.returned = true;
+    }
+
+    fn ack(&mut self) {
+        self.book
+            .ack_decided_close(self.agent, self.session, &self.end);
+        self.acked = true;
+    }
+}
+
+impl Drop for HandedClose {
+    fn drop(&mut self) {
+        if self.acked {
+            return;
+        }
+        if self.returned {
+            self.book
+                .release_answered_close(self.agent, self.session, &self.end);
+            return;
+        }
+        self.book
+            .ack_decided_close(self.agent, self.session, &self.end);
     }
 }
 
@@ -1162,30 +1266,37 @@ mod tests {
         assert_eq!(created.status(), reqwest::StatusCode::OK);
         let posts = Arc::new(AtomicUsize::new(0));
         let deletes = Arc::new(AtomicUsize::new(0));
+        let held_path = Arc::new(std::sync::Mutex::new(String::new()));
         let first_delete = Arc::new(Notify::new());
         let hold = Arc::new(Notify::new());
+        let first = Uuid::from_u128(21);
+        let second = Uuid::from_u128(22);
         let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let neighbour_addr = neighbour_listener.local_addr().unwrap();
         let neighbour_uri = format!("http://{neighbour_addr}/");
         let neighbour_server = {
             let posts = Arc::clone(&posts);
             let deletes = Arc::clone(&deletes);
+            let held_path = Arc::clone(&held_path);
             let first_delete = Arc::clone(&first_delete);
             let hold = Arc::clone(&hold);
             tokio::spawn(async move {
                 let app = axum::Router::new().fallback(move |request: Request| {
                     let posts = Arc::clone(&posts);
                     let deletes = Arc::clone(&deletes);
+                    let held_path = Arc::clone(&held_path);
                     let first_delete = Arc::clone(&first_delete);
                     let hold = Arc::clone(&hold);
                     async move {
                         let method = request.method().clone();
+                        let path = request.uri().path().to_owned();
                         let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
                         if method == axum::http::Method::DELETE {
                             if deletes.fetch_add(1, Ordering::SeqCst) == 0 {
+                                *held_path.lock().unwrap() = path;
                                 first_delete.notify_one();
+                                hold.notified().await;
                             }
-                            hold.notified().await;
                         } else {
                             posts.fetch_add(1, Ordering::SeqCst);
                         }
@@ -1201,8 +1312,6 @@ mod tests {
         let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
         let client = SimulationClient::new().unwrap();
         let port = neighbour_addr.port();
-        let first = Uuid::from_u128(21);
-        let second = Uuid::from_u128(22);
         let neighbours = [
             neighbour_at(&neighbour_uri, 21, port, [256, 256]),
             VisibleNeighbour::at(
@@ -1245,18 +1354,160 @@ mod tests {
         assert!(state.take_open_children(agent).is_empty());
         state.abort_admissions(agent).await;
         let staged = state.take_staged_closes(agent);
-        let staged_ids: HashSet<Uuid> = staged.iter().map(|(_, end)| end.region_id).collect();
-        assert!(staged_ids.contains(&first));
-        assert!(
-            staged_ids.contains(&second),
-            "the close that was not sent was dropped"
+        assert_eq!(
+            staged.len(),
+            1,
+            "a DELETE already on the wire was staged again"
         );
+        assert_eq!(staged[0].0, session);
+        let held = held_path.lock().unwrap().clone();
         assert!(
-            staged
-                .iter()
-                .all(|(staged_session, _)| *staged_session == session)
+            !held.contains(&staged[0].1.region_id.to_string()),
+            "the close that was already sent was returned"
         );
+        assert!(held.contains(&first.to_string()) || held.contains(&second.to_string()));
         hold.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            deletes.load(Ordering::SeqCst),
+            1,
+            "the held DELETE was sent a second time"
+        );
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// A take that does not abort the admission task must not return a close
+    /// that task is still sending. Each neighbour then receives one DELETE.
+    #[tokio::test]
+    async fn a_take_while_the_close_is_in_flight_does_not_return_it() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let posts = Arc::new(AtomicUsize::new(0));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let first_delete = Arc::new(Notify::new());
+        let hold = Arc::new(Notify::new());
+        let second = Uuid::from_u128(42);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = {
+            let posts = Arc::clone(&posts);
+            let deletes = Arc::clone(&deletes);
+            let first_delete = Arc::clone(&first_delete);
+            let hold = Arc::clone(&hold);
+            tokio::spawn(async move {
+                let app = axum::Router::new().fallback(move |request: Request| {
+                    let posts = Arc::clone(&posts);
+                    let deletes = Arc::clone(&deletes);
+                    let first_delete = Arc::clone(&first_delete);
+                    let hold = Arc::clone(&hold);
+                    async move {
+                        let method = request.method().clone();
+                        let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                        if method == axum::http::Method::DELETE {
+                            if deletes.fetch_add(1, Ordering::SeqCst) == 0 {
+                                first_delete.notify_one();
+                                hold.notified().await;
+                            }
+                        } else {
+                            posts.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (
+                            axum::http::StatusCode::OK,
+                            r#"{"success":true,"reason":""}"#,
+                        )
+                    }
+                });
+                axum::serve(neighbour_listener, app).await.unwrap();
+            })
+        };
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let neighbours = [
+            neighbour_at(&neighbour_uri, 41, port, [256, 256]),
+            VisibleNeighbour::at(
+                RegionEnd {
+                    server_uri: neighbour_uri,
+                    region_id: second,
+                    name: "Neighbour Two".into(),
+                    loc_x: 256_512,
+                    loc_y: 256_000,
+                },
+                [256, 256],
+                "127.0.0.1",
+                port,
+            ),
+        ];
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
+
+        apply_notice(&state, &config, &frame, &client, &enable_notice(agent), &[]).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_delete.notified())
+            .await
+            .expect("the first close was not sent");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            deletes.load(Ordering::SeqCst),
+            1,
+            "the closes were not sent one at a time"
+        );
+        assert_eq!(state.child_book().staged_outstanding(agent), 2);
+        assert!(
+            state.take_staged_closes(agent).is_empty(),
+            "a take without an abort returned a close the task is still sending"
+        );
+        assert_eq!(state.child_book().staged_outstanding(agent), 2);
+        hold.notify_waiters();
+        state.finish_admissions(agent).await;
+        assert_eq!(deletes.load(Ordering::SeqCst), 2);
+        assert_eq!(state.child_book().staged_outstanding(agent), 0);
+        assert!(state.take_staged_closes(agent).is_empty());
         drop(accepted_rx);
         home_server.abort();
         neighbour_server.abort();

@@ -136,6 +136,46 @@ struct Destination {
 struct StagedClose {
     session: Uuid,
     end: RegionEnd,
+    /// The admission task still owns this close. A take that does not abort
+    /// that task leaves it here, so the DELETE goes out once.
+    in_flight: bool,
+    /// `close_child` has started. Aborting that await does not send again:
+    /// the neighbour may already have the DELETE.
+    started: bool,
+}
+
+fn parked_close(session: Uuid, end: RegionEnd) -> StagedClose {
+    StagedClose {
+        session,
+        end,
+        in_flight: false,
+        started: false,
+    }
+}
+
+/// A take returns closes no task still owns. An in-flight DELETE stays staged.
+fn take_ready(staged: &mut Vec<StagedClose>) -> Vec<(Uuid, RegionEnd)> {
+    let mut kept = Vec::new();
+    let mut ready = Vec::new();
+    for close in staged.drain(..) {
+        if close.in_flight {
+            kept.push(close);
+        } else {
+            ready.push((close.session, close.end));
+        }
+    }
+    *staged = kept;
+    ready
+}
+
+fn find_staged(
+    book: &mut AgentBook,
+    session: Uuid,
+    region: Uuid,
+) -> Option<&mut StagedClose> {
+    book.staged
+        .iter_mut()
+        .find(|close| close.session == session && close.end.region_id == region)
 }
 
 #[derive(Debug, Default)]
@@ -333,10 +373,7 @@ impl ChildBook {
                 }
             } else {
                 for end in close {
-                    book.staged.push(StagedClose {
-                        session: previous_session,
-                        end,
-                    });
+                    book.staged.push(parked_close(previous_session, end));
                 }
             }
         }
@@ -347,19 +384,15 @@ impl ChildBook {
 
     /// Closes owed to a session a later login replaced, including one staged
     /// when an admission guard dropped after logout. One take sends them.
-    /// Call this only after that admission task has stopped: the guard stages
-    /// the close as it drops, and an earlier take misses it.
+    /// A close whose admission task is still sending stays put: that task
+    /// sends the DELETE, and this take does not send it again.
     pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
         let mut books = self.lock();
         let (staged, finished) = {
             let Some(book) = books.agents.get_mut(&agent) else {
                 return Vec::new();
             };
-            let staged = book
-                .staged
-                .drain(..)
-                .map(|close| (close.session, close.end))
-                .collect();
+            let staged = take_ready(&mut book.staged);
             let finished = book.generations.is_empty() && book.staged.is_empty();
             (staged, finished)
         };
@@ -369,8 +402,8 @@ impl ChildBook {
         staged
     }
 
-    /// Every staged close, for the moment the admission task has stopped.
-    /// An earlier take misses a close the guard stages as it drops.
+    /// Every close that no admission task still owns. Shutdown calls this
+    /// after those tasks have stopped. An in-flight DELETE stays with its task.
     pub(crate) fn take_every_staged_close(&self) -> Vec<(Uuid, Uuid, RegionEnd)> {
         let mut books = self.lock();
         let agents: Vec<Uuid> = books.agents.keys().copied().collect();
@@ -380,10 +413,10 @@ impl ChildBook {
                 let Some(book) = books.agents.get_mut(&agent) else {
                     continue;
                 };
-                for close in book.staged.drain(..) {
-                    found.push((agent, close.session, close.end));
+                for (session, end) in take_ready(&mut book.staged) {
+                    found.push((agent, session, end));
                 }
-                book.generations.is_empty()
+                book.generations.is_empty() && book.staged.is_empty()
             };
             if finished {
                 books.agents.remove(&agent);
@@ -393,8 +426,8 @@ impl ChildBook {
     }
 
     /// A close the drive has already decided. The destination is no longer
-    /// tracked. The close stays until its DELETE returns, so aborting that
-    /// send still leaves it for serve end and shutdown.
+    /// tracked. The close is in flight until its task finishes or is aborted
+    /// before the DELETE starts, so a far hop does not send it as well.
     pub fn stage_decided_close(&self, agent: Uuid, session: Uuid, end: RegionEnd) {
         let mut books = self.lock();
         books
@@ -402,7 +435,69 @@ impl ChildBook {
             .entry(agent)
             .or_default()
             .staged
-            .push(StagedClose { session, end });
+            .push(StagedClose {
+                session,
+                end,
+                in_flight: true,
+                started: false,
+            });
+    }
+
+    /// The task has handed this close to HTTP. A later abort must not send it.
+    pub fn begin_decided_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id) {
+            close.started = true;
+        }
+    }
+
+    /// The task stopped before this close's DELETE started. Serve end may send it.
+    pub fn release_unsent_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id)
+            && !close.started
+        {
+            close.in_flight = false;
+        }
+    }
+
+    /// The DELETE returned and the pass did not ack it. A later take may send it.
+    pub fn release_answered_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id) {
+            close.in_flight = false;
+        }
+    }
+
+    /// A decided close no admission task is sending. Serve end may take it.
+    pub fn stage_ready_close(&self, agent: Uuid, session: Uuid, end: RegionEnd) {
+        let mut books = self.lock();
+        books
+            .agents
+            .entry(agent)
+            .or_default()
+            .staged
+            .push(parked_close(session, end));
+    }
+
+    /// Closes still recorded, including one a task is sending.
+    #[cfg(test)]
+    pub fn staged_outstanding(&self, agent: Uuid) -> usize {
+        let books = self.lock();
+        books
+            .agents
+            .get(&agent)
+            .map(|book| book.staged.len())
+            .unwrap_or(0)
     }
 
     /// The DELETE for one decided close returned. One that was not sent stays.
@@ -720,7 +815,7 @@ impl ChildBook {
         if stale {
             let session = generation_session(&books, agent, generation);
             if let Some(book) = books.agents.get_mut(&agent) {
-                book.staged.push(StagedClose { session, end });
+                book.staged.push(parked_close(session, end));
             }
             remove_destination(&mut books, agent, generation, region);
             return;
@@ -876,7 +971,7 @@ impl ChildBook {
         };
         if let Some(book) = books.agents.get_mut(&agent) {
             for end in stage {
-                book.staged.push(StagedClose { session, end });
+                book.staged.push(parked_close(session, end));
             }
         }
         if empty {
