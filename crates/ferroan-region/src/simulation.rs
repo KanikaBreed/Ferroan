@@ -1705,7 +1705,7 @@ async fn handle(
                         false,
                         &RegionEnd {
                             server_uri: String::new(),
-                            region_id: Uuid::nil(),
+                            region_id: fields.source_region,
                             name: String::new(),
                             loc_x: 0,
                             loc_y: 0,
@@ -2276,6 +2276,9 @@ struct AgentFields {
     appearance: Option<Appearance>,
     /// `ChildrenCapSeeds`. A missing or non-array field is empty. First handle wins.
     children_seeds: Vec<(u64, String)>,
+    /// `source_uuid` on a child create. Absent or unparseable is nil, so a
+    /// demote does not treat any root as already knowing the source region.
+    source_region: Uuid,
 }
 
 impl AgentFields {
@@ -2374,6 +2377,7 @@ impl AgentFields {
             service_urls: circuit_service_urls(args),
             appearance: args.get("packed_appearance").map(appearance_from_json),
             children_seeds: child_seeds(args),
+            source_region: json_uuid(args.get("source_uuid")).unwrap_or(Uuid::nil()),
         })
     }
 
@@ -3076,6 +3080,7 @@ mod tests {
             service_urls: Vec::new(),
             appearance: None,
             children_seeds: Vec::new(),
+            source_region: Uuid::nil(),
         }
     }
 
@@ -4986,6 +4991,40 @@ mod tests {
         assert!(after > before);
     }
 
+    async fn watch(
+        frame: &ferroan_scene::TerrainFrame,
+        agent: Uuid,
+    ) -> (u32, std::sync::Arc<ferroan_scene::terse::ViewerFeed>) {
+        let feed = frame.new_feed();
+        let link = ferroan_scene::ViewerLink {
+            feed: std::sync::Arc::clone(&feed),
+            seeds_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            look: std::sync::Arc::new(ferroan_scene::AvatarLook {
+                first_name: "Watch".to_string(),
+                last_name: "User".to_string(),
+                title: String::new(),
+                visual_params: Vec::new(),
+                texture: Vec::new(),
+                height: 1.9,
+                hover: 0.0,
+            }),
+            teleport_flags: 1 << 7,
+        };
+        let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
+        (local_id, feed)
+    }
+
+    fn kill_ids(feed: &ferroan_scene::terse::ViewerFeed) -> Vec<u32> {
+        feed.take_avatar_packets(usize::MAX)
+            .into_iter()
+            .filter_map(|packet| match packet {
+                ferroan_scene::AvatarPacket::Kill(ids) => Some(ids[0]),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn pose_at(position: [f32; 3]) -> ferroan_scene::Presence {
         ferroan_scene::Presence {
             position,
@@ -4997,7 +5036,17 @@ mod tests {
     }
 
     fn view_post(fields: &AgentFields, region: Uuid, start: &str, seeds: Value) -> Request {
-        let body = json!({
+        sourced_view_post(fields, region, start, seeds, None)
+    }
+
+    fn sourced_view_post(
+        fields: &AgentFields,
+        region: Uuid,
+        start: &str,
+        seeds: Value,
+        source: Option<Uuid>,
+    ) -> Request {
+        let mut body = json!({
             "agent_id": fields.agent_id.to_string(),
             "session_id": fields.session_id.to_string(),
             "secure_session_id": fields.secure_session_id.to_string(),
@@ -5012,6 +5061,9 @@ mod tests {
             "child": true,
             "children_seeds": seeds,
         });
+        if let Some(source) = source {
+            body["source_uuid"] = json!(source.to_string());
+        }
         Request::builder()
             .method("POST")
             .uri(format!("/agent/{}/", fields.agent_id))
@@ -5237,6 +5289,11 @@ mod tests {
             .wait()
             .await
             .unwrap();
+        let (root_local, root_feed) = watch(&frame, agent).await;
+        let observer = Uuid::from_u128(90);
+        let (_observer_local, observer_feed) = watch(&frame, observer).await;
+        let _ = root_feed.take_avatar_packets(usize::MAX);
+        let _ = observer_feed.take_avatar_packets(usize::MAX);
         let mut child = synthetic_agent();
         child.child = true;
         child.via_login = false;
@@ -5267,10 +5324,99 @@ mod tests {
         assert_eq!(seat.pose.position[1], 128.0);
         assert!(seat.child);
         assert!(!seat.actor);
+        assert_eq!(kill_ids(&observer_feed), vec![root_local]);
+        assert!(kill_ids(&root_feed).is_empty());
         child_agent.mark_root();
         drop(accepted);
         assert!(state.child_identity(agent).is_none());
         task.abort();
+    }
+
+    /// `MakeChildAgent` sends the out-of-view kill to every root, then a
+    /// second kill only to a root that does not know `source_uuid`.
+    #[tokio::test]
+    async fn a_same_session_demote_spares_the_second_kill_when_the_root_knows_the_source() {
+        let region = Uuid::from_u128(5);
+        let source = Uuid::from_u128(7);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let mut state =
+            SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let hopper_id = Uuid::from_u128(80);
+        let knower_id = Uuid::from_u128(81);
+        let stranger_id = Uuid::from_u128(82);
+        let mut hopper = synthetic_agent();
+        hopper.agent_id = hopper_id;
+        hopper.session_id = hopper_id;
+        hopper.secure_session_id = Uuid::from_u128(180);
+        hopper.circuit_code = 80;
+        hopper.caps_path = Uuid::from_u128(280).to_string();
+        state.accept(hopper.clone()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        frame
+            .arrive(hopper_id, pose_at([200.0, 128.0, 25.0]), [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let (hopper_local, _hopper_feed) = watch(&frame, hopper_id).await;
+        for id in [knower_id, stranger_id] {
+            frame
+                .arrive(id, pose_at([128.0, 128.0, 25.0]), [1.0, 0.0, 0.0])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+        }
+        let (_knower_local, knower_feed) = watch(&frame, knower_id).await;
+        let (_stranger_local, stranger_feed) = watch(&frame, stranger_id).await;
+        let mut knower = synthetic_agent();
+        knower.agent_id = knower_id;
+        knower.session_id = knower_id;
+        knower.secure_session_id = Uuid::from_u128(181);
+        knower.circuit_code = 81;
+        knower.caps_path = Uuid::from_u128(281).to_string();
+        state.accept(knower).unwrap();
+        let knower_generation = state.root_generation(knower_id).unwrap();
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: source,
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        assert!(matches!(
+            state.claim_child(knower_id, knower_generation, end),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(knower_id, knower_generation, source),
+            crate::children::Admission::Announce { .. }
+        ));
+        let _ = knower_feed.take_avatar_packets(usize::MAX);
+        let _ = stranger_feed.take_avatar_packets(usize::MAX);
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state),
+            ConnectInfo(peer),
+            sourced_view_post(
+                &hopper,
+                region,
+                "<-56, 128, 6.916>",
+                json!([]),
+                Some(source),
+            ),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(kill_ids(&knower_feed), vec![hopper_local]);
+        assert_eq!(kill_ids(&stranger_feed), vec![hopper_local, hopper_local]);
+        drop(accepted);
     }
 
     /// An existing view child keeps the circuit and replaces known seeds.
