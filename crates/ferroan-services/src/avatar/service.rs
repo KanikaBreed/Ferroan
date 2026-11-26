@@ -34,7 +34,7 @@ use ferroan_http::{MAX_FIELDS, MAX_QUERY_BYTES};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{AvatarStore, StoreError};
+use super::{AvatarAppearance, AvatarStore, StoreError};
 
 /// Raw service data. The request dictionary also retains a supplied AvatarType entry.
 #[derive(Debug, PartialEq)]
@@ -64,6 +64,19 @@ impl AvatarService {
 
     fn lock(&self, id: Uuid) -> &Mutex<()> {
         &self.locks[usize::from(id.as_bytes()[15]) % self.locks.len()]
+    }
+
+    pub async fn get_appearance(&self, id: Uuid) -> Result<Option<AvatarAppearance>, StoreError> {
+        self.get_avatar(id).await?.to_appearance()
+    }
+
+    pub async fn set_appearance(
+        &self,
+        id: Uuid,
+        appearance: &AvatarAppearance,
+    ) -> Result<bool, StoreError> {
+        self.set_avatar(id, &AvatarData::from_appearance(appearance)?)
+            .await
     }
 
     pub async fn get_avatar(&self, id: Uuid) -> Result<AvatarData, StoreError> {
@@ -182,7 +195,10 @@ impl AvatarService {
     }
 }
 
-fn check_fields(count: usize, sizes: impl Iterator<Item = usize>) -> Result<(), StoreError> {
+pub(super) fn check_fields(
+    count: usize,
+    sizes: impl Iterator<Item = usize>,
+) -> Result<(), StoreError> {
     check_bound(ferroan_diag::AVATAR_ROWS, MAX_FIELDS, count)?;
     check_bound(
         ferroan_diag::AVATAR_ROW_BYTES,
@@ -191,7 +207,7 @@ fn check_fields(count: usize, sizes: impl Iterator<Item = usize>) -> Result<(), 
     )
 }
 
-fn check_bound(id: &'static str, limit: usize, used: usize) -> Result<(), StoreError> {
+pub(super) fn check_bound(id: &'static str, limit: usize, used: usize) -> Result<(), StoreError> {
     if used > limit {
         ferroan_diag::refuse(
             id,
@@ -205,13 +221,35 @@ fn check_bound(id: &'static str, limit: usize, used: usize) -> Result<(), StoreE
     Ok(())
 }
 
+/// OpenMetaverse.UUID.TryParse accepts the dashed or compact form with ASCII space padding.
+pub(super) fn try_id(raw: &str) -> Option<Uuid> {
+    let text = raw.trim_matches(' ');
+    if !matches!(text.len(), 32 | 36) {
+        return None;
+    }
+    Uuid::parse_str(text).ok()
+}
+
 pub(super) fn numeric_text(raw: &str) -> &str {
     raw.trim_matches(|c| matches!(c, '\t'..='\r' | ' '))
 }
 
-fn rectified_height(raw: &str) -> f32 {
+pub(super) fn parse_height(raw: &str) -> Option<f32> {
     let text = numeric_text(raw);
-    let value = if !text.contains('.') && text.matches(',').count() == 1 {
+    // The dot-decimal fallback accepts the culture's infinity symbol.
+    // Single.TryParse also accepts invariant "Infinity", but rejects "inf".
+    match text {
+        "∞" | "+∞" => return Some(f32::INFINITY),
+        "-∞" => return Some(f32::NEG_INFINITY),
+        _ if text
+            .trim_start_matches(['+', '-'])
+            .eq_ignore_ascii_case("inf") =>
+        {
+            return None;
+        }
+        _ => {}
+    }
+    if !text.contains('.') && text.matches(',').count() == 1 {
         text.replace(',', ".").parse::<f32>().ok()
     } else if text.contains(',') {
         // The pin falls back to the current culture. In the dot-decimal
@@ -225,8 +263,11 @@ fn rectified_height(raw: &str) -> f32 {
         }
     } else {
         text.parse::<f32>().ok()
-    };
-    value
+    }
+}
+
+fn rectified_height(raw: &str) -> f32 {
+    parse_height(raw)
         .filter(|v| v.is_nan() || (0.0..=10.0).contains(v))
         .unwrap_or(1.771488)
 }

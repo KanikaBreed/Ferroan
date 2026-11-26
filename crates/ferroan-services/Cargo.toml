@@ -14,6 +14,7 @@ ferroan-config = { path = "../ferroan-config" }
 ferroan-diag = { path = "../ferroan-diag" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-http = { path = "../ferroan-http" }
+ferroan-types = { path = "../ferroan-types" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 md-5 = "0.10.6"

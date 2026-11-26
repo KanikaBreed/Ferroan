@@ -81,6 +81,7 @@ use ferroan_protocol::msgs::avatar_appearance::{
 use ferroan_protocol::msgs::object_update::{ObjectData, RegionData};
 use ferroan_protocol::msgs::{AvatarAppearance, ObjectUpdate};
 use ferroan_protocol::str_field;
+use ferroan_types::DEFAULT_VISUAL_PARAMS;
 use uuid::Uuid;
 
 /// `PCode.Avatar` in `EnumsPrimitive.cs`.
@@ -96,20 +97,6 @@ const SCALE_Y: f32 = 0.6;
 /// `AppearanceManager.DEFAULT_AVATAR_TEXTURE`, RFC byte order.
 const DEFAULT_TEXTURE: [u8; 16] = [
     0xc2, 0x28, 0xd1, 0xcf, 0x4b, 0x5d, 0x4b, 0xa8, 0x84, 0xf4, 0x89, 0x9a, 0x07, 0x96, 0xaa, 0x97,
-];
-/// `AvatarAppearance.SetDefaultParams`. The template count is one byte, and this list fits.
-const DEFAULT_VISUAL_PARAMS: &[u8] = &[
-    33, 61, 85, 23, 58, 127, 63, 85, 63, 42, 0, 85, 63, 36, 85, 95, 153, 63, 34, 0, 63, 109, 88,
-    132, 63, 136, 81, 85, 103, 136, 127, 0, 150, 150, 150, 127, 0, 0, 0, 0, 0, 127, 0, 0, 255, 127,
-    114, 127, 99, 63, 127, 140, 127, 127, 0, 0, 0, 191, 0, 104, 0, 0, 0, 0, 0, 0, 0, 0, 0, 145,
-    216, 133, 0, 127, 0, 127, 170, 0, 0, 127, 127, 109, 85, 127, 127, 63, 85, 42, 150, 150, 150,
-    150, 150, 150, 150, 25, 150, 150, 150, 0, 127, 0, 0, 144, 85, 127, 132, 127, 85, 0, 127, 127,
-    127, 127, 127, 127, 59, 127, 85, 127, 127, 106, 47, 79, 127, 127, 204, 2, 141, 66, 0, 0, 127,
-    127, 0, 0, 0, 0, 127, 0, 159, 0, 0, 178, 127, 36, 85, 131, 127, 127, 127, 153, 95, 0, 140, 75,
-    27, 127, 127, 0, 150, 150, 198, 0, 0, 63, 30, 127, 165, 209, 198, 127, 127, 153, 204, 51, 51,
-    255, 255, 255, 204, 0, 255, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 0, 150, 150, 150,
-    150, 150, 0, 127, 127, 150, 150, 150, 150, 150, 150, 150, 150, 0, 0, 150, 51, 132, 150, 150,
-    150,
 ];
 
 /// One root avatar the region is about to announce. Wearables and attachments

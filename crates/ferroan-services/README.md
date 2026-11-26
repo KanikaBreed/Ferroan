@@ -2,6 +2,8 @@
 
 Grid services. This crate holds the asset service and the user-account service, including user aliases. `ferroan-robust` mounts a service only when its ini section is present.
 
+The avatar service exposes `get_appearance` and `set_appearance` over the configured avatar store. An empty record yields the constructor outfit. A nonempty record restores missing body parts, reads legacy item/asset pairs and applies indexed layers in numeric order. Malformed appearance rows return `Ok(None)`; store and size errors propagate to the caller. Attachment rows retain item order within each point and omit asset IDs. Heights are written with a decimal point and read with either decimal separator (TB44).
+
 The asset service is what a Tranquillity region calls on Robust.
 
 The routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`:

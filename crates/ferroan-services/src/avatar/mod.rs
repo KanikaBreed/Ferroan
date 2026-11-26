@@ -36,14 +36,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Avatar key/value service and Pin8's `POST /avatar` forms. The store supports
-//! SQLite, MySQL and PostgreSQL; typed appearance conversion is P1.4b2.
+//! SQLite, MySQL and PostgreSQL.
 
+mod appearance;
+mod appearance_sort;
+#[cfg(test)]
+mod appearance_tests;
 mod http;
 mod model;
 mod open;
 mod service;
 mod store;
 
+pub use appearance::{AppearanceItem, AvatarAppearance, WearableLayers};
 pub use http::AvatarHttp;
 pub use model::{AvatarRow, DEFAULT_REALM};
 pub use open::AvatarError;
