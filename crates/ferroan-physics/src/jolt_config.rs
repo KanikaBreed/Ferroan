@@ -21,10 +21,14 @@
 //! a rate below the heartbeat. Absent keys leave the field initializers, which
 //! are the defaults P3.2a hardcodes.
 //!
-//! `JoltScene.TestCommandsEnabled` (`JoltScene.cs` 75–76) reads `[Jolt]
-//! TestCommands`. A value that is not `true` or `false` warns and stays false:
-//! `FromConfig` never throws, and a bad flag must not stop the region
-//! (`JoltConfig.cs` 14–15).
+//! `JoltScene.TestCommandsEnabled` (`JoltScene.cs` 75–76, called from
+//! `Initialise` at 362) reads `[Jolt] TestCommands` through Nini `GetBoolean`.
+//! Anything but `true` or `false`, trimmed, any case, throws. Nothing catches
+//! it until `RegionRuntime` (99–113) logs `[STARTUP]: [OPENSIM MAIN]: Fatal
+//! error while starting the region runtime.` and the region server does not
+//! start (TB161). That throw is against the module's own rule (`JoltConfig.cs`
+//! 14–15). Ferroan warns and keeps false (D121). `FromConfig`'s `F`, `I`, `B`
+//! and `E` still do not throw.
 //!
 //! When `[Startup] physics` is not `Jolt`, [`load`] logs one warning that names
 //! the setting and the value, and still returns this configuration ([D110]).
