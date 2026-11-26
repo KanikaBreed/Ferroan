@@ -140,6 +140,15 @@ pub struct Presence {
     pub draw_distance: f32,
 }
 
+/// A presence as admission and tests read it. `child` is the child-agent flag.
+/// `actor` is the physics actor. A view child has the flag and no actor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seat {
+    pub pose: Presence,
+    pub child: bool,
+    pub actor: bool,
+}
+
 /// `ScenePresence.CHILDUPDATES_TIME` at Pin8 `c401bceecd` (line 194).
 const CHILD_UPDATES_MS: i64 = 2_000;
 /// Arrival stores `EnvironmentTickCount() + 10000` (lines 2577 and 4400).
@@ -375,9 +384,11 @@ enum Request {
     PhysicsPose {
         reply: oneshot::Sender<Pose>,
     },
-    /// The serve ended.
+    /// The serve ended. `owner` removes only that generation's presence.
+    /// `None` removes whatever is seated.
     Remove {
         agent: Uuid,
+        owner: Option<Uuid>,
         reply: oneshot::Sender<Option<Leaving>>,
     },
     /// A viewer's feed. The answer is the avatar's local id.
@@ -387,10 +398,31 @@ enum Request {
         reply: oneshot::Sender<u32>,
     },
     /// Seat a login pose for chat. The actor waits for the arrival.
+    /// An existing child agent keeps its pose. `owner` is the circuit generation.
     Pose {
         agent: Uuid,
         pose: Presence,
+        owner: Uuid,
         reply: oneshot::Sender<Presence>,
+    },
+    /// Seat a neighbour view child at the posted start. No physics actor and
+    /// no `made_child`: the first `SendInitialData` still runs.
+    ViewChild {
+        agent: Uuid,
+        pose: Presence,
+        owner: Uuid,
+        reply: oneshot::Sender<Presence>,
+    },
+    /// `MakeChildAgent`: child, no actor, and `made_child` when a viewer is
+    /// attached. The position stays where it is.
+    MakeChild {
+        agent: Uuid,
+        reply: oneshot::Sender<()>,
+    },
+    /// The stored pose and the child and actor flags.
+    Seat {
+        agent: Uuid,
+        reply: oneshot::Sender<Option<Seat>>,
     },
     /// An arrival: the record with an actor at rest, or this pose when
     /// there is no record yet, turned to the look the arrival packet sends.
@@ -500,6 +532,9 @@ struct Avatar {
     parcel: Option<Uuid>,
     /// `ScenePresence.posLastMove`. Starts at the pose this avatar was built with.
     last_move: [f32; 3],
+    /// Circuit generation that seated this presence. A later generation's
+    /// remove leaves it in place.
+    owner: Uuid,
 }
 
 /// An attached viewer, the terse state of its avatar, and its minimap state.
@@ -798,14 +833,55 @@ impl TerrainFrame {
     }
 
     /// Seat one login pose so chat can read it. The actor waits for the
-    /// arrival. The answer is the record the frame thread kept.
+    /// arrival. The answer is the record the frame thread kept. An existing
+    /// child agent is left where it is. `owner` is the circuit generation.
     pub fn post_login(
         &self,
         agent: Uuid,
         pose: Presence,
+        owner: Uuid,
     ) -> Result<Pending<Presence>, TerrainError> {
         let (reply, answer) = pending();
-        self.request(Request::Pose { agent, pose, reply })?;
+        self.request(Request::Pose {
+            agent,
+            pose,
+            owner,
+            reply,
+        })?;
+        Ok(answer)
+    }
+
+    /// Seat a neighbour view child at `pose` before `CreateAgent` returns.
+    /// The child flag is set and the physics actor is not. `SendInitialData`
+    /// is not suppressed.
+    pub fn seat_view_child(
+        &self,
+        agent: Uuid,
+        pose: Presence,
+        owner: Uuid,
+    ) -> Result<Pending<Presence>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::ViewChild {
+            agent,
+            pose,
+            owner,
+            reply,
+        })?;
+        Ok(answer)
+    }
+
+    /// `MakeChildAgent` for a stale root on the same session. The position
+    /// stays. A missing presence is left alone.
+    pub fn make_child(&self, agent: Uuid) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::MakeChild { agent, reply })?;
+        Ok(answer)
+    }
+
+    /// The pose and the child and actor flags, or `None` when the agent is absent.
+    pub fn seated(&self, agent: Uuid) -> Result<Pending<Option<Seat>>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::Seat { agent, reply })?;
         Ok(answer)
     }
 
@@ -929,8 +1005,30 @@ impl TerrainFrame {
     /// presence was and its look, or `None` when there was none. A full
     /// inbound queue cannot keep a ghost.
     pub fn remove(&self, agent: Uuid) -> Result<Pending<Option<Leaving>>, TerrainError> {
+        self.remove_if(agent, None)
+    }
+
+    /// Remove the presence only when `owner` still seated it. A replacement
+    /// generation's view child stays.
+    pub fn remove_owned(
+        &self,
+        agent: Uuid,
+        owner: Uuid,
+    ) -> Result<Pending<Option<Leaving>>, TerrainError> {
+        self.remove_if(agent, Some(owner))
+    }
+
+    fn remove_if(
+        &self,
+        agent: Uuid,
+        owner: Option<Uuid>,
+    ) -> Result<Pending<Option<Leaving>>, TerrainError> {
         let (reply, answer) = pending();
-        self.request(Request::Remove { agent, reply })?;
+        self.request(Request::Remove {
+            agent,
+            owner,
+            reply,
+        })?;
         Ok(answer)
     }
 
@@ -1095,7 +1193,19 @@ fn answer(
         Request::PhysicsPose { reply } => {
             let _ = reply.send(physics_pose);
         }
-        Request::Remove { agent, reply } => {
+        Request::Remove {
+            agent,
+            owner,
+            reply,
+        } => {
+            if owner.is_some_and(|owner| {
+                presences
+                    .get(&agent)
+                    .is_some_and(|avatar| avatar.owner != owner)
+            }) {
+                let _ = reply.send(None);
+                return true;
+            }
             let root = presences
                 .get(&agent)
                 .is_some_and(|avatar| !avatar.body.is_child());
@@ -1130,15 +1240,61 @@ fn answer(
             );
             let _ = reply.send(local_id);
         }
-        Request::Pose { agent, pose, reply } => {
+        Request::Pose {
+            agent,
+            pose,
+            owner,
+            reply,
+        } => {
+            if let Some(avatar) = presences.get(&agent)
+                && avatar.body.child_agent()
+            {
+                // A view child is already seated. Chat must not replace it
+                // with a login hold, or the neighbour enable treats it as a root.
+                let _ = reply.send(avatar.pose);
+            } else {
+                let mut avatar = Avatar::new(agent, pose, fly_slow);
+                // Chat can read this pose immediately. The actor waits until
+                // the arrival packet samples it, or a tick would change the
+                // position that packet and GridUser still report.
+                avatar.body.set_actor(false);
+                avatar.owner = owner;
+                let pose = avatar.pose;
+                presences.insert(agent, avatar);
+                let _ = reply.send(pose);
+            }
+        }
+        Request::ViewChild {
+            agent,
+            pose,
+            owner,
+            reply,
+        } => {
             let mut avatar = Avatar::new(agent, pose, fly_slow);
-            // Chat can read this pose immediately. The actor waits until
-            // the arrival packet samples it, or a tick would change the
-            // position that packet and GridUser still report.
+            avatar.body.set_child(true);
             avatar.body.set_actor(false);
-            let pose = avatar.pose;
+            avatar.owner = owner;
+            let stored = avatar.pose;
             presences.insert(agent, avatar);
-            let _ = reply.send(pose);
+            let _ = reply.send(stored);
+        }
+        Request::MakeChild { agent, reply } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.set_child(true);
+                avatar.body.set_actor(false);
+            }
+            if let Some(viewer) = scene.viewers.get_mut(&agent) {
+                viewer.initial.made_child();
+            }
+            let _ = reply.send(());
+        }
+        Request::Seat { agent, reply } => {
+            let seat = presences.get(&agent).map(|avatar| Seat {
+                pose: avatar.pose,
+                child: avatar.body.child_agent(),
+                actor: avatar.body.has_actor(),
+            });
+            let _ = reply.send(seat);
         }
         Request::Arrive {
             agent,
@@ -1300,6 +1456,7 @@ impl Avatar {
             gate: ChildGate::default(),
             parcel: None,
             last_move: pose.position,
+            owner: Uuid::nil(),
         }
     }
 }
@@ -2336,7 +2493,7 @@ mod tests {
 
     fn login(frame: &TerrainFrame, agent: Uuid, pose: Presence) -> Presence {
         frame
-            .post_login(agent, pose)
+            .post_login(agent, pose, Uuid::nil())
             .unwrap()
             .blocking_wait()
             .unwrap()
@@ -3133,6 +3290,7 @@ mod tests {
             Request::Pose {
                 agent,
                 pose: pose_at([128.0, 128.0, 25.0]),
+                owner: Uuid::nil(),
                 reply,
             },
             &mut scene,
@@ -3268,6 +3426,7 @@ mod tests {
             Request::Pose {
                 agent,
                 pose: pose_at([6.0, 2.0, 30.0]),
+                owner: Uuid::nil(),
                 reply,
             },
             &mut scene,
@@ -3378,6 +3537,7 @@ mod tests {
             Request::Pose {
                 agent,
                 pose: pose_at([6.0, 2.0, 30.0]),
+                owner: Uuid::nil(),
                 reply,
             },
             &mut scene,
@@ -3672,6 +3832,77 @@ mod tests {
         Arc::new(map)
     }
 
+
+    /// A Default-flag child gets terrain, the other root, and does not move.
+    /// A later login pose does not replace it.
+    #[test]
+    fn a_view_child_sends_initial_data_and_does_not_move() {
+        let mut scene = bare_scene();
+        let child = Uuid::from_u128(4);
+        let root = Uuid::from_u128(5);
+        let start = [-56.0, 128.0, 6.916];
+        arrive_in(&mut scene, root, [16.0, 128.0, 25.0]);
+        open_viewer_flags(&mut scene, root, true, 1 << 7);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::ViewChild {
+                agent: child,
+                pose: pose_at(start),
+                owner: Uuid::from_u128(9),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+            no_physics(),
+        ));
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Pose {
+                agent: child,
+                pose: pose_at([1.0, 1.0, 1.0]),
+                owner: Uuid::from_u128(8),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+            no_physics(),
+        ));
+        assert_eq!(scene.presences.get(&child).unwrap().pose.position, start);
+        let (feed, _) = open_viewer_flags(&mut scene, child, true, 0);
+        scene
+            .viewers
+            .get(&child)
+            .unwrap()
+            .link
+            .seeds_sent
+            .store(true, Ordering::Release);
+        apply(Inbound::HandshakeReply { agent: child }, &mut scene);
+        for _ in 0..3 {
+            update_presences(&mut scene);
+            assert!(!feed.take_land_pass());
+        }
+        update_presences(&mut scene);
+        assert!(feed.take_land_pass());
+        let packets = feed.take_avatar_packets(usize::MAX);
+        assert!(
+            packets
+                .iter()
+                .any(|packet| { matches!(packet, AvatarPacket::Full(full) if full.agent == root) })
+        );
+        for _ in 0..4 {
+            update_presences(&mut scene);
+            step_avatars(&mut scene.presences, None);
+        }
+        let avatar = scene.presences.get(&child).unwrap();
+        assert_eq!(avatar.pose.position, start);
+        assert!(avatar.body.child_agent());
+        assert!(!avatar.body.has_actor());
+    }
+
     fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {
         let (reply, _answer) = oneshot::channel();
         let request = Request::Arrive {
@@ -3716,7 +3947,8 @@ mod tests {
         assert!(answer(
             Request::Remove {
                 agent: leaving,
-                reply
+                owner: None,
+                reply,
             },
             &mut scene,
             None,
@@ -3848,7 +4080,8 @@ mod tests {
         assert!(answer(
             Request::Remove {
                 agent: leaving,
-                reply
+                owner: None,
+                reply,
             },
             &mut scene,
             None,

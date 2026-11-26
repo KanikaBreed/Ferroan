@@ -67,6 +67,10 @@ pub struct ReturnSlot {
 
 struct ReturnInner {
     child: AtomicBool,
+    /// Teleport flags were Default. This child is not a hop return.
+    view: AtomicBool,
+    /// The circuit has begun a hop and has not settled. Shared with admission.
+    transit: AtomicBool,
     ready: AtomicBool,
     rooted: AtomicBool,
     closed: AtomicBool,
@@ -95,6 +99,8 @@ impl ReturnSlot {
         Self {
             inner: Arc::new(ReturnInner {
                 child: AtomicBool::new(child),
+                view: AtomicBool::new(false),
+                transit: AtomicBool::new(false),
                 ready: AtomicBool::new(false),
                 rooted: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
@@ -108,22 +114,52 @@ impl ReturnSlot {
         }
     }
 
+    /// A neighbour view child (`TPFlags.Default`). It does not wait to become root.
+    pub fn new_view() -> Self {
+        let slot = Self::new(true);
+        slot.inner.view.store(true, Ordering::Release);
+        slot
+    }
+
     pub fn is_child(&self) -> bool {
         self.inner.child.load(Ordering::Acquire) && !self.inner.closed.load(Ordering::Acquire)
     }
 
+    /// True only while this child is a view child. A hop re-arm clears it.
+    pub fn is_view(&self) -> bool {
+        self.inner.view.load(Ordering::Acquire) && self.is_child()
+    }
+
+    /// The circuit's hop has started, or settled. Admission reads this.
+    pub fn note_transit(&self, transit: bool) {
+        self.inner.transit.store(transit, Ordering::Release);
+    }
+
+    pub fn in_transit(&self) -> bool {
+        self.inner.transit.load(Ordering::Acquire)
+    }
+
     /// The session was demoted, or a child create reused it. A stale update is dropped.
+    /// A later flags-16 reuse of a view slot becomes a hop return.
     pub fn arm_child(&self) {
         self.inner.ready.store(false, Ordering::Release);
         self.inner.rooted.store(false, Ordering::Release);
         self.inner.child.store(true, Ordering::Release);
+        self.inner.view.store(false, Ordering::Release);
         *self.pose_mut() = ReturnPose::default();
         *self.callback_mut() = None;
+    }
+
+    /// Same session reused as a view child. Not a hop return.
+    pub fn arm_view(&self) {
+        self.arm_child();
+        self.inner.view.store(true, Ordering::Release);
     }
 
     /// The hop failed and the avatar is root here again.
     pub fn disarm(&self) {
         self.inner.child.store(false, Ordering::Release);
+        self.inner.view.store(false, Ordering::Release);
         self.inner.ready.store(false, Ordering::Release);
     }
 
@@ -131,6 +167,7 @@ impl ReturnSlot {
     pub fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.child.store(false, Ordering::Release);
+        self.inner.view.store(false, Ordering::Release);
         self.inner.update_notify.notify_waiters();
         self.inner.root_notify.notify_waiters();
     }
@@ -195,6 +232,7 @@ impl ReturnSlot {
     /// The child is root. `UpdateAgent` is waiting on this.
     pub fn note_rooted(&self) {
         self.inner.child.store(false, Ordering::Release);
+        self.inner.view.store(false, Ordering::Release);
         self.inner.rooted.store(true, Ordering::Release);
         self.inner.root_notify.notify_one();
     }

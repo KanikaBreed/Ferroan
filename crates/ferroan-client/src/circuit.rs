@@ -273,7 +273,8 @@ pub struct AgentMotionUpdate {
 #[derive(Clone, Debug)]
 pub enum SceneCall {
     /// Seat a login pose for chat. The actor waits for the arrival.
-    Pose(LoginPose),
+    /// The uuid is the circuit generation that owns the presence.
+    Pose(LoginPose, Uuid),
     /// An arrival. An existing record keeps its position and gets an actor
     /// at rest; with none, this pose is stored with an actor. The avatar
     /// turns to the look `AgentMovementComplete` carries (`RotateToLookAt`),
@@ -1277,11 +1278,17 @@ impl State {
             if let Ok(movement) = packet.decode::<CompleteAgentMovement>()
                 && movement.agent_data.circuit_code == expect.circuit_code
             {
+                let view = self.return_slot.as_ref().is_some_and(|slot| slot.is_view());
                 let child = self
                     .return_slot
                     .as_ref()
                     .is_some_and(|slot| slot.is_child());
-                if child && !self.return_started {
+                if view {
+                    // A Default-flag child stays a child. No AgentMovementComplete
+                    // and no root report. CompleteMovement returns before MakeRootAgent
+                    // when the view child never receives AgentData.
+                    self.arrived = true;
+                } else if child && !self.return_started {
                     let parked = self.arrived;
                     self.return_started = true;
                     self.arrived = true;
@@ -1781,6 +1788,7 @@ impl State {
             pose: HopPose::default(),
         };
         self.in_transit = true;
+        self.note_slot_transit(true);
         self.hop_agent = expect.agent_id;
         let out = HopOut::new(tx);
         tokio::spawn(async move {
@@ -1810,6 +1818,12 @@ impl State {
         Ok(())
     }
 
+    fn note_slot_transit(&self, transit: bool) {
+        if let Some(slot) = &self.return_slot {
+            slot.note_transit(transit);
+        }
+    }
+
     async fn apply_hop(
         &mut self,
         sock: &impl DatagramIo,
@@ -1818,6 +1832,7 @@ impl State {
         match command {
             HopCommand::Settle => {
                 self.in_transit = false;
+                self.note_slot_transit(false);
                 Ok(())
             }
             HopCommand::Start { flags, done } => {
@@ -2478,7 +2493,8 @@ impl CircuitServer {
     }
 
     /// Record the login pose and name. A valid UseCircuitCode seats the viewer for chat.
-    pub fn attach_chat(&self, agent: Uuid, name: String, position: [f32; 3]) {
+    /// `owner` is the circuit generation. A view child already seated keeps its pose.
+    pub fn attach_chat(&self, agent: Uuid, name: String, position: [f32; 3], owner: Uuid) {
         let chat = self
             .inner
             .chat
@@ -2502,7 +2518,7 @@ impl CircuitServer {
                 control_flags: 0,
                 draw_distance: LOGIN_DRAW_DISTANCE,
             };
-            let _ = scene(agent, SceneCall::Pose(pose));
+            let _ = scene(agent, SceneCall::Pose(pose, owner));
         }
         self.inner
             .waiting_chat
@@ -3342,7 +3358,7 @@ mod tests {
         server.set_login_scene(Arc::new(move |agent, call| {
             let mut poses = store.lock().unwrap_or_else(|poison| poison.into_inner());
             let result: crate::circuit::SceneResult = match call {
-                SceneCall::Pose(pose) => {
+                SceneCall::Pose(pose, _) => {
                     poses.insert(agent, pose.position);
                     Ok(SceneReply::Pose(pose))
                 }
@@ -3410,11 +3426,13 @@ mod tests {
             speaker.agent_id,
             "Test User".to_string(),
             [128.0, 128.0, 23.0],
+            Uuid::nil(),
         );
         server.attach_chat(
             listener.agent_id,
             "Chat Bot".to_string(),
             [130.0, 128.0, 23.0],
+            Uuid::nil(),
         );
         let speaker_server = server.clone();
         let listener_server = server.clone();

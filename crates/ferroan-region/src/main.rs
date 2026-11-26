@@ -593,9 +593,11 @@ fn log_world_map(loaded: &ferroan_scene::WorldMap, initial: ferroan_scene::Initi
 
 /// `MakeRootAgent` without physics: lift Z, and take the precomputed land packets.
 /// Both answers are awaited, so the frame thread never blocks this worker.
+/// A view child still takes the layers and keeps the posted Z.
 async fn terrain_login(
     frame: Option<&TerrainFrame>,
     start: [f32; 3],
+    lift: bool,
 ) -> ([f32; 3], Vec<LandLayer>) {
     let Some(frame) = frame else {
         return (start, Vec::new());
@@ -610,9 +612,11 @@ async fn terrain_login(
         Ok(pending) => pending.wait().await,
         Err(error) => Err(error),
     };
-    match height {
-        Ok(height) => position[2] = ferroan_scene::movement_z(position[2], height),
-        Err(error) => tracing::error!("ferroan-region: terrain height: {error}"),
+    if lift {
+        match height {
+            Ok(height) => position[2] = ferroan_scene::movement_z(position[2], height),
+            Err(error) => tracing::error!("ferroan-region: terrain height: {error}"),
+        }
     }
     let layers = match layers {
         Ok(pending) => pending.wait().await,
@@ -768,7 +772,7 @@ fn queued(posted: Result<(), ferroan_scene::TerrainError>) -> SceneAnswer {
 /// One circuit call onto the frame. Nothing here waits for the frame thread.
 fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer {
     match call {
-        SceneCall::Pose(pose) => answered(
+        SceneCall::Pose(pose, owner) => answered(
             frame.post_login(
                 agent,
                 ferroan_scene::Presence {
@@ -778,6 +782,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                     control_flags: pose.control_flags,
                     draw_distance: pose.draw_distance,
                 },
+                owner,
             ),
             |stored| Ok(pose_reply(stored)),
         ),
@@ -1001,8 +1006,9 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         presence,
     } = clients;
     // The guard goes first so even an early return or a panic removes the presence.
-    let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id);
+    let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id, agent.generation());
     let mut root_arrived = false;
+    let view_child = agent.return_slot.is_view();
     let already_stopped = *stop.borrow_and_update();
     let (position, land, members) = if already_stopped {
         (agent.start_pos, Vec::new(), BTreeSet::new())
@@ -1012,7 +1018,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         // overlay still goes out, and every group cell reads as non-member.
         let frame = terrain.as_deref();
         let ((position, land), memberships) = tokio::join!(
-            terrain_login(frame, agent.start_pos),
+            terrain_login(frame, agent.start_pos, !view_child),
             config.groups.memberships(agent.expect.agent_id),
         );
         let members = match memberships {
@@ -1141,7 +1147,27 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             expect.agent_id,
             format!("{} {}", agent.first_name, agent.last_name),
             position,
+            agent.generation(),
         );
+        if view_child && let Some(frame) = terrain.as_deref() {
+            // After the chat pose on the same queue, so a login hold cannot
+            // remain. The HTTP accept already seated this child; this one
+            // keeps the posted start if that pose has not run yet.
+            let posted = ferroan_scene::Presence {
+                position,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0; 3],
+                control_flags: 0,
+                draw_distance: 0.0,
+            };
+            let seated = match frame.seat_view_child(expect.agent_id, posted, agent.generation()) {
+                Ok(pending) => pending.wait().await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = seated {
+                tracing::debug!("ferroan-region: view child was not seated: {error}");
+            }
+        }
         let serving = circuit.serve_login(expect, arrival, report, opened, close_rx);
         tokio::pin!(serving);
         let mut close_tx = Some(close_tx);
@@ -1196,13 +1222,17 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                 report = &mut report_ready, if !reported => {
                     reported = true;
                     if let Ok(report) = report {
-                        root_arrived = true;
+                        // A view child completes movement without becoming root.
+                        // The oneshot still completes so the circuit cannot hang.
+                        if !agent.return_slot.is_view() {
+                            root_arrived = true;
+                        }
                         // C# runs movement callbacks separately from ping,
                         // ACK and resend handling. Keep polling UDP during
                         // HTTP, but defer cancellation until writes finish.
                         let reporting = async {
                             let _guard = agent.lock_lifecycle().await;
-                            if agent.is_current() {
+                            if agent.is_current() && !agent.return_slot.is_view() {
                                 agent.mark_root();
                                 notify_root_arrival(&grid_user, &presence, &config, &agent, position).await;
                             }
@@ -1239,13 +1269,15 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                     };
                     // The parked circuit already consumed the login signal.
                     // This one makes the child root again, then the circuit
-                    // sends AgentMovementComplete.
-                    root_arrived = true;
+                    // sends AgentMovementComplete. A view child does not.
+                    if !agent.return_slot.is_view() {
+                        root_arrived = true;
+                    }
                     let position = token.position;
                     *landed.lock().unwrap_or_else(|poison| poison.into_inner()) = position;
                     let reporting = async {
                         let _guard = agent.lock_lifecycle().await;
-                        if agent.is_current() {
+                        if agent.is_current() && !agent.return_slot.is_view() {
                             agent.mark_root();
                             if let Some(callback) = agent.return_slot.take_callback() {
                                 tokio::spawn(release_callback(callback));
@@ -1482,17 +1514,23 @@ fn avatar_wire(
 struct ForgetPresence {
     frame: Option<Arc<TerrainFrame>>,
     agent: Uuid,
+    /// Removes only the presence this generation seated.
+    generation: Uuid,
 }
 
 impl ForgetPresence {
-    fn new(frame: Option<Arc<TerrainFrame>>, agent: Uuid) -> Self {
-        Self { frame, agent }
+    fn new(frame: Option<Arc<TerrainFrame>>, agent: Uuid, generation: Uuid) -> Self {
+        Self {
+            frame,
+            agent,
+            generation,
+        }
     }
 
     /// The presence's last position and look, when the frame had one.
     async fn finish(mut self) -> Option<ferroan_scene::Leaving> {
         let frame = self.frame.take()?;
-        let removed = match frame.remove(self.agent) {
+        let removed = match frame.remove_owned(self.agent, self.generation) {
             Ok(pending) => pending.wait().await,
             Err(error) => Err(error),
         };
@@ -1509,8 +1547,8 @@ impl ForgetPresence {
 impl Drop for ForgetPresence {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.take() {
-            // The frame applies this call before any later one; nothing waits for it.
-            let _ = frame.remove(self.agent);
+            // Queued behind posts already sent. A newer generation's presence stays.
+            let _ = frame.remove_owned(self.agent, self.generation);
         }
     }
 }
@@ -2645,13 +2683,18 @@ mod tests {
                     control_flags: 0,
                     draw_distance: 255.0,
                 },
+                Uuid::nil(),
             )
             .unwrap()
             .wait()
             .await
             .unwrap();
         // A panicking or aborted serve never reaches `finish`.
-        drop(ForgetPresence::new(Some(Arc::clone(&frame)), agent));
+        drop(ForgetPresence::new(
+            Some(Arc::clone(&frame)),
+            agent,
+            Uuid::nil(),
+        ));
         assert!(
             frame
                 .presence(agent)
@@ -2662,10 +2705,59 @@ mod tests {
                 .is_none()
         );
         // `finish` takes the frame, so the drop after it does nothing more.
-        ForgetPresence::new(Some(Arc::clone(&frame)), agent)
+        ForgetPresence::new(Some(Arc::clone(&frame)), agent, Uuid::nil())
             .finish()
             .await;
-        ForgetPresence::new(None, agent).finish().await;
+        ForgetPresence::new(None, agent, Uuid::nil()).finish().await;
+    }
+
+    /// A replaced root's cleanup does not remove the view child that replaced it.
+    #[tokio::test]
+    async fn a_replaced_root_does_not_remove_the_view_child() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let agent = Uuid::from_u128(78);
+        let root = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+        frame
+            .post_login(
+                agent,
+                ferroan_scene::Presence {
+                    position: [200.0, 128.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0; 3],
+                    control_flags: 0,
+                    draw_distance: 255.0,
+                },
+                root,
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame
+            .seat_view_child(
+                agent,
+                ferroan_scene::Presence {
+                    position: [-56.0, 128.0, 6.916],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0; 3],
+                    control_flags: 0,
+                    draw_distance: 0.0,
+                },
+                child,
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        drop(ForgetPresence::new(Some(Arc::clone(&frame)), agent, root));
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position[0], -56.0);
+        assert!(seat.child);
+        assert!(!seat.actor);
+        ForgetPresence::new(Some(frame), agent, child)
+            .finish()
+            .await;
     }
 
     #[tokio::test]
@@ -3674,7 +3766,7 @@ mod tests {
             draw_distance: 255.0,
         };
         frame
-            .post_login(viewer, pose)
+            .post_login(viewer, pose, uuid::Uuid::nil())
             .unwrap()
             .wait()
             .await
@@ -3972,7 +4064,7 @@ mod tests {
             draw_distance: 255.0,
         };
         frame
-            .post_login(viewer, pose)
+            .post_login(viewer, pose, uuid::Uuid::nil())
             .unwrap()
             .wait()
             .await
