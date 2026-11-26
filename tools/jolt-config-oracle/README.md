@@ -10,7 +10,8 @@ The config command calls `JoltConfig.FromConfig`, `EffectivePhysicsStepRate`,
 `EffectivePresets` and `JoltScene.TestCommandsEnabled` on the pinned Jolt
 module. The file command calls private `JoltScene.NoteDilationSample`
 (`JoltScene.cs` 2928-2942) by reflection on `new JoltScene()` and reads the
-private dilation fields back. It does not call `Initialise`. A later row adds
+private dilation fields back. It does not call `Initialise`. It also compiles
+`JoltCharacter` and writes `fixtures/jolt-file/character`. A later row can add
 its own fixture in this producer. The producer compiles the Jolt project, so
 the Pin8 files that project contains are the files those rows name.
 
@@ -36,6 +37,28 @@ the machine clock; the producer checks the stored double against
 Exact stored ratios are 1, 0.75, 0.625 at sample 3 and 0.5625 at sample 7.
 The Rust test checks the fixture's structure and pins all twelve scene A
 dilation values. The dilation window port that replays it is P3.3b.
+
+The same file command calls `JoltCharacter` capsule, mass and stand-half,
+`DesiredVelocity`, the jump latch and the ground flags through
+`ApplyCharacterState`, and records the `CharacterDesc` a stub backend
+received. The samples are those method results. A finite footprint keeps a
+radius of at least 0.2 m. A constructor size that is NaN or infinite is
+recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
+The replay compares NaN as NaN because the default NaN's bits are
+platform-defined. Only `fixtures/jolt-file/character/result.txt` has NaN
+results (capsule rows 21-24, size row 50, buoyancy row 57). The
+note-dilation, config and drop replays stay bit-exact.
+The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
+unscaled. Flight ignores always-run, for both signs of Z. The latch clears
+when vertical velocity is above 0.5 or the avatar is not supported.
+`KeepInRegion` records an allow-outside return, an invalid character and a
+256 by 128 region. The descriptor's user data is the value the query marker
+would copy; the body is not created. Heartbeat and native code are not
+involved. A ray that would see the query marker, and the body-cap miss, wait
+for the bind. The matched-native trace waits for the upgrade. The gravity
+scale inside `StepCharacter` is not invoked; that multiply is P3.13b.
+Default speed-factor and jump bits are the same bits as
+`fixtures/jolt-record/drop/config.txt`. The capture still does not load joltc.
 
 No native code is started. The fixture records the same proof at
 `before_construct`, after construction and after the calls:

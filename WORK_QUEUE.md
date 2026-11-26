@@ -230,8 +230,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q214 | P2.0e4.1: OAR control file and region path | READY |
+| Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
 | Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
-| Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
 | Q216 | P2.0e4.3: OAR terrain merge | BLOCKED (split into Q216a and Q216b) |
 | Q216a | P2.0e4.3a: OAR terrain merge (`MergeWithBounding`) | READY after Q215 |
 | Q216b | P2.0e4.3b: OAR terrain-member cap in the archive walk | READY after Q214 and Q216a |
@@ -239,7 +239,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
-| Q220 | P2.0e4.6a: OAR parcels in memory | READY |
+| Q220 | P2.0e4.6a: OAR parcels in memory | DONE (this PR) |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |
 | Q222 | P2.0e4.7: OAR region, environment and estate settings | READY after Q225, Q226 and Q227 |
 | Q223 | P2.0e4.8: OAR assets | READY after Q218 |
@@ -325,7 +325,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
 | Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q193, Q157, Q122, Q123, Q115 and Q156 |
-| Q109 | P3.13a: Capsule, marker and intent | READY |
+| Q109 | P3.13a: Capsule, marker and intent | BLOCKED (split into Q109a and Q109b) |
+| Q109a | P3.13a1: Capsule, mass, latch, intent and descriptor | DONE (this PR) |
+| Q109b | P3.13a2: Marker after the bind | READY after Q145 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
 | Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
 | Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
@@ -373,18 +375,18 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
 | Q143 | P3.12b: Cells in a compound | READY after Q142 and Q191 |
 | Q144 | P3.18b: Linkset struck child | READY after Q186 |
-| Q145 | P3.13b: Walk and run | READY after Q109 and Q115 and Q112 |
+| Q145 | P3.13b: Walk and run | READY after Q109a and Q115 and Q112 |
 | Q146 | P3.13c: Fly | READY after Q145 |
 | Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
 | Q148 | P3.14b: Stairs, slope and a loose object | READY after Q147 and Q113 |
 | Q195 | P3.75: Moving, stopping and dropping support | READY after Q148 and Q130 |
 | Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
-| Q150 | P3.14d: Avatar position set | READY after Q109 and Q105 |
-| Q151 | P3.14e: Avatar size | READY after Q109 and Q105 |
+| Q150 | P3.14d: Avatar position set | READY after Q109a and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109b and Q105 |
 | Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q186 |
 | Q153 | P3.15: Jolt live selection before the stand-in is removed | READY after Q145 and Q118 and Q152 |
 | Q196 | P3.76: Remove the walking stand-in | READY after Q153 |
-| Q154 | P3.16: Arrival landing ray | READY after Q109 and Q118 and Q115 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109a and Q118 and Q115 |
 | Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
 | Q156 | P3.17: Camera ray | READY after Q115 and Q118 |
 | Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
@@ -569,7 +571,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q375 | P4.F3.11: async notecard reads | READY after Q232, Q234, Q256 and Q271 |
 | Q376 | P4.F3.12: synchronous and `os` notecard reads | READY after Q232, Q253, Q256, Q270, Q273 and Q327 |
 
-Q100 to Q205 are the Phase 3 rows, with Q381. The maintainer deferred the C# module move (Q102) on 26 November 2026 and reversed the deferral the same day. Q102 landed as `dev-build` `41f18f983b` (OpenSim-NGC #550), Q103 moved the pin to it (Pin9) and Q104 recorded D144, so Q100 is READY. Q176 no longer waits on Q104. Q381, a deterministic win-x64 joltc built and recorded the way the linux-x64 one is, is C# work on `dev-build` (the maintainer approved it as a follow-up on 26 November 2026); until it lands, the C# side of the matched-native compare is linux-x64 only. Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+Q100 to Q205 are the Phase 3 rows, with Q381. The maintainer deferred the C# module move (Q102) on 26 November 2026 and reversed the deferral the same day. Q102 landed as `dev-build` `41f18f983b` (OpenSim-NGC #550), Q103 moved the pin to it (Pin9) and Q104 recorded D144, so Q100 is READY. Q176 no longer waits on Q104. Q381, a deterministic win-x64 joltc built and recorded the way the linux-x64 one is, is C# work on `dev-build` (the maintainer approved it as a follow-up on 26 November 2026); until it lands, the C# side of the matched-native compare is linux-x64 only. Q108 stays blocked because it is split into Q108a and Q108b. Q109 stays blocked because it is split into Q109a and Q109b. Q109a is done. Q109b waits on the character bind (Q145). Q100a, Q101, Q105, Q106, Q107, Q108a and Q109a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q294 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). Q295 to Q321 are the stage 2 placeholders. The pure-function plan and the communication plan replace P4.S1, P4.S2, P4.S3, P4.S13, P4.S24 and P4.S25, and they narrow P4.S4, P4.S5, P4.S6, P4.S19 and P4.S27. A replaced placeholder does not start. Q322 to Q376 are those rows. A row is READY only when every dependency is already DONE. The others are READY after the items named in the status.
 

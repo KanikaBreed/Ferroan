@@ -27,6 +27,8 @@
   <ItemGroup>
     <Compile Remove="Program.cs" />
     <Compile Remove="FileOracle.cs" />
+    <Compile Remove="CharacterOracle.cs" />
+    <Compile Remove="RecordingBackend.cs" />
   </ItemGroup>
 
   <ItemGroup>

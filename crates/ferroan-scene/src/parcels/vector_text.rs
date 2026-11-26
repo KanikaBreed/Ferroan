@@ -28,7 +28,8 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Acceptance of the string components consumed by the parcel environment.
+//! Acceptance and values of the string components consumed by the parcel
+//! environment and by the OAR parcel reader (`Vector3.Parse`).
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Components {
@@ -37,55 +38,72 @@ pub(super) enum Components {
     Rotation,
 }
 
-fn number(component: &str) -> bool {
+pub(super) fn number(component: &str) -> Option<f32> {
     // NumberStyles.Float uses the en-US infinity symbol and NaN. The special
     // symbols accept Unicode whitespace, ordinary numbers use ASCII space.
     let symbol = component.trim();
     let unsigned = symbol.strip_prefix(['+', '-']).unwrap_or(symbol);
-    if unsigned == "∞" || unsigned.eq_ignore_ascii_case("nan") {
-        return true;
+    if unsigned == "∞" {
+        return Some(if symbol.starts_with('-') {
+            f32::NEG_INFINITY
+        } else {
+            f32::INFINITY
+        });
+    }
+    if unsigned.eq_ignore_ascii_case("nan") {
+        return Some(f32::NAN);
     }
     let value = component
         .trim_end_matches('\0')
         .trim_matches(|c| matches!(c, ' ' | '\t'..='\r'));
-    value.bytes().any(|b| b.is_ascii_digit()) && value.parse::<f32>().is_ok()
+    if !value.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<f32>().ok()
 }
 
 pub(super) fn accepts(text: &str, kind: Components) -> bool {
+    components(text, kind).is_some()
+}
+
+/// `Vector3.Parse`. `None` is the `FormatException`.
+pub(super) fn vector3(text: &str) -> Option<[f32; 3]> {
+    let [x, y, z, _] = components(text, Components::Triple)?;
+    Some([x, y, z])
+}
+
+/// The components `Parse` reads, in order. A pair fills two, a triple three.
+fn components(text: &str, kind: Components) -> Option<[f32; 4]> {
     let minimum = match kind {
         Components::Pair => 3,
         Components::Triple => 5,
         Components::Rotation => 7,
     };
     if text.encode_utf16().take(minimum).count() < minimum {
-        return false;
+        return None;
     }
+    let mut out = [0.0; 4];
+    let mut filled = 0;
     // The first opening bracket can be preceded by arbitrary text. Without a
     // bracket, parsing starts at the beginning of the string.
     let mut rest = match text.find(['<', ',']) {
         Some(i) if text.as_bytes()[i] == b'<' => &text[i + 1..],
         Some(_) => text,
-        None => return false,
+        None => return None,
     };
     let commas = if kind == Components::Pair { 1 } else { 2 };
     for _ in 0..commas {
-        let Some((component, next)) = rest.split_once(',') else {
-            return false;
-        };
-        if !number(component) {
-            return false;
-        }
+        let (component, next) = rest.split_once(',')?;
+        out[filled] = number(component)?;
+        filled += 1;
         rest = next;
     }
     if kind == Components::Rotation {
-        let Some(i) = rest.find([',', '>']) else {
-            return false;
-        };
-        if !number(&rest[..i]) {
-            return false;
-        }
+        let i = rest.find([',', '>'])?;
+        out[filled] = number(&rest[..i])?;
+        filled += 1;
         if rest.as_bytes()[i] == b'>' {
-            return true;
+            return Some(out);
         }
         rest = &rest[i + 1..];
     }
@@ -96,5 +114,6 @@ pub(super) fn accepts(text: &str, kind: Components) -> bool {
         .skip(1)
         .find(|(_, c)| *c == '>' || (kind != Components::Pair && *c == ' '))
         .map_or(rest.len(), |(i, _)| i);
-    number(&rest[..end])
+    out[filled] = number(&rest[..end])?;
+    Some(out)
 }

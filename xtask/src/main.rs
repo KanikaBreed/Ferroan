@@ -33,8 +33,8 @@
 //! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
 //! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
 //! and compare `fixtures/jolt-config`. `jolt file` and `jolt file-verify`
-//! run the pinned `JoltScene.NoteDilationSample` and compare
-//! `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
+//! run the pinned `JoltScene.NoteDilationSample` and `JoltCharacter`, and
+//! compare `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
 //! pinned harness in-process for the stock `drop` and compare
 //! `fixtures/jolt-record`. That command loads the stock native. None of
 //! them starts a region. `jolt generate` and `jolt verify` stay with the
@@ -56,6 +56,10 @@
 //! `regionstore cross` reloads SQLite and throwaway MySQL and PostgreSQL
 //! containers, then removes the containers. None of them starts a server or
 //! the live harness.
+//!
+//! `raw32 verify` rebuilds the RAW32 oracle at the pin and diffs
+//! `fixtures/oar-raw32`. It starts the in-process scene that oracle uses and
+//! does not start the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -126,6 +130,7 @@ mod oracle_reference;
 mod personal_paths;
 mod pin3_oracle;
 mod ports;
+mod raw32;
 mod region_report;
 mod regionstore;
 mod schema;
@@ -197,6 +202,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask raw32 verify
        cargo xtask regionstore scales
        cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
@@ -205,6 +211,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask access generate|verify
        cargo xtask permissions generate|verify
        cargo xtask oar-owners generate|verify
+       cargo xtask oar-parcels generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -262,6 +269,8 @@ fn main() -> ExitCode {
         ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["oar-owners", "generate"] => access_oracle::run("oar-owners", "OarOwnersOracle", true),
         ["oar-owners", "verify"] => access_oracle::run("oar-owners", "OarOwnersOracle", false),
+        ["oar-parcels", "generate"] => access_oracle::run("oar-parcels", "OarParcelsOracle", true),
+        ["oar-parcels", "verify"] => access_oracle::run("oar-parcels", "OarParcelsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
@@ -353,6 +362,7 @@ fn main() -> ExitCode {
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["raw32", "verify"] => raw32::verify(),
         ["regionstore", "scales"] => regionstore::scales(true),
         ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
