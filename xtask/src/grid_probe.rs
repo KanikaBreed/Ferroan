@@ -196,7 +196,7 @@ pub async fn offline(private_uri: &str) -> Result<(), String> {
     offline_user(private_uri, crate::live::ESTATE_OWNER).await
 }
 
-async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
+pub(super) async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
     await_settled(private_uri, user).await
 }
 
