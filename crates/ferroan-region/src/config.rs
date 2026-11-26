@@ -44,6 +44,9 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// Child view settings follow Source/OpenSim.Region.Framework/Scenes/Scene.cs
+// and ScenePresence.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
+
 //! The single region used by P2.0d. INI syntax, includes and substitutions
 //! belong to ferroan-config. Interactive creation, XML regions, variable
 //! region sizes and TLS listeners remain unsupported and are refused.
@@ -81,12 +84,42 @@ pub enum RegionConfigError {
     ControlPlane(#[from] ControlPlaneError),
 }
 
+/// Scene.RegionViewDistance settings for child discovery (Pin8 Scene.cs
+/// 975-995 and ScenePresence.cs 725-730). The circuit retains its draw distance.
+#[derive(Clone, Copy)]
+pub struct RegionViewDistances {
+    minimum: f32,
+    pub(crate) maximum: f32,
+}
+
+impl RegionViewDistances {
+    pub(crate) fn read(server: &Config) -> Result<Self, RegionConfigError> {
+        let read = |key, default| match server.get("Startup", key) {
+            None => Ok(default),
+            Some(text) => text
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| value("Startup", key, "expected a finite distance")),
+        };
+        let maximum = read("MaxRegionsViewDistance", 255.)?.min(read("MaxDrawDistance", 512.)?);
+        let minimum = read("MinRegionsViewDistance", 96.)?.max(96.).min(maximum);
+        Ok(Self { minimum, maximum })
+    }
+
+    pub fn for_draw_distance(&self, draw_distance: f32) -> f32 {
+        (draw_distance + 64.).clamp(self.minimum, self.maximum)
+    }
+}
+
 /// Resolved public settings. Deliberately no Debug: region_secret is private.
 #[derive(Clone)]
 pub struct RegionConfig {
     pub id: Uuid,
     pub name: String,
     pub scope_id: Uuid,
+    pub region_view: RegionViewDistances,
     /// Map tiles, as written in Regions.ini. Registration uses metres.
     pub location: [u32; 2],
     pub size: [u32; 2],
@@ -373,6 +406,7 @@ impl RegionConfig {
         Ok(Self {
             id,
             name: name.to_owned(),
+            region_view: RegionViewDistances::read(server)?,
             scope_id: uuid(regions, name, "ScopeID", Some(Uuid::nil()))?,
             location,
             size,

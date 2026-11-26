@@ -62,6 +62,16 @@ const PRESENCE_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_PRESENCE_ADO",
 };
 
+/// Both providers use the same disposable MySQL connection from the environment. The C# constructor runs the Presence migration.
+pub fn presence_mysql_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "mysql_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_CROSS",
+        false,
+    )
+}
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///

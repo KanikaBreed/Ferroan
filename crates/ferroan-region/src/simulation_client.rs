@@ -51,6 +51,9 @@
 //! again uncompressed. This module does not send viewer packets or change
 //! presence.
 
+mod child;
+pub use child::AgentPosition;
+
 use std::io::Write;
 use std::time::Duration;
 
@@ -383,6 +386,7 @@ struct Outbound {
 #[derive(Clone, Debug)]
 pub struct SimulationClient {
     http: reqwest::Client,
+    positions: std::sync::Arc<std::sync::Mutex<child::PositionQueue>>,
 }
 
 impl SimulationClient {
@@ -394,7 +398,10 @@ impl SimulationClient {
             .pool_max_idle_per_host(0)
             .build()
             .map_err(|_| ClientError::Unavailable)?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            positions: Default::default(),
+        })
     }
 
     /// `QueryAccess`. A missing destination answer is unsuccessful.
@@ -442,12 +449,22 @@ impl SimulationClient {
                 reason: "Destination not found".to_string(),
             });
         };
+        let body = pack_create(source, destination, circuit, flags, Some(context));
+        self.send_create(destination, circuit, body).await
+    }
+
+    async fn send_create(
+        &self,
+        destination: &RegionEnd,
+        circuit: &mut Circuit,
+        body: Value,
+    ) -> Result<CreateOutcome, ClientError> {
         let url = format!(
             "{}/agent/{}/",
             trim_uri(&destination.server_uri),
             circuit.agent_id
         );
-        let body = encode_json(&pack_create(source, destination, circuit, flags, context))?;
+        let body = encode_json(&body)?;
         let first = self
             .execute(Outbound {
                 method: Method::POST,
@@ -885,7 +902,7 @@ fn pack_create(
     destination: &RegionEnd,
     circuit: &Circuit,
     flags: u32,
-    context: &TransferContext,
+    context: Option<&TransferContext>,
 ) -> Value {
     let mut entries = vec![
         ("agent_id", Osd::Uuid(circuit.agent_id)),
@@ -921,11 +938,14 @@ fn pack_create(
         entries.push(("appearance_serial", Osd::Int(appearance.serial)));
         entries.push((
             "packed_appearance",
-            pack_appearance(appearance, context.outbound),
+            pack_appearance(appearance, context.map_or(0.0, |c| c.outbound)),
         ));
     }
     entries.extend(pack_service_urls(&circuit.service_urls));
-    entries.push(("context", pack_context(context)));
+    entries.push((
+        "context",
+        pack_context(context.unwrap_or(&TransferContext::negotiated())),
+    ));
     entries.extend(pack_ends(source, destination, Some(flags)));
     object(entries)
 }
@@ -1630,7 +1650,13 @@ mod tests {
         circuit.child = false;
         circuit.service_session_id.clear();
         let region = sample_region();
-        let created = pack_create(None, &region, &circuit, 16, &TransferContext::negotiated());
+        let created = pack_create(
+            None,
+            &region,
+            &circuit,
+            16,
+            Some(&TransferContext::negotiated()),
+        );
         assert!(created.get("child").is_none());
         assert!(created.get("base_folder").is_none());
         assert!(created.get("service_session_id").is_none());
@@ -1709,7 +1735,7 @@ mod tests {
             &region,
             &circuit,
             16,
-            &TransferContext::negotiated(),
+            Some(&TransferContext::negotiated()),
         );
         assert_eq!(created["teleport_flags"], "16");
         assert_eq!(created["start_pos"], LANDING);
@@ -1745,7 +1771,7 @@ mod tests {
                 &bodies.destination,
                 &bodies.circuit,
                 16,
-                &context,
+                Some(&context),
             );
             assert_same(&bodies.create, &created, "create");
             let source = bodies.source.as_ref().unwrap();

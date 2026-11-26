@@ -30,6 +30,7 @@
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
+//! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
 //! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
@@ -141,9 +142,10 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
-       cargo xtask presence cross postgres
        cargo xtask presence generate
        cargo xtask presence verify
+       cargo xtask presence cross mysql
+       cargo xtask presence cross postgres
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -183,6 +185,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run parcel-timing grid --physics basicphysics
        cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
+       cargo xtask live run store-handoff grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
        cargo xtask live run prim-arrival grid --region ferroan
@@ -278,6 +281,7 @@ fn main() -> ExitCode {
         ["http", "status-verify"] => http_oracle::status_verify(),
         ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
+        ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
         ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),

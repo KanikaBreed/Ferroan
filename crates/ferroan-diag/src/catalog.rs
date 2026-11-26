@@ -95,6 +95,7 @@ pub const PRESENCE_FIELDS: &str = "presence.fields";
 pub const PRESENCE_ROW_BYTES: &str = "presence.row-bytes";
 pub const PRESENCE_RESULTS: &str = "presence.results";
 pub const GRIDUSER_CACHE_ENTRIES: &str = "griduser.cache-entries";
+pub const CHILD_POSITION_ENDPOINTS: &str = "region.child-position-endpoints";
 pub const NEIGHBOUR_DNS: &str = "region.neighbour-dns";
 pub const LIVE_PORT_BASE: &str = "live.port-base";
 pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";

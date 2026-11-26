@@ -19,8 +19,8 @@ use ferroan_scene::{ObjectStoreKind, open_objects};
 use serde_json::json;
 use uuid::Uuid;
 
-fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
-    let mut parts = BTreeMap::new();
+pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
+    let mut parts = BTreeMap::<Uuid, ObjectData>::new();
     for record in records.iter().filter(|r| r.kind == Kind::UdpOut) {
         let packet = parse_packet(&record.bytes).map_err(|e| e.to_string())?;
         if packet.id != ObjectUpdate::ID {
@@ -45,7 +45,10 @@ fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, Str
             }
             let id = block.full_id;
             if let Some(previous) = parts.get(&id) {
-                if previous != &block {
+                // A repeat must preserve every field byte, including the sign of zero.
+                let mut first = Writer::new();
+                previous.encode(&mut first);
+                if first.buf != writer.buf {
                     return Err(format!("different initial blocks for {id}"));
                 }
             } else {
@@ -83,7 +86,7 @@ async fn stored_roots(db: &Path) -> Result<BTreeMap<Uuid, Uuid>, String> {
     Ok(roots)
 }
 
-fn validate_ids(
+pub(super) fn validate_ids(
     parts: &BTreeMap<Uuid, ObjectData>,
     roots: &BTreeMap<Uuid, Uuid>,
 ) -> Result<(), String> {
@@ -123,9 +126,16 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
             roots.len()
         ));
     }
-    validate_ids(&parts, &roots)?;
-    let dir = run.join("prim-updates");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    write_fixture(&run.join("prim-updates"), parts, &roots)
+}
+
+pub(super) fn write_fixture(
+    dir: &Path,
+    parts: BTreeMap<Uuid, ObjectData>,
+    roots: &BTreeMap<Uuid, Uuid>,
+) -> Result<String, String> {
+    validate_ids(&parts, roots)?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let aliases: BTreeMap<_, _> = parts
         .keys()
         .enumerate()
