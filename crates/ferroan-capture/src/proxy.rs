@@ -95,6 +95,27 @@ impl ProxyStatus {
         self.0.refused_after_stop.load(Ordering::Acquire)
     }
 
+    /// The upstream was gone before any response byte.
+    ///
+    /// Call this when the request is already in hand. A stop flagged by then
+    /// counts a late refusal and is not a failure. A forwarded exchange uses
+    /// the same helper with the flag it read when its request arrived.
+    pub fn upstream_was_gone(&self) {
+        let stopping = self.0.upstream_stopping.load(Ordering::Acquire);
+        if !self.note_upstream_gone(stopping) {
+            self.failed();
+        }
+    }
+
+    /// Count a late refusal when `stopping` was set as the request arrived.
+    /// Returns whether that refusal is expected.
+    fn note_upstream_gone(&self, stopping: bool) -> bool {
+        if stopping {
+            self.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
+        }
+        stopping
+    }
+
     pub fn ensure_success(&self) -> io::Result<()> {
         let failures = self.failures();
         if failures == 0 {
@@ -480,14 +501,13 @@ async fn forward(
     }])?;
     let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
         Ok(Reply::Response(response)) => response,
-        Ok(Reply::Gone(_)) if upstream_stopping => {
-            // The upstream was shut down on purpose before this request came.
-            // Keep the request as evidence; the client sees a closed socket.
-            status.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
-            capture.flushed().await?;
-            return Ok(());
-        }
         Ok(Reply::Gone(error)) => {
+            if status.note_upstream_gone(upstream_stopping) {
+                // The upstream was shut down on purpose before this request came.
+                // Keep the request as evidence; the client sees a closed socket.
+                capture.flushed().await?;
+                return Ok(());
+            }
             // The upstream is meant to be up: a failed exchange.
             let _ = capture.flushed().await;
             return Err(error);

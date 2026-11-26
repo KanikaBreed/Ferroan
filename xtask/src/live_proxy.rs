@@ -81,6 +81,12 @@ impl Proxies {
         }
     }
 
+    /// The status `stop_in_order` marks for bind `index`.
+    #[cfg(test)]
+    pub(crate) fn status(&self, index: usize) -> Option<ProxyStatus> {
+        self.statuses.get(index).map(|(status, _)| status.clone())
+    }
+
     pub(crate) fn finish(self) -> Result<(), String> {
         self.runtime.block_on(async {
             let mut failure = None;

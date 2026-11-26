@@ -2787,25 +2787,17 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    /// A stand-in server whose stop sends one request through a proxy, as the
-    /// C# neighbour's late CloseAgent does.
+    /// A stand-in server whose stop finds its upstream gone, as the C#
+    /// neighbour's late CloseAgent does. The classification is the proxy's;
+    /// the stand-in does not open a socket, so a listener that has already
+    /// closed cannot fail the test.
     #[cfg(target_os = "linux")]
-    struct LateCaller(SocketAddr);
+    struct LateCaller(ferroan_capture::ProxyStatus);
 
     #[cfg(target_os = "linux")]
     impl Drop for LateCaller {
         fn drop(&mut self) {
-            use std::io::{Read, Write};
-            let mut client = TcpStream::connect(self.0).unwrap();
-            client
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            client
-                .write_all(b"DELETE /agent/x/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                .unwrap();
-            let mut response = Vec::new();
-            let _ = client.read_to_end(&mut response);
-            assert!(response.is_empty());
+            self.0.upstream_was_gone();
         }
     }
 
@@ -2813,7 +2805,7 @@ mod tests {
     /// Robust public, home, neighbour. Literal indexes, so a swapped constant
     /// shows.
     #[cfg(target_os = "linux")]
-    fn grid_proxies(name: &str) -> (Vec<SocketAddr>, crate::live_proxy::Proxies, Vec<PathBuf>) {
+    fn grid_proxies(name: &str) -> (crate::live_proxy::Proxies, Vec<PathBuf>) {
         let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> =
             ["private", "public", "home", "neighbour"]
                 .iter()
@@ -2829,9 +2821,8 @@ mod tests {
                     ("127.0.0.1:0".parse().unwrap(), closed, path)
                 })
                 .collect();
-        let (addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
+        let (_addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
         (
-            addresses,
             proxies,
             binds.into_iter().map(|(_, _, path)| path).collect(),
         )
@@ -2840,23 +2831,32 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn each_server_is_marked_just_before_it_stops() {
-        // Each server's stop sends through its own proxy: all are marked.
-        let (addresses, proxies, paths) = grid_proxies("own");
-        let mut home = Some(LateCaller(addresses[2]));
-        let mut neighbour = Some(LateCaller(addresses[3]));
-        let mut robust = Some(LateCaller(addresses[0]));
+        // Each server's stop finds its own upstream gone: all three are marked.
+        // Literal indexes, so a swapped constant shows.
+        let (proxies, paths) = grid_proxies("own");
+        let mut home = Some(LateCaller(proxies.status(2).unwrap()));
+        let mut neighbour = Some(LateCaller(proxies.status(3).unwrap()));
+        let mut robust = Some(LateCaller(proxies.status(0).unwrap()));
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
         assert!(home.is_none() && neighbour.is_none() && robust.is_none());
+        for index in [2, 3, 0] {
+            let status = proxies.status(index).unwrap();
+            assert_eq!(status.refused_after_stop(), 1, "proxy {index}");
+            assert_eq!(status.failures(), 0, "proxy {index}");
+        }
         proxies.finish().unwrap();
         for path in paths {
             let _ = fs::remove_file(path);
         }
-        // Home's stop calls the neighbour, which is still meant to be up.
-        let (addresses, proxies, paths) = grid_proxies("early");
-        let mut home = Some(LateCaller(addresses[3]));
+        // Home's stop finds the neighbour gone while that neighbour is meant to be up.
+        let (proxies, paths) = grid_proxies("early");
+        let mut home = Some(LateCaller(proxies.status(3).unwrap()));
         let mut neighbour: Option<LateCaller> = None;
         let mut robust: Option<LateCaller> = None;
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
+        let neighbour_status = proxies.status(3).unwrap();
+        assert_eq!(neighbour_status.failures(), 1);
+        assert_eq!(neighbour_status.refused_after_stop(), 0);
         let error = proxies.finish().unwrap_err();
         assert!(error.contains("recorded 1 failure(s)"), "{error}");
         for path in paths {
