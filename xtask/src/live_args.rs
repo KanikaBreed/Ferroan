@@ -152,12 +152,18 @@ pub(crate) fn dispatch(args: &[&str]) -> Outcome {
             return Outcome::Exit(ExitCode::from(2));
         }
     };
-    if let Err(text) = crate::ports::install(base) {
-        eprintln!("live: {text}");
-        return Outcome::Exit(ExitCode::from(2));
-    }
     match parse(&args) {
-        Ok(command) => Outcome::Exit(execute(command)),
+        Ok(command) => {
+            let persistent = matches!(
+                command,
+                Command::Up { .. } | Command::RunningAssets { .. } | Command::Down
+            );
+            if let Err(text) = crate::ports::install(base, persistent) {
+                eprintln!("live: {text}");
+                return Outcome::Exit(ExitCode::from(2));
+            }
+            Outcome::Exit(execute(command))
+        }
         Err(ParseFail::Usage) => Outcome::Usage,
         Err(ParseFail::Message(text)) => {
             eprintln!("live: {text}");

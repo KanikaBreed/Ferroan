@@ -213,7 +213,7 @@ fn main() -> ExitCode {
     // Docker smoke and console-forms open listeners too. `live` installs from
     // the flag or the environment inside dispatch; every other command reads
     // the environment here.
-    if let Err(text) = ports::install(None) {
+    if let Err(text) = ports::install(None, false) {
         eprintln!("xtask: {text}");
         return ExitCode::from(2);
     }

@@ -229,41 +229,54 @@ fn validate_base(base: u16, ephemeral: Option<(u16, u16)>) -> Result<(), String>
     Ok(())
 }
 
-static PLAN: OnceLock<Plan> = OnceLock::new();
+struct Run {
+    plan: Plan,
+    // None for persistent standalone commands that share state across processes.
+    directory_pid: Option<u32>,
+}
+
+static RUN: OnceLock<Run> = OnceLock::new();
 static ASSIGNED: Mutex<Vec<(u8, u16)>> = Mutex::new(Vec::new());
 static DYNAMIC_NEXT: Mutex<u8> = Mutex::new(DYNAMIC);
 static RUN_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-pub(crate) fn install(flag: Option<u16>) -> Result<(), String> {
+pub(crate) fn install(flag: Option<u16>, persistent_standalone: bool) -> Result<(), String> {
     let plan = Plan::resolve(flag)?;
-    PLAN.set(plan)
-        .map_err(|_| "the live port base is already set".to_string())
+    RUN.set(Run {
+        plan,
+        directory_pid: (!persistent_standalone).then(std::process::id),
+    })
+    .map_err(|_| "the live port base is already set".to_string())
 }
 
 pub(crate) fn current() -> Plan {
-    PLAN.get().copied().unwrap_or_else(Plan::unset)
+    RUN.get().map_or_else(Plan::unset, |run| run.plan)
 }
 
 pub(crate) fn isolated() -> bool {
     current().base.is_some()
 }
 
-pub(crate) fn directory_for(base: u16, pid: u32) -> PathBuf {
-    crate::live::live_root()
-        .join("runs")
-        .join(format!("{base}-{pid}"))
+fn directory_for(base: u16, pid: Option<u32>) -> PathBuf {
+    crate::live::live_root().join("runs").join(match pid {
+        Some(pid) => format!("{base}-{pid}"),
+        None => format!("{base}-persistent"),
+    })
 }
 
 /// Directory that holds this process's grid, standalone and state files.
 /// Unset, that is `.scratch/live` and the historical `run/`, `grid/` and
 /// `grid-state` names stay where they are.
 pub(crate) fn run_root() -> PathBuf {
-    let Some(base) = current().base else {
+    let Some((base, pid)) = RUN
+        .get()
+        .and_then(|run| Some((run.plan.base?, run.directory_pid)))
+    else {
         return crate::live::live_root();
     };
     RUN_ROOT
         .get_or_init(|| {
-            let dir = directory_for(base, std::process::id());
+            let dir = directory_for(base, pid);
             let _ = std::fs::create_dir_all(&dir);
             dir
         })
@@ -792,9 +805,13 @@ mod tests {
 
     #[test]
     fn run_directories_follow_the_base_and_the_process() {
-        let first = directory_for(20_000, 11);
-        let second = directory_for(21_000, 22);
+        let first = directory_for(20_000, Some(11));
+        let second = directory_for(21_000, Some(22));
         assert_ne!(first, second);
+        let persistent = directory_for(20_000, None);
+        assert_ne!(first, persistent);
+        assert!(persistent.ends_with("runs/20000-persistent"));
+        assert_ne!(persistent, directory_for(20_032, None));
         assert!(first.ends_with("runs/20000-11"));
         assert!(second.ends_with("runs/21000-22"));
         assert_eq!(

@@ -80,7 +80,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
-| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY |
+| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | DONE (this PR) |
 | Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | READY |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
