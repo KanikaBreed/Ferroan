@@ -38,7 +38,8 @@ mod properties;
 mod vector_text;
 
 pub use overlay::OverlayPacket;
-pub use properties::{ParcelPropertiesSend, PrimCounts};
+pub(crate) use properties::prim_counts;
+pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts};
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

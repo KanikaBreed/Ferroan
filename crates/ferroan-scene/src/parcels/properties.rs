@@ -62,11 +62,14 @@
 //! `to_xml` stays the capability serializer. This writer follows Encode2 only
 //! for the types this message uses.
 
+use std::collections::HashMap;
+
 use base64::Engine;
 use uuid::Uuid;
 
 use super::{Parcel, ParcelMap};
 use crate::height::Heightmap;
+use crate::objects::ObjectGroup;
 
 /// `OpenMetaverse.RegionFlags` bits `SendLandProperties` reads.
 const RESTRICT_PUSH: u32 = 1 << 22;
@@ -78,9 +81,13 @@ const DENY_AGE: u32 = 1 << 30;
 
 /// `PrimCounts` for one parcel.
 ///
-/// `PrimCountModule` starts tainted and recounts on the first read. Zero is
-/// the count after that recount only when the parcel has no prims. A region
-/// with no counter still leaves every field at zero.
+/// The tally walks the groups admitted at startup. Attachments and
+/// `TemporaryOnRez` are skipped. Owner, group and other follow the land owner
+/// and group, and the part count is the group's length. Selected stays zero:
+/// a stored group is not selected and holds no sitting avatar. Simulator is
+/// that land owner's total on every parcel they own. A parcel with nothing
+/// counted stays at zero. Runtime rez, moves, selection and sitting are not
+/// in the admitted set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PrimCounts {
     pub owner: i32,
@@ -89,6 +96,72 @@ pub struct PrimCounts {
     pub selected: i32,
     pub total: i32,
     pub simulator: i32,
+}
+
+/// Region values `SendLandProperties` reads besides the parcel map.
+///
+/// The capture defaults are flags 0, tax free false, capacity 15,000 and
+/// object bonus 1. [`ParcelPropertiesSend::notify`] builds that element.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParcelRegion {
+    /// `EstateManagementModule.GetRegionFlags`. The handshake already applies
+    /// the settings bits, including `RestrictPushObject` from `RestrictPushing`.
+    pub region_flags: u32,
+    /// `EstateSettings.TaxFree`. The element sends the inverse.
+    pub tax_free: bool,
+    /// `RegionInfo.ObjectCapacity`. The fresh-region default is 15,000.
+    pub object_capacity: i32,
+    /// `RegionSettings.ObjectBonus`.
+    pub object_bonus: f64,
+}
+
+impl Default for ParcelRegion {
+    fn default() -> Self {
+        Self {
+            region_flags: 0,
+            tax_free: false,
+            object_capacity: 15_000,
+            object_bonus: 1.0,
+        }
+    }
+}
+
+impl ParcelRegion {
+    /// `AllowEnvironmentOverride` is the estate bit the handshake leaves clear.
+    pub fn from_handshake(
+        handshake_flags: u32,
+        object_bonus: f64,
+        object_capacity: i32,
+        tax_free: bool,
+        allow_environment: bool,
+    ) -> Self {
+        let mut region_flags = handshake_flags;
+        if allow_environment {
+            region_flags |= ALLOW_ENVIRONMENT;
+        }
+        Self {
+            region_flags,
+            tax_free,
+            object_capacity,
+            object_bonus,
+        }
+    }
+
+    /// Sequence 0 for one parcel. Snap, the request result and the agent's
+    /// environment version stay at the notify values.
+    pub fn element(self, prims: PrimCounts) -> ParcelPropertiesSend {
+        ParcelPropertiesSend {
+            sequence_id: 0,
+            snap_selection: false,
+            request_result: 0,
+            region_flags: self.region_flags,
+            tax_free: self.tax_free,
+            object_capacity: self.object_capacity,
+            object_bonus: self.object_bonus,
+            prims,
+            agent_environment_version: 0,
+        }
+    }
 }
 
 /// What `LandObject.SendLandProperties` passes in besides the parcel map.
@@ -116,18 +189,65 @@ impl ParcelPropertiesSend {
     /// Sequence 0 for one parcel, with the region values the Q61a arrival and
     /// walk elements were captured with.
     pub fn notify() -> Self {
-        Self {
-            sequence_id: 0,
-            snap_selection: false,
-            request_result: 0,
-            region_flags: 0,
-            tax_free: false,
-            object_capacity: 15_000,
-            object_bonus: 1.0,
-            prims: PrimCounts::default(),
-            agent_environment_version: 0,
+        ParcelRegion::default().element(PrimCounts::default())
+    }
+}
+
+/// `PrimFlags.TemporaryOnRez`. `PrimCountModule.AddObject` skips it on the root.
+const TEMPORARY_ON_REZ: u32 = 0x2000_0000;
+/// Primitive pcode. A nonzero state on that pcode is an attachment.
+const PRIM_PCODE: u8 = 9;
+
+/// `PrimCountModule.Recount` over the groups the region admitted.
+pub(crate) fn prim_counts(map: &ParcelMap, groups: &[ObjectGroup]) -> HashMap<Uuid, PrimCounts> {
+    let mut counts: HashMap<Uuid, PrimCounts> = HashMap::new();
+    let mut simwide: HashMap<Uuid, i32> = HashMap::new();
+    for parcel in map.parcels() {
+        counts.insert(parcel.id, PrimCounts::default());
+        simwide.entry(parcel.owner).or_insert(0);
+    }
+    for group in groups {
+        let Some(root) = group.parts.first() else {
+            continue;
+        };
+        if root.shape.pcode == PRIM_PCODE && root.shape.state != 0 {
+            continue;
+        }
+        if root.flags & TEMPORARY_ON_REZ != 0 {
+            continue;
+        }
+        let Some(land) = map.at_metres(root.group_position[0], root.group_position[1]) else {
+            continue;
+        };
+        let parcel_id = land.id;
+        let land_owner = land.owner;
+        let land_group = land.group;
+        let parts = i32::try_from(group.parts.len()).unwrap_or(i32::MAX);
+        if let Some(total) = simwide.get_mut(&land_owner) {
+            *total = total.saturating_add(parts);
+        }
+        let Some(slot) = counts.get_mut(&parcel_id) else {
+            continue;
+        };
+        if root.owner_id == land_owner {
+            slot.owner = slot.owner.saturating_add(parts);
+        } else if !land_group.is_nil() && root.group_id == land_group {
+            slot.group = slot.group.saturating_add(parts);
+        } else {
+            slot.others = slot.others.saturating_add(parts);
         }
     }
+    for parcel in map.parcels() {
+        let Some(slot) = counts.get_mut(&parcel.id) else {
+            continue;
+        };
+        slot.total = slot
+            .owner
+            .saturating_add(slot.group)
+            .saturating_add(slot.others);
+        slot.simulator = simwide.get(&parcel.owner).copied().unwrap_or(0);
+    }
+    counts
 }
 
 impl ParcelMap {
@@ -612,6 +732,7 @@ fn civil_from_days(days: i32) -> (i32, u32, u32) {
 mod tests {
     use super::*;
     use crate::initial::InitialTerrain;
+    use crate::objects::ObjectGroup;
     use crate::parcels::open_parcels_at;
     use crate::test_store::CopiedStore;
 
@@ -626,9 +747,152 @@ mod tests {
         assert_eq!(prim_capacity(65_472, 15_000, 1.0, 256, 256), 14_985);
         assert_eq!(prim_capacity(48, 15_000, 1.0, 256, 256), 11);
         assert_eq!(prim_capacity(16, 15_000, 1.0, 256, 256), 4);
+        // West is 16 m². Bonus 2 on a 256 m region is 7.824, truncated to 7.
+        assert_eq!(prim_capacity(16, 15_000, 2.0, 256, 256), 7);
         assert_eq!(prim_capacity(65_536, 15_000, 1.0, 256, 256), 15_000);
         assert_eq!(prim_capacity(65_536, 15_000, 2.0, 256, 256), 15_000);
         assert_eq!(prim_capacity(0, 15_000, 1.0, 256, 256), 0);
+    }
+
+    #[test]
+    fn restrict_pushing_and_bonus_two_match_the_west_element() {
+        let mut west = super::super::Parcel::estate_land(ESTATE, CLAIM);
+        west.name = "West".into();
+        let mut map = ParcelMap::empty([256, 256]).unwrap();
+        map.insert(super::super::StoredParcel {
+            data: west,
+            bitmap: vec![1],
+        });
+        let local_id = map.parcels()[0].local_id;
+        let region = ParcelRegion::from_handshake(1 << 22, 2.0, 15_000, false, true);
+        assert_eq!(region.region_flags & (1 << 22), 1 << 22);
+        assert_eq!(region.region_flags & (1 << 9), 1 << 9);
+        let bytes = map
+            .parcel_properties(local_id, &region.element(PrimCounts::default()))
+            .unwrap();
+        let xml = String::from_utf8(bytes).unwrap();
+        assert!(
+            xml.contains("<key>Name</key><string>West</string>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>ParcelPrimBonus</key><real>2</real>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>MaxPrims</key><integer>7</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>RegionPushOverride</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>RegionAllowEnvironmentOverride</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>RegionAllowAccessOverride</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        let taxed = ParcelRegion::from_handshake(0, 1.0, 15_000, true, false);
+        let taxed = map
+            .parcel_properties(local_id, &taxed.element(PrimCounts::default()))
+            .unwrap();
+        let taxed = String::from_utf8(taxed).unwrap();
+        assert!(
+            taxed.contains("<key>RegionAllowAccessOverride</key><boolean>0</boolean>"),
+            "{taxed}"
+        );
+        assert!(
+            taxed.contains("<key>RegionPushOverride</key><boolean>0</boolean>"),
+            "{taxed}"
+        );
+    }
+
+    #[test]
+    fn admitted_groups_tally_owner_group_other_and_simwide() {
+        let alice = uuid::uuid!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        let bob = uuid::uuid!("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        let group = uuid::uuid!("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        let mut west = super::super::Parcel::estate_land(alice, CLAIM);
+        west.group = group;
+        west.name = "West".into();
+        let east = super::super::Parcel::estate_land(alice, CLAIM);
+        let mut map = ParcelMap::empty([16, 16]).unwrap();
+        map.insert(super::super::StoredParcel {
+            data: west,
+            bitmap: vec![0b0001],
+        });
+        map.insert(super::super::StoredParcel {
+            data: east,
+            bitmap: vec![0b0010],
+        });
+        let placed = |owner: Uuid,
+                      group_id: Uuid,
+                      position: [f32; 3],
+                      parts: usize,
+                      state: u8,
+                      flags: u32| {
+            if parts == 0 {
+                return ObjectGroup {
+                    from_item_id: Uuid::nil(),
+                    rez_parameter: None,
+                    parts: Vec::new(),
+                };
+            }
+            let mut root = crate::xml::blank_part();
+            root.owner_id = owner;
+            root.group_id = group_id;
+            root.group_position = position;
+            root.shape.pcode = 9;
+            root.shape.state = state;
+            root.flags = flags;
+            let mut pieces = vec![root];
+            for _ in 1..parts {
+                pieces.push(crate::xml::blank_part());
+            }
+            ObjectGroup {
+                from_item_id: Uuid::nil(),
+                rez_parameter: None,
+                parts: pieces,
+            }
+        };
+        let groups = vec![
+            placed(alice, Uuid::nil(), [1.0, 1.0, 0.0], 2, 0, 0),
+            placed(bob, group, [1.0, 1.0, 0.0], 3, 0, 0),
+            placed(bob, Uuid::nil(), [1.0, 1.0, 0.0], 1, 0, 0),
+            placed(alice, Uuid::nil(), [5.0, 1.0, 0.0], 4, 0, 0),
+            placed(alice, Uuid::nil(), [1.0, 1.0, 0.0], 9, 1, 0),
+            placed(alice, Uuid::nil(), [1.0, 1.0, 0.0], 8, 0, 0x2000_0000),
+            placed(alice, Uuid::nil(), [1.0, 1.0, 0.0], 0, 0, 0),
+            placed(alice, Uuid::nil(), [-1.0, 1.0, 0.0], 5, 0, 0),
+        ];
+        let counts = prim_counts(&map, &groups);
+        let west_id = map.at_metres(1.0, 1.0).unwrap().id;
+        let east_id = map.at_metres(5.0, 1.0).unwrap().id;
+        assert_eq!(
+            counts[&west_id],
+            PrimCounts {
+                owner: 2,
+                group: 3,
+                others: 1,
+                selected: 0,
+                total: 6,
+                simulator: 10,
+            }
+        );
+        assert_eq!(
+            counts[&east_id],
+            PrimCounts {
+                owner: 4,
+                group: 0,
+                others: 0,
+                selected: 0,
+                total: 4,
+                simulator: 10,
+            }
+        );
     }
 
     #[test]

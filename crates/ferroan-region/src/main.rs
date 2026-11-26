@@ -170,7 +170,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         );
     }
     let terrain = load_terrain(&config).await?;
-    let _region_settings = load_stored_settings(&mut config).await?;
+    let region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -248,12 +248,43 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
             }
         }
     }
+    let mut tax_free = false;
+    let mut allow_environment = false;
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
-            Ok(Some(access)) => simulation.apply_estate(access),
+            Ok(Some(access)) => {
+                tax_free = access.tax_free;
+                allow_environment = access.allow_environment_override;
+                simulation.apply_estate(access);
+            }
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!("ferroan-region: estate tables were not read: {error}");
+            }
+        }
+    }
+    if let Some(frame) = &terrain {
+        let object_bonus = region_settings
+            .as_ref()
+            .map(|settings| settings.object_bonus)
+            .unwrap_or(1.0);
+        let parcel_region = ferroan_scene::parcels::ParcelRegion::from_handshake(
+            config.handshake.region_flags,
+            object_bonus,
+            config.object_capacity,
+            tax_free,
+            allow_environment,
+        );
+        match frame.set_parcel_region(parcel_region) {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!(
+                        "ferroan-region: parcel region values were not installed: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel region values were not installed: {error}");
             }
         }
     }

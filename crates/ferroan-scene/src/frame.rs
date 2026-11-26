@@ -260,6 +260,12 @@ enum Request {
         send: ParcelSender,
         reply: oneshot::Sender<()>,
     },
+    /// `RegionSettings.ObjectBonus`, `RegionInfo.ObjectCapacity`, the region
+    /// flags and `EstateSettings.TaxFree` for every later element.
+    ParcelRegion {
+        region: crate::parcels::ParcelRegion,
+        reply: oneshot::Sender<()>,
+    },
     Wake,
     Stop,
 }
@@ -309,6 +315,9 @@ struct Scene {
     local_ids: Arc<LocalIds>,
     parcels: Option<Arc<crate::parcels::ParcelMap>>,
     parcel_out: Option<ParcelSender>,
+    parcel_region: crate::parcels::ParcelRegion,
+    /// Groups admitted at startup. The prim tally reads this set.
+    groups: Arc<Vec<ObjectGroup>>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -404,6 +413,8 @@ impl TerrainFrame {
             local_ids: Arc::clone(&local_ids),
             parcels: parcels.clone(),
             parcel_out: None,
+            parcel_region: crate::parcels::ParcelRegion::default(),
+            groups: Arc::clone(&objects.groups),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -435,6 +446,17 @@ impl TerrainFrame {
     pub fn set_parcel_sender(&self, send: ParcelSender) -> Result<Pending<()>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::ParcelOut { send, reply })?;
+        Ok(answer)
+    }
+
+    /// Install the region values `SendLandProperties` reads. The region calls
+    /// this after settings and the estate are loaded, before logins.
+    pub fn set_parcel_region(
+        &self,
+        region: crate::parcels::ParcelRegion,
+    ) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::ParcelRegion { region, reply })?;
         Ok(answer)
     }
 
@@ -881,6 +903,10 @@ fn answer(
             scene.parcel_out = Some(send);
             let _ = reply.send(());
         }
+        Request::ParcelRegion { region, reply } => {
+            scene.parcel_region = region;
+            let _ = reply.send(());
+        }
         Request::Wake => {}
         Request::Stop => return false,
     }
@@ -1202,12 +1228,19 @@ impl Scene {
         if let Some(avatar) = self.presences.get_mut(&agent) {
             avatar.parcel = Some(id);
         }
-        let Some(element) =
-            parcels.parcel_properties(local_id, &crate::parcels::ParcelPropertiesSend::notify())
-        else {
+        let Some(element) = self.parcel_element(local_id, id) else {
             return;
         };
         self.emit_parcel(agent, &element);
+    }
+
+    /// The element for one parcel: installed region values and the tally of
+    /// admitted groups.
+    fn parcel_element(&self, local_id: i32, parcel_id: Uuid) -> Option<Vec<u8>> {
+        let parcels = self.parcels.as_ref()?;
+        let counts = crate::parcels::prim_counts(parcels, &self.groups);
+        let prims = counts.get(&parcel_id).copied().unwrap_or_default();
+        parcels.parcel_properties(local_id, &self.parcel_region.element(prims))
     }
 
     fn emit_parcel(&self, agent: Uuid, element: &[u8]) {
@@ -1388,9 +1421,7 @@ fn note_parcel_crossings(scene: &mut Scene) {
         if let Some(avatar) = scene.presences.get_mut(&agent) {
             avatar.parcel = Some(id);
         }
-        if let Some(element) =
-            parcels.parcel_properties(local_id, &crate::parcels::ParcelPropertiesSend::notify())
-        {
+        if let Some(element) = scene.parcel_element(local_id, id) {
             scene.emit_parcel(agent, &element);
         }
     }
@@ -2023,6 +2054,8 @@ mod tests {
             local_ids: Arc::default(),
             parcels: None,
             parcel_out: None,
+            parcel_region: crate::parcels::ParcelRegion::default(),
+            groups: Arc::default(),
         }
     }
 
@@ -2209,6 +2242,79 @@ mod tests {
         arm_initial(&mut login, login_agent);
         assert_eq!(login_sent.lock().unwrap().as_slice(), &[arrival]);
         assert!(!feed.take_land_pass());
+    }
+
+    /// The send path reads the installed region and the admitted groups.
+    /// Bonus 2 makes West's max prims 7. Restrict pushing sets the push
+    /// override. The two-part group on West is the owner's count.
+    #[tokio::test]
+    async fn a_west_send_uses_bonus_push_override_and_the_stored_tally() {
+        let parcels = loaded_region_parcels().await;
+        let owner = parcels.at_metres(6.0, 2.0).unwrap().owner;
+        let mut scene = scene_with(&parcels);
+        scene.parcel_region =
+            crate::parcels::ParcelRegion::from_handshake(1 << 22, 2.0, 15_000, false, false);
+        let mut root = crate::xml::blank_part();
+        root.owner_id = owner;
+        root.group_position = [6.0, 2.0, 30.0];
+        root.shape.pcode = 9;
+        let child = crate::xml::blank_part();
+        scene.groups = Arc::new(vec![crate::ObjectGroup {
+            from_item_id: Uuid::nil(),
+            rez_parameter: None,
+            parts: vec![root, child],
+        }]);
+        let sent = record_parcels(&mut scene);
+        let agent = Uuid::from_u128(9);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Pose {
+                agent,
+                pose: pose_at([6.0, 2.0, 30.0]),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        {
+            let avatar = scene.presences.get_mut(&agent).unwrap();
+            avatar.body.set_actor(true);
+            avatar.body.set_child(false);
+        }
+        scene.send_parcel_at(agent);
+        let xml = String::from_utf8(sent.lock().unwrap()[0].clone()).unwrap();
+        assert!(
+            xml.contains("<key>Name</key><string>West</string>"),
+            "{xml}"
+        );
+        // The stored West is 48 m², so bonus 2 is 22. A 16 m² West is 7.
+        assert!(
+            xml.contains("<key>MaxPrims</key><integer>22</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>ParcelPrimBonus</key><real>2</real>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>RegionPushOverride</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>OwnerPrims</key><integer>2</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>TotalPrims</key><integer>2</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>SimWideTotalPrims</key><integer>2</integer>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<key>SelectedPrims</key><integer />"), "{xml}");
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
