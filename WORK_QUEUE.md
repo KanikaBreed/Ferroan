@@ -166,7 +166,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | DONE (this PR) |
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | DONE (this PR) |
 | Q49 | P2.3b1: the animation state machine | DONE (this PR) |
-| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
+| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | DONE (this PR) |
 | Q379 | P2.3e: hide avatars by parcel (`ParcelHideThisAvatar`, `SeeAVs`) | READY after Q50 |
 | Q380 | P2.3f: retry refused inbound posts in order (`AgentAnimation`) | READY after Q50 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |

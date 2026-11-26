@@ -4,6 +4,8 @@
 //! Scenarios for `cargo xtask live run`. Each check uses a reply from the
 //! region. The caller starts and stops the region and supplies the accounts.
 
+mod animations;
+pub use animations::steps as animation_steps;
 pub mod child_view;
 mod material_override;
 #[path = "object_cross.rs"]
@@ -213,6 +215,10 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         }
         Some(Bot::Avatars) => {
             let line = avatars_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Animations) => {
+            let line = animations::run(&http, harness).await?;
             Ok(format!("{line}\nlive: run passed"))
         }
         Some(
