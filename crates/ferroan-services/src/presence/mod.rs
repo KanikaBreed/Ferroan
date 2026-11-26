@@ -31,7 +31,10 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Presence rows and the process-wide in-memory provider used by standalone regions.
+//! Presence rows and the Null, MySQL and PostgreSQL providers.
+
+mod mysql;
+pub use mysql::MySqlPresenceData;
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -338,5 +341,7 @@ impl PresenceStore for NullPresenceData {
 mod postgres;
 pub use postgres::PgPresenceData;
 
+#[cfg(test)]
+mod mysql_tests;
 #[cfg(test)]
 mod tests;
