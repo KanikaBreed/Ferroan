@@ -6,12 +6,14 @@ use std::process::Command;
 use super::*;
 use ferroan_db::{Backend, Pool};
 
-async fn timestamp(pool: &PgPool, session: Uuid) -> Option<String> {
-    sqlx::query_scalar(r#"SELECT "LastSeen"::text FROM presence WHERE "SessionID" = $1"#)
-        .bind(session)
-        .fetch_one(pool)
-        .await
-        .unwrap()
+async fn timestamp(pool: &PgPool, realm: &str, session: Uuid) -> Option<String> {
+    sqlx::query_scalar(&format!(
+        r#"SELECT "LastSeen"::text FROM {realm} WHERE "SessionID" = $1"#
+    ))
+    .bind(session)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 async fn db_clock(pool: &PgPool) -> String {
@@ -24,11 +26,22 @@ async fn db_clock(pool: &PgPool) -> String {
 #[tokio::test]
 async fn postgres_presence_plugins_cross_read() {
     if std::env::var_os("FERROAN_PRESENCE_PG_CROSS").is_none() {
+        eprintln!(
+            "FERROAN_PRESENCE_PG_CROSS is unset; run cargo xtask presence cross postgres for the Pin8 comparison"
+        );
         return;
     }
     let dll = std::env::var_os("FERROAN_PRESENCE_ORACLE").unwrap();
     let connection = std::env::var("FERROAN_PRESENCE_ADO_POSTGRES")
         .expect("set FERROAN_PRESENCE_ADO_POSTGRES for a disposable PostgreSQL database");
+    let db = Pool::connect(Backend::Postgres, &connection).await.unwrap();
+    cross_realm(&db, &dll, false).await;
+    cross_realm(&db, &dll, true).await;
+    db.close().await;
+}
+
+async fn cross_realm(db: &Pool, dll: &std::ffi::OsStr, custom: bool) {
+    let pool = db.postgres().unwrap();
     let base = Uuid::new_v4().as_u128() & !0xff;
     let id = |n| Uuid::from_u128(base | n);
     let (user, first, second, third, secure, home, away, staging, third_secure) = (
@@ -43,10 +56,24 @@ async fn postgres_presence_plugins_cross_read() {
         id(9),
     );
     let ids = id(0).to_string();
+    let mode = if custom { "alternate" } else { "default" };
+    let realm = if custom {
+        format!("PresenceGridB{}", id(0).simple())
+    } else {
+        "Presence".to_owned()
+    };
+    if custom {
+        sqlx::query(&format!(
+            "CREATE TABLE {realm} (LIKE presence INCLUDING ALL)"
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
     let oracle = |phase, stamp: &str| {
         let output = Command::new("dotnet")
-            .arg(&dll)
-            .args(["postgres", phase, &ids[..34], stamp])
+            .arg(dll)
+            .args(["postgres", phase, &ids[..34], stamp, mode])
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -62,11 +89,15 @@ async fn postgres_presence_plugins_cross_read() {
     };
 
     oracle("seed", "");
-    let db = Pool::open(Backend::Postgres, &connection, &["Presence"])
-        .await
-        .unwrap();
-    let pool = db.postgres().unwrap();
-    let store = PgPresenceData::new(pool.clone());
+    db.require_stores(&["Presence"]).await.unwrap();
+    let default_store = PgPresenceData::open(pool.clone()).unwrap();
+    let store = if custom {
+        assert!(PgPresenceData::new(pool.clone(), "invalid realm").is_err());
+        assert!(default_store.get(first).await.unwrap().is_none());
+        PgPresenceData::new(pool.clone(), &realm).unwrap()
+    } else {
+        default_store
+    };
     let partial = |session, region, data| {
         Arc::new(PresenceData::new(user.to_string(), session, region, data))
     };
@@ -75,7 +106,7 @@ async fn postgres_presence_plugins_cross_read() {
     assert_eq!(fresh.region_id(), staging);
     assert_eq!(fresh.data["LastSeen"], "");
     assert_eq!(fresh.data["SecureSessionID"], secure.to_string());
-    assert_eq!(timestamp(pool, first).await, None);
+    assert_eq!(timestamp(pool, &realm, first).await, None);
     assert_eq!(
         store
             .get_by_field("UserID", &user.to_string())
@@ -121,7 +152,7 @@ async fn postgres_presence_plugins_cross_read() {
     let before = db_clock(pool).await;
     oracle("report", "");
     let reported = store.get(first).await.unwrap().unwrap();
-    let reported_time = timestamp(pool, first).await.unwrap();
+    let reported_time = timestamp(pool, &realm, first).await.unwrap();
     assert!((before..=db_clock(pool).await).contains(&reported_time));
     let exact = reported_time;
     assert_eq!(reported.region_id(), away);
@@ -144,10 +175,12 @@ async fn postgres_presence_plugins_cross_read() {
     assert!(store.store(reported).await.unwrap());
     assert!(!store.report_agent(second, Uuid::nil()).await.unwrap());
     assert!(!store.report_agent(id(10), away).await.unwrap());
-    assert_eq!(timestamp(pool, second).await, None);
+    assert_eq!(timestamp(pool, &realm, second).await, None);
     let before = db_clock(pool).await;
     assert!(store.report_agent(second, away).await.unwrap());
-    assert!((before..=db_clock(pool).await).contains(&timestamp(pool, second).await.unwrap()));
+    assert!(
+        (before..=db_clock(pool).await).contains(&timestamp(pool, &realm, second).await.unwrap())
+    );
     oracle("restored-report", &exact);
     assert!(store.get(third).await.unwrap().is_none());
     assert_eq!(
@@ -166,9 +199,14 @@ async fn postgres_presence_plugins_cross_read() {
     assert!(store.get(second).await.unwrap().is_some());
     store.logout_region_agents(away).await.unwrap();
     oracle("after-logout", "");
-    db.close().await;
+    if custom {
+        sqlx::query(&format!("DROP TABLE {realm}"))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
     println!(
-        "presence postgres: both directions match; TB105: Pin8 InvalidCastException, Ferroan restores SQL NULL and the reported microseconds (proposed D84)"
+        "presence postgres: {mode} realm: both directions match; TB105: Pin8 InvalidCastException, Ferroan restores SQL NULL and the reported microseconds (proposed D84)"
     );
     println!(
         "TB114: Pin8 InvalidCastException on LastSeen get/delete, Ferroan matches by typed timestamp (proposed D89)"
@@ -178,12 +216,13 @@ async fn postgres_presence_plugins_cross_read() {
 #[tokio::test]
 async fn postgres_presence_bounds_lookup_but_logs_out_the_whole_region() {
     let Ok(url) = std::env::var("FERROAN_POSTGRES_URL") else {
+        eprintln!("FERROAN_POSTGRES_URL is unset; PostgreSQL Presence lookup bound was not tested");
         return;
     };
     let db = Pool::connect_sqlx_url(&url).await.unwrap();
     db.require_stores(&["Presence"]).await.unwrap();
     let pool = db.postgres().unwrap();
-    let store = PgPresenceData::new(pool.clone());
+    let store = PgPresenceData::open(pool.clone()).unwrap();
     let region = Uuid::new_v4();
     let user = Uuid::new_v4().to_string();
     let mut inserts =
@@ -218,7 +257,10 @@ async fn postgres_presence_bounds_lookup_but_logs_out_the_whole_region() {
     let infinite = store.get(session).await.unwrap().unwrap();
     assert_eq!(infinite.data["LastSeen"], "infinity");
     assert!(store.store(infinite).await.unwrap());
-    assert_eq!(timestamp(pool, session).await.as_deref(), Some("infinity"));
+    assert_eq!(
+        timestamp(pool, "presence", session).await.as_deref(),
+        Some("infinity")
+    );
     assert!(
         matches!(store.get_by_field("UserID", &user).await, Err(PresenceStoreError::Limit(e)) if e.observed == MAX_RESULTS + 1)
     );

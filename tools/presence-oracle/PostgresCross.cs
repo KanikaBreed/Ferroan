@@ -9,12 +9,13 @@ using OpenSim.Data.PGSQL;
 
 static class PostgresCross
 {
-    public static int Run(string phase, string prefix, string expectedStamp)
+    public static int Run(string phase, string prefix, string expectedStamp, bool alternate)
     {
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         string connection = Environment.GetEnvironmentVariable("FERROAN_PRESENCE_ADO_POSTGRES")
             ?? throw new InvalidOperationException("Set FERROAN_PRESENCE_ADO_POSTGRES");
-        var store = new PGSQLPresenceData(connection, "presence");
+        var realm = alternate ? "PresenceGridB" + Guid.Parse(prefix + "00").ToString("N") : "Presence";
+        var store = new PGSQLPresenceData(connection, realm);
         UUID Id(int suffix) => UUID.Parse(prefix + suffix.ToString("x2"));
         var user = Id(1);
         var first = Id(2);
@@ -44,7 +45,7 @@ static class PostgresCross
         {
             using var conn = new NpgsqlConnection(connection);
             conn.Open();
-            using var cmd = new NpgsqlCommand("SELECT \"LastSeen\" FROM presence WHERE \"SessionID\" = @id", conn);
+            using var cmd = new NpgsqlCommand($"SELECT \"LastSeen\" FROM {realm} WHERE \"SessionID\" = @id", conn);
             cmd.Parameters.AddWithValue("id", first.Guid);
             object stamp = cmd.ExecuteScalar();
             if (expectedStamp.Length == 0)

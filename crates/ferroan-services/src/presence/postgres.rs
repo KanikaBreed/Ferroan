@@ -47,18 +47,31 @@ use super::{
 #[derive(Clone)]
 pub struct PgPresenceData {
     pool: PgPool,
+    realm: String,
 }
 
 impl PgPresenceData {
     /// Use the pool for the database with the Presence v4 migration.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn open(pool: PgPool) -> Result<Self, PresenceStoreError> {
+        Self::new(pool, "Presence")
+    }
+
+    /// Use the table named by `[PresenceService] Realm`. Pin8 leaves its
+    /// identifier unquoted, so PostgreSQL folds ASCII capitals to lowercase.
+    pub fn new(pool: PgPool, realm: &str) -> Result<Self, PresenceStoreError> {
+        if !crate::sql_ident(realm) {
+            return Err(PresenceStoreError::Realm);
+        }
+        Ok(Self {
+            pool,
+            realm: realm.to_owned(),
+        })
     }
 }
 
 // sqlx sets DateStyle to ISO on connection. PostgreSQL can represent and
 // re-read every timestamp it stores, including infinity, at full precision.
-const SELECT: &str = r#"SELECT "UserID", "SessionID", "RegionID", "SecureSessionID", "LastSeen"::text AS "LastSeen" FROM presence"#;
+const SELECT: &str = r#"SELECT "UserID", "SessionID", "RegionID", "SecureSessionID", "LastSeen"::text AS "LastSeen""#;
 
 fn read_row(row: &PgRow) -> Result<Arc<PresenceData>, sqlx::Error> {
     let secure: Uuid = row.try_get("SecureSessionID")?;
@@ -127,7 +140,7 @@ impl PresenceStore for PgPresenceData {
                 .get("LastSeen")
                 .map(|v| (!v.is_empty()).then_some(v.as_str()));
             let region = row.region_id();
-            let mut update = QueryBuilder::new(r#"UPDATE presence SET "UserID" = "#);
+            let mut update = QueryBuilder::new(format!(r#"UPDATE {} SET "UserID" = "#, self.realm));
             update
                 .push_bind(&row.user_id)
                 .push(r#", "RegionID" = "#)
@@ -148,9 +161,10 @@ impl PresenceStore for PgPresenceData {
             if update.build().execute(&mut *conn).await?.rows_affected() != 0 {
                 return Ok(true);
             }
-            let mut insert = QueryBuilder::new(
-                r#"INSERT INTO presence ("UserID","RegionID","SessionID","SecureSessionID","LastSeen") VALUES ("#,
-            );
+            let mut insert = QueryBuilder::new(format!(
+                r#"INSERT INTO {} ("UserID","RegionID","SessionID","SecureSessionID","LastSeen") VALUES ("#,
+                self.realm
+            ));
             let mut values = insert.separated(", ");
             values
                 .push_bind(&row.user_id)
@@ -175,7 +189,7 @@ impl PresenceStore for PgPresenceData {
 
     fn get(&self, session: Uuid) -> PresenceFuture<'_, Option<Arc<PresenceData>>> {
         Box::pin(async move {
-            let sql = format!(r#"{SELECT} WHERE "SessionID" = $1"#);
+            let sql = format!(r#"{SELECT} FROM {} WHERE "SessionID" = $1"#, self.realm);
             let row = sqlx::query(&sql)
                 .bind(session)
                 .fetch_optional(&self.pool)
@@ -190,7 +204,7 @@ impl PresenceStore for PgPresenceData {
         value: &'a str,
     ) -> PresenceFuture<'a, Vec<Arc<PresenceData>>> {
         Box::pin(async move {
-            let mut query = QueryBuilder::new(SELECT);
+            let mut query = QueryBuilder::new(format!("{SELECT} FROM {}", self.realm));
             filter(&mut query, field, value)?;
             query.push(" LIMIT ").push_bind((MAX_RESULTS + 1) as i64);
             let rows = query.build().fetch_all(&self.pool).await?;
@@ -201,7 +215,7 @@ impl PresenceStore for PgPresenceData {
 
     fn delete<'a>(&'a self, field: &'a str, value: &'a str) -> PresenceFuture<'a, bool> {
         Box::pin(async move {
-            let mut query = QueryBuilder::new("DELETE FROM presence");
+            let mut query = QueryBuilder::new(format!("DELETE FROM {}", self.realm));
             filter(&mut query, field, value)?;
             Ok(query.build().execute(&self.pool).await?.rows_affected() != 0)
         })
@@ -212,9 +226,10 @@ impl PresenceStore for PgPresenceData {
             if self.get(session).await?.is_none() || region.is_nil() {
                 return Ok(false);
             }
-            Ok(sqlx::query(
-                r#"UPDATE presence SET "RegionID"=$1, "LastSeen"=now() WHERE "SessionID"=$2"#,
-            )
+            Ok(sqlx::query(&format!(
+                r#"UPDATE {} SET "RegionID"=$1, "LastSeen"=now() WHERE "SessionID"=$2"#,
+                self.realm
+            ))
             .bind(region)
             .bind(session)
             .execute(&self.pool)
@@ -226,19 +241,23 @@ impl PresenceStore for PgPresenceData {
 
     fn logout_region_agents(&self, region: Uuid) -> PresenceFuture<'_, ()> {
         Box::pin(async move {
-            sqlx::query(r#"DELETE FROM presence WHERE "RegionID"=$1"#)
-                .bind(region)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(&format!(
+                r#"DELETE FROM {} WHERE "RegionID"=$1"#,
+                self.realm
+            ))
+            .bind(region)
+            .execute(&self.pool)
+            .await?;
             Ok(())
         })
     }
 
     fn verify_agent(&self, agent: Uuid, secure_session: Uuid) -> PresenceFuture<'_, bool> {
         Box::pin(async move {
-            let user: Option<String> = sqlx::query_scalar(
-                r#"SELECT "UserID" FROM presence WHERE "SecureSessionID"=$1 LIMIT 1"#,
-            )
+            let user: Option<String> = sqlx::query_scalar(&format!(
+                r#"SELECT "UserID" FROM {} WHERE "SecureSessionID"=$1 LIMIT 1"#,
+                self.realm
+            ))
             .bind(secure_session)
             .fetch_optional(&self.pool)
             .await?;

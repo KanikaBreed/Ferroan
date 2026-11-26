@@ -91,7 +91,7 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 
 ## Presence rows
 
-`presence::PgPresenceData` uses the PostgreSQL Presence v4 table. A store with an existing session ID updates the supplied fields. A new session defaults to a zero secure session ID and SQL NULL for LastSeen. The row exposes NULL as an empty string and preserves the microseconds of a non-null timestamp on re-store (TB105, proposed D84). A successful region report sets LastSeen from the database clock.
+`presence::PgPresenceData` opens `Presence` by default. Pass `[PresenceService] Realm` to `new` for a different PostgreSQL v4 table. PostgreSQL folds the validated identifier to lowercase as in Pin8. A store with an existing session ID updates the supplied fields. A new session defaults to a zero secure session ID and SQL NULL for LastSeen. The row exposes NULL as an empty string and preserves the microseconds of a non-null timestamp on re-store (TB105, proposed D84). A successful region report sets LastSeen from the database clock.
 
 The service can use `dyn PresenceStore` for all seven asynchronous operations. A store returns `Ok(false)` when it writes nothing. Bound and database errors have distinct variants. After a successful region report the service can call `set_region_id` on its cached row, including a detached row fetched from SQL.
 
