@@ -25,6 +25,7 @@ pub const REGION_DISPATCH_CHILDREN: &str = "region.dispatch-children";
 pub const REGION_OVERLAPPING_LOGINS: &str = "region.overlapping-logins";
 pub const UDP_CIRCUIT_INBOX: &str = "udp.circuit-inbox";
 pub const UDP_PENDING_LOGINS: &str = "udp.pending-logins";
+pub const UDP_PENDING_LOGIN_BURST: &str = "udp.pending-login-burst";
 pub const UDP_DATAGRAM: &str = "udp.datagram";
 pub const UDP_ZERO_EXPANSION: &str = "udp.zero-expansion";
 pub const UDP_PENDING_TELEPORTS: &str = "udp.pending-teleports";

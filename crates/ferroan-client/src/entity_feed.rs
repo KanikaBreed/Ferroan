@@ -147,6 +147,11 @@ pub trait EntityUpdates: Send + Sync {
     /// At most `max` waiting avatar packets, the oldest first, in the order
     /// the region sent them. The rest wait for a later pass.
     fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket>;
+    /// `SendInitialData` asked for another terrain and overlay pass.
+    /// A feed that never reaches that gate leaves this false.
+    fn take_land_pass(&self) -> bool {
+        false
+    }
 }
 
 /// The feed and the wake an offer notifies.
