@@ -137,6 +137,21 @@ pub fn run() -> ExitCode {
     ) {
         return ExitCode::FAILURE;
     }
+    let new_york_ado = postgres_connection(Some("America/New_York"));
+    if !cargo_zone(
+        "postgres PGTZ=NotAZone",
+        &zone_dll,
+        "postgres",
+        &new_york_ado,
+        &postgres_zone,
+        "America/New_York",
+        &[
+            ("PGTZ", "NotAZone"),
+            ("FERROAN_ZONE_BAD_ADO", postgres_ado.as_str()),
+        ],
+    ) {
+        return ExitCode::FAILURE;
+    }
     if !cargo_zone(
         "postgres Timezone=Europe/Berlin",
         &zone_dll,
@@ -355,6 +370,68 @@ pub fn run() -> ExitCode {
     ) {
         return ExitCode::FAILURE;
     }
+    if let Err(error) = psql(
+        "\
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'OpenSim') THEN
+    CREATE ROLE \"OpenSim\" LOGIN PASSWORD 'opensim';
+  END IF;
+END $$;
+GRANT CONNECT ON DATABASE ferroan TO \"OpenSim\";
+ALTER ROLE \"OpenSim\" SET timezone TO 'Asia/Tokyo';
+",
+    ) {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let opensim_ado = named_connection("OpenSim", "opensim", None);
+    if !cargo_named_role(
+        "postgres role OpenSim timezone=Asia/Tokyo",
+        &opensim_ado,
+        &tokyo,
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql(
+        "REVOKE SELECT ON pg_catalog.pg_database FROM PUBLIC;\n\
+         REVOKE SELECT ON pg_catalog.pg_roles FROM PUBLIC",
+    ) {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_named_role(
+        "postgres role OpenSim with pg_database and pg_roles revoked",
+        &opensim_ado,
+        &tokyo,
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql(
+        "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_stat_get_activity(integer) FROM PUBLIC;\n\
+         GRANT SELECT ON pg_catalog.pg_database TO PUBLIC",
+    ) {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_named_role(
+        "postgres role OpenSim with pg_stat_get_activity revoked",
+        &opensim_ado,
+        &tokyo,
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
     if let Err(error) = psql("REVOKE SELECT ON pg_catalog.pg_db_role_setting FROM PUBLIC") {
         eprintln!("session-zone: {error}");
         return ExitCode::FAILURE;
@@ -522,6 +599,43 @@ fn cargo_zone(
         "--",
         "--nocapture",
     ]);
+    println!(
+        "$ cargo test -p ferroan-services --lib session_zone_csharp_reads_ferroan_rows ({label})"
+    );
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("session-zone: {label} exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("session-zone: could not run cargo: {error}");
+            false
+        }
+    }
+}
+
+fn cargo_named_role(label: &str, ado: &str, zone: &Measured) -> bool {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(crate::repo_root())
+        .env_remove("FERROAN_MYSQL_URL")
+        .env_remove("FERROAN_POSTGRES_URL")
+        .env_remove("DATABASE_URL")
+        .env_remove("PGTZ")
+        .env("FERROAN_ZONE_ROLE_ONLY", "1")
+        .env("FERROAN_ZONE_ROLE_ADO", ado)
+        .env("FERROAN_ZONE_ROLE_NAME", &zone.name)
+        .env("FERROAN_ZONE_ROLE_OFFSET", &zone.offset)
+        .args([
+            "test",
+            "-p",
+            "ferroan-services",
+            "--lib",
+            "session_zone_csharp_reads_ferroan_rows",
+            "--",
+            "--nocapture",
+        ]);
     println!(
         "$ cargo test -p ferroan-services --lib session_zone_csharp_reads_ferroan_rows ({label})"
     );
@@ -890,6 +1004,17 @@ fn mysql_connection() -> String {
 fn postgres_connection(timezone: Option<&str>) -> String {
     let mut text = format!(
         "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
+    );
+    if let Some(timezone) = timezone {
+        text.push_str(";Timezone=");
+        text.push_str(timezone);
+    }
+    text
+}
+
+fn named_connection(username: &str, password: &str, timezone: Option<&str>) -> String {
+    let mut text = format!(
+        "Host=127.0.0.1;Port={POSTGRES_PORT};Database=ferroan;Username={username};Password={password};SSL Mode=Disable"
     );
     if let Some(timezone) = timezone {
         text.push_str(";Timezone=");
