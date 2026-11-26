@@ -290,7 +290,7 @@ async fn read_memberships(
     let mut seen = HashSet::new();
     let mut group_ids = Vec::new();
     for text in &memberships {
-        let id = parse_group(text)?;
+        let id = parse_uuid(text);
         if seen.insert(id) {
             // C# looks the group up by UUID.ToString(), which is lowercase.
             group_ids.push(id.to_string());
@@ -397,20 +397,20 @@ fn assemble(
 ) -> Result<BTreeMap<Uuid, u64>, GridError> {
     let mut by_group = HashMap::new();
     for (group_id, owner) in groups {
-        let id = parse_group(&group_id)?;
+        let id = parse_uuid(&group_id);
         by_group.entry(id).or_insert_with(|| StoredGroup {
-            owner: parse_loose(&owner),
+            owner: parse_uuid(&owner),
             roles: HashMap::new(),
         });
     }
     for (group_id, role_id, powers) in roles {
-        let id = parse_group(&group_id)?;
+        let id = parse_uuid(&group_id);
         let Some(group) = by_group.get_mut(&id) else {
             continue;
         };
         group
             .roles
-            .entry(parse_loose(&role_id))
+            .entry(parse_uuid(&role_id))
             .or_insert(parse_powers(&powers));
     }
     let mut held_by_group: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -419,13 +419,13 @@ fn assemble(
             continue;
         }
         held_by_group
-            .entry(parse_group(&group_id)?)
+            .entry(parse_uuid(&group_id))
             .or_default()
-            .push(parse_loose(&role_id));
+            .push(parse_uuid(&role_id));
     }
     let mut result = BTreeMap::new();
     for group_text in memberships {
-        let group = parse_group(group_text)?;
+        let group = parse_uuid(group_text);
         let Some(stored) = by_group.get(&group) else {
             continue;
         };
@@ -452,13 +452,17 @@ fn powers_of(held: &[Uuid], roles: &HashMap<Uuid, Option<u64>>, owner: Uuid) -> 
     powers
 }
 
-fn parse_group(text: &str) -> Result<Uuid, GridError> {
-    text.parse().map_err(|_| GridError::InvalidReply)
-}
-
-/// `UUID.TryParse` failure is the nil id (`OwnerRoleOf`, and a role id on the row).
-fn parse_loose(text: &str) -> Uuid {
-    text.parse().unwrap_or(Uuid::nil())
+/// OpenMetaverse `UUID.TryParse`: dashed or compact hex, with ASCII space
+/// padding. A failure is nil, which drops that membership when no group row
+/// has that id. A tab, braces and `urn:uuid:` fail.
+fn parse_uuid(text: &str) -> Uuid {
+    let text = text.trim_matches(' ');
+    if matches!(text.len(), 32 | 36)
+        && let Ok(id) = Uuid::parse_str(text)
+    {
+        return id;
+    }
+    Uuid::nil()
 }
 
 /// `UInt64.TryParse` with `NumberStyles.Integer`: surrounding spaces, no sign.
@@ -1060,24 +1064,67 @@ mod tests {
         assert!(client.memberships(agent).await.unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn an_unparsable_group_id_is_an_invalid_reply() {
+    #[test]
+    fn uuid_text_follows_try_parse() {
+        let east = Uuid::from_u128(0xa);
+        assert_eq!(parse_uuid(" 00000000-0000-0000-0000-00000000000a"), east);
+        assert_eq!(parse_uuid("00000000-0000-0000-0000-00000000000a "), east);
+        assert_eq!(parse_uuid("0000000000000000000000000000000a"), east);
+        assert_eq!(parse_uuid("00000000-0000-0000-0000-00000000000A"), east);
+        assert!(parse_uuid("junk").is_nil());
+        assert!(parse_uuid("{00000000-0000-0000-0000-00000000000a}").is_nil());
+        assert!(parse_uuid("urn:uuid:00000000-0000-0000-0000-00000000000a").is_nil());
+        assert!(parse_uuid("\t00000000-0000-0000-0000-00000000000a").is_nil());
+    }
+
+    async fn seeded_member(extra: &str) -> BTreeMap<Uuid, u64> {
         let scratch = Scratch::new();
         let db = scratch.groups("groups.db");
-        let agent = Uuid::from_u128(0xcd);
         apply_sql(
             &db,
-            &format!(
-                "INSERT INTO os_groups_membership(GroupID, PrincipalID, SelectedRoleID)
-                 VALUES ('not-a-uuid', '{agent}', '00000000-0000-0000-0000-000000000000')"
-            ),
+            include_str!("../../../fixtures/group-memberships/seed.sql"),
         )
         .await;
+        if !extra.is_empty() {
+            apply_sql(&db, extra).await;
+        }
         let client = GroupsClient::from_config(&local_ini(&connection(&db))).unwrap();
-        assert!(matches!(
-            client.memberships(agent).await,
-            Err(GridError::InvalidReply)
-        ));
+        client.memberships(Uuid::from_u128(1)).await.unwrap()
+    }
+
+    fn assert_pin8_member(map: &BTreeMap<Uuid, u64>) {
+        assert_eq!(map, &captured_map(MEMBER));
+        assert_eq!(map[&Uuid::from_u128(0xa)], 33_554_440);
+        assert_eq!(map[&Uuid::from_u128(0xb)], 0);
+    }
+
+    #[tokio::test]
+    async fn a_junk_group_id_row_is_skipped() {
+        let member = "00000000-0000-0000-0000-000000000001";
+        let junk_membership = format!(
+            "INSERT INTO os_groups_membership(GroupID, PrincipalID, SelectedRoleID)
+             VALUES ('junk', '{member}', '00000000-0000-0000-0000-000000000000')"
+        );
+        let junk_held = format!(
+            "INSERT INTO os_groups_rolemembership(GroupID, RoleID, PrincipalID)
+             VALUES ('junk', '00000000-0000-0000-0000-000000000000', '{member}')"
+        );
+        assert_pin8_member(&seeded_member(&junk_membership).await);
+        assert_pin8_member(&seeded_member(&junk_held).await);
+        assert_pin8_member(&seeded_member(&format!("{junk_membership}; {junk_held}")).await);
+
+        let padded = format!(
+            "UPDATE os_groups_membership SET GroupID = ' 00000000-0000-0000-0000-00000000000a'
+             WHERE GroupID = '00000000-0000-0000-0000-00000000000a' AND PrincipalID = '{member}'"
+        );
+        assert_pin8_member(&seeded_member(&padded).await);
+
+        let braced = format!(
+            "UPDATE os_groups_membership SET GroupID = '{{00000000-0000-0000-0000-00000000000a}}'
+             WHERE GroupID = '00000000-0000-0000-0000-00000000000a' AND PrincipalID = '{member}'"
+        );
+        let map = seeded_member(&braced).await;
+        assert_eq!(map, BTreeMap::from([(Uuid::from_u128(0xb), 0)]));
     }
 
     #[tokio::test]
