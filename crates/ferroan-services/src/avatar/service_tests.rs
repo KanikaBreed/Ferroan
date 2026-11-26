@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-struct CopiedStore(PathBuf);
+pub(super) struct CopiedStore(PathBuf);
 
 impl CopiedStore {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("ferroan-avatar-http-{}", Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
@@ -20,7 +20,7 @@ impl CopiedStore {
         Self(dir)
     }
 
-    fn path(&self) -> PathBuf {
+    pub(super) fn path(&self) -> PathBuf {
         self.0.join("Avatar.db")
     }
 }
