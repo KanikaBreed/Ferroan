@@ -4,6 +4,7 @@
 //! Scenarios for `cargo xtask live run`. Each check uses a reply from the
 //! region. The caller starts and stops the region and supplies the accounts.
 
+pub mod child_view;
 #[path = "object_cross.rs"]
 mod object_cross;
 mod observer;

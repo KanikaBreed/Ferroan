@@ -13,9 +13,9 @@ pub(crate) fn check(root: &Path) -> bool {
     match fs::read_to_string(root.join("tools/bot/src/scenario.rs")) {
         Ok(text) => match function_body(&text, "async fn enter_with_throttle(") {
             Some(enter) => match (enter.find("before_login"), enter.find("login::login")) {
-                (Some(hook), Some(call)) if hook < call => {}
+                (Some(hook), Some(call)) if hook < call && text.matches("login::login(").count() == 1 => {}
                 _ => problems.push(
-                    "tools/bot/src/scenario.rs enter_with_throttle must call before_login before login::login"
+                    "tools/bot/src/scenario.rs enter_with_throttle must call before_login before the sole login::login call"
                         .to_string(),
                 ),
             },

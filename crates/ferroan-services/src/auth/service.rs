@@ -46,7 +46,7 @@
 
 use uuid::Uuid;
 
-use super::hash::{self, ZERO_KEY};
+use super::hash;
 use super::model::{AuthKind, AuthRow};
 use super::store::{AuthStore, StoreError};
 
@@ -71,19 +71,7 @@ impl AuthService {
     ) -> Result<bool, StoreError> {
         let salt = hash::new_salt();
         let hashed = hash::stored_hash(password, &salt);
-        let mut row = match self.store.get(principal).await? {
-            Some(row) => row,
-            None => AuthRow {
-                principal_id: principal,
-                password_hash: String::new(),
-                password_salt: String::new(),
-                web_login_key: ZERO_KEY.to_string(),
-                account_type: "UserAccount".to_string(),
-            },
-        };
-        row.password_hash = hashed;
-        row.password_salt = salt;
-        let stored = self.store.store(&row).await?;
+        let stored = self.store.set_password(principal, hashed, salt).await?;
         if stored {
             tracing::info!("authentication: set password for principal {principal}");
         } else {
