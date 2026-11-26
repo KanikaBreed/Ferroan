@@ -112,12 +112,19 @@ static class BakesCases
                 Send("empty file", HttpMethod.Post, route, []);
                 Send("read empty file", HttpMethod.Get, route);
 
-                string json = JsonSerializer.Serialize(new { pin, observations },
+                // A nonportable leaf entirely within the cache, to check D98 independently.
+                const string nonportable = "/bakes/abcdef1234:fixture";
+                using var portability = client.GetAsync(nonportable).GetAwaiter().GetResult();
+                var nonportableRead = new {
+                    target = nonportable, status = (int)portability.StatusCode,
+                    reply = portability.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+                };
+                string json = JsonSerializer.Serialize(new { pin, observations, nonportableRead },
                     new JsonSerializerOptions { WriteIndented = true }).ReplaceLineEndings("\n") + "\n";
                 if (action == "generate") File.WriteAllText(path, json);
                 else if (action != "verify" || File.ReadAllText(path).ReplaceLineEndings("\n") != json)
                     throw new InvalidDataException("XBakes HTTP, command or stored file differs");
-                System.Console.WriteLine($"XBakes: {observations.Count} Pin8 observations match");
+                System.Console.WriteLine($"XBakes: {observations.Count} observations and the nonportable-name read match Pin8");
                 return 0;
             }
             finally { server.Stop(true); }

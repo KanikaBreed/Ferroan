@@ -251,5 +251,10 @@
         }
       ]
     }
-  ]
+  ],
+  "nonportableRead": {
+    "target": "/bakes/abcdef1234:fixture",
+    "status": 200,
+    "reply": ""
+  }
 }

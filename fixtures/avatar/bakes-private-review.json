@@ -1,0 +1,17 @@
+{
+  "pin": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "issue": "TB132",
+  "provenance": "Private maintainer review, 25 November 2026. Request identifiers and filesystem paths redacted.",
+  "pin8": {
+    "postStatus": 200,
+    "writeOutsideBaseDirectory": true,
+    "getStatus": 200,
+    "readBackPostedBytes": true
+  },
+  "ferroanPolicy": {
+    "decision": "D98",
+    "postStatus": 500,
+    "getStatus": 500,
+    "fileAccess": false
+  }
+}

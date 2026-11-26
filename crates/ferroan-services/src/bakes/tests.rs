@@ -108,6 +108,46 @@ async fn xbakes_replies_commands_and_files_match_pin8() {
     }
 }
 
+#[tokio::test]
+async fn nonportable_bake_ids_are_refused_before_file_access() {
+    let dir = Directory::new();
+    let cache = Bakes::configured(&config(&dir.0), 8003).unwrap().unwrap();
+    let router = cache.clone().into_router();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../../fixtures/avatar/bakes.json")).unwrap();
+    let pin = &fixture["nonportableRead"];
+    assert_eq!(pin["status"], 200, "revisit D98 if Pin8 refuses this name");
+    assert_eq!(pin["reply"], "");
+    let target = pin["target"].as_str().unwrap();
+
+    // Test path markers as individual components, without a reusable request.
+    assert!(!portable_name(
+        std::path::Component::ParentDir
+            .as_os_str()
+            .to_str()
+            .unwrap()
+    ));
+    assert!(!portable_name("."));
+    for name in ["NUL", "con.txt", "lpt2", "name."] {
+        assert!(!portable_name(name));
+    }
+    // The leaf is otherwise portable. Only the derived shard is unsuitable.
+    assert!(cache.path("abcdefLPT2example").is_none());
+    for route in [target, "/bakes/abcdefLPT2example"] {
+        for method in [Method::GET, Method::POST] {
+            let request = Request::builder()
+                .method(method)
+                .uri(route)
+                .body(Body::from("fixture"))
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(to_bytes(response.into_body(), 32).await.unwrap().is_empty());
+        }
+    }
+    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+}
+
 #[test]
 fn full_ini_keeps_xbakes_opt_in_and_honours_transport_settings() {
     let mut c = config(Path::new("bakes"));

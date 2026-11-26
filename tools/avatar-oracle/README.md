@@ -21,3 +21,5 @@ cargo xtask avatar cross
 ## XBakes
 
 Run `cargo xtask avatar bakes-generate` or `cargo xtask avatar bakes-verify` under the shared live lock with a free port base and `UseSharedCompilation=false`. Each run starts a loopback Pin8 HTTP server and a fresh file cache. The region module posts a synthetic texture, and the oracle checks that the first file contains exactly the captured upload. HTTP replies and files are recorded directly as base64. The oversize probe uses `Expect: 100-continue` so the reference can reject a declared length one byte over its parser limit before the body is sent. [Fixture](../../fixtures/avatar/bakes.json)
+
+The extra `nonportableRead` observation uses an in-cache filename and records the actual Pin8 GET status and bytes. [Private review summary](../../fixtures/avatar/bakes-private-review.json) records the separate TB132 result supplied by the reviewer. The private request details are omitted. [D98](../../docs/DECISIONS.md) records the Ferroan policy.
