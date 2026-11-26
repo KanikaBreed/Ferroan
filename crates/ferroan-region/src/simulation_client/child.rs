@@ -52,8 +52,9 @@ pub struct AgentPosition {
 }
 
 impl AcceptedAgent {
-    /// Build a fresh circuit for a visible neighbour while the viewer remains
-    /// rooted here. Only the current height carries into the new appearance.
+    /// Build a circuit for a visible neighbour while the viewer remains rooted
+    /// here. `caps_path` is the seed the child book stored for this destination.
+    /// Only the current height carries into the new appearance.
     pub fn visible_child_circuit(
         &self,
         home: &RegionEnd,
@@ -61,13 +62,14 @@ impl AcceptedAgent {
         position: [f32; 3],
         draw_distance: f32,
         height: f32,
+        caps_path: &str,
     ) -> Circuit {
         let offset = |source: u32, dest: u32| (i64::from(source) - i64::from(dest)) as f32;
         Circuit {
             agent_id: self.expect.agent_id,
             base_folder: Uuid::nil(),
             inventory_folder: Uuid::nil(),
-            caps_path: Uuid::new_v4().to_string(),
+            caps_path: caps_path.to_owned(),
             children_seeds: Vec::new(),
             child: true,
             circuit_code: self.expect.circuit_code,

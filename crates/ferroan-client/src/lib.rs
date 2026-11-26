@@ -30,15 +30,18 @@ mod throttle;
 pub use appearance::{
     AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
 };
-pub use arrival::{ArrivalConfig, LandLayer};
+pub use arrival::{
+    ArrivalConfig, LandLayer, ParcelOverlayChunk, VIA_LOGIN, land_at_complete, land_at_initial,
+};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,
     CapsServer, UploaderRoutes,
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, RootArrival, SceneAnswer, SceneCall,
-    SceneDeparture, SceneMove, SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
+    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, RootArrival,
+    SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply, SceneResult,
+    TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
     AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,

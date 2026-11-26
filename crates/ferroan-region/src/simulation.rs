@@ -82,7 +82,7 @@ use std::{
     io::Read,
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -103,7 +103,8 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{
-    CapsError, CapsRegistry, CircuitExpect, CircuitStop, ROOT_WAIT, ReturnPose, ReturnSlot,
+    CapsError, CapsRegistry, CircuitExpect, CircuitServer, CircuitStop, LoginReservation,
+    ROOT_WAIT, ReturnPose, ReturnSlot,
 };
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
@@ -253,8 +254,14 @@ pub struct SimulationState {
     objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
     /// The frame, when this process has one. Child hops skip its physics tick.
     scene: Option<Arc<ferroan_scene::TerrainFrame>>,
-    /// In-view child this root opened on a neighbour. Logout closes it.
-    open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
+    /// The UDP listener, once `serve` has bound it. Accept reserves the
+    /// circuit code there, before the group and avatar lookups.
+    circuit: Arc<OnceLock<CircuitServer>>,
+    /// `LoginConnectWaitSeconds`. A reserved pending login lasts until the
+    /// session opens or this long after accept. Zero means no connect deadline.
+    login_connect_wait: Duration,
+    /// Child destinations and seeds for each root circuit generation.
+    children: Arc<crate::children::ChildBook>,
 }
 
 struct ActiveSession {
@@ -307,6 +314,8 @@ pub struct AcceptedAgent {
     pub via_login: bool,
     pub client_ip: String,
     pub service_session_id: String,
+    /// `TeleportFlags` from the accepted login, including bits other than ViaLogin.
+    pub teleport_flags: u32,
     pub viewer: String,
     pub channel: String,
     pub mac: String,
@@ -322,6 +331,9 @@ pub struct AcceptedAgent {
     pub supports_pbr: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
+    /// Keeps this login's pending `UseCircuitCode` until the session opens
+    /// or the connect wait ends. Drop releases it.
+    _circuit_hold: Option<LoginReservation>,
     // Drop last, after the UDP serve, frame removal, service writes and generation lease.
     _logout_done: watch::Sender<()>,
 }
@@ -403,6 +415,9 @@ impl AcceptedAgent {
             session.root = true;
             session.set_child_place(None);
             session.slot.note_rooted();
+            // An in-view return makes this generation the root again. The
+            // neighbour it left is an ordinary open child, so logout closes it.
+            self._lease.children.release_promoted(self._lease.agent_id);
             publish_agents(&sessions, &self._lease.meters);
         }
     }
@@ -457,7 +472,7 @@ struct SessionLease {
     meters: Arc<RegionMeters>,
     departed: Arc<AtomicBool>,
     rooted_when_replaced: Arc<AtomicBool>,
-    open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
+    children: Arc<crate::children::ChildBook>,
 }
 
 impl Drop for SessionLease {
@@ -469,14 +484,11 @@ impl Drop for SessionLease {
             .sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        self.children.end_generation(self.agent_id, self.generation);
         if sessions
             .get(&self.agent_id)
             .is_some_and(|session| session.generation == self.generation)
         {
-            self.open_children
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .remove(&self.agent_id);
             self.caps.clear_agent(self.agent_id);
             if let Some(session) = sessions.remove(&self.agent_id) {
                 session.slot.close();
@@ -520,9 +532,17 @@ impl SimulationState {
             meters,
             releases: Arc::new(Mutex::new(HashMap::new())),
             objects: Arc::new(Vec::new()),
-            open_children: Arc::new(Mutex::new(HashMap::new())),
+            children: Arc::new(crate::children::ChildBook::new()),
             scene: None,
+            circuit: Arc::new(OnceLock::new()),
+            login_connect_wait: config.login_connect_wait,
         }
+    }
+
+    /// Point admission at the listener that will serve the accepted login.
+    /// A second call keeps the first listener.
+    pub fn bind_circuit(&self, circuit: CircuitServer) {
+        let _ = self.circuit.set(circuit);
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -728,6 +748,8 @@ impl SimulationState {
         let last_name = fields.last_name.clone();
         let agent_id = fields.agent_id;
         let generation = Uuid::new_v4();
+        self.children
+            .attach(fields.agent_id, generation, fields.session_id);
         let departed = Arc::new(AtomicBool::new(false));
         let (cancel, cancelled) = oneshot::channel();
         let (logout_done, logout_wait) = watch::channel(());
@@ -768,20 +790,33 @@ impl SimulationState {
             meters: self.meters.clone(),
             departed,
             rooted_when_replaced,
-            open_children: self.open_children.clone(),
+            children: Arc::clone(&self.children),
         };
         let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
+        let accepted_at = tokio::time::Instant::now();
+        let expect = CircuitExpect {
+            agent_id: fields.agent_id,
+            session_id: fields.session_id,
+            circuit_code: fields.circuit_code,
+            region_id: self.region_id,
+        };
+        // Before the group lookup, the avatar lookup and the frame attach.
+        // Those can outlast the 60 second pending cache. The hold keeps this
+        // code until the session opens or the connect wait ends.
+        let circuit_hold = self.circuit.get().map(|circuit| {
+            let until = if self.login_connect_wait.is_zero() {
+                None
+            } else {
+                Some(accepted_at + self.login_connect_wait)
+            };
+            circuit.reserve_login(expect, until)
+        });
         let accepted = AcceptedAgent {
             _logout_done: logout_done,
             predecessor,
-            accepted_at: tokio::time::Instant::now(),
-            expect: CircuitExpect {
-                agent_id: fields.agent_id,
-                session_id: fields.session_id,
-                circuit_code: fields.circuit_code,
-                region_id: self.region_id,
-            },
+            accepted_at,
+            expect,
             secure_session_id: fields.secure_session_id,
             caps_path: fields.caps_path,
             start_pos: fields.start_pos,
@@ -790,6 +825,7 @@ impl SimulationState {
             via_login: fields.via_login,
             client_ip: fields.client_ip,
             service_session_id: fields.service_session_id,
+            teleport_flags: fields.teleport_flags,
             viewer: fields.viewer,
             channel: fields.channel,
             mac: fields.mac,
@@ -803,6 +839,7 @@ impl SimulationState {
             supports_pbr,
             cancelled,
             _lease: lease,
+            _circuit_hold: circuit_hold,
         };
         // A receiver dropped after reservation may drop this lease in send().
         // Release the admission lock first so that cleanup cannot deadlock.
@@ -1001,10 +1038,8 @@ impl SimulationState {
         let Some(session) = sessions.get(&agent) else {
             return;
         };
-        self.open_children
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&agent);
+        let generation = session.generation;
+        self.children.end_generation(agent, generation);
         session.departed.store(true, Ordering::Release);
         let slot = session.slot.clone();
         self.caps.clear_agent(agent);
@@ -1021,14 +1056,7 @@ impl SimulationState {
         let Some(frame) = &self.scene else {
             return;
         };
-        let known_by = self
-            .open_children
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .iter()
-            .filter(|(other, child)| **other != agent && child.region_id == end.region_id)
-            .map(|(other, _)| *other)
-            .collect();
+        let known_by = self.children.known_by(end.region_id, agent);
         let away = ferroan_scene::MovedAway { near, known_by };
         let done = match frame.moved_away(agent, away) {
             Ok(pending) => pending.wait().await,
@@ -1039,12 +1067,72 @@ impl SimulationState {
         }
     }
 
-    /// Remember a neighbour child that stays in view. A later hop replaces it.
-    pub fn note_open_child(&self, agent: Uuid, end: RegionEnd) {
-        self.open_children
+    /// The root circuit generation admission and the hop share.
+    pub fn root_generation(&self, agent: Uuid) -> Option<Uuid> {
+        self.generation_of(agent)
+    }
+
+    /// Claim one child destination for `generation`.
+    /// The returned seed is the admission POST's caps path. `Existing` means
+    /// the POST is already owned. The caller passes this same generation to
+    /// [`Self::finish_child`] or [`Self::refuse_child`].
+    pub fn claim_child(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+    ) -> crate::children::Claim {
+        self.children.claim(agent, generation, end)
+    }
+
+    /// The neighbour refused that destination. No viewer events follow.
+    pub fn refuse_child(&self, agent: Uuid, generation: Uuid, region: Uuid) {
+        self.children.refuse(agent, generation, region);
+    }
+
+    /// The admission POST failed after the seed was stored. Before logout the
+    /// claim is dropped, as a refusal is. After logout the child is closed.
+    pub fn fail_child(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        region: Uuid,
+    ) -> crate::children::Admission {
+        self.children.failed(agent, generation, region)
+    }
+
+    /// The admission POST finished for the generation that claimed it.
+    pub fn finish_child(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        region: Uuid,
+    ) -> crate::children::Admission {
+        self.children.accepted(agent, generation, region)
+    }
+
+    /// Caps path already stored for this root's current generation, if any.
+    pub fn child_seed(&self, agent: Uuid, region: Uuid) -> Option<String> {
+        self.generation_of(agent)?;
+        self.children.seed(agent, region)
+    }
+
+    /// The in-view hop now owns this destination. Logout does not close it
+    /// until this generation is root again. A later admission completion
+    /// announces once.
+    pub fn promote_child(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
+        if self.generation_of(agent).is_none() {
+            return;
+        }
+        self.children.promote(agent, end, seed);
+    }
+
+    fn generation_of(&self, agent: Uuid) -> Option<Uuid> {
+        self.sessions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(agent, end);
+            .get(&agent)
+            .map(|session| session.generation)
     }
 
     /// CloseAgent. The session stays so a root still logs Presence out.
@@ -1065,12 +1153,15 @@ impl SimulationState {
         }
     }
 
-    /// The neighbour logout should close, once.
-    pub fn take_open_child(&self, agent: Uuid) -> Option<RegionEnd> {
-        self.open_children
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&agent)
+    /// Open children logout should close, once each. A pending admission stays
+    /// until its POST finishes, and then closes if logout already won.
+    pub fn take_open_children(&self, agent: Uuid) -> Vec<RegionEnd> {
+        self.children.begin_logout(agent)
+    }
+
+    /// Children a replaced root left for one close each, with that root's session.
+    pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
+        self.children.take_staged_closes(agent)
     }
 }
 
@@ -1753,6 +1844,8 @@ struct AgentFields {
     via_login: bool,
     client_ip: String,
     service_session_id: String,
+    /// The full `teleport_flags` word. ViaLogin is one bit of it.
+    teleport_flags: u32,
     viewer: String,
     channel: String,
     mac: String,
@@ -1849,6 +1942,7 @@ impl AgentFields {
             via_login,
             client_ip: optional_string(args, "client_ip"),
             service_session_id: optional_string(args, "service_session_id"),
+            teleport_flags: flags,
             viewer: optional_string(args, "viewer"),
             channel: optional_string(args, "channel"),
             mac: optional_string(args, "mac"),
@@ -2492,6 +2586,7 @@ mod tests {
             via_login: true,
             client_ip: String::new(),
             service_session_id: String::new(),
+            teleport_flags: VIA_LOGIN,
             viewer: String::new(),
             channel: String::new(),
             mac: String::new(),
@@ -2549,6 +2644,23 @@ mod tests {
         assert!(state.accept(synthetic_agent()).is_err());
         assert!(state.sessions.lock().unwrap().is_empty());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn accept_reserves_the_login_until_the_accepted_agent_is_dropped() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state =
+            SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
+        let circuit = CircuitServer::bind().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 0);
+        state.bind_circuit(circuit.clone());
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 1);
+        drop(accepted);
+        assert_eq!(circuit.reserved_logins(), 0);
     }
 
     #[tokio::test]
@@ -2762,6 +2874,7 @@ mod tests {
             let mut fields = other_agent(u128::from(n), n);
             fields.child = true;
             fields.via_login = false;
+            fields.teleport_flags = 0;
             fields
         };
         for n in 10..10 + CHILD_DISPATCH_CAPACITY as u32 {
@@ -3471,6 +3584,7 @@ mod tests {
         let mut child = other_agent(6, 43);
         child.child = true;
         child.via_login = false;
+        child.teleport_flags = 0;
         state.accept(child).unwrap();
         let accepted = receiver.recv().await.unwrap();
         assert!(accepted.return_slot.is_child());
@@ -3481,6 +3595,7 @@ mod tests {
         let mut again = synthetic_agent();
         again.child = true;
         again.via_login = false;
+        again.teleport_flags = 0;
         again.caps_path = Uuid::from_u128(99).to_string();
         state
             .reuse_child(&again, state.reserve_child_place().unwrap())
@@ -4023,9 +4138,17 @@ mod tests {
             loc_x: 256,
             loc_y: 256,
         };
-        state.note_open_child(agent, end.clone());
+        let generation = state.root_generation(agent).unwrap();
+        assert!(matches!(
+            state.claim_child(agent, generation, end.clone()),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(agent, generation, end.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
         state.close_departed(agent);
-        assert!(state.take_open_child(agent).is_none());
+        assert!(state.take_open_children(agent).is_empty());
 
         state.accept(synthetic_agent()).unwrap();
         let old = receiver.recv().await.unwrap();
@@ -4046,13 +4169,118 @@ mod tests {
             current.predecessor.as_mut().unwrap().has_changed(),
             Ok(false)
         ));
-        state.note_open_child(agent, end);
+        let generation = state.root_generation(agent).unwrap();
+        assert!(matches!(
+            state.claim_child(agent, generation, end),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(agent, generation, Uuid::from_u128(7)),
+            crate::children::Admission::Announce { .. }
+        ));
         drop(old);
         current.wait_for_predecessor().await;
         assert_eq!(
-            state.take_open_child(agent).map(|end| end.region_id),
-            Some(Uuid::from_u128(7))
+            state
+                .take_open_children(agent)
+                .into_iter()
+                .map(|end| end.region_id)
+                .collect::<Vec<_>>(),
+            vec![Uuid::from_u128(7)]
         );
+        drop(current);
+    }
+
+    #[tokio::test]
+    async fn promote_child_stays_open_for_the_same_session() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let rooted = receiver.recv().await.unwrap();
+        let agent = rooted.expect.agent_id;
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: Uuid::from_u128(7),
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        state.promote_child(agent, &end, "seed");
+        rooted.mark_root();
+        assert_eq!(
+            state
+                .take_open_children(agent)
+                .into_iter()
+                .map(|end| end.region_id)
+                .collect::<Vec<_>>(),
+            vec![end.region_id]
+        );
+
+        state.accept(synthetic_agent()).unwrap();
+        let first = receiver.recv().await.unwrap();
+        state.promote_child(agent, &end, "seed");
+        state.accept(synthetic_agent()).unwrap();
+        let second = receiver.recv().await.unwrap();
+        drop(first);
+        assert!(state.take_open_children(agent).is_empty());
+        second.mark_root();
+        assert_eq!(
+            state
+                .take_open_children(agent)
+                .into_iter()
+                .map(|end| end.region_id)
+                .collect::<Vec<_>>(),
+            vec![end.region_id]
+        );
+        drop(second);
+        drop(rooted);
+    }
+
+    #[tokio::test]
+    async fn a_different_session_does_not_inherit_the_open_child() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let old = receiver.recv().await.unwrap();
+        let agent = old.expect.agent_id;
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: Uuid::from_u128(7),
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        let generation = state.root_generation(agent).unwrap();
+        assert!(matches!(
+            state.claim_child(agent, generation, end.clone()),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(agent, generation, end.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
+        let mut next = synthetic_agent();
+        next.session_id = Uuid::from_u128(70);
+        next.circuit_code = 70;
+        next.caps_path = Uuid::from_u128(71).to_string();
+        state.accept(next).unwrap();
+        let current = receiver.recv().await.unwrap();
+        assert!(state.take_open_children(agent).is_empty());
+        let staged = state.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, Uuid::from_u128(2));
+        assert_eq!(staged[0].1.region_id, end.region_id);
+        drop(old);
         drop(current);
     }
 
@@ -4092,6 +4320,7 @@ mod tests {
                     height: 1.9,
                     hover: 0.0,
                 }),
+                teleport_flags: 1 << 7,
             };
             let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
             let pose = ferroan_scene::Presence {
@@ -4114,7 +4343,21 @@ mod tests {
         }
         let hopper = Uuid::from_u128(80);
         // 81 has a child in the destination; 82 does not.
-        state.note_open_child(Uuid::from_u128(81), end.clone());
+        let mut watcher = synthetic_agent();
+        watcher.agent_id = Uuid::from_u128(81);
+        watcher.session_id = Uuid::from_u128(81);
+        watcher.circuit_code = 81;
+        watcher.caps_path = Uuid::from_u128(81).to_string();
+        state.accept(watcher).unwrap();
+        let watcher_generation = state.root_generation(Uuid::from_u128(81)).unwrap();
+        assert!(matches!(
+            state.claim_child(Uuid::from_u128(81), watcher_generation, end.clone()),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(Uuid::from_u128(81), watcher_generation, end.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
         state.moved_away(hopper, true, &end).await;
         assert!(feeds[1].1.take_avatar_packets(usize::MAX).is_empty());
         assert_eq!(

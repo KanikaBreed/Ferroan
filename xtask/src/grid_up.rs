@@ -122,6 +122,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
             asset: None,
             account: None,
             auth: None,
+            groups: None,
         },
         false,
     )?);
@@ -199,6 +200,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 metrics_port: None,
                 store: super::RegionStore::Standard,
                 parcel_seed: None,
+                groups_uri: None,
                 patch_materials: false,
                 basic_physics: false,
             },

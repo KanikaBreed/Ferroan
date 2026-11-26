@@ -141,6 +141,9 @@ pub struct ViewerLink {
     /// C# has no client before that, so it sends the viewer no minimap dots.
     pub circuit_open: Arc<AtomicBool>,
     pub look: Arc<AvatarLook>,
+    /// `TeleportFlags` from the accepted login. Zero asks for terrain and the
+    /// overlay again at `SendInitialData` (`ScenePresence.cs` 4338).
+    pub teleport_flags: u32,
 }
 
 /// A root that hopped away has arrived at its destination
@@ -1163,6 +1166,14 @@ impl Scene {
     /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
     /// then its appearance, to this viewer.
     fn send_initial_data(&self, agent: Uuid) {
+        // ScenePresence.cs 4337 logs before the teleport-flag check.
+        tracing::info!("SendInitialData for \"{agent}\"");
+        // ScenePresence.cs 4338: flags of zero request terrain and the overlay again.
+        if let Some(viewer) = self.viewers.get(&agent)
+            && viewer.link.teleport_flags == 0
+        {
+            viewer.link.feed.request_land_pass();
+        }
         for (other, _) in self.viewer_order() {
             if other == agent || !self.is_root(&other) {
                 continue;
@@ -1461,6 +1472,7 @@ mod tests {
             seeds_sent: Arc::clone(&seeds),
             circuit_open: Arc::new(AtomicBool::new(true)),
             look: look_of(&agent.as_u128().to_string()),
+            teleport_flags: 1 << 7,
         };
         let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
         (local_id, feed, seeds)
@@ -1898,6 +1910,16 @@ mod tests {
         agent: Uuid,
         open: bool,
     ) -> (Arc<ViewerFeed>, Arc<AtomicBool>) {
+        // ViaLogin. SendInitialData does not request a second overlay.
+        open_viewer_flags(scene, agent, open, 1 << 7)
+    }
+
+    fn open_viewer_flags(
+        scene: &mut Scene,
+        agent: Uuid,
+        open: bool,
+        teleport_flags: u32,
+    ) -> (Arc<ViewerFeed>, Arc<AtomicBool>) {
         let feed = Arc::new(ViewerFeed::new(scene.board.clone()));
         let circuit_open = Arc::new(AtomicBool::new(open));
         let link = ViewerLink {
@@ -1905,6 +1927,7 @@ mod tests {
             seeds_sent: Arc::new(AtomicBool::new(false)),
             circuit_open: Arc::clone(&circuit_open),
             look: look_of(&agent.as_u128().to_string()),
+            teleport_flags,
         };
         let (reply, _answer) = oneshot::channel();
         assert!(answer(
@@ -1915,6 +1938,39 @@ mod tests {
             0
         ));
         (feed, circuit_open)
+    }
+
+    /// Handshake, seeds, then four frames. The fourth runs `SendInitialData`.
+    /// Zero teleport flags request another land pass. ViaLogin does not.
+    /// A second reply after that frame does not request another pass.
+    #[test]
+    fn send_initial_data_requests_land_only_when_teleport_flags_are_zero() {
+        for flags in [0, 1 << 7] {
+            let mut scene = bare_scene();
+            let agent = Uuid::from_u128(1);
+            let (feed, _) = open_viewer_flags(&mut scene, agent, true, flags);
+            scene
+                .viewers
+                .get(&agent)
+                .unwrap()
+                .link
+                .seeds_sent
+                .store(true, Ordering::Release);
+            apply(Inbound::HandshakeReply { agent }, &mut scene);
+            for _ in 0..3 {
+                update_presences(&mut scene);
+                assert!(!feed.take_land_pass());
+            }
+            update_presences(&mut scene);
+            assert_eq!(feed.take_land_pass(), flags == 0);
+            // A second reply must not re-arm the gate. One frame cannot
+            // reach SendInitialData; four frames can.
+            apply(Inbound::HandshakeReply { agent }, &mut scene);
+            for _ in 0..4 {
+                update_presences(&mut scene);
+                assert!(!feed.take_land_pass());
+            }
+        }
     }
 
     fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {

@@ -126,6 +126,7 @@ enum Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fixture {
     ParcelTiming,
+    ParcelProperties,
     ObjectCross,
     Caps,
     Login,
@@ -304,6 +305,7 @@ fn fixture(kind: Fixture, path: &str) -> ExitCode {
     let path = std::path::Path::new(path);
     match kind {
         Fixture::ParcelTiming => grid::parcel_timing_fixtures(path),
+        Fixture::ParcelProperties => grid::parcel_properties_fixtures(path),
         Fixture::ObjectCross => grid::object_cross_fixtures(path),
         Fixture::Caps => live::finish(crate::caps_fixtures::generate(path)),
         Fixture::Login => grid::login_fixtures(path),
@@ -477,15 +479,27 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
     if matches!(*scenario, "prim-arrival" | "material-override") && flags.region_ferroan && !grid {
         return Err(ParseFail::Usage);
     }
-    if (matches!(
+    // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
+    // scenario on the Ferroan home region and does not select that engine.
+    if *scenario == "parcel-timing" {
+        let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
+        let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
+        if !pin8 && !ferroan {
+            return Err(ParseFail::Message(
+                "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+                    .to_string(),
+            ));
+        }
+    } else if (matches!(
         *scenario,
         "prim-capture"
             | "object-cross"
             | "child-view"
             | "store-handoff"
-            | "parcel-timing"
             | "prim-load"
-    ) || (matches!(*scenario, "prim-arrival" | "material-override") && !flags.region_ferroan))
+            | "parcel-properties"
+    ) || (matches!(*scenario, "prim-arrival" | "material-override")
+        && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
@@ -622,6 +636,7 @@ fn database(value: &str) -> Result<Database, ParseFail> {
 fn fixture_kind(name: &str) -> Option<Fixture> {
     Some(match name {
         "parcel-timing-fixtures" => Fixture::ParcelTiming,
+        "parcel-properties-fixtures" => Fixture::ParcelProperties,
         "object-cross-fixtures" => Fixture::ObjectCross,
         "caps-fixtures" => Fixture::Caps,
         "login-fixtures" => Fixture::Login,
@@ -777,6 +792,7 @@ mod tests {
             "store-handoff",
             "prim-load",
             "parcel-timing",
+            "parcel-properties",
         ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
             assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
@@ -796,6 +812,10 @@ mod tests {
             );
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
         }
+        let ferroan = run(&["run", "parcel-timing", "grid", "--region", "ferroan"]);
+        assert!(ferroan.ferroan_region);
+        assert!(!ferroan.basic_physics);
+        assert!(parse(&["run", "parcel-timing", "grid", "--region", "ferroan"]).is_ok());
     }
 
     #[test]
