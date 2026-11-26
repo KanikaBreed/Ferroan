@@ -199,6 +199,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
+| Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -815,7 +817,7 @@ The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 no
 
 Q65c3b's material-override send is independent of both items.
 
-**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child.
+**Q65d1 — DONE (#304)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child.
 
 **Q65d2 — DONE (this PR)** on `feat/q65d2-prim-load`. Both viewers received all 500 parts at 512,000 bit/s. The [receipts](fixtures/prim-load/README.md) record first deliveries and repeats. The mapped block bytes matched and the Ferroan entity queue recorded no new refusals or drops.
 
