@@ -82,6 +82,7 @@ pub const OBJECT_COALESCED_PRIMS: &str = "object.coalesced-prims";
 pub const OBJECT_UPDATE_FIELD: &str = "object.update-field";
 pub const OBJECT_XML_BYTES: &str = "object.xml-bytes";
 pub const OBJECT_TASK_ITEMS: &str = "object.task-items";
+pub const OBJECT_MATERIAL_NOTATION_BYTES: &str = "object.material-notation-bytes";
 pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";
 pub const REGION_ENTITY_UPDATES: &str = "region.entity-updates";
 pub const REGION_AVATAR_PACKETS: &str = "region.avatar-packets";

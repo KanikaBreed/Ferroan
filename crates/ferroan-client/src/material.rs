@@ -35,7 +35,10 @@
 //!
 //! Pin8 writes it after the full, probe, terse and animation sends. A tree is
 //! left out at dequeue. An empty override list uses a different key order from
-//! a list that has entries. The HTTP RenderMaterials capability is not this path.
+//! a list that has entries. A notation past 4080 bytes is refused before that
+//! string is built. The HTTP RenderMaterials capability is not this path.
+
+use std::borrow::Cow;
 
 use ferroan_protocol::msgs::GenericStreamingMessage;
 use ferroan_protocol::msgs::generic_streaming_message::{DataBlock, MethodData};
@@ -66,7 +69,13 @@ pub fn packet(local_id: u32, pcode: u8, faces: Option<&[Face<'_>]>) -> Option<Ve
     let faces = faces?;
     let nonempty = !faces.is_empty();
     let notation = if nonempty {
-        nonempty_notation(local_id, faces)
+        let parts = nonempty_parts(local_id, faces);
+        let bytes = notation_bytes(&parts);
+        if bytes > MAX_NOTATION_BYTES as u64 {
+            refuse_over_cap(bytes);
+            return None;
+        }
+        join_parts(&parts)
     } else {
         empty_notation(local_id)
     };
@@ -77,24 +86,48 @@ pub fn packet(local_id: u32, pcode: u8, faces: Option<&[Face<'_>]>) -> Option<Ve
 }
 
 /// Nonempty maps are `id`, `te`, `od`, and the id is the signed cast of the local id.
-fn nonempty_notation(local_id: u32, faces: &[Face<'_>]) -> String {
-    let mut te = String::new();
-    let mut od = String::new();
+///
+/// Face text stays borrowed. The caller measures [`notation_bytes`] before
+/// [`join_parts`], so an override of several megabytes is not copied into one string.
+fn nonempty_parts<'a>(local_id: u32, faces: &'a [Face<'a>]) -> Vec<Cow<'a, str>> {
+    let mut parts = Vec::with_capacity(faces.len().saturating_mul(2).saturating_add(6));
+    parts.push(Cow::Borrowed("{'id':i"));
+    parts.push(Cow::Owned((local_id as i32).to_string()));
+    parts.push(Cow::Borrowed(",'te':["));
     for (index, face) in faces.iter().enumerate() {
         if index > 0 {
-            te.push(',');
-            od.push(',');
+            parts.push(Cow::Borrowed(","));
         }
-        te.push('i');
-        te.push_str(&face.te_index.to_string());
+        parts.push(Cow::Owned(format!("i{}", face.te_index)));
+    }
+    parts.push(Cow::Borrowed("],'od':["));
+    for (index, face) in faces.iter().enumerate() {
+        if index > 0 {
+            parts.push(Cow::Borrowed(","));
+        }
         if face.data.is_empty() {
-            od.push('!');
+            parts.push(Cow::Borrowed("!"));
         } else {
-            od.push_str(face.data);
+            parts.push(Cow::Borrowed(face.data));
         }
     }
-    let id = local_id as i32;
-    format!("{{'id':i{id},'te':[{te}],'od':[{od}]}}")
+    parts.push(Cow::Borrowed("]}"));
+    parts
+}
+
+/// UTF-8 length of `parts`. Each face's stored text is counted, not copied.
+fn notation_bytes(parts: &[Cow<'_, str>]) -> u64 {
+    parts
+        .iter()
+        .fold(0u64, |sum, part| sum.saturating_add(part.len() as u64))
+}
+
+fn join_parts(parts: &[Cow<'_, str>]) -> String {
+    let mut notation = String::new();
+    for part in parts {
+        notation.push_str(part);
+    }
+    notation
 }
 
 /// The empty list interpolates the unsigned local id and orders the keys `id`, `od`, `te`.
@@ -102,12 +135,28 @@ fn empty_notation(local_id: u32) -> String {
     format!("{{'id':i{local_id},'od':[],'te':[]}}")
 }
 
-/// The nonempty branch also refuses a string shorter than four UTF-16 code units.
+/// The nonempty branch also skips a string shorter than four UTF-16 code units.
+/// A notation past [`MAX_NOTATION_BYTES`] is refused here when a caller already
+/// built it. [`packet`] measures the length and refuses before that build.
 fn within_cap(notation: &str, nonempty: bool) -> bool {
     if nonempty && notation.encode_utf16().count() < 4 {
         return false;
     }
-    notation.len() <= MAX_NOTATION_BYTES
+    if notation.len() > MAX_NOTATION_BYTES {
+        refuse_over_cap(notation.len() as u64);
+        return false;
+    }
+    true
+}
+
+fn refuse_over_cap(observed: u64) {
+    ferroan_diag::refuse(
+        ferroan_diag::OBJECT_MATERIAL_NOTATION_BYTES,
+        ferroan_diag::Kind::Hard,
+        MAX_NOTATION_BYTES as u64,
+        observed,
+        "material",
+    );
 }
 
 fn encode(notation: &str) -> Vec<u8> {
@@ -200,6 +249,9 @@ mod tests {
         let message = GenericStreamingMessage::decode(&body[1..]).unwrap();
         assert_eq!(message.data_block.data.len(), MAX_NOTATION_BYTES);
         assert!(packet(1, 9, Some(&dropped)).is_none());
+        assert!(ferroan_diag::metrics().contains(
+            "ferroan_limit_hits_total{limit=\"object.material-notation-bytes\",action=\"refuse\"}"
+        ));
     }
 
     #[test]
