@@ -16,6 +16,9 @@
 //! so one caller's calls apply in the order it made them. The serve's end
 //! removes the presence, so a later login starts fresh.
 //!
+//! Each tick posts one physics heartbeat and reads the pose only after that
+//! reply. The pose is not written onto avatars. The stand-in still steps them.
+//!
 //! After each tick the frame runs `ScenePresence.Update`'s terse test on every
 //! attached viewer's avatar ([`crate::terse`]) and offers a due update to
 //! every attached viewer's feed. The circuit drains its feed. Arrivals,
@@ -34,6 +37,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
+use ferroan_physics::Physics;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -952,6 +956,11 @@ fn run(
     ready: Sender<()>,
 ) {
     let layers = map.as_ref().map(compress::land_layers).unwrap_or_default();
+    // The frame's own period, not `[Startup] FrameTime`. Drop detaches this
+    // thread; the frame does not join it.
+    let Ok(physics) = Physics::for_frame(FRAME_TIME) else {
+        return;
+    };
     if ready.send(()).is_err() {
         return;
     }
@@ -962,6 +971,9 @@ fn run(
         let now = Instant::now();
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
+            // Pose after the reply, then the stand-in. P3.64 reads a box pose.
+            // P3.76 is what removes the stand-in.
+            let _pose = physics.frame_tick(f64::from(FRAME_TIME));
             frames = tick(&mut scene, map.as_ref(), frames);
             next = next_tick(next, now);
             continue;

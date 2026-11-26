@@ -61,7 +61,8 @@ const MAX_BODIES: u32 = 1024;
 const MAX_BODY_PAIRS: u32 = 1024;
 const MAX_CONTACT_CONSTRAINTS: u32 = 1024;
 
-/// `JPH_PhysicsSystem_Create` or `JPH_Init` failed, or a layer table did.
+/// `JPH_PhysicsSystem_Create` or `JPH_Init` failed, a layer table did, or the
+/// caller is not the physics thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeError {
     /// `JPH_Init` returned false.
@@ -70,6 +71,8 @@ pub enum NativeError {
     Layers,
     /// `JPH_PhysicsSystem_Create` returned null.
     System,
+    /// The caller is not the physics thread. Only that thread calls Jolt.
+    OffThread,
 }
 
 impl fmt::Display for NativeError {
@@ -78,6 +81,7 @@ impl fmt::Display for NativeError {
             Self::Init => "JPH_Init failed",
             Self::Layers => "Jolt layer table creation failed",
             Self::System => "Jolt physics system creation failed",
+            Self::OffThread => "Jolt was called off the physics thread",
         })
     }
 }
@@ -100,6 +104,9 @@ impl PhysicsSystem {
     /// `JPH_Init` runs once per process. This function does not call
     /// `JPH_Shutdown`. A later drop destroys this system only.
     pub fn new() -> Result<Self, NativeError> {
+        if !crate::thread::on_physics_thread() {
+            return Err(NativeError::OffThread);
+        }
         ensure_foundation()?;
         let _guard = system_lock();
         Ok(Self {
@@ -233,7 +240,10 @@ mod tests {
         assert_eq!(JOLTC_COMMIT, "886e088675bae3a086f8318c7803f8ee962c2f2c");
         assert_eq!(JOLTC_EXT_REVISION, "30");
 
-        let system = PhysicsSystem::new().expect("one physics system");
-        drop(system);
+        let physics = crate::thread::Physics::for_frame(0.0909).expect("physics thread");
+        assert!(matches!(PhysicsSystem::new(), Err(NativeError::OffThread)));
+        physics
+            .create_and_drop_system()
+            .expect("create on the physics thread");
     }
 }

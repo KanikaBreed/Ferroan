@@ -561,6 +561,7 @@ dependencies = [
  "ferroan-db",
  "ferroan-diag",
  "ferroan-llsd",
+ "ferroan-physics",
  "ferroan-protocol",
  "ferroan-types",
  "flate2",

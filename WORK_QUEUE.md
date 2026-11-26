@@ -325,7 +325,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
 | Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
-| Q115 | P3.3: Physics thread and the request queue | READY |
+| Q115 | P3.3: Physics thread and the request queue | DONE (this PR) |
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
 | Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
