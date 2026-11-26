@@ -1044,6 +1044,56 @@
     "next_carry_bits": "3f60799b0e6d5140",
     "next_capped_frames": 1
   },
+  "exact_sixteen": {
+    "rate_hz_bits": "42340000",
+    "step_bits": "3f96c16c16c16c17",
+    "step_seconds_bits": "3cb60b61",
+    "frame_f64_bits": "3fd6c16c16c16c17",
+    "counts": [
+      16
+    ],
+    "steps": 16,
+    "carry_bits": "0000000000000000",
+    "capped_frames": 0
+  },
+  "epsilon_90hz": {
+    "rate_hz_bits": "42b40000",
+    "step_bits": "3f86c16c16c16c17",
+    "step_seconds_bits": "3c360b61",
+    "heartbeat_f32_bits": "3e000000",
+    "heartbeat_f64_bits": "3fc0000000000000",
+    "counts": [
+      11,
+      11,
+      11,
+      12
+    ],
+    "steps": 45,
+    "carry_bits": "0000000000000000",
+    "capped_frames": 0
+  },
+  "epsilon_11hz": {
+    "rate_hz_bits": "42340000",
+    "step_bits": "3f96c16c16c16c17",
+    "step_seconds_bits": "3cb60b61",
+    "heartbeat_f64_bits": "3fb745d1745d1746",
+    "counts": [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      5
+    ],
+    "steps": 45,
+    "carry_bits": "0000000000000000",
+    "capped_frames": 0
+  },
   "rejected_rate_bits": [
     "00000000",
     "80000000",

@@ -100,6 +100,9 @@ static class Program
         var sixty = new SubstepAccumulator(60f);
         var sequence = RunSequence();
         var capped = RunCapped();
+        var exact = RunExact();
+        var epsilon90 = RunEpsilon90();
+        var epsilon11 = RunEpsilon11();
         var held = RunHeld();
 
         var sb = new StringBuilder();
@@ -120,6 +123,15 @@ static class Program
         sb.Append(",\n");
         sb.Append("  \"capped\": ");
         CappedObject(sb, capped);
+        sb.Append(",\n");
+        sb.Append("  \"exact_sixteen\": ");
+        ExactObject(sb, exact);
+        sb.Append(",\n");
+        sb.Append("  \"epsilon_90hz\": ");
+        CountsObject(sb, epsilon90);
+        sb.Append(",\n");
+        sb.Append("  \"epsilon_11hz\": ");
+        CountsObject(sb, epsilon11);
         sb.Append(",\n");
         sb.Append("  \"rejected_rate_bits\": [\n");
         Rejected(sb);
@@ -188,6 +200,64 @@ static class Program
             CarryBits = Hex64(carry),
             CappedFrames = capped,
             NextReturned = next,
+        };
+    }
+
+    static ExactRun RunExact()
+    {
+        var acc = new SubstepAccumulator(45f);
+        var frame = 16.0 / 45.0;
+        var returned = acc.Advance(frame);
+        Console.WriteLine(
+            "jolt: exact Advance(16.0/45.0) at 45 Hz returned " + Inv(returned)
+            + ", capped " + Inv(acc.CappedFrames)
+            + ", steps " + Inv(acc.Steps)
+            + ", carry " + Hex64(acc.Carry));
+        return new ExactRun { Acc = acc, Frame = frame, Returned = returned };
+    }
+
+    // Four heartbeats so index 3 is present. That count is 12 only with the epsilon.
+    static CountRun RunEpsilon90()
+    {
+        const float Heartbeat = 0.125f;
+        var acc = new SubstepAccumulator(90f);
+        var counts = new List<int>(4);
+        for (var i = 0; i < 4; i++)
+            counts.Add(acc.Advance(Heartbeat));
+        Console.WriteLine(
+            "jolt: 90 Hz 0.125f heartbeat 3 returned " + Inv(counts[3])
+            + ", capped " + Inv(acc.CappedFrames)
+            + ", steps " + Inv(acc.Steps)
+            + ", carry " + Hex64(acc.Carry));
+        return new CountRun
+        {
+            Acc = acc,
+            Heartbeat = Heartbeat,
+            HeartbeatF32 = Heartbeat,
+            StoreF32 = true,
+            Counts = counts,
+        };
+    }
+
+    // Eleven heartbeats so index 10 is present. That count is 5 only with the epsilon.
+    static CountRun RunEpsilon11()
+    {
+        var heartbeat = 1.0 / 11.0;
+        var acc = new SubstepAccumulator(45f);
+        var counts = new List<int>(11);
+        for (var i = 0; i < 11; i++)
+            counts.Add(acc.Advance(heartbeat));
+        Console.WriteLine(
+            "jolt: 45 Hz 1.0/11.0 heartbeat 10 returned " + Inv(counts[10])
+            + ", capped " + Inv(acc.CappedFrames)
+            + ", steps " + Inv(acc.Steps)
+            + ", carry " + Hex64(acc.Carry));
+        return new CountRun
+        {
+            Acc = acc,
+            Heartbeat = heartbeat,
+            StoreF32 = false,
+            Counts = counts,
         };
     }
 
@@ -293,6 +363,55 @@ static class Program
         sb.Append("    \"next_capped_frames\": ");
         sb.Append(Inv(run.Acc.CappedFrames));
         sb.Append("\n  }");
+    }
+
+    static void ExactObject(StringBuilder sb, ExactRun run)
+    {
+        sb.Append("{\n");
+        RateFields(sb, run.Acc, 2);
+        Field(sb, "frame_f64_bits", Hex64(run.Frame), 2, true);
+        var counts = new List<int> { run.Returned };
+        AppendCounts(sb, counts, 2);
+        sb.Append("    \"steps\": ");
+        sb.Append(Inv(run.Acc.Steps));
+        sb.Append(",\n");
+        Field(sb, "carry_bits", Hex64(run.Acc.Carry), 2, true);
+        sb.Append("    \"capped_frames\": ");
+        sb.Append(Inv(run.Acc.CappedFrames));
+        sb.Append("\n  }");
+    }
+
+    static void CountsObject(StringBuilder sb, CountRun run)
+    {
+        sb.Append("{\n");
+        RateFields(sb, run.Acc, 2);
+        if (run.StoreF32)
+            Field(sb, "heartbeat_f32_bits", Hex32(run.HeartbeatF32), 2, true);
+        Field(sb, "heartbeat_f64_bits", Hex64(run.Heartbeat), 2, true);
+        AppendCounts(sb, run.Counts, 2);
+        sb.Append("    \"steps\": ");
+        sb.Append(Inv(run.Acc.Steps));
+        sb.Append(",\n");
+        Field(sb, "carry_bits", Hex64(run.Acc.Carry), 2, true);
+        sb.Append("    \"capped_frames\": ");
+        sb.Append(Inv(run.Acc.CappedFrames));
+        sb.Append("\n  }");
+    }
+
+    static void AppendCounts(StringBuilder sb, List<int> counts, int indent)
+    {
+        sb.Append(' ', indent * 2);
+        sb.Append("\"counts\": [\n");
+        for (var i = 0; i < counts.Count; i++)
+        {
+            sb.Append(' ', (indent + 1) * 2);
+            sb.Append(Inv(counts[i]));
+            if (i + 1 != counts.Count)
+                sb.Append(',');
+            sb.Append('\n');
+        }
+        sb.Append(' ', indent * 2);
+        sb.Append("],\n");
     }
 
     static void Rejected(StringBuilder sb)
@@ -433,6 +552,22 @@ static class Program
         internal string CarryBits;
         internal long CappedFrames;
         internal int NextReturned;
+    }
+
+    sealed class ExactRun
+    {
+        internal SubstepAccumulator Acc;
+        internal double Frame;
+        internal int Returned;
+    }
+
+    sealed class CountRun
+    {
+        internal SubstepAccumulator Acc;
+        internal double Heartbeat;
+        internal float HeartbeatF32;
+        internal bool StoreF32;
+        internal List<int> Counts;
     }
 
     sealed class HeldRun

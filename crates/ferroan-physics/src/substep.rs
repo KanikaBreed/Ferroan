@@ -274,6 +274,73 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_sixteen_keeps_the_remainder() {
+        let doc = fixture();
+        let section = doc.get("exact_sixteen").unwrap();
+        let (mut acc, _) = rate_from(section);
+        let frame = f64::from_bits(hex_u64(str_field(section, "frame_f64_bits")));
+        let counts = section.get("counts").unwrap().as_array().unwrap();
+        assert_eq!(counts.len(), 1);
+        let got = acc.advance(frame);
+        assert_eq!(got, i32::try_from(counts[0].as_i64().unwrap()).unwrap());
+        assert_eq!(got, 16);
+        assert_eq!(acc.steps(), i64_field(section, "steps"));
+        assert_eq!(acc.capped_frames(), i64_field(section, "capped_frames"));
+        assert_eq!(acc.capped_frames(), 0);
+        assert_eq!(
+            acc.carry().to_bits(),
+            hex_u64(str_field(section, "carry_bits"))
+        );
+    }
+
+    #[test]
+    fn the_epsilon_sequences_match_the_pinned_counts() {
+        let doc = fixture();
+        let wide = doc.get("epsilon_90hz").unwrap();
+        replay_heartbeats(wide);
+        let wide_counts = wide.get("counts").unwrap().as_array().unwrap();
+        assert_eq!(wide_counts.len(), 4);
+        assert_eq!(
+            i32::try_from(wide_counts[3].as_i64().unwrap()).unwrap(),
+            12,
+            "heartbeat 3"
+        );
+
+        let eleventh = doc.get("epsilon_11hz").unwrap();
+        replay_heartbeats(eleventh);
+        let eleventh_counts = eleventh.get("counts").unwrap().as_array().unwrap();
+        assert_eq!(eleventh_counts.len(), 11);
+        assert_eq!(
+            i32::try_from(eleventh_counts[10].as_i64().unwrap()).unwrap(),
+            5,
+            "heartbeat 10"
+        );
+    }
+
+    fn replay_heartbeats(section: &Value) {
+        let (mut acc, _) = rate_from(section);
+        let frame = f64::from_bits(hex_u64(str_field(section, "heartbeat_f64_bits")));
+        if let Some(bits) = section.get("heartbeat_f32_bits").and_then(Value::as_str) {
+            assert_eq!(
+                f64::from(f32::from_bits(hex_u32(bits))).to_bits(),
+                frame.to_bits()
+            );
+        }
+        let counts = section.get("counts").unwrap().as_array().unwrap();
+        for (index, expected) in counts.iter().enumerate() {
+            let want = i32::try_from(expected.as_i64().unwrap()).unwrap();
+            let got = acc.advance(frame);
+            assert_eq!(got, want, "heartbeat {index}");
+        }
+        assert_eq!(acc.steps(), i64_field(section, "steps"));
+        assert_eq!(acc.capped_frames(), i64_field(section, "capped_frames"));
+        assert_eq!(
+            acc.carry().to_bits(),
+            hex_u64(str_field(section, "carry_bits"))
+        );
+    }
+
+    #[test]
     fn a_rejected_rate_is_refused() {
         let doc = fixture();
         for bits in doc.get("rejected_rate_bits").unwrap().as_array().unwrap() {
