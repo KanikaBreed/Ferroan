@@ -73,6 +73,7 @@
 
 pub mod avatars;
 mod bits;
+pub mod client_flags;
 pub mod coarse;
 mod compress;
 pub mod entity_queue;

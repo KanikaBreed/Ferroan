@@ -77,6 +77,7 @@ jobs:
           cargo xtask http verify
           cargo xtask http status-verify
           cargo xtask http auth-verify
+          cargo xtask avatar appearance-verify
           cargo xtask asset verify
           cargo xtask pin3 verify
           cargo xtask throttle verify

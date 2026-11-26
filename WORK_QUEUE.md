@@ -182,7 +182,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
-| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
+| Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
@@ -245,7 +245,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
 | Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
-| Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | READY after Q27b1 |
+| Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | DONE (this PR) |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
 | Q27e | P1.4e: `cargo xtask live compare avatar` and `--rust avatar` | READY after Q27d |

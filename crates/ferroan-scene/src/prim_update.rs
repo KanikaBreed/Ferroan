@@ -56,10 +56,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use crate::client_flags::LinksetPermissions as LinksetUpdateFlags;
+use crate::client_flags::{PartPermissions, ViewerPermissions};
 use ferroan_diag::{Action, Hit, Kind, OBJECT_UPDATE_FIELD};
 use ferroan_protocol::{Writer, msgs::object_update::ObjectData};
-use ferroan_types::{PERM_ALL_EFFECTIVE, PERM_COPY, PERM_MODIFY, PERM_MOVE, PERM_TRANSFER};
-use uuid::Uuid;
 
 use crate::{ObjectPart, xml::shape_update_extras};
 
@@ -76,56 +76,10 @@ const GRASS: u8 = 95;
 const NEW_TREE: u8 = 111;
 const TREE: u8 = 255;
 
-const OBJECT_MODIFY: u32 = 0x4;
-const OBJECT_COPY: u32 = 0x8;
-const ANY_OWNER: u32 = 0x10;
-const YOU_OWNER: u32 = 0x20;
-const OBJECT_MOVE: u32 = 0x100;
-const OBJECT_TRANSFER: u32 = 0x2_0000;
-const OWNER_MODIFY: u32 = 0x1000_0000;
-const VIEWER_FLAGS: u32 = OBJECT_MODIFY
-    | OBJECT_COPY
-    | ANY_OWNER
-    | YOU_OWNER
-    | OBJECT_MOVE
-    | OBJECT_TRANSFER
-    | OWNER_MODIFY;
-
-/// Owner permissions shared by a restored linkset, computed once before encoding its parts.
-pub struct LinksetUpdateFlags {
-    root: Uuid,
-    effective_owner: u32,
-}
-
-impl LinksetUpdateFlags {
-    /// SceneObjectGroup.AggregatePerms intersects the owner's rights with the contents
-    /// of every part except landmarks, then restores the root's modify and move bits.
-    pub fn from_parts(root: &ObjectPart, children: &[ObjectPart]) -> Self {
-        let contents = std::iter::once(root)
-            .chain(children)
-            .flat_map(|part| &part.items)
-            .filter(|item| item.inv_type != 3) // InventoryType.Landmark
-            .fold(PERM_ALL_EFFECTIVE, |mask, item| {
-                mask & item.current_permissions
-            });
-        let mut owner = root.owner_mask & (contents | PERM_MODIFY | PERM_MOVE);
-        if owner & (PERM_COPY | PERM_TRANSFER) == 0 {
-            owner |= PERM_TRANSFER;
-        }
-        owner &= (root.base_mask & PERM_ALL_EFFECTIVE) | PERM_MOVE;
-        Self {
-            root: root.uuid,
-            effective_owner: owner,
-        }
-    }
-}
-
-/// Restore once per part. All viewers see the same local IDs, payload and cache revision.
-/// The owner-only flags stand in for GenerateClientFlags until P2.7b.
+/// Restore once per part. Recipients share the IDs, payload and cache revision.
 pub struct StoredPrimUpdate {
     block: ObjectData,
-    owner: Uuid,
-    owner_flags: u32,
+    permissions: PartPermissions,
 }
 
 impl StoredPrimUpdate {
@@ -161,15 +115,12 @@ impl StoredPrimUpdate {
             motion.vec3(part.angular_velocity.into());
         }
 
-        let mut flags = part.flags & !(VIEWER_FLAGS | 0x2); // restored prims are never CreateSelected
+        let mut flags = part.flags & !0x2; // restored prims are never CreateSelected
         if is_root {
             flags &= !0x40; // Scene.LoadPrimsFromStorage clears Scripted on the root
         }
         if part.items.is_empty() {
             flags |= 0x800; // InventoryEmpty
-        }
-        if !part.owner_id.is_nil() {
-            flags |= ANY_OWNER;
         }
         let mut block = ObjectData {
             id: local_id,
@@ -191,35 +142,18 @@ impl StoredPrimUpdate {
         }
         Ok(Self {
             block,
-            owner: part.owner_id,
-            owner_flags: owner_flags(linkset.effective_owner),
+            permissions: PartPermissions::new(part, *linkset, false), // stored world prim
         })
     }
 
-    pub fn block_for(&self, viewer: Uuid) -> ObjectData {
+    /// Apply the scene dispatcher's flag word for this recipient immediately before sending.
+    pub fn block_for(&self, viewer: impl Into<ViewerPermissions>) -> ObjectData {
         let mut block = self.block.clone();
-        if viewer == self.owner && !viewer.is_nil() {
-            block.update_flags |= self.owner_flags;
-        }
+        block.update_flags = self
+            .permissions
+            .viewer_flags(block.update_flags, viewer.into());
         block
     }
-}
-
-fn owner_flags(mask: u32) -> u32 {
-    let mut flags = YOU_OWNER | ANY_OWNER;
-    if mask & PERM_COPY != 0 {
-        flags |= OBJECT_COPY;
-    }
-    if mask & PERM_TRANSFER != 0 {
-        flags |= OBJECT_TRANSFER;
-    }
-    if mask & PERM_MOVE != 0 {
-        flags |= OBJECT_MOVE;
-        if mask & PERM_MODIFY != 0 {
-            flags |= OBJECT_MODIFY | OWNER_MODIFY;
-        }
-    }
-    flags
 }
 
 fn restored_crc(stored: Option<i32>, root_update: bool) -> u32 {
@@ -355,6 +289,17 @@ fn fill_prim(block: &mut ObjectData, part: &ObjectPart) -> Result<(), PrimUpdate
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferroan_types::{PERM_ALL_EFFECTIVE, PERM_MODIFY};
+    use uuid::Uuid;
+
+    const OBJECT_MODIFY: u32 = 0x4;
+    const OBJECT_COPY: u32 = 0x8;
+    const ANY_OWNER: u32 = 0x10;
+    const YOU_OWNER: u32 = 0x20;
+    const OBJECT_MOVE: u32 = 0x100;
+    const OBJECT_TRANSFER: u32 = 0x2_0000;
+    const VIEWER_FLAGS: u32 = 0x1002_013c;
+
     use crate::{ObjectGroup, ObjectStoreKind, open_objects, test_store::CopiedStore};
     use std::collections::BTreeMap;
 

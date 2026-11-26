@@ -28,6 +28,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use super::service::try_id;
 use axum::{
     Router,
     body::Body,
@@ -38,7 +39,6 @@ use axum::{
 };
 use ferroan_http::{Field, FieldMap, MAX_QUERY_BYTES, build_xml_response, parse_query_string};
 use std::sync::Arc;
-use uuid::Uuid;
 
 use super::{AvatarData, AvatarService};
 use crate::griduser::{FAILURE_XML, SUCCESS_XML};
@@ -101,11 +101,7 @@ async fn dispatch(service: &AvatarService, mut fields: FieldMap) -> Option<Vec<u
     let Field::Str(user) = fields.shift_remove("UserID")? else {
         return None;
     };
-    let user = user.trim_matches(' ');
-    if !matches!(user.len(), 32 | 36) {
-        return None;
-    }
-    let id = Uuid::parse_str(user).ok()?;
+    let id = try_id(&user)?;
     let Field::Str(method) = fields.shift_remove("METHOD")? else {
         return None;
     };
