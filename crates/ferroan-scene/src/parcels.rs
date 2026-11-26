@@ -263,7 +263,7 @@ impl ParcelMap {
         }
         let width = size[0] as usize / 4;
         let count = width * (size[1] as usize / 4);
-        let cells_y = if width == 0 { 0 } else { count / width };
+        let cells_y = count.checked_div(width).unwrap_or(0);
         Ok(Self {
             width,
             cells: vec![0; count],

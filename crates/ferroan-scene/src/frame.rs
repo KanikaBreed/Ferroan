@@ -2869,24 +2869,25 @@ mod tests {
     /// Arrival uses the same text bound as a request and a walk (D127).
     #[tokio::test]
     async fn an_oversized_arrival_is_refused() {
-        let _guard = crate::parcels::limits_lock();
         let mut map = region_parcel_map().await;
         let local_id = map.at_metres(128.0, 128.0).unwrap().local_id;
         map.set_description(local_id, "x".repeat(9_000));
         let parcels = Arc::new(map);
         let mut scene = scene_with(&parcels);
         let sent = record_parcels(&mut scene);
-        let before = crate::parcels::limit_hits("parcel.text", "refuse");
         let agent = Uuid::from_u128(21);
         let _ = open_viewer_flags(&mut scene, agent, true, 1 << 7);
         arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
         assert!(sent.lock().unwrap().is_empty());
+        let _guard = crate::parcels::limits_lock();
+        let before = crate::parcels::limit_hits("parcel.text", "refuse");
         scene.send_parcel_at(agent);
         assert!(sent.lock().unwrap().is_empty());
         assert_eq!(
             crate::parcels::limit_hits("parcel.text", "refuse"),
             before + 1
         );
+        drop(_guard);
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
