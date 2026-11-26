@@ -125,6 +125,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR42 | R42: live scenarios register in one table | DONE (this PR) |
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
+| QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
@@ -843,6 +844,8 @@ QR27 (24 November 2026, `fix/upload-offer-bounds`): An offer shortens the name t
 QR29 (25 November 2026, `fix/qr29-teleport-flake`): The failing check was the return landing, not the hop: the home `AgentMovementComplete` after the return carried (128, 128, 2.1), the snapped walking height, while GridUser and Presence had been given (128, 128, 30). The hop completion made the actor live, the region then reported the root to GridUser and Presence, and a frame tick in that window (about 16 ms locally of a 90.9 ms frame) moved the avatar before the arrival packet sampled it. The completion now holds the actor until that sample, as a login pose does. Evidence is on the R29 row.
 
 QR30 (25 November 2026, `fix/qr30-harness-flakes`): Two harness flakes, no server change. The C# neighbour's arrival may now lie up to 1.0 m below the landing: it adds the physics actor, then makes two synchronous Robust calls (Presence and GridUser) before it samples the position, so the fall is wall time and grows on a slow runner; X, Y, the look and every Ferroan arrival stay exact. A grid proxy whose server the harness is stopping keeps a later request that finds it gone (refused, or reset or closed before any response byte) instead of failing: the C# neighbour's CloseAgent to home, sent after the bot logs out of it, reached the home proxy after home had stopped. Evidence is on the R30 row.
+
+QR46 (26 November 2026, `fix/qr46-neighbour-teleport`): The C#-to-C# neighbour arrival at Z 30.021477 came from the harness terrain seed. R29 holds the Ferroan return until the arrival sample. R30 allows the C# fall below the landing. The 29 m seed used the visual height. Pin8's physics box is 0.2 m taller, so the capsule started inside the terrain and the contact push lifted Z through the landing. The seed now leaves 5 cm under that capsule. The landing window is unchanged. No new TB or D. Evidence is on the R46 row.
 
 QR31 (25 November 2026, `fix/qr31-kill-groups`, urgent): the maintainer traced the anubis runner deaths to procps-ng 4.0.4's `/usr/bin/kill`, which reads `kill -TERM -<pgid>` without `--` as `kill(-1, SIGTERM)` and killed every process of the runner user. Every harness signal now goes through one helper that passes `--` and refuses 0 and 1. anubis stays paused with a temporary wrapper until this merges. Evidence is on the R31 row.
 

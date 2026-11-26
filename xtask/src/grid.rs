@@ -2438,6 +2438,9 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
 /// Q18a checks a standing avatar on both departures. The C# neighbour's
 /// default island peaks at 25 m, below the 30 m landing: ubODE can put the
 /// avatar into FALLDOWN before the return PUT (Pin8 ScenePresenceAnimator).
+/// The seeded floor is the physics capsule, not the visual height: Pin8 adds
+/// 0.2 m to the box, so a 29 m seed intersects it and the contact push lifts
+/// the arrival through the landing.
 #[cfg(target_os = "linux")]
 async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), String> {
     use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
@@ -2455,9 +2458,11 @@ async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), Str
 
     // TerrainData.FromCompressedTerrainSerializationV2D at Pin8 reads
     // revision 22 as two little-endian dimensions followed by float heights.
-    // At 29 m the captured 1.9 m avatar's feet have just 5 cm to settle.
+    // The height is the capsule floor: visual height plus Pin8's 0.2 m box
+    // adjustment, then 5 cm of air under that capsule.
+    let floor = login_capture::neighbour_landing_floor(login_capture::NEIGHBOUR_AVATAR_HEIGHT);
     let mut heights = 256_i32.to_le_bytes().repeat(2);
-    heights.extend_from_slice(&29_f32.to_le_bytes().repeat(256 * 256));
+    heights.extend_from_slice(&floor.to_le_bytes().repeat(256 * 256));
     let mut conn = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(db))
         .await
         .map_err(|e| e.to_string())?;
