@@ -9,8 +9,10 @@ mod material_override;
 #[path = "object_cross.rs"]
 mod object_cross;
 mod observer;
+mod parcel_properties;
 mod prim_arrival;
 use observer::{ObservedAvatar, ObserverSession};
+pub use parcel_properties::parcel_properties;
 
 use std::future::Future;
 use std::net::SocketAddr;
