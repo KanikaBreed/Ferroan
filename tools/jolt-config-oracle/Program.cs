@@ -303,6 +303,8 @@ static class Program
             Parse("enum-undefined", "Jolt", "0.0909",
                 "FrictionCombine = Min,Max\nRestitutionCombine = Min,Max\nVehicleBehaviour = +2\n"
                 + "VehiclePresets = +2\nBasicForcesBehaviour = +2\n"),
+            Parse("step-tiny", "Jolt", "0.0909", "PhysicsStepRate = 0.00001\n"),
+            Parse("frame-0.005025", "Jolt", "0.005025", ""),
             new Case("shipped", "region-ref",
                 "reference_appdata OpenSim.Server.RegionServer/AppData\nini_master RegionServerDefaults.ini\nini_file RegionServer.ini.example\n"),
         };

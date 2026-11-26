@@ -46,7 +46,6 @@ const MIN_AVATAR_SPEED_FACTOR: f32 = 0.1;
 const MAX_AVATAR_SPEED_FACTOR: f32 = 10.0;
 const MIN_REGION_HEIGHT: f32 = -128.0;
 const MAX_REGION_HEIGHT: f32 = 10_000.0;
-const DEFAULT_FRAME_TIME: f32 = 0.0908;
 const CORE_WALK_REQUEST: f32 = 4.096;
 const CORE_FLY_REQUEST: f32 = CORE_WALK_REQUEST * 4.0;
 
@@ -323,8 +322,7 @@ pub struct JoltLoad {
     pub test_commands_warning: Option<String>,
     pub effective_step_rate: f32,
     pub test_commands: bool,
-    /// `[Startup] FrameTime`, or `0.0908` when the key is absent or unparsable.
-    /// `Scene.cs` sets `FrameTime` to `0.0908f` and then `GetFloat("FrameTime", FrameTime)`.
+    /// The heartbeat the caller passed to [`load`]. Not read from `[Startup] FrameTime`.
     pub heartbeat_seconds: f32,
 }
 
@@ -339,18 +337,23 @@ pub fn startup_physics_warning(value: &str) -> Option<String> {
     }
 }
 
-/// Reads `[Jolt]` and `[Startup] physics` / `FrameTime`.
+/// Reads `[Jolt]` and `[Startup] physics`.
+///
+/// `heartbeat_seconds` is the caller's frame period. This function does not
+/// read `[Startup] FrameTime`. Ferroan's frame ignores that key and ticks at
+/// `0.0909`; P3.3 passes the frame's real heartbeat. Pin8's `Scene` reads the
+/// key (`Scene.cs` 1145, constructor default `0.0908` at 863).
 ///
 /// Logs the engine warning once when the physics value is not `Jolt`, then
-/// each `FromConfig` warning, then the step-rate warning. The step-rate note
-/// is information. The returned config is Jolt's either way.
-pub fn load(config: &Config) -> JoltLoad {
+/// each `FromConfig` warning, then a bad `TestCommands` warning, then the
+/// step-rate warning. The step-rate note is information. The returned config
+/// is Jolt's either way.
+pub fn load(config: &Config, heartbeat_seconds: f32) -> JoltLoad {
     let physics = config.get("Startup", "physics").unwrap_or("");
     let engine_warning = startup_physics_warning(physics);
     if let Some(warning) = &engine_warning {
         tracing::warn!("{warning}");
     }
-    let heartbeat_seconds = frame_time(config);
     let (parsed, warnings, test_commands, test_commands_warning) = from_config(config);
     for warning in &warnings {
         tracing::warn!("{warning}");
@@ -376,13 +379,6 @@ pub fn load(config: &Config) -> JoltLoad {
         effective_step_rate,
         test_commands,
         heartbeat_seconds,
-    }
-}
-
-fn frame_time(config: &Config) -> f32 {
-    match config.get("Startup", "FrameTime") {
-        Some(raw) => try_f(raw, f32::MIN, f32::MAX).unwrap_or(DEFAULT_FRAME_TIME),
-        None => DEFAULT_FRAME_TIME,
     }
 }
 
@@ -1191,7 +1187,8 @@ fn try_b(raw: &str) -> Option<bool> {
 fn try_e<'a>(raw: &str, names: &'a [&'a str]) -> Option<&'a str> {
     let name = raw.trim();
     let first = name.chars().next()?;
-    if first.is_digit(10) || first == '-' {
+    // C# `char.IsDigit` is Unicode category Nd, not only ASCII.
+    if unicode_digit(first) || first == '-' {
         return None;
     }
     let combined = if first == '+' {
@@ -1203,6 +1200,12 @@ fn try_e<'a>(raw: &str, names: &'a [&'a str]) -> Option<&'a str> {
         parse_enum_names(name, names)?
     };
     names.get(usize::try_from(combined).ok()?).copied()
+}
+
+/// `char.IsDigit`: Unicode decimal digits, including those outside ASCII.
+#[allow(clippy::is_digit_ascii_radix)]
+fn unicode_digit(first: char) -> bool {
+    first.is_digit(10)
 }
 
 /// Comma-separated names, as `Enum.TryParse` ORs them. An empty part fails.
@@ -1229,6 +1232,9 @@ fn csharp_bool(value: bool) -> &'static str {
 }
 
 /// `float.ToString(CultureInfo.InvariantCulture)` for the values this reader formats.
+///
+/// Below `1e-4` the spelling is scientific, as in `1E-05`. Larger finite values
+/// keep Rust's decimal spelling, which matches the pin for this reader's defaults.
 pub(crate) fn csharp_g(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -1247,10 +1253,35 @@ pub(crate) fn csharp_g(value: f32) -> String {
             "0".to_string()
         };
     }
+    let debug = format!("{value:?}");
+    if let Some(scientific) = scientific_below_1e_4(&debug) {
+        return scientific;
+    }
     format!("{value}")
 }
 
+/// Rewrite Rust's `1e-5` debug spelling to C#'s `1E-05` when the exponent is below -4.
+fn scientific_below_1e_4(debug: &str) -> Option<String> {
+    let (body, exponent) = debug.split_once('e')?;
+    let exponent: i32 = exponent.parse().ok()?;
+    if exponent >= -4 {
+        return None;
+    }
+    let mut text = String::from(body);
+    text.push('E');
+    text.push(if exponent < 0 { '-' } else { '+' });
+    let magnitude = exponent.unsigned_abs();
+    if magnitude < 10 {
+        text.push('0');
+    }
+    text.push_str(&magnitude.to_string());
+    Some(text)
+}
+
 /// `float.ToString("0.##", CultureInfo.InvariantCulture)`.
+///
+/// The value is rounded to 7 significant digits, then to two decimal places,
+/// half away from zero.
 fn format_hash2(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -1266,10 +1297,41 @@ fn format_hash2(value: f32) -> String {
         };
     }
     let negative = value.is_sign_negative();
-    let scaled = (value.abs() as f64) * 100.0;
-    let rounded = scaled.round() as u64;
-    let whole = rounded / 100;
-    let frac = (rounded % 100) as u8;
+    let Some((significand, exponent)) = seven_significant_digits(value.abs()) else {
+        return if negative {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
+    };
+    if exponent >= 6 {
+        let mut text = String::new();
+        if negative {
+            text.push('-');
+        }
+        text.push_str(&significand.to_string());
+        for _ in 0..(exponent - 6) {
+            text.push('0');
+        }
+        return text;
+    }
+    if exponent <= -4 {
+        return if negative {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
+    }
+    let hundredths = hundredths_half_away(significand, exponent);
+    if hundredths == 0 {
+        return if negative {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
+    }
+    let whole = hundredths / 100;
+    let frac = (hundredths % 100) as u8;
     let mut text = if negative {
         format!("-{whole}")
     } else {
@@ -1277,14 +1339,55 @@ fn format_hash2(value: f32) -> String {
     };
     if frac != 0 {
         text.push('.');
-        if frac.is_multiple_of(10) {
-            text.push(char::from(b'0' + frac / 10));
-        } else {
-            text.push(char::from(b'0' + frac / 10));
+        let tenths = frac / 10;
+        text.push(char::from(b'0' + tenths));
+        if !frac.is_multiple_of(10) {
             text.push(char::from(b'0' + frac % 10));
         }
     }
     text
+}
+
+/// Seven significant digits of a positive finite `f32`, as `{:.6e}` rounds them.
+fn seven_significant_digits(abs: f32) -> Option<(u32, i32)> {
+    let text = format!("{abs:.6e}");
+    let (mantissa, exponent) = text.split_once('e')?;
+    let exponent: i32 = exponent.parse().ok()?;
+    let digits = mantissa.as_bytes();
+    if digits.len() != 8 || digits[1] != b'.' || !digits[0].is_ascii_digit() {
+        return None;
+    }
+    let mut significand = u32::from(digits[0] - b'0') * 1_000_000;
+    let mut place = 100_000u32;
+    for byte in &digits[2..] {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        significand += u32::from(byte - b'0') * place;
+        place /= 10;
+    }
+    Some((significand, exponent))
+}
+
+/// `significand * 10^(exponent-6)`, rounded to hundredths, half away from zero.
+fn hundredths_half_away(significand: u32, exponent: i32) -> u64 {
+    let shift = exponent - 4;
+    if shift >= 0 {
+        u64::from(significand) * 10u64.pow(u32::try_from(shift).unwrap_or(0))
+    } else {
+        let Ok(places) = u32::try_from(-shift) else {
+            return 0;
+        };
+        let divisor = 10u64.pow(places);
+        let significand = u64::from(significand);
+        let quotient = significand / divisor;
+        let remainder = significand % divisor;
+        if remainder >= divisor / 2 {
+            quotient + 1
+        } else {
+            quotient
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1311,6 +1414,12 @@ mod tests {
         assert_eq!(csharp_g(bits("80000000")), "-0");
         assert_eq!(format_hash2(bits("41300482")), "11");
         assert_eq!(format_hash2(100.0), "100");
+        assert_eq!(csharp_g(0.00001), "1E-05");
+        assert_eq!(csharp_g(-0.00001), "-1E-05");
+        assert_eq!(csharp_g(f32::from_bits(0x38D1_B716)), "9.999999E-05");
+        assert_eq!(format_hash2(1.0 / 0.005025), "199.01");
+        assert_eq!(format_hash2(1.225), "1.23");
+        assert_eq!(format_hash2(-0.001), "-0");
         assert_eq!(
             JoltConfig::default().avatar_fly_speed_factor.to_bits(),
             bits("3F79FFFF").to_bits()
@@ -1331,6 +1440,7 @@ mod tests {
         assert_eq!(try_e("Average, Min", MATERIAL_COMBINES), Some("Min"));
         assert_eq!(try_e("Min,Max", MATERIAL_COMBINES), None);
         assert_eq!(try_e("1", MATERIAL_COMBINES), None);
+        assert_eq!(try_e("١", MATERIAL_COMBINES), None);
         assert_eq!(try_e("-Max", MATERIAL_COMBINES), None);
         assert_eq!(try_e("Average, +1", MATERIAL_COMBINES), None);
         assert_eq!(try_e("+0", VEHICLE_BEHAVIOURS), Some("SecondLife"));
@@ -1368,23 +1478,23 @@ mod tests {
             let text = format!("[Startup]\nphysics = {value}\nFrameTime = 0.0909\n");
             let config = Config::parse(&text).unwrap();
             let logged = warn_lines(&config);
-            let loaded = load(&config);
+            let loaded = load(&config, 0.0909);
             assert_eq!(loaded.engine_warning.as_deref(), Some(expected), "{value}");
             assert_eq!(logged, vec![expected.to_string()], "{value}");
             assert_eq!(loaded.config.gravity.to_bits(), bits("C11CE80A").to_bits());
             assert_eq!(loaded.effective_step_rate.to_bits(), 45.0f32.to_bits());
         }
         let jolt = Config::parse("[Startup]\nphysics = Jolt\nFrameTime = 0.0909\n").unwrap();
-        assert!(load(&jolt).engine_warning.is_none());
+        assert!(load(&jolt, 0.0909).engine_warning.is_none());
         assert!(warn_lines(&jolt).is_empty());
         let lower = Config::parse("[Startup]\nphysics = jolt\nFrameTime = 0.0909\n").unwrap();
         assert_eq!(
-            load(&lower).engine_warning.as_deref(),
+            load(&lower, 0.0909).engine_warning.as_deref(),
             Some("[Startup] physics = \"jolt\" is not Jolt; running Jolt.")
         );
         let empty = Config::parse("").unwrap();
         assert_eq!(
-            load(&empty).engine_warning.as_deref(),
+            load(&empty, 0.0909).engine_warning.as_deref(),
             Some("[Startup] physics = \"\" is not Jolt; running Jolt.")
         );
         assert_eq!(warn_lines(&empty).len(), 1);
@@ -1397,15 +1507,27 @@ mod tests {
             ]
         );
         assert_eq!(
-            load(&both).config.gravity.to_bits(),
+            load(&both, 0.0909).config.gravity.to_bits(),
             bits("C11CE80A").to_bits()
         );
+    }
+
+    #[test]
+    fn frame_time_in_the_ini_does_not_change_the_step_rate() {
+        let config =
+            Config::parse("[Startup]\nphysics = Jolt\nFrameTime = 0.01\n[Jolt]\n").unwrap();
+        let loaded = load(&config, 0.0909);
+        assert_eq!(loaded.heartbeat_seconds.to_bits(), 0.0909f32.to_bits());
+        assert_eq!(loaded.effective_step_rate.to_bits(), 45.0f32.to_bits());
+        assert!(loaded.step_warning.is_none());
+        assert!(loaded.step_note.is_none());
+        assert!(warn_lines(&config).is_empty());
     }
 
     fn warn_lines(config: &Config) -> Vec<String> {
         let store = WarnStore(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
         tracing::subscriber::with_default(store.clone(), || {
-            let _ = load(config);
+            let _ = load(config, 0.0909);
         });
         store.0.lock().unwrap().clone()
     }

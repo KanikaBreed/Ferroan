@@ -3,8 +3,9 @@
 
 //! Compares [`crate::load`] with the field bits and warnings
 //! `tools/jolt-config-oracle` wrote from the pinned `JoltConfig.FromConfig`.
-//! The `shipped` case reads the pinned Tranquillity tree when it is available
-//! and is skipped otherwise.
+//! The test passes the recorded `[Startup] FrameTime` bits as the heartbeat.
+//! `load` does not read that key. The `shipped` case reads the pinned
+//! Tranquillity tree when it is available and is skipped otherwise.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -135,8 +136,11 @@ fn jolt_config_matches_the_csharp_reader() {
         let config = read_config(&case_dir, &kind, reference.as_deref());
         let recorded = std::fs::read_to_string(case_dir.join("result.txt")).unwrap();
         let parsed = parse_result(&recorded);
+        let heartbeat = f32::from_bits(
+            u32::from_str_radix(parsed.heartbeat.trim(), 16).expect("heartbeat bits"),
+        );
         let store = WarnStore(Arc::new(Mutex::new(Vec::new())));
-        let loaded = tracing::subscriber::with_default(store.clone(), || load(&config));
+        let loaded = tracing::subscriber::with_default(store.clone(), || load(&config, heartbeat));
         let logged = store.0.lock().unwrap().clone();
         assert_case(id, &config, &loaded, &parsed, &logged);
     }
@@ -159,7 +163,10 @@ fn assert_case(id: &str, config: &Config, loaded: &JoltLoad, parsed: &Parsed, lo
             assert!(loaded.test_commands, "{id}");
             assert!(loaded.test_commands_warning.is_none(), "{id}");
         }
-        "false" => assert!(!loaded.test_commands, "{id}"),
+        "false" => {
+            assert!(!loaded.test_commands, "{id}");
+            assert!(loaded.test_commands_warning.is_none(), "{id}");
+        }
         "threw" => {
             assert!(!loaded.test_commands, "{id}");
             assert!(loaded.test_commands_warning.is_some(), "{id}");

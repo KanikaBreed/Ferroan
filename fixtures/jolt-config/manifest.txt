@@ -42,4 +42,6 @@ enum-plus-one
 enum-plus-zero
 enum-or-names
 enum-undefined
+step-tiny
+frame-0.005025
 shipped
