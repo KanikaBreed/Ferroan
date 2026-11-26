@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AnalysisLevel>none</AnalysisLevel>
+    <AssemblyName>Raw32Oracle</AssemblyName>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(USERPROFILE)' != ''">$(USERPROFILE)/Git/reference</FerroanRef>
+  </PropertyGroup>
+
+  <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Tests/OpenSim.Tests.Common/OpenSim.Tests.Common.csproj')"
+           Text="Set FerroanRef to the scratch clone of the pin. Missing OpenSim.Tests.Common." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Tests/OpenSim.Tests.Common/OpenSim.Tests.Common.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false;TreatWarningsAsErrors=false</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+</Project>
