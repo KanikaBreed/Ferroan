@@ -104,10 +104,10 @@ fn check_capsule(f: &[&str], header: &Header) {
     assert_eq!(f.len(), 9, "{f:?}");
     let size = [bits(f[2]), bits(f[3]), bits(f[4])];
     let capsule = capsule_from_size(size);
-    assert_eq!(hex(capsule.radius), f[5], "radius {f:?}");
-    assert_eq!(hex(capsule.half_height), f[6], "half {f:?}");
-    assert_eq!(hex(stand_half_for(size)), f[7], "stand {f:?}");
-    assert_eq!(hex(mass_for(size)), f[8], "mass {f:?}");
+    assert_eq!(seen(capsule.radius, f[5]), f[5], "radius {f:?}");
+    assert_eq!(seen(capsule.half_height, f[6]), f[6], "half {f:?}");
+    assert_eq!(seen(stand_half_for(size), f[7]), f[7], "stand {f:?}");
+    assert_eq!(seen(mass_for(size), f[8]), f[8], "mass {f:?}");
     if capsule.radius.is_finite() {
         assert!(
             capsule.radius >= 0.2_f32,
@@ -141,20 +141,26 @@ fn check_desc(f: &[&str], calls: &str, header: &Header) {
     });
     assert_eq!(desc.user_data.to_string(), f[1]);
     assert_eq!(create[1], f[1], "create user data");
-    assert_eq!(vec3(desc.position), owned3([f[2], f[3], f[4]]));
-    assert_eq!(vec4(desc.orientation), owned4([f[5], f[6], f[7], f[8]]));
-    assert_eq!(hex(desc.half_height), f[9]);
-    assert_eq!(hex(desc.radius), f[10]);
+    assert_eq!(
+        seen3(desc.position, [f[2], f[3], f[4]]),
+        owned3([f[2], f[3], f[4]])
+    );
+    assert_eq!(
+        seen4(desc.orientation, [f[5], f[6], f[7], f[8]]),
+        owned4([f[5], f[6], f[7], f[8]])
+    );
+    assert_eq!(seen(desc.half_height, f[9]), f[9]);
+    assert_eq!(seen(desc.radius, f[10]), f[10]);
     if desc.radius.is_finite() {
         assert!(desc.radius >= 0.2_f32);
     }
-    assert_eq!(hex(desc.mass), f[11]);
-    assert_eq!(hex(desc.jump_speed), f[12]);
+    assert_eq!(seen(desc.mass, f[11]), f[11]);
+    assert_eq!(seen(desc.jump_speed, f[12]), f[12]);
     assert_eq!(bit(desc.wants_contact_events), f[13]);
-    assert_eq!(hex(desc.friction), f[14]);
-    assert_eq!(hex(desc.max_slope_angle), f[15]);
-    assert_eq!(hex(desc.step_height), f[16]);
-    assert_eq!(hex(desc.push_strength), f[17]);
+    assert_eq!(seen(desc.friction, f[14]), f[14]);
+    assert_eq!(seen(desc.max_slope_angle, f[15]), f[15]);
+    assert_eq!(seen(desc.step_height, f[16]), f[16]);
+    assert_eq!(seen(desc.push_strength, f[17]), f[17]);
     let marker = marker_body_user_data(desc.user_data);
     assert_eq!(marker.to_string(), f[18], "marker user data");
     assert_eq!(marker, desc.user_data);
@@ -168,7 +174,10 @@ fn check_move(f: &[&str], header: &Header) {
         always_run: false,
         factors: factors_of(header),
     });
-    assert_eq!(vec3(velocity), owned3([f[1], f[2], f[3]]));
+    assert_eq!(
+        seen3(velocity, [f[1], f[2], f[3]]),
+        owned3([f[1], f[2], f[3]])
+    );
     assert_eq!(f[4], bit(movement_sends_latch(false)));
     assert_eq!(f[5], "0");
 }
@@ -188,19 +197,23 @@ fn check_intent(f: &[&str]) {
     };
     let velocity = desired_velocity(intent);
     assert_eq!(
-        vec3(velocity),
+        seen3(velocity, [f[10], f[11], f[12]]),
         owned3([f[10], f[11], f[12]]),
         "movement {f:?}"
     );
     assert_eq!(
-        vec3(velocity),
+        seen3(velocity, [f[13], f[14], f[15]]),
         owned3([f[13], f[14], f[15]]),
         "desired {f:?}"
     );
     assert_eq!(f[16], "0");
     assert_eq!(bit(intent.flying), f[17]);
     if !intent.flying {
-        assert_eq!(hex(velocity[2]), f[5], "walk and run leave Z unscaled");
+        assert_eq!(
+            seen(velocity[2], f[5]),
+            f[5],
+            "walk and run leave Z unscaled"
+        );
     }
 }
 
@@ -236,7 +249,7 @@ fn check_drain(f: &[&str], header: &Header) {
     assert_eq!(bit(flags.object), f[12]);
     let clamped = keep_in_region(input, header.region[0], header.region[1], false, true);
     assert_eq!(
-        vec3(clamped.position),
+        seen3(clamped.position, [f[13], f[14], f[15]]),
         owned3([f[13], f[14], f[15]]),
         "position {f:?}"
     );
@@ -248,10 +261,13 @@ fn check_size(f: &[&str], shape: &mut ShapeState) {
     let next = [bits(f[1]), bits(f[2]), bits(f[3])];
     let called = shape.set_size(next);
     assert_eq!(bit(called), f[4], "called {f:?}");
-    assert_eq!(hex(shape.mass), f[5]);
-    assert_eq!(hex(shape.half_height), f[6]);
-    assert_eq!(hex(shape.radius), f[7]);
-    assert_eq!(vec3(shape.size), owned3([f[8], f[9], f[10]]));
+    assert_eq!(seen(shape.mass, f[5]), f[5]);
+    assert_eq!(seen(shape.half_height, f[6]), f[6]);
+    assert_eq!(seen(shape.radius, f[7]), f[7]);
+    assert_eq!(
+        seen3(shape.size, [f[8], f[9], f[10]]),
+        owned3([f[8], f[9], f[10]])
+    );
     assert!(shape.radius >= 0.2_f32);
 }
 
@@ -259,7 +275,7 @@ fn check_buoyancy(f: &[&str], stored: f32) -> f32 {
     assert_eq!(f.len(), 4, "{f:?}");
     let (forwarded, next) = store_buoyancy(stored, bits(f[1]));
     assert_eq!(bit(forwarded), f[2], "buoyancy {f:?}");
-    assert_eq!(hex(next), f[3]);
+    assert_eq!(seen(next, f[3]), f[3]);
     next
 }
 
@@ -283,7 +299,7 @@ fn check_keep(f: &[&str]) {
         flag(f[2]),
     );
     assert_eq!(
-        vec3(clamped.position),
+        seen3(clamped.position, [f[8], f[9], f[10]]),
         owned3([f[8], f[9], f[10]]),
         "keep {f:?}"
     );
@@ -352,7 +368,10 @@ fn check_reject(f: &[&str]) {
     assert_eq!(f.len(), 6, "{f:?}");
     let finite = store_target([1.0, 2.0, 3.0]).unwrap();
     assert!(store_target([f32::NAN, 2.0, 3.0]).is_none());
-    assert_eq!(vec3(finite), owned3([f[1], f[2], f[3]]));
+    assert_eq!(
+        seen3(finite, [f[1], f[2], f[3]]),
+        owned3([f[1], f[2], f[3]])
+    );
     assert_eq!(f[4], f[5], "a rejected target adds no movement");
 }
 
@@ -438,6 +457,32 @@ fn hex(value: f32) -> String {
     format!("{:08X}", value.to_bits())
 }
 
+/// NaN compares as NaN because the default NaN's bits are platform-defined.
+fn seen(value: f32, expected: &str) -> String {
+    if value.is_nan() && bits(expected).is_nan() {
+        expected.to_string()
+    } else {
+        hex(value)
+    }
+}
+
+fn seen3(value: [f32; 3], expected: [&str; 3]) -> [String; 3] {
+    [
+        seen(value[0], expected[0]),
+        seen(value[1], expected[1]),
+        seen(value[2], expected[2]),
+    ]
+}
+
+fn seen4(value: [f32; 4], expected: [&str; 4]) -> [String; 4] {
+    [
+        seen(value[0], expected[0]),
+        seen(value[1], expected[1]),
+        seen(value[2], expected[2]),
+        seen(value[3], expected[3]),
+    ]
+}
+
 fn vec3(value: [f32; 3]) -> [String; 3] {
     [hex(value[0]), hex(value[1]), hex(value[2])]
 }
@@ -448,10 +493,6 @@ fn owned3(hexes: [&str; 3]) -> [String; 3] {
         hexes[1].to_string(),
         hexes[2].to_string(),
     ]
-}
-
-fn vec4(value: [f32; 4]) -> [String; 4] {
-    [hex(value[0]), hex(value[1]), hex(value[2]), hex(value[3])]
 }
 
 fn owned4(hexes: [&str; 4]) -> [String; 4] {

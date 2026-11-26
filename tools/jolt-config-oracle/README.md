@@ -44,6 +44,10 @@ The same file command calls `JoltCharacter` capsule, mass and stand-half,
 received. The samples are those method results. A finite footprint keeps a
 radius of at least 0.2 m. A constructor size that is NaN or infinite is
 recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
+The replay compares NaN as NaN because the default NaN's bits are
+platform-defined. Only `fixtures/jolt-file/character/result.txt` has NaN
+results (capsule rows 21-24, size row 50, buoyancy row 57). The
+note-dilation, config and drop replays stay bit-exact.
 The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
 unscaled. Flight ignores always-run, for both signs of Z. The latch clears
 when vertical velocity is above 0.5 or the avatar is not supported.
