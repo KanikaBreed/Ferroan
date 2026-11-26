@@ -83,8 +83,8 @@ static class PostgresCross
                     rust.Data["LastSeen"] == "" && store.VerifyAgent(user, thirdSecure), "Rust insert");
                 Check(store.Get("UserID", user.ToString()).Length == 3, "three sessions");
                 Check(!store.ReportAgent(first, UUID.Zero) && !store.ReportAgent(Id(10), home), "refused reports");
-                // LastSeen has no zone. Take both window bounds in the reporting
-                // provider's session zone, even when the Rust reader uses UTC.
+                // LastSeen has no zone. Both sessions use the server zone, or
+                // Npgsql's Timezone= when the connection string sets it.
                 using (var conn = new NpgsqlConnection(connection))
                 {
                     conn.Open();

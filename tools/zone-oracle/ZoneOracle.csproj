@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AnalysisLevel>none</AnalysisLevel>
+    <AssemblyName>ZoneOracle</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(USERPROFILE)' != ''">$(USERPROFILE)/Git/reference</FerroanRef>
+  </PropertyGroup>
+
+  <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj')"
+           Text="Set FerroanRef (or FERROAN_REF) to the scratch clone from oracle_reference::prepare. Missing OpenSim.Data.MySQL." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj">
+      <AdditionalProperties>GeneratePackageOnBuild=false</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

@@ -115,14 +115,15 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
-| QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
+| QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | DONE (this PR) |
 | QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
-| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
+| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | DONE (this PR) |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
 | QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
+| QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
