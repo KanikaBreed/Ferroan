@@ -76,8 +76,11 @@ const DENY_TRANSACTED: u32 = 1 << 25;
 const ALLOW_ENVIRONMENT: u32 = 1 << 9;
 const DENY_AGE: u32 = 1 << 30;
 
-/// `PrimCounts` for one parcel. A region with no counter leaves every field at
-/// zero, which is where `PrimCountModule` starts.
+/// `PrimCounts` for one parcel.
+///
+/// `PrimCountModule` starts tainted and recounts on the first read. Zero is
+/// the count after that recount only when the parcel has no prims. A region
+/// with no counter still leaves every field at zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PrimCounts {
     pub owner: i32,
@@ -519,21 +522,18 @@ impl Xml {
     }
 }
 
-/// Encode2 escapes `<`, `>`, `&`, `"` and `\`. A backslash becomes `&apos;`.
+/// `OSDParser.EscapeToXML` (`XmlLLSD.cs` 309–337). Apostrophe becomes
+/// `&apos;`. A backslash is left as itself.
 fn escape(value: &str, out: &mut Vec<u8>) {
-    for byte in value.bytes() {
-        match byte {
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'"' => out.extend_from_slice(b"&quot;"),
-            b'\\' => out.extend_from_slice(b"&apos;"),
-            _ => out.push(byte),
-        }
-    }
+    let mut text = String::new();
+    ferroan_llsd::xml::escape(value, &mut text);
+    out.extend_from_slice(text.as_bytes());
 }
 
 /// `float.ToString(CultureInfo.InvariantCulture)`, the general format.
+///
+/// Finite values take the spelling of [`crate::xml::format_f32`].
+/// Encode2 writes `Infinity` and `-Infinity`, not U+221E.
 fn format_single(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
@@ -545,10 +545,7 @@ fn format_single(value: f32) -> String {
             "Infinity".to_owned()
         };
     }
-    if value == 0.0 {
-        return "0".to_owned();
-    }
-    format!("{value}")
+    crate::xml::format_f32(value)
 }
 
 /// `Util.ToDateTime` then Encode2's date text. Unix 0 is the empty epoch.
@@ -618,6 +615,94 @@ mod tests {
         );
         assert_eq!(format_unix(CLAIM).as_deref(), Some("2026-11-26T06:25:48Z"));
         assert_eq!(format_unix(86_400).as_deref(), Some("1970-01-02"));
+    }
+
+    #[test]
+    fn strings_escape_apostrophe_and_reals_use_an_exponent() {
+        let mut escaped = Vec::new();
+        escape("Bob's Place", &mut escaped);
+        assert_eq!(escaped, b"Bob&apos;s Place");
+        escaped.clear();
+        escape(r"C:\land", &mut escaped);
+        assert_eq!(escaped, br"C:\land");
+        assert_eq!(format_single(-4.371139e-8), "-4.371139E-08");
+        assert_eq!(format_single(1e-5), "1E-05");
+        assert_eq!(format_single(1e9), "1E+09");
+        assert_eq!(format_single(f32::INFINITY), "Infinity");
+        assert_eq!(format_single(f32::NEG_INFINITY), "-Infinity");
+    }
+
+    #[tokio::test]
+    async fn bounding_box_heights_follow_each_metre_corner() {
+        let mut map = ParcelMap::empty([32, 32]).unwrap();
+        let mut bitmap = vec![0u8; 8];
+        for (x, y) in [(1u32, 0u32), (2, 0), (1, 3), (2, 3)] {
+            let n = y * 8 + x;
+            bitmap[n as usize / 8] |= 1 << (n % 8);
+        }
+        map.insert(super::super::StoredParcel {
+            data: super::super::Parcel::estate_land(ESTATE, CLAIM),
+            bitmap,
+        });
+        let mut heights = vec![0.0f32; 32 * 32];
+        heights[4] = 12.5;
+        heights[4 * 32] = 99.0;
+        heights[15 * 32 + 11] = 40.5;
+        heights[11 * 32 + 15] = 7.0;
+        let heightmap = super::Heightmap::from_cells(32, 32, heights);
+        let local_id = map.parcels()[0].local_id;
+        let send = ParcelPropertiesSend {
+            sequence_id: 0,
+            snap_selection: false,
+            request_result: 0,
+            region_flags: 0,
+            tax_free: false,
+            object_capacity: 15_000,
+            object_bonus: 1.0,
+            prims: PrimCounts::default(),
+            agent_environment_version: 0,
+            heightmap: Some(&heightmap),
+        };
+        let xml = String::from_utf8(map.parcel_properties(local_id, &send).unwrap()).unwrap();
+        assert!(
+            xml.contains(
+                "<key>AABBMin</key><array><real>4</real><real>0</real><real>12.5</real></array>"
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                "<key>AABBMax</key><array><real>12</real><real>16</real><real>40.5</real></array>"
+            ),
+            "{xml}"
+        );
+        assert!(!xml.contains("<real>99</real>"));
+        assert!(!xml.contains("<real>7</real>"));
+    }
+
+    #[tokio::test]
+    async fn parcel_element_bytes_grow_with_the_region() {
+        let cases = [(2048u32, 46_750usize), (2560, 71_326), (4096, 177_823)];
+        for (edge, expected) in cases {
+            let map = open_parcels_at(None, REGION, [edge, edge], ESTATE, CLAIM)
+                .await
+                .unwrap();
+            let local_id = map.parcels()[0].local_id;
+            let send = ParcelPropertiesSend {
+                sequence_id: 0,
+                snap_selection: false,
+                request_result: 0,
+                region_flags: 0,
+                tax_free: false,
+                object_capacity: 15_000,
+                object_bonus: 1.0,
+                prims: PrimCounts::default(),
+                agent_environment_version: 0,
+                heightmap: None,
+            };
+            let bytes = map.parcel_properties(local_id, &send).unwrap();
+            assert_eq!(bytes.len(), expected, "{edge} m");
+        }
     }
 
     #[tokio::test]
