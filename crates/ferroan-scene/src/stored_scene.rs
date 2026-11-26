@@ -48,9 +48,10 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 // Ported from SceneGraph.AddSceneObject, SceneObjectGroup.AttachToScene and
-// SendFullAnimUpdateToClient, and SceneObjectPart.ApplyPhysics and SendUpdateToClient
-// at Tranquillity c401bceecd1684832ae8ba86a31b5ee01a4ded7b,
-// and Utils.Clamp at libopenmetaverse a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
+// SendFullAnimUpdateToClient, and SceneObjectPart.ApplyPhysics, AddToPhysics,
+// ClampScale and SendUpdateToClient at Tranquillity
+// c401bceecd1684832ae8ba86a31b5ee01a4ded7b, and Utils.Clamp at libopenmetaverse
+// a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
 
 //! Restored world objects share one set of local IDs and cache revisions across viewers.
 
@@ -62,6 +63,9 @@ use crate::prim_update::{LinksetUpdateFlags, PrimUpdateError, StoredPrimUpdate};
 use crate::{ObjectGroup, ObjectPart, PriorityEntity};
 
 const PHYSICS: u32 = 1; // PrimFlags.Physics
+const PHANTOM: u32 = 0x400; // PrimFlags.Phantom
+const VOLUME_DETECT: u32 = 0x4000; // PrimFlags.JointLP2P, read by VolumeDetectActive
+const PHYS_SHAPE_NONE: u8 = 1; // PhysShapeType.none
 const FLEXIBLE: u8 = 0x80; // Extrusion.Flexible
 
 /// Effective nonphysical scale limits when ClampPrimSize is enabled.
@@ -84,6 +88,63 @@ impl PrimScaleLimits {
     }
 }
 
+/// Physical and nonphysical size limits from Scene's fields.
+///
+/// [`Default`] is those fields before configuration is read: nonphysical
+/// 0.001 to 256, physical 0.01 to 10.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PhysicsScaleLimits {
+    pub nonphys_min: f32,
+    pub nonphys_max: f32,
+    pub phys_min: f32,
+    pub phys_max: f32,
+}
+
+impl Default for PhysicsScaleLimits {
+    fn default() -> Self {
+        Self {
+            nonphys_min: 0.001,
+            nonphys_max: 256.0,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        }
+    }
+}
+
+/// ClampScale assigns an axis below `min` to `min`, else an axis above `max` to `max`.
+fn clamp_scale(scale: &mut [f32; 3], min: f32, max: f32) {
+    for axis in scale {
+        if *axis < min {
+            *axis = min;
+        } else if *axis > max {
+            *axis = max;
+        }
+    }
+}
+
+/// AddToPhysics runs ClampScale only for a part that would receive an actor.
+fn actor_clamps_scale(
+    part: &ObjectPart,
+    is_root: bool,
+    root_flags: u32,
+    attachment: bool,
+    collidable: bool,
+) -> bool {
+    if !collidable {
+        return false;
+    }
+    // A root stored as none is replaced with the default shape and still clamped.
+    // A child stored as none returns before ClampScale.
+    if part.physics_shape_type == PHYS_SHAPE_NONE && !is_root {
+        return false;
+    }
+    let physical = root_flags & PHYSICS != 0;
+    let phantom = root_flags & PHANTOM != 0;
+    // The column and the JointLP2P bit are the same VolumeDetectActive flag after a load.
+    let volume = part.volume_detect || part.flags & VOLUME_DETECT != 0;
+    (!phantom || physical || volume) && !attachment && part.shape.path_curve != FLEXIBLE
+}
+
 struct PreparedPart {
     group: usize,
     part: usize,
@@ -104,6 +165,7 @@ impl StoredScene {
     pub(crate) fn admit(
         mut groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
+        physics: PhysicsScaleLimits,
         collidable_prims: bool,
         mut allocate: impl FnMut() -> u32,
     ) -> Self {
@@ -118,8 +180,9 @@ impl StoredScene {
             // IsAttachmentCheckFull recognizes a stored primitive with a nonzero
             // attachment state. Vegetation uses State to identify its species.
             let attachment = root.shape.pcode == 9 && root.shape.state != 0;
+            let root_flags = root.flags;
             let physical_root = collidable_prims
-                && root.flags & PHYSICS != 0
+                && root_flags & PHYSICS != 0
                 && root.shape.path_curve != FLEXIBLE
                 && !attachment;
             let root_id = allocate();
@@ -131,8 +194,19 @@ impl StoredScene {
             link_order.sort_by_key(|&index| (index != 0, group.parts[index].link_num));
             for &index in &link_order {
                 let part = &mut group.parts[index];
+                // ClampPrimSize, when enabled, clamps every part to the nonphysical
+                // limits. AttachToScene then ClampScales each part that would get an actor.
                 if let Some(limits) = limits {
                     limits.apply(&mut part.shape.scale);
+                }
+                if actor_clamps_scale(part, index == 0, root_flags, attachment, collidable_prims) {
+                    let physical = root_flags & PHYSICS != 0;
+                    let (min, max) = if physical {
+                        (physics.phys_min, physics.phys_max)
+                    } else {
+                        (physics.nonphys_min, physics.nonphys_max)
+                    };
+                    clamp_scale(&mut part.shape.scale, min, max);
                 }
                 let (mesh_flags, probe) =
                     crate::xml::shape_update_entries(&part.shape.extra_params);

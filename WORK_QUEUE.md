@@ -120,7 +120,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
-| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
@@ -185,7 +185,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
+| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | READY |
+| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
@@ -270,6 +273,85 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
+| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
+| Q101 | P3.0b: `SubstepAccumulator` | READY |
+| Q102 | P3.0c: Move the C# Jolt module | READY |
+| Q103 | P3.0d: Pin move | READY after Q102 |
+| Q104 | P3.0e: Decision entry | READY after Q103 |
+| Q105 | P3.1: Bind `oxijolt-sys` | READY |
+| Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
+| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
+| Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
+| Q113 | P3.2d: Slope and hill | READY after Q112 |
+| Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
+| Q115 | P3.3: Physics thread and the request queue | READY after Q111 |
+| Q116 | P3.3b: Time dilation on terse updates | READY after Q111, Q115 and Q65c3b |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q111 |
+| Q118 | P3.5: Create-time body flags | READY after Q117 |
+| Q119 | P3.18a: Box contacts terrain and another box | READY after Q118 |
+| Q120 | P3.6: Buoyancy and gravity scale | READY after Q118 |
+| Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117, Q118, Q69 and Q70 |
+| Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
+| Q124 | P3.43: Grab | READY after Q118 |
+| Q125 | P3.44: Angular lock | READY after Q118 |
+| Q126 | P3.45: Impulse and push | READY after Q118 and Q101 |
+| Q127 | P3.46: Constant force and torque | READY after Q118 |
+| Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
+| Q129 | P3.48: Look-at | READY after Q118 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 and Q101 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 |
+| Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
+| Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
+| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
+| Q138 | P3.51: Physics shape type | READY after Q134, Q135 and Q69 |
+| Q139 | P3.10a: Sculpt vertices | READY after Q132 |
+| Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
+| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
+| Q144 | P3.18b: Linkset struck child | READY after Q142 and Q119 |
+| Q145 | P3.13b: Walk and run | READY after Q109, Q115 and Q112 |
+| Q146 | P3.13c: Fly | READY after Q145 |
+| Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
+| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147, Q130 and Q113 |
+| Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
+| Q150 | P3.14d: Avatar position set | READY after Q109, Q103 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109, Q103 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q119 |
+| Q153 | P3.15: Remove the walking stand-in | READY after Q145, Q118 and Q152 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109, Q118 and Q115 |
+| Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
+| Q156 | P3.17: Camera ray | READY after Q118 and Q115 |
+| Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
+| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 |
+| Q159 | P3.19: Vehicle parameter store | READY after Q118 and Q107 |
+| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q100 and Q159 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120 and Q115 |
+| Q162 | P3.20c: Angular motor and banking | READY after Q161 |
+| Q163 | P3.21a: Hover | READY after Q161 and Q114 |
+| Q164 | P3.21b: Vertical attraction | READY after Q162 |
+| Q165 | P3.22a: Car | READY after Q163 and Q162 |
+| Q166 | P3.22b: Sled | READY after Q165 and Q113 |
+| Q167 | P3.23a: Airplane | READY after Q164 |
+| Q168 | P3.23b: Mouselook | READY after Q167 |
+| Q169 | P3.23c: Balloon | READY after Q163 |
+| Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
+| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
+| Q172 | P3.24b: Saved `VehicleData` | READY after Q171 and Q142 |
+| Q173 | P3.25: Sit | READY after Q157 and Q147 |
+| Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
+| Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
+| Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
+
+Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -764,6 +846,30 @@ The manager approved Q60a through Q60c. Their dependencies and acceptance checks
 3. **Deliver and compare on Ferroan** (half to one day, after 1 and 2). Use the frame-owned map and the viewer's memberships on both Pin8 paths. At movement completion Pin8 sends terrain then requests the overlay unless it received a crossing update; positive teleport flags clear that crossing state. At the later initial-data gate it requests terrain and overlay only for zero teleport flags (`ScenePresence.cs` 2402, 2475, 4266–4343, 5427–5428). Ferroan currently retains only `via_login` on its accepted agent. Carry the teleport and crossing state needed by those two guards to the frame and circuit. Test suppression at that boundary, the eligible sends and duplicate movement/handshake packets. Drain on Land through the reliable window. Compare both viewer timelines and bodies on the same store, then run walk, avatars, teleport and require `live compare region` to report `region: match`.
 
 The manager approved Q60c1 to Q60c3 on 25 November 2026, as proposed above. Q60c1 and Q60c2 are independent; Q61 now waits for Q60c3.
+
+### Q61 proposed split
+
+**BLOCKED, 25 November 2026** (`docs/q61-parcel-properties`). The row is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
+
+The evidence the row asks for is the event element `EndEventToBytes` returns, byte for byte, at three moments. That element is `OpenMetaverse.StructuredData.LLSDxmlEncode2` (libopenmetaverse `OpenMetaverse.StructuredData/LLSD/LLSDxmlEncode.cs`, 972 lines). `EventQueueGetModule.StartEvent` writes `<map><key>message</key>…<key>body</key><map>`, and `GetEvents` wraps the queued elements in `<llsd><map><key>events</key><array>`. The poll id is random, so the compared bytes are the `ParcelProperties` element. Ferroan's queue stores `ferroan_llsd::to_xml` with the `<llsd>` wrapper removed (`crates/ferroan-client/src/event_queue.rs`). Encode2 writes boolean `0`/`1`, `<integer />` for zero, `<uuid />`, `<string />` and `<binary />` for empty values, a uint as little-endian binary, a `Vector3` as an array of reals, and a date as an empty epoch, a date-only day, or `yyyy-MM-ddTHH:mm:ssZ` / `.ffZ`. `ParcelFlags` is a uint. A map passed through `to_xml` cannot match a capture.
+
+`LandObject.SendLandProperties` (`LandObject.cs` 490–525) passes prim capacities, the object bonus and `IEstateModule.GetRegionFlags`. `GetParcelMaxPrimCount` (437) and `GetSimulatorMaxPrimCount` (463) are area × object capacity × object bonus / region area + 0.5, clamped to the region capacity. Object counts come from `PrimCounts`. `LLClientView.SendLandProperties` (6757–6893) writes `ParcelData`, `MediaData`, `ParcelExtendedFlags`, `AgeVerificationBlock`, `ParcelEnvironmentBlock` and `RegionAllowAccessBlock`. `GetRegionFlags` (`EstateManagementModule.cs` 134–191) does not set the four deny bits that method reads (TB152, D108). `RegionAllowAccessOverride` is `!EstateSettings.TaxFree` (6888). Obscure media and music in `MediaData` are hardcoded false; `ParcelExtendedFlags.Flags` is 1 when `ObscureMedia` is set.
+
+The three sends:
+
+1. Arrival. `ScenePresence.CompleteMovement` (2475) calls `sendClientInitialLandInfo` after terrain when the avatar is not an NPC. `LandManagementModule.sendClientInitialLandInfo` (492–507) returns when the presence or the parcel is missing. A child skips properties and can still receive the overlay. Otherwise it sets `currentParcelUUID` and calls `SendLandUpdateToClient`, which is `SendLandProperties(0, false, 0)`, and then the overlay. The initial-data gate (4343) calls the same method with the overlay only when teleport flags are `<= 0`. A login sets `ViaLogin`, so that gate does not send a second body. Q60c3 already carries those flags for the overlay.
+2. Request. `LLClientView.HandleParcelPropertiesRequest` (10874) rounds West, South, East and North into `ClientOnParcelPropertiesRequest` (1594–1646). Empty land, a negative bound or a bound outside the region returns. A span of at most one land unit sends `LAND_RESULT_SINGLE` for that cell. A larger span scans every cell, skips a parcel the agent is banned from, and sends `LAND_RESULT_MULTIPLE` when more than one parcel remains. Every parcel in the reply uses the request's sequence id. Snap with sequence 0 resends `m_lastSeqId` (510–518).
+3. Walk. `EventManagerOnClientMovement` (536–553) runs for a root on movement. When the parcel under the avatar differs from `currentParcelUUID`, it triggers `EventManagerOnAvatarEnteringNewParcel` (449–466). That sends when `GlobalID` differs, then stores the new id. `SendLandUpdate` (510) returns for a child. `EnforceBans` (464) and `SendOutNearestBanLine` (469) are access collisions. `ScenePresence.ParcelCrossCheck` (7405) shows and hides avatars. Neither is this body.
+
+`UpdateLandProperties` (`LandManagementModule.cs` 1648, `LandObject.cs` 528) is the editor. It reads the unsigned power mask through `CanEditParcelProperties`. The send path does not. Q60c1's memberships are the ban test on a multi-cell request. The region guide's sentence that ParcelProperties reads the power mask is recorded in `docs/found/Q61.md`.
+
+Use the Q60b multi-parcel store. A lone stored parcel keeps its old bitmap, area and bounding box while the overlay covers the region (TB97, D80). Q60a asked the properties comparison to notice that. This capture should not be that store.
+
+Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until all three are `DONE`. The delivery part waits for Q60c3. The capture and the encoder do not.
+
+1. **Capture the Pin8 elements** (about a day). On the Q60b store, record the `ParcelProperties` element on arrival, on a one-cell `ParcelPropertiesRequest`, on a span that covers two parcels, and on a walk across a parcel border. Publish those original bytes. When the extractor rebuilds a body, assert first that re-encoding the unredacted original reproduces the captured bytes, as `xtask/src/prim_capture.rs` does, and take the body from the capture. Keep the poll id out of the fixture. No Ferroan sender.
+2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
+3. **Deliver and compare** (about a day, after 1, 2 and Q60c3). Send on arrival, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. Handle `ParcelPropertiesRequest` for one cell, for several parcels, for a banned parcel and for a bound the handler ignores. Send again when a walk changes the parcel `GlobalID`. The bot reads the parcel flags from the arrival element. Live-compare those moments with the capture. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them. Ban lines, ban enforcement and avatar hiding stay out.
 
 ### Q65 split
 

@@ -452,6 +452,7 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         parcels,
         objects,
         config.prim_scale_limits,
+        config.physics_scale_limits,
         config.collidable_prims,
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;

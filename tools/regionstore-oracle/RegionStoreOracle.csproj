@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AnalysisLevel>none</AnalysisLevel>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseSharedCompilation>false</UseSharedCompilation>
     <AssemblyName>RegionStoreOracle</AssemblyName>
     <RootNamespace>Ferroan.RegionStoreOracle</RootNamespace>
     <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
