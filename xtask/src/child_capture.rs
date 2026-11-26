@@ -29,6 +29,8 @@ fn neighbour_handle() -> u64 {
 struct Circuit {
     session: Uuid,
     code: u32,
+    /// Capture time of this circuit's UseCircuitCode.
+    opened_ms: u64,
 }
 
 fn circuit(udp: &[Record], agent: Uuid) -> Result<Circuit, String> {
@@ -43,6 +45,7 @@ fn circuit(udp: &[Record], agent: Uuid) -> Result<Circuit, String> {
                 return Ok(Circuit {
                     session: id.session_id,
                     code: id.code,
+                    opened_ms: record.time_ms,
                 });
             }
         }
@@ -189,6 +192,7 @@ const RESIDENT_NAME: &[u8] =
 const ALIAS_NAME: &[u8] =
     b"FirstName STRING RW SV Test\nLastName STRING RW SV Doe\nTitle STRING RW SV \0";
 
+#[allow(clippy::too_many_arguments)]
 fn child_block(
     receipt: Option<&ferroan_protocol::IncomingPacket>,
     udp: &[Record],
@@ -197,11 +201,19 @@ fn child_block(
     code: u8,
     alias: Uuid,
     start: u64,
+    opened_ms: u64,
 ) -> Result<Option<(Vec<u8>, Value)>, String> {
     let Some(receipt) = receipt else {
         return Ok(None);
     };
-    for r in udp.iter().filter(|r| r.kind == Kind::UdpOut) {
+    // The neighbour file stores no socket address, so the resident circuit and
+    // the observer's child circuit share it. A resident full update can repeat
+    // the child copy's sequence and body. The child socket does not exist
+    // before its UseCircuitCode.
+    for r in udp
+        .iter()
+        .filter(|r| r.kind == Kind::UdpOut && r.time_ms >= opened_ms)
+    {
         let p = parse_packet(&r.bytes).map_err(|e| e.to_string())?;
         if p.id != ObjectUpdate::ID || p.sequence != receipt.sequence || p.body != receipt.body {
             continue;
@@ -494,6 +506,7 @@ pub(super) fn finish(run: &Path, observed: &Observation, ferroan: bool) -> Resul
             code,
             Uuid::from_u128(alias),
             start,
+            child.opened_ms,
         )? {
             fs::write(output.join(format!("{name}.bin")), bytes).map_err(|e| e.to_string())?;
             udp.push(event);
@@ -924,6 +937,53 @@ mod tests {
             replay_trace(&dir, &still).unwrap_err(),
             "missing movement-triggered AgentPosition"
         );
+    }
+
+    #[test]
+    fn child_block_ignores_a_resident_copy_before_the_child_circuit_opens() {
+        let id = Uuid::from_u128(7);
+        let message = ObjectUpdate {
+            region_data: RegionData {
+                region_handle: neighbour_handle(),
+                time_dilation: u16::MAX,
+            },
+            object_data: vec![ObjectData {
+                id: 1,
+                full_id: id,
+                p_code: 9,
+                ..ObjectData::default()
+            }],
+            ..ObjectUpdate::default()
+        };
+        let mut bytes = Vec::new();
+        ferroan_protocol::build_packet(&message, 4, true, false, &[], &mut bytes);
+        let receipt = parse_packet(&bytes).unwrap();
+        let udp = [
+            Record {
+                kind: Kind::UdpOut,
+                time_ms: 103,
+                bytes: bytes.clone(),
+            },
+            Record {
+                kind: Kind::UdpOut,
+                time_ms: 1269,
+                bytes,
+            },
+        ];
+        let alias = Uuid::from_u128(6);
+        let (_block, event) = child_block(Some(&receipt), &udp, "prim", id, 9, alias, 0, 882)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["ms"], 1269);
+        assert_eq!(event["circuit"], "observer-child");
+        assert_eq!(
+            child_block(Some(&receipt), &udp[..1], "prim", id, 9, alias, 0, 882).unwrap_err(),
+            "viewer receipt has no matching C# datagram with the same sequence and body"
+        );
+        let (_block, event) = child_block(Some(&receipt), &udp[1..], "prim", id, 9, alias, 0, 882)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["ms"], 1269);
     }
 
     #[test]
