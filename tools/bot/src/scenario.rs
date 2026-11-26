@@ -49,11 +49,21 @@ pub const HANDOFF_TASK_BPS: f32 = 512_000.0;
 pub type LoginGate =
     Arc<dyn Fn(Uuid) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
-/// Called with the account's principal once that login reached the region:
-/// the circuit is ready and the arrival handshake is done. The harness takes
-/// its `online` memory point here. The hook must return quickly and must not
-/// log in or out.
-pub type AfterLogin = Arc<dyn Fn(Uuid) + Send + Sync>;
+/// Called with the account's principal at a [`Moment`] of that login. The
+/// harness takes its `online` memory points here. The hook must return
+/// quickly and must not log in or out.
+pub type AfterLogin = Arc<dyn Fn(Uuid, Moment) + Send + Sync>;
+
+/// When [`Harness::after_login`] runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moment {
+    /// The login reached the region: the circuit is ready and the arrival
+    /// handshake is done.
+    Login,
+    /// A stored-prim run's viewer has received every stored part, before it
+    /// logs out.
+    Scene,
+}
 
 /// One account the region already has. The password is not printed.
 pub struct Account {
@@ -97,7 +107,8 @@ pub struct Harness {
     pub service_probe: String,
     /// Runs before every [`enter`]. The harness waits for the account to settle.
     pub before_login: LoginGate,
-    /// Runs at the end of every [`enter`] that succeeded. `None` does nothing.
+    /// Runs at the end of every [`enter`] that succeeded, and once more when a
+    /// stored-prim run has the whole scene. `None` does nothing.
     pub after_login: Option<AfterLogin>,
     /// Region metrics listener. Set for the Ferroan `roots` scenario.
     /// The C# region leaves this empty.
@@ -174,6 +185,11 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
             let (mut session, _) =
                 enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
             let result = wait_for_stored_prims(&mut session, count).await;
+            if result.is_ok()
+                && let Some(hook) = &harness.after_login
+            {
+                hook(harness.owner.principal_id, Moment::Scene);
+            }
             let logout = leave(harness, &mut session, &harness.owner).await;
             result?;
             logout?;
@@ -1935,7 +1951,7 @@ async fn enter_prepared(
         &harness.region_log,
     )?;
     if let Some(hook) = &harness.after_login {
-        hook(account.principal_id);
+        hook(account.principal_id, Moment::Login);
     }
     Ok((session, response))
 }

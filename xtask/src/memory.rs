@@ -13,8 +13,8 @@
 //! memory: region csharp idle 412.0 MiB, online 1 420.3 MiB, after logout 431.0 MiB, peak 530.1 MiB
 //! ```
 //!
-//! `peak` is the last `VmHWM` read, the process's high-water mark since it
-//! started. Nothing here signals a process or reads one the harness did not
+//! `peak` is the largest `VmHWM` or `VmRSS` read, the process's high-water
+//! mark since it started. Nothing here signals a process or reads one the harness did not
 //! start. Two limits bound the sampling: the status read
 //! ([`STATUS_BYTES`], `live.memory-status-bytes`) and the points kept for one
 //! process ([`MAX_POINTS`], `live.memory-points`).
@@ -120,6 +120,8 @@ struct State {
     watched: Vec<Watched>,
     online: usize,
     errors: Vec<String>,
+    /// Printed after the server name: `region csharp (500 parts) idle …`.
+    scene: Option<String>,
 }
 
 /// The memory points of one run, shared with the bot's after-login hook.
@@ -131,6 +133,13 @@ pub(crate) struct Meter {
 impl Meter {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// A meter whose lines name the scene the region holds.
+    pub(crate) fn for_scene(scene: &str) -> Arc<Self> {
+        let meter = Self::default();
+        meter.lock().scene = Some(scene.to_string());
+        Arc::new(meter)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -195,14 +204,20 @@ impl Meter {
         }
     }
 
-    /// The point taken right after a bot finished logging in: `online 1`,
-    /// `online 2`, ... in login order across the run. A failure is kept and
+    /// The point taken right after a bot finished logging in (`online 1`,
+    /// `online 2`, ... in login order across the run), or once a stored-prim
+    /// viewer has every part (`scene received`). A failure is kept and
     /// returned by [`Meter::lines`], since the hook cannot fail the login.
-    pub(crate) fn online(&self) {
+    pub(crate) fn online(&self, moment: ferroan_bot::scenario::Moment) {
         let label = {
             let mut state = self.lock();
-            state.online += 1;
-            format!("online {}", state.online)
+            match moment {
+                ferroan_bot::scenario::Moment::Login => {
+                    state.online += 1;
+                    format!("online {}", state.online)
+                }
+                ferroan_bot::scenario::Moment::Scene => "scene received".to_string(),
+            }
         };
         let _ = self.point(&label);
     }
@@ -217,14 +232,30 @@ impl Meter {
         Ok(state
             .watched
             .iter()
-            .map(|watched| line(&watched.role, watched.server, &watched.points))
+            .map(|watched| match &state.scene {
+                Some(scene) => line(
+                    &watched.role,
+                    &format!("{} ({scene})", watched.server),
+                    &watched.points,
+                ),
+                None => line(&watched.role, watched.server, &watched.points),
+            })
             .collect())
+    }
+
+    /// The points of the process watched `index`-th, or none.
+    pub(crate) fn points(&self, index: usize) -> Vec<(String, Sample)> {
+        self.lock()
+            .watched
+            .get(index)
+            .map(|watched| watched.points.clone())
+            .unwrap_or_default()
     }
 
     /// The bot hook that takes [`Meter::online`] after each login.
     pub(crate) fn after_login(self: &Arc<Self>) -> ferroan_bot::scenario::AfterLogin {
         let meter = Arc::clone(self);
-        Arc::new(move |_principal| meter.online())
+        Arc::new(move |_principal, moment| meter.online(moment))
     }
 }
 
@@ -235,8 +266,14 @@ pub(crate) fn line(role: &str, server: &str, points: &[(String, Sample)]) -> Str
         text.push_str(if index == 0 { " " } else { ", " });
         text.push_str(&format!("{label} {}", mib(sample.rss_kib)));
     }
-    match points.last() {
-        Some((_, last)) => text.push_str(&format!(", peak {}", mib(last.hwm_kib))),
+    // The kernel batches its RSS counters per CPU, so a `VmHWM` read can be
+    // a little below an earlier `VmRSS` read. The peak is the larger.
+    match points
+        .iter()
+        .map(|(_, sample)| sample.hwm_kib.max(sample.rss_kib))
+        .max()
+    {
+        Some(peak) => text.push_str(&format!(", peak {}", mib(peak))),
         None => text.push_str(" no samples"),
     }
     text
@@ -322,6 +359,30 @@ mod tests {
                 "memory: region csharp idle 401.0 MiB, online 1 403.0 MiB, after logout 405.0 MiB, peak 600.0 MiB",
                 "memory: robust ferroan idle 402.1 MiB, online 1 404.1 MiB, after logout 406.1 MiB, peak 600.0 MiB",
             ]
+        );
+    }
+
+    #[test]
+    fn the_peak_is_never_below_a_resident_sample() {
+        let points = [
+            (
+                "scene received".to_string(),
+                Sample {
+                    rss_kib: 262_760,
+                    hwm_kib: 262_760,
+                },
+            ),
+            (
+                "after logout".to_string(),
+                Sample {
+                    rss_kib: 249_548,
+                    hwm_kib: 262_246,
+                },
+            ),
+        ];
+        assert_eq!(
+            line("region", "csharp", &points),
+            "memory: region csharp scene received 256.6 MiB, after logout 243.6 MiB, peak 256.6 MiB"
         );
     }
 

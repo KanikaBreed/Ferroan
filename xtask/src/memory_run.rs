@@ -1,24 +1,28 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cargo xtask live memory` (P0.10n11): idle memory of region processes the
-//! scenarios do not start.
+//! `cargo xtask live memory [--bulk]` (P0.10n11): the C# and Ferroan region
+//! processes side by side, on the same scenes, with bots logged in.
 //!
 //! One C# Robust serves every step. Each step starts one region process,
 //! waits [`super::IDLE_SETTLE`] after its last `INITIALIZATION COMPLETE` line,
-//! reads `VmRSS` and `VmHWM`, and stops it:
+//! reads `VmRSS` and `VmHWM`, and stops it. The steps:
 //!
-//! - the C# region alone, then four C# regions in one process, which gives
-//!   the C# cost of each extra region;
-//! - the Ferroan region alone (release build);
-//! - both servers on the same seeded object store, at each size in
-//!   [`PRIMS`]. The stores are the `regionstore bulk` files QR22 measured:
-//!   single-prim groups with no shape row, written through the pin's
-//!   `SQLiteSimulationData`.
+//! - each server on the empty region, then on the 500-part store P2.5a's
+//!   `prim-load` delivers (`fixtures/prim-load/README.md`, written by the pin's
+//!   `SQLiteSimulationData.StoreObject`). Points: `idle`; `online 1` and
+//!   `online 2` as the two `roots` bots log in on the empty region, or
+//!   `online 1` and `scene received` once the `prim-load` bot has all 500
+//!   parts; then `after logout`;
+//! - four C# regions in one process at idle, which gives the C# cost of each
+//!   extra region against the empty C# region's idle point;
+//! - with `--bulk`, both servers at idle on the `regionstore bulk` stores
+//!   QR22 measured (single-prim groups with no shape row, [`PRIMS`]), and the
+//!   idle growth per prim.
 //!
-//! The C# regions run BasicPhysics, so no prim gets a physics body; Ferroan has
-//! no physics yet. Nothing logs in. The scenarios' `online` points are in
-//! every `live run … grid`.
+//! The Ferroan region is the release build. The C# regions run BasicPhysics
+//! and Ferroan has no physics or scripts yet, so no prim has a physics body or
+//! a script in either server.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -26,20 +30,28 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use super::{
-    ADVERTISED, AccountSeed, ExtraRegion, HOME_BIND, HOME_NAME, HOME_X, HOME_Y, Proc,
-    ROBUST_BIND, RegionExtras, RegionStart, ServiceUris, grid_root, provision_account,
+    ADVERTISED, AccountSeed, ExtraRegion, HOME_BIND, HOME_NAME, HOME_X, HOME_Y, Proc, ROBUST_BIND,
+    RegionExtras, RegionStart, RegionStore, ServiceUris, grid_root, provision_account,
     start_proxies, start_region_with, start_robust,
 };
 use crate::live;
-use crate::memory::{self, Sample};
+use crate::memory::{self, Meter, Sample};
 
-/// Object store sizes, as QR22 measured them (docs/TESTING.md).
+/// Bulk store sizes, as QR22 measured them (docs/TESTING.md).
 pub(super) const PRIMS: [u32; 5] = [500, 1_000, 5_000, 10_000, 40_000];
 
 /// Regions in the one C# process of the per-region step.
 const REGIONS: usize = 4;
 
-pub(super) fn run() -> Result<String, String> {
+/// The scenes the bots visit: the label, the home store and the bot scenario.
+const SCENES: [(&str, RegionStore, &str); 2] = [
+    ("empty", RegionStore::Standard, "roots"),
+    ("500 parts", RegionStore::LoadFixture, "prim-load"),
+];
+
+const SERVERS: [(&str, bool); 2] = [("csharp", false), ("ferroan", true)];
+
+pub(super) fn run(bulk: bool) -> Result<String, String> {
     if let Some(pid) = live::standalone_is_up()? {
         return Err(format!(
             "the harness is already up (pid {pid}); cargo xtask live down stops an interrupted run"
@@ -68,13 +80,20 @@ pub(super) fn run() -> Result<String, String> {
     }
     fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
-    let stores: Vec<(PathBuf, u32)> = PRIMS
-        .iter()
-        .map(|count| (root.join(format!("objects-{count}.db")), *count))
-        .collect();
-    crate::regionstore::bulk_stores(&stores, live::REGION_UUID)?;
+    let stores: Vec<(PathBuf, u32)> = if bulk {
+        PRIMS
+            .iter()
+            .map(|count| (root.join(format!("objects-{count}.db")), *count))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if bulk {
+        crate::regionstore::bulk_stores(&stores, live::REGION_UUID)?;
+    }
     let estate = live::generate_password()?;
-    let passwords = vec![estate.clone()];
+    let chat = live::generate_password()?;
+    let passwords = vec![estate.clone(), chat.clone()];
     let proxies = start_proxies(&[
         (
             SocketAddr::from((ADVERTISED, private_proxy)),
@@ -86,8 +105,26 @@ pub(super) fn run() -> Result<String, String> {
             SocketAddr::from((ROBUST_BIND, robust_public)),
             root.join("proxy-robust-public.cap"),
         ),
+        // Robust hands the bot the region's advertised address.
+        (
+            SocketAddr::from((ADVERTISED, home_port)),
+            SocketAddr::from((HOME_BIND, home_port)),
+            root.join("proxy-home.cap"),
+        ),
     ])?;
-    let mut robust = start_robust(
+    // Every step stops its region process on purpose, and the next one
+    // starts on the same port.
+    proxies.upstream_stopping(2);
+    let step = Step {
+        root: &root,
+        estate: &estate,
+        chat: &chat,
+        passwords: &passwords,
+        home_port,
+        public_proxy,
+        private_proxy,
+    };
+    let result = start_robust(
         &root,
         robust_public,
         robust_private,
@@ -96,35 +133,49 @@ pub(super) fn run() -> Result<String, String> {
             asset: None,
             account: None,
             auth: None,
+            groups: None,
         },
         false,
-    )?;
-    provision_account(
-        &mut robust,
-        None,
-        None,
-        robust_private,
-        AccountSeed {
-            first: "Test",
-            last: "User",
-            password: &estate,
-            email: "test@example.invalid",
-            uuid: live::ESTATE_OWNER,
-        },
-        &passwords,
-    )?;
-    let step = Step {
-        root: &root,
-        estate: &estate,
-        passwords: &passwords,
-        home_port,
-        public_proxy,
-        private_proxy,
-    };
-    let result = measure(&step, &stores, &more, robust.listen_pid);
-    proxies.upstream_stopping(0);
-    proxies.upstream_stopping(1);
-    drop(robust);
+    )
+    .and_then(|mut robust| {
+        let accounts = [
+            (
+                "Test",
+                "User",
+                &estate,
+                "test@example.invalid",
+                live::ESTATE_OWNER,
+            ),
+            (
+                "Chat",
+                "Bot",
+                &chat,
+                "chat@example.invalid",
+                live::CHAT_USER,
+            ),
+        ];
+        for (first, last, password, email, uuid) in accounts {
+            provision_account(
+                &mut robust,
+                None,
+                None,
+                robust_private,
+                AccountSeed {
+                    first,
+                    last,
+                    password,
+                    email,
+                    uuid,
+                },
+                &passwords,
+            )?;
+        }
+        let result = measure(&step, &stores, &more, robust.listen_pid);
+        proxies.upstream_stopping(0);
+        proxies.upstream_stopping(1);
+        drop(robust);
+        result
+    });
     let finished = proxies.finish();
     let lines = result?;
     finished?;
@@ -135,6 +186,7 @@ pub(super) fn run() -> Result<String, String> {
 struct Step<'a> {
     root: &'a Path,
     estate: &'a str,
+    chat: &'a str,
     passwords: &'a [String],
     home_port: u16,
     public_proxy: u16,
@@ -147,9 +199,25 @@ fn measure(
     more: &[ExtraRegion],
     robust_pid: u32,
 ) -> Result<Vec<String>, String> {
+    let robust = Meter::new();
+    robust.watch("robust", "csharp", robust_pid);
+    robust.point("idle")?;
     let mut lines = Vec::new();
-    let one = idle(step, "csharp-1", false, &RegionExtras::default())?;
-    lines.push(memory::line("1 region", "csharp", &[("idle".to_string(), one)]));
+    let mut empty = [None, None];
+    for (scene, store, bot) in SCENES {
+        for (index, (server, ferroan)) in SERVERS.into_iter().enumerate() {
+            let (line, idle) = visit(step, scene, store, bot, server, ferroan)?;
+            println!("{line}");
+            lines.push(line);
+            if store == RegionStore::Standard {
+                empty[index] = Some(idle);
+            }
+            robust.point(&format!("after {server} {scene}"))?;
+        }
+    }
+    let [Some(csharp_empty), Some(ferroan_empty)] = empty else {
+        return Err("the empty region was not measured".to_string());
+    };
     let four = idle(
         step,
         "csharp-4",
@@ -159,58 +227,95 @@ fn measure(
             ..RegionExtras::default()
         },
     )?;
-    lines.push(per_region_line(one, four));
-    let ferroan = idle(
-        step,
-        "ferroan-1",
-        true,
-        &RegionExtras {
-            release: true,
-            ..RegionExtras::default()
-        },
-    )?;
-    lines.push(memory::line(
-        "1 region",
-        "ferroan",
-        &[("idle".to_string(), ferroan)],
-    ));
+    lines.push(per_region_line(csharp_empty, four));
+    robust.point("after 4 regions")?;
     let mut largest = None;
     for (store, count) in stores {
-        let mut pair = Vec::with_capacity(2);
-        for (server, is_ferroan) in [("ferroan", true), ("csharp", false)] {
+        let mut pair = [None, None];
+        for (index, (server, ferroan)) in SERVERS.into_iter().enumerate() {
             let sample = idle(
                 step,
                 &format!("{server}-{count}"),
-                is_ferroan,
+                ferroan,
                 &RegionExtras {
                     store: Some(store),
-                    release: is_ferroan,
+                    release: ferroan,
                     more: &[],
                 },
             )?;
             lines.push(memory::line(
-                &format!("{count} prims"),
-                server,
+                "region",
+                &format!("{server} ({count} bulk prims)"),
                 &[("idle".to_string(), sample)],
             ));
-            pair.push(sample);
+            pair[index] = Some(sample);
         }
-        largest = Some((*count, pair[0], pair[1]));
+        if let [Some(csharp), Some(rust)] = pair {
+            largest = Some((*count, csharp, rust));
+        }
     }
-    if let Some((count, rust, csharp)) = largest {
+    if let Some((count, csharp, rust)) = largest {
         lines.push(format!(
-            "memory: per prim at {count} prims against an empty region: ferroan {}, csharp {}",
-            per_prim(ferroan, rust, count),
-            per_prim(one, csharp, count)
+            "memory: per prim at {count} bulk prims against the empty region: csharp {}, ferroan {}",
+            per_prim(csharp_empty, csharp, count),
+            per_prim(ferroan_empty, rust, count)
         ));
+        robust.point("after the bulk stores")?;
     }
-    let robust = memory::sample(robust_pid)?;
-    lines.push(memory::line(
-        "robust",
-        "csharp",
-        &[("after the regions".to_string(), robust)],
-    ));
+    lines.extend(robust.lines()?);
     Ok(lines)
+}
+
+/// One server on one scene: idle, the bot's logins, after logout. Returns the
+/// report line and the idle sample.
+fn visit(
+    step: &Step<'_>,
+    scene: &str,
+    store: RegionStore,
+    bot: &str,
+    server: &'static str,
+    ferroan: bool,
+) -> Result<(String, Sample), String> {
+    let directory = format!("{server}-{}", scene.replace(' ', "-"));
+    let region = start(
+        step,
+        &directory,
+        ferroan,
+        store,
+        &RegionExtras {
+            release: ferroan,
+            ..RegionExtras::default()
+        },
+    )?;
+    let meter = Meter::for_scene(scene);
+    meter.watch("region", server, region.listen_pid);
+    thread::sleep(super::IDLE_SETTLE);
+    meter.point("idle")?;
+    let mut harness = live::harness(
+        &format!("http://{ADVERTISED}:{}/", step.public_proxy),
+        &format!("http://{ADVERTISED}:{}", step.private_proxy),
+        step.estate,
+        step.chat,
+        &region.log,
+    )?;
+    harness.after_login = Some(meter.after_login());
+    println!("live: memory {server} {scene}: bot {bot}");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not start tokio: {error}"))?;
+    runtime.block_on(ferroan_bot::scenario::run(bot, &harness))?;
+    drop(runtime);
+    thread::sleep(super::IDLE_SETTLE);
+    meter.point("after logout")?;
+    let idle = meter
+        .points(0)
+        .first()
+        .map(|(_, sample)| *sample)
+        .ok_or("the idle point is missing")?;
+    let line = meter.lines()?.pop().ok_or("the region line is missing")?;
+    drop(region);
+    Ok((line, idle))
 }
 
 /// Start one region process, take its idle sample, stop it.
@@ -220,16 +325,30 @@ fn idle(
     ferroan: bool,
     extras: &RegionExtras<'_>,
 ) -> Result<Sample, String> {
+    let region = start(step, directory, ferroan, RegionStore::Standard, extras)?;
+    thread::sleep(super::IDLE_SETTLE);
+    let sample = memory::sample(region.listen_pid);
+    drop(region);
+    sample
+}
+
+fn start(
+    step: &Step<'_>,
+    directory: &str,
+    ferroan: bool,
+    store: RegionStore,
+    extras: &RegionExtras<'_>,
+) -> Result<Proc, String> {
     let cwd = step.root.join(directory);
     println!(
         "live: memory step {directory} on {HOME_BIND}:{}",
         step.home_port
     );
-    let region: Proc = start_region_with(
+    start_region_with(
         &cwd,
         (&live::publish_dir(), &live::source_dir()),
         step.estate,
-        RegionStart {
+        &RegionStart {
             ferroan,
             login_only: true,
             name: HOME_NAME,
@@ -247,26 +366,26 @@ fn idle(
             account_uri: None,
             auth_uri: None,
             metrics_port: None,
+            parcel_seed: None,
+            store,
+            patch_materials: false,
             basic_physics: !ferroan,
+            groups_uri: None,
         },
         step.passwords,
         false,
         extras,
-    )?;
-    thread::sleep(super::IDLE_SETTLE);
-    let sample = memory::sample(region.listen_pid);
-    drop(region);
-    sample
+    )
 }
 
-/// `memory: 4 regions csharp idle …, peak …, per extra region …`.
+/// `memory: region csharp (4 regions) idle …, peak …, per extra region …`.
 fn per_region_line(one: Sample, four: Sample) -> String {
     let extra = four.rss_kib.saturating_sub(one.rss_kib) / (REGIONS as u64 - 1);
     format!(
         "{}, per extra region {}",
         memory::line(
-            &format!("{REGIONS} regions"),
-            "csharp",
+            "region",
+            &format!("csharp ({REGIONS} regions)"),
             &[("idle".to_string(), four)]
         ),
         memory::mib(extra)
@@ -295,7 +414,7 @@ mod tests {
     fn the_extra_region_cost_is_a_third_of_the_growth_to_four() {
         assert_eq!(
             per_region_line(kib(300 * 1024), kib(360 * 1024)),
-            "memory: 4 regions csharp idle 360.0 MiB, peak 360.0 MiB, per extra region 20.0 MiB"
+            "memory: region csharp (4 regions) idle 360.0 MiB, peak 360.0 MiB, per extra region 20.0 MiB"
         );
     }
 

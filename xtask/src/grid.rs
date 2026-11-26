@@ -1273,7 +1273,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             })
     };
     let cleanup = grid.stop();
-    let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction, memory) {
+    let report = match (
+        report,
+        relay_result,
+        cleanup,
+        scrape,
+        smoke_logs,
+        redaction,
+        memory,
+    ) {
         (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(()), Ok(memory)) => {
             for line in memory {
                 report.lines.push('\n');
@@ -2495,10 +2503,7 @@ fn start_region_with(
         wait_log(
             &mut proc.child,
             &log,
-            &format!(
-                "INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED",
-                more.name
-            ),
+            &format!("INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED", more.name),
             live::START_TIMEOUT,
             passwords,
         )?;
@@ -3230,8 +3235,14 @@ mod tests {
         let mut region = sample_region(None);
         region.prim_capture = true;
         let ini = region_server_ini(&region).unwrap();
-        assert!(ini.ends_with("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n"));
-        assert!(!region_server_ini(&sample_region(None)).unwrap().contains("ClientStack"));
+        assert!(
+            ini.ends_with("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n")
+        );
+        assert!(
+            !region_server_ini(&sample_region(None))
+                .unwrap()
+                .contains("ClientStack")
+        );
     }
 
     #[test]
