@@ -44,6 +44,9 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// Child view settings follow Source/OpenSim.Region.Framework/Scenes/Scene.cs
+// and ScenePresence.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
+
 //! The single region used by P2.0d. INI syntax, includes and substitutions
 //! belong to ferroan-config. Interactive creation, XML regions, variable
 //! region sizes and TLS listeners remain unsupported and are refused.
@@ -81,12 +84,42 @@ pub enum RegionConfigError {
     ControlPlane(#[from] ControlPlaneError),
 }
 
+/// Scene.RegionViewDistance settings for child discovery (Pin8 Scene.cs
+/// 975-995 and ScenePresence.cs 725-730). The circuit retains its draw distance.
+#[derive(Clone, Copy)]
+pub struct RegionViewDistances {
+    minimum: f32,
+    pub(crate) maximum: f32,
+}
+
+impl RegionViewDistances {
+    pub(crate) fn read(server: &Config) -> Result<Self, RegionConfigError> {
+        let read = |key, default| match server.get("Startup", key) {
+            None => Ok(default),
+            Some(text) => text
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| value("Startup", key, "expected a finite distance")),
+        };
+        let maximum = read("MaxRegionsViewDistance", 255.)?.min(read("MaxDrawDistance", 512.)?);
+        let minimum = read("MinRegionsViewDistance", 96.)?.max(96.).min(maximum);
+        Ok(Self { minimum, maximum })
+    }
+
+    pub fn for_draw_distance(&self, draw_distance: f32) -> f32 {
+        (draw_distance + 64.).clamp(self.minimum, self.maximum)
+    }
+}
+
 /// Resolved public settings. Deliberately no Debug: region_secret is private.
 #[derive(Clone)]
 pub struct RegionConfig {
     pub id: Uuid,
     pub name: String,
     pub scope_id: Uuid,
+    pub region_view: RegionViewDistances,
     /// Map tiles, as written in Regions.ini. Registration uses metres.
     pub location: [u32; 2],
     pub size: [u32; 2],
@@ -152,6 +185,9 @@ pub struct RegionConfig {
     pub initial_terrain: ferroan_scene::InitialTerrain,
     /// SceneGraph's optional clamp on the scale of restored world prims.
     pub prim_scale_limits: Option<ferroan_scene::PrimScaleLimits>,
+    /// Size limits applied when a restored part would receive a physics actor.
+    /// Always set, including when [`Self::prim_scale_limits`] is absent.
+    pub physics_scale_limits: ferroan_scene::PhysicsScaleLimits,
     /// Whether stored prims can acquire physics actors on admission.
     pub collidable_prims: bool,
     /// Region store for prims. `[SimulationDataStore]` replaces
@@ -370,9 +406,11 @@ impl RegionConfig {
         handshake.sim_name = name.to_owned();
         handshake.product_name = product_name.to_owned();
         handshake.estate_owner = estate_owner;
+        let scales = scale_limits(server, regions, name)?;
         Ok(Self {
             id,
             name: name.to_owned(),
+            region_view: RegionViewDistances::read(server)?,
             scope_id: uuid(regions, name, "ScopeID", Some(Uuid::nil()))?,
             location,
             size,
@@ -419,7 +457,8 @@ impl RegionConfig {
                     .get("Terrain", "InitialTerrain")
                     .unwrap_or(ferroan_scene::DEFAULT_INITIAL_TERRAIN),
             ),
-            prim_scale_limits: prim_scale_limits(server, regions, name)?,
+            prim_scale_limits: scales.clamp,
+            physics_scale_limits: scales.physics,
             collidable_prims: boolean_or(server, "Startup", "collidable_prim", true)?,
             object_store: object_store(server),
             udp_capture: server
@@ -998,13 +1037,20 @@ fn estate_connection(config: &Config) -> Option<String> {
     current
 }
 
+struct ScaleSettings {
+    clamp: Option<ferroan_scene::PrimScaleLimits>,
+    physics: ferroan_scene::PhysicsScaleLimits,
+}
+
 /// Scene.cs and RegionInfo.cs at Pin8 c401bceecd: positive region sizes
 /// override Startup; the region setting can enable the startup clamp.
-fn prim_scale_limits(
+/// Physical limits are always applied by ClampScale. The nonphysical pair is
+/// also the ClampPrimSize pass when that flag is set.
+fn scale_limits(
     server: &Config,
     regions: &Config,
     name: &str,
-) -> Result<Option<ferroan_scene::PrimScaleLimits>, RegionConfigError> {
+) -> Result<ScaleSettings, RegionConfigError> {
     fn size(
         config: &Config,
         section: &str,
@@ -1019,15 +1065,26 @@ fn prim_scale_limits(
                 .ok_or_else(|| value(section, key, "expected a finite number"))
         })
     }
+    fn region_int(
+        regions: &Config,
+        name: &str,
+        key: &'static str,
+    ) -> Result<i32, RegionConfigError> {
+        regions
+            .get(name, key)
+            .unwrap_or("0")
+            .trim()
+            .parse::<i32>()
+            .map_err(|_| value(name, key, "expected an integer"))
+    }
     let startup_min = size(server, "Startup", "NonPhysicalPrimMin", 0.001)?;
     let startup_max = size(server, "Startup", "NonPhysicalPrimMax", 256.0)?;
     let region_min = size(regions, name, "NonPhysicalPrimMin", 0.0)?;
-    let region_max = regions
-        .get(name, "NonPhysicalPrimMax")
-        .unwrap_or("0")
-        .trim()
-        .parse::<i32>()
-        .map_err(|_| value(name, "NonPhysicalPrimMax", "expected an integer"))?;
+    let region_max = region_int(regions, name, "NonPhysicalPrimMax")?;
+    let startup_phys_min = size(server, "Startup", "PhysicalPrimMin", 0.01)?;
+    let startup_phys_max = size(server, "Startup", "PhysicalPrimMax", 10.0)?;
+    let region_phys_min = size(regions, name, "PhysicalPrimMin", 0.0)?;
+    let region_phys_max = region_int(regions, name, "PhysicalPrimMax")?;
     let startup_clamp = boolean(server, "Startup", "ClampPrimSize")?;
     let region_clamp = boolean(regions, name, "ClampPrimSize")?;
     let min = if region_min > 0.0 {
@@ -1040,12 +1097,30 @@ fn prim_scale_limits(
     } else {
         startup_max
     };
-    Ok(
-        (startup_clamp || region_clamp).then_some(ferroan_scene::PrimScaleLimits {
-            min: min.max(0.001),
-            max: max.min(65536.0),
+    let phys_min = if region_phys_min > 0.0 {
+        region_phys_min
+    } else {
+        startup_phys_min
+    };
+    let phys_max = if region_phys_max > 0 {
+        region_phys_max as f32
+    } else {
+        startup_phys_max
+    };
+    let nonphys_min = min.max(0.001);
+    let nonphys_max = max.min(65536.0);
+    Ok(ScaleSettings {
+        clamp: (startup_clamp || region_clamp).then_some(ferroan_scene::PrimScaleLimits {
+            min: nonphys_min,
+            max: nonphys_max,
         }),
-    )
+        physics: ferroan_scene::PhysicsScaleLimits {
+            nonphys_min,
+            nonphys_max,
+            phys_min: phys_min.max(0.01),
+            phys_max: phys_max.min(2048.0),
+        },
+    })
 }
 
 pub(crate) fn boolean(
@@ -1253,46 +1328,99 @@ mod tests {
 
     #[test]
     fn stored_prim_scale_settings_follow_startup_and_region_overrides() {
-        use ferroan_scene::PrimScaleLimits;
+        use ferroan_scene::{PhysicsScaleLimits, PrimScaleLimits};
         let mut server = server();
         let mut regions = regions();
         let read = |server: &Config, regions: &Config| {
-            RegionConfig::from_configs(server, regions)
-                .unwrap()
-                .prim_scale_limits
+            let config = RegionConfig::from_configs(server, regions).unwrap();
+            (config.prim_scale_limits, config.physics_scale_limits)
         };
-        assert_eq!(read(&server, &regions), None);
+        let defaults = PhysicsScaleLimits {
+            nonphys_min: 0.001,
+            nonphys_max: 256.0,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
+        assert_eq!(read(&server, &regions), (None, defaults));
         server.set("Startup", "ClampPrimSize", "true");
         assert_eq!(
             read(&server, &regions),
-            Some(PrimScaleLimits {
-                min: 0.001,
-                max: 256.0
-            })
+            (
+                Some(PrimScaleLimits {
+                    min: 0.001,
+                    max: 256.0
+                }),
+                defaults
+            )
         );
         server.set("Startup", "NonPhysicalPrimMin", "0.25");
         server.set("Startup", "NonPhysicalPrimMax", "64.5");
         regions.set("Ferroan Test", "NonPhysicalPrimMin", "-1");
         regions.set("Ferroan Test", "NonPhysicalPrimMax", "0");
+        let sized = PhysicsScaleLimits {
+            nonphys_min: 0.25,
+            nonphys_max: 64.5,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
         assert_eq!(
             read(&server, &regions),
-            Some(PrimScaleLimits {
-                min: 0.25,
-                max: 64.5
-            })
+            (
+                Some(PrimScaleLimits {
+                    min: 0.25,
+                    max: 64.5
+                }),
+                sized
+            )
         );
         server.set("Startup", "ClampPrimSize", "false");
         regions.set("Ferroan Test", "ClampPrimSize", "true");
         regions.set("Ferroan Test", "NonPhysicalPrimMin", "0.00001");
         regions.set("Ferroan Test", "NonPhysicalPrimMax", "70000");
+        let floored = PhysicsScaleLimits {
+            nonphys_min: 0.001,
+            nonphys_max: 65536.0,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
         assert_eq!(
             read(&server, &regions),
-            Some(PrimScaleLimits {
-                min: 0.001,
-                max: 65536.0
-            })
+            (
+                Some(PrimScaleLimits {
+                    min: 0.001,
+                    max: 65536.0
+                }),
+                floored
+            )
         );
         regions.set("Ferroan Test", "NonPhysicalPrimMax", "3.5");
+        assert!(RegionConfig::from_configs(&server, &regions).is_err());
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "32");
+        server.set("Startup", "PhysicalPrimMin", "0.2");
+        server.set("Startup", "PhysicalPrimMax", "4.5");
+        regions.set("Ferroan Test", "PhysicalPrimMin", "0.00001");
+        regions.set("Ferroan Test", "PhysicalPrimMax", "9000");
+        assert_eq!(
+            read(&server, &regions).1,
+            PhysicsScaleLimits {
+                nonphys_min: 0.001,
+                nonphys_max: 32.0,
+                phys_min: 0.01,
+                phys_max: 2048.0,
+            }
+        );
+        regions.set("Ferroan Test", "PhysicalPrimMax", "8");
+        regions.set("Ferroan Test", "PhysicalPrimMin", "0");
+        assert_eq!(
+            read(&server, &regions).1,
+            PhysicsScaleLimits {
+                nonphys_min: 0.001,
+                nonphys_max: 32.0,
+                phys_min: 0.2,
+                phys_max: 8.0,
+            }
+        );
+        regions.set("Ferroan Test", "PhysicalPrimMax", "3.5");
         assert!(RegionConfig::from_configs(&server, &regions).is_err());
     }
 

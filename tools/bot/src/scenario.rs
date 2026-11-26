@@ -25,7 +25,7 @@ use glam::Vec3;
 use uuid::Uuid;
 
 use crate::login::{self, LoginRequest, LoginResponse};
-use crate::session::{Agent, Session};
+use crate::session::{Agent, PrimTrace, Session};
 use crate::world::{self, SeenObject};
 
 const HANDSHAKE: Duration = Duration::from_secs(30);
@@ -35,6 +35,8 @@ const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 
 /// Number of parts in the persisted Pin8 prim-update capture scene.
 pub const PRIM_CAPTURE_COUNT: usize = 8;
+pub const PRIM_LOAD_COUNT: usize = 500;
+pub const HANDOFF_TASK_BPS: f32 = 512_000.0;
 
 /// Called with the account's principal before [`login::login`].
 ///
@@ -166,14 +168,31 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "prim-arrival" {
         return prim_arrival::run(&http, harness).await;
     }
-    if name == "prim-capture" {
-        let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
-        let result = wait_for_stored_prims(&mut session).await;
+    if matches!(name, "prim-capture" | "store-handoff" | "prim-load") {
+        let (count, throttle) = match name {
+            "prim-load" => (PRIM_LOAD_COUNT, ArrivalThrottle::Task(PrimTrace::Load)),
+            "store-handoff" => (
+                PRIM_CAPTURE_COUNT,
+                ArrivalThrottle::Task(PrimTrace::Arrival(HANDOFF_TASK_BPS)),
+            ),
+            _ => (PRIM_CAPTURE_COUNT, ArrivalThrottle::Default),
+        };
+        let (mut session, _) =
+            enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
+        let result = wait_for_stored_prims(&mut session, count).await;
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
         logout?;
+        if name != "prim-capture" {
+            let records = session
+                .take_arrival_records()
+                .ok_or("missing handoff viewer capture")?;
+            let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
+            std::fs::write(harness.region_log.with_extension("viewer.cap"), bytes)
+                .map_err(|e| e.to_string())?;
+        }
         return Ok(format!(
-            "prim-capture: viewer received {PRIM_CAPTURE_COUNT} distinct full prim updates\nlive: run passed"
+            "{name}: viewer received {count} distinct full prim updates\nlive: run passed"
         ));
     }
     if name == "avatars" {
@@ -182,7 +201,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all, object-cross, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {name}; expected all, object-cross, prim-load, store-handoff, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };
@@ -317,9 +336,10 @@ async fn receive_overlay(session: &mut Session, count: usize) -> Result<Vec<u8>,
 }
 
 /// Wait for the full set of fixture parts, including the linked child.
-async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
+async fn wait_for_stored_prims(session: &mut Session, count: usize) -> Result<(), String> {
     let mut ids = std::collections::BTreeSet::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now()
+        + Duration::from_secs(if count == PRIM_LOAD_COUNT { 60 } else { 15 });
     while std::time::Instant::now() < deadline {
         session
             .drive(STEP)
@@ -333,19 +353,19 @@ async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
                 for block in update.object_data {
                     if block.p_code != 47 {
                         ids.insert(block.full_id);
-                        if ids.len() > PRIM_CAPTURE_COUNT {
+                        if ids.len() > count {
                             return Err("unexpected extra stored prim".into());
                         }
                     }
                 }
             }
         }
-        if ids.len() == PRIM_CAPTURE_COUNT {
+        if ids.len() == count {
             return Ok(());
         }
     }
     Err(format!(
-        "expected {PRIM_CAPTURE_COUNT} stored prims, received {}",
+        "expected {count} stored prims, received {}",
         ids.len()
     ))
 }
@@ -1825,7 +1845,7 @@ async fn enter(
 
 enum ArrivalThrottle {
     Default,
-    Task(f32),
+    Task(PrimTrace),
     Land(f32),
 }
 
@@ -1867,7 +1887,7 @@ async fn enter_with_throttle(
     .map_err(|error| error.to_string())?;
     match throttle {
         ArrivalThrottle::Default => {}
-        ArrivalThrottle::Task(rate) => session.capture_prim_arrival(rate),
+        ArrivalThrottle::Task(trace) => session.capture_prim_arrival(trace),
         ArrivalThrottle::Land(rate) => session.set_land_rate(Some(rate)),
     }
     session

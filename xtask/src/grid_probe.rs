@@ -43,13 +43,17 @@ pub async fn online(
     loop {
         let mut grid = fields("getgriduserinfo");
         grid.insert("UserID".into(), Field::Str(arrival.agent_id.to_string()));
-        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid).await?;
+        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid)
+            .await
+            .map_err(|e| format!("root arrival: {e}"))?;
         let mut presence = fields("getagent");
         presence.insert(
             "SessionID".into(),
             Field::Str(arrival.session_id.to_string()),
         );
-        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence).await?;
+        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence)
+            .await
+            .map_err(|e| format!("root arrival: {e}"))?;
         if let (Some(Field::Map(grid)), Some(Field::Map(presence))) =
             (grid.get("result"), presence.get("result"))
         {
@@ -61,7 +65,7 @@ pub async fn online(
                 Some(Field::Str(value)) => vector(value),
                 _ => None,
             };
-            if online_matches(grid, presence, &arrival) {
+            if online_matches(grid, presence, &arrival, ferroan) {
                 let observation = write_observation(
                     &directory.join("root-arrival-online.json"),
                     ferroan,
@@ -90,7 +94,7 @@ pub async fn online(
                         }
                     }
                 }
-                return Ok("root arrival: Presence region and GridUser online/last region/position match current AgentMovementComplete; stored look is zero".into());
+                return Ok("root arrival: Presence and GridUser match the current circuit and region; stored look is zero".into());
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -104,6 +108,7 @@ fn online_matches(
     grid: &FieldMap,
     presence: &FieldMap,
     arrival: &ferroan_bot::scenario::RootArrival,
+    ferroan: bool,
 ) -> bool {
     let text = |map: &FieldMap, key: &str, expected: &str| matches!(map.get(key), Some(Field::Str(value)) if value == expected);
     let position = match grid.get("LastPosition") {
@@ -114,14 +119,22 @@ fn online_matches(
         Some(Field::Str(value)) => vector(value),
         _ => None,
     };
-    // Vector3.ToString uses Single.ToString(EnUsCulture). At the pinned .NET
-    // runtime those values round trip; compare parsed singles without epsilon.
+    // Pin8 installs the physics actor before ActivityDetector.SetLastPosition,
+    // then samples AbsolutePosition again for MoveAgentIntoRegion. Allow a
+    // vertical physics step on C# login (including upward ground correction).
+    // After the proxy drains we check all stored coordinates against the form.
+    // Ferroan reports and sends the same position.
     text(grid, "Online", "True")
         && text(grid, "UserID", &arrival.agent_id.to_string())
         && text(presence, "UserID", &arrival.agent_id.to_string())
         && text(presence, "RegionID", &arrival.region_id.to_string())
         && text(grid, "LastRegionID", &arrival.region_id.to_string())
-        && position == Some(arrival.position)
+        && position.is_some_and(|p| {
+            p == arrival.position
+                || (!ferroan
+                    && p[..2] == arrival.position[..2]
+                    && (p[2] - arrival.position[2]).abs() < 1.0)
+        })
         && look == Some([0.0; 3])
 }
 
@@ -310,7 +323,7 @@ fn deadline_error(service: &str, abandoned: u32) -> String {
     } else {
         format!("{abandoned} attempts abandoned")
     };
-    format!("logout service-state probe exceeded its ten-second deadline ({service}); {attempts}")
+    format!("service-state probe exceeded its ten-second deadline ({service}); {attempts}")
 }
 
 /// `hit` only reaches a log line when a subscriber is installed. The live
@@ -388,7 +401,7 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
         .timeout(SERVICE_ATTEMPT + Duration::from_millis(500))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| "could not build logout state probe client".to_string())?;
+        .map_err(|_| "could not build service-state probe client".to_string())?;
     let body = ferroan_http::build_query_string(fields).map_err(|error| error.to_string())?;
     let mut response = client
         .post(url)
@@ -397,10 +410,10 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
         .body(body)
         .send()
         .await
-        .map_err(|_| "logout state probe transport failed".to_string())?;
+        .map_err(|_| "service-state probe transport failed".to_string())?;
     if !response.status().is_success() {
         return Err(format!(
-            "logout state probe HTTP status {}",
+            "service-state probe HTTP status {}",
             response.status().as_u16()
         ));
     }
@@ -408,15 +421,15 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| "logout state probe body failed".to_string())?
+        .map_err(|_| "service-state probe body failed".to_string())?
     {
         if bytes.len().saturating_add(chunk.len()) > LIMIT {
-            return Err("logout state probe response exceeds limit".to_string());
+            return Err("service-state probe response exceeds limit".to_string());
         }
         bytes.extend_from_slice(&chunk);
     }
     let text = std::str::from_utf8(&bytes)
-        .map_err(|_| "logout state probe response is not UTF-8".to_string())?;
+        .map_err(|_| "service-state probe response is not UTF-8".to_string())?;
     ferroan_http::parse_xml_response(text).map_err(|error| error.to_string())
 }
 
@@ -642,10 +655,19 @@ pub fn generate(directory: &Path) -> Result<String, String> {
     Ok("region parity fixtures: six C# HTTP answers captured".into())
 }
 
+pub(super) fn verify_csharp_login_position(directory: &Path) -> Result<(), String> {
+    let online = read(&directory.join("root-arrival-online.json"))?;
+    let records = super::login_capture::records(&directory.join("proxy-robust-private.cap"))?;
+    let stored: [f32; 3] = serde_json::from_value(online["last_position"].clone())
+        .map_err(|e| format!("invalid observed GridUser LastPosition: {e}"))?;
+    super::login_capture::verify_login_set_position(&records, stored)
+}
+
 pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
     let pin = crate::live::read_pin()?;
     let online = read(&directory.join("root-arrival-online.json"))?;
     require_csharp_revision(&online, &pin)?;
+    verify_csharp_login_position(directory)?;
     let marker = super::login_capture::root_arrival_marker(directory, &pin)?;
     for key in ["arrival_position", "arrival_look_at", "arrival_handle"] {
         if marker[key] != online[key] {
@@ -1042,7 +1064,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.into(), Field::Str(v.into())))
             .collect();
-        assert!(online_matches(&grid, &presence, &arrival));
+        assert!(online_matches(&grid, &presence, &arrival, true));
         for (key, value) in [
             ("UserID", "wrong"),
             ("LastRegionID", "00000000-0000-0000-0000-000000000000"),
@@ -1052,13 +1074,23 @@ mod tests {
         ] {
             let mut stale = grid.clone();
             stale.insert(key.into(), Field::Str(value.into()));
-            assert!(!online_matches(&stale, &presence, &arrival), "{key}");
+            assert!(!online_matches(&stale, &presence, &arrival, true), "{key}");
         }
         for key in ["UserID", "RegionID"] {
             let mut wrong = presence.clone();
             wrong.insert(key.into(), Field::Str("wrong".into()));
-            assert!(!online_matches(&grid, &wrong, &arrival));
+            assert!(!online_matches(&grid, &wrong, &arrival, true));
         }
+        // Delay the C# setposition request by 220 ms and physics moves the
+        // viewer to 26.023798 while GridUser correctly retains 25.960001.
+        let mut later = arrival;
+        later.position[2] = 26.023798;
+        assert!(online_matches(&grid, &presence, &later, false));
+        assert!(!online_matches(&grid, &presence, &later, true));
+        later.position[0] += 0.01;
+        assert!(!online_matches(&grid, &presence, &later, false));
+        later.position = [128.0, 128.0, 28.0];
+        assert!(!online_matches(&grid, &presence, &later, false));
         for invalid in ["128, 128, 0", "<0, 0>", "<0, 0, 0, 1>", "<NaN, 0, 0>"] {
             assert!(vector(invalid).is_none());
         }

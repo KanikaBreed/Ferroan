@@ -25,7 +25,9 @@ mod source_hop;
 mod teleport;
 mod throttle;
 
-pub use appearance::{AvatarWire, LiveAvatar, StoredAppearance};
+pub use appearance::{
+    AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
+};
 pub use arrival::{ArrivalConfig, LandLayer};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,

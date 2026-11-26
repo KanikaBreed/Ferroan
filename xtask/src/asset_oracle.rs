@@ -62,6 +62,16 @@ const PRESENCE_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_PRESENCE_ADO",
 };
 
+/// Both providers use the same disposable MySQL connection from the environment. The C# constructor runs the Presence migration.
+pub fn presence_mysql_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "mysql_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_CROSS",
+        false,
+    )
+}
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///
@@ -154,37 +164,66 @@ pub fn presence_postgres_cross() -> ExitCode {
 
 /// Record or check the pinned loopback HTTP responses for the five avatar forms.
 pub fn avatar_service(writing: bool) -> ExitCode {
-    avatar_http(
+    service_http(
+        &AVATAR_CROSS,
         writing,
         &[
-            ("service", "service.json"),
-            ("service-mysql", "service-mysql.json"),
+            ("service", "service.json", None),
+            (
+                "service-mysql",
+                "service-mysql.json",
+                Some("FERROAN_AVATAR_ADO_MYSQL"),
+            ),
         ],
     )
 }
 
 /// Record or verify the XBakes HTTP responses, directory contents and console output.
 pub fn avatar_bakes(writing: bool) -> ExitCode {
-    avatar_http(writing, &[("bakes", "bakes.json")])
+    service_http(&AVATAR_CROSS, writing, &[("bakes", "bakes.json", None)])
 }
 
-fn avatar_http(writing: bool, modes: &[(&str, &str)]) -> ExitCode {
-    let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
+pub fn presence_service(writing: bool) -> ExitCode {
+    service_http(
+        &PRESENCE_CROSS,
+        writing,
+        &[
+            ("service", "service.json", None),
+            (
+                "service-postgres",
+                "service-postgres.json",
+                Some("FERROAN_PRESENCE_ADO_POSTGRES"),
+            ),
+        ],
+    )
+}
+
+fn service_http(
+    target: &PluginCross,
+    writing: bool,
+    modes: &[(&str, &str, Option<&str>)],
+) -> ExitCode {
+    let (dll, pin) = match build_plugin_oracle(target) {
         Ok(result) => result,
         Err(code) => return code,
     };
     let port = match crate::ports::alloc(crate::ports::Slot::RobustPrivate) {
         Ok(port) => port,
         Err(error) => {
-            eprintln!("avatar: {error}");
+            eprintln!("{}: {error}", target.label);
             return ExitCode::FAILURE;
         }
     };
     let action = if writing { "generate" } else { "verify" };
-    let fixtures = crate::repo_root().join("fixtures/avatar");
-    for &(mode, file) in modes {
-        if mode == "service-mysql" && std::env::var_os("FERROAN_AVATAR_ADO_MYSQL").is_none() {
-            println!("avatar: MySQL HTTP oracle skipped (FERROAN_AVATAR_ADO_MYSQL unset)");
+    let fixtures = crate::repo_root().join("fixtures").join(target.label);
+    for &(mode, file, variable) in modes {
+        if let Some(variable) = variable
+            && std::env::var_os(variable).is_none()
+        {
+            println!(
+                "{}: {mode} HTTP oracle skipped ({variable} unset)",
+                target.label
+            );
             continue;
         }
         let status = crate::dotnet_ci::command("dotnet")
@@ -193,7 +232,7 @@ fn avatar_http(writing: bool, modes: &[(&str, &str)]) -> ExitCode {
             .arg(fixtures.join(file))
             .status();
         if !matches!(status, Ok(status) if status.success()) {
-            eprintln!("avatar: {mode} HTTP oracle failed: {status:?}");
+            eprintln!("{}: {mode} HTTP oracle failed: {status:?}", target.label);
             return ExitCode::FAILURE;
         }
     }

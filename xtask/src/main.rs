@@ -30,6 +30,7 @@
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
+//! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
 //! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
 //! `session-zone` checks MySQL and PostgreSQL session zones against Pin8 on
 //! throwaway servers.
@@ -38,9 +39,11 @@
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
 //! `regionstore read` reads that XML back through the pin and writes the fields.
-//! `regionstore verify` reloads the object fixture. `regionstore cross`
-//! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
-//! the containers. None of them starts a server or the live harness.
+//! `regionstore verify` reloads the object fixture. `regionstore scales` writes
+//! the admitted-scale fixture, and `regionstore scales-verify` checks it.
+//! `regionstore cross` reloads SQLite and throwaway MySQL and PostgreSQL
+//! containers, then removes the containers. None of them starts a server or
+//! the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -144,10 +147,12 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
-       cargo xtask presence cross postgres
-       cargo xtask session-zone
+       cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
+       cargo xtask presence cross mysql
+       cargo xtask presence cross postgres
+       cargo xtask session-zone
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -168,6 +173,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask regionstore scales
+       cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
@@ -187,6 +194,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run parcel-timing grid --physics basicphysics
        cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
+       cargo xtask live run prim-load grid --physics basicphysics
+       cargo xtask live run store-handoff grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
        cargo xtask live run prim-arrival grid --region ferroan
@@ -282,7 +291,10 @@ fn main() -> ExitCode {
         ["http", "status-verify"] => http_oracle::status_verify(),
         ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
+        ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "service-generate"] => asset_oracle::presence_service(true),
+        ["presence", "service-verify"] => asset_oracle::presence_service(false),
         ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
         ["session-zone"] => session_zone::run(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
@@ -311,6 +323,8 @@ fn main() -> ExitCode {
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "scales"] => regionstore::scales(true),
+        ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),
