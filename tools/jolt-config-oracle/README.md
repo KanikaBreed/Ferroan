@@ -62,9 +62,12 @@ The heartbeat is `1/11` s (`RateHz` 11). `PhysicsStepRate` 0 is one step
 per heartbeat, read from `JoltScene.Substeps` when that accumulator exists
 and from `JoltScene.StepCount` when it does not. The host subscribes to the
 actor and records collision updates. The stock drop attaches no step
-provider. After the samples, events and step marks are stored, one extra
-simulate calls a recording provider through the backend's provider list and
-records that the call was forwarded. That proof is not a stock provider call.
+provider. After the samples, events and step marks are stored, the proof
+attaches `ScriptForceStepProvider` to the dropped box and replaces that
+entry's `Provider` field with a recording wrapper. One extra simulate
+forwards to the stock provider. The field is restored, and disposing the
+attachment leaves no provider and no step listener. The wrapper does not
+replace the entry: detach removes that entry by reference.
 
 Each fixture records the native file name, size and sha256, the harness
 commit, the heartbeat, the step count, the config, the warm-up count, the

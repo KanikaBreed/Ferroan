@@ -699,47 +699,82 @@ static class RecordOracle
 
         void ProveSeam(JoltScene scene, PhysicsActor actor)
         {
+            // AttachStepForceProvider's disposable removes its own entry by reference
+            // (JoltPhysicsBackend.StepProviders.cs). Replacing the entry leaves that
+            // disposable holding an object the list no longer contains. The proof
+            // therefore keeps the entry and swaps its Provider field.
             object backend = Backend(actor);
             BodyId body = (BodyId)actor.GetType().GetField("_body", Inst).GetValue(actor);
-            var inner = new RecordingStepForceProvider();
-            var attach = backend.GetType().GetMethod("AttachStepForceProvider");
-            var attachment = (IDisposable)attach.Invoke(backend, new object[] { body, inner });
-            var wrapper = new RecordingStepForceProvider { Inner = inner };
+            object stock = CreateStockProvider(actor, backend);
+            if (!(bool)stock.GetType().GetMethod("Arm", Inst).Invoke(stock, new object[]
+            {
+                body,
+                new System.Numerics.Vector3(1f, 0f, 0f),
+                System.Numerics.Vector3.Zero,
+                1e6f,
+                0f,
+            }))
+                throw new InvalidOperationException("the stock provider did not attach");
+            if (ProviderCount(backend) != 1)
+                throw new InvalidOperationException("the stock provider did not attach one entry");
+            object entry = LastEntry(backend);
+            FieldInfo providerField = entry.GetType().GetField("Provider");
+            var original = (IStepForceProvider)providerField.GetValue(entry);
+            if (!ReferenceEquals(original, stock))
+                throw new InvalidOperationException("the attached provider was not the stock provider");
+            var wrapper = new RecordingStepForceProvider { Inner = original };
+            providerField.SetValue(entry, wrapper);
+            // OnStep reads the provider list with Volatile.Read. The fence pairs with that acquire.
+            Thread.MemoryBarrier();
+            if (!ReferenceEquals(LastEntry(backend), entry))
+                throw new InvalidOperationException("the seam replaced the provider entry");
             try
             {
-                ReplaceLastProvider(backend, wrapper);
                 backend.GetType().GetMethod("ActivateBody").Invoke(backend, new object[] { body });
                 scene.Simulate((float)_dt);
+                if ((bool)stock.GetType().GetProperty("Armed", Inst).GetValue(stock))
+                    throw new InvalidOperationException("the stock provider was not stepped");
+                if (wrapper.Calls <= 0 || wrapper.Forwarded != wrapper.Calls)
+                    throw new InvalidOperationException("the recording seam did not forward a provider call");
+                long faults = (long)backend.GetType().GetProperty("StepForceProviderFaults").GetValue(backend);
+                if (faults != 0)
+                    throw new InvalidOperationException("the stock provider threw");
+                _seamCalls = wrapper.Calls;
+                _seamForwarded = wrapper.Forwarded;
             }
             finally
             {
-                attachment.Dispose();
+                providerField.SetValue(entry, original);
+                Thread.MemoryBarrier();
+                stock.GetType().GetMethod("Detach", Inst).Invoke(stock, null);
             }
-            if (wrapper.Calls <= 0 || inner.Calls <= 0 || wrapper.Forwarded != wrapper.Calls)
-                throw new InvalidOperationException("the recording seam did not forward a provider call");
-            _seamCalls = wrapper.Calls;
-            _seamForwarded = wrapper.Forwarded;
+            if (ProviderCount(backend) != 0)
+                throw new InvalidOperationException("detach left a step provider");
+            if ((bool)backend.GetType().GetProperty("HasStepListener", Inst).GetValue(backend))
+                throw new InvalidOperationException("detach left the step listener");
         }
 
-        static void ReplaceLastProvider(object backend, IStepForceProvider provider)
+        static object CreateStockProvider(PhysicsActor actor, object backend)
         {
-            FieldInfo field = backend.GetType().GetField("_stepProviders", Inst);
-            Array old = (Array)field.GetValue(backend);
-            if (old.Length == 0)
+            Type stockType = typeof(JoltScene).Assembly.GetType(
+                "OpenSim.Region.PhysicsModules.Jolt.ScriptForceStepProvider", true);
+            object stock = Activator.CreateInstance(
+                stockType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null,
+                new object[] { actor, backend },
+                null);
+            if (stock == null)
+                throw new InvalidOperationException("the stock provider was not constructed");
+            return stock;
+        }
+
+        static object LastEntry(object backend)
+        {
+            Array list = (Array)backend.GetType().GetField("_stepProviders", Inst).GetValue(backend);
+            if (list == null || list.Length == 0)
                 throw new InvalidOperationException("the seam proof attached no provider");
-            Type entryType = old.GetType().GetElementType();
-            object last = old.GetValue(old.Length - 1);
-            object created = Activator.CreateInstance(
-                entryType,
-                (uint)entryType.GetField("Handle").GetValue(last),
-                entryType.GetField("Id").GetValue(last),
-                provider);
-            Array next = Array.CreateInstance(entryType, old.Length);
-            Array.Copy(old, next, old.Length - 1);
-            next.SetValue(created, old.Length - 1);
-            field.SetValue(backend, next);
-            // OnStep reads the array with Volatile.Read. The fence pairs with that acquire.
-            Thread.MemoryBarrier();
+            return list.GetValue(list.Length - 1);
         }
 
         static JoltScene Scene(Run run) => (JoltScene)typeof(Run).GetField("Scene", Inst).GetValue(run);
@@ -837,7 +872,8 @@ static class RecordOracle
 
 /// <summary>
 /// Records one provider call and forwards it. OnStep does not allocate.
-/// The drop attaches none; the proof attaches one after the samples are stored.
+/// The drop attaches none. The proof attaches <c>ScriptForceStepProvider</c> after the
+/// samples are stored and forwards one simulate to that stock provider.
 /// </summary>
 sealed class RecordingStepForceProvider : IStepForceProvider
 {
