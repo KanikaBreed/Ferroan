@@ -3,7 +3,8 @@
 
 //! The other avatar's packets from a Ferroan `avatars` run against the C#
 //! capture in `fixtures/avatars/avatars.cap`: full `ObjectUpdate`,
-//! `AvatarAppearance`, `KillObject` and the minimap's `CoarseLocationUpdate`.
+//! `AvatarAppearance`, `KillObject` and the minimap's `CoarseLocationUpdate`;
+//! and the `UUIDNameReply` packets against `fixtures/avatars/names.cap`.
 //! The capture does not record which viewer a datagram went to, so each kind
 //! is compared per avatar, and each minimap list by its `You` index. The live
 //! run is redacted the way the fixture was before the bytes are compared;
@@ -11,8 +12,11 @@
 
 use std::path::Path;
 
+use ferroan_bot::scenario::UNKNOWN_NAME_ID;
 use ferroan_capture::{Kind, Record, redact_records};
-use ferroan_protocol::msgs::{AvatarAppearance, CoarseLocationUpdate, KillObject, ObjectUpdate};
+use ferroan_protocol::msgs::{
+    AvatarAppearance, CoarseLocationUpdate, KillObject, ObjectUpdate, UUIDNameReply,
+};
 use ferroan_protocol::{IncomingPacket, Msg, PacketFlags, Writer, parse_packet, str_field};
 use uuid::Uuid;
 
@@ -35,6 +39,7 @@ struct AvatarPackets {
     fulls: Vec<Seen<ObjectUpdate>>,
     appearances: Vec<Seen<AvatarAppearance>>,
     kills: Vec<Seen<KillObject>>,
+    names: Vec<Seen<UUIDNameReply>>,
     /// `flags` here is the whole first header byte, and the extra-header
     /// length must be 0: C# writes this header by hand.
     coarse: Vec<Seen<CoarseLocationUpdate>>,
@@ -89,6 +94,14 @@ fn avatar_packets(records: &[Record], agents: &[Uuid]) -> Result<AvatarPackets, 
                 .decode::<KillObject>()
                 .map_err(|_| "a KillObject did not decode".to_string())?;
             found.kills.push(Seen {
+                flags: packet.flags,
+                message,
+            });
+        } else if packet.id == UUIDNameReply::ID {
+            let message = packet
+                .decode::<UUIDNameReply>()
+                .map_err(|_| "a UUIDNameReply did not decode".to_string())?;
+            found.names.push(Seen {
                 flags: packet.flags,
                 message,
             });
@@ -240,6 +253,82 @@ fn masked_full(update: &ObjectUpdate) -> ObjectUpdate {
     update
 }
 
+/// The name replies for one id. Each must carry that one block.
+fn replies_for(names: &[Seen<UUIDNameReply>], id: Uuid) -> Vec<&Seen<UUIDNameReply>> {
+    names
+        .iter()
+        .filter(|seen| {
+            seen.message
+                .uuid_name_block
+                .iter()
+                .any(|block| block.id == id)
+        })
+        .collect()
+}
+
+/// `UUIDNameReply` for the other bot on each circuit and for the unknown id
+/// once its miss is cached, against `fixtures/avatars/names.cap`: one reply
+/// each, the C# body once redacted, the C# header flags, and the account
+/// names (or `Unknown` and the id) raw.
+fn compare_names(
+    csharp: &AvatarPackets,
+    ferroan: &AvatarPackets,
+    redacted: &AvatarPackets,
+    agents: [(Uuid, (&str, &str)); 2],
+) -> Result<usize, String> {
+    let unknown = UNKNOWN_NAME_ID.to_string();
+    let mut compared = 0;
+    for (id, names) in [
+        agents[0],
+        agents[1],
+        (UNKNOWN_NAME_ID, ("Unknown", unknown.as_str())),
+    ] {
+        // The second bot's first request for the unknown id can come after
+        // the owner's miss is cached, and is then answered too (TB89).
+        let most = if id == UNKNOWN_NAME_ID { 2 } else { 1 };
+        let reference = replies_for(&csharp.names, id);
+        let Some(reference) = reference.first().filter(|_| reference.len() <= most) else {
+            return Err(format!(
+                "the C# capture has {} UUIDNameReply for {id}, not 1 to {most}",
+                reference.len()
+            ));
+        };
+        let sent = replies_for(&ferroan.names, id);
+        let redacted_sent = replies_for(&redacted.names, id);
+        if sent.is_empty() || sent.len() > most {
+            return Err(format!(
+                "Ferroan sent {} UUIDNameReply for {id}, not 1 to {most}",
+                sent.len()
+            ));
+        }
+        if redacted_sent.len() != sent.len() {
+            return Err("redaction changed which name replies the run holds".into());
+        }
+        for (sent, redacted_sent) in sent.iter().zip(&redacted_sent) {
+            let block = &sent.message.uuid_name_block;
+            let want = (str_field(names.0), str_field(names.1));
+            if block.len() != 1 || (block[0].first_name.clone(), block[0].last_name.clone()) != want
+            {
+                return Err(format!(
+                    "Ferroan's UUIDNameReply for {id} does not carry {names:?}"
+                ));
+            }
+            if sent.flags & 0xc0 != reference.flags & 0xc0 {
+                return Err(format!(
+                    "the UUIDNameReply header for {id} differs from the C# capture"
+                ));
+            }
+            if body(&redacted_sent.message) != body(&reference.message) {
+                return Err(format!(
+                    "the UUIDNameReply for {id} differs from the C# capture"
+                ));
+            }
+            compared += 1;
+        }
+    }
+    Ok(compared)
+}
+
 fn name_value(first: &str, last: &str) -> Vec<u8> {
     str_field(&format!(
         "FirstName STRING RW SV {first}\nLastName STRING RW SV {last}\nTitle STRING RW SV "
@@ -367,6 +456,15 @@ pub(super) fn compare_avatars(directory: &Path) -> Result<String, String> {
     if kills[0].flags & 0xc0 != reference.flags & 0xc0 || body(&kill) != body(&reference_kill) {
         return Err("the KillObject differs from the C# capture past the local id".into());
     }
+    let named =
+        super::login_capture::records(&crate::repo_root().join("fixtures/avatars/names.cap"))?;
+    let named = avatar_packets(&named, &agents)?;
+    let names = compare_names(
+        &named,
+        &ferroan,
+        &ferroan_redacted,
+        [(owner, ("Test", "User")), (chat, ("Chat", "Bot"))],
+    )?;
     if ferroan.kills.iter().any(|seen| {
         seen.message
             .object_data
@@ -384,7 +482,7 @@ pub(super) fn compare_avatars(directory: &Path) -> Result<String, String> {
         chat,
     )?;
     Ok(format!(
-        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# can also send the kill to the leaving viewer after its LogoutReply (TB87, racing the circuit close; {} kill(s) in the C# capture), and AvatarAnimation is P2.3b2",
+        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked, and {names} UUIDNameReply (each bot's name, and the unknown id's cached miss) match fixtures/avatars/names.cap byte for byte; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# can also send the kill to the leaving viewer after its LogoutReply (TB87, racing the circuit close; {} kill(s) in the C# capture), and AvatarAnimation is P2.3b2",
         ferroan.fulls.len(),
         ferroan.appearances.len(),
         kills.len(),
@@ -578,5 +676,111 @@ mod tests {
         assert!(compare_coarse(&ferroan, &ferroan, &raw, (&[], &[]), owner, chat).is_ok());
         assert!(compare_coarse(&found.coarse, &ferroan, &raw, (&[], &[]), owner, chat).is_ok());
         assert!(compare_coarse(&ferroan, &found.coarse, &[], (&[], &[]), owner, chat).is_ok());
+    }
+
+    /// One `UUIDNameReply` for each bot, on the other's circuit, and one for
+    /// the unknown id's second request; none for its first. Each is one
+    /// redacted block, reliable and not zero-coded.
+    #[test]
+    fn the_csharp_capture_names_each_bot_and_the_cached_miss() {
+        let records = super::super::login_capture::records(
+            &crate::repo_root().join("fixtures/avatars/names.cap"),
+        )
+        .unwrap();
+        let owner = Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
+        let chat = Uuid::parse_str(crate::live::CHAT_USER).unwrap();
+        let found = avatar_packets(&records, &[owner, chat]).unwrap();
+        assert_eq!(found.names.len(), 3);
+        for id in [owner, chat, UNKNOWN_NAME_ID] {
+            let [seen] = replies_for(&found.names, id)[..] else {
+                panic!("not one reply for {id}");
+            };
+            assert_eq!(seen.flags & 0xc0, PacketFlags::RELIABLE);
+            let block = &seen.message.uuid_name_block;
+            assert_eq!(block.len(), 1);
+            // The redactor keeps C#'s placeholder for an unknown id (TB89).
+            let (first, last) = if id == UNKNOWN_NAME_ID {
+                (str_field("Unknown"), str_field(&id.to_string()))
+            } else {
+                (b"Redacted".to_vec(), b"Redacted".to_vec())
+            };
+            assert_eq!(block[0].first_name, first);
+            assert_eq!(block[0].last_name, last);
+        }
+    }
+
+    /// The compare refuses a reply with other names, a second reply, and a
+    /// missing one.
+    #[test]
+    fn the_name_compare_catches_a_wrong_or_missing_reply() {
+        let records = super::super::login_capture::records(
+            &crate::repo_root().join("fixtures/avatars/names.cap"),
+        )
+        .unwrap();
+        let owner = Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
+        let chat = Uuid::parse_str(crate::live::CHAT_USER).unwrap();
+        let csharp = avatar_packets(&records, &[owner, chat]).unwrap();
+        let agents = [(owner, ("Test", "User")), (chat, ("Chat", "Bot"))];
+        let unknown = UNKNOWN_NAME_ID.to_string();
+        let live = |names: &[(Uuid, &str, &str)]| AvatarPackets {
+            names: names
+                .iter()
+                .map(|(id, first, last)| Seen {
+                    flags: PacketFlags::RELIABLE,
+                    message: UUIDNameReply {
+                        uuid_name_block: vec![
+                            ferroan_protocol::msgs::uuid_name_reply::UUIDNameBlock {
+                                id: *id,
+                                first_name: str_field(first),
+                                last_name: str_field(last),
+                            },
+                        ],
+                        ..UUIDNameReply::default()
+                    },
+                })
+                .collect(),
+            ..AvatarPackets::default()
+        };
+        let redact = |packets: &AvatarPackets| AvatarPackets {
+            names: packets
+                .names
+                .iter()
+                .map(|seen| {
+                    let mut message = seen.message.clone();
+                    for block in &mut message.uuid_name_block {
+                        if block.id != UNKNOWN_NAME_ID {
+                            block.first_name = b"Redacted".to_vec();
+                            block.last_name = b"Redacted".to_vec();
+                        }
+                    }
+                    Seen {
+                        flags: seen.flags,
+                        message,
+                    }
+                })
+                .collect(),
+            ..AvatarPackets::default()
+        };
+        let good = [
+            (owner, "Test", "User"),
+            (chat, "Chat", "Bot"),
+            (UNKNOWN_NAME_ID, "Unknown", unknown.as_str()),
+        ];
+        let run = live(&good);
+        assert_eq!(compare_names(&csharp, &run, &redact(&run), agents), Ok(3));
+        let wrong = live(&[good[0], (chat, "Other", "Name"), good[2]]);
+        assert!(compare_names(&csharp, &wrong, &redact(&wrong), agents).is_err());
+        let twice = live(&[good[0], good[1], good[1], good[2]]);
+        // Two for the unknown id is the cached-miss race, and passes.
+        let unknown_twice = live(&[good[0], good[1], good[2], good[2]]);
+        assert_eq!(
+            compare_names(&csharp, &unknown_twice, &redact(&unknown_twice), agents),
+            Ok(4)
+        );
+        assert!(compare_names(&csharp, &twice, &redact(&twice), agents).is_err());
+        let other_unknown = live(&[good[0], good[1], (UNKNOWN_NAME_ID, "Unknown", "User")]);
+        assert!(compare_names(&csharp, &other_unknown, &redact(&other_unknown), agents).is_err());
+        let missing = live(&good[..2]);
+        assert!(compare_names(&csharp, &missing, &redact(&missing), agents).is_err());
     }
 }

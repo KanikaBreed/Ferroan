@@ -315,6 +315,31 @@ fn drive(server: &mut Running, name: &str, port: u16, log: &Path) -> Result<Vec<
     let authorized = post_xml(port, "/authorization", AUTHORIZATION_REQUEST)
         .map_err(|error| format!("auth {name} authorization failed: {error}\n{}", tail(log)))?;
     push(&mut records, checked(server, log, authorized)?);
+    // Exercise the R13 serializer and form cases on both running connectors.
+    let edges: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/auth-edges/cases.json"))
+            .map_err(|error| error.to_string())?;
+    for case in edges["xml"]
+        .as_array()
+        .ok_or("auth fixture is missing XML cases")?
+    {
+        let request = case["request"]
+            .as_str()
+            .ok_or("auth fixture is missing a request")?;
+        let reply = post_xml(port, "/authorization", request)?;
+        push(&mut records, checked(server, log, reply)?);
+    }
+    let list = edges["list"]["request"]
+        .as_str()
+        .ok_or("auth fixture is missing the list form")?;
+    push(
+        &mut records,
+        checked(server, log, form("list", "/auth/plain", list)?)?,
+    );
+    push(
+        &mut records,
+        checked(server, log, form("read-list", "/auth/plain", &info)?)?,
+    );
     Ok(records)
 }
 

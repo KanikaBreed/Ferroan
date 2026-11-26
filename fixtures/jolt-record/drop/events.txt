@@ -1,0 +1,36 @@
+format 1
+raw i=11 actor=1000 throttle=0 previous=0 phase=land-start collider=0 px=43008000 py=42FF0000 pz=41C80005 nx=80000000 ny=80000000 nz=BF800000 pen=00000000 speed=C11FFB83 feet=1
+raw i=12 actor=1000 throttle=0 previous=0 phase=land-end collider=0 px=00000000 py=00000000 pz=00000000 nx=00000000 ny=00000000 nz=00000000 pen=00000000 speed=00000000 feet=0
+raw i=17 actor=1000 throttle=0 previous=0 phase=land-start collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BB ny=B42F568F nz=BF800000 pen=00000000 speed=C02EBE76 feet=1
+raw i=18 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BB ny=B42F568F nz=BF800000 pen=00000000 speed=BF2E98E8 feet=1
+raw i=19 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BB ny=B42F568F nz=BF800000 pen=00000000 speed=BF3B9BE5 feet=1
+raw i=20 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=21 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=22 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=23 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=24 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=25 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=26 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=27 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=28 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=29 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+raw i=30 actor=1000 throttle=0 previous=0 phase=land collider=0 px=43007FFE py=42FEFFFC pz=41C80005 nx=B3A802BA ny=B42F568E nz=BF800000 pen=00000000 speed=BE181B06 feet=1
+phase t=3FF1745D1745D174 event=update id=1
+phase t=3FF1745D1745D174 event=land-start id=0
+phase t=3FF2E8BA2E8BA2E8 event=update id=0
+phase t=3FF2E8BA2E8BA2E8 event=land-end id=0
+phase t=3FFA2E8BA2E8BA2E event=update id=1
+phase t=3FFA2E8BA2E8BA2E event=land-start id=0
+phase t=3FFBA2E8BA2E8BA3 event=update id=1
+phase t=3FFD1745D1745D17 event=update id=1
+phase t=3FFE8BA2E8BA2E8C event=update id=1
+phase t=4000000000000000 event=update id=1
+phase t=4000BA2E8BA2E8BA event=update id=1
+phase t=4001745D1745D174 event=update id=1
+phase t=40022E8BA2E8BA2E event=update id=1
+phase t=4002E8BA2E8BA2E9 event=update id=1
+phase t=4003A2E8BA2E8BA3 event=update id=1
+phase t=40045D1745D1745D event=update id=1
+phase t=40051745D1745D17 event=update id=1
+phase t=4005D1745D1745D1 event=update id=1
+phase t=40068BA2E8BA2E8C event=update id=1

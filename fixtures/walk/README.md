@@ -28,7 +28,7 @@ The region generated that map at startup because the harness store has no `terra
 
 `the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds` (`crates/ferroan-scene/src/walk_capture.rs`) replays the inputs through the stand-in and the `ScenePresence.Update` thresholds. X, Y and Z match each block bit for bit, and velocity and rotation match after the avatar block's 16-bit packing. The send ticks match. The C# frame clock is not in the capture: tick `k` is placed at the first block's arrival plus `(k - 4) * 90.9` ms, every block falls on it within half a frame, the first forward update falls between ticks 0 and 1, and the release deadline falls between ticks 30 and 31. This heartbeat ran about 90.4 ms frames. The first frame that runs the thresholds is the one after `SendInitialData`, because `ScenePresence.Update` returns early until then. On a login `SendInitialData` sends no terrain (`ScenePresence.cs` line 4338 needs `TeleportFlags` 0): the `LayerData` burst is `CompleteMovement`'s push (line 2472), drained by the terrain module's every-fourth-frame check (`Scene.cs` 1768–1771). On this recording that check ran in the `SendInitialData` frame (region log 23:26:36,005, first `LayerData` 36,017), so the test uses the first `LayerData` as the marker for that frame. A new recording may not line up.
 
-To record it again, under the live lock with a free port base:
+To reproduce this single-viewer trace, use the Q46a harness at `4b48710` in a worktree under the live lock with a free port base. The current walk opens a second viewer circuit and records both viewers in the same capture.
 
 ```
 FERROAN_LIVE_PORT_BASE=23584 cargo xtask live run walk grid --physics basicphysics

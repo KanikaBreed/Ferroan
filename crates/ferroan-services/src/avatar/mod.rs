@@ -35,19 +35,27 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Avatar rows on SQLite, MySQL and PostgreSQL.
-//!
-//! `Get` by `PrincipalID`, upsert on `(PrincipalID, Name)`, delete by
-//! principal, and delete by principal and name follow the three
-//! `*AvatarData` plugins. The service's preserve, replace and height rules
-//! are a later item. This module does not serve HTTP and does not run
-//! migrations.
+//! Avatar key/value service and Pin8's `POST /avatar` forms. The store supports
+//! SQLite, MySQL and PostgreSQL.
 
+mod appearance;
+mod appearance_sort;
+#[cfg(test)]
+mod appearance_tests;
+mod http;
 mod model;
+mod open;
+mod service;
 mod store;
 
+pub use appearance::{AppearanceItem, AvatarAppearance, WearableLayers};
+pub use http::AvatarHttp;
 pub use model::{AvatarRow, DEFAULT_REALM};
+pub use open::AvatarError;
+pub use service::{AvatarData, AvatarService};
 pub use store::{AvatarStore, StoreError};
 
+#[cfg(test)]
+mod service_tests;
 #[cfg(test)]
 mod tests;

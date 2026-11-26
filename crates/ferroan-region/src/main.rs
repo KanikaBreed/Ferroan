@@ -33,6 +33,9 @@
 //   Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs
 //     (TeleportAgentWithinRegion)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// QR9 reference: Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPServer.cs
+// (HandleUseCircuitCode) and Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs
+// (AllocateLocalId and avatar creation) at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: async lifecycle, generation-safe cleanup and process orchestration.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -41,15 +44,13 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::collections::HashMap;
+use std::collections::BTreeSet;
 use std::env;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ferroan_client::{
@@ -61,7 +62,7 @@ use ferroan_region::config::{RegionConfig, RegionConfigError};
 use ferroan_region::fetch_caps::FetchCaps;
 use ferroan_region::grid::{GridClient, GridError, GridUserClient, PresenceClient};
 use ferroan_region::simulation::{
-    ADMISSION_QUEUE, AcceptedAgent, SimulationState, release_callback,
+    AcceptedAgent, DISPATCH_CAPACITY, SimulationState, release_callback,
 };
 use ferroan_region::source_hop::{HopEnv, HopLogin, HopPresence};
 use ferroan_region::status::{
@@ -70,7 +71,7 @@ use ferroan_region::status::{
 use ferroan_scene::TerrainFrame;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +100,8 @@ enum RunError {
     Terrain(String),
     #[error("objects: {0}")]
     Objects(String),
+    #[error("parcels: {0}")]
+    Parcels(#[from] ferroan_scene::parcels::ParcelError),
     #[error("region settings: {0}")]
     Settings(String),
 }
@@ -156,6 +159,25 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
     }))
 }
 
+/// `SendLandProperties` region values. The handshake word is the one stored
+/// settings already applied, including `RestrictPushing`. A missing settings
+/// row sends bonus 1. A missing estate leaves tax-free and the environment
+/// override clear.
+fn parcel_region(
+    config: &RegionConfig,
+    settings: Option<&ferroan_scene::RegionSettings>,
+    estate: Option<&ferroan_scene::EstateAccess>,
+) -> ferroan_scene::parcels::ParcelRegion {
+    let object_bonus = settings.map(|row| row.object_bonus).unwrap_or(1.0);
+    ferroan_scene::parcels::ParcelRegion::from_handshake(
+        config.handshake.region_flags,
+        object_bonus,
+        config.object_capacity,
+        estate.is_some_and(|access| access.tax_free),
+        estate.is_some_and(|access| access.allow_environment_override),
+    )
+}
+
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     if ferroan_region::config::prioritization_scheme_differs(
@@ -167,8 +189,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         );
     }
     let terrain = load_terrain(&config).await?;
-    let objects = load_stored_objects(&config).await?;
-    let _region_settings = load_stored_settings(&mut config).await?;
+    let region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -219,22 +240,65 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         Some(fetch.service()),
     )?;
     fetch.bind_uploader_routes(caps.uploader_routes());
-    // One queued accept per admitted root, including the staff and god bypass.
-    // The dispatcher spawns the circuit, so a same-agent replacement still fits
-    // while the old task is running.
-    let (accepted, agents) = mpsc::channel(ADMISSION_QUEUE);
+    // A full child share must leave room for queued roots as well as running ones.
+    let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
-    simulation.keep_objects(objects);
+    simulation.bind_circuit(circuit.clone());
     if let Some(frame) = &terrain {
+        simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
+        let caps_out = caps.clone();
+        let installed = frame.set_parcel_sender(Arc::new(move |agent, element| {
+            if let Err(error) = caps_out.enqueue_raw_for(agent, element, "parcel-properties") {
+                tracing::warn!(
+                    "ferroan-region: parcel properties were not queued for {agent}: {error}"
+                );
+            }
+        }));
+        match installed {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+            }
+        }
     }
+    let mut stored_estate = None;
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
-            Ok(Some(access)) => simulation.apply_estate(access),
+            Ok(Some(access)) => {
+                stored_estate = Some(access.clone());
+                simulation.apply_estate(access);
+            }
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!("ferroan-region: estate tables were not read: {error}");
+            }
+        }
+    }
+    if let Some(frame) = &terrain {
+        if let Some(map) = frame.parcels() {
+            if let Some(access) = stored_estate.as_ref() {
+                map.set_estate(access.owner, access.managers.clone(), access.tax_free);
+            }
+            let staff = simulation.staff_gate();
+            map.set_administrator(Arc::new(move |agent| staff.is_administrator(agent)));
+        }
+        let installed = parcel_region(&config, region_settings.as_deref(), stored_estate.as_ref());
+        match frame.set_parcel_region(installed) {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!(
+                        "ferroan-region: parcel region values were not installed: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel region values were not installed: {error}");
             }
         }
     }
@@ -326,12 +390,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     simulation.stop_accepting();
     let _ = stop_circuits.send(true);
     if !circuits_consumed {
-        // One active generation and one queued replacement: two arrival writes,
-        // up to six failed-login cleanup requests and one admission, each
-        // bounded at 30s. Concurrent roots take the same budget. HTTP cleanup
-        // holds one lifecycle lock, so a region at the ordinary root limit plus
-        // the staff bypass can still outrun it. Shutdown never cancels a write
-        // ahead of its cleanup.
+        // Allow time for in-flight detector writes, replacement cleanup and a final
+        // admission. Each agent drains independently within the shutdown deadline.
         let drained = tokio::time::timeout(Duration::from_secs(275), &mut circuits).await;
         let error = match drained {
             Ok(Ok(Ok(()))) => None,
@@ -415,12 +475,15 @@ async fn load_stored_objects(
 }
 
 async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>, RunError> {
-    let map = match (config.terrain_store.as_deref(), config.terrain_kind) {
-        (Some(connection), Some(ferroan_scene::ObjectStoreKind::Sqlite)) => {
+    // `SimulationDataService` keeps terrain in the same store as prims and
+    // settings: `[SimulationDataStore]` over `[DatabaseService]`.
+    let map = match config.object_store.as_ref() {
+        Some(store) => {
             let width = i32::try_from(config.size[0]).unwrap_or(i32::MAX);
             let height = i32::try_from(config.size[1]).unwrap_or(i32::MAX);
             let loaded = ferroan_scene::load_world_map(
-                connection,
+                &store.connection,
+                store.kind,
                 config.id,
                 width,
                 height,
@@ -431,25 +494,34 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
             log_world_map(&loaded, config.initial_terrain);
             Some(loaded.map)
         }
-        (Some(_), Some(_)) => {
-            tracing::info!(
-                "ferroan-region: MySQL and PostgreSQL stores have no saved heightmap yet"
-            );
-            None
-        }
-        (Some(_), None) => {
-            tracing::info!(
-                "ferroan-region: the database service is not a SQLite terrain store; no saved heightmap"
-            );
-            None
-        }
-        (None, _) => None,
+        None => None,
     };
-    let options = ferroan_scene::FrameOptions {
-        fly_slow: config.fly_slow,
+    let parcels = match &config.object_store {
+        Some(store) if store.kind != ferroan_scene::ObjectStoreKind::Sqlite => None,
+        store => {
+            let connection = store.as_ref().map(|store| store.connection.as_str());
+            let parcels = ferroan_scene::parcels::open_parcels(
+                connection,
+                config.id,
+                config.size,
+                config.estate_owner,
+            )
+            .await?;
+            tracing::info!("ferroan-region: loaded {} parcels", parcels.parcels().len());
+            Some(parcels)
+        }
     };
-    let frame = TerrainFrame::start_with(map, options)
-        .map_err(|error| RunError::Terrain(error.to_string()))?;
+    let objects = load_stored_objects(config).await?;
+    let frame = TerrainFrame::with_object_settings(
+        map,
+        parcels,
+        objects,
+        config.prim_scale_limits,
+        config.physics_scale_limits,
+        config.collidable_prims,
+        config.server.clone(),
+    )
+    .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -520,30 +592,32 @@ async fn terrain_login(
     (position, land)
 }
 
+/// Overlay chunks for an arrival at `position`. A root with no parcel under
+/// them gets none: `sendClientInitialLandInfo` returns before the overlay,
+/// after terrain was already queued. A child skips that lookup and still
+/// receives the overlay. Group cells use key presence only.
+fn overlay_chunks(
+    parcels: Option<&ferroan_scene::parcels::ParcelMap>,
+    agent: Uuid,
+    position: [f32; 3],
+    child: bool,
+    members: &BTreeSet<Uuid>,
+) -> Vec<ferroan_client::ParcelOverlayChunk> {
+    let Some(map) = parcels else {
+        return Vec::new();
+    };
+    map.arrival_overlay(agent, position, child, |group| members.contains(&group))
+        .into_iter()
+        .map(|packet| ferroan_client::ParcelOverlayChunk {
+            sequence_id: packet.sequence_id,
+            data: packet.data.to_vec(),
+        })
+        .collect()
+}
+
 async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     if let Err(error) = presence.logout_region(region).await {
         tracing::error!("ferroan-region: Presence logoutregion failed: {error}");
-    }
-}
-
-/// Aborts the circuit task when the dispatcher future is dropped. `JoinHandle`
-/// on drop detaches, and the region tests abort the dispatcher.
-struct AbortOnDrop(JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl AbortOnDrop {
-    fn join(mut self) -> impl Future<Output = ()> + Send {
-        std::future::poll_fn(
-            move |cx: &mut Context<'_>| match Pin::new(&mut self.0).poll(cx) {
-                Poll::Ready(_) => Poll::Ready(()),
-                Poll::Pending => Poll::Pending,
-            },
-        )
     }
 }
 
@@ -553,6 +627,7 @@ struct LifecycleClients {
     presence: PresenceClient,
 }
 
+#[derive(Clone)]
 struct DispatchCtx {
     circuit: CircuitServer,
     config: RegionConfig,
@@ -561,56 +636,7 @@ struct DispatchCtx {
     stop: watch::Receiver<bool>,
     /// Tests wait until a dequeued agent has passed same-agent cleanup.
     started: Arc<AtomicUsize>,
-    running: HashMap<Uuid, AbortOnDrop>,
     hop: HopEnv,
-}
-
-impl DispatchCtx {
-    /// Join a same-agent predecessor before its replacement circuit starts.
-    async fn launch(&mut self, agent: AcceptedAgent) {
-        let agent_id = agent.expect.agent_id;
-        if let Some(previous) = self.running.remove(&agent_id) {
-            previous.join().await;
-        }
-        if *self.stop.borrow() {
-            self.note_started();
-            let position = agent.start_pos;
-            settle(
-                &self.clients.grid_user,
-                &self.clients.presence,
-                &self.config,
-                agent,
-                false,
-                position,
-                [0.0; 3],
-            )
-            .await;
-            return;
-        }
-        let started = Arc::clone(&self.started);
-        let circuit = self.circuit.clone();
-        let config = self.config.clone();
-        let terrain = self.terrain.clone();
-        let clients = self.clients.clone();
-        let stop = self.stop.clone();
-        let hop = self.hop.clone();
-        let handle = tokio::spawn(async move {
-            started.fetch_add(1, Ordering::Release);
-            serve_agent(circuit, config, terrain, agent, stop, clients, hop).await;
-        });
-        self.running.insert(agent_id, AbortOnDrop(handle));
-    }
-
-    fn note_started(&self) {
-        self.started.fetch_add(1, Ordering::Release);
-    }
-
-    async fn join_running(&mut self) {
-        let pending: Vec<AbortOnDrop> = self.running.drain().map(|(_, task)| task).collect();
-        for task in pending {
-            task.join().await;
-        }
-    }
 }
 
 fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::MotionUpdate {
@@ -767,6 +793,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
+        SceneCall::InitialLand => answered(frame.initial_land(agent), |()| Ok(SceneReply::Applied)),
         SceneCall::Read => answered(frame.presence(agent), |stored| {
             Ok(stored.map_or(SceneReply::Missing, pose_reply))
         }),
@@ -795,6 +822,20 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
+        SceneCall::ParcelRequest(query) => answered(
+            frame.parcel_request(
+                agent,
+                ferroan_scene::parcels::PropertiesRequest {
+                    west: query.west,
+                    south: query.south,
+                    east: query.east,
+                    north: query.north,
+                    sequence_id: query.sequence_id,
+                    snap_selection: query.snap_selection,
+                },
+            ),
+            |()| Ok(SceneReply::Applied),
+        ),
     }
 }
 
@@ -802,17 +843,24 @@ async fn dispatch_circuits(
     circuit: CircuitServer,
     config: RegionConfig,
     terrain: Option<Arc<TerrainFrame>>,
-    mut agents: mpsc::Receiver<AcceptedAgent>,
+    agents: mpsc::Receiver<AcceptedAgent>,
     stop: watch::Receiver<bool>,
     started: Arc<AtomicUsize>,
     hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
+    // UserManagementModule: names from the account service, then GridUser.
+    circuit.enable_names(ferroan_region::names::GridNames::new(
+        &config.user_account_server_uri,
+        config.scope_id,
+        &config.grid_user_server_uri,
+        config.grid_home.clone(),
+    ));
     if let Some(frame) = terrain.as_ref() {
         let frame = Arc::clone(frame);
         circuit.set_login_scene(Arc::new(move |agent, call| scene_call(&frame, agent, call)));
     }
-    let mut ctx = DispatchCtx {
+    let ctx = DispatchCtx {
         circuit,
         clients: LifecycleClients {
             grid_user: GridUserClient::new(&config.grid_user_server_uri),
@@ -820,57 +868,91 @@ async fn dispatch_circuits(
         },
         config,
         terrain,
-        stop,
+        stop: stop.clone(),
         started,
-        running: HashMap::new(),
         hop,
     };
-    loop {
-        let next = tokio::select! {
-            biased;
-            result = ctx.stop.changed() => {
-                if result.is_err() || *ctx.stop.borrow() {
-                    agents.close();
-                    break;
-                }
-                continue;
+    dispatch(agents, stop, DISPATCH_CAPACITY, |mut agent, stopping| {
+        let ctx = ctx.clone();
+        async move {
+            agent.wait_for_predecessor().await;
+            ctx.started.fetch_add(1, Ordering::Release);
+            if stopping
+                || *ctx.stop.borrow()
+                || ctx.stop.has_changed().is_err()
+                || !agent.is_current()
+            {
+                let position = agent.start_pos;
+                settle(
+                    &ctx.clients.grid_user,
+                    &ctx.clients.presence,
+                    &ctx.config,
+                    agent,
+                    false,
+                    position,
+                    [0.0; 3],
+                )
+                .await;
+            } else {
+                serve_agent(ctx, agent).await;
             }
-            next = agents.recv() => next,
-        };
-        let Some(agent) = next else { break };
-        ctx.launch(agent).await;
-    }
-    while let Some(agent) = agents.recv().await {
-        let agent_id = agent.expect.agent_id;
-        if let Some(previous) = ctx.running.remove(&agent_id) {
-            previous.join().await;
         }
-        ctx.note_started();
-        let position = agent.start_pos;
-        settle(
-            &ctx.clients.grid_user,
-            &ctx.clients.presence,
-            &ctx.config,
-            agent,
-            false,
-            position,
-            [0.0; 3],
-        )
-        .await;
-    }
-    ctx.join_running().await;
+    })
+    .await;
     Ok(())
 }
 
-async fn serve_agent(
-    circuit: CircuitServer,
-    config: RegionConfig,
-    terrain: Option<Arc<TerrainFrame>>,
-    mut agent: AcceptedAgent,
+/// Reap completions even when admission is idle. Dropping the set aborts its tasks.
+/// Closing admission drains every reserved generation before shutdown returns.
+async fn dispatch<T, F, R>(
+    mut agents: mpsc::Receiver<T>,
     mut stop: watch::Receiver<bool>,
-    clients: LifecycleClients,
-    hop: HopEnv,
-) {
+    capacity: usize,
+    serve: impl Fn(T, bool) -> F,
+) where
+    F: Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    let mut running = JoinSet::new();
+    let mut stopping = *stop.borrow();
+    if stopping {
+        agents.close();
+    }
+    loop {
+        tokio::select! {
+            biased;
+            changed = stop.changed(), if !stopping => {
+                if changed.is_err() || *stop.borrow() {
+                    stopping = true;
+                    agents.close();
+                }
+            }
+            Some(result) = running.join_next(), if !running.is_empty() => {
+                if let Err(error) = result { tracing::error!("circuit task ended: {error}"); }
+            }
+            next = agents.recv(), if running.len() < capacity => {
+                let Some(agent) = next else { break };
+                running.spawn(serve(agent, stopping));
+            }
+        }
+    }
+    while let Some(result) = running.join_next().await {
+        if let Err(error) = result {
+            tracing::error!("circuit task ended: {error}");
+        }
+    }
+}
+
+async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
+    let DispatchCtx {
+        circuit,
+        config,
+        terrain,
+        mut stop,
+        clients,
+        hop,
+        ..
+    } = ctx;
     let LifecycleClients {
         grid_user,
         presence,
@@ -879,10 +961,25 @@ async fn serve_agent(
     let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id);
     let mut root_arrived = false;
     let already_stopped = *stop.borrow_and_update();
-    let (position, land) = if already_stopped {
-        (agent.start_pos, Vec::new())
+    let (position, land, members) = if already_stopped {
+        (agent.start_pos, Vec::new(), BTreeSet::new())
     } else {
-        terrain_login(terrain.as_deref(), agent.start_pos).await
+        // RefreshGroupMembership runs in the ScenePresence constructor, before
+        // the viewer connects. A transport error leaves the map empty: the
+        // overlay still goes out, and every group cell reads as non-member.
+        let frame = terrain.as_deref();
+        let ((position, land), memberships) = tokio::join!(
+            terrain_login(frame, agent.start_pos),
+            config.groups.memberships(agent.expect.agent_id),
+        );
+        let members = match memberships {
+            Ok(rows) => rows.into_keys().collect(),
+            Err(error) => {
+                tracing::error!("ferroan-region: group membership lookup failed: {error}");
+                BTreeSet::new()
+            }
+        };
+        (position, land, members)
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
@@ -901,14 +998,23 @@ async fn serve_agent(
         let half_height = avatar.height / 2.0;
         let mut arrival = config.arrival(position);
         arrival.land = land;
-        // The frame gives the avatar its local id and fills this viewer's
-        // entity updates. Without a frame the avatar keeps id 1 and gets none.
-        if let Some(frame) = terrain.as_deref() {
+        arrival.teleport_flags = agent.teleport_flags;
+        arrival.crossing_flags = 0;
+        arrival.overlay = overlay_chunks(
+            terrain.as_deref().and_then(TerrainFrame::parcels),
+            expect.agent_id,
+            position,
+            agent.return_slot.is_child(),
+            &members,
+        );
+        // The owner and the frame use the same region id space, even if attach fails.
+        let attached = if let Some(frame) = terrain.as_deref() {
             let feed = frame.new_feed();
             let link = ferroan_scene::ViewerLink {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
                 circuit_open: Arc::clone(&circuit_open),
+                teleport_flags: agent.teleport_flags,
                 look: Arc::new(ferroan_scene::AvatarLook {
                     first_name: avatar.first_name.clone(),
                     last_name: avatar.last_name.clone(),
@@ -923,17 +1029,28 @@ async fn serve_agent(
                 Ok(pending) => pending.wait().await.ok(),
                 Err(_) => None,
             };
-            if let Some(local_id) = attached {
-                avatar.local_id = local_id;
+            if attached.is_some() {
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
                     updates: Arc::new(SceneFeed {
+                        viewer: expect.agent_id,
+                        object_animations: Arc::clone(&agent.object_animations),
+                        supports_pbr: Arc::clone(&agent.supports_pbr),
                         feed,
                         region_handle: arrival.region_handle,
                     }),
                 });
             }
-        }
+            attached
+        } else {
+            None
+        };
+        avatar.local_id = attached.unwrap_or_else(|| {
+            // The production region always has a frame. Isolated circuit tests can omit it.
+            terrain
+                .as_deref()
+                .map_or(1, TerrainFrame::allocate_local_id)
+        });
         arrival.avatar = Some(avatar);
         // TeleportAgentWithinRegion. Godlike needs a cached user level, so it
         // stays off. The frame owns the landing and IsFlying. A handle this
@@ -953,6 +1070,10 @@ async fn serve_agent(
         });
         arrival.return_slot = Some(agent.return_slot.clone());
         let mut promotions = agent.return_slot.take_promotions();
+        // A different session already staged the previous root's children.
+        // The closes go out on a separate task with the old session id.
+        // This login does not wait on them.
+        hop.close_staged(expect.agent_id).await;
         arrival.source_hop = Some(hop.install(HopLogin {
             agent_id: expect.agent_id,
             session_id: expect.session_id,
@@ -970,6 +1091,9 @@ async fn serve_agent(
         let (report, mut report_ready) = oneshot::channel();
         let (opened, mut opening) = oneshot::channel();
         let (close_tx, close_rx) = oneshot::channel();
+        // Scene.CacheUserName. CreateAgent's service URLs are not kept, so
+        // every arrival is a resident of this grid, as an empty HomeURI is.
+        circuit.cache_arrival_name(expect.agent_id, &agent.first_name, &agent.last_name);
         circuit.attach_chat(
             expect.agent_id,
             format!("{} {}", agent.first_name, agent.last_name),
@@ -1127,8 +1251,8 @@ async fn serve_agent(
     }
     // The serve is over: the presence leaves the frame, so nothing reads a
     // ghost and a later login of this agent posts a fresh pose and filter.
-    // A same-agent replacement joins this task first, so this runs before
-    // the new serve posts.
+    // A same-agent replacement waits for this generation to finish cleanup
+    // before it posts to the frame.
     let leaving = forget.finish().await;
     // The reply is already out. Close the neighbour child before the harness
     // stops the proxy, the same moment a root logout closes known children.
@@ -1136,6 +1260,11 @@ async fn serve_agent(
         hop.close_open_child(agent.expect.agent_id, agent.expect.session_id)
             .await;
     }
+    // The circuit that was replaced drains the same list when it ends first.
+    // The sends do not hold this cleanup. Abort and await this circuit's
+    // admission tasks before this take: a cancelled admission stages its
+    // close when the guard drops, and an earlier take leaves it in the book.
+    hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without
     // a frame record, the login or landing position and a zero look.
@@ -1164,6 +1293,9 @@ async fn serve_agent(
 
 /// One viewer's frame feed, as the circuit drains it.
 struct SceneFeed {
+    object_animations: Arc<std::sync::atomic::AtomicBool>,
+    supports_pbr: Arc<std::sync::atomic::AtomicBool>,
+    viewer: Uuid,
     feed: Arc<ferroan_scene::terse::ViewerFeed>,
     region_handle: u64,
 }
@@ -1173,8 +1305,36 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         self.feed.has_updates()
     }
 
-    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
-        self.feed.take_terse(max_bytes)
+    fn take_updates(&self, batch: &mut ferroan_client::TaskBatch) {
+        use ferroan_scene::terse::ViewerUpdate;
+        let supports_animations = self
+            .object_animations
+            .load(std::sync::atomic::Ordering::Acquire);
+        while batch.has_room() {
+            match self.feed.take_update_for_viewer(supports_animations) {
+                Some(ViewerUpdate::Terse(block)) => batch.push_terse(block),
+                Some(ViewerUpdate::Full {
+                    update: Ok(update),
+                    animations,
+                    part,
+                    queued,
+                }) => {
+                    batch.push_full(&update.block_for(self.viewer), animations.map(<[_]>::len));
+                    if self.supports_pbr.load(std::sync::atomic::Ordering::Acquire)
+                        && queued.flags & ferroan_scene::MATERIAL_OVR != 0
+                    {
+                        push_part_material(batch, part);
+                    }
+                }
+                // Oversize fields were reported at admission. Continue with the next part.
+                Some(ViewerUpdate::Full { update: Err(_), .. }) => continue,
+                None => break,
+            }
+        }
+    }
+
+    fn take_land_pass(&self) -> bool {
+        self.feed.take_land_pass()
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
@@ -1182,8 +1342,7 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         for packet in self.feed.take_avatar_packets(max) {
             match packet {
                 ferroan_scene::AvatarPacket::Full(full) => {
-                    let mut wire = avatar_wire(full.agent, &full.look);
-                    wire.local_id = full.local_id;
+                    let wire = avatar_wire(full.agent, full.local_id, &full.look);
                     let live = ferroan_client::LiveAvatar {
                         collision_plane: full.collision_plane,
                         position: full.position,
@@ -1196,7 +1355,7 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 }
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
-                        avatar_wire(agent, &look).appearance(),
+                        avatar_wire(agent, 0, &look).appearance(),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -1222,9 +1381,36 @@ impl ferroan_client::EntityUpdates for SceneFeed {
     }
 }
 
+/// `needMaterials` after the full block. A dropped full datagram was already dequeued.
+fn push_part_material(batch: &mut ferroan_client::TaskBatch, part: &ferroan_scene::ObjectPart) {
+    let Some(materials) = part.shape.materials.as_ref() else {
+        return;
+    };
+    let faces: Vec<ferroan_client::Face<'_>> = materials
+        .overrides
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|entry| ferroan_client::Face {
+            te_index: entry.te_index,
+            data: entry.data.as_str(),
+        })
+        .collect();
+    if let Some(body) =
+        ferroan_client::material_packet(part.local_id, part.shape.pcode, Some(&faces))
+    {
+        batch.push_material(body);
+    }
+}
+
 /// The wire form of another avatar, from what its own viewer attached with.
-fn avatar_wire(agent: Uuid, look: &ferroan_scene::AvatarLook) -> ferroan_client::AvatarWire {
-    let mut wire = ferroan_client::AvatarWire::standing(agent, &look.first_name, &look.last_name);
+fn avatar_wire(
+    agent: Uuid,
+    local_id: u32,
+    look: &ferroan_scene::AvatarLook,
+) -> ferroan_client::AvatarWire {
+    let mut wire =
+        ferroan_client::AvatarWire::standing(agent, local_id, &look.first_name, &look.last_name);
     wire.title.clone_from(&look.title);
     wire.visual_params.clone_from(&look.visual_params);
     wire.texture.clone_from(&look.texture);
@@ -1423,7 +1609,7 @@ mod tests {
              [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
              [Map]\nGenerateMaptiles=false\n\
              [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
-             ConnectionString=Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused\n",
+             ConnectionString=\"Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\"\n",
         )
         .unwrap();
         let regions = ferroan_config::Config::parse(
@@ -1437,21 +1623,20 @@ mod tests {
             config.object_store.as_ref().map(|store| store.kind),
             Some(ferroan_scene::ObjectStoreKind::Mysql)
         );
-        assert_eq!(
-            config.terrain_kind,
-            Some(ferroan_scene::ObjectStoreKind::Mysql)
-        );
-        assert!(
-            config
-                .terrain_store
-                .as_deref()
-                .unwrap()
-                .contains("Data Source=")
-        );
         let settings = load_stored_settings(&mut config).await.unwrap();
         assert!(settings.is_none());
-        let terrain = load_terrain(&config).await.unwrap().unwrap();
-        assert!(!terrain.has_map());
+        // Terrain is read from the MySQL store, which is not running: startup
+        // stops on the MySQL connect, not on a SQLite file named by the string.
+        match load_terrain(&config).await {
+            Err(RunError::Terrain(text)) => {
+                assert!(
+                    text.starts_with("terrain store: could not connect to mysql"),
+                    "{text}"
+                );
+            }
+            Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("an unreachable MySQL store loaded terrain"),
+        }
 
         let bare = ferroan_config::Config::parse(
             "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
@@ -1465,11 +1650,93 @@ mod tests {
         .unwrap();
         let bare_config = RegionConfig::from_configs(&bare, &regions).unwrap();
         assert!(bare_config.object_store.is_none());
-        assert!(bare_config.terrain_kind.is_none());
-        assert!(bare_config.terrain_store.is_some());
         let bare_terrain = load_terrain(&bare_config).await.unwrap().unwrap();
         assert!(!bare_terrain.has_map());
+        assert_eq!(bare_terrain.parcels().unwrap().parcels().len(), 1);
     }
+    #[tokio::test]
+    async fn terrain_is_stored_in_the_simulation_data_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-terrain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("RegionStore.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/prim-updates/scene.db"),
+            &path,
+        )
+        .unwrap();
+        let seed = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
+        )
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../../fixtures/regionstore/parcels.sql"))
+            .execute(&seed)
+            .await
+            .unwrap();
+        // Put the parcel fixture's home rows in the prim fixture's region.
+        sqlx::query("UPDATE land SET RegionUUID = ? WHERE RegionUUID = ?")
+            .bind("6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01")
+            .bind("11111111-1111-1111-1111-111111111111")
+            .execute(&seed)
+            .await
+            .unwrap();
+        seed.close().await;
+        // `[DatabaseService]` names MySQL; `[SimulationDataStore]` replaces it.
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n\
+             [DatabaseService]\nStorageProvider=OpenSim.Data.MySQL.dll\n\
+             ConnectionString=Data Source=127.0.0.1;Port=1;Database=ferroan;User ID=ferroan;Password=unused\n\
+             [SimulationDataStore]\nStorageProvider=OpenSim.Data.SQLite.dll\n\
+             ConnectionString=URI=file:{};UseUTF16Encoding=True\n",
+            path.display()
+        ))
+        .unwrap();
+        let mut regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\n",
+        )
+        .unwrap();
+        regions.set("Ferroan Test", "ClampPrimSize", "true");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "2");
+        let config = RegionConfig::from_configs(&server, &regions).unwrap();
+        let terrain = load_terrain(&config).await.unwrap().unwrap();
+        assert!(terrain.has_map());
+        let parcels = terrain.parcels().unwrap();
+        assert_eq!(parcels.parcels().len(), 3);
+        assert_eq!(parcels.at_cell(1, 0).unwrap().name, "West");
+        assert_eq!(parcels.at_cell(2, 0).unwrap().name, "East");
+        let groups = terrain.stored_groups();
+        let linked = groups.iter().find(|group| group.parts.len() == 2).unwrap();
+        let child = &linked.parts[1]; // Persisted scale (0.5, 0.5, 0.5).
+        assert_ne!(linked.parts[0].local_id, 0);
+        assert_eq!(child.parent_id, linked.parts[0].local_id);
+        assert_eq!(child.shape.scale, [2.0; 3]);
+        let stored = ferroan_scene::open_terrain(
+            &format!("URI=file:{};UseUTF16Encoding=True", path.display()),
+            config.id,
+            256,
+            256,
+            ferroan_scene::ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap();
+        assert!(stored.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use ferroan_client::CircuitExpect;
     use ferroan_client::EntityUpdates;
     use ferroan_http::{Field, FieldMap};
@@ -1500,6 +1767,7 @@ mod tests {
         requests: Arc<Mutex<Vec<FieldMap>>>,
         presence_missing: Arc<std::sync::atomic::AtomicBool>,
         fail_presence_logout: Arc<std::sync::atomic::AtomicBool>,
+        hold_next_logout: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
         sessions: Arc<Mutex<std::collections::HashSet<String>>>,
         online: Arc<std::sync::atomic::AtomicBool>,
         stop: Option<watch::Sender<bool>>,
@@ -1572,6 +1840,8 @@ mod tests {
             let service_online = online.clone();
             let fail_presence_logout = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let fail_logout = fail_presence_logout.clone();
+            let hold_next_logout = Arc::new(Mutex::new(None::<oneshot::Receiver<()>>));
+            let logout_gate = Arc::clone(&hold_next_logout);
             let users = Arc::new(Mutex::new(std::collections::HashMap::new()));
             let service_users = users.clone();
             let app = axum::Router::new().fallback(move |body: String| {
@@ -1580,12 +1850,14 @@ mod tests {
                 let session = match fields.get("SessionID") { Some(Field::Str(s)) => s.clone(), _ => String::new() };
                 seen.lock().unwrap().push(fields);
                 let report_gate = report_gate.clone();
+                let hold = if method == "logout" { logout_gate.lock().unwrap().take() } else { None };
                 let missing = missing.clone();
                 let sessions = service_sessions.clone();
                 let online = service_online.clone();
                 let fail_logout = fail_logout.clone();
                 let users = service_users.clone();
                 async move {
+                    if let Some(release) = hold { let _ = release.await; }
                     if method == "report" && let Some(gate) = report_gate {
                         gate.acquire_owned().await.unwrap().forget();
                     }
@@ -1629,6 +1901,13 @@ mod tests {
             let (sender, agents) = mpsc::channel(1);
             let started = Arc::new(AtomicUsize::new(0));
             let state = SimulationState::new(&config, caps.clone(), sender.clone());
+            let circuit = CircuitServer::bind()
+                .await
+                .unwrap()
+                .with_timing(config.circuit_timing)
+                .unwrap()
+                .with_throttle(config.circuit_throttle);
+            state.bind_circuit(circuit.clone());
             let app = state.clone().router().merge(caps.router());
             let http = tokio::spawn(async move {
                 axum::serve(
@@ -1638,12 +1917,6 @@ mod tests {
                 .await
                 .unwrap()
             });
-            let circuit = CircuitServer::bind()
-                .await
-                .unwrap()
-                .with_timing(config.circuit_timing)
-                .unwrap()
-                .with_throttle(config.circuit_throttle);
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
             let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(state.clone()));
@@ -1668,6 +1941,7 @@ mod tests {
                 requests,
                 presence_missing,
                 fail_presence_logout,
+                hold_next_logout,
                 sessions,
                 online,
                 stop: Some(stop),
@@ -1679,6 +1953,19 @@ mod tests {
         }
 
         async fn admit(&self, replacement: bool, same_session: bool) -> CircuitExpect {
+            let started = self.started.load(Ordering::Acquire);
+            let expect = self.submit_login(replacement, same_session).await;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.started.load(Ordering::Acquire) == started {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            expect
+        }
+
+        async fn submit_login(&self, replacement: bool, same_session: bool) -> CircuitExpect {
             let mut body: Value = serde_json::from_str(include_str!(
                 "../../../fixtures/region-login/create-agent.request.json"
             ))
@@ -1696,7 +1983,6 @@ mod tests {
             self.users.lock().unwrap().insert(session_id, agent_id);
             self.online
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            let started = self.started.load(Ordering::Acquire);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -1714,13 +2000,6 @@ mod tests {
             assert!(response.status().is_success());
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true);
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while self.started.load(Ordering::Acquire) == started {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
             CircuitExpect {
                 agent_id: body["agent_id"].as_str().unwrap().parse().unwrap(),
                 session_id: body["session_id"].as_str().unwrap().parse().unwrap(),
@@ -1971,6 +2250,112 @@ mod tests {
             assert_eq!(harness.count("setposition"), 2);
             harness.finish().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn a_replacement_waiting_for_logout_allows_another_root_to_arrive() {
+        let mut harness = Harness::new(false, false).await;
+        let first = harness.admit(false, false).await;
+        let socket = open(&harness, first).await;
+        movement(&socket, first, 2).await;
+        wait_arrival(&socket).await;
+
+        let (release, hold) = oneshot::channel();
+        *harness.hold_next_logout.lock().unwrap() = Some(hold);
+        let next = harness.submit_login(true, false).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(harness.started.load(Ordering::Acquire), 1);
+        let other = harness.admit_other().await;
+        let other_socket = open(&harness, other).await;
+        movement(&other_socket, other, 2).await;
+        wait_arrival(&other_socket).await;
+        assert_eq!(harness.started.load(Ordering::Acquire), 2);
+
+        release.send(()).unwrap();
+        let next_socket = open(&harness, next).await;
+        wait_packet(&next_socket, RegionHandshake::ID).await;
+        movement(&next_socket, next, 2).await;
+        wait_arrival(&next_socket).await;
+        harness.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_reaps_finished_tasks_while_admission_is_idle() {
+        let (submit, queue) = mpsc::channel(1);
+        let (_stop, stopping) = watch::channel(false);
+        let dispatcher = tokio::spawn(dispatch(
+            queue,
+            stopping,
+            1,
+            |result, _| async move { result },
+        ));
+        for _ in 0..3 {
+            let (result, reaped) = oneshot::channel::<()>();
+            submit.send(result).await.unwrap();
+            // The sender is the task output. It is dropped only when the JoinSet is reaped.
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), reaped)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        drop(submit);
+        dispatcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_arrivals_with_the_region_frame_receive_distinct_object_local_ids() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(frame.clone()),
+        )
+        .await;
+        let previous_id = frame.allocate_local_id();
+        let first = harness.admit(false, false).await;
+        let second = harness.admit_other().await;
+        let mut ids = Vec::new();
+        for expect in [first, second] {
+            let socket = open(&harness, expect).await;
+            movement(&socket, expect, 2).await;
+            let id = tokio::time::timeout(Duration::from_secs(2), async {
+                let mut buf = [0; 4096];
+                loop {
+                    let len = socket.recv(&mut buf).await.unwrap();
+                    let packet = parse_packet(&buf[..len]).unwrap();
+                    if packet.id == ferroan_protocol::msgs::ObjectUpdate::ID {
+                        let update = packet
+                            .decode::<ferroan_protocol::msgs::ObjectUpdate>()
+                            .unwrap();
+                        let block = &update.object_data[0];
+                        if block.full_id == expect.agent_id {
+                            break block.id;
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert_ne!(id, 0);
+            ids.push(id);
+        }
+        assert_ne!(ids[0], ids[1]);
+        // A serve that cannot attach draws its fallback from this same counter.
+        let fallback = frame.allocate_local_id();
+        assert_eq!(ids, [previous_id + 1, previous_id + 2]);
+        assert_eq!(fallback, previous_id + 3);
+        harness.finish().await.unwrap();
     }
 
     #[tokio::test]
@@ -2625,7 +3010,20 @@ mod tests {
         wait_arrival(&socket).await;
         assert_eq!(harness.count("logout"), 0);
         assert_eq!(harness.count("loggedout"), 0);
-        harness.state.close_departed(expect.agent_id);
+        harness.state.close_departed(
+            expect.agent_id,
+            &ferroan_region::children::FarDestination {
+                end: ferroan_region::simulation_client::RegionEnd {
+                    server_uri: "http://127.0.0.1:9/".to_string(),
+                    region_id: Uuid::from_u128(99),
+                    name: "Away".to_string(),
+                    loc_x: 768,
+                    loc_y: 768,
+                },
+                size_x: 256,
+                size_y: 256,
+            },
+        );
         harness.finish().await.unwrap();
         assert_eq!(harness.count("logout"), 0);
         assert_eq!(harness.count("loggedout"), 0);
@@ -2638,7 +3036,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         drop(socket);
         tokio::time::timeout(Duration::from_secs(2), async {
             while harness.seed_status().await != reqwest::StatusCode::NOT_FOUND {
@@ -2706,7 +3104,7 @@ mod tests {
         let socket = open(&harness, expect).await;
         movement(&socket, expect, 2).await;
         wait_arrival(&socket).await;
-        harness.state.demote_child(expect.agent_id);
+        harness.state.demote_child(expect.agent_id).unwrap();
         harness.admit(true, false).await;
         let deadline = std::time::Instant::now() + Duration::from_millis(300);
         while std::time::Instant::now() < deadline {
@@ -3169,6 +3567,98 @@ mod tests {
         assert_eq!(animations.motion_state, 1);
     }
 
+    #[tokio::test]
+    async fn the_scene_feed_delivers_the_child_in_the_same_drain_as_a_refused_root() {
+        use ferroan_protocol::msgs::ObjectUpdate;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/regionstore/objects-xml.json"
+        ))
+        .unwrap();
+        let mut group =
+            ferroan_scene::from_xml2(fixture["groups"][1]["xml2"].as_str().unwrap()).unwrap();
+        assert_eq!(group.parts.len(), 2);
+        group.parts[0]
+            .shape
+            .texture
+            .resize(usize::from(u16::MAX) + 1, 1);
+        let child = group.parts[1].uuid;
+        let frame = TerrainFrame::with_objects(None, Arc::new(vec![group]), None).unwrap();
+        let viewer = Uuid::from_u128(91);
+        let feed = frame.new_feed();
+        frame
+            .attach(
+                viewer,
+                ferroan_scene::ViewerLink {
+                    feed: Arc::clone(&feed),
+                    seeds_sent: Arc::new(true.into()),
+                    circuit_open: Arc::new(true.into()),
+                    look: Arc::new(ferroan_scene::AvatarLook {
+                        first_name: "Test".into(),
+                        last_name: "User".into(),
+                        title: String::new(),
+                        texture: Vec::new(),
+                        visual_params: Vec::new(),
+                        height: 1.8,
+                        hover: 0.0,
+                    }),
+                    teleport_flags: 1 << 7,
+                },
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let pose = ferroan_scene::Presence {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        frame
+            .post_login(viewer, pose)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame
+            .arrive(viewer, pose, [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame.handshake_reply(viewer).unwrap();
+        let wake = feed.wake();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !feed.has_updates() {
+                wake.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Wait for the frame that offered the root to finish offering its child.
+        frame.frames().unwrap().wait().await.unwrap();
+        let scene_feed = SceneFeed {
+            feed,
+            viewer,
+            region_handle: 7,
+            object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
+        };
+        let ferroan_client::TaskPackets { full, .. } =
+            ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
+        assert_eq!(full.len(), 1);
+        let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
+        wire.extend_from_slice(&full[0]);
+        let packet = ferroan_protocol::parse_packet(&wire)
+            .unwrap()
+            .decode::<ObjectUpdate>()
+            .unwrap();
+        assert_eq!(packet.object_data.len(), 1);
+        assert_eq!(packet.object_data[0].full_id, child);
+    }
+
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
     /// its appearance, and the kill.
@@ -3191,6 +3681,7 @@ mod tests {
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
+            teleport_flags: 1 << 7,
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
@@ -3198,6 +3689,7 @@ mod tests {
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
+            teleport_flags: 1 << 7,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -3225,6 +3717,9 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
+                viewer: agent,
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
             };
@@ -3253,5 +3748,290 @@ mod tests {
             };
             assert_eq!(kill.object_data[0].id, local_id);
         });
+    }
+
+    fn override_list(faces: &[(u8, &str)]) -> ferroan_scene::RenderMaterials {
+        ferroan_scene::RenderMaterials {
+            overrides: Some(
+                faces
+                    .iter()
+                    .map(|(te_index, data)| ferroan_scene::MaterialOverride {
+                        te_index: *te_index,
+                        data: (*data).to_owned(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn material_scene() -> (ferroan_scene::ObjectGroup, Uuid, Uuid, Uuid) {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/regionstore/objects-xml.json"
+        ))
+        .unwrap();
+        let mut group =
+            ferroan_scene::from_xml2(fixture["groups"][1]["xml2"].as_str().unwrap()).unwrap();
+        group.parts.truncate(1);
+        group.parts[0].shape.pcode = 9;
+        group.parts[0].shape.extra_params = vec![0];
+        group.parts[0].animations = None;
+        group.parts[0].shape.materials = Some(override_list(&[
+            (0, "{'bc':[r1,r0,r0,r1]}"),
+            (2, "{'ds':1}"),
+        ]));
+        let root = group.parts[0].uuid;
+        let mut tree = group.parts[0].clone();
+        tree.uuid = Uuid::from_u128(0x6500_0000_0000_4000_8000_0000_0000_0003);
+        tree.link_num = 2;
+        tree.shape.pcode = 255;
+        tree.shape.materials = Some(override_list(&[(0, "{'tree':1}")]));
+        let tree_id = tree.uuid;
+        let mut probe = group.parts[0].clone();
+        probe.uuid = Uuid::from_u128(0x6500_0000_0000_4000_8000_0000_0000_0006);
+        probe.link_num = 3;
+        probe.shape.pcode = 9;
+        probe.shape.extra_params = vec![1, 0x90, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        probe.shape.materials = Some(override_list(&[(0, "{'probe':1}")]));
+        let probe_id = probe.uuid;
+        group.parts.push(tree);
+        group.parts.push(probe);
+        (group, root, tree_id, probe_id)
+    }
+
+    async fn delivered(
+        group: ferroan_scene::ObjectGroup,
+        pbr: bool,
+    ) -> (Vec<(Uuid, u8, u32)>, Vec<String>) {
+        use ferroan_protocol::msgs::{GenericStreamingMessage, ObjectUpdate};
+
+        let frame = TerrainFrame::with_objects(None, Arc::new(vec![group]), None).unwrap();
+        let viewer = Uuid::from_u128(91);
+        let feed = frame.new_feed();
+        frame
+            .attach(
+                viewer,
+                ferroan_scene::ViewerLink {
+                    feed: Arc::clone(&feed),
+                    seeds_sent: Arc::new(true.into()),
+                    circuit_open: Arc::new(true.into()),
+                    look: Arc::new(ferroan_scene::AvatarLook {
+                        first_name: "Test".into(),
+                        last_name: "User".into(),
+                        title: String::new(),
+                        texture: Vec::new(),
+                        visual_params: Vec::new(),
+                        height: 1.8,
+                        hover: 0.0,
+                    }),
+                    teleport_flags: 1 << 7,
+                },
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let pose = ferroan_scene::Presence {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        frame
+            .post_login(viewer, pose)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame
+            .arrive(viewer, pose, [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame.handshake_reply(viewer).unwrap();
+        let wake = feed.wake();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !feed.has_updates() {
+                wake.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        frame.frames().unwrap().wait().await.unwrap();
+        let scene_feed = SceneFeed {
+            feed,
+            viewer,
+            region_handle: 7,
+            object_animations: Arc::default(),
+            supports_pbr: Arc::new(pbr.into()),
+        };
+        let ferroan_client::TaskPackets {
+            full, materials, ..
+        } = ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
+        let mut parts = Vec::new();
+        for body in full {
+            let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
+            wire.extend(body);
+            let packet = ferroan_protocol::parse_packet(&wire)
+                .unwrap()
+                .decode::<ObjectUpdate>()
+                .unwrap();
+            for block in packet.object_data {
+                if block.p_code != 47 {
+                    parts.push((block.full_id, block.p_code, block.id));
+                }
+            }
+        }
+        let mut notes = Vec::new();
+        for body in materials {
+            assert_eq!(body[0], 31);
+            let message = GenericStreamingMessage::decode(&body[1..]).unwrap();
+            assert_eq!(message.method_data.method, 16757);
+            notes.push(String::from_utf8(message.data_block.data).unwrap());
+        }
+        (parts, notes)
+    }
+
+    #[tokio::test]
+    async fn a_pbr_viewer_gets_material_overrides_for_an_ordinary_part_only() {
+        let (group, root, tree, probe) = material_scene();
+        let (parts, notes) = delivered(group, true).await;
+        let local = parts.iter().find(|part| part.0 == root).unwrap().2;
+        assert!(parts.iter().any(|part| part.0 == tree && part.1 == 255));
+        assert!(parts.iter().any(|part| part.0 == probe && part.1 == 9));
+        assert_eq!(
+            notes,
+            vec![format!(
+                "{{'id':i{local},'te':[i0,i2],'od':[{{'bc':[r1,r0,r0,r1]}},{{'ds':1}}]}}"
+            )]
+        );
+
+        let (mut group, root, _, _) = material_scene();
+        group.parts.truncate(1);
+        group.parts[0].shape.materials = Some(ferroan_scene::RenderMaterials {
+            overrides: Some(vec![ferroan_scene::MaterialOverride {
+                te_index: 0,
+                data: "a".repeat(5000),
+            }]),
+        });
+        let (parts, notes) = delivered(group, true).await;
+        assert!(parts.iter().any(|part| part.0 == root));
+        assert!(notes.is_empty());
+
+        let (group, root, _, _) = material_scene();
+        let (parts, notes) = delivered(group, false).await;
+        assert!(parts.iter().any(|part| part.0 == root));
+        assert!(notes.is_empty());
+    }
+
+    /// A stored row with restrict pushing and object bonus 2 reaches the
+    /// parcel region. `InitialLand` is posted for that agent.
+    #[tokio::test]
+    async fn a_stored_row_sets_push_override_and_bonus_and_initial_land_uses_the_agent() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-parcel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/regionstore/settings.db"),
+            &path,
+        )
+        .unwrap();
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let updated = sqlx::query(
+            "UPDATE regionsettings SET object_bonus = 2.0, restrict_pushing = 1 \
+             WHERE lower(regionUUID) = '11111111-1111-1111-1111-111111111111'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        pool.close().await;
+        assert_eq!(updated, 1);
+
+        let server = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n",
+        )
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=11111111-1111-1111-1111-111111111111\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\nMaxPrims=22000\n",
+        )
+        .unwrap();
+        let mut config = RegionConfig::from_configs(&server, &regions).unwrap();
+        assert_eq!(config.object_capacity, 22_000);
+        config.object_store = Some(ferroan_region::config::ObjectStore {
+            connection: format!("Data Source={};Version=3", path.display()),
+            kind: ferroan_scene::ObjectStoreKind::Sqlite,
+        });
+        let settings = load_stored_settings(&mut config).await.unwrap().unwrap();
+        assert!(settings.restrict_pushing);
+        assert_eq!(settings.object_bonus, 2.0);
+        let estate = ferroan_scene::EstateAccess {
+            owner: None,
+            managers: Vec::new(),
+            tax_free: false,
+            allow_environment_override: true,
+        };
+        let region = parcel_region(&config, Some(settings.as_ref()), Some(&estate));
+        assert_eq!(region.object_bonus, 2.0);
+        assert_eq!(region.object_capacity, 22_000);
+        assert_eq!(region.region_flags & (1 << 22), 1 << 22);
+        assert_eq!(region.region_flags & (1 << 9), 1 << 9);
+        assert!(!region.tax_free);
+
+        let parcels =
+            ferroan_scene::parcels::open_parcels(None, config.id, [256, 256], Uuid::nil())
+                .await
+                .unwrap();
+        let frame = TerrainFrame::start_region(None, Some(parcels)).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        frame
+            .set_parcel_sender(Arc::new(move |agent, _element| {
+                record.lock().unwrap().push(agent);
+            }))
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let agent = Uuid::from_u128(0x61c1);
+        frame
+            .arrive(
+                agent,
+                ferroan_scene::Presence {
+                    position: [128.0, 128.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 64.0,
+                },
+                [1.0, 0.0, 0.0],
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        scene_call(&frame, agent, SceneCall::InitialLand)
+            .reply()
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(), &[agent]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -8,15 +8,18 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.22"
 axum = "0.8"
 ferroan-client = { path = "../ferroan-client" }
 ferroan-config = { path = "../ferroan-config" }
+ferroan-db = { path = "../ferroan-db" }
 ferroan-diag = { path = "../ferroan-diag" }
 ferroan-http = { path = "../ferroan-http" }
 ferroan-llsd = { path = "../ferroan-llsd" }
 ferroan-log = { path = "../ferroan-log" }
 ferroan-scene = { path = "../ferroan-scene" }
 ferroan-services = { path = "../ferroan-services" }
+ferroan-types = { path = "../ferroan-types" }
 tracing = "0.1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hyper = { version = "1", features = ["http1"] }
@@ -24,6 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1.27.0", features = ["v4"] }
 
 [lints]

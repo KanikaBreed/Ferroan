@@ -4,6 +4,16 @@
 //! Scenarios for `cargo xtask live run`. Each check uses a reply from the
 //! region. The caller starts and stops the region and supplies the accounts.
 
+pub mod child_view;
+mod material_override;
+#[path = "object_cross.rs"]
+mod object_cross;
+mod observer;
+mod parcel_properties;
+mod prim_arrival;
+use observer::{ObservedAvatar, ObserverSession};
+pub use parcel_properties::parcel_properties;
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -13,18 +23,24 @@ use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_protocol::Msg;
-use ferroan_protocol::msgs::{AvatarAppearance, CoarseLocationUpdate, ObjectUpdate};
+use ferroan_protocol::msgs::{AvatarAppearance, ObjectUpdate, UUIDNameRequest, uuid_name_request};
 use glam::Vec3;
 use uuid::Uuid;
 
 use crate::login::{self, LoginRequest, LoginResponse};
-use crate::session::{Agent, Session};
+use crate::register::Bot;
+use crate::session::{Agent, PrimTrace, Session};
 use crate::world::{self, SeenObject};
 
 const HANDSHAKE: Duration = Duration::from_secs(30);
 const STEP: Duration = Duration::from_millis(100);
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const UPLOAD_NAME: &str = "Ferroan Harness Texture";
+
+/// Number of parts in the persisted Pin8 prim-update capture scene.
+pub const PRIM_CAPTURE_COUNT: usize = 8;
+pub const PRIM_LOAD_COUNT: usize = 500;
+pub const HANDOFF_TASK_BPS: f32 = 512_000.0;
 
 /// Called with the account's principal before [`login::login`].
 ///
@@ -68,7 +84,7 @@ pub struct Harness {
     /// Require the viewer's wire acknowledgement; do not accept a server log.
     pub require_logout_reply: bool,
     /// Set by grid mode. Standalone leaves this empty, and `all` then stays
-    /// the seven names in [`NAMES`].
+    /// the seven names from the registration table.
     pub neighbour: Option<Neighbour>,
     /// Presence and GridUser listener. Robust in grid mode, the region in
     /// standalone. The hook reads it; the login itself uses [`Harness::login_uri`].
@@ -86,35 +102,12 @@ pub fn region_handle(x: u32, y: u32) -> u64 {
 }
 
 /// The scenarios `all` runs, in order.
-pub const NAMES: &[&str] = &[
-    "login",
-    "walk",
-    "chat",
-    "build",
-    "teleport",
-    "texture",
-    "inventory",
-];
+pub fn names() -> &'static [&'static str] {
+    crate::register::names()
+}
 
 pub fn selection(name: &str) -> Option<&'static [&'static str]> {
-    if name == "all" {
-        Some(NAMES)
-    } else if name == "assets" {
-        Some(&NAMES[5..7])
-    } else if NAMES.contains(&name) {
-        Some(match name {
-            "login" => &NAMES[0..1],
-            "walk" => &NAMES[1..2],
-            "chat" => &NAMES[2..3],
-            "build" => &NAMES[3..4],
-            "teleport" => &NAMES[4..5],
-            "texture" => &NAMES[5..6],
-            "inventory" => &NAMES[6..7],
-            _ => return None,
-        })
-    } else {
-        None
-    }
+    crate::register::selection(name)
 }
 
 /// Run the named scenario, or every scenario when `name` is `all`.
@@ -128,58 +121,123 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         return Err("the texture does not start with a JPEG 2000 codestream".to_string());
     }
     let http = login::http_client().map_err(|error| error.to_string())?;
-    if name == "caps" {
-        let (mut session, login) = enter(&http, harness, &harness.owner).await?;
-        let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
-        leave(harness, &mut session, &harness.owner).await?;
-        return Ok(format!("{line}\nlive: run passed"));
+    match crate::register::get(name).map(|row| row.bot) {
+        Some(Bot::Caps) => {
+            let (mut session, login) = enter(&http, harness, &harness.owner, "last").await?;
+            let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
+            leave(harness, &mut session, &harness.owner).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Neighbour) => {
+            let line = teleport_neighbour(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Hop) => {
+            let line = teleport_hop(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Roots) => {
+            let line = roots_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Uploads) => {
+            let line = uploads_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::ObjectCross) => object_cross::run(&http, harness).await,
+        Some(Bot::PrimArrival) => prim_arrival::run(&http, harness).await,
+        Some(Bot::MaterialOverride) => material_override::run(&http, harness).await,
+        Some(Bot::Stored(kind)) => {
+            let (count, throttle, handoff) = match kind {
+                crate::register::Stored::Load => (
+                    PRIM_LOAD_COUNT,
+                    ArrivalThrottle::Task(PrimTrace::Load),
+                    true,
+                ),
+                crate::register::Stored::Handoff => (
+                    PRIM_CAPTURE_COUNT,
+                    ArrivalThrottle::Task(PrimTrace::Arrival(HANDOFF_TASK_BPS)),
+                    true,
+                ),
+                crate::register::Stored::Capture => {
+                    (PRIM_CAPTURE_COUNT, ArrivalThrottle::Default, false)
+                }
+            };
+            let (mut session, _) =
+                enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
+            let result = wait_for_stored_prims(&mut session, count).await;
+            let logout = leave(harness, &mut session, &harness.owner).await;
+            result?;
+            logout?;
+            if handoff {
+                let records = session
+                    .take_arrival_records()
+                    .ok_or("missing handoff viewer capture")?;
+                let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
+                std::fs::write(harness.region_log.with_extension("viewer.cap"), bytes)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(format!(
+                "{name}: viewer received {count} distinct full prim updates\nlive: run passed"
+            ))
+        }
+        Some(Bot::Avatars) => {
+            let line = avatars_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(
+            Bot::Login
+            | Bot::Walk
+            | Bot::Chat
+            | Bot::Build
+            | Bot::Teleport
+            | Bot::Texture
+            | Bot::Inventory
+            | Bot::All
+            | Bot::Assets,
+        ) => run_selected(name, harness, &http).await,
+        Some(
+            Bot::ChildView
+            | Bot::ParcelTiming
+            | Bot::ParcelProperties
+            | Bot::ParcelOverlay
+            | Bot::Limits
+            | Bot::Report
+            | Bot::Ferrobot,
+        )
+        | None => Err(crate::register::bot_unknown(name)),
     }
-    if name == "neighbour" {
-        let line = teleport_neighbour(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "hop" {
-        let line = teleport_hop(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "roots" {
-        let line = roots_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "uploads" {
-        let line = uploads_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "avatars" {
-        let line = avatars_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
+}
+
+async fn run_selected(
+    name: &str,
+    harness: &Harness,
+    http: &reqwest::Client,
+) -> Result<String, String> {
     let Some(names) = selection(name) else {
-        return Err(format!(
-            "unknown scenario {name}; expected all or {}",
-            NAMES.join(", ")
-        ));
+        return Err(crate::register::bot_unknown(name));
     };
     let mut lines = Vec::new();
     for scenario in names {
-        match *scenario {
-            "login" => login_scenario(&http, harness).await,
-            "walk" => walk_scenario(&http, harness).await,
-            "chat" => chat_scenario(&http, harness).await,
-            "build" => build_scenario(&http, harness).await,
-            "teleport" => teleport_scenario(&http, harness).await,
-            "texture" => texture_scenario(&http, harness).await,
-            "inventory" => inventory_scenario(&http, harness).await,
+        let step = match crate::register::get(scenario).map(|row| row.bot) {
+            Some(Bot::Login) => login_scenario(http, harness).await,
+            Some(Bot::Walk) => walk_scenario(http, harness).await,
+            Some(Bot::Chat) => chat_scenario(http, harness).await,
+            Some(Bot::Build) => build_scenario(http, harness).await,
+            Some(Bot::Teleport) => teleport_scenario(http, harness).await,
+            Some(Bot::Texture) => texture_scenario(http, harness).await,
+            Some(Bot::Inventory) => inventory_scenario(http, harness).await,
             _ => Err(format!("unknown scenario {scenario}")),
-        }
-        .map(|line| lines.push(line))
-        .map_err(|error| {
+        };
+        step.map(|line| lines.push(line)).map_err(|error| {
             lines.push(format!("{scenario}: fail ({error})"));
             lines.join("\n")
         })?;
     }
-    if name == "all" && harness.neighbour.is_some() {
-        teleport_neighbour(&http, harness)
+    if crate::register::get(name).is_some_and(|row| row.bot == Bot::All)
+        && harness.neighbour.is_some()
+    {
+        teleport_neighbour(http, harness)
             .await
             .map(|line| lines.push(line))
             .map_err(|error| {
@@ -191,8 +249,142 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// Observe control and limited Land on two fresh circuits, including the late initial-data gate.
+pub async fn parcel_timing(harness: &Harness) -> Result<String, String> {
+    let http = login::http_client().map_err(|e| e.to_string())?;
+    for (account, rate) in [(&harness.owner, 512_000.0), (&harness.chat, 8_000.0)] {
+        let (mut session, _) =
+            enter_with_throttle(&http, harness, account, "last", ArrivalThrottle::Land(rate))
+                .await?;
+        let result = async {
+            if session.region_id() != Some(harness.region_id) {
+                return Err("parcel timing viewer arrived on another region".into());
+            }
+            let observation = Duration::from_secs(2);
+            session
+                .drive(observation)
+                .await
+                .map_err(|e| e.to_string())?;
+            if rate == 8_000.0 {
+                session.set_land_rate(Some(512_000.0));
+                session
+                    .send_throttles(None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            receive_overlay(&mut session, 4).await?;
+            // Continue acknowledging through the delayed initial-data gate and its Land drain.
+            session.drive(observation).await.map_err(|e| e.to_string())
+        }
+        .await;
+        let logout = leave(harness, &mut session, account).await;
+        result.and(logout)?;
+    }
+    Ok("parcel-timing: captured two fresh circuits through logout".into())
+}
+
+/// Receive each test account's unredacted ParcelData bodies on a separate circuit.
+pub async fn parcel_overlays(harness: &Harness, count: usize) -> Result<[Vec<u8>; 2], String> {
+    if !matches!(count, 4 | 16) {
+        return Err("parcel capture expects four or sixteen packets".into());
+    }
+    let http = login::http_client().map_err(|e| e.to_string())?;
+    let mut captures = [Vec::new(), Vec::new()];
+    for (out, account) in captures.iter_mut().zip([&harness.owner, &harness.chat]) {
+        let (mut session, login) = enter(&http, harness, account, "last").await?;
+        let result = if session.region_id() == Some(harness.region_id)
+            && login.agent_id == account.principal_id
+        {
+            receive_overlay(&mut session, count).await
+        } else {
+            Err("parcel capture arrived on the wrong region or account".into())
+        };
+        let logout = leave(harness, &mut session, account).await;
+        *out = result?;
+        logout?;
+    }
+    Ok(captures)
+}
+
+async fn receive_overlay(session: &mut Session, count: usize) -> Result<Vec<u8>, String> {
+    use ferroan_protocol::{Writer, msgs::ParcelOverlay};
+    let mut bodies = vec![None; count];
+    let mut received = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        session.drive(STEP).await.map_err(|e| e.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id != ParcelOverlay::ID {
+                continue;
+            }
+            let msg = packet
+                .decode::<ParcelOverlay>()
+                .map_err(|e| e.to_string())?;
+            let seq = msg.parcel_data.sequence_id;
+            let mut check = Writer::new();
+            msg.encode_body(&mut check);
+            if check.buf != packet.body || msg.parcel_data.data.len() != 1024 {
+                return Err(format!("ParcelOverlay {seq}: invalid captured body"));
+            }
+            let slot = usize::try_from(seq)
+                .ok()
+                .and_then(|i| bodies.get_mut(i))
+                .ok_or_else(|| format!("out-of-range ParcelOverlay sequence {seq}"))?;
+            if let Some(original) = slot {
+                if original != &packet.body {
+                    return Err(format!("conflicting ParcelOverlay {seq}"));
+                }
+            } else {
+                *slot = Some(packet.body);
+                received += 1;
+            }
+        }
+        if received == count {
+            return Ok(bodies.into_iter().flatten().flatten().collect());
+        }
+    }
+    Err(format!(
+        "viewer received {received} of {count} ParcelOverlay packets"
+    ))
+}
+
+/// Wait for the full set of fixture parts, including the linked child.
+async fn wait_for_stored_prims(session: &mut Session, count: usize) -> Result<(), String> {
+    let mut ids = std::collections::BTreeSet::new();
+    let deadline = std::time::Instant::now()
+        + Duration::from_secs(if count == PRIM_LOAD_COUNT { 60 } else { 15 });
+    while std::time::Instant::now() < deadline {
+        session
+            .drive(STEP)
+            .await
+            .map_err(|error| error.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id == ObjectUpdate::ID {
+                let update = packet
+                    .decode::<ObjectUpdate>()
+                    .map_err(|error| error.to_string())?;
+                for block in update.object_data {
+                    if block.p_code != 47 {
+                        ids.insert(block.full_id);
+                        if ids.len() > count {
+                            return Err("unexpected extra stored prim".into());
+                        }
+                    }
+                }
+            }
+        }
+        if ids.len() == count {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "expected {count} stored prims, received {}",
+        ids.len()
+    ))
+}
+
 async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner).await?;
+    let (mut session, _) = enter(http, harness, &harness.owner, "last").await?;
     let region = session.region_id().ok_or("the handshake set no region")?;
     if region != harness.region_id {
         let _ = leave(harness, &mut session, &harness.owner).await;
@@ -282,7 +474,7 @@ where
 {
     harness.http_trace.scope(async {
         let http = login::http_client().map_err(|error| error.to_string())?;
-        let (mut session, _) = enter(&http, harness, &harness.owner).await?;
+        let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
         let observed = async {
             let region = session.region_id().ok_or("the handshake set no region")?;
             if region != harness.region_id { return Err("arrival region differs from the test region".to_owned()); }
@@ -324,96 +516,216 @@ where
     }).await
 }
 
-async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner).await?;
-    let agent = session.agent();
-    let mut start = None;
-    let mut look = Vec3::X;
-    let mut handle = 0u64;
-    let mut local_id = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while start.is_none() && std::time::Instant::now() < deadline {
-        session
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        while let Some(packet) = session.poll_inbox() {
-            // The full avatar update arrives in this same burst. Recording it
-            // here is what lets later terse updates match our local id.
-            let _ = avatar_position(&packet, agent.agent_id, &mut local_id);
-            if packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID
-                && let Some(position) = world::movement_position(&packet)
-            {
-                start = Some(position);
-                if let Some((seen_look, seen_handle)) = world::movement_look(&packet) {
-                    look = seen_look;
-                    handle = seen_handle;
-                }
-            }
+async fn enter_observed_pair(
+    http: &reqwest::Client,
+    harness: &Harness,
+    first: &Account,
+    second: &Account,
+) -> Result<(ObserverSession, ObserverSession), String> {
+    let (session, _) = enter(http, harness, first, "last").await?;
+    let mut observer = ObserverSession::new(session, second.principal_id);
+    let (login, observation) = observer.during(enter(http, harness, second, "last")).await;
+    let error = match (login, observation) {
+        (Ok((session, _)), Ok(())) => {
+            return Ok((observer, ObserverSession::new(session, first.principal_id)));
         }
-    }
-    let Some(start) = start else {
-        let _ = leave(harness, &mut session, &harness.owner).await;
-        return Err("no AgentMovementComplete".to_string());
+        (Ok((mut session, _)), Err(error)) => {
+            let _ = leave(harness, &mut session, second).await;
+            error
+        }
+        (Err(error), observed) => observed.err().unwrap_or(error),
     };
-    let _ = handle;
-    let facing = world::facing_look(look);
-    let forward = world::horizontal_forward(facing);
-    let mut latest = start;
-    let mut moved = false;
-    let mut samples = 0u32;
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while std::time::Instant::now() < deadline {
-        let update = world::agent_update(agent, latest, facing, world::CONTROL_AT_POS);
-        session
-            .send(&update, false)
-            .await
-            .map_err(|error| error.to_string())?;
-        session
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        while let Some(packet) = session.poll_inbox() {
-            if let Some(position) = avatar_position(&packet, agent.agent_id, &mut local_id) {
-                latest = position;
-                samples += 1;
-            }
+    let _ = leave(harness, &mut observer.session, first).await;
+    Err(error)
+}
+
+/// The staying viewer must witness the walker leaving on the same circuit.
+/// Drive and log out both accounts even if a movement assertion failed.
+async fn finish_observed_walk(
+    harness: &Harness,
+    mut watcher: ObserverSession,
+    watcher_account: &Account,
+    mut walker: ObserverSession,
+    walker_account: &Account,
+    check: Result<(), String>,
+    check_minimap: bool,
+) -> Result<(ObservedAvatar, usize), String> {
+    let early = watcher.seen.peer_kills();
+    let walker_id = watcher.seen.local_id;
+    let mut leaving_kills = walker
+        .seen
+        .killed
+        .iter()
+        .filter(|&&id| Some(id) == walker_id)
+        .count();
+    let (left, observation) = watcher
+        .during(leave_observing_before_request(
+            harness,
+            &mut walker.session,
+            walker_account,
+            |packet| {
+                leaving_kills += world::killed(packet)
+                    .iter()
+                    .filter(|&&id| Some(id) == walker_id)
+                    .count();
+            },
+        ))
+        .await;
+    drop(walker); // The leaving circuit ends at logout (D70).
+    let departure = async {
+        check?;
+        observation?;
+        left?;
+        if early != 0 {
+            return Err("observer saw the walker killed before logout".into());
         }
-        let delta = Vec3::new(latest.x - start.x, latest.y - start.y, 0.0);
-        if delta.dot(forward) >= 1.0 {
-            moved = true;
-            break;
+        watcher.seen.coarse = None;
+        let alone = |view: &ObservedAvatar| {
+            !check_minimap
+                || view
+                    .dots_match(
+                        watcher_account.principal_id,
+                        walker_account.principal_id,
+                        &[watcher_account.principal_id],
+                    )
+                    .is_ok()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !(watcher.seen.peer_kills() != 0 && alone(&watcher.seen))
+            && std::time::Instant::now() < deadline
+        {
+            watcher.step().await?;
         }
+        if watcher.seen.peer_kills() == 0 {
+            return Err(format!(
+                "no KillObject for the walker's local id {:?}",
+                watcher.seen.local_id
+            ));
+        }
+        // Observe late duplicate kills on the circuit that stays in the region.
+        let settle = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < settle {
+            watcher.step().await?;
+        }
+        watcher.seen.check_departure(leaving_kills)?;
+        if check_minimap {
+            watcher.seen.dots_match(
+                watcher_account.principal_id,
+                walker_account.principal_id,
+                &[watcher_account.principal_id],
+            )?;
+        }
+        Ok(())
     }
-    // Release forward control so the region stops the movement burst
-    // before logout. LogoutReply sits on that same throttle.
-    let stop = world::agent_update(agent, latest, facing, 0);
-    let _ = session.send(&stop, false).await;
-    let logged_out = leave(harness, &mut session, &harness.owner).await;
-    if !moved {
-        return Err(format!(
-            "position stayed at {:.1},{:.1},{:.1} under forward control ({samples} position updates, local id {local_id:?})",
-            latest.x, latest.y, latest.z
-        ));
-    }
-    logged_out?;
+    .await;
+    let logout = leave(harness, &mut watcher.session, watcher_account).await;
+    departure?;
+    logout?;
+    Ok((watcher.seen, leaving_kills))
+}
+
+async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let (mut walker, mut watcher) =
+        enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
+    let moved = observed_forward(&mut walker, &mut watcher).await;
+    let (seen, leaving_kills) = finish_observed_walk(
+        harness,
+        watcher,
+        &harness.chat,
+        walker,
+        &harness.owner,
+        moved,
+        false,
+    )
+    .await?;
     Ok(format!(
-        "walk: pass ({:.1},{:.1},{:.1} to {:.1},{:.1},{:.1})",
-        start.x, start.y, start.z, latest.x, latest.y, latest.z
+        "walk: pass (forward movement, observer kills={}, leaving viewer kills={leaving_kills})",
+        seen.peer_kills()
     ))
 }
 
-async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let text = "ferroan harness chat";
-    let (mut listener, _) = enter(http, harness, &harness.chat).await?;
-    let (mut speaker, _) = enter(http, harness, &harness.owner).await?;
-    let speaker_id = speaker.agent();
-    let chat = world::say(speaker_id, text);
-    speaker
-        .send(&chat, true)
+async fn observed_forward(
+    walker: &mut ObserverSession,
+    watcher: &mut ObserverSession,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let (arrival, look, peer_start) = loop {
+        walker.step().await?;
+        watcher.step().await?;
+        if let (Some((pos, look)), Some(_), Some(peer)) = (
+            walker.seen.arrival,
+            walker.seen.own_position,
+            watcher.seen.position,
+        ) {
+            break (pos, look, peer);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("no walker arrival or matching full avatar update".into());
+        }
+    };
+    let facing = world::facing_look(look);
+    let forward = world::horizontal_forward(facing);
+    let advanced = |pos: Vec3, start: Vec3| {
+        Vec3::new(pos.x - start.x, pos.y - start.y, 0.0).dot(forward) >= 1.0
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut latest = walker.seen.own_position.unwrap_or(arrival);
+    watcher.seen.peer_terse = None;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "forward walk timed out: own {arrival:?} to {latest:?}, observer {peer_start:?} to {:?}",
+                watcher.seen.peer_terse
+            ));
+        }
+        let update = world::agent_update(
+            walker.session.agent(),
+            latest,
+            facing,
+            world::CONTROL_AT_POS,
+        );
+        walker
+            .session
+            .send(&update, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
+        if advanced(latest, arrival)
+            && watcher
+                .seen
+                .peer_terse
+                .is_some_and(|p| advanced(p, peer_start))
+        {
+            break;
+        }
+    }
+    let stop = world::agent_update(walker.session.agent(), latest, facing, 0);
+    walker
+        .session
+        .send(&stop, false)
         .await
-        .map_err(|error| error.to_string())?;
-    let mut heard = false;
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    const SAY: &str = "ferroan harness chat";
+    const DEBUG: &str = "ferroan harness debug";
+    let (mut listener, _) = enter(http, harness, &harness.chat, "last").await?;
+    let (mut speaker, _) = enter(http, harness, &harness.owner, "last").await?;
+    let speaker_id = speaker.agent();
+    for (channel, text) in [(0, SAY), (i32::MAX, DEBUG)] {
+        let mut chat = world::say(speaker_id, text);
+        chat.chat_data.channel = channel;
+        speaker
+            .send(&chat, true)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let mut heard_say = false;
+    let mut heard_debug = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         speaker
@@ -427,22 +739,24 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
         while let Some(packet) = listener.poll_inbox() {
             if let Some((name, source, chat_type, message)) = world::chat_heard(&packet)
                 && source == speaker_id.agent_id
-                && chat_type == world::CHAT_SAY
-                && message == text
                 && name.contains("Test")
                 && name.contains("User")
             {
-                heard = true;
+                heard_say |= chat_type == world::CHAT_SAY && message == SAY;
+                heard_debug |= chat_type == 6 && message == DEBUG;
             }
         }
-        if heard {
+        if heard_say && heard_debug {
             break;
         }
     }
     let speaker_out = leave(harness, &mut speaker, &harness.owner).await;
     let listener_out = leave(harness, &mut listener, &harness.chat).await;
-    if !heard {
+    if !heard_say {
         return Err("the second bot did not hear the say on channel 0".to_string());
+    }
+    if !heard_debug {
+        return Err("the second bot did not hear type 6 on DEBUG_CHANNEL".to_string());
     }
     speaker_out?;
     listener_out?;
@@ -451,9 +765,9 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
 
 /// Both harness accounts in the region at once. No chat is sent or required.
 async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut chat, _) = enter(http, harness, &harness.chat).await?;
+    let (mut chat, _) = enter(http, harness, &harness.chat, "last").await?;
     refuse_chat(&mut chat)?;
-    let owner_login = enter(http, harness, &harness.owner);
+    let owner_login = enter(http, harness, &harness.owner, "last");
     tokio::pin!(owner_login);
     let owner_result = loop {
         tokio::select! {
@@ -495,12 +809,12 @@ async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
 
 /// Both harness accounts upload one texture while they are in the region together.
 async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut owner, owner_login) = enter(http, harness, &harness.owner).await?;
+    let (mut owner, owner_login) = enter(http, harness, &harness.owner, "last").await?;
     let Some(owner_folder) = textures_folder(&owner_login) else {
         let _ = leave(harness, &mut owner, &harness.owner).await;
         return Err("the owner login reply has no Textures folder".to_string());
     };
-    let chat_login = enter(http, harness, &harness.chat);
+    let chat_login = enter(http, harness, &harness.chat, "last");
     tokio::pin!(chat_login);
     let chat_result = loop {
         tokio::select! {
@@ -572,150 +886,6 @@ async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     ))
 }
 
-/// What one bot has seen of the other avatar, of its own, and on its minimap.
-#[derive(Debug, Default)]
-struct OtherAvatar {
-    /// The local id of the other avatar's full `ObjectUpdate`.
-    local_id: Option<u32>,
-    appearance: bool,
-    /// Local ids in every `KillObject` this bot received.
-    killed: Vec<u32>,
-    /// The other avatar's position in its latest full or terse update.
-    position: Option<Vec3>,
-    own_local_id: Option<u32>,
-    /// This bot's own position in its latest full or terse update.
-    own_position: Option<Vec3>,
-    /// The latest `CoarseLocationUpdate`.
-    coarse: Option<CoarseLocationUpdate>,
-    /// The other avatar's minimap cells, X and Y, each change in order.
-    other_cells: Vec<(u8, u8)>,
-    /// This bot's own minimap cells, the same way.
-    own_cells: Vec<(u8, u8)>,
-    /// The first malformed minimap update.
-    coarse_error: Option<String>,
-}
-
-impl OtherAvatar {
-    fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
-        let me = session.agent().agent_id;
-        while let Some(packet) = session.poll_inbox() {
-            if world::chat_heard(&packet).is_some() {
-                return Err("the region sent ChatFromSimulator".to_string());
-            }
-            for object in world::objects_in(&packet) {
-                if object.pcode != world::PCODE_AVATAR {
-                    continue;
-                }
-                if object.full_id == other {
-                    self.local_id = Some(object.local_id);
-                    self.position = Some(Vec3::from(object.position));
-                } else if object.full_id == me {
-                    self.own_local_id = Some(object.local_id);
-                    self.own_position = Some(Vec3::from(object.position));
-                }
-            }
-            for (local_id, _, position) in world::terse_in(&packet) {
-                if Some(local_id) == self.local_id {
-                    self.position = Some(position);
-                } else if Some(local_id) == self.own_local_id {
-                    self.own_position = Some(position);
-                }
-            }
-            if packet.id == AvatarAppearance::ID
-                && let Ok(message) = packet.decode::<AvatarAppearance>()
-                && message.sender.id == other
-                && !message.visual_param.is_empty()
-                // A viewer drops an appearance for an avatar it does not
-                // know yet: only one after the full update counts.
-                && self.local_id.is_some()
-            {
-                self.appearance = true;
-            }
-            self.killed.extend(world::killed(&packet));
-        }
-        for coarse in session.take_coarse() {
-            self.note_coarse(me, other, coarse);
-        }
-        Ok(())
-    }
-
-    /// `SendCoarseLocationUpdate`: one location per listed agent, this bot's
-    /// own index in `You` when it is listed, and `Prey` -1.
-    fn note_coarse(&mut self, me: Uuid, other: Uuid, coarse: CoarseLocationUpdate) {
-        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
-        let you = agents
-            .iter()
-            .position(|agent| *agent == me)
-            .map_or(-1, |index| index as i16);
-        if self.coarse_error.is_none() {
-            if coarse.location.len() != agents.len() {
-                self.coarse_error = Some(format!(
-                    "a minimap update lists {} locations for {} agents",
-                    coarse.location.len(),
-                    agents.len()
-                ));
-            } else if coarse.index.you != you || coarse.index.prey != -1 {
-                self.coarse_error = Some(format!(
-                    "a minimap update has You {} and Prey {} for index {you}",
-                    coarse.index.you, coarse.index.prey
-                ));
-            }
-        }
-        for (agent, cells) in [(other, &mut self.other_cells), (me, &mut self.own_cells)] {
-            if let Some(index) = agents.iter().position(|listed| *listed == agent)
-                && let Some(location) = coarse.location.get(index)
-            {
-                let cell = (location.x, location.y);
-                if cells.last() != Some(&cell) {
-                    cells.push(cell);
-                }
-            }
-        }
-        self.coarse = Some(coarse);
-    }
-
-    /// The latest minimap update lists exactly `expected`, each at the cell of
-    /// the position this bot last saw for it.
-    fn dots_match(&self, me: Uuid, other: Uuid, expected: &[Uuid]) -> Result<(), String> {
-        if let Some(error) = &self.coarse_error {
-            return Err(error.clone());
-        }
-        let coarse = self.coarse.as_ref().ok_or("no minimap update")?;
-        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
-        if agents.len() != expected.len() || expected.iter().any(|agent| !agents.contains(agent)) {
-            return Err(format!("the minimap lists {} agent(s)", agents.len()));
-        }
-        for (index, agent) in agents.iter().enumerate() {
-            let seen = if *agent == me {
-                self.own_position
-            } else if *agent == other {
-                self.position
-            } else {
-                None
-            };
-            let seen = seen.ok_or("no position for a listed agent")?;
-            let location = &coarse.location[index];
-            let got = [location.x, location.y, location.z];
-            if !coarse_cell_near(got, seen) {
-                return Err(format!(
-                    "a minimap dot is at {},{},{} for an avatar seen at {:.2},{:.2},{:.2}",
-                    got[0], got[1], got[2], seen.x, seen.y, seen.z
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn seen(&self) -> bool {
-        self.local_id.is_some() && self.appearance
-    }
-
-    fn saw_kill(&self) -> bool {
-        self.local_id
-            .is_some_and(|local_id| self.killed.contains(&local_id))
-    }
-}
-
 /// Both harness accounts in the region together. Each bot gets the other's
 /// full avatar `ObjectUpdate` and `AvatarAppearance`: the one already there
 /// when the other arrives, the newcomer once its initial data is sent. Then
@@ -725,107 +895,19 @@ impl OtherAvatar {
 /// gets `KillObject` for the local id it saw, and its minimap lists only
 /// itself.
 async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let owner_id = harness.owner.principal_id;
-    let chat_id = harness.chat.principal_id;
-    let (mut owner, _) = enter(http, harness, &harness.owner).await?;
-    let mut owner_saw = OtherAvatar::default();
-    let chat_login = enter(http, harness, &harness.chat);
-    tokio::pin!(chat_login);
-    let chat_result = loop {
-        tokio::select! {
-            result = &mut chat_login => break result,
-            step = owner.drive(STEP) => {
-                step.map_err(|error| error.to_string())?;
-                owner_saw.note(&mut owner, chat_id)?;
-            }
-        }
-    };
-    let (mut chat, _) = match chat_result {
-        Ok(pair) => pair,
-        Err(error) => {
-            let _ = leave(harness, &mut owner, &harness.owner).await;
-            return Err(error);
-        }
-    };
-    let mut chat_saw = OtherAvatar::default();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while !(owner_saw.seen() && chat_saw.seen()) && std::time::Instant::now() < deadline {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        chat.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(&mut owner, chat_id)?;
-        chat_saw.note(&mut chat, owner_id)?;
-    }
-    let early_kill = [owner_saw.local_id, chat_saw.local_id]
-        .into_iter()
-        .flatten()
-        .any(|id| owner_saw.killed.contains(&id) || chat_saw.killed.contains(&id));
-    if !(owner_saw.seen() && chat_saw.seen()) || early_kill {
-        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        if early_kill {
-            return Err("an avatar was killed while both were in the region".to_string());
-        }
-        return Err(format!(
-            "the bots did not see each other (owner saw {owner_saw:?}, second bot saw {chat_saw:?})"
-        ));
-    }
-    let walked = walk_east(&mut chat, &mut chat_saw, &mut owner, &mut owner_saw).await;
-    let dots = walked.and_then(|start| {
-        owner_saw.dots_match(owner_id, chat_id, &[owner_id, chat_id])?;
-        chat_saw.dots_match(chat_id, owner_id, &[owner_id, chat_id])?;
-        let from = (start.x as i32) as u8;
-        let walked_to = |cells: &[(u8, u8)]| cells.last().map(|(x, _)| *x);
-        let far = |cell: Option<u8>| cell.is_some_and(|x| x >= from.saturating_add(2));
-        if !far(walked_to(&owner_saw.other_cells)) || !far(walked_to(&chat_saw.own_cells)) {
-            return Err(format!(
-                "the walking bot's dot did not follow it east of cell {from} (owner saw cells {:?}, second bot saw its own at {:?})",
-                owner_saw.other_cells, chat_saw.own_cells
-            ));
-        }
-        Ok(())
-    });
-    if let Err(error) = dots {
-        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        return Err(format!("minimap: {error}"));
-    }
-    let left = {
-        let logout = leave(harness, &mut chat, &harness.chat);
-        tokio::pin!(logout);
-        loop {
-            tokio::select! {
-                result = &mut logout => break result,
-                step = owner.drive(STEP) => {
-                    step.map_err(|error| error.to_string())?;
-                    owner_saw.note(&mut owner, chat_id)?;
-                }
-            }
-        }
-    };
-    if let Err(error) = left {
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        return Err(error);
-    }
-    let alone = |seen: &OtherAvatar| seen.dots_match(owner_id, chat_id, &[owner_id]).is_ok();
-    // A list sent before the departure may still arrive after the kill.
-    owner_saw.coarse = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !(owner_saw.saw_kill() && alone(&owner_saw)) && std::time::Instant::now() < deadline {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(&mut owner, chat_id)?;
-    }
-    let killed = owner_saw.saw_kill();
-    let dots = owner_saw.dots_match(owner_id, chat_id, &[owner_id]);
-    leave(harness, &mut owner, &harness.owner).await?;
-    if !killed {
-        return Err(format!(
-            "no KillObject for the second bot's local id {:?} after it left",
-            owner_saw.local_id
-        ));
-    }
-    if let Err(error) = dots {
-        return Err(format!("minimap after the second bot left: {error}"));
-    }
+    let (mut owner, mut chat) =
+        enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
+    let checked = check_avatars(harness, &mut owner, &mut chat).await;
+    let (owner_saw, _) = finish_observed_walk(
+        harness,
+        owner,
+        &harness.owner,
+        chat,
+        &harness.chat,
+        checked,
+        true,
+    )
+    .await?;
     let cells = |cells: &[(u8, u8)]| {
         cells
             .iter()
@@ -834,9 +916,56 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
             .join(" ")
     };
     Ok(format!(
-        "avatars: pass (each bot saw the other's local id, appearance and minimap dot; the dot followed a walk; KillObject and no dot on leave)\nminimap: the owner saw the second bot's dot at {}",
+        "avatars: pass (each bot saw the other's local id, appearance and minimap dot and got its name; the unknown id was answered only from the cached miss; the dot followed a walk; KillObject and no dot on leave)\nminimap: the owner saw the second bot's dot at {}",
         cells(&owner_saw.other_cells)
     ))
+}
+
+async fn check_avatars(
+    harness: &Harness,
+    owner: &mut ObserverSession,
+    chat: &mut ObserverSession,
+) -> Result<(), String> {
+    let owner_id = harness.owner.principal_id;
+    let chat_id = harness.chat.principal_id;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !(owner.seen.seen() && chat.seen.seen()) && std::time::Instant::now() < deadline {
+        owner.step().await?;
+        chat.step().await?;
+    }
+    let early_kill = [owner.seen.local_id, chat.seen.local_id]
+        .into_iter()
+        .flatten()
+        .any(|id| owner.seen.killed.contains(&id) || chat.seen.killed.contains(&id));
+    if !(owner.seen.seen() && chat.seen.seen()) || early_kill {
+        if early_kill {
+            return Err("an avatar was killed while both were in the region".to_string());
+        }
+        return Err(format!(
+            "the bots did not see each other (owner saw full {:?}, appearance {}; second bot saw full {:?}, appearance {})",
+            owner.seen.local_id,
+            owner.seen.seen(),
+            chat.seen.local_id,
+            chat.seen.seen()
+        ));
+    }
+    let walked = walk_east(chat, owner).await;
+    let dots = walked.and_then(|start| {
+        owner.seen.dots_match(owner_id, chat_id, &[owner_id, chat_id])?;
+        chat.seen.dots_match(chat_id, owner_id, &[owner_id, chat_id])?;
+        let from = (start.x as i32) as u8;
+        let walked_to = |cells: &[(u8, u8)]| cells.last().map(|(x, _)| *x);
+        let far = |cell: Option<u8>| cell.is_some_and(|x| x >= from.saturating_add(2));
+        if !far(walked_to(&owner.seen.other_cells)) || !far(walked_to(&chat.seen.own_cells)) {
+            return Err(format!(
+                "the walking bot's dot did not follow it east of cell {from} (owner saw cells {:?}, second bot saw its own at {:?})",
+                owner.seen.other_cells, chat.seen.own_cells
+            ));
+        }
+        Ok(())
+    });
+    dots.map_err(|e| format!("minimap: {e}"))?;
+    exchange_names(harness, owner, chat).await
 }
 
 /// The walking bot goes east under forward control until it is 2.5 m from
@@ -845,36 +974,31 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
 /// every 50 frames (about 4.5 s). Both circuits are driven throughout.
 /// Returns where the walk started.
 async fn walk_east(
-    walker: &mut Session,
-    walker_saw: &mut OtherAvatar,
-    watcher: &mut Session,
-    watcher_saw: &mut OtherAvatar,
+    walker: &mut ObserverSession,
+    watcher: &mut ObserverSession,
 ) -> Result<Vec3, String> {
-    let walker_id = walker.agent().agent_id;
-    let watcher_id = watcher.agent().agent_id;
-    let start = walker_saw
+    let start = walker
+        .seen
         .own_position
         .ok_or("the walking bot has not seen its own avatar")?;
     let facing = glam::Quat::IDENTITY;
     let mut latest = start;
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     while std::time::Instant::now() < deadline && latest.x - start.x < 2.5 {
-        let update = world::agent_update(walker.agent(), latest, facing, world::CONTROL_AT_POS);
+        let update = world::agent_update(
+            walker.session.agent(),
+            latest,
+            facing,
+            world::CONTROL_AT_POS,
+        );
         walker
+            .session
             .send(&update, false)
             .await
             .map_err(|error| error.to_string())?;
-        walker
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        watcher
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        walker_saw.note(walker, watcher_id)?;
-        watcher_saw.note(watcher, walker_id)?;
-        latest = walker_saw.own_position.unwrap_or(latest);
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
     }
     if latest.x - start.x < 2.5 {
         return Err(format!(
@@ -889,41 +1013,136 @@ async fn walk_east(
     while std::time::Instant::now() < deadline {
         if !fresh && std::time::Instant::now() >= settle {
             // Only a list made after the walker stopped counts.
-            walker_saw.coarse = None;
-            watcher_saw.coarse = None;
+            walker.seen.coarse = None;
+            watcher.seen.coarse = None;
             fresh = true;
         }
-        if fresh && walker_saw.coarse.is_some() && watcher_saw.coarse.is_some() {
+        if fresh && walker.seen.coarse.is_some() && watcher.seen.coarse.is_some() {
             break;
         }
         // `AgentUpdate` is unreliable: repeat the stop as a viewer does.
-        let stop = world::agent_update(walker.agent(), latest, facing, 0);
+        let stop = world::agent_update(walker.session.agent(), latest, facing, 0);
         walker
+            .session
             .send(&stop, false)
             .await
             .map_err(|error| error.to_string())?;
-        walker
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        watcher
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        walker_saw.note(walker, watcher_id)?;
-        watcher_saw.note(watcher, walker_id)?;
-        latest = walker_saw.own_position.unwrap_or(latest);
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
     }
     Ok(start)
 }
 
-/// `SendCoarseLocationUpdate`'s cell for `position`: X and Y as bytes, Z
-/// divided by four. Up to 0.1 m either way is allowed, because an update
-/// below the terse thresholds is not sent.
-fn coarse_cell_near(cell: [u8; 3], position: Vec3) -> bool {
-    let byte = |value: f32| (value as i32) as u8;
-    let near = |got: u8, value: f32| got == byte(value - 0.1) || got == byte(value + 0.1);
-    near(cell[0], position.x) && near(cell[1], position.y) && near(cell[2], position.z * 0.25)
+/// An id no harness grid has: `UUIDNameRequest` for it gets no reply.
+pub const UNKNOWN_NAME_ID: Uuid = Uuid::from_u128(0x0f0e_0d0c_0b0a_4984_8984_0102_0304_0506);
+
+fn name_request(ids: &[Uuid]) -> UUIDNameRequest {
+    let mut request = UUIDNameRequest::default();
+    for id in ids {
+        request
+            .uuid_name_block
+            .push(uuid_name_request::UUIDNameBlock { id: *id });
+    }
+    request
+}
+
+/// Each bot asks for the other's name and for [`UNKNOWN_NAME_ID`], in one
+/// `UUIDNameRequest`. Each must get one `UUIDNameReply` with the other's
+/// account names. The first request for the unknown id to be looked up gets
+/// no reply; the other bot's may come after that miss is cached and then
+/// gets `Unknown` and the id (TB89), so at most one of the two is answered,
+/// only that way. Then the owner asks for the unknown id again and must get
+/// `Unknown` and the id from the cached miss.
+async fn exchange_names(
+    harness: &Harness,
+    owner: &mut ObserverSession,
+    chat: &mut ObserverSession,
+) -> Result<(), String> {
+    let owner_id = harness.owner.principal_id;
+    let chat_id = harness.chat.principal_id;
+    owner
+        .session
+        .send(&name_request(&[chat_id, UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    chat.session
+        .send(&name_request(&[owner_id, UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut settle_until = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        owner.step().await?;
+        chat.step().await?;
+        unknown_answers(&owner.seen, &chat.seen, 1)?;
+        let both = !owner.seen.named(chat_id).is_empty() && !chat.seen.named(owner_id).is_empty();
+        match settle_until {
+            None if both => {
+                settle_until = Some(std::time::Instant::now() + Duration::from_secs(1));
+            }
+            Some(until) if std::time::Instant::now() >= until => break,
+            _ => {}
+        }
+        if settle_until.is_none() && std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "UUIDNameReply did not name the other bot (owner got {:?}, second bot got {:?})",
+                owner.seen.names, chat.seen.names
+            ));
+        }
+    }
+    for (saw, other, account) in [
+        (&owner.seen, chat_id, &harness.chat),
+        (&chat.seen, owner_id, &harness.owner),
+    ] {
+        let named = saw.named(other);
+        let want = (account.first_name.clone(), account.last_name.clone());
+        if named != [want.clone()] {
+            return Err(format!(
+                "UUIDNameReply named {other} as {named:?}, not once as {want:?}"
+            ));
+        }
+    }
+    let before = owner.seen.named(UNKNOWN_NAME_ID).len();
+    owner
+        .session
+        .send(&name_request(&[UNKNOWN_NAME_ID]), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while owner.seen.named(UNKNOWN_NAME_ID).len() == before && std::time::Instant::now() < deadline
+    {
+        owner.step().await?;
+        chat.step().await?;
+    }
+    if owner.seen.named(UNKNOWN_NAME_ID).len() != before + 1 {
+        return Err(format!(
+            "the second request for the unknown id got {:?}, not Unknown and the id from the cached miss",
+            owner.seen.named(UNKNOWN_NAME_ID)
+        ));
+    }
+    unknown_answers(&owner.seen, &chat.seen, 2)
+}
+
+/// Every reply for [`UNKNOWN_NAME_ID`] is `Unknown` and the id, and the two
+/// bots got at most `most` of them.
+fn unknown_answers(
+    owner: &ObservedAvatar,
+    chat: &ObservedAvatar,
+    most: usize,
+) -> Result<(), String> {
+    let want = ("Unknown".to_string(), UNKNOWN_NAME_ID.to_string());
+    let answers: Vec<_> = owner
+        .named(UNKNOWN_NAME_ID)
+        .into_iter()
+        .chain(chat.named(UNKNOWN_NAME_ID))
+        .collect();
+    if answers.len() > most || answers.iter().any(|answer| *answer != want) {
+        return Err(format!(
+            "the region answered the unknown id {answers:?}; at most {most} reply, each Unknown and the id"
+        ));
+    }
+    Ok(())
 }
 
 fn refuse_chat(session: &mut Session) -> Result<(), String> {
@@ -1003,8 +1222,8 @@ async fn leave_while_driving(
 }
 
 async fn build_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut owner, _) = enter(http, harness, &harness.owner).await?;
-    let (mut other, _) = enter(http, harness, &harness.chat).await?;
+    let (mut owner, _) = enter(http, harness, &harness.owner, "last").await?;
+    let (mut other, _) = enter(http, harness, &harness.chat, "last").await?;
     let owner_agent = owner.agent();
     let stand = world::agent_update(
         owner_agent,
@@ -1083,7 +1302,7 @@ async fn teleport_neighbour(http: &reqwest::Client, harness: &Harness) -> Result
         .neighbour
         .as_ref()
         .ok_or("neighbour teleport needs a grid-mode harness")?;
-    let (session, _) = enter(http, harness, &harness.owner).await?;
+    let (session, _) = enter(http, harness, &harness.owner, "last").await?;
     // Circuits the source region kept as children. The return hop reuses
     // one instead of sending a second UseCircuitCode.
     let mut parked: Vec<Session> = Vec::new();
@@ -1137,7 +1356,7 @@ async fn teleport_hop(http: &reqwest::Client, harness: &Harness) -> Result<Strin
         .neighbour
         .as_ref()
         .ok_or("neighbour hop needs a grid-mode harness")?;
-    let (session, _) = enter(http, harness, &harness.owner).await?;
+    let (session, _) = enter(http, harness, &harness.owner, "last").await?;
     let mut parked: Vec<Session> = Vec::new();
     let away = cross_to(
         http,
@@ -1515,7 +1734,7 @@ impl AbortPoll {
 }
 
 async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner).await?;
+    let (mut session, _) = enter(http, harness, &harness.owner, "last").await?;
     let agent = session.agent();
     let mut start = None;
     let mut handle = None;
@@ -1584,7 +1803,7 @@ async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<
 }
 
 async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, login) = enter(http, harness, &harness.owner).await?;
+    let (mut session, login) = enter(http, harness, &harness.owner, "last").await?;
     let folder = textures_folder(&login).ok_or("the login reply has no Textures folder")?;
     let uploaded = upload_texture(http, &session, folder, &harness.texture).await?;
     let fetched = fetch_texture(http, &session, uploaded).await?;
@@ -1609,7 +1828,7 @@ async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
 }
 
 async fn inventory_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, login) = enter(http, harness, &harness.owner).await?;
+    let (mut session, login) = enter(http, harness, &harness.owner, "last").await?;
     let root = login.inventory_root;
     if root.is_nil() {
         let _ = leave(harness, &mut session, &harness.owner).await;
@@ -1632,6 +1851,34 @@ async fn enter(
     http: &reqwest::Client,
     harness: &Harness,
     account: &Account,
+    start: &str,
+) -> Result<(Session, LoginResponse), String> {
+    enter_with_throttle(http, harness, account, start, ArrivalThrottle::Default).await
+}
+
+enum ArrivalThrottle {
+    Default,
+    Task(PrimTrace),
+    Land(f32),
+}
+
+async fn enter_with_throttle(
+    http: &reqwest::Client,
+    harness: &Harness,
+    account: &Account,
+    start: &str,
+    throttle: ArrivalThrottle,
+) -> Result<(Session, LoginResponse), String> {
+    enter_prepared(http, harness, account, start, throttle, |_| {}).await
+}
+
+async fn enter_prepared(
+    http: &reqwest::Client,
+    harness: &Harness,
+    account: &Account,
+    start: &str,
+    throttle: ArrivalThrottle,
+    prepare: impl FnOnce(&mut Session),
 ) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
@@ -1643,7 +1890,7 @@ async fn enter(
             login_uri: harness.login_uri.clone(),
             username: format!("{} {}", account.first_name, account.last_name),
             password: account.password.clone(),
-            start: "last".to_string(),
+            start: start.to_owned(),
         },
     )
     .await
@@ -1662,6 +1909,12 @@ async fn enter(
     )
     .await
     .map_err(|error| error.to_string())?;
+    match throttle {
+        ArrivalThrottle::Default => {}
+        ArrivalThrottle::Task(trace) => session.capture_prim_arrival(trace),
+        ArrivalThrottle::Land(rate) => session.set_land_rate(Some(rate)),
+    }
+    prepare(&mut session);
     session
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
         .await
@@ -1677,6 +1930,15 @@ async fn enter(
 }
 
 async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> Result<(), String> {
+    leave_observing_before_request(harness, session, account, |_| {}).await
+}
+
+async fn leave_observing_before_request(
+    harness: &Harness,
+    session: &mut Session,
+    account: &Account,
+    mut record: impl FnMut(&ferroan_protocol::IncomingPacket),
+) -> Result<(), String> {
     // LogoutReply is queued on the task throttle. The outgoing loop sleeps
     // while that queue is idle, and closing the agent then clears the queue,
     // so the reply is often never sent. HandleLogout logs the request before
@@ -1693,7 +1955,9 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             .drive(Duration::from_millis(200))
             .await
             .map_err(|error| error.to_string())?;
-        while session.poll_inbox().is_some() {}
+        while let Some(packet) = session.poll_inbox() {
+            record(&packet);
+        }
         if session.received() == seen {
             let since = quiet_since.unwrap_or_else(std::time::Instant::now);
             quiet_since = Some(since);
@@ -1704,7 +1968,10 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             quiet_since = None;
         }
     }
-    if session.logout(Duration::from_secs(2)).await.is_ok() {
+    // Stop recording when we send LogoutRequest. Pin8 can send its departing
+    // viewer a kill for its own avatar during teardown (TB87).
+    let logout = session.logout(Duration::from_secs(2)).await;
+    if logout.is_ok() {
         return Ok(());
     }
     if harness.require_logout_reply {
@@ -1735,32 +2002,6 @@ fn logout_requests(path: &Path, name: &str) -> Result<usize, String> {
     let text = String::from_utf8_lossy(&bytes);
     let needle = format!("Got a logout request for {name} ");
     Ok(text.matches(&needle).count())
-}
-
-fn avatar_position(
-    packet: &ferroan_protocol::IncomingPacket,
-    agent: Uuid,
-    local_id: &mut Option<u32>,
-) -> Option<Vec3> {
-    for object in world::objects_in(packet) {
-        if object.full_id == agent {
-            // A non-avatar update can share the agent id. Keep an avatar local
-            // id once one arrives, and still report the position either way.
-            if local_id.is_none() || object.pcode == world::PCODE_AVATAR {
-                *local_id = Some(object.local_id);
-            }
-            return Some(Vec3::from(object.position));
-        }
-    }
-    for (seen, avatar, position) in world::terse_in(packet) {
-        if local_id.is_none() && avatar {
-            *local_id = Some(seen);
-        }
-        if *local_id == Some(seen) {
-            return Some(position);
-        }
-    }
-    None
 }
 
 async fn wait_object<F>(

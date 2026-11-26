@@ -3,7 +3,7 @@
 
 //! Grid services. This crate holds the asset service, the user-account
 //! service (including user aliases), authentication, the grid-user service,
-//! and the avatar stores.
+//! the Null, MySQL and PostgreSQL Presence stores, and the raw avatar service.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies
@@ -18,7 +18,9 @@ pub mod alias;
 pub mod asset;
 pub mod auth;
 pub mod avatar;
+pub mod bakes;
 pub mod griduser;
+pub mod presence;
 
 #[cfg(test)]
 mod shard_header;
@@ -26,7 +28,9 @@ mod shard_header;
 pub use account::AccountHttp;
 pub use alias::AliasHttp;
 pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};
+pub use avatar::AvatarHttp;
 pub use griduser::GridUserHttp;
+pub use presence::PresenceHttp;
 
 pub use asset::{
     Asset, AssetClock, AssetError, AssetHttp, AssetMetadata, AssetOptions, AssetStore, DeleteMode,
@@ -34,3 +38,13 @@ pub use asset::{
     encode_bool, encode_bools, encode_metadata, encode_string, encode_strings, listen_address,
     network_port,
 };
+
+/// A single table identifier accepted by the grid service stores.
+pub(crate) fn sql_ident(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 64
+        && bytes
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+        && bytes.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}

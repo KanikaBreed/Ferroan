@@ -21,11 +21,13 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use ferroan_capture::{Kind, Record};
 use ferroan_protocol::msgs::{
     AgentHeightWidth, AgentMovementComplete, AgentThrottle, CoarseLocationUpdate,
-    CompleteAgentMovement, CompletePingCheck, ImageData, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, RegionHandshake, RegionHandshakeReply, SimStats, SimulatorViewerTimeMessage,
-    StartPingCheck, UseCircuitCode,
+    CompleteAgentMovement, CompletePingCheck, GenericStreamingMessage, ImageData,
+    ImprovedTerseObjectUpdate, LayerData, LogoutReply, LogoutRequest, ObjectUpdate, PacketAck,
+    RegionHandshake, RegionHandshakeReply, SimStats, SimulatorViewerTimeMessage, StartPingCheck,
+    UseCircuitCode,
 };
 use ferroan_protocol::{IncomingPacket, Msg, parse_packet};
 use uuid::Uuid;
@@ -45,11 +47,15 @@ pub struct Agent {
 /// `REGION_HANDSHAKE_SUPPORTS_SELF_APPEARANCE | SEND_ALL_CACHEABLE | CACHE_EMPTY`.
 /// The bot keeps no object cache, so the region sends every cacheable object.
 const HANDSHAKE_FLAGS: u32 = 0x4 | 0x1 | 0x2;
+/// `GenericStreamingMessage` method for a glTF material override.
+const MATERIAL_OVERRIDE_METHOD: u16 = 16757;
 const WINDOW_HEIGHT: u16 = 1080;
 const WINDOW_WIDTH: u16 = 1920;
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// Packets a scenario has not taken yet. The oldest is dropped past this.
 const MAX_INBOX: usize = 256;
+/// Per-circuit bound for each observer history, including the raw arrival trace.
+pub(crate) const OBSERVER_HISTORY: usize = 256;
 /// Minimap updates a scenario has not taken yet. The oldest is dropped past
 /// this; a region sends each viewer one list every 50 frames (about 4.5 s).
 const MAX_COARSE: usize = 64;
@@ -68,6 +74,44 @@ pub enum SessionError {
     SeedTask,
     #[error("the previous circuit visit still has too many buffered datagrams")]
     PriorCircuitBacklog,
+    #[error("prim arrival capture is full")]
+    ArrivalCaptureFull,
+}
+
+pub const LOAD_RECEIPT_LIMIT: usize = 2048;
+pub(crate) enum PrimTrace {
+    Arrival(f32),
+    Load,
+}
+
+struct ArrivalCapture {
+    limit: usize,
+    task_bps: f32,
+    start: Instant,
+    records: Vec<Record>,
+    materials: bool,
+    material_count: usize,
+}
+
+impl ArrivalCapture {
+    fn record(&mut self, kind: Kind, bytes: &[u8]) -> Result<(), SessionError> {
+        if self.records.len() >= self.limit {
+            ferroan_diag::refuse(
+                ferroan_diag::BOT_OBSERVER_HISTORY,
+                ferroan_diag::Kind::Hard,
+                self.limit as u64,
+                self.records.len() as u64 + 1,
+                "bot",
+            );
+            return Err(SessionError::ArrivalCaptureFull);
+        }
+        self.records.push(Record {
+            kind,
+            time_ms: self.start.elapsed().as_millis() as u64,
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
 }
 
 pub struct Session {
@@ -75,7 +119,10 @@ pub struct Session {
     agent: Agent,
     caps: HashMap<String, String>,
     ucc_seq: u32,
+    land_rate: Option<f32>,
     movement_sent: bool,
+    arrival_capture: Option<ArrivalCapture>,
+    extra_seed: Vec<String>,
     handshake_sent: bool,
     handshake_sequence: Option<u32>,
     generation: u64,
@@ -106,7 +153,10 @@ impl Session {
             agent,
             caps: HashMap::new(),
             ucc_seq,
+            land_rate: None,
             movement_sent: false,
+            arrival_capture: None,
+            extra_seed: Vec::new(),
             handshake_sent: false,
             handshake_sequence: None,
             generation: 0,
@@ -197,11 +247,12 @@ impl Session {
     ) -> Result<(), SessionError> {
         let http = http.clone();
         let seed = seed.to_owned();
+        let extra_seed = self.extra_seed.clone();
         let mut seed_task = if seed.is_empty() {
             None
         } else {
             Some(tokio::spawn(async move {
-                caps::request_seed(&http, &seed).await
+                caps::request_seed_names(&http, &seed, &extra_seed).await
             }))
         };
         let mut seed_done = seed_task.is_none();
@@ -251,7 +302,7 @@ impl Session {
         for index in 0..=MAX_INBOX {
             match self.circuit.try_recv_from(&mut buf) {
                 Ok(_) if index == MAX_INBOX => return Err(SessionError::PriorCircuitBacklog),
-                Ok((len, from)) => self.receive_datagram(&buf[..len], from).await,
+                Ok((len, from)) => self.receive_datagram(&buf[..len], from).await?,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
             }
@@ -298,12 +349,15 @@ impl Session {
         movement.agent_data.circuit_code = self.agent.circuit_code;
         self.circuit.send(&movement, true).await?;
 
-        let mut throttle = AgentThrottle::default();
-        throttle.agent_data.agent_id = self.agent.agent_id;
-        throttle.agent_data.session_id = self.agent.session_id;
-        throttle.agent_data.circuit_code = self.agent.circuit_code;
-        throttle.throttle.throttles = throttle::initial_throttle_bytes();
-        self.circuit.send(&throttle, true).await?;
+        self.send_viewer_settings().await?;
+        self.movement_sent = true;
+        Ok(())
+    }
+
+    /// Initialize the child viewer's throttle and window without requesting root.
+    pub(crate) async fn send_viewer_settings(&mut self) -> Result<(), SessionError> {
+        self.send_throttles(self.arrival_capture.as_ref().map(|c| c.task_bps))
+            .await?;
 
         let mut window = AgentHeightWidth::default();
         window.agent_data.agent_id = self.agent.agent_id;
@@ -312,7 +366,70 @@ impl Session {
         window.height_width_block.height = WINDOW_HEIGHT;
         window.height_width_block.width = WINDOW_WIDTH;
         self.circuit.send(&window, true).await?;
-        self.movement_sent = true;
+        Ok(())
+    }
+
+    pub(crate) fn set_land_rate(&mut self, rate: Option<f32>) {
+        self.land_rate = rate;
+    }
+
+    pub(crate) fn capture_prim_arrival(&mut self, trace: PrimTrace) {
+        let (task_bps, limit) = match trace {
+            PrimTrace::Arrival(rate) => (rate, OBSERVER_HISTORY),
+            PrimTrace::Load => (crate::scenario::HANDOFF_TASK_BPS, LOAD_RECEIPT_LIMIT),
+        };
+        self.arrival_capture = Some(ArrivalCapture {
+            limit,
+            task_bps,
+            start: Instant::now(),
+            records: Vec::new(),
+            materials: false,
+            material_count: 0,
+        });
+    }
+
+    /// Also keep `GenericStreamingMessage` datagrams in the arrival capture.
+    pub(crate) fn record_material_messages(&mut self) {
+        if let Some(capture) = &mut self.arrival_capture {
+            capture.materials = true;
+        }
+    }
+
+    pub(crate) fn material_messages(&self) -> usize {
+        self.arrival_capture
+            .as_ref()
+            .map(|capture| capture.material_count)
+            .unwrap_or(0)
+    }
+
+    /// Ask the seed for one more name. An unregistered name still negotiates its flag.
+    pub(crate) fn request_seed_cap(&mut self, name: &str) {
+        self.extra_seed.push(name.to_owned());
+    }
+
+    pub(crate) fn take_arrival_records(&mut self) -> Option<Vec<Record>> {
+        self.arrival_capture.take().map(|c| c.records)
+    }
+
+    pub(crate) async fn send_throttles(
+        &mut self,
+        task_bps: Option<f32>,
+    ) -> Result<(), SessionError> {
+        let mut throttle = AgentThrottle::default();
+        throttle.agent_data.agent_id = self.agent.agent_id;
+        throttle.agent_data.session_id = self.agent.session_id;
+        throttle.agent_data.circuit_code = self.agent.circuit_code;
+        throttle.throttle.throttles = throttle::initial_throttle_bytes();
+        if let Some(rate) = self.land_rate {
+            throttle.throttle.throttles[4..8].copy_from_slice(&rate.to_le_bytes());
+        }
+        if let Some(rate) = task_bps {
+            throttle.throttle.throttles[16..20].copy_from_slice(&rate.to_le_bytes());
+        }
+        self.circuit.send(&throttle, true).await?;
+        if let Some(capture) = &mut self.arrival_capture {
+            capture.record(Kind::UdpIn, self.circuit.sent_datagram())?;
+        }
         Ok(())
     }
 
@@ -325,27 +442,48 @@ impl Session {
             return Ok(());
         };
         let (len, from) = received?;
-        self.receive_datagram(&buf[..len], from).await;
-        Ok(())
+        self.receive_datagram(&buf[..len], from).await
     }
 
-    async fn receive_datagram(&mut self, bytes: &[u8], from: SocketAddr) {
+    async fn receive_datagram(
+        &mut self,
+        bytes: &[u8],
+        from: SocketAddr,
+    ) -> Result<(), SessionError> {
         if from != self.circuit.addr {
-            return;
+            return Ok(());
         }
         self.received += 1;
         let Ok(packet) = parse_packet(bytes) else {
-            return;
+            return Ok(());
         };
+        if let Some(capture) = &mut self.arrival_capture {
+            let streaming = capture.materials && packet.id == GenericStreamingMessage::ID;
+            if packet.id == ObjectUpdate::ID
+                || packet.id == ImprovedTerseObjectUpdate::ID
+                || streaming
+            {
+                capture.record(Kind::UdpOut, bytes)?;
+                if streaming
+                    && !packet.resent()
+                    && packet
+                        .decode::<GenericStreamingMessage>()
+                        .is_ok_and(|message| message.method_data.method == MATERIAL_OVERRIDE_METHOD)
+                {
+                    capture.material_count += 1;
+                }
+            }
+        }
         if !self
             .circuit
             .on_receive(packet.flags, packet.sequence, &packet.acks)
         {
             self.circuit.flush_acks().await;
-            return;
+            return Ok(());
         }
         self.dispatch(packet).await;
         self.circuit.flush_acks().await;
+        Ok(())
     }
 
     fn accept(&mut self, flags: u8, sequence: u32) {
@@ -622,6 +760,64 @@ mod tests {
             sock.write_all(body).await.unwrap();
         });
         format!("http://127.0.0.1:{port}/seed")
+    }
+
+    #[tokio::test]
+    async fn prim_arrival_records_a_resend_even_when_the_inbox_drops_it() {
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = sim.local_addr().unwrap();
+        let mut session = Session::connect(peer, agent()).await.unwrap();
+        session.capture_prim_arrival(PrimTrace::Arrival(8000.0));
+        let mut first = Vec::new();
+        build_packet(&ObjectUpdate::default(), 41, true, false, &[], &mut first);
+        let mut resend = first.clone();
+        resend[0] |= ferroan_protocol::PacketFlags::RESENT;
+        session.receive_datagram(&first, peer).await.unwrap();
+        session.receive_datagram(&resend, peer).await.unwrap();
+        assert_eq!(session.inbox.len(), 1);
+        let records = session.take_arrival_records().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].bytes, first);
+        assert_eq!(records[1].bytes, resend);
+    }
+
+    #[tokio::test]
+    async fn material_count_ignores_a_resend_and_any_other_method() {
+        use ferroan_protocol::msgs::generic_streaming_message::{DataBlock, MethodData};
+
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = sim.local_addr().unwrap();
+        let mut session = Session::connect(peer, agent()).await.unwrap();
+        session.capture_prim_arrival(PrimTrace::Arrival(8000.0));
+        session.record_material_messages();
+        let override_message = GenericStreamingMessage {
+            method_data: MethodData {
+                method: MATERIAL_OVERRIDE_METHOD,
+            },
+            data_block: DataBlock {
+                data: b"{'id':i1}".to_vec(),
+            },
+        };
+        let other = GenericStreamingMessage {
+            method_data: MethodData { method: 1 },
+            data_block: DataBlock {
+                data: b"no".to_vec(),
+            },
+        };
+        let mut fresh = Vec::new();
+        build_packet(&override_message, 7, true, false, &[], &mut fresh);
+        let mut again = Vec::new();
+        build_packet(&override_message, 8, true, false, &[], &mut again);
+        let mut resend = fresh.clone();
+        resend[0] |= ferroan_protocol::PacketFlags::RESENT;
+        let mut wrong = Vec::new();
+        build_packet(&other, 9, true, false, &[], &mut wrong);
+        session.receive_datagram(&fresh, peer).await.unwrap();
+        session.receive_datagram(&resend, peer).await.unwrap();
+        session.receive_datagram(&wrong, peer).await.unwrap();
+        assert_eq!(session.material_messages(), 1);
+        session.receive_datagram(&again, peer).await.unwrap();
+        assert_eq!(session.material_messages(), 2);
     }
 
     async fn handshaken_session() -> (Session, UdpSocket, u32) {

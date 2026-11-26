@@ -46,7 +46,10 @@ pub use commands::{delete_asset, dump_asset, show_asset};
 pub use content_type::content_type;
 pub use fsasset::FsAssetStore;
 pub use fservice::FsAssetService;
-pub use fsfiles::{FsFiles, WRITER_INTERVAL_MS, WRITER_MAX_RETRY_MS, next_writer_interval};
+pub(crate) use fsfiles::hash_to_file;
+pub use fsfiles::{
+    FsFiles, WRITER_INTERVAL_MS, WRITER_MAX_RETRY_MS, WriterPass, next_writer_interval,
+};
 pub use http::{AssetHttp, AssetOptions, DeleteMode};
 pub use model::{Asset, AssetMetadata};
 pub use open::{AssetError, listen_address, network_port};

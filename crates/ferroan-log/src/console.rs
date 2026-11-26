@@ -36,7 +36,15 @@ const MAX_SESSIONS: usize = 32;
 /// `OpenSim.cs` `GetString("ConsolePrompt", ...)` at the pin (`c70fee205f`, line 131).
 pub(crate) const DEFAULT_CONSOLE_PROMPT: &str = "Region (\\R) ";
 
+type CommandHandler = Arc<dyn Fn(&[&str]) -> String + Send + Sync>;
+pub(crate) struct ServiceCommand {
+    pub words: &'static [&'static str],
+    pub help_xml: &'static str,
+    pub run: CommandHandler,
+}
+
 pub(crate) struct ConsoleState {
+    pub service_commands: Mutex<Vec<ServiceCommand>>,
     user: String,
     pass: String,
     origin: Option<HeaderValue>,
@@ -124,6 +132,7 @@ pub(crate) fn state(
         None => None,
     };
     Ok(Arc::new(ConsoleState {
+        service_commands: Mutex::new(Vec::new()),
         user,
         pass,
         origin,
@@ -157,6 +166,19 @@ pub(crate) fn router(state: Arc<ConsoleState>) -> Router {
 }
 
 impl ConsoleState {
+    fn command_help(&self) -> String {
+        let mut xml = help_tree().to_owned();
+        for command in self
+            .service_commands
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+        {
+            xml.push_str(command.help_xml);
+        }
+        xml
+    }
+
     pub(crate) fn push_plain(&self, level_name: &str, text: &str) {
         self.push_line(level_name, text, false, false, false);
     }
@@ -197,7 +219,7 @@ async fn start_session(State(state): State<Arc<ConsoleState>>, body: String) -> 
     let xml = format!(
         "<?xml version=\"1.0\"?><ConsoleSession><SessionID>{id}</SessionID><Prompt>{prompt}</Prompt><HelpTree>{help}</HelpTree></ConsoleSession>",
         prompt = xml_escape(&state.prompt),
-        help = help_tree(),
+        help = state.command_help(),
     );
     xml_response(StatusCode::OK, "text/xml", xml, false, &state)
 }
@@ -219,7 +241,7 @@ async fn session_command(State(state): State<Arc<ConsoleState>>, body: String) -
     let Some(command) = form_get(&form, "COMMAND") else {
         return empty(StatusCode::NOT_FOUND, "text/plain", &state);
     };
-    run_command(&state, command);
+    run_command(&state, command).await;
     xml_response(
         StatusCode::OK,
         "text/xml",
@@ -402,7 +424,7 @@ fn ensure_sweeper(state: &Arc<ConsoleState>) {
     }
 }
 
-fn run_command(state: &ConsoleState, command: &str) {
+async fn run_command(state: &ConsoleState, command: &str) {
     let parts = split_command(command);
     let words: Vec<&str> = parts.iter().map(String::as_str).collect();
     match words.as_slice() {
@@ -438,7 +460,26 @@ fn run_command(state: &ConsoleState, command: &str) {
                 state.push_plain("Info", &format!("Console log level is {name}"));
             }
         },
-        _ => state.push_plain("Info", "Invalid command"),
+        _ => {
+            let handler = state
+                .service_commands
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .find(|cmd| words.starts_with(cmd.words))
+                .map(|cmd| (cmd.words.len(), Arc::clone(&cmd.run)));
+            if let Some((prefix, run)) = handler {
+                let output = tokio::task::spawn_blocking(move || {
+                    let args: Vec<_> = parts[prefix..].iter().map(String::as_str).collect();
+                    run(&args)
+                })
+                .await
+                .unwrap_or_else(|_| "Command failed".into());
+                state.push_plain("Info", &output);
+            } else {
+                state.push_plain("Info", "Invalid command");
+            }
+        }
     }
 }
 
@@ -592,6 +633,39 @@ mod tests {
             .await
             .expect("body");
         (status, String::from_utf8_lossy(&bytes).into_owned(), kind)
+    }
+
+    #[tokio::test]
+    async fn a_registered_service_command_requires_an_open_session() {
+        let state = console();
+        let help = r#"<Level Name="delete"><Level Name="bakes"/></Level>"#;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.service_commands.lock().unwrap().push(ServiceCommand {
+            words: &["delete", "bakes"],
+            help_xml: help,
+            run: Arc::new(move |args| {
+                tx.send(args.join(" ")).unwrap();
+                "Bakes deleted".into()
+            }),
+        });
+        assert!(state.command_help().contains(help));
+        let id = Uuid::new_v4();
+        let form = format!("ID={id}&COMMAND=delete bakes fixture");
+        assert_eq!(
+            session_command(State(state.clone()), form.clone())
+                .await
+                .status(),
+            HttpStatus::NOT_FOUND
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(state.try_open(id));
+        assert_eq!(
+            session_command(State(state.clone()), form).await.status(),
+            HttpStatus::OK
+        );
+        assert_eq!(rx.try_recv().unwrap(), "fixture");
+        let (_, lines, _) = text(read_responses(State(state), Path(id.to_string())).await).await;
+        assert!(lines.contains(">Bakes deleted</Line>"));
     }
 
     #[tokio::test]

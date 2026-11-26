@@ -35,6 +35,7 @@
 //! `ServerUtils.ParseQueryString` and `BuildQueryString`.
 
 use ferroan_diag::{self, HTTP_FIELDS, HTTP_LIST_ITEMS, HTTP_QUERY_BYTES, Kind};
+use indexmap::map::Entry;
 
 use crate::error::HttpError;
 use crate::value::{Field, FieldMap};
@@ -169,6 +170,26 @@ pub fn parse_query_string_limited(
     max_bytes: usize,
     max_fields: usize,
 ) -> Result<FieldMap, HttpError> {
+    parse_query(query, max_bytes, max_fields, None)
+}
+
+/// Override the item count for one named list in a service form. Other lists
+/// keep the normal HTTP limit, and the entire form still has the byte limit.
+pub fn parse_query_with_list_limit(
+    query: &str,
+    key: &str,
+    maximum: usize,
+    id: &'static str,
+) -> Result<FieldMap, HttpError> {
+    parse_query(query, MAX_QUERY_BYTES, MAX_FIELDS, Some((key, maximum, id)))
+}
+
+fn parse_query(
+    query: &str,
+    max_bytes: usize,
+    max_fields: usize,
+    list_limit: Option<(&str, usize, &'static str)>,
+) -> Result<FieldMap, HttpError> {
     if query.len() > max_bytes {
         ferroan_diag::refuse(
             HTTP_QUERY_BYTES,
@@ -192,7 +213,7 @@ pub fn parse_query_string_limited(
         if parts.is_empty() || blank(parts[0]) {
             continue;
         }
-        let name = url_decode(parts[0]);
+        let mut name = url_decode(parts[0]);
         let item = if parts.len() > 1 && !blank(parts[1]) {
             url_decode(parts[1])
         } else {
@@ -202,43 +223,42 @@ pub fn parse_query_string_limited(
             if bare.is_empty() {
                 continue;
             }
-            match result.get_mut(bare) {
-                Some(Field::List(list)) => {
-                    if list.len() >= MAX_LIST_ITEMS {
-                        ferroan_diag::refuse(
-                            HTTP_LIST_ITEMS,
-                            Kind::Hard,
-                            MAX_LIST_ITEMS as u64,
-                            (list.len() + 1) as u64,
-                            "query",
-                        );
-                        return Err(HttpError::Limit {
-                            what: "query list",
-                            limit: MAX_LIST_ITEMS,
-                            got: list.len() + 1,
-                        });
-                    }
-                    list.push(item);
-                }
-                Some(_) => {}
-                None => {
-                    if result.len() >= max_fields {
+            let (maximum, id) = list_limit
+                .filter(|(key, _, _)| *key == bare)
+                .map_or((MAX_LIST_ITEMS, HTTP_LIST_ITEMS), |(_, n, id)| (n, id));
+            name.truncate(bare.len());
+            let fields = result.len();
+            let field = match result.entry(name) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    if fields >= max_fields {
                         ferroan_diag::refuse(
                             HTTP_FIELDS,
                             Kind::Hard,
                             max_fields as u64,
-                            (result.len() + 1) as u64,
+                            (fields + 1) as u64,
                             "query",
                         );
                         return Err(HttpError::Limit {
                             what: "query fields",
                             limit: max_fields,
-                            got: result.len() + 1,
+                            got: fields + 1,
                         });
                     }
-                    result.insert(bare.to_string(), Field::List(vec![item]));
+                    entry.insert(Field::List(Vec::new()))
                 }
+            };
+            let Field::List(list) = field else { continue };
+            if list.len() >= maximum {
+                let observed = list.len() + 1;
+                ferroan_diag::refuse(id, Kind::Hard, maximum as u64, observed as u64, "query");
+                return Err(HttpError::Limit {
+                    what: "query list",
+                    limit: maximum,
+                    got: observed,
+                });
             }
+            list.push(item);
         } else if !result.contains_key(&name) {
             if result.len() >= max_fields {
                 ferroan_diag::refuse(

@@ -11,9 +11,26 @@ using OpenSim.Data;
 
 const int MaxPayload = 1024 * 1024;
 
+if (args.Length == 4 && args[0] == "appearance")
+    return AppearanceCases.Run(args[1], args[2], args[3]);
+
+if (args.Length == 5 && args[0] is ("service" or "service-mysql" or "bakes") && ushort.TryParse(args[3], out var port) && port != 0)
+{
+    try
+    {
+        if (args[0] == "bakes") return BakesCases.Run(args[1], args[2], port, args[4]);
+        return ServiceCases.Run(args[1], args[2], port, args[4], args[0] == "service-mysql");
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine(Scrub(error.Message));
+        return 1;
+    }
+}
+
 if (args.Length != 1 || !IsOperation(args[0]))
 {
-    Console.Error.WriteLine("usage: AvatarOracle get|upsert|delete|delete-principal");
+    Console.Error.WriteLine("usage: AvatarOracle get|upsert|delete|delete-principal, appearance generate|verify <pin> <fixture>, or service|service-mysql|bakes generate|verify <pin> <port> <fixture>");
     return 2;
 }
 

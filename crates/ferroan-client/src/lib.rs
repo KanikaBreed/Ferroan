@@ -16,30 +16,44 @@ mod chat;
 mod circuit;
 mod datagram_log;
 mod entity_feed;
+mod material;
+mod task_batch;
+pub use material::{Face, packet as material_packet};
+pub use task_batch::{TaskBatch, TaskPackets};
 mod event_queue;
 mod handshake;
+mod names;
 mod return_hop;
 mod source_hop;
 mod teleport;
 mod throttle;
 
 pub use agent_animations::{AgentAnimations, Anim};
-pub use appearance::{AvatarWire, LiveAvatar, StoredAppearance};
-pub use arrival::{ArrivalConfig, LandLayer};
+pub use appearance::{
+    AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
+};
+pub use arrival::{
+    ArrivalConfig, LandLayer, ParcelOverlayChunk, VIA_LOGIN, land_at_complete, land_at_initial,
+};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,
     CapsServer, UploaderRoutes,
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginScene, RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove,
-    SceneRefused, SceneReply, SceneResult, TeleportRequest, UdpCounters,
+    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, ParcelQuery,
+    RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply,
+    SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
     AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};
+pub use names::{
+    MAX_CIRCUIT_LOOKUPS, MAX_NAME_CACHE, MAX_NAME_LOOKUPS, NameFuture, NameSource, RegionNames,
+    UserName,
+};
 pub use return_hop::{ROOT_WAIT, ReturnPose, ReturnSlot, UPDATE_WAIT};
 pub use source_hop::{
     CONNECT_INNER, FinishEvent, HopOut, HopPose, HopRequest, INTERNAL, NOT_FOUND, RESOLVE_FAILED,

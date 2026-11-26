@@ -8,20 +8,25 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 ferroan-bot = { path = "../tools/bot" }
 ferroan-capture = { path = "../crates/ferroan-capture" }
+ferroan-config = { path = "../crates/ferroan-config" }
 ferroan-db = { path = "../crates/ferroan-db" }
 ferroan-diag = { path = "../crates/ferroan-diag" }
 ferroan-http = { path = "../crates/ferroan-http" }
 ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-log = { path = "../crates/ferroan-log" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }
+ferroan-region = { path = "../crates/ferroan-region" }
 ferroan-scene = { path = "../crates/ferroan-scene" }
 ferroan-services = { path = "../crates/ferroan-services" }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
 sha1 = "0.10.6"
 sha2 = "0.10.9"
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 tracing = "0.1"

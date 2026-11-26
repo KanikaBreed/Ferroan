@@ -6,7 +6,8 @@
 //! `check` verifies that every Markdown link to a local file resolves and that
 //! every limit id is listed in `docs/LIMITS.md` and named from a call site,
 //! then runs formatting, clippy (warnings denied) and the workspace tests.
-//! With `--docs-only` it stops after the Markdown and limit-id checks.
+//! With `--docs-only` it stops after the Markdown, limit-id, login-gate and
+//! personal-path checks.
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
 //! `verify`. The Linux live workflow runs `verify` against pinned references.
@@ -28,13 +29,33 @@
 //! `throttle generate` and `throttle verify` read the pinned category token
 //! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
 //!
+//! `jolt substeps` and `jolt substeps-verify` run the pinned
+//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
+//! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
+//! and compare `fixtures/jolt-config`. `jolt file` and `jolt file-verify`
+//! run the pinned `JoltScene.NoteDilationSample` and compare
+//! `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
+//! pinned harness in-process for the stock `drop` and compare
+//! `fixtures/jolt-record`. That command loads the stock native. None of
+//! them starts a region. `jolt generate` and `jolt verify` stay with the
+//! matched-native harness.
+//!
+//! `presence generate` and `presence verify` record and compare the pinned Null
+//! provider's calls and results in `fixtures/presence/null.json`.
+//! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
+//! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
+//! `session-zone` checks MySQL and PostgreSQL session zones against Pin8 on
+//! throwaway servers.
+//!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
 //! `regionstore read` reads that XML back through the pin and writes the fields.
-//! `regionstore verify` reloads the object fixture. `regionstore cross`
-//! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
-//! the containers. None of them starts a server or the live harness.
+//! `regionstore verify` reloads the object fixture. `regionstore scales` writes
+//! the admitted-scale fixture, and `regionstore scales-verify` checks it.
+//! `regionstore cross` reloads SQLite and throwaway MySQL and PostgreSQL
+//! containers, then removes the containers. None of them starts a server or
+//! the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -83,12 +104,15 @@ mod docker;
 mod dotnet_ci;
 mod ferrobot;
 mod ferrobot_build;
+mod fixture_oracle;
 mod fsasset_live;
 mod grid;
 mod grid_smoke;
 mod grid_state;
+mod group_memberships;
 mod http_oracle;
 mod inventory_probe;
+mod jolt;
 mod limit_ids;
 mod limits_probe;
 mod live;
@@ -98,13 +122,14 @@ mod login_gate;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
+mod personal_paths;
 mod pin3_oracle;
 mod ports;
 mod region_report;
 mod regionstore;
 mod schema;
+mod session_zone;
 mod signal;
-mod throttle_oracle;
 mod trailing_fixtures;
 mod twice;
 mod xasset_live;
@@ -118,7 +143,8 @@ use std::process::{Command, ExitCode};
 /// Directories never searched for Markdown files.
 const SKIP_DIRS: &[&str] = &[".git", "target", ".scratch"];
 
-const USAGE: &str = "\
+fn usage() -> String {
+    const HEAD: &str = "\
 usage: cargo xtask check [--docs-only]
        cargo xtask oracle build
        cargo xtask oracle generate [fixture-dir]
@@ -130,10 +156,26 @@ usage: cargo xtask check [--docs-only]
        cargo xtask config verify [directory]
        cargo xtask http generate [directory]
        cargo xtask http verify [directory]
+       cargo xtask http auth-generate
+       cargo xtask http auth-verify
        cargo xtask http status-generate
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask jolt substeps
+       cargo xtask jolt substeps-verify
+       cargo xtask jolt config
+       cargo xtask jolt config-verify
+       cargo xtask jolt file
+       cargo xtask jolt file-verify
+       cargo xtask jolt record
+       cargo xtask jolt record-verify
+       cargo xtask presence service-generate|service-verify
+       cargo xtask presence generate
+       cargo xtask presence verify
+       cargo xtask presence cross mysql
+       cargo xtask presence cross postgres
+       cargo xtask session-zone
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -142,43 +184,36 @@ usage: cargo xtask check [--docs-only]
        cargo xtask asset fsassets-files
        cargo xtask griduser cross
        cargo xtask griduser service
+       cargo xtask avatar bakes-generate|bakes-verify
+       cargo xtask avatar service-generate|service-verify
+       cargo xtask avatar appearance-generate|appearance-verify
        cargo xtask avatar cross
        cargo xtask regionstore generate
+       cargo xtask regionstore prim-seed
        cargo xtask regionstore settings
+       cargo xtask regionstore coalesced
+       cargo xtask regionstore parcels
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask regionstore scales
+       cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
+       cargo xtask permissions generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
+       cargo xtask live group-memberships
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
-       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
-       cargo xtask live run login grid --region ferroan
-       cargo xtask live run limits grid --region ferroan
-       cargo xtask live run caps grid [--region ferroan]
-       cargo xtask live run ferrobot [grid [--region ferroan]]
-       cargo xtask live run assets grid --region ferroan
-       cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]
-       cargo xtask live run login grid --rust accounts
-       cargo xtask live run login grid --rust auth
-       cargo xtask live run login grid --rust assets,accounts
-       cargo xtask live caps-fixtures <capture-dir>
-       cargo xtask live login-fixtures <capture-dir>
-       cargo xtask live region-parity-fixtures <capture-dir>
-       cargo xtask live root-arrival-fixtures <capture-dir>
-       cargo xtask live circuit-fixtures <udp-capture>
-       cargo xtask live arrival-fixtures <udp-capture>
-       cargo xtask live trailing-fixtures <udp-capture>
-       cargo xtask live run assets --running
-       cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
+";
+    const TAIL: &str = "       cargo xtask live compare <service> [--db sqlite|mysql|pgsql]
        cargo xtask live compare region
        cargo xtask live assets [--db sqlite|mysql|pgsql]
        cargo xtask live assets --backend xasset --db mysql|pgsql
@@ -192,6 +227,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask ci gate
        cargo xtask ci ensure-sqlite
        cargo xtask ci ensure-db-clients";
+    format!("{HEAD}{}{TAIL}", ferroan_bot::register::live_run_help())
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -200,7 +237,7 @@ fn main() -> ExitCode {
         return match live_args::dispatch(&refs[1..]) {
             live_args::Outcome::Exit(code) => code,
             live_args::Outcome::Usage => {
-                eprintln!("{USAGE}");
+                eprintln!("{}", usage());
                 ExitCode::from(2)
             }
         };
@@ -208,7 +245,7 @@ fn main() -> ExitCode {
     // Docker smoke and console-forms open listeners too. `live` installs from
     // the flag or the environment inside dispatch; every other command reads
     // the environment here.
-    if let Err(text) = ports::install(None) {
+    if let Err(text) = ports::install(None, false) {
         eprintln!("xtask: {text}");
         return ExitCode::from(2);
     }
@@ -216,8 +253,10 @@ fn main() -> ExitCode {
         ["check"] => check(false),
         ["pin3", "generate"] => pin3_oracle::run(true),
         ["pin3", "verify"] => pin3_oracle::run(false),
-        ["access", "generate"] => access_oracle::run(true),
-        ["access", "verify"] => access_oracle::run(false),
+        ["access", "generate"] => access_oracle::run("access", "AccessOracle", true),
+        ["access", "verify"] => access_oracle::run("access", "AccessOracle", false),
+        ["permissions", "generate"] => access_oracle::run("permissions", "PermissionsOracle", true),
+        ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
@@ -243,10 +282,47 @@ fn main() -> ExitCode {
         ["http", "generate", directory] => http_oracle::generate(Some(PathBuf::from(directory))),
         ["http", "verify"] => http_oracle::verify(None),
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
+        ["http", "auth-generate"] => http_oracle::auth_generate(),
+        ["http", "auth-verify"] => http_oracle::auth_verify(),
         ["http", "status-generate"] => http_oracle::status_generate(),
         ["http", "status-verify"] => http_oracle::status_verify(),
-        ["throttle", "generate"] => throttle_oracle::generate(),
-        ["throttle", "verify"] => throttle_oracle::verify(),
+        ["throttle", "generate"] => fixture_oracle::run(
+            "throttle",
+            "ThrottleOracle.csproj",
+            &repo_root().join("fixtures/throttle"),
+            "generate",
+        ),
+        ["throttle", "verify"] => fixture_oracle::run(
+            "throttle",
+            "ThrottleOracle.csproj",
+            &repo_root().join("fixtures/throttle"),
+            "verify",
+        ),
+        ["jolt", "substeps"] => jolt::substeps(true),
+        ["jolt", "substeps-verify"] => jolt::substeps(false),
+        ["jolt", "config"] => jolt::config(true),
+        ["jolt", "config-verify"] => jolt::config(false),
+        ["jolt", "file"] => jolt::file(true),
+        ["jolt", "file-verify"] => jolt::file(false),
+        ["jolt", "record"] => jolt::record(true),
+        ["jolt", "record-verify"] => jolt::record(false),
+        ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
+        ["presence", "generate"] => fixture_oracle::run(
+            "presence",
+            "PresenceOracle.csproj",
+            &repo_root().join("fixtures/presence"),
+            "generate",
+        ),
+        ["presence", "service-generate"] => asset_oracle::presence_service(true),
+        ["presence", "service-verify"] => asset_oracle::presence_service(false),
+        ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
+        ["session-zone"] => session_zone::run(),
+        ["presence", "verify"] => fixture_oracle::run(
+            "presence",
+            "PresenceOracle.csproj",
+            &repo_root().join("fixtures/presence"),
+            "verify",
+        ),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
         ["asset", "verify"] => asset_oracle::verify(None),
@@ -257,12 +333,23 @@ fn main() -> ExitCode {
         ["asset", "fsassets-files"] => asset_oracle::fsassets_files(),
         ["griduser", "cross"] => asset_oracle::griduser_cross(),
         ["griduser", "service"] => asset_oracle::griduser_service(),
+        ["avatar", "appearance-generate"] => asset_oracle::avatar_appearance(true),
+        ["avatar", "appearance-verify"] => asset_oracle::avatar_appearance(false),
+        ["avatar", "bakes-generate"] => asset_oracle::avatar_bakes(true),
+        ["avatar", "bakes-verify"] => asset_oracle::avatar_bakes(false),
+        ["avatar", "service-generate"] => asset_oracle::avatar_service(true),
+        ["avatar", "service-verify"] => asset_oracle::avatar_service(false),
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
+        ["regionstore", "prim-seed"] => regionstore::prim_seed(),
         ["regionstore", "generate"] => regionstore::generate(),
+        ["regionstore", "parcels"] => regionstore::parcels(),
         ["regionstore", "settings"] => regionstore::settings(),
+        ["regionstore", "coalesced"] => regionstore::coalesced(),
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "scales"] => regionstore::scales(true),
+        ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),
@@ -274,7 +361,7 @@ fn main() -> ExitCode {
         ["ci", "ensure-sqlite"] => ci::ensure_sqlite(),
         ["ci", "ensure-db-clients"] => ci::ensure_db_clients(),
         _ => {
-            eprintln!("{USAGE}");
+            eprintln!("{}", usage());
             ExitCode::from(2)
         }
     }
@@ -282,7 +369,11 @@ fn main() -> ExitCode {
 
 fn check(docs_only: bool) -> ExitCode {
     let root = repo_root();
-    if !check_markdown(&root) || !limit_ids::check(&root) || !login_gate::check(&root) {
+    if !check_markdown(&root)
+        || !limit_ids::check(&root)
+        || !login_gate::check(&root)
+        || !personal_paths::check(&root)
+    {
         return ExitCode::FAILURE;
     }
     if docs_only {
@@ -581,5 +672,54 @@ mod tests {
         assert!(setup.contains("cargo xtask ci ensure-sqlite"));
         assert!(!setup.contains("apt-get"));
         assert!(!live.contains("apt-get"));
+    }
+
+    #[test]
+    fn scenario_help_matches_the_lines_from_before_the_table() {
+        let help = ferroan_bot::register::live_run_help();
+        let expected = concat!(
+            "       cargo xtask live run object-cross grid --physics basicphysics\n",
+            "       cargo xtask live object-cross-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-timing grid --physics basicphysics\n",
+            "       cargo xtask live run parcel-timing grid --region ferroan\n",
+            "       cargo xtask live parcel-timing-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-properties grid --physics basicphysics\n",
+            "       cargo xtask live run parcel-properties grid --region ferroan\n",
+            "       cargo xtask live parcel-properties-fixtures <capture-dir>\n",
+            "       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics\n",
+            "       cargo xtask live run prim-load grid --physics basicphysics\n",
+            "       cargo xtask live run store-handoff grid --physics basicphysics\n",
+            "       cargo xtask live run prim-capture grid --physics basicphysics\n",
+            "       cargo xtask live run child-view grid --physics basicphysics\n",
+            "       cargo xtask live run prim-arrival grid --region ferroan\n",
+            "       cargo xtask live run prim-arrival grid --physics basicphysics\n",
+            "       cargo xtask live run material-override grid --physics basicphysics\n",
+            "       cargo xtask live run material-override grid --region ferroan\n",
+            "       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]\n",
+            "       cargo xtask live run login grid --region ferroan\n",
+            "       cargo xtask live run limits grid --region ferroan\n",
+            "       cargo xtask live run caps grid [--region ferroan]\n",
+            "       cargo xtask live run ferrobot [grid [--region ferroan]]\n",
+            "       cargo xtask live run assets grid --region ferroan\n",
+            "       cargo xtask live run <scenario>|all grid --rust assets [--db sqlite]\n",
+            "       cargo xtask live run login grid --rust accounts\n",
+            "       cargo xtask live run login grid --rust auth\n",
+            "       cargo xtask live run login grid --rust assets,accounts\n",
+            "       cargo xtask live caps-fixtures <capture-dir>\n",
+            "       cargo xtask live login-fixtures <capture-dir>\n",
+            "       cargo xtask live region-parity-fixtures <capture-dir>\n",
+            "       cargo xtask live root-arrival-fixtures <capture-dir>\n",
+            "       cargo xtask live circuit-fixtures <udp-capture>\n",
+            "       cargo xtask live arrival-fixtures <udp-capture>\n",
+            "       cargo xtask live trailing-fixtures <udp-capture>\n",
+            "       cargo xtask live run assets --running\n",
+        );
+        assert_eq!(help, expected);
+        let usage = super::usage();
+        assert!(usage.contains(&help));
+        assert!(usage.contains("cargo xtask live down\n       cargo xtask live run object-cross"));
+        assert!(usage.contains(
+            "cargo xtask live run assets --running\n       cargo xtask live compare <service>"
+        ));
     }
 }

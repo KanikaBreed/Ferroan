@@ -76,10 +76,19 @@ jobs:
           cargo xtask config verify
           cargo xtask http verify
           cargo xtask http status-verify
+          cargo xtask http auth-verify
+          cargo xtask avatar appearance-verify
+          cargo xtask avatar bakes-verify
           cargo xtask asset verify
           cargo xtask pin3 verify
           cargo xtask throttle verify
+          cargo xtask jolt substeps-verify
+          cargo xtask jolt config-verify
+          cargo xtask jolt file-verify
+          cargo xtask jolt record-verify
+          cargo xtask presence verify
           cargo xtask access verify
+          cargo xtask permissions verify
       - name: Run the live harness
         run: |
           set -euo pipefail
@@ -142,43 +151,14 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-  services:
-    name: live services
+  services_region:
+    name: live services (region)
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      FERROAN_MYSQL_URL: mysql://ferroan:ferroan@127.0.0.1:3306/ferroan?ssl-mode=disabled
-      FERROAN_POSTGRES_URL: postgres://ferroan:ferroan@127.0.0.1:5432/ferroan?sslmode=disable
-    services:
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: ferroan
-          MYSQL_USER: ferroan
-          MYSQL_PASSWORD: ferroan
-          MYSQL_DATABASE: ferroan
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uferroan -pferroan"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=20
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: ferroan
-          POSTGRES_PASSWORD: ferroan
-          POSTGRES_DB: ferroan
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U ferroan -d ferroan"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=20
+      FERROAN_LIVE_PORT_BASE: "24832"
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -212,6 +192,36 @@ jobs:
         run: cargo xtask live run neighbour grid --region ferroan
       - name: Compare grid report lines on the C# and Ferroan regions
         run: cargo xtask live compare region
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-${{ github.job }}
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/**/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  services_grid:
+    name: live services (grid)
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FERROAN_LIVE_PORT_BASE: "24864"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
+          rust-restore: rust-live-${{ runner.os }}-
       - name: Trip POST-body, datagram and fetch-folder limits
         run: cargo xtask live run limits grid --region ferroan
       - name: Compare inventory and texture caps on the Ferroan region
@@ -224,8 +234,6 @@ jobs:
         run: cargo xtask live run login grid --rust assets,accounts
       - name: Check login with the Rust authentication service
         run: cargo xtask live run login grid --rust auth
-      - name: Compare C# and Ferroan asset services
-        run: cargo xtask live compare assets
       - name: Compare C# and Ferroan user account services
         run: cargo xtask live compare accounts
       - name: Compare C# and Ferroan authentication services
@@ -240,6 +248,68 @@ jobs:
       - name: Stop the persistent region and asset service
         if: always()
         run: cargo xtask live down
+      - name: Upload live logs and diagnostic dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-logs-${{ github.job }}
+          path: |
+            .scratch/live/**/*.log
+            .scratch/live/**/diag/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  services_assets:
+    name: live services (assets)
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FERROAN_LIVE_PORT_BASE: "24896"
+      FERROAN_MYSQL_URL: mysql://ferroan:ferroan@127.0.0.1:3306/ferroan_assets?ssl-mode=disabled
+      FERROAN_POSTGRES_URL: postgres://ferroan:ferroan@127.0.0.1:5432/ferroan_assets?sslmode=disable
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ferroan
+          MYSQL_USER: ferroan
+          MYSQL_PASSWORD: &services_mysql_password ferroan
+          MYSQL_DATABASE: ferroan_assets
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uferroan -pferroan"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ferroan
+          POSTGRES_PASSWORD: &services_pg_password ferroan
+          POSTGRES_DB: ferroan_assets
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ferroan -d ferroan_assets"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the live runner
+        uses: ./.github/actions/live-setup
+        with:
+          tranquillity-key: tranquillity-${{ hashFiles('docs/REFERENCES.md', 'tools/capture/tranquillity-capture.patch', 'xtask/src/live.rs') }}
+          rust-key: rust-live-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/**') }}
+          rust-restore: rust-live-${{ runner.os }}-
+      - name: Compare C# and Ferroan asset services
+        run: cargo xtask live compare assets
       - name: Build OpenSim.ConsoleClient and read a Ferroan console
         if: success()
         run: cargo xtask console-client
@@ -251,8 +321,20 @@ jobs:
         run: |
           set -euo pipefail
           cargo xtask ci ensure-db-clients
-          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uferroan -pferroan --ssl-mode=DISABLED ferroan < fixtures/db/mysql/schema.sql
-          PGPASSWORD=ferroan psql -h 127.0.0.1 -p 5432 -U ferroan -d ferroan -v ON_ERROR_STOP=1 -f fixtures/db/postgres/schema.sql
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uferroan -pferroan --ssl-mode=DISABLED ferroan_assets < fixtures/db/mysql/schema.sql
+          PGPASSWORD=ferroan psql -h 127.0.0.1 -p 5432 -U ferroan -d ferroan_assets -v ON_ERROR_STOP=1 -f fixtures/db/postgres/schema.sql
+      - name: Compare Presence HTTP against Pin8 on Null and PostgreSQL
+        env:
+          PGPASSWORD: *services_pg_password
+          PRESENCE_MYSQL_PASSWORD: *services_mysql_password
+          UseSharedCompilation: "false"
+        run: |
+          set -euo pipefail
+          createdb -h 127.0.0.1 -U ferroan ferroan_presence_ci
+          export FERROAN_PRESENCE_ADO_POSTGRES="Host=127.0.0.1;Database=ferroan_presence_ci;Username=ferroan;Password=$PGPASSWORD"
+          export FERROAN_PRESENCE_ADO_MYSQL="Server=127.0.0.1;Database=ferroan_assets;Uid=ferroan;Password=$PRESENCE_MYSQL_PASSWORD;SslMode=None"
+          cargo xtask presence service-verify
+          cargo test -p ferroan-services --test presence_service
       - name: Compare XAsset on MySQL
         if: success()
         run: cargo xtask live assets --backend xasset --db mysql
@@ -269,10 +351,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: live-logs-services
+          name: live-logs-${{ github.job }}
           path: |
             .scratch/live/**/*.log
-            .scratch/live/diag/**
+            .scratch/live/**/diag/**
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -334,7 +416,7 @@ jobs:
 
   live:
     name: live (ubuntu-latest)
-    needs: [scope, scenarios, ferrobot, services, images]
+    needs: [scope, scenarios, ferrobot, services_region, services_grid, services_assets, images]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -363,6 +445,8 @@ jobs:
           DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
           SCENARIOS: ${{ needs.scenarios.result }}
           FERROBOT: ${{ needs.ferrobot.result }}
-          SERVICES: ${{ needs.services.result }}
+          SERVICES_REGION: ${{ needs.services_region.result }}
+          SERVICES_GRID: ${{ needs.services_grid.result }}
+          SERVICES_ASSETS: ${{ needs.services_assets.result }}
           IMAGES: ${{ needs.images.result }}
         run: cargo xtask ci gate

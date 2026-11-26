@@ -54,6 +54,11 @@
 // Throttle setup, SetThrottles, the resend and category send gate,
 // TokenBucket.cs, ThrottleRates.cs and the scene bucket in LLUDPServer.cs
 // were read at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
+// Chat registration follows HandleUseCircuitCode in LLUDPServer.cs and
+// Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatModule.cs at the same Pin8 revision.
+// Local teleport admission and Task ordering were checked against
+// ScenePresence.CompleteMovement, EntityTransferModule.Teleport and
+// LLClientView.SendLocalTeleport at that Pin8 revision.
 // Socket-error behavior compared with OpenSimUDPBase.cs (no code copied).
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -62,24 +67,30 @@
 //! Established ACKs are queued. Reliable packets remain until acknowledgment or
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
-use crate::chat::{ChatSeat, RegionChat, ViewerBound};
+use crate::arrival::{land_at_complete, land_at_initial};
+use crate::chat::{ChatSeat, DEBUG_CHANNEL, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
     AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
     terse_packets,
 };
+use crate::names::{CircuitNames, RegionNames, Requested, UserName};
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
 use crate::teleport::{self, FAIL_INCOMPLETE, FAIL_PROCESS, GODLIKE, IS_FLYING, VIA_LOCATION};
 use crate::throttle::{
     CircuitThrottle, ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock,
 };
 use crate::{ArrivalConfig, HandshakeConfig};
-use ferroan_diag::{self, Kind, UDP_DATAGRAM, UDP_UNACKED};
+use ferroan_diag::{
+    self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGIN_BURST, UDP_PENDING_LOGINS,
+    UDP_UNACKED,
+};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocationRequest,
-    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply, SetAlwaysRun,
+    StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode,
+    logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -107,6 +118,11 @@ const MAX_PENDING_ACKS: usize = 4096;
 /// reliable packets wait for an ack.
 const ACK_STALL: usize = 50;
 const ACKS_PER_PACKET: usize = 255;
+/// Maximum unsent TeleportLocal replies per circuit, independent of Land and other Task traffic.
+const MAX_PENDING_TELEPORTS: usize = 256;
+/// A name reply is dropped when this many task packets already wait.
+/// C#'s task outbox has no bound.
+pub const MAX_NAME_REPLIES: usize = 1024;
 
 /// `[ClientStack.LindenUDP]` timing values. RTO settings use milliseconds in
 /// Tranquillity configuration; inactivity settings use seconds. Zero RTO values
@@ -263,6 +279,9 @@ pub enum SceneCall {
     /// turns to the look `AgentMovementComplete` carries (`RotateToLookAt`),
     /// and the other viewers are told of it. One call.
     Arrive(LoginPose, [f32; 3]),
+    /// The parcel element `sendClientInitialLandInfo` queues after
+    /// `AgentMovementComplete` is sent (`ScenePresence.cs` 2441, then 2475).
+    InitialLand,
     /// `ChatFromViewer` forwarded so distance uses the stored poses.
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. The frame owns the landing
@@ -281,8 +300,21 @@ pub enum SceneCall {
     /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
     /// inbound slot, no answer. A refused post waits on the circuit.
     HandshakeReply,
+    /// `ParcelPropertiesRequest`. The frame queues the elements, then answers.
+    ParcelRequest(ParcelQuery),
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
+}
+
+/// Bounds from `ParcelPropertiesRequest`. `MathF.Round` happens on the frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ParcelQuery {
+    pub west: f32,
+    pub south: f32,
+    pub east: f32,
+    pub north: f32,
+    pub sequence_id: i32,
+    pub snap_selection: bool,
 }
 
 /// The departing avatar for a source hop.
@@ -432,6 +464,11 @@ trait DatagramIo: Sync {
     ) -> impl Future<Output = io::Result<(usize, SocketAddr)>> + Send;
     fn send_to(&self, buf: &[u8], to: SocketAddr)
     -> impl Future<Output = io::Result<usize>> + Send;
+    /// A datagram already queued for this circuit. Empty unless the shared
+    /// listener held a login burst before this serve started reading.
+    fn try_recv_from(&self, _buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        Ok(None)
+    }
 }
 impl DatagramIo for UdpSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -475,10 +512,17 @@ impl DatagramIo for CountingSocket {
         result
     }
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Coding {
+    Plain,
+    Zero,
+    Preencoded,
+}
+
 #[derive(Clone)]
 struct Payload {
     bytes: Vec<u8>,
-    zerocoded: bool,
+    coding: Coding,
     /// False only for a task packet C# sends unreliable.
     reliable: bool,
 }
@@ -511,17 +555,24 @@ struct State {
     udp: Option<Arc<UdpCounters>>,
     /// This circuit's last addition to the shared unacked gauge.
     published_unacked: u64,
-    /// Land packets waiting for the land bucket and a free reliable slot: the
-    /// arrival `LayerData` and `MapBlockReply`. A 256 metre map is 256 packets,
-    /// and `AgentMovementComplete` already occupies one, so the burst does not
-    /// fit in `udp.unacked`.
+    /// Land packets waiting for the land bucket and a free reliable slot:
+    /// `ParcelOverlay`, arrival `LayerData` and `MapBlockReply`. A 256 metre
+    /// map is 256 packets, and `AgentMovementComplete` already occupies one,
+    /// so the burst does not fit in `udp.unacked`.
     pending_land: VecDeque<Payload>,
+    /// Overlay chunks for an eligible land pass. Cloned onto `pending_land`.
+    staged_overlay: Vec<Payload>,
+    /// Terrain patches for an eligible land pass, after the overlay.
+    staged_land: Vec<Payload>,
     /// Avatar terse updates and `TeleportLocal`. `f6cc9597ad` puts the teleport
     /// on this queue, behind terse updates already built, so a moving avatar
     /// cannot snap back to the pre-teleport position.
     pending_task: VecDeque<Payload>,
-    /// Channel 0 chat for this region. Absent when the serve was not seated.
-    chat: Option<RegionChat>,
+    /// Unsent TeleportLocal replies in the Task FIFO.
+    pending_teleports: usize,
+    /// Accepted logins acquire their chat queue only once the viewer connects.
+    pending_chat: Option<(RegionChat, String)>,
+    chat: Option<ChatSeat>,
     /// Set before the source hop is spawned. Cleared when that task settles.
     in_transit: bool,
     /// A far hop asked this circuit to stop without a viewer kick.
@@ -556,6 +607,8 @@ struct State {
     queue_empty_at: Instant,
     /// A `RegionHandshakeReply` the frame has not taken yet.
     handshake_reply: Option<Uuid>,
+    /// `UUIDNameRequest` answers. Absent when the region has no name lookup.
+    names: Option<CircuitNames>,
 }
 impl State {
     #[cfg(test)]
@@ -582,12 +635,21 @@ impl State {
         let throttle_clock = ThrottleClock::start();
         let client_max = scene.client_max();
         let throttle = ClientThrottle::open(scene, client_max, throttle_clock.now_secs());
-        let mut pending_land = VecDeque::with_capacity(arrival.land.len());
+        // Held until CompleteMovement or SendInitialData. UseCircuitCode must
+        // not drain terrain ahead of the overlay.
+        let mut staged_land = Vec::with_capacity(arrival.land.len());
         for layer in std::mem::take(&mut arrival.land) {
             let mut message = LayerData::default();
             message.layer_id.type_ = layer.kind;
             message.layer_data.data = layer.data;
-            pending_land.push_back(encode_payload(&message)?);
+            staged_land.push(encode_payload(&message)?);
+        }
+        let mut staged_overlay = Vec::with_capacity(arrival.overlay.len());
+        for chunk in std::mem::take(&mut arrival.overlay) {
+            let mut message = ParcelOverlay::default();
+            message.parcel_data.sequence_id = chunk.sequence_id;
+            message.parcel_data.data = chunk.data;
+            staged_overlay.push(encode_payload(&message)?);
         }
         let source_hop = arrival.source_hop.clone();
         let return_slot = arrival.return_slot.clone();
@@ -624,8 +686,12 @@ impl State {
             paused: false,
             udp: None,
             published_unacked: 0,
-            pending_land,
+            pending_land: VecDeque::new(),
+            staged_overlay,
+            staged_land,
             pending_task: VecDeque::new(),
+            pending_teleports: 0,
+            pending_chat: None,
             chat: None,
             in_transit: false,
             leave: false,
@@ -644,6 +710,7 @@ impl State {
             feed,
             queue_empty_at: now,
             handshake_reply: None,
+            names: None,
         })
     }
 
@@ -732,7 +799,7 @@ impl State {
                     let Some(payload) = self.unacked.payload(seq) else {
                         continue;
                     };
-                    let size = packet::raw_len(&payload.bytes, payload.zerocoded);
+                    let size = packet::raw_len(&payload.bytes, payload.coding == Coding::Zero);
                     if !self
                         .throttle
                         .try_spend(RESEND, size, self.throttle_clock.now_secs())
@@ -768,6 +835,7 @@ impl State {
             self.ping_at = now + PING_INTERVAL;
             self.send_ping(sock, peer).await?;
         }
+        self.take_initial_land();
         self.drain_land(sock, peer).await?;
         self.take_avatar_packets()?;
         self.drain_task(sock, peer).await?;
@@ -808,8 +876,8 @@ impl State {
 
     /// `BeginFireQueueEmpty` for the task category: when its outbox holds
     /// fewer than five packets and the feed has updates, at most every 20 ms,
-    /// take what the task bucket drips in 30 ms and queue it as terse
-    /// packets. True when packets were queued.
+    /// take what the task bucket drips in 30 ms and queue full, then terse,
+    /// then plain material packets. True when packets were queued.
     fn take_entity_updates(&mut self) -> Result<bool, CircuitError> {
         let Some(feed) = self.feed.as_ref() else {
             return Ok(false);
@@ -824,17 +892,60 @@ impl State {
         }
         self.queue_empty_at = now + QUEUE_EMPTY_INTERVAL;
         let budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
-        let blocks = feed.updates.take_terse(budget);
         let region_handle = self.arrival.region_handle;
-        let mut queued = false;
+        let room = MAX_UNACKED.saturating_sub(self.unacked.len() + self.pending_task.len());
+        let crate::TaskPackets {
+            full,
+            terse: blocks,
+            materials,
+        } = crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
+        let mut queued = !full.is_empty();
+        for bytes in full {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Preencoded,
+                reliable: true,
+            });
+        }
         for packet in terse_packets(region_handle, &blocks) {
             // `terseUpdateHeader` zero-codes a message the template leaves plain.
             let mut payload = encode_payload(&packet)?;
-            payload.zerocoded = true;
+            payload.coding = Coding::Zero;
             self.pending_task.push_back(payload);
             queued = true;
         }
+        for bytes in materials {
+            // `GenericStreamingMessageHeader` is reliable and not zero-coded.
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Plain,
+                reliable: true,
+            });
+            queued = true;
+        }
         Ok(queued)
+    }
+
+    /// `SendInitialData` asked for another pass. ViaLogin ignores it: the
+    /// frame also withholds the request when the teleport flags are not zero.
+    fn take_initial_land(&mut self) {
+        let requested = self
+            .feed
+            .as_ref()
+            .is_some_and(|feed| feed.updates.take_land_pass());
+        if requested && land_at_initial(self.arrival.teleport_flags) {
+            self.enqueue_staged_land();
+        }
+    }
+
+    /// One terrain-and-overlay pass. Pin8 calls `SendLayerData` first, on a
+    /// pool thread, then `SendLandParcelOverlay` on this thread. The capture's
+    /// socket shows the overlay ahead of the first land terrain datagram, so
+    /// the FIFO is overlay chunks, then the staged patches.
+    fn enqueue_staged_land(&mut self) {
+        self.pending_land
+            .extend(self.staged_overlay.iter().cloned());
+        self.pending_land.extend(self.staged_land.iter().cloned());
     }
 
     async fn drain_land(
@@ -868,6 +979,12 @@ impl State {
                 self.pending_task.push_front(payload);
                 break;
             }
+            if self.pending_teleports > 0
+                && ferroan_protocol::MsgId::decode(&payload.bytes)
+                    .is_ok_and(|(id, _)| id == TeleportLocal::ID)
+            {
+                self.pending_teleports -= 1;
+            }
             let reliable = payload.reliable;
             self.send_payload(sock, peer, payload, reliable).await?;
         }
@@ -877,13 +994,52 @@ impl State {
     /// True when this category can carry `payload` right now. The size is the
     /// reliable datagram that would leave, including the header.
     fn spend(&mut self, category: usize, payload: &Payload) -> bool {
-        let size = packet::raw_len(&payload.bytes, payload.zerocoded);
+        let size = packet::raw_len(&payload.bytes, payload.coding == Coding::Zero);
         self.throttle
             .try_spend(category, size, self.throttle_clock.now_secs())
     }
 
     fn enqueue_task<M: Msg>(&mut self, message: &M) -> Result<(), CircuitError> {
         self.pending_task.push_back(encode_payload(message)?);
+        if M::ID == TeleportLocal::ID {
+            self.pending_teleports += 1;
+        }
+        Ok(())
+    }
+
+    /// `SendNameReply` queues on the task category. Past
+    /// `region.name-replies` waiting task packets the reply is dropped.
+    fn enqueue_name(&mut self, id: Uuid, name: &UserName) -> Result<(), CircuitError> {
+        if self.pending_task.len() >= MAX_NAME_REPLIES {
+            ferroan_diag::drop_bound(
+                ferroan_diag::REGION_NAME_REPLIES,
+                Kind::Hard,
+                MAX_NAME_REPLIES as u64,
+                self.pending_task.len() as u64 + 1,
+                "names",
+            );
+            return Ok(());
+        }
+        self.enqueue_task(&crate::names::name_reply(id, name))
+    }
+
+    /// `LLClientView.HandleUUIDNameRequest`: ignored while the avatar is on
+    /// its way to another region, otherwise one lookup per block.
+    fn request_names(&mut self, packet: &IncomingPacket) -> Result<(), CircuitError> {
+        let Some(names) = self.names.clone() else {
+            return Ok(());
+        };
+        if self.in_transit {
+            return Ok(());
+        }
+        let Ok(request) = packet.decode::<UUIDNameRequest>() else {
+            return Ok(());
+        };
+        for block in &request.uuid_name_block {
+            if let Requested::Answered(name) = names.request(block.id) {
+                self.enqueue_name(block.id, &name)?;
+            }
+        }
         Ok(())
     }
     async fn send_ping(
@@ -915,6 +1071,17 @@ impl State {
         self.send_payload(sock, to, encode_payload(message)?, reliable)
             .await
     }
+
+    fn check_reliable_room(&self) -> Result<(), CircuitError> {
+        if self.unacked.len() >= MAX_UNACKED {
+            let count = self.unacked.len() as u64;
+            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
+            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
+            return Err(CircuitError::TooManyUnacked(self.unacked.len()));
+        }
+        Ok(())
+    }
+
     async fn send_payload(
         &mut self,
         sock: &impl DatagramIo,
@@ -922,11 +1089,8 @@ impl State {
         payload: Payload,
         reliable: bool,
     ) -> Result<(), CircuitError> {
-        if reliable && self.unacked.len() >= MAX_UNACKED {
-            let count = self.unacked.len() as u64;
-            ferroan_diag::observe(UDP_UNACKED, MAX_UNACKED as u64, count, "udp");
-            ferroan_diag::refuse(UDP_UNACKED, Kind::Soft, MAX_UNACKED as u64, count, "udp");
-            return Err(CircuitError::TooManyUnacked(self.unacked.len()));
+        if reliable {
+            self.check_reliable_room()?;
         }
         let seq = self.sequence.take();
         let bytes = wire(&payload, seq, reliable, false);
@@ -1045,6 +1209,9 @@ impl State {
                 return Ok(false);
             }
             self.peer = Some(from);
+            if let Some((hub, name)) = self.pending_chat.take() {
+                self.chat = Some(hub.seat(expect.agent_id, name));
+            }
             self.last_received = Instant::now();
             if let Some(connected) = self.connection_opened.take() {
                 let _ = connected.send(());
@@ -1168,14 +1335,17 @@ impl State {
                 self.send_message(sock, from, &reply, false).await?;
             }
         } else if packet.id == ChatFromViewer::ID {
-            // Only channel 0 is delivered here, so other channels never ask the frame.
-            if let Some(chat) = self.chat.clone()
+            // Private channels have no viewer recipients and need no frame lookup.
+            if let Some(seat) = &self.chat
                 && let Ok(incoming) = packet.decode::<ChatFromViewer>()
-                && incoming.chat_data.channel == 0
+                && matches!(incoming.chat_data.channel, 0 | DEBUG_CHANNEL)
             {
                 let text = ferroan_protocol::field_str(&incoming.chat_data.message);
-                let places = self.chat_places(&chat, expect.agent_id).await;
-                chat.publish(
+                let audience = seat.hub.audience();
+                let places = self
+                    .chat_places(audience.seated_ids(), expect.agent_id)
+                    .await;
+                audience.publish(
                     expect.agent_id,
                     incoming.chat_data.type_,
                     incoming.chat_data.channel,
@@ -1187,10 +1357,16 @@ impl State {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
             }
+        } else if packet.id == ParcelPropertiesRequest::ID {
+            if let Ok(request) = packet.decode::<ParcelPropertiesRequest>() {
+                self.forward_parcel_request(expect, &request).await?;
+            }
         } else if packet.id == RegionHandshakeReply::ID {
             if packet.decode::<RegionHandshakeReply>().is_ok() {
                 self.forward_handshake_reply(expect);
             }
+        } else if packet.id == UUIDNameRequest::ID {
+            self.request_names(packet)?;
         } else if packet.id == AgentThrottle::ID {
             if let Ok(throttle) = packet.decode::<AgentThrottle>() {
                 self.throttle
@@ -1235,6 +1411,12 @@ impl State {
         let look_at = self.arrival.look_at;
         reply.data.position = position.into();
         self.send_message(sock, to, &reply, true).await?;
+        // `MoveAgentIntoRegion` has gone out. `sendClientInitialLandInfo`
+        // queues the parcel element next (`ScenePresence.cs` 2441, then 2475).
+        // A refused post does not stop the rest of this arrival.
+        if let Some(scene) = self.login_scene.clone() {
+            let _ = scene(expect.agent_id, SceneCall::InitialLand).reply().await;
+        }
         // CompleteMovement queues the avatar full update, then appearance, on
         // the task category (`SendEntityFullUpdateImmediate`, `SendAppearance`).
         // Land stays queued until its bucket and the reliable window have room.
@@ -1243,6 +1425,11 @@ impl State {
             self.enqueue_task(&update)?;
             let appearance = avatar.appearance();
             self.enqueue_task(&appearance)?;
+        }
+        // CompleteMovement queues terrain and the overlay unless a crossing
+        // update remains. Positive teleport flags already cleared that state.
+        if land_at_complete(self.arrival.teleport_flags, self.arrival.crossing_flags) {
+            self.enqueue_staged_land();
         }
         Ok(())
     }
@@ -1397,15 +1584,40 @@ impl State {
         }
     }
 
+    /// `ParcelPropertiesRequest`. The frame queues every element before this
+    /// returns. No scene, or a stopped frame, sends nothing: the packet has
+    /// no failure reply.
+    async fn forward_parcel_request(
+        &self,
+        expect: &CircuitExpect,
+        request: &ParcelPropertiesRequest,
+    ) -> Result<(), CircuitError> {
+        let Some(scene) = self.login_scene.clone() else {
+            return Ok(());
+        };
+        let data = &request.parcel_data;
+        let _ = scene(
+            expect.agent_id,
+            SceneCall::ParcelRequest(ParcelQuery {
+                west: data.west,
+                south: data.south,
+                east: data.east,
+                north: data.north,
+                sequence_id: data.sequence_id,
+                snap_selection: data.snap_selection,
+            }),
+        )
+        .reply()
+        .await;
+        Ok(())
+    }
+
     /// Forward the seated ids. The frame answers with the poses it has.
-    async fn chat_places(&self, chat: &RegionChat, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
+    async fn chat_places(&self, ids: Vec<Uuid>, speaker: Uuid) -> HashMap<Uuid, [f32; 3]> {
         let Some(scene) = self.login_scene.clone() else {
             return HashMap::new();
         };
-        match scene(speaker, SceneCall::Places(chat.seated_ids()))
-            .reply()
-            .await
-        {
+        match scene(speaker, SceneCall::Places(ids)).reply().await {
             Ok(SceneReply::Places(places)) => places,
             _ => HashMap::new(),
         }
@@ -1460,7 +1672,16 @@ impl State {
             self.send_message(sock, to, &failed, true).await?;
             return Ok(());
         }
-        if self.pending_task.len() + self.unacked.len() >= MAX_UNACKED {
+        // TeleportStart needs a real send slot before we move the presence.
+        self.check_reliable_room()?;
+        if self.pending_teleports >= MAX_PENDING_TELEPORTS {
+            ferroan_diag::refuse(
+                ferroan_diag::UDP_PENDING_TELEPORTS,
+                Kind::Hard,
+                MAX_PENDING_TELEPORTS as u64,
+                self.pending_teleports as u64 + 1,
+                "udp",
+            );
             let failed = teleport::failed_packet(expect.agent_id, FAIL_INCOMPLETE);
             self.send_message(sock, to, &failed, true).await?;
             return Ok(());
@@ -1709,13 +1930,16 @@ fn wire(payload: &Payload, sequence: u32, reliable: bool, resent: bool) -> Vec<u
     let mut bytes = Vec::new();
     packet::build_raw(
         &payload.bytes,
-        payload.zerocoded,
+        payload.coding == Coding::Zero,
         sequence,
         reliable,
         resent,
         &[],
         &mut bytes,
     );
+    if payload.coding == Coding::Preencoded {
+        bytes[0] |= ferroan_protocol::PacketFlags::ZEROCODED;
+    }
     bytes
 }
 
@@ -1735,7 +1959,11 @@ fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
     }
     Ok(Payload {
         bytes: writer.buf,
-        zerocoded: M::ZEROCODED,
+        coding: if M::ZEROCODED {
+            Coding::Zero
+        } else {
+            Coding::Plain
+        },
         reliable: true,
     })
 }
@@ -1765,13 +1993,28 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
     Some(Uuid::from_bytes(raw))
 }
 /// Remembered UseCircuitCode datagrams for logins that have not started serving.
-/// One slot per source address, capped at the region root-agent limit.
-const PENDING_LOGINS: usize = 40;
+/// One slot per source address for 40 ordinary roots and the 21 staff bypass places.
+pub const PENDING_LOGINS: usize = 61;
+/// Datagrams kept for one pending login. Pin8's queue is unbounded.
+const PENDING_BURST_CAP: usize = 32;
+/// `LLUDPServer.PacketReceived` stores the pending queue with a 60 second expiry.
+const PENDING_LOGIN_TTL: Duration = Duration::from_secs(60);
 const INBOX_CAP: usize = 128;
 
 struct Datagram {
     from: SocketAddr,
     bytes: Vec<u8>,
+}
+
+/// Packets from one source that arrived before its serve was registered.
+/// The first is `UseCircuitCode`. Later ones are the viewer's login burst
+/// (`CompleteAgentMovement`, `AgentThrottle`), which Pin8 keeps in
+/// `m_pendingCache` and replays once the client exists.
+struct PendingLogin {
+    from: SocketAddr,
+    /// When this `UseCircuitCode` was stored. A resend does not refresh it.
+    seen: Instant,
+    packets: VecDeque<Vec<u8>>,
 }
 
 struct Inbox {
@@ -1793,6 +2036,13 @@ impl Inbox {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if queue.len() >= INBOX_CAP {
+            ferroan_diag::refuse(
+                UDP_CIRCUIT_INBOX,
+                Kind::Hard,
+                INBOX_CAP as u64,
+                (queue.len() + 1) as u64,
+                "udp",
+            );
             return;
         }
         queue.push_back(datagram);
@@ -1813,11 +2063,22 @@ struct UnboundServe {
     inbox: Arc<Inbox>,
 }
 
+/// A circuit code accepted before its lookups. The pending `UseCircuitCode`
+/// for this login stays past the 60 second cache until the login is served
+/// or `until`, when the connect wait has one.
+#[derive(Clone, Copy)]
+struct ReservedLogin {
+    id: u64,
+    expect: CircuitExpect,
+    until: Option<Instant>,
+}
+
 struct Fan {
     bound: HashMap<SocketAddr, u64>,
     senders: HashMap<u64, Arc<Inbox>>,
     unbound: VecDeque<UnboundServe>,
-    pending: VecDeque<Datagram>,
+    pending: VecDeque<PendingLogin>,
+    reserved: Vec<ReservedLogin>,
 }
 
 struct SharedUdp {
@@ -1835,10 +2096,12 @@ struct CircuitInner {
     scene_throttle: Mutex<Arc<SceneThrottle>>,
     /// Shared by every serve on this socket. Empty until [`CircuitServer::enable_chat`].
     chat: Mutex<Option<RegionChat>>,
-    /// Seats waiting for the serve that owns that agent.
-    waiting_seats: Mutex<HashMap<Uuid, ChatSeat>>,
+    /// Login metadata awaiting its serve. It cannot receive chat.
+    waiting_chat: Mutex<HashMap<Uuid, (RegionChat, String)>>,
     /// Login posts its landed pose here and reads that record back.
     login_scene: Mutex<Option<LoginScene>>,
+    /// Name lookups for `UUIDNameRequest`. Empty until [`CircuitServer::enable_names`].
+    names: Mutex<Option<RegionNames>>,
 }
 
 impl Drop for CircuitInner {
@@ -1861,6 +2124,22 @@ struct SessionSock {
     inbox: Arc<Inbox>,
 }
 
+impl SessionSock {
+    fn copy_in(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        let Some(datagram) = self.inbox.pop() else {
+            return Ok(None);
+        };
+        if datagram.bytes.len() > buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "datagram exceeds the receive buffer",
+            ));
+        }
+        buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
+        Ok(Some((datagram.bytes.len(), datagram.from)))
+    }
+}
+
 impl Drop for SessionSock {
     fn drop(&mut self) {
         let mut fan = self
@@ -1877,18 +2156,15 @@ impl Drop for SessionSock {
 impl DatagramIo for SessionSock {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         loop {
-            if let Some(datagram) = self.inbox.pop() {
-                if datagram.bytes.len() > buf.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "datagram exceeds the receive buffer",
-                    ));
-                }
-                buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
-                return Ok((datagram.bytes.len(), datagram.from));
+            if let Some(datagram) = self.copy_in(buf)? {
+                return Ok(datagram);
             }
             self.inbox.notify.notified().await;
         }
+    }
+
+    fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        self.copy_in(buf)
     }
 
     async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
@@ -1913,8 +2189,68 @@ fn datagram_matches(bytes: &[u8], expect: &CircuitExpect) -> bool {
     use_circuit(bytes).is_some_and(|packet| expect_matches(&packet, expect))
 }
 
+/// Same circuit code, agent and session. A resend may carry a new sequence.
+fn login_matches(packet: &IncomingPacket, stored: &[u8]) -> bool {
+    let Ok(next) = packet.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    let Some(stored) = use_circuit(stored) else {
+        return false;
+    };
+    let Ok(first) = stored.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    next.circuit_code.code == first.circuit_code.code
+        && next.circuit_code.id == first.circuit_code.id
+        && next.circuit_code.session_id == first.circuit_code.session_id
+}
+
+fn reservation_holds(item: &ReservedLogin, packet: &IncomingPacket, now: Instant) -> bool {
+    item.until.is_none_or(|until| now < until) && expect_matches(packet, &item.expect)
+}
+
+fn pending_is_reserved(login: &PendingLogin, reserved: &[ReservedLogin], now: Instant) -> bool {
+    let Some(bytes) = login.packets.front() else {
+        return false;
+    };
+    let Some(packet) = use_circuit(bytes) else {
+        return false;
+    };
+    reserved
+        .iter()
+        .any(|item| reservation_holds(item, &packet, now))
+}
+
+/// Drop pending logins older than 60 seconds. A code reserved at accept stays
+/// until that login is served or its connect deadline passes.
+fn expire_pending(fan: &mut Fan, now: Instant) {
+    let reserved = fan.reserved.clone();
+    fan.pending.retain(|login| {
+        now.saturating_duration_since(login.seen) < PENDING_LOGIN_TTL
+            || pending_is_reserved(login, &reserved, now)
+    });
+}
+
+fn release_reservation(fan: &mut Fan, expect: &CircuitExpect) {
+    fan.reserved.retain(|item| {
+        item.expect.agent_id != expect.agent_id
+            || item.expect.session_id != expect.session_id
+            || item.expect.circuit_code != expect.circuit_code
+    });
+}
+
 /// Route one datagram. Returns a source and sequence to ACK when the datagram
 /// is kept for a serve that has not started. A matching waiter ACKs it itself.
+///
+/// An unbound serve is matched before any pending login from the same
+/// endpoint, so a new `UseCircuitCode` is not swallowed by one nobody claimed.
+/// While a login is waiting, later packets from that endpoint stay in its
+/// burst. A `UseCircuitCode` with the same code, agent and session is
+/// acknowledged and not queued again. Any other `UseCircuitCode` replaces the
+/// entry and drops the old burst. An unreserved entry expires after 60
+/// seconds. A code reserved at accept stays until that login is served or
+/// its login-connect deadline passes. A serve that accepts a different code
+/// drops the old burst as well.
 fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(SocketAddr, u32)> {
     let mut fan = shared
         .fan
@@ -1937,23 +2273,74 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
         ferroan_diag::log_malformed("udp", &bytes, "datagram exceeds udp.datagram");
         return None;
     }
-    let packet = use_circuit(&bytes)?;
-    if let Some(pos) = fan
-        .unbound
-        .iter()
-        .position(|waiter| expect_matches(&packet, &waiter.expect))
-        && pos < fan.unbound.len()
+    let now = Instant::now();
+    expire_pending(&mut fan, now);
+    if let Some(packet) = use_circuit(&bytes)
+        && let Some(pos) = fan
+            .unbound
+            .iter()
+            .position(|waiter| expect_matches(&packet, &waiter.expect))
         && let Some(waiter) = fan.unbound.remove(pos)
     {
+        // The new code won. Drop the burst HandleUseCircuitCode would remove
+        // when the earlier login is no longer the one being accepted.
+        fan.pending.retain(|login| login.from != from);
         fan.bound.insert(from, waiter.id);
         waiter.inbox.push(Datagram { from, bytes });
         return None;
     }
-    fan.pending.retain(|queued| queued.from != from);
+    if let Some(pos) = fan.pending.iter().position(|queued| queued.from == from) {
+        if let Some(packet) = use_circuit(&bytes) {
+            let same = fan
+                .pending
+                .get(pos)
+                .and_then(|login| login.packets.front())
+                .is_some_and(|stored| login_matches(&packet, stored));
+            if same {
+                // A live resend must not be the oldest login when the cache is full.
+                if let Some(login) = fan.pending.remove(pos) {
+                    fan.pending.push_back(login);
+                }
+                return Some((from, packet.sequence));
+            }
+            fan.pending.remove(pos);
+            fan.pending.push_back(PendingLogin {
+                from,
+                seen: now,
+                packets: VecDeque::from([bytes]),
+            });
+            return Some((from, packet.sequence));
+        }
+        let login = fan.pending.get_mut(pos)?;
+        if login.packets.len() >= PENDING_BURST_CAP {
+            ferroan_diag::refuse(
+                UDP_PENDING_LOGIN_BURST,
+                Kind::Hard,
+                PENDING_BURST_CAP as u64,
+                (login.packets.len() + 1) as u64,
+                "udp",
+            );
+            return None;
+        }
+        login.packets.push_back(bytes);
+        return None;
+    }
+    let packet = use_circuit(&bytes)?;
     if fan.pending.len() >= PENDING_LOGINS {
+        ferroan_diag::drop_bound(
+            UDP_PENDING_LOGINS,
+            Kind::Hard,
+            PENDING_LOGINS as u64,
+            (fan.pending.len() + 1) as u64,
+            "udp",
+        );
         fan.pending.pop_front();
     }
-    fan.pending.push_back(Datagram { from, bytes });
+    fan.pending.push_back(PendingLogin {
+        from,
+        seen: now,
+        packets: VecDeque::from([bytes]),
+    });
     Some((from, packet.sequence))
 }
 
@@ -1975,11 +2362,29 @@ async fn read_loop(shared: Arc<SharedUdp>) {
     }
 }
 
+/// One accepted login's circuit code. Dropping it allows the 60 second expiry.
+pub struct LoginReservation {
+    shared: Arc<SharedUdp>,
+    id: u64,
+}
+
+impl Drop for LoginReservation {
+    fn drop(&mut self) {
+        let mut fan = self
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.retain(|item| item.id != self.id);
+    }
+}
+
 /// One UDP listener with the region settings to announce.
 ///
 /// Several logins share the socket. Each serve receives only its own peer,
-/// plus the UseCircuitCode that opened it. A login packet that arrives before
-/// its serve is acknowledged and kept for that serve.
+/// plus the UseCircuitCode that opened it and the packets that arrived while
+/// that login was still waiting. A login packet that arrives before its serve
+/// is acknowledged and kept, with that burst, for that serve.
 pub struct CircuitServer {
     inner: Arc<CircuitInner>,
 }
@@ -2006,6 +2411,7 @@ impl CircuitServer {
                         senders: HashMap::new(),
                         unbound: VecDeque::new(),
                         pending: VecDeque::new(),
+                        reserved: Vec::new(),
                     }),
                 }),
                 handshake: Mutex::new(HandshakeConfig::for_region(Uuid::nil())),
@@ -2014,8 +2420,9 @@ impl CircuitServer {
                 next_id: AtomicU64::new(1),
                 scene_throttle: Mutex::new(SceneThrottle::configured(CircuitThrottle::default())),
                 chat: Mutex::new(None),
-                waiting_seats: Mutex::new(HashMap::new()),
+                waiting_chat: Mutex::new(HashMap::new()),
                 login_scene: Mutex::new(None),
+                names: Mutex::new(None),
             }),
         })
     }
@@ -2036,7 +2443,7 @@ impl CircuitServer {
         Ok(())
     }
 
-    /// Turn on channel 0 chat for every serve that later calls [`Self::attach_chat`].
+    /// Turn on local chat for every serve that later calls [`Self::attach_chat`].
     pub fn enable_chat(&self) {
         let mut chat = self
             .inner
@@ -2048,7 +2455,7 @@ impl CircuitServer {
         }
     }
 
-    /// Seat one accepted avatar. The matching serve takes the seat when it starts.
+    /// Record the login pose and name. A valid UseCircuitCode seats the viewer for chat.
     pub fn attach_chat(&self, agent: Uuid, name: String, position: [f32; 3]) {
         let chat = self
             .inner
@@ -2075,17 +2482,42 @@ impl CircuitServer {
             };
             let _ = scene(agent, SceneCall::Pose(pose));
         }
-        let seat = chat.seat(agent, name);
         self.inner
-            .waiting_seats
+            .waiting_chat
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(agent, seat);
+            .insert(agent, (chat, name));
     }
 
-    fn take_waiting_seat(&self, agent: Uuid) -> Option<ChatSeat> {
+    /// Answer `UUIDNameRequest` on every later serve, from `source`. Call it
+    /// on the tokio runtime: it starts the region's lookup queue.
+    pub fn enable_names(&self, source: Arc<dyn crate::NameSource>) {
+        let mut names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if names.is_none() {
+            *names = Some(RegionNames::start(source));
+        }
+    }
+
+    /// `Scene.CacheUserName` for a resident of this grid: the arrival's names.
+    pub fn cache_arrival_name(&self, agent: Uuid, first: &str, last: &str) {
+        let names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        if let Some(names) = names {
+            names.add_arrival(agent, first, last);
+        }
+    }
+
+    fn take_waiting_chat(&self, agent: Uuid) -> Option<(RegionChat, String)> {
         self.inner
-            .waiting_seats
+            .waiting_chat
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove(&agent)
@@ -2127,6 +2559,37 @@ impl CircuitServer {
         Ok(self.inner.shared.socket.local_addr()?)
     }
 
+    /// Reserve `expect` when the login is accepted, before the group and
+    /// avatar lookups. A pending `UseCircuitCode` for that code is kept past
+    /// the 60 second cache until this login is served or `until`. `None`
+    /// means the login has no connect deadline. Drop the reservation when
+    /// the accepted login is discarded.
+    pub fn reserve_login(&self, expect: CircuitExpect, until: Option<Instant>) -> LoginReservation {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut fan = self
+            .inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.push(ReservedLogin { id, expect, until });
+        LoginReservation {
+            shared: Arc::clone(&self.inner.shared),
+            id,
+        }
+    }
+
+    /// Logins reserved at accept and not yet released by the serve.
+    pub fn reserved_logins(&self) -> usize {
+        self.inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .reserved
+            .len()
+    }
+
     fn ensure_reader(&self) {
         let mut reader = self
             .inner
@@ -2151,15 +2614,22 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         fan.senders.insert(id, Arc::clone(&inbox));
-        if let Some(pos) = fan
-            .pending
-            .iter()
-            .position(|queued| datagram_matches(&queued.bytes, &expect))
-            && pos < fan.pending.len()
-            && let Some(datagram) = fan.pending.remove(pos)
+        expire_pending(&mut fan, Instant::now());
+        if let Some(pos) = fan.pending.iter().position(|queued| {
+            queued
+                .packets
+                .front()
+                .is_some_and(|bytes| datagram_matches(bytes, &expect))
+        }) && let Some(login) = fan.pending.remove(pos)
         {
-            fan.bound.insert(datagram.from, id);
-            inbox.push(datagram);
+            fan.bound.insert(login.from, id);
+            let source = login.from;
+            for bytes in login.packets {
+                inbox.push(Datagram {
+                    from: source,
+                    bytes,
+                });
+            }
         } else {
             fan.unbound.push_back(UnboundServe {
                 id,
@@ -2167,6 +2637,9 @@ impl CircuitServer {
                 inbox: Arc::clone(&inbox),
             });
         }
+        // The login is being served, so a later pending entry for this code
+        // keeps the ordinary 60 second expiry.
+        release_reservation(&mut fan, &expect);
         SessionSock {
             shared: Arc::clone(&self.inner.shared),
             id,
@@ -2244,7 +2717,7 @@ impl CircuitServer {
         connected: Option<oneshot::Sender<()>>,
         stop: Option<oneshot::Receiver<CircuitStop>>,
     ) -> Result<(), CircuitError> {
-        let chat = self.take_waiting_seat(expect.agent_id);
+        let chat = self.take_waiting_chat(expect.agent_id);
         if !arrival.valid() {
             return Err(CircuitError::InvalidArrival);
         }
@@ -2276,6 +2749,13 @@ impl CircuitServer {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner()),
         );
+        let names = self
+            .inner
+            .names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .map(RegionNames::circuit);
         serve_socket_reporting(
             &session,
             expect,
@@ -2292,6 +2772,7 @@ impl CircuitServer {
                 stop,
                 chat,
                 login_scene,
+                names,
             },
         )
         .await
@@ -2304,8 +2785,9 @@ struct ServeExtra<'a> {
     connected: Option<oneshot::Sender<()>>,
     pending: Option<&'a PendingUseCircuit>,
     stop: Option<oneshot::Receiver<CircuitStop>>,
-    chat: Option<ChatSeat>,
+    chat: Option<(RegionChat, String)>,
     login_scene: Option<LoginScene>,
+    names: Option<(CircuitNames, mpsc::Receiver<(Uuid, UserName)>)>,
 }
 
 #[cfg(test)]
@@ -2331,6 +2813,7 @@ async fn serve_socket(
             stop: None,
             chat: None,
             login_scene: None,
+            names: None,
         },
     )
     .await
@@ -2367,10 +2850,16 @@ async fn serve_socket_reporting(
     state.root_arrival = extra.root_arrival;
     state.connection_opened = extra.connected;
     state.login_scene = extra.login_scene;
+    let mut name_rx = match extra.names {
+        Some((names, rx)) => {
+            state.names = Some(names);
+            Some(rx)
+        }
+        None => None,
+    };
     let mut hop_rx = state.hop_rx.take();
     let entity_wake = state.feed.as_ref().map(|feed| Arc::clone(&feed.wake));
-    let mut seated = extra.chat;
-    state.chat = seated.as_ref().map(|seat| seat.hub.clone());
+    state.pending_chat = extra.chat;
     // One byte past the cap so Linux `recvfrom` can report an oversize datagram
     // instead of silently truncating it to `MAX_DATAGRAM`.
     let mut buf = [0u8; MAX_DATAGRAM + 1];
@@ -2441,11 +2930,11 @@ async fn serve_socket_reporting(
                 continue;
             }
             bound = async {
-                match seated.as_mut() {
+                match state.chat.as_mut() {
                     Some(seat) => seat.rx.recv().await,
                     None => std::future::pending().await,
                 }
-            }, if seated.is_some() && state.peer.is_some() => {
+            }, if state.chat.is_some() => {
                 if let Some(bound) = bound
                     && let Some(peer) = state.peer
                 {
@@ -2458,6 +2947,20 @@ async fn serve_socket_reporting(
                             state.enqueue_task(&message)?;
                         }
                     }
+                } else {
+                    state.chat = None;
+                }
+                continue;
+            }
+            answer = async {
+                match name_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if name_rx.is_some() && state.peer.is_some() => {
+                match answer {
+                    Some((id, name)) => state.enqueue_name(id, &name)?,
+                    None => name_rx = None,
                 }
                 continue;
             }
@@ -2503,7 +3006,7 @@ async fn serve_socket_reporting(
             }
             received = tokio::time::timeout(wait, sock.recv_from(&mut buf)) => received,
         };
-        let (len, from) = match received {
+        let (mut len, mut from) = match received {
             Ok(Ok(received)) => received,
             Ok(Err(_)) => {
                 // Includes Windows WSAECONNRESET; back off to avoid spinning
@@ -2513,38 +3016,54 @@ async fn serve_socket_reporting(
             }
             Err(_) => continue,
         };
-        if len > MAX_DATAGRAM {
-            ferroan_diag::refuse(
-                UDP_DATAGRAM,
-                Kind::Hard,
-                MAX_DATAGRAM as u64,
-                len as u64,
-                "udp",
-            );
-            ferroan_diag::log_malformed("udp", &buf[..len], "datagram exceeds udp.datagram");
-            continue;
-        }
-        let Ok(packet) = packet::parse_packet(&buf[..len]) else {
-            continue;
-        };
-        if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
-            if state.retarget_child(sock, from, &expect, &packet).await? {
-                continue;
-            }
-            // Store before the ACK so a test that waits for the ACK can already
-            // see the datagram queued for the replacement serve.
-            if let Some(slot) = extra.pending {
-                // INFALLIBLE: the pending slot is locked only to push or take one datagram.
-                #[allow(clippy::unwrap_used)]
-                {
-                    *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+        // Pin8 replays the pending-login queue before the send loop runs again,
+        // so AgentThrottle is applied before CompleteMovement's land pass drains.
+        // One pass stops after a full inbox. The outer loop then runs
+        // maintenance and can observe CircuitStop, instead of a busy endpoint
+        // holding pings, resends, acks and the land and task drains.
+        let mut drain_budget = INBOX_CAP;
+        loop {
+            if len > MAX_DATAGRAM {
+                ferroan_diag::refuse(
+                    UDP_DATAGRAM,
+                    Kind::Hard,
+                    MAX_DATAGRAM as u64,
+                    len as u64,
+                    "udp",
+                );
+                ferroan_diag::log_malformed("udp", &buf[..len], "datagram exceeds udp.datagram");
+            } else if let Ok(packet) = packet::parse_packet(&buf[..len]) {
+                if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
+                    if state.retarget_child(sock, from, &expect, &packet).await? {
+                        break;
+                    }
+                    // Store before the ACK so a test that waits for the ACK can already
+                    // see the datagram queued for the replacement serve.
+                    if let Some(slot) = extra.pending {
+                        // INFALLIBLE: the pending slot is locked only to push or take one datagram.
+                        #[allow(clippy::unwrap_used)]
+                        {
+                            *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+                        }
+                    }
+                    State::immediate_ack(sock, from, packet.sequence).await;
+                    break;
+                }
+                if state.handle(sock, from, &expect, &packet, len).await? {
+                    return Ok(());
                 }
             }
-            State::immediate_ack(sock, from, packet.sequence).await;
-            continue;
-        }
-        if state.handle(sock, from, &expect, &packet, len).await? {
-            return Ok(());
+            drain_budget = drain_budget.saturating_sub(1);
+            if drain_budget == 0 {
+                break;
+            }
+            match sock.try_recv_from(&mut buf)? {
+                Some(next) => {
+                    len = next.0;
+                    from = next.1;
+                }
+                None => break,
+            }
         }
     }
 }
@@ -2823,9 +3342,11 @@ mod tests {
                         flags: request.flags,
                     }))
                 }
-                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
-                    Ok(SceneReply::Applied)
-                }
+                SceneCall::AgentUpdate(_)
+                | SceneCall::AlwaysRun(_)
+                | SceneCall::HandshakeReply
+                | SceneCall::InitialLand
+                | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),
@@ -2887,36 +3408,52 @@ mod tests {
         let left = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let right = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         send(&left, addr, 1, &use_circuit(1, 2, 42), true).await;
-        send(&right, addr, 1, &use_circuit(3, 4, 43), true).await;
         let mut buf = [0u8; 4096];
         assert!(wait_for(&left, &mut buf, RegionHandshake::ID).await);
-        assert!(wait_for(&right, &mut buf, RegionHandshake::ID).await);
         let mut said = ChatFromViewer::default();
         said.agent_data.agent_id = speaker.agent_id;
         said.agent_data.session_id = speaker.session_id;
-        said.chat_data.message = str_field("ferroan harness chat");
+        said.chat_data.message = str_field("before connect");
         said.chat_data.type_ = 1;
         said.chat_data.channel = 0;
         send(&left, addr, 2, &said, true).await;
-        let heard_left = wait_for_chat(&left, &mut buf).await;
-        let heard_right = wait_for_chat(&right, &mut buf).await;
-        for packet in [&heard_left, &heard_right] {
-            assert!(packet.reliable());
-            assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
-            let decoded = packet.decode::<ChatFromSimulator>().unwrap();
-            assert_eq!(field_str(&decoded.chat_data.from_name), "Test User");
-            assert_eq!(decoded.chat_data.source_id, speaker.agent_id);
-            assert_eq!(decoded.chat_data.owner_id, speaker.agent_id);
-            assert_eq!(decoded.chat_data.source_type, 1);
-            assert_eq!(decoded.chat_data.chat_type, 1);
-            assert_eq!(decoded.chat_data.audible, 1);
-            assert_eq!(decoded.chat_data.message, b"ferroan harness chat\0");
-            assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
+        // The echo establishes that publication finished while the second
+        // login had a pose but had not sent UseCircuitCode.
+        let echo = wait_for_chat(&left, addr, &mut buf).await;
+        assert_eq!(
+            echo.decode::<ChatFromSimulator>()
+                .unwrap()
+                .chat_data
+                .message,
+            b"before connect\0"
+        );
+        send(&right, addr, 1, &use_circuit(3, 4, 43), true).await;
+        assert!(wait_for(&right, &mut buf, RegionHandshake::ID).await);
+        for (seq, channel, text, expected_type) in
+            [(3, 0, "ferroan harness chat", 1), (4, i32::MAX, "debug", 6)]
+        {
+            said.chat_data.channel = channel;
+            said.chat_data.message = str_field(text);
+            send(&left, addr, seq, &said, true).await;
+            for viewer in [&left, &right] {
+                let packet = wait_for_chat(viewer, addr, &mut buf).await;
+                assert!(packet.reliable());
+                assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+                let decoded = packet.decode::<ChatFromSimulator>().unwrap();
+                assert_eq!(field_str(&decoded.chat_data.from_name), "Test User");
+                assert_eq!(decoded.chat_data.source_id, speaker.agent_id);
+                assert_eq!(decoded.chat_data.owner_id, speaker.agent_id);
+                assert_eq!(decoded.chat_data.source_type, 1);
+                assert_eq!(decoded.chat_data.chat_type, expected_type);
+                assert_eq!(decoded.chat_data.audible, 1);
+                assert_eq!(decoded.chat_data.message, str_field(text));
+                assert_eq!(decoded.chat_data.position.to_array(), [128.0, 128.0, 23.0]);
+            }
         }
         let mut request = LogoutRequest::default();
         request.agent_data.agent_id = speaker.agent_id;
         request.agent_data.session_id = speaker.session_id;
-        send(&left, addr, 3, &request, true).await;
+        send(&left, addr, 5, &request, true).await;
         request.agent_data.agent_id = listener.agent_id;
         request.agent_data.session_id = listener.session_id;
         send(&right, addr, 2, &request, true).await;
@@ -2924,6 +3461,107 @@ mod tests {
         assert!(wait_for(&right, &mut buf, LogoutReply::ID).await);
         speaker_task.await.unwrap().unwrap();
         listener_task.await.unwrap().unwrap();
+    }
+
+    fn name_request_packet(id: Uuid) -> ferroan_protocol::IncomingPacket {
+        use ferroan_protocol::msgs::{UUIDNameRequest, uuid_name_request};
+        let mut request = UUIDNameRequest::default();
+        request
+            .uuid_name_block
+            .push(uuid_name_request::UUIDNameBlock { id });
+        let mut bytes = Vec::new();
+        build_packet(&request, 1, true, false, &[], &mut bytes);
+        parse_packet(&bytes).unwrap()
+    }
+
+    fn named_state(id: Uuid) -> super::State {
+        let region =
+            crate::names::RegionNames::start(Arc::new(crate::names::tests::Fake::default()));
+        region.cache_found(id, crate::names::UserName::new("Chat", "Bot"));
+        let mut state = super::State::new(
+            crate::HandshakeConfig::for_region(Uuid::nil()),
+            crate::ArrivalConfig::default(),
+        );
+        state.names = Some(region.circuit().0);
+        state
+    }
+
+    /// A cached name is answered on the task outbox, until it holds
+    /// `MAX_NAME_REPLIES` packets.
+    #[tokio::test]
+    async fn a_name_reply_waits_on_the_task_outbox_up_to_its_bound() {
+        let id = Uuid::from_u128(0x79);
+        let mut state = named_state(id);
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), 1);
+        while state.pending_task.len() < super::MAX_NAME_REPLIES {
+            let payload = state.pending_task[0].clone();
+            state.pending_task.push_back(payload);
+        }
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert_eq!(state.pending_task.len(), super::MAX_NAME_REPLIES);
+    }
+
+    /// `HandleUUIDNameRequest` ignores a presence in transit.
+    #[tokio::test]
+    async fn a_name_request_in_transit_is_ignored() {
+        let id = Uuid::from_u128(0x7a);
+        let mut state = named_state(id);
+        state.in_transit = true;
+        state.request_names(&name_request_packet(id)).unwrap();
+        assert!(state.pending_task.is_empty());
+    }
+
+    /// `UUIDNameRequest` with a known and an unknown id: one reliable,
+    /// plain `UUIDNameReply` for the known one, none for the other.
+    #[tokio::test]
+    async fn a_name_request_answers_the_known_id_only() {
+        use ferroan_protocol::msgs::{UUIDNameReply, UUIDNameRequest, uuid_name_request};
+        let server = CircuitServer::bind().await.unwrap();
+        let known = Uuid::from_u128(0x77);
+        let unknown = Uuid::from_u128(0x78);
+        server.enable_names(Arc::new(crate::names::tests::Fake::with_account(
+            known, "Chat", "Bot",
+        )));
+        let addr = server.local_addr().unwrap();
+        let agent = expect_agent();
+        let serving = server.clone();
+        let task =
+            tokio::spawn(async move { serving.serve_one(agent, Duration::from_secs(20)).await });
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        send(&sock, addr, 1, &use_circuit(1, 2, 42), true).await;
+        let mut buf = [0u8; 4096];
+        assert!(wait_for(&sock, &mut buf, RegionHandshake::ID).await);
+        let mut request = UUIDNameRequest::default();
+        for id in [unknown, known] {
+            request
+                .uuid_name_block
+                .push(uuid_name_request::UUIDNameBlock { id });
+        }
+        send(&sock, addr, 2, &request, true).await;
+        let mut replies = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(1) {
+            if let Some(packet) = recv(&sock, &mut buf, Duration::from_millis(100)).await
+                && packet.id == UUIDNameReply::ID
+            {
+                assert!(packet.reliable());
+                assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+                replies.push(packet.decode::<UUIDNameReply>().unwrap());
+            }
+        }
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        let block = &replies[0].uuid_name_block;
+        assert_eq!(block.len(), 1);
+        assert_eq!(block[0].id, known);
+        assert_eq!(block[0].first_name, b"Chat\0");
+        assert_eq!(block[0].last_name, b"Bot\0");
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = agent.agent_id;
+        logout.agent_data.session_id = agent.session_id;
+        send(&sock, addr, 3, &logout, true).await;
+        assert!(wait_for(&sock, &mut buf, LogoutReply::ID).await);
+        task.await.unwrap().unwrap();
     }
 
     async fn wait_for(sock: &UdpSocket, buf: &mut [u8], id: ferroan_protocol::MsgId) -> bool {
@@ -2938,12 +3576,23 @@ mod tests {
         false
     }
 
-    async fn wait_for_chat(sock: &UdpSocket, buf: &mut [u8]) -> ferroan_protocol::IncomingPacket {
+    async fn wait_for_chat(
+        sock: &UdpSocket,
+        addr: SocketAddr,
+        buf: &mut [u8],
+    ) -> ferroan_protocol::IncomingPacket {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
             if let Some(packet) = recv(sock, buf, Duration::from_millis(200)).await
                 && packet.id == ChatFromSimulator::ID
             {
+                let ack = PacketAck {
+                    packets: vec![ferroan_protocol::msgs::packet_ack::Packets {
+                        id: packet.sequence,
+                    }],
+                    ..Default::default()
+                };
+                send(sock, addr, 0, &ack, false).await;
                 return packet;
             }
         }
@@ -3092,7 +3741,7 @@ mod tests {
 
         use ferroan_protocol::reliability::Resend;
 
-        use super::{Payload, State, UdpCounters};
+        use super::{Coding, Payload, State, UdpCounters};
         use crate::{ArrivalConfig, HandshakeConfig};
 
         let udp = Arc::new(UdpCounters::default());
@@ -3109,7 +3758,7 @@ mod tests {
         let now = std::time::Instant::now();
         let payload = Payload {
             bytes: vec![1],
-            zerocoded: false,
+            coding: Coding::Plain,
             reliable: true,
         };
         first

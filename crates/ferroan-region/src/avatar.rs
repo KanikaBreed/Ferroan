@@ -54,8 +54,9 @@ pub enum AvatarError {
 }
 
 /// Fetch when `AvatarServerURI` is set. An empty URI is the constructor appearance.
+/// The caller assigns the region local ID after attaching to the frame and before sending.
 pub async fn load(uri: &str, agent_id: Uuid, first_name: &str, last_name: &str) -> AvatarWire {
-    let mut wire = AvatarWire::standing(agent_id, first_name, last_name);
+    let mut wire = AvatarWire::standing(agent_id, 0, first_name, last_name);
     if uri.is_empty() {
         return wire;
     }
@@ -79,7 +80,9 @@ async fn fetch(uri: &str, agent_id: Uuid) -> Result<StoredAppearance, AvatarErro
 fn avatar_error(error: GridError) -> AvatarError {
     match error {
         GridError::Http(http) => AvatarError::Http(http),
-        GridError::Rejected { .. } | GridError::InvalidReply => AvatarError::InvalidReply,
+        GridError::Rejected { .. } | GridError::InvalidReply | GridError::Store(_) => {
+            AvatarError::InvalidReply
+        }
     }
 }
 

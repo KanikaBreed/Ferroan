@@ -64,13 +64,36 @@
 //! `MakeRootAgent` would use: the login start, lifted to terrain height when a
 //! heightmap is loaded. ScenePresence's initial camera and velocity are zero,
 //! so a fresh root login without an AgentUpdate uses its exact (not unit
-//! length) fallback look vector. Land packets follow `AgentMovementComplete`.
-//! Crossing, parcel and animation messages are later work. The avatar
-//! `ObjectUpdate` and `AvatarAppearance` ride on `avatar` when the region has one.
+//! length) fallback look vector. Parcel overlay and land follow
+//! `AgentMovementComplete` on the eligible paths. The frame queues
+//! `ParcelProperties` before that overlay. Animation messages are later work.
+//! The avatar `ObjectUpdate` and
+//! `AvatarAppearance` ride on `avatar` when the region has one.
 
 use ferroan_protocol::msgs::AgentMovementComplete;
 
 use crate::CircuitExpect;
+
+/// `TeleportFlags.ViaLogin`. A normal grid login carries it, so the
+/// initial-data gate does not request a second overlay.
+pub const VIA_LOGIN: u32 = 1 << 7;
+
+/// `ScenePresence.CompleteMovement` (lines 2401–2402 and 2471–2475). Positive
+/// teleport flags clear a crossing update. Terrain and the overlay are sent
+/// unless that update remains.
+pub fn land_at_complete(teleport_flags: u32, crossing_flags: u32) -> bool {
+    let mut got_cross = crossing_flags != 0;
+    if teleport_flags > 0 {
+        got_cross = false;
+    }
+    !got_cross
+}
+
+/// `ScenePresence.SendInitialData` (lines 4338–4343). Terrain and the overlay
+/// are requested again only when the teleport flags are zero.
+pub fn land_at_initial(teleport_flags: u32) -> bool {
+    teleport_flags == 0
+}
 
 /// Region and accepted-login data needed by LLClientView.MoveAgentIntoRegion.
 #[derive(Clone, Debug)]
@@ -81,8 +104,15 @@ pub struct ArrivalConfig {
     pub region_handle: u64,
     /// Scene.GetSimulatorVersion, encoded as a bounded NUL-terminated string.
     pub channel_version: String,
-    /// Land `LayerData` bodies, one patch per packet, sent after arrival.
+    /// Land `LayerData` bodies, one patch per packet, queued after the overlay
+    /// on an eligible path.
     pub land: Vec<LandLayer>,
+    /// `ParcelOverlay` chunks, queued ahead of `land` on an eligible path.
+    pub overlay: Vec<ParcelOverlayChunk>,
+    /// `TeleportFlags` from the accepted login.
+    pub teleport_flags: u32,
+    /// `CrossingFlags` from agent data. Zero until a crossing update arrives.
+    pub crossing_flags: u32,
     /// Avatar full update and appearance. Absent on tests that only check arrival.
     pub avatar: Option<crate::AvatarWire>,
     /// Local teleport. Absent until the region installs its rectangle and ground.
@@ -106,6 +136,13 @@ pub struct LandLayer {
     pub data: Vec<u8>,
 }
 
+/// One `ParcelOverlay` `ParcelData` block. `data` is the 1024-byte cell map.
+#[derive(Clone, Debug)]
+pub struct ParcelOverlayChunk {
+    pub sequence_id: i32,
+    pub data: Vec<u8>,
+}
+
 #[cfg(test)]
 impl Default for ArrivalConfig {
     /// Defaults for the standalone circuit test listener. A region must supply
@@ -117,6 +154,9 @@ impl Default for ArrivalConfig {
             region_handle: 0,
             channel_version: "Ferroan Server".into(),
             land: Vec::new(),
+            overlay: Vec::new(),
+            teleport_flags: VIA_LOGIN,
+            crossing_flags: 0,
             avatar: None,
             teleport: None,
             source_hop: None,
@@ -150,10 +190,15 @@ impl ArrivalConfig {
 }
 
 fn channel_version(text: &str) -> Vec<u8> {
-    // Utils.StringToBytes stops at the first NUL, keeps whole UTF-8 characters,
-    // then appends a terminator. The 1024-byte limit includes that terminator.
+    string_to_bytes(text, 1024)
+}
+
+/// `Utils.StringToBytes(str, maxlen)`: stops at the first NUL, keeps whole
+/// UTF-8 characters, then appends a terminator. `maxlen` includes that
+/// terminator. An empty result has no terminator.
+pub(crate) fn string_to_bytes(text: &str, maxlen: usize) -> Vec<u8> {
     let text = text.split('\0').next().unwrap_or_default();
-    let mut end = text.len().min(1023);
+    let mut end = text.len().min(maxlen.saturating_sub(1));
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -179,6 +224,16 @@ mod tests {
             [vec![b'a'; 1022], vec![0]].concat()
         );
         assert_eq!(channel_version(&"😀".repeat(300)).len(), 1021);
+    }
+
+    #[test]
+    fn land_passes_follow_the_pin8_guards() {
+        assert!(land_at_complete(VIA_LOGIN, 0));
+        assert!(land_at_complete(VIA_LOGIN, 4));
+        assert!(!land_at_complete(0, 4));
+        assert!(land_at_complete(0, 0));
+        assert!(!land_at_initial(VIA_LOGIN));
+        assert!(land_at_initial(0));
     }
 
     #[test]

@@ -39,11 +39,14 @@
 //!
 //! `QueryAccess`, then `TeleportStart`, then `CreateAgent` with `child` true,
 //! then an event-queue `TeleportFinish`. The root is demoted before
-//! `UpdateAgent`. An in-view neighbour keeps that child: the caps seed and the
-//! circuit stay, and the hop does not release or close the agent. A destination
+//! `UpdateAgent`. An in-view neighbour keeps that child: the hop reuses the
+//! caps seed already stored for that destination, and the circuit stays. The
+//! hop does not release or close the agent. A destination
 //! outside that view, or one whose grid Y is 0, waits for the destination's
-//! release DELETE and then closes the circuit without a kick. The grid is asked
-//! when the local directory has no handle.
+//! release DELETE, stages a close for each open child that destination's view
+//! would drop (never the destination itself), and then closes the circuit
+//! without a kick. Those child closes run on a separate task. The grid is
+//! asked when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -123,6 +126,9 @@ pub enum HopPresence {
     Idle,
     /// The region's sessions, caps and release table.
     Live(Box<SimulationState>),
+    /// A child book with no region session. The hop reads its seeds.
+    #[cfg(test)]
+    Seeded(Arc<crate::children::ChildBook>),
     #[cfg(test)]
     Watch(Arc<PresenceWatch>),
 }
@@ -201,18 +207,29 @@ impl HopPresence {
         Self::Watch(watch)
     }
 
-    fn demote(&self, agent: Uuid) {
-        match self {
-            Self::Idle => {}
-            Self::Live(state) => state.demote_child(agent),
+    // Reserve before telling the viewer to leave. A failed create or enqueue
+    // releases the place without demoting the root.
+    fn prepare_demotion(&self, agent: Uuid) -> Result<impl FnOnce() + '_, &'static str> {
+        let reservation = match self {
+            Self::Live(state) => Some((state, state.reserve_child_place()?)),
+            _ => None,
+        };
+        Ok(move || {
+            if let Some((state, place)) = reservation {
+                state.demote_with_place(agent, place);
+            }
             #[cfg(test)]
-            Self::Watch(watch) => watch.demoted.store(true, Ordering::Release),
-        }
+            if let Self::Watch(watch) = self {
+                watch.demoted.store(true, Ordering::Release);
+            }
+        })
     }
 
     fn restore(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.restore_root(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.restored.store(true, Ordering::Release),
@@ -224,6 +241,8 @@ impl HopPresence {
     async fn moved_away(&self, agent: Uuid, near: bool, end: &RegionEnd) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.moved_away(agent, near, end).await,
             #[cfg(test)]
             Self::Watch(watch) => {
@@ -235,27 +254,55 @@ impl HopPresence {
         }
     }
 
-    fn note_child(&self, agent: Uuid, end: &RegionEnd) {
+    fn child_seed(&self, agent: Uuid, region: Uuid) -> Option<String> {
+        match self {
+            Self::Idle => None,
+            Self::Live(state) => state.child_seed(agent, region),
+            #[cfg(test)]
+            Self::Seeded(book) => book.seed(agent, region),
+            #[cfg(test)]
+            Self::Watch(_) => None,
+        }
+    }
+
+    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
         match self {
             Self::Idle => {}
-            Self::Live(state) => state.note_open_child(agent, end.clone()),
+            Self::Live(state) => state.promote_child(agent, end, seed),
+            #[cfg(test)]
+            Self::Seeded(book) => book.promote(agent, end, seed),
             #[cfg(test)]
             Self::Watch(_) => {}
         }
     }
 
-    fn take_child(&self, agent: Uuid) -> Option<RegionEnd> {
+    fn take_staged(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
         match self {
-            Self::Idle => None,
-            Self::Live(state) => state.take_open_child(agent),
+            Self::Idle => Vec::new(),
+            Self::Live(state) => state.take_staged_closes(agent),
             #[cfg(test)]
-            Self::Watch(_) => None,
+            Self::Seeded(book) => book.take_staged_closes(agent),
+            #[cfg(test)]
+            Self::Watch(_) => Vec::new(),
+        }
+    }
+
+    fn take_children(&self, agent: Uuid) -> Vec<RegionEnd> {
+        match self {
+            Self::Idle => Vec::new(),
+            Self::Live(state) => state.take_open_children(agent),
+            #[cfg(test)]
+            Self::Seeded(book) => book.begin_logout(agent),
+            #[cfg(test)]
+            Self::Watch(_) => Vec::new(),
         }
     }
 
     fn arm(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.arm_release(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.armed.store(true, Ordering::Release),
@@ -265,6 +312,8 @@ impl HopPresence {
     fn disarm(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.disarm_release(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.armed.store(false, Ordering::Release),
@@ -274,6 +323,8 @@ impl HopPresence {
     async fn wait_release(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.wait_release(agent).await,
             #[cfg(test)]
             Self::Watch(watch) => {
@@ -286,10 +337,17 @@ impl HopPresence {
         }
     }
 
-    fn close_local(&self, agent: Uuid) {
+    fn close_local(&self, agent: Uuid, destination: &HopDestination) {
+        let far = crate::children::FarDestination {
+            end: destination.end.clone(),
+            size_x: destination.size_x,
+            size_y: destination.size_y,
+        };
         match self {
             Self::Idle => {}
-            Self::Live(state) => state.close_departed(agent),
+            #[cfg(test)]
+            Self::Seeded(book) => book.close_far(agent, &far),
+            Self::Live(state) => state.close_departed(agent, &far),
             #[cfg(test)]
             Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
         }
@@ -362,17 +420,31 @@ impl HopEnv {
         }
     }
 
-    /// Close the in-view neighbour child this root opened. One attempt.
-    /// The error text can carry a URL, so it stays at debug and is not shown.
-    pub async fn close_open_child(&self, agent: Uuid, session: Uuid) {
-        let Some(end) = self.presence.take_child(agent) else {
+    /// Close children a replaced root left behind. The auth token is the session
+    /// that opened them. One take, so the old circuit and the new login cannot
+    /// both send the same close. The sends run on a separate task, as
+    /// `SendCloseChildAgentConnections` does: an unresponsive neighbour does
+    /// not delay the new login.
+    pub async fn close_staged(&self, agent: Uuid) {
+        let staged = self.presence.take_staged(agent);
+        let Some(client) = self.client.clone() else {
             return;
         };
+        spawn_staged_closes(client, agent, staged);
+    }
+
+    /// Close the in-view neighbour children this root opened. One attempt each.
+    /// The error text can carry a URL, so it stays at debug and is not shown.
+    pub async fn close_open_child(&self, agent: Uuid, session: Uuid) {
+        let ends = self.presence.take_children(agent);
         let Some(client) = &self.client else {
             return;
         };
-        if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
-            tracing::debug!("logout child close: {error}");
+        let auth = session.to_string();
+        for end in ends {
+            if let Err(error) = client.close_agent(&end, agent, &auth).await {
+                tracing::debug!("logout child close: {error}");
+            }
         }
     }
 
@@ -495,6 +567,13 @@ async fn perform(work: HopWork<'_>) {
         out.teleport_failed(&outcome.reason).await;
         return;
     }
+    let demote = match presence.prepare_demotion(session.agent_id) {
+        Ok(demote) => demote,
+        Err(reason) => {
+            out.teleport_failed(reason).await;
+            return;
+        }
+    };
     if !out.teleport_start(request.flags).await {
         return;
     }
@@ -503,9 +582,17 @@ async fn perform(work: HopWork<'_>) {
         outbound: outcome.outbound_version,
         wearables_count: outcome.wearables_count,
     };
-    // No child seed is stored yet, so the destination circuit gets a new path.
-    // The viewer seed uses that same path.
-    let caps_path = Uuid::new_v4().to_string();
+    // An in-view destination reuses the seed stored before its admission POST.
+    // Outside the view, the destination circuit gets a new path. The viewer
+    // seed uses that same path.
+    let outside = needs_closing(session, &destination);
+    let caps_path = if outside {
+        Uuid::new_v4().to_string()
+    } else {
+        presence
+            .child_seed(session.agent_id, destination.end.region_id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    };
     let mut circuit = child_circuit(session, request, &caps_path, position);
     tracing::debug!("source hop: create");
     let created = match client
@@ -547,7 +634,6 @@ async fn perform(work: HopWork<'_>) {
             .await;
         return;
     }
-    let outside = needs_closing(session, &destination);
     let callback = if outside {
         presence.arm(session.agent_id);
         Some(release_uri(session))
@@ -555,7 +641,7 @@ async fn perform(work: HopWork<'_>) {
         None
     };
     let update = agent_update(session, request, position, callback);
-    presence.demote(session.agent_id);
+    demote();
     tracing::debug!("source hop: update");
     let arrived = match client
         .update_agent(&destination.end, &update, &context)
@@ -581,14 +667,31 @@ async fn perform(work: HopWork<'_>) {
         .moved_away(session.agent_id, !outside, &destination.end)
         .await;
     if !outside {
-        // Logout closes this child. An outside-view hop does not leave one.
-        presence.note_child(session.agent_id, &destination.end);
+        // The hop owns this destination until this generation is root again.
+        // Logout does not close the remote root. A late admission still
+        // announces once.
+        presence.note_child(session.agent_id, &destination.end, &caps_path);
     }
     if outside {
         presence.wait_release(session.agent_id).await;
-        presence.close_local(session.agent_id);
+        presence.close_local(session.agent_id, &destination);
+        let staged = presence.take_staged(session.agent_id);
+        spawn_staged_closes(client.clone(), session.agent_id, staged);
         out.leave().await;
     }
+}
+
+fn spawn_staged_closes(client: SimulationClient, agent: Uuid, staged: Vec<(Uuid, RegionEnd)>) {
+    if staged.is_empty() {
+        return;
+    }
+    let _detached = tokio::spawn(async move {
+        for (session, end) in staged {
+            if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+                tracing::debug!("replaced root child close: {error}");
+            }
+        }
+    });
 }
 
 async fn locate(
@@ -684,29 +787,12 @@ fn needs_closing(session: &HopSession, destination: &HopDestination) -> bool {
         return true;
     }
     let (new_x, new_y) = handle_cells(destination_handle(destination));
-    outside_view(
+    crate::children::outside_cells(
         (session.source.loc_x >> 8, session.source.loc_y >> 8),
         (new_x, new_y),
         (session.size_x, session.size_y),
         (destination.size_x, destination.size_y),
     )
-}
-
-fn outside_view(
-    old: (u32, u32),
-    new: (u32, u32),
-    old_size: (u32, u32),
-    new_size: (u32, u32),
-) -> bool {
-    let draw = REGION_VIEW_METRES - 1;
-    let old_x = u64::from(old.0) * 256;
-    let new_x = u64::from(new.0) * 256;
-    let old_y = u64::from(old.1) * 256;
-    let new_y = u64::from(new.1) * 256;
-    old_x + u64::from(old_size.0) + draw < new_x
-        || new_x + u64::from(new_size.0) + draw < old_x
-        || old_y + u64::from(old_size.1) + draw < new_y
-        || new_y + u64::from(new_size.1) + draw < old_y
 }
 
 fn release_uri(session: &HopSession) -> String {
@@ -882,9 +968,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        EmptyDirectory, HopDestination, HopGrid, HopPresence, HopSession, PresenceWatch,
-        RegionDirectory, drive, outside_view, viewer_endpoint,
+        EmptyDirectory, HopDestination, HopEnv, HopGrid, HopPresence, HopSession, PresenceWatch,
+        RegionDirectory, drive, viewer_endpoint,
     };
+    use crate::children::outside_cells;
     use crate::simulation_client::{RegionEnd, SimulationClient};
     use ferroan_client::{
         ArrivalConfig, CONNECT_INNER, CapsServer, CircuitExpect, CircuitServer, EventQueueError,
@@ -940,7 +1027,7 @@ mod tests {
         dest.end.loc_y = 256;
         dest.size_x = 768;
         dest.size_y = 256;
-        assert!(outside_view((0, 1), (2, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 1), (2, 1), (256, 256), (256, 256)));
         assert!(!super::needs_closing(&home, &dest));
         dest.end.loc_x = 1024;
         assert!(super::needs_closing(&home, &dest));
@@ -1153,6 +1240,9 @@ mod tests {
             region_handle: 0,
             channel_version: "Ferroan hop test".to_string(),
             land: Vec::new(),
+            overlay: Vec::new(),
+            teleport_flags: 1 << 7,
+            crossing_flags: 0,
             avatar: None,
             teleport: Some(region),
             source_hop: Some(hop),
@@ -1564,6 +1654,180 @@ mod tests {
         assert!(body.get("SeedCapability").as_str().ends_with("0000/"));
     }
 
+    #[tokio::test]
+    async fn an_in_view_hop_reuses_the_admission_seed() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let events = caps.lock().unwrap().event_queue_url().to_owned();
+        let book = Arc::new(crate::children::ChildBook::new());
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        book.attach(agent, generation, Uuid::from_u128(2));
+        let claimed = book.claim(
+            agent,
+            generation,
+            RegionEnd {
+                server_uri: format!("http://{addr}/"),
+                region_id: Uuid::from_u128(7),
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 256,
+            },
+        );
+        let crate::children::Claim::New { seed } = claimed else {
+            panic!("admission did not own the destination");
+        };
+        let mut opened = open_at(
+            listed(addr),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            HopChoice {
+                presence: HopPresence::Seeded(Arc::clone(&book)),
+                handle: HANDLE,
+                grid: None,
+            },
+        )
+        .await;
+        opened.events = events;
+        opened.caps = caps;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 3);
+        let create: Value = serde_json::from_slice(&plain(&hits[1])).unwrap();
+        assert_eq!(create["child"], true);
+        assert_eq!(create["teleport_flags"], "16");
+        assert_eq!(create["caps_path"], seed);
+        let event = poll_finish(&opened).await;
+        let info = event.get("events").at(0);
+        assert_eq!(info.get("message").as_str(), "TeleportFinish");
+        assert_eq!(
+            info.get("body")
+                .get("Info")
+                .at(0)
+                .get("SeedCapability")
+                .as_str(),
+            ferroan_client::caps_seed(&format!("http://{addr}/"), &seed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_far_hop_deletes_an_open_child_with_the_claim_session() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let book = Arc::new(crate::children::ChildBook::new());
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        let session = Uuid::from_u128(2);
+        book.attach(agent, generation, session);
+        // Cell (0, 1) is outside a destination at cell (3, 1). Same listener,
+        // so the staged DELETE is the script's fourth request.
+        let child = RegionEnd {
+            server_uri: format!("http://{addr}/"),
+            region_id: Uuid::from_u128(15),
+            name: "FarChild".to_string(),
+            loc_x: 0,
+            loc_y: 256,
+        };
+        let crate::children::Claim::New { .. } = book.claim(agent, generation, child.clone())
+        else {
+            panic!("claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, child.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
+        let mut opened = open_at(
+            listed_for(addr, FAR_HANDLE, 256),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+                (200, "closed".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            HopChoice {
+                presence: HopPresence::Seeded(book),
+                handle: FAR_HANDLE,
+                grid: None,
+            },
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 4);
+        let (method, target) = request_parts(&hits[3].header);
+        assert_eq!(method, "DELETE");
+        assert!(target.contains(&child.region_id.to_string()));
+        assert!(target.contains(&format!("auth={session}")));
+        assert!(!target.contains(&Uuid::from_u128(7).to_string()));
+    }
+
+    #[test]
+    fn close_staged_returns_while_the_neighbour_holds_the_close() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let agent = Uuid::from_u128(1);
+            let older = Uuid::from_u128(8);
+            let book = Arc::new(crate::children::ChildBook::new());
+            book.attach(agent, older, Uuid::from_u128(2));
+            let end = RegionEnd {
+                server_uri: format!("http://{addr}/"),
+                region_id: Uuid::from_u128(7),
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 256,
+            };
+            let crate::children::Claim::New { .. } = book.claim(agent, older, end.clone()) else {
+                panic!("claim");
+            };
+            assert!(matches!(
+                book.accepted(agent, older, end.region_id),
+                crate::children::Admission::Announce { .. }
+            ));
+            book.attach(agent, Uuid::from_u128(9), Uuid::from_u128(70));
+            let hop = HopEnv {
+                source: RegionEnd {
+                    server_uri: "http://127.0.0.1:9/".to_string(),
+                    region_id: Uuid::from_u128(9),
+                    name: "Home".to_string(),
+                    loc_x: 0,
+                    loc_y: 0,
+                },
+                size_x: 256,
+                size_y: 256,
+                client: client(),
+                caps: ferroan_client::CapsRegistry::new("http://127.0.0.1:9").unwrap(),
+                grid: HopGrid {
+                    client: crate::grid::GridClient::from_base("http://127.0.0.1:9"),
+                    scope: Uuid::nil(),
+                },
+                presence: HopPresence::Seeded(book),
+            };
+            let started = Instant::now();
+            hop.close_staged(agent).await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "close_staged waited {elapsed:?}"
+            );
+            let accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await;
+            assert!(accepted.is_ok(), "the neighbour did not accept the close");
+        });
+    }
+
     #[test]
     fn a_flying_departure_sends_the_fly_control() {
         assert_eq!(super::fly_control(ferroan_client::VIA_LOCATION), 0);
@@ -1826,9 +2090,9 @@ mod tests {
 
     #[test]
     fn an_adjacent_region_stays_in_view_and_two_cells_do_not() {
-        assert!(!outside_view((0, 0), (1, 0), (256, 256), (256, 256)));
-        assert!(!outside_view((0, 0), (1, 1), (256, 256), (256, 256)));
-        assert!(outside_view((0, 0), (3, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 0), (3, 0), (256, 256), (256, 256)));
     }
 
     fn watched(budget: Duration, handle: u64) -> (Arc<PresenceWatch>, HopChoice) {

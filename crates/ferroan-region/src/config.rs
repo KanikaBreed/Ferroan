@@ -36,12 +36,16 @@
 //   Source/OpenSim.Framework/ServiceAuth/ServiceAuth.cs (Create)
 //   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// Stored scale limits follow Scene.cs and RegionInfo.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Permission settings follow Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs
 // and the startup checks in Source/OpenSim.Server.RegionServer/OpenSimBase.cs and
 // Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs
 // at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
+
+// Child view settings follow Source/OpenSim.Region.Framework/Scenes/Scene.cs
+// and ScenePresence.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 
 //! The single region used by P2.0d. INI syntax, includes and substitutions
 //! belong to ferroan-config. Interactive creation, XML regions, variable
@@ -80,12 +84,42 @@ pub enum RegionConfigError {
     ControlPlane(#[from] ControlPlaneError),
 }
 
+/// Scene.RegionViewDistance settings for child discovery (Pin8 Scene.cs
+/// 975-995 and ScenePresence.cs 725-730). The circuit retains its draw distance.
+#[derive(Clone, Copy)]
+pub struct RegionViewDistances {
+    minimum: f32,
+    pub(crate) maximum: f32,
+}
+
+impl RegionViewDistances {
+    pub(crate) fn read(server: &Config) -> Result<Self, RegionConfigError> {
+        let read = |key, default| match server.get("Startup", key) {
+            None => Ok(default),
+            Some(text) => text
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| value("Startup", key, "expected a finite distance")),
+        };
+        let maximum = read("MaxRegionsViewDistance", 255.)?.min(read("MaxDrawDistance", 512.)?);
+        let minimum = read("MinRegionsViewDistance", 96.)?.max(96.).min(maximum);
+        Ok(Self { minimum, maximum })
+    }
+
+    pub fn for_draw_distance(&self, draw_distance: f32) -> f32 {
+        (draw_distance + 64.).clamp(self.minimum, self.maximum)
+    }
+}
+
 /// Resolved public settings. Deliberately no Debug: region_secret is private.
 #[derive(Clone)]
 pub struct RegionConfig {
     pub id: Uuid,
     pub name: String,
     pub scope_id: Uuid,
+    pub region_view: RegionViewDistances,
     /// Map tiles, as written in Regions.ini. Registration uses metres.
     pub location: [u32; 2],
     pub size: [u32; 2],
@@ -96,6 +130,7 @@ pub struct RegionConfig {
     pub grid_server_uri: String,
     pub presence_server_uri: String,
     pub grid_user_server_uri: String,
+    pub groups: crate::groups::GroupsClient,
     pub control_plane: ControlPlaneAccess,
     pub estate_owner: Uuid,
     pub staff_permissions: StaffPermissions,
@@ -109,6 +144,9 @@ pub struct RegionConfig {
     pub region_manager_is_god: bool,
     /// `[UserAccountService] UserAccountServerURI`. Empty skips the level lookup.
     pub user_account_server_uri: String,
+    /// This grid's gatekeeper, which tells a GridUser visitor's name from a
+    /// resident's for `UUIDNameRequest`.
+    pub grid_home: crate::names::GridHome,
     /// SQLite estate connection, resolved like `EstateDataService`: DatabaseService
     /// `ConnectionString`, then `EstateConnectionString`, then
     /// `[EstateDataStore] ConnectionString`. Absent means no estate tables.
@@ -141,17 +179,22 @@ pub struct RegionConfig {
     pub monitoring: MonitoringSettings,
     /// Stdout, `LOGDIR`, JSON, OTLP and the remote console. Not `Debug`.
     pub logs: ferroan_log::Settings,
-    /// `[DatabaseService] ConnectionString` when it is present and not empty.
-    /// Absent means no saved heightmap. [`Self::terrain_kind`] says whether the
-    /// string is SQLite. MySQL and PostgreSQL have no saved heightmap yet.
-    pub terrain_store: Option<String>,
-    /// Driver for [`Self::terrain_store`], from `[DatabaseService]` only.
-    /// `[SimulationDataStore]` does not change this.
-    pub terrain_kind: Option<ferroan_scene::ObjectStoreKind>,
     /// `[Terrain] InitialTerrain` (`pinhead-island` when absent): the map a
-    /// SQLite store with no `terrain` and no `bakedterrain` row gets. A SQLite
-    /// file that is not on disk runs it without storing it.
+    /// region store with no `terrain` and no `bakedterrain` row gets. The
+    /// terrain rows live in [`Self::object_store`], as C#'s
+    /// `SimulationDataService` keeps prims, settings and terrain in one store.
+    /// A SQLite file that is not on disk runs it without storing it.
     pub initial_terrain: ferroan_scene::InitialTerrain,
+    /// SceneGraph's optional clamp on the scale of restored world prims.
+    pub prim_scale_limits: Option<ferroan_scene::PrimScaleLimits>,
+    /// Size limits applied when a restored part would receive a physics actor.
+    /// Always set, including when [`Self::prim_scale_limits`] is absent.
+    pub physics_scale_limits: ferroan_scene::PhysicsScaleLimits,
+    /// Whether stored prims can acquire physics actors on admission.
+    pub collidable_prims: bool,
+    /// `RegionInfo.ObjectCapacity`. Regions.ini `MaxPrims`, default 15,000.
+    /// A value that is not a signed 32-bit integer stops startup.
+    pub object_capacity: i32,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
     /// PostgreSQL providers are kept. A null provider leaves this empty.
@@ -162,6 +205,10 @@ pub struct RegionConfig {
     /// Absent leaves the shipped default. Startup warns when the value is not
     /// `BestAvatarResponsiveness`. This process does not compute another scheme.
     pub prioritization_scheme: Option<String>,
+    /// The region server ini. The frame passes it to `Physics::start`, so
+    /// `[Jolt]` keys apply (`PhysicsStepRate = 0` is one step) and a
+    /// `[Startup] physics` value other than `Jolt` logs the D110 warning.
+    pub server: Config,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -363,13 +410,16 @@ impl RegionConfig {
             };
         let user_account_server_uri =
             optional_uri(server, "UserAccountService", "UserAccountServerURI")?;
+        let grid_home = crate::names::GridHome::from_config(server, &server_uri);
         let mut handshake = HandshakeConfig::for_region(id);
         handshake.sim_name = name.to_owned();
         handshake.product_name = product_name.to_owned();
         handshake.estate_owner = estate_owner;
+        let scales = scale_limits(server, regions, name)?;
         Ok(Self {
             id,
             name: name.to_owned(),
+            region_view: RegionViewDistances::read(server)?,
             scope_id: uuid(regions, name, "ScopeID", Some(Uuid::nil()))?,
             location,
             size,
@@ -387,6 +437,8 @@ impl RegionConfig {
             region_owner_is_god,
             region_manager_is_god,
             user_account_server_uri,
+            groups: crate::groups::GroupsClient::from_config(server)?,
+            grid_home,
             estate_store: estate_connection(server),
             handshake,
             circuit_timing: circuit_timing(server)?,
@@ -410,17 +462,15 @@ impl RegionConfig {
                 Some(id),
             )
             .map_err(log_config_error)?,
-            terrain_store: server
-                .get("DatabaseService", "ConnectionString")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
-            terrain_kind: database_service_kind(server),
             initial_terrain: ferroan_scene::InitialTerrain::from_name(
                 server
                     .get("Terrain", "InitialTerrain")
                     .unwrap_or(ferroan_scene::DEFAULT_INITIAL_TERRAIN),
             ),
+            prim_scale_limits: scales.clamp,
+            physics_scale_limits: scales.physics,
+            collidable_prims: boolean_or(server, "Startup", "collidable_prim", true)?,
+            object_capacity: object_capacity(regions, name)?,
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -430,6 +480,7 @@ impl RegionConfig {
             prioritization_scheme: server
                 .get("InterestManagement", "UpdatePrioritizationScheme")
                 .map(str::to_owned),
+            server: server.clone(),
         })
     }
 
@@ -447,6 +498,10 @@ impl RegionConfig {
             region_handle: self.handle(),
             channel_version: self.channel_version.clone(),
             land: Vec::new(),
+            overlay: Vec::new(),
+            // `serve_agent` overwrites this from the accepted login.
+            teleport_flags: 0,
+            crossing_flags: 0,
             avatar: None,
             teleport: None,
             source_hop: None,
@@ -609,7 +664,7 @@ fn log_config_error(error: ferroan_log::LogError) -> RegionConfigError {
     }
 }
 
-fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {
+pub(crate) fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {
     RegionConfigError::Value {
         section: section.to_owned(),
         key,
@@ -715,6 +770,16 @@ fn circuit_throttle(config: &Config) -> Result<CircuitThrottle, RegionConfigErro
         client_max_bps,
         scene_max_bps,
     })
+}
+
+/// `RegionInfo` reads `MaxPrims` from the region section. Absent keeps 15,000.
+/// `GetInt` throws when the text is not a signed 32-bit integer.
+fn object_capacity(regions: &Config, name: &str) -> Result<i32, RegionConfigError> {
+    match regions.get(name, "MaxPrims") {
+        None => Ok(15_000),
+        Some(text) => csharp_int(text)
+            .ok_or_else(|| value(name, "MaxPrims", "expected a signed 32-bit integer")),
+    }
 }
 
 /// Nini `GetInt`: `Convert.ToInt32` of the text, surrounding white space and
@@ -951,15 +1016,6 @@ fn object_store(config: &Config) -> Option<ObjectStore> {
     Some(ObjectStore { connection, kind })
 }
 
-/// Terrain uses `[DatabaseService]` even when `[SimulationDataStore]` replaces the object store.
-fn database_service_kind(config: &Config) -> Option<ferroan_scene::ObjectStoreKind> {
-    let connection = nonempty(config, "DatabaseService", "ConnectionString")?;
-    provider_kind(
-        nonempty(config, "DatabaseService", "StorageProvider"),
-        connection,
-    )
-}
-
 fn provider_kind(
     provider: Option<&str>,
     connection: &str,
@@ -1007,13 +1063,110 @@ fn estate_connection(config: &Config) -> Option<String> {
     current
 }
 
-fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {
-    match config
-        .get(section, key)
-        .unwrap_or("false")
-        .to_ascii_lowercase()
-        .as_str()
-    {
+struct ScaleSettings {
+    clamp: Option<ferroan_scene::PrimScaleLimits>,
+    physics: ferroan_scene::PhysicsScaleLimits,
+}
+
+/// Scene.cs and RegionInfo.cs at Pin8 c401bceecd: positive region sizes
+/// override Startup; the region setting can enable the startup clamp.
+/// Physical limits are always applied by ClampScale. The nonphysical pair is
+/// also the ClampPrimSize pass when that flag is set.
+fn scale_limits(
+    server: &Config,
+    regions: &Config,
+    name: &str,
+) -> Result<ScaleSettings, RegionConfigError> {
+    fn size(
+        config: &Config,
+        section: &str,
+        key: &'static str,
+        default: f32,
+    ) -> Result<f32, RegionConfigError> {
+        config.get(section, key).map_or(Ok(default), |s| {
+            s.trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| value(section, key, "expected a finite number"))
+        })
+    }
+    fn region_int(
+        regions: &Config,
+        name: &str,
+        key: &'static str,
+    ) -> Result<i32, RegionConfigError> {
+        regions
+            .get(name, key)
+            .unwrap_or("0")
+            .trim()
+            .parse::<i32>()
+            .map_err(|_| value(name, key, "expected an integer"))
+    }
+    let startup_min = size(server, "Startup", "NonPhysicalPrimMin", 0.001)?;
+    let startup_max = size(server, "Startup", "NonPhysicalPrimMax", 256.0)?;
+    let region_min = size(regions, name, "NonPhysicalPrimMin", 0.0)?;
+    let region_max = region_int(regions, name, "NonPhysicalPrimMax")?;
+    let startup_phys_min = size(server, "Startup", "PhysicalPrimMin", 0.01)?;
+    let startup_phys_max = size(server, "Startup", "PhysicalPrimMax", 10.0)?;
+    let region_phys_min = size(regions, name, "PhysicalPrimMin", 0.0)?;
+    let region_phys_max = region_int(regions, name, "PhysicalPrimMax")?;
+    let startup_clamp = boolean(server, "Startup", "ClampPrimSize")?;
+    let region_clamp = boolean(regions, name, "ClampPrimSize")?;
+    let min = if region_min > 0.0 {
+        region_min
+    } else {
+        startup_min
+    };
+    let max = if region_max > 0 {
+        region_max as f32
+    } else {
+        startup_max
+    };
+    let phys_min = if region_phys_min > 0.0 {
+        region_phys_min
+    } else {
+        startup_phys_min
+    };
+    let phys_max = if region_phys_max > 0 {
+        region_phys_max as f32
+    } else {
+        startup_phys_max
+    };
+    let nonphys_min = min.max(0.001);
+    let nonphys_max = max.min(65536.0);
+    Ok(ScaleSettings {
+        clamp: (startup_clamp || region_clamp).then_some(ferroan_scene::PrimScaleLimits {
+            min: nonphys_min,
+            max: nonphys_max,
+        }),
+        physics: ferroan_scene::PhysicsScaleLimits {
+            nonphys_min,
+            nonphys_max,
+            phys_min: phys_min.max(0.01),
+            phys_max: phys_max.min(2048.0),
+        },
+    })
+}
+
+pub(crate) fn boolean(
+    config: &Config,
+    section: &str,
+    key: &'static str,
+) -> Result<bool, RegionConfigError> {
+    boolean_or(config, section, key, false)
+}
+
+fn boolean_or(
+    config: &Config,
+    section: &str,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, RegionConfigError> {
+    let Some(text) = config.get(section, key) else {
+        return Ok(default);
+    };
+    match text.to_ascii_lowercase().as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(value(section, key, "expected true or false")),
@@ -1079,7 +1232,7 @@ fn library_file(config_dir: &Path, config: &Config) -> Result<Option<PathBuf>, R
     }
 }
 
-fn check_uri(text: &str) -> Result<(), &'static str> {
+pub(crate) fn check_uri(text: &str) -> Result<(), &'static str> {
     if text.len() > 2048 {
         return Err("URI exceeds 2048 bytes");
     }
@@ -1146,6 +1299,29 @@ mod tests {
     }
 
     #[test]
+    fn max_prims_is_the_region_object_capacity() {
+        let loaded = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        assert_eq!(loaded.object_capacity, 15_000);
+        let mut regions = regions();
+        regions.set("Ferroan Test", "MaxPrims", "2");
+        assert_eq!(
+            RegionConfig::from_configs(&server(), &regions)
+                .unwrap()
+                .object_capacity,
+            2
+        );
+        regions.set("Ferroan Test", "MaxPrims", "-3");
+        assert_eq!(
+            RegionConfig::from_configs(&server(), &regions)
+                .unwrap()
+                .object_capacity,
+            -3
+        );
+        regions.set("Ferroan Test", "MaxPrims", "not prims");
+        assert!(RegionConfig::from_configs(&server(), &regions).is_err());
+    }
+
+    #[test]
     fn an_other_prioritization_scheme_is_stored_for_the_startup_warning() {
         let plain = RegionConfig::from_configs(&server(), &regions()).unwrap();
         assert!(plain.prioritization_scheme.is_none());
@@ -1191,6 +1367,121 @@ mod tests {
         assert!(prioritization_scheme_differs(
             angular.prioritization_scheme.as_deref()
         ));
+    }
+
+    #[test]
+    fn stored_prim_collisions_follow_startup_and_default_to_enabled() {
+        let mut server = server();
+        let regions = regions();
+        assert!(
+            RegionConfig::from_configs(&server, &regions)
+                .unwrap()
+                .collidable_prims
+        );
+        server.set("Startup", "collidable_prim", "false");
+        assert!(
+            !RegionConfig::from_configs(&server, &regions)
+                .unwrap()
+                .collidable_prims
+        );
+    }
+
+    #[test]
+    fn stored_prim_scale_settings_follow_startup_and_region_overrides() {
+        use ferroan_scene::{PhysicsScaleLimits, PrimScaleLimits};
+        let mut server = server();
+        let mut regions = regions();
+        let read = |server: &Config, regions: &Config| {
+            let config = RegionConfig::from_configs(server, regions).unwrap();
+            (config.prim_scale_limits, config.physics_scale_limits)
+        };
+        let defaults = PhysicsScaleLimits {
+            nonphys_min: 0.001,
+            nonphys_max: 256.0,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
+        assert_eq!(read(&server, &regions), (None, defaults));
+        server.set("Startup", "ClampPrimSize", "true");
+        assert_eq!(
+            read(&server, &regions),
+            (
+                Some(PrimScaleLimits {
+                    min: 0.001,
+                    max: 256.0
+                }),
+                defaults
+            )
+        );
+        server.set("Startup", "NonPhysicalPrimMin", "0.25");
+        server.set("Startup", "NonPhysicalPrimMax", "64.5");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "-1");
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "0");
+        let sized = PhysicsScaleLimits {
+            nonphys_min: 0.25,
+            nonphys_max: 64.5,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
+        assert_eq!(
+            read(&server, &regions),
+            (
+                Some(PrimScaleLimits {
+                    min: 0.25,
+                    max: 64.5
+                }),
+                sized
+            )
+        );
+        server.set("Startup", "ClampPrimSize", "false");
+        regions.set("Ferroan Test", "ClampPrimSize", "true");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "0.00001");
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "70000");
+        let floored = PhysicsScaleLimits {
+            nonphys_min: 0.001,
+            nonphys_max: 65536.0,
+            phys_min: 0.01,
+            phys_max: 10.0,
+        };
+        assert_eq!(
+            read(&server, &regions),
+            (
+                Some(PrimScaleLimits {
+                    min: 0.001,
+                    max: 65536.0
+                }),
+                floored
+            )
+        );
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "3.5");
+        assert!(RegionConfig::from_configs(&server, &regions).is_err());
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "32");
+        server.set("Startup", "PhysicalPrimMin", "0.2");
+        server.set("Startup", "PhysicalPrimMax", "4.5");
+        regions.set("Ferroan Test", "PhysicalPrimMin", "0.00001");
+        regions.set("Ferroan Test", "PhysicalPrimMax", "9000");
+        assert_eq!(
+            read(&server, &regions).1,
+            PhysicsScaleLimits {
+                nonphys_min: 0.001,
+                nonphys_max: 32.0,
+                phys_min: 0.01,
+                phys_max: 2048.0,
+            }
+        );
+        regions.set("Ferroan Test", "PhysicalPrimMax", "8");
+        regions.set("Ferroan Test", "PhysicalPrimMin", "0");
+        assert_eq!(
+            read(&server, &regions).1,
+            PhysicsScaleLimits {
+                nonphys_min: 0.001,
+                nonphys_max: 32.0,
+                phys_min: 0.2,
+                phys_max: 8.0,
+            }
+        );
+        regions.set("Ferroan Test", "PhysicalPrimMax", "3.5");
+        assert!(RegionConfig::from_configs(&server, &regions).is_err());
     }
 
     #[test]
@@ -1671,46 +1962,6 @@ mod tests {
             "Host=127.0.0.1;Port=15433;Database=ferroan;Username=ferroan;Password=ferroan;SSL Mode=Disable"
         );
         assert_eq!(postgres.kind, ferroan_scene::ObjectStoreKind::Postgres);
-    }
-
-    #[test]
-    fn terrain_kind_follows_database_service_only() {
-        let mut server = server();
-        server.set(
-            "DatabaseService",
-            "StorageProvider",
-            "OpenSim.Data.SQLite.dll",
-        );
-        server.set(
-            "DatabaseService",
-            "ConnectionString",
-            "URI=file:OpenSim.db;UseUTF16Encoding=True",
-        );
-        server.set(
-            "SimulationDataStore",
-            "StorageProvider",
-            "OpenSim.Data.MySQL.dll",
-        );
-        server.set(
-            "SimulationDataStore",
-            "ConnectionString",
-            "Data Source=127.0.0.1;Database=ferroan;User ID=ferroan;Password=unused",
-        );
-        let config = RegionConfig::from_configs(&server, &regions()).unwrap();
-        assert_eq!(
-            config.object_store.unwrap().kind,
-            ferroan_scene::ObjectStoreKind::Mysql
-        );
-        assert_eq!(
-            config.terrain_kind,
-            Some(ferroan_scene::ObjectStoreKind::Sqlite)
-        );
-        assert!(
-            config
-                .terrain_store
-                .unwrap()
-                .contains("URI=file:OpenSim.db")
-        );
     }
 
     #[test]

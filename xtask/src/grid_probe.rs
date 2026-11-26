@@ -22,7 +22,6 @@ const SERVICE_DEADLINE: Duration = Duration::from_secs(10);
 /// One private POST. `probe.service-attempt`. A socket that does not answer
 /// is abandoned so the next attempt opens a new connection.
 const SERVICE_ATTEMPT: Duration = Duration::from_secs(1);
-const PIN: &str = "f67db54399c027fd74e5aefcb2193905b4dc1646";
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
 const REGION: &str = "00000000-0000-4000-8000-000000000002";
 const CASES: &[&str] = &[
@@ -44,13 +43,17 @@ pub async fn online(
     loop {
         let mut grid = fields("getgriduserinfo");
         grid.insert("UserID".into(), Field::Str(arrival.agent_id.to_string()));
-        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid).await?;
+        let grid = post_before(deadline, &format!("{private_uri}/griduser"), &grid)
+            .await
+            .map_err(|e| format!("root arrival: {e}"))?;
         let mut presence = fields("getagent");
         presence.insert(
             "SessionID".into(),
             Field::Str(arrival.session_id.to_string()),
         );
-        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence).await?;
+        let presence = post_before(deadline, &format!("{private_uri}/presence"), &presence)
+            .await
+            .map_err(|e| format!("root arrival: {e}"))?;
         if let (Some(Field::Map(grid)), Some(Field::Map(presence))) =
             (grid.get("result"), presence.get("result"))
         {
@@ -62,13 +65,12 @@ pub async fn online(
                 Some(Field::Str(value)) => vector(value),
                 _ => None,
             };
-            if online_matches(grid, presence, &arrival) {
-                let observation = json!({"source":if ferroan {"ferroan"} else {"csharp"},"revision":PIN,"online":true,"presence_region":REGION,"last_region":REGION,"last_position":position,"last_look_at":look,"arrival_position":arrival.position,"arrival_look_at":arrival.look_at,"arrival_handle":arrival.region_handle});
-                fs::write(
-                    directory.join("root-arrival-online.json"),
-                    serde_json::to_vec_pretty(&observation).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
+            if online_matches(grid, presence, &arrival, ferroan) {
+                let observation = write_observation(
+                    &directory.join("root-arrival-online.json"),
+                    ferroan,
+                    json!({"online":true,"presence_region":REGION,"last_region":REGION,"last_position":position,"last_look_at":look,"arrival_position":arrival.position,"arrival_look_at":arrival.look_at,"arrival_handle":arrival.region_handle}),
+                )?;
                 if ferroan {
                     let baseline =
                         read(&crate::repo_root().join("fixtures/root-arrival/exchanges.json"))?;
@@ -92,7 +94,7 @@ pub async fn online(
                         }
                     }
                 }
-                return Ok("root arrival: Presence region and GridUser online/last region/position match current AgentMovementComplete; stored look is zero".into());
+                return Ok("root arrival: Presence and GridUser match the current circuit and region; stored look is zero".into());
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -106,6 +108,7 @@ fn online_matches(
     grid: &FieldMap,
     presence: &FieldMap,
     arrival: &ferroan_bot::scenario::RootArrival,
+    ferroan: bool,
 ) -> bool {
     let text = |map: &FieldMap, key: &str, expected: &str| matches!(map.get(key), Some(Field::Str(value)) if value == expected);
     let position = match grid.get("LastPosition") {
@@ -116,14 +119,22 @@ fn online_matches(
         Some(Field::Str(value)) => vector(value),
         _ => None,
     };
-    // Vector3.ToString uses Single.ToString(EnUsCulture). At the pinned .NET
-    // runtime those values round trip; compare parsed singles without epsilon.
+    // Pin8 installs the physics actor before ActivityDetector.SetLastPosition,
+    // then samples AbsolutePosition again for MoveAgentIntoRegion. Allow a
+    // vertical physics step on C# login (including upward ground correction).
+    // After the proxy drains we check all stored coordinates against the form.
+    // Ferroan reports and sends the same position.
     text(grid, "Online", "True")
         && text(grid, "UserID", &arrival.agent_id.to_string())
         && text(presence, "UserID", &arrival.agent_id.to_string())
         && text(presence, "RegionID", &arrival.region_id.to_string())
         && text(grid, "LastRegionID", &arrival.region_id.to_string())
-        && position == Some(arrival.position)
+        && position.is_some_and(|p| {
+            p == arrival.position
+                || (!ferroan
+                    && p[..2] == arrival.position[..2]
+                    && (p[2] - arrival.position[2]).abs() < 1.0)
+        })
         && look == Some([0.0; 3])
 }
 
@@ -152,22 +163,20 @@ where
     F: FnMut(&'a str) -> Fut,
     Fut: std::future::Future<Output = Result<String, String>>,
 {
-    let mut names =
-        ferroan_bot::scenario::selection(scenario).map_or_else(|| vec![scenario], <[_]>::to_vec);
-    if scenario == "all" {
-        names.push("neighbour");
-    }
-    if scenario == "report" {
-        // Login, chat, the in-region teleport and the neighbour teleport.
-        // One grid, then the compare keeps only those report lines.
-        names = vec!["login", "chat", "teleport", "neighbour"];
-    }
+    // `all` appends the neighbour login. `report` keeps login, chat, the
+    // in-region teleport and the neighbour teleport, and the compare keeps
+    // only those lines.
+    let registered = ferroan_bot::register::grid_names(scenario);
+    let names: Vec<&str> = match &registered {
+        Some(names) => names.to_vec(),
+        None => vec![scenario],
+    };
     let mut lines = Vec::new();
     for name in names {
         let result = async {
             let line = run(name).await?;
             offline(private_uri).await?;
-            if name == "chat" || name == "roots" || name == "uploads" || name == "avatars" {
+            if ferroan_bot::register::get(name).is_some_and(|row| row.settle_second) {
                 offline_user(private_uri, crate::live::CHAT_USER).await?;
             }
             Ok::<_, String>(line)
@@ -193,7 +202,7 @@ pub async fn offline(private_uri: &str) -> Result<(), String> {
     offline_user(private_uri, crate::live::ESTATE_OWNER).await
 }
 
-async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
+pub(super) async fn offline_user(private_uri: &str, user: &str) -> Result<(), String> {
     await_settled(private_uri, user).await
 }
 
@@ -307,7 +316,7 @@ fn deadline_error(service: &str, abandoned: u32) -> String {
     } else {
         format!("{abandoned} attempts abandoned")
     };
-    format!("logout service-state probe exceeded its ten-second deadline ({service}); {attempts}")
+    format!("service-state probe exceeded its ten-second deadline ({service}); {attempts}")
 }
 
 /// `hit` only reaches a log line when a subscriber is installed. The live
@@ -385,7 +394,7 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
         .timeout(SERVICE_ATTEMPT + Duration::from_millis(500))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| "could not build logout state probe client".to_string())?;
+        .map_err(|_| "could not build service-state probe client".to_string())?;
     let body = ferroan_http::build_query_string(fields).map_err(|error| error.to_string())?;
     let mut response = client
         .post(url)
@@ -394,10 +403,10 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
         .body(body)
         .send()
         .await
-        .map_err(|_| "logout state probe transport failed".to_string())?;
+        .map_err(|_| "service-state probe transport failed".to_string())?;
     if !response.status().is_success() {
         return Err(format!(
-            "logout state probe HTTP status {}",
+            "service-state probe HTTP status {}",
             response.status().as_u16()
         ));
     }
@@ -405,15 +414,15 @@ async fn post_once(url: &str, fields: &FieldMap) -> Result<FieldMap, String> {
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| "logout state probe body failed".to_string())?
+        .map_err(|_| "service-state probe body failed".to_string())?
     {
         if bytes.len().saturating_add(chunk.len()) > LIMIT {
-            return Err("logout state probe response exceeds limit".to_string());
+            return Err("service-state probe response exceeds limit".to_string());
         }
         bytes.extend_from_slice(&chunk);
     }
     let text = std::str::from_utf8(&bytes)
-        .map_err(|_| "logout state probe response is not UTF-8".to_string())?;
+        .map_err(|_| "service-state probe response is not UTF-8".to_string())?;
     ferroan_http::parse_xml_response(text).map_err(|error| error.to_string())
 }
 
@@ -558,12 +567,11 @@ pub async fn probe(home_uri: &str, directory: &Path, ferroan: bool) -> Result<St
             serde_json::from_str(&folded).map_err(|error| error.to_string())?,
         );
     }
-    let report = json!({"source": if ferroan {"ferroan"} else {"csharp"}, "revision":PIN,"exchanges":exchanges});
-    fs::write(
-        directory.join("region-parity.json"),
-        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    let report = write_observation(
+        &directory.join("region-parity.json"),
+        ferroan,
+        json!({"exchanges":exchanges}),
+    )?;
     if ferroan {
         let expected = read(&crate::repo_root().join("fixtures/region-parity/exchanges.json"))?;
         if report["exchanges"] != expected["exchanges"] {
@@ -592,22 +600,40 @@ fn read(path: &Path) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
-pub fn generate(directory: &Path) -> Result<String, String> {
-    let mut report = read(&directory.join("region-parity.json"))?;
-    // The probe writes `source` itself. The C#-only proof is the pinned channel
-    // on this directory's login circuit, the same marker login fixtures require.
-    let provenance = crate::arrival_fixtures::csharp_provenance(&super::login_capture::records(
-        &directory.join("capture-udp.cap"),
-    )?)?;
-    if report["source"] != "csharp" || report["revision"] != PIN {
-        return Err("region parity fixtures require a capture from pinned C#".into());
+fn write_observation(path: &Path, ferroan: bool, mut report: Value) -> Result<Value, String> {
+    report["source"] = json!(if ferroan { "ferroan" } else { "csharp" });
+    report["revision"] = json!(crate::live::read_pin()?);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(report)
+}
+
+fn require_csharp_revision(report: &Value, pin: &str) -> Result<(), String> {
+    if report["source"] != "csharp" || report["revision"] != pin {
+        return Err(format!("fixture requires a C# observation at {pin}"));
     }
-    report["provenance"] = provenance;
+    Ok(())
+}
+
+pub fn generate(directory: &Path) -> Result<String, String> {
+    let pin = crate::live::read_pin()?;
+    let mut report = read(&directory.join("region-parity.json"))?;
+    require_csharp_revision(&report, &pin)?;
     if report["exchanges"].as_object().is_none_or(|exchanges| {
         exchanges.len() != CASES.len() || CASES.iter().any(|case| !exchanges.contains_key(*case))
     }) {
         return Err("region parity capture is incomplete".into());
     }
+    // The probe writes `source` itself. The C#-only proof is the pinned channel
+    // on this directory's login circuit, the same marker login fixtures require.
+    let provenance = crate::arrival_fixtures::csharp_provenance(
+        &super::login_capture::records(&directory.join("capture-udp.cap"))?,
+        &pin,
+    )?;
+    report["provenance"] = provenance;
     report["services"] = super::login_capture::service_exchanges(directory)?;
     let target = crate::repo_root().join("fixtures/region-parity");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
@@ -622,12 +648,20 @@ pub fn generate(directory: &Path) -> Result<String, String> {
     Ok("region parity fixtures: six C# HTTP answers captured".into())
 }
 
-pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
+pub(super) fn verify_csharp_login_position(directory: &Path) -> Result<(), String> {
     let online = read(&directory.join("root-arrival-online.json"))?;
-    if online["source"] != "csharp" || online["revision"] != PIN {
-        return Err("root-arrival fixtures require pinned C# observations".into());
-    }
-    let marker = super::login_capture::root_arrival_marker(directory)?;
+    let records = super::login_capture::records(&directory.join("proxy-robust-private.cap"))?;
+    let stored: [f32; 3] = serde_json::from_value(online["last_position"].clone())
+        .map_err(|e| format!("invalid observed GridUser LastPosition: {e}"))?;
+    super::login_capture::verify_login_set_position(&records, stored)
+}
+
+pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
+    let pin = crate::live::read_pin()?;
+    let online = read(&directory.join("root-arrival-online.json"))?;
+    require_csharp_revision(&online, &pin)?;
+    verify_csharp_login_position(directory)?;
+    let marker = super::login_capture::root_arrival_marker(directory, &pin)?;
     for key in ["arrival_position", "arrival_look_at", "arrival_handle"] {
         if marker[key] != online[key] {
             return Err(format!(
@@ -635,7 +669,7 @@ pub fn generate_root_arrival(directory: &Path) -> Result<String, String> {
             ));
         }
     }
-    let root_arrival = json!({"source":"csharp", "revision":PIN,"channel_version":marker["channel_version"],"services":super::login_capture::root_arrival_exchanges(directory)?,"online":online});
+    let root_arrival = json!({"source":"csharp", "revision":pin,"channel_version":marker["channel_version"],"services":super::login_capture::root_arrival_exchanges(directory)?,"online":online});
     let target = crate::repo_root().join("fixtures/root-arrival");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     fs::write(
@@ -1023,7 +1057,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.into(), Field::Str(v.into())))
             .collect();
-        assert!(online_matches(&grid, &presence, &arrival));
+        assert!(online_matches(&grid, &presence, &arrival, true));
         for (key, value) in [
             ("UserID", "wrong"),
             ("LastRegionID", "00000000-0000-0000-0000-000000000000"),
@@ -1033,13 +1067,23 @@ mod tests {
         ] {
             let mut stale = grid.clone();
             stale.insert(key.into(), Field::Str(value.into()));
-            assert!(!online_matches(&stale, &presence, &arrival), "{key}");
+            assert!(!online_matches(&stale, &presence, &arrival, true), "{key}");
         }
         for key in ["UserID", "RegionID"] {
             let mut wrong = presence.clone();
             wrong.insert(key.into(), Field::Str("wrong".into()));
-            assert!(!online_matches(&grid, &wrong, &arrival));
+            assert!(!online_matches(&grid, &wrong, &arrival, true));
         }
+        // Delay the C# setposition request by 220 ms and physics moves the
+        // viewer to 26.023798 while GridUser correctly retains 25.960001.
+        let mut later = arrival;
+        later.position[2] = 26.023798;
+        assert!(online_matches(&grid, &presence, &later, false));
+        assert!(!online_matches(&grid, &presence, &later, true));
+        later.position[0] += 0.01;
+        assert!(!online_matches(&grid, &presence, &later, false));
+        later.position = [128.0, 128.0, 28.0];
+        assert!(!online_matches(&grid, &presence, &later, false));
         for invalid in ["128, 128, 0", "<0, 0>", "<0, 0, 0, 1>", "<NaN, 0, 0>"] {
             assert!(vector(invalid).is_none());
         }
@@ -1078,6 +1122,32 @@ mod tests {
     }
 
     #[test]
+    fn observations_use_the_reference_pin_and_extractors_refuse_stale_reports() {
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let pin =
+            crate::asset_oracle::pinned_revision(include_str!("../../docs/REFERENCES.md")).unwrap();
+        for name in ["region-parity.json", "root-arrival-online.json"] {
+            let path = directory.join(name);
+            write_observation(&path, false, json!({"online": true})).unwrap();
+            let report = read(&path).unwrap();
+            assert_eq!(report["revision"], pin);
+            assert_eq!(report["source"], "csharp");
+            fs::write(
+                path,
+                br#"{"source":"csharp","revision":"0000000000000000000000000000000000000000"}"#,
+            )
+            .unwrap();
+        }
+        for result in [generate(&directory), generate_root_arrival(&directory)] {
+            assert!(result.unwrap_err().contains(&pin));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn fixture_generator_rejects_rust_and_incomplete_captures() {
         let directory = crate::repo_root()
             .join(".scratch")
@@ -1087,17 +1157,28 @@ mod tests {
         for case in CASES {
             complete.insert((*case).to_string(), json!({}));
         }
-        for report in [
-            json!({"source":"ferroan","revision":PIN}),
-            json!({"source":"csharp","revision":PIN,"exchanges":{}}),
-            json!({"source":"csharp","revision":PIN,"exchanges":complete}),
+        let pin = crate::live::read_pin().unwrap();
+        for (report, reason) in [
+            (
+                json!({"source":"ferroan","revision":pin}),
+                "requires a C# observation",
+            ),
+            (
+                json!({"source":"csharp","revision":pin,"exchanges":{}}),
+                "capture is incomplete",
+            ),
+            (
+                json!({"source":"csharp","revision":pin,"exchanges":complete}),
+                "capture-udp.cap",
+            ),
         ] {
             fs::write(
                 directory.join("region-parity.json"),
                 serde_json::to_vec(&report).unwrap(),
             )
             .unwrap();
-            assert!(generate(&directory).is_err());
+            let error = generate(&directory).unwrap_err();
+            assert!(error.contains(reason), "{error}");
         }
         fs::remove_dir_all(directory).unwrap();
     }

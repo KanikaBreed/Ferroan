@@ -212,6 +212,7 @@ struct Slot {
 struct Heap {
     items: Vec<u32>,
     size: usize,
+    terse_count: usize,
 }
 
 impl Heap {
@@ -219,6 +220,7 @@ impl Heap {
         Self {
             items: Vec::new(),
             size: 0,
+            terse_count: 0,
         }
     }
 
@@ -227,6 +229,7 @@ impl Heap {
     }
 
     fn add(&mut self, slots: &mut HashMap<u32, Slot>, local_id: u32) {
+        self.terse_count += usize::from(slots[&local_id].flags == TERSE_UPDATE);
         if self.size == self.items.len() {
             self.items.push(local_id);
         } else {
@@ -243,6 +246,7 @@ impl Heap {
         if self.size == 0 || index >= self.size {
             return false;
         }
+        self.terse_count -= usize::from(slots[&self.items[index]].flags == TERSE_UPDATE);
         self.size -= 1;
         if self.size > 0 && index != self.size {
             let moved = self.items[self.size];
@@ -411,6 +415,9 @@ impl EntityUpdateQueue {
                     self.heaps[priority as usize].add(&mut self.slots, local_id);
                 }
             } else if let Some(slot) = self.slots.get_mut(&local_id) {
+                let heap = &mut self.heaps[priority as usize];
+                heap.terse_count -= usize::from(existing == TERSE_UPDATE);
+                heap.terse_count += usize::from(merged == TERSE_UPDATE);
                 slot.flags = merged;
                 slot.priority = priority;
             }
@@ -459,6 +466,13 @@ impl EntityUpdateQueue {
             })
             .map(|(&local_id, _)| local_id);
         if let Some(local_id) = victim {
+            ferroan_diag::drop_bound(
+                REGION_ENTITY_UPDATES,
+                Kind::Hard,
+                MAX_ENTITY_UPDATES as u64,
+                self.slots.len() as u64 + 1,
+                "entity-updates",
+            );
             self.remove(&[local_id]);
         }
     }
@@ -505,6 +519,40 @@ impl EntityUpdateQueue {
                 self.heaps[priority as usize].add(&mut self.slots, local_id);
             }
         }
+    }
+
+    /// Avatars normally use the immediate priorities. Before a viewer has
+    /// a position its peers use the last queue. The terse-only
+    /// circuit drain must leave any other field update in its original slot.
+    fn next_avatar_terse(&self) -> Option<QueuedUpdate> {
+        for heap in self.heaps.iter().filter(|heap| heap.terse_count != 0) {
+            let entries = &heap.items[..heap.len()];
+            let Some(head) = entries.first().and_then(|id| self.get(*id)) else {
+                continue;
+            };
+            if head.flags == TERSE_UPDATE {
+                return Some(head);
+            }
+            if let Some(next) = entries
+                .iter()
+                .filter_map(|id| self.get(*id))
+                .filter(|u| u.flags == TERSE_UPDATE)
+                .min_by_key(|u| u.entry_order)
+            {
+                return Some(next);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn has_avatar_terse(&self) -> bool {
+        self.heaps.iter().any(|heap| heap.terse_count != 0)
+    }
+
+    pub(crate) fn dequeue_avatar_terse(&mut self) -> Option<QueuedUpdate> {
+        let next = self.next_avatar_terse()?;
+        self.remove(&[next.local_id]);
+        Some(next)
     }
 
     pub fn dequeue(&mut self) -> Option<QueuedUpdate> {
@@ -586,6 +634,19 @@ mod tests {
             out.push(update.local_id);
         }
         out
+    }
+
+    #[test]
+    fn terse_drain_leaves_full_entries_even_in_the_same_priority() {
+        let mut queue = EntityUpdateQueue::new();
+        queue.enqueue(12, 1, FULL_UPDATE);
+        queue.enqueue(12, 2, TERSE_UPDATE);
+        queue.enqueue(12, 3, TERSE_UPDATE);
+        queue.enqueue(12, 2, FULL_UPDATE);
+        assert!(queue.has_avatar_terse());
+        assert_eq!(queue.dequeue_avatar_terse().unwrap().local_id, 3);
+        assert!(!queue.has_avatar_terse());
+        assert_eq!(ids(&mut queue), [1, 2]);
     }
 
     #[test]
@@ -825,6 +886,11 @@ mod tests {
         assert!(queue.enqueue(1, other, POSITION));
         assert_eq!(queue.get(other).map(|update| update.priority), Some(1));
         assert!(queue.get(newest - 2).is_none());
+        assert!(
+            ferroan_diag::metrics().contains(
+                r#"ferroan_limit_hits_total{limit="region.entity-updates",action="drop"} "#
+            )
+        );
         assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
     }
 

@@ -67,14 +67,15 @@
 //! crate does not write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
-//! `ferroan-region` keeps this load at startup. A prim `ObjectUpdate` is a
-//! later row.
+//! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
+//! Initial data queues them in link order. Q65c3 drains them onto the wire.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod animation;
 pub mod avatars;
 mod bits;
+pub mod client_flags;
 pub mod coarse;
 mod compress;
 pub mod entity_queue;
@@ -84,11 +85,16 @@ mod frame;
 mod height;
 mod initial;
 mod motion;
+pub mod object_permissions;
 mod objects;
+pub mod parcels;
 mod payloads;
+pub mod prim_update;
 pub mod prioritizer;
 mod settings;
 mod store;
+mod stored_scene;
+pub use stored_scene::{PhysicsScaleLimits, PrimScaleLimits};
 pub mod terse;
 #[cfg(test)]
 mod test_store;
@@ -103,14 +109,14 @@ pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;
 pub use entity_queue::{
     ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,
-    FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MAX_ENTITY_UPDATES, POSITION, QueuedUpdate, ROTATION,
-    SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
+    FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MATERIAL_OVR, MAX_ENTITY_UPDATES, POSITION,
+    QueuedUpdate, ROTATION, SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
 };
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    FrameOptions, HopReturn, Leaving, LocalTeleport, MovedAway, Pending, Presence, TELEPORT_IS_FLYING,
-    TeleportStored, TerrainFrame, ViewerLink, landed_z,
+    HopReturn, Leaving, LocalTeleport, MovedAway, ParcelSender, Pending, Presence,
+    TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
@@ -127,4 +133,7 @@ pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;
-pub use xml::{from_original_xml, from_xml2, to_original_xml, to_xml2};
+pub use xml::{
+    from_coalesced_xml, from_coalesced_xml_data, from_original_xml, from_xml2, to_coalesced_xml,
+    to_original_xml, to_xml2,
+};

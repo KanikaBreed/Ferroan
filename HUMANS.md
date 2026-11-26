@@ -6,6 +6,8 @@ Ferroan is built by volunteers. This guide covers how to pick up work, how to wo
 
 Clone the repository, install Rust through rustup, and run `cargo xtask check`.
 
+A default build fetches the SHA-checked Jolt prebuilt for x86_64 Linux (glibc 2.35), x86_64 Windows (MSVC 14.44) and aarch64 macOS 11.0 (`JOLTC_PREBUILT=require`). Set `JOLTC_PREBUILT=off` to compile that library from source on a host without a prebuilt (ARM Linux, Intel macOS, glibc older than 2.35, a linker override, an offline build, or a vendored tree). Leave `JOLTC_LIB_DIR` unset: it skips the SHA check and the build refuses it.
+
 Most work also needs the C# reference and the tools that run it:
 
 - **The .NET 10 SDK.** The C# oracles and the live harness build and run Tranquillity.

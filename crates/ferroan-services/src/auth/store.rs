@@ -40,9 +40,12 @@
 //! This store updates when the row is already present.
 //!
 //! Token times use the database clock on SQLite and MySQL, and the process
-//! clock on PostgreSQL, which is what each plugin binds. Expired tokens are
-//! deleted on the first token call and again after 30 seconds. The pin's
-//! `Environment.TickCount` is already past that gap at startup.
+//! clock on PostgreSQL, which is what each plugin binds. The PostgreSQL
+//! session zone follows Npgsql: `Timezone=` when the connection string sets
+//! it, otherwise `PGTZ`, otherwise the server zone when that value can be
+//! read (D104). Expired
+//! tokens are deleted on the first token call and again after 30 seconds. The
+//! pin's `Environment.TickCount` is already past that gap at startup.
 
 use std::time::{Duration, Instant};
 
@@ -51,6 +54,7 @@ use ferroan_db::Pool;
 use sqlx::Row;
 use uuid::Uuid;
 
+use super::hash::ZERO_KEY;
 use super::model::AuthRow;
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +112,130 @@ impl AuthStore {
         } else {
             self.insert(row).await
         }
+    }
+
+    /// AuthenticationServiceBase.SetPassword at Pin8 c401bceecd. Existing
+    /// accounts keep their current key and type, including concurrent changes (D79).
+    pub(crate) async fn set_password(
+        &self,
+        principal: Uuid,
+        hash: String,
+        salt: String,
+    ) -> Result<bool, StoreError> {
+        if self.update_password(principal, &hash, &salt).await? {
+            return Ok(true);
+        }
+        let new = AuthRow {
+            principal_id: principal,
+            password_hash: hash,
+            password_salt: salt,
+            web_login_key: ZERO_KEY.into(),
+            account_type: "UserAccount".into(),
+        };
+        match self.insert(&new).await {
+            // Another writer created the principal between UPDATE and INSERT.
+            Err(StoreError::Db(sqlx::Error::Database(error))) if error.is_unique_violation() => {
+                self.update_password(principal, &new.password_hash, &new.password_salt)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    async fn update_password(
+        &self,
+        principal: Uuid,
+        hash: &str,
+        salt: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = if let Some(pool) = self.pool.postgres() {
+            let sql = format!(
+                r#"UPDATE {} SET "passwordHash" = $1, "passwordSalt" = $2 WHERE uuid = $3"#,
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(hash)
+                .bind(salt)
+                .bind(principal)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else {
+            let sql = format!(
+                "UPDATE `{}` SET passwordHash = ?, passwordSalt = ? WHERE UUID = ?",
+                self.realm
+            );
+            if let Some(pool) = self.pool.mysql() {
+                sqlx::query(&sql)
+                    .bind(hash)
+                    .bind(salt)
+                    .bind(principal.to_string())
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            } else if let Some(pool) = self.pool.sqlite() {
+                sqlx::query(&sql)
+                    .bind(hash)
+                    .bind(salt)
+                    .bind(principal.to_string())
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            } else {
+                return Err(StoreError::Backend);
+            }
+        };
+        Ok(changed > 0)
+    }
+
+    /// D79: exactly one caller can clear the key it read. A concurrent clear,
+    /// replacement or deletion leaves the row untouched and refuses the token.
+    pub(crate) async fn consume_web_key(
+        &self,
+        principal: Uuid,
+        key: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = if let Some(pool) = self.pool.sqlite() {
+            let sql = format!(
+                "UPDATE `{}` SET webLoginKey = ? WHERE UUID = ? AND webLoginKey = ? COLLATE BINARY",
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal.to_string())
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else if let Some(pool) = self.pool.mysql() {
+            // The auth table can use a case-insensitive collation. The key comparison is ordinal.
+            let sql = format!(
+                "UPDATE `{}` SET webLoginKey = ? WHERE UUID = ? AND webLoginKey = CAST(? AS BINARY)",
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal.to_string())
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else if let Some(pool) = self.pool.postgres() {
+            let sql = format!(
+                r#"UPDATE {} SET "webLoginKey" = $1 WHERE uuid = $2 AND "webLoginKey" = $3"#,
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal)
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else {
+            return Err(StoreError::Backend);
+        };
+        Ok(changed > 0)
     }
 
     /// `SetDataItem`. The column name is part of the statement, so it has to
