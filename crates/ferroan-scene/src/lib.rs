@@ -66,6 +66,7 @@
 //! ([`avatars`]), and every 50th frame the minimap dots ([`coarse`]). This
 //! crate does not write those packets.
 //!
+//! An OAR load reads the control file and the region a path belongs to ([`oar`]).
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
 //! Initial data queues them in link order. Q65c3 drains them onto the wire.
@@ -85,6 +86,7 @@ mod frame;
 mod height;
 mod initial;
 mod motion;
+pub mod oar;
 pub mod object_permissions;
 mod objects;
 pub mod parcels;
@@ -121,6 +123,7 @@ pub use frame::{
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
+pub use oar::{ArchivedRegion, OarEntry, OarReport, OarSource, SimulatorRegion, load_oar};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
     ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
