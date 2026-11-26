@@ -196,6 +196,22 @@ fn enable(
             closes.push((end, session));
         }
     }
+    // Sizes are local. Refresh before the cap return so a refused enable
+    // still matches the neighbours this pass can see.
+    book.refresh_sizes(
+        notice.agent,
+        &visible
+            .iter()
+            .map(|neighbour| (neighbour.region.region_id, neighbour.size))
+            .collect::<Vec<_>>(),
+    );
+    if simulation.admission_full(notice.agent) {
+        for (end, session) in closes {
+            book.stage_decided_close(notice.agent, session, end);
+        }
+        finish(frame, notice, true);
+        return;
+    }
     let mut steps = Vec::new();
     for neighbour in visible {
         let known = before
@@ -224,6 +240,11 @@ fn enable(
     // fire-and-forget HTTP. An arrival notice does not settle, so this leaves
     // the arrival stamp in place.
     finish(frame, notice, true);
+    // Stage before the task starts. Aborting that task, or stopping the
+    // process, must still leave every close this pass already decided.
+    for (end, session) in &closes {
+        book.stage_decided_close(notice.agent, *session, end.clone());
+    }
     let pass = EnableHttp {
         simulation: simulation.clone(),
         config: config.clone(),
@@ -250,6 +271,11 @@ impl EnableHttp {
     async fn run(mut self) {
         for (end, session) in &self.closes {
             close_child(&self.client, end, self.notice.agent, *session).await;
+            // A cancel at the await above skips this ack, so the close stays
+            // staged. A returned DELETE, including a transport error, does not.
+            self.simulation
+                .child_book()
+                .ack_decided_close(self.notice.agent, *session, end);
         }
         // Take the steps so each admission can still borrow this pass.
         for step in std::mem::take(&mut self.steps) {
@@ -335,7 +361,10 @@ async fn admit_one(
             }
         }
         Admission::Close { end, session } => {
-            close_child(&pass.client, end, pass.notice.agent, *session).await
+            let session = *session;
+            book.stage_decided_close(pass.notice.agent, session, end.clone());
+            close_child(&pass.client, end, pass.notice.agent, session).await;
+            book.ack_decided_close(pass.notice.agent, session, end);
         }
         Admission::Quiet => {}
     }
@@ -438,7 +467,8 @@ mod tests {
     use ferroan_client::CapsRegistry;
     use serde_json::{Value, json};
     use std::net::SocketAddr;
-    use tokio::sync::mpsc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::{Notify, mpsc};
 
     const CREATE_REQUEST: &str =
         include_str!("../../../fixtures/region-login/create-agent.request.json");
@@ -828,8 +858,50 @@ mod tests {
             root_session,
             "a visibility child replaced the root identity"
         );
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(4);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
         drop(root);
-        assert!(state.child_identity(agent).is_none());
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            child_session,
+            "the successor identity was not published when the old lease dropped"
+        );
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let neighbour = neighbour_at(&neighbour_uri, 9, neighbour_addr.port(), [256, 256]);
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            std::slice::from_ref(&neighbour),
+        )
+        .await;
+        let method = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            state.finish_admissions(agent).await;
+            recorded_rx.recv().await
+        })
+        .await
+        .expect("enable between the lease drop and mark_root did not post");
+        assert_eq!(method.unwrap(), "POST");
         let child = accepted_rx.recv().await.unwrap();
         child.mark_root();
         assert_eq!(
@@ -837,6 +909,7 @@ mod tests {
             child_session
         );
         home_server.abort();
+        neighbour_server.abort();
     }
 
     /// The position pass folds regions that share a simulator. The enable
@@ -1044,5 +1117,253 @@ mod tests {
         drop(sock);
         drop(accepted_rx);
         home_server.abort();
+    }
+
+    /// Two neighbours share one listener. The first DELETE is held. Aborting
+    /// the admission task must still stage the close that was never sent.
+    #[tokio::test]
+    async fn an_aborted_enable_stages_a_close_that_was_not_sent() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let session = Uuid::parse_str(args["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let posts = Arc::new(AtomicUsize::new(0));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let first_delete = Arc::new(Notify::new());
+        let hold = Arc::new(Notify::new());
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = {
+            let posts = Arc::clone(&posts);
+            let deletes = Arc::clone(&deletes);
+            let first_delete = Arc::clone(&first_delete);
+            let hold = Arc::clone(&hold);
+            tokio::spawn(async move {
+                let app = axum::Router::new().fallback(move |request: Request| {
+                    let posts = Arc::clone(&posts);
+                    let deletes = Arc::clone(&deletes);
+                    let first_delete = Arc::clone(&first_delete);
+                    let hold = Arc::clone(&hold);
+                    async move {
+                        let method = request.method().clone();
+                        let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                        if method == axum::http::Method::DELETE {
+                            if deletes.fetch_add(1, Ordering::SeqCst) == 0 {
+                                first_delete.notify_one();
+                            }
+                            hold.notified().await;
+                        } else {
+                            posts.fetch_add(1, Ordering::SeqCst);
+                        }
+                        (
+                            axum::http::StatusCode::OK,
+                            r#"{"success":true,"reason":""}"#,
+                        )
+                    }
+                });
+                axum::serve(neighbour_listener, app).await.unwrap();
+            })
+        };
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let first = Uuid::from_u128(21);
+        let second = Uuid::from_u128(22);
+        let neighbours = [
+            neighbour_at(&neighbour_uri, 21, port, [256, 256]),
+            VisibleNeighbour::at(
+                RegionEnd {
+                    server_uri: neighbour_uri,
+                    region_id: second,
+                    name: "Neighbour Two".into(),
+                    loc_x: 256_512,
+                    loc_y: 256_000,
+                },
+                [256, 256],
+                "127.0.0.1",
+                port,
+            ),
+        ];
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
+        assert!(state.child_book().seed(agent, first).is_some());
+        assert!(state.child_book().seed(agent, second).is_some());
+
+        apply_notice(&state, &config, &frame, &client, &enable_notice(agent), &[]).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_delete.notified())
+            .await
+            .expect("the first close was not sent");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            deletes.load(Ordering::SeqCst),
+            1,
+            "the closes were not sent one at a time"
+        );
+        assert!(state.take_open_children(agent).is_empty());
+        state.abort_admissions(agent).await;
+        let staged = state.take_staged_closes(agent);
+        let staged_ids: HashSet<Uuid> = staged.iter().map(|(_, end)| end.region_id).collect();
+        assert!(staged_ids.contains(&first));
+        assert!(
+            staged_ids.contains(&second),
+            "the close that was not sent was dropped"
+        );
+        assert!(
+            staged
+                .iter()
+                .all(|(staged_session, _)| *staged_session == session)
+        );
+        hold.notify_waiters();
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// Eight admission tasks already running. The next enable stages the
+    /// close it decided and does not claim the new neighbour.
+    #[tokio::test]
+    async fn an_enable_past_the_admission_cap_stages_the_close_and_does_not_claim() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let session = Uuid::parse_str(args["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(8);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let first = Uuid::from_u128(31);
+        let second = Uuid::from_u128(32);
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &[neighbour_at(&neighbour_uri, 31, port, [256, 256])],
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        assert!(state.child_book().seed(agent, first).is_some());
+        for _ in 0..SimulationState::CHILD_ADMISSION_TASKS {
+            state.track_admission(agent, tokio::spawn(std::future::pending::<()>()));
+        }
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &[neighbour_at(&neighbour_uri, 32, port, [256, 256])],
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            recorded_rx.try_recv().is_err(),
+            "a full admission list still sent child HTTP"
+        );
+        let staged = state.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session);
+        assert_eq!(staged[0].1.region_id, first);
+        assert!(state.child_book().seed(agent, second).is_none());
+        state.abort_admissions(agent).await;
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
     }
 }

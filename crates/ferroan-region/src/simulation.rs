@@ -108,7 +108,7 @@ use ferroan_client::{
     CapsError, CapsRegistry, CircuitExpect, CircuitServer, CircuitStop, LoginReservation,
     ROOT_WAIT, ReturnPose, ReturnSlot,
 };
-use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
+use ferroan_diag::{self, HTTP_POST_BODY, Kind, REGION_CHILD_ADMISSIONS, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
@@ -537,11 +537,24 @@ impl Drop for SessionLease {
             }
             publish_agents(&sessions, &self.meters);
         }
+        // The successor is whoever replaced this lease. Captured before the
+        // sessions lock drops: a child accepted while this identity was held
+        // wrote only `prepared`, and SendInitialData can arm before mark_root.
+        let successor = sessions
+            .get(&self.agent_id)
+            .filter(|session| session.generation != self.generation)
+            .map(|session| session.generation);
         drop(sessions);
-        self.prepared
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&self.generation);
+        // `remember_identity` takes `prepared` then `roots`. Do not take
+        // `prepared` while `sessions` or `roots` is held.
+        let published = {
+            let mut prepared = self
+                .prepared
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            prepared.remove(&self.generation);
+            successor.and_then(|generation| prepared.get(&generation).cloned())
+        };
         let mut roots = self
             .roots
             .lock()
@@ -551,6 +564,9 @@ impl Drop for SessionLease {
             .is_some_and(|identity| identity.generation == self.generation)
         {
             roots.remove(&self.agent_id);
+            if let Some(identity) = published {
+                roots.insert(self.agent_id, identity);
+            }
         }
     }
 }
@@ -622,6 +638,36 @@ impl SimulationState {
             .unwrap_or_else(|poison| poison.into_inner())
             .get(&agent)
             .cloned()
+    }
+
+    /// Admission tasks one agent may have in flight. A create can hang for
+    /// 30 s, so several enables overlap. Past this, another enable is refused
+    /// and does not claim.
+    pub const CHILD_ADMISSION_TASKS: usize = 8;
+
+    /// Drop finished handles. True when another admission would pass
+    /// [`Self::CHILD_ADMISSION_TASKS`].
+    pub(crate) fn admission_full(&self, agent: Uuid) -> bool {
+        let mut admissions = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(queued) = admissions.get_mut(&agent) else {
+            return false;
+        };
+        queued.retain(|running| !running.is_finished());
+        let count = queued.len();
+        if count < Self::CHILD_ADMISSION_TASKS {
+            return false;
+        }
+        ferroan_diag::refuse(
+            REGION_CHILD_ADMISSIONS,
+            Kind::Hard,
+            Self::CHILD_ADMISSION_TASKS as u64,
+            count.saturating_add(1) as u64,
+            "child-admission",
+        );
+        true
     }
 
     /// Remember one child-drive admission. A finished handle is dropped.
@@ -1272,6 +1318,18 @@ impl SimulationState {
         self.children.claim(agent, generation, end)
     }
 
+    /// [`Self::claim_child`] that stores this neighbour's footprint. A zero
+    /// extent stays the 256 m fallback.
+    pub fn claim_child_sized(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+        size: [u32; 2],
+    ) -> crate::children::Claim {
+        self.children.claim_sized(agent, generation, end, size)
+    }
+
     /// The neighbour refused that destination. No viewer events follow.
     pub fn refuse_child(&self, agent: Uuid, generation: Uuid, region: Uuid) {
         self.children.refuse(agent, generation, region);
@@ -1312,6 +1370,15 @@ impl SimulationState {
             return;
         }
         self.children.promote(agent, end, seed);
+    }
+
+    /// [`Self::promote_child`] that stores this neighbour's footprint. A zero
+    /// extent stays the 256 m fallback. An existing destination takes the new size.
+    pub fn promote_child_sized(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: [u32; 2]) {
+        if self.generation_of(agent).is_none() {
+            return;
+        }
+        self.children.promote_sized(agent, end, seed, size);
     }
 
     fn generation_of(&self, agent: Uuid) -> Option<Uuid> {

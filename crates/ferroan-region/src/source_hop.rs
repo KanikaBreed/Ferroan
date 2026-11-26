@@ -267,12 +267,12 @@ impl HopPresence {
         }
     }
 
-    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
+    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: [u32; 2]) {
         match self {
             Self::Idle => {}
-            Self::Live(state) => state.promote_child(agent, end, seed),
+            Self::Live(state) => state.promote_child_sized(agent, end, seed, size),
             #[cfg(test)]
-            Self::Seeded(book) => book.promote(agent, end, seed),
+            Self::Seeded(book) => book.promote_sized(agent, end, seed, size),
             #[cfg(test)]
             Self::Watch(_) => {}
         }
@@ -690,7 +690,12 @@ async fn perform(work: HopWork<'_>) {
         // The hop owns this destination until this generation is root again.
         // Logout does not close the remote root. A late admission still
         // announces once.
-        presence.note_child(session.agent_id, &destination.end, &caps_path);
+        presence.note_child(
+            session.agent_id,
+            &destination.end,
+            &caps_path,
+            [destination.size_x, destination.size_y],
+        );
     }
     if outside {
         presence.wait_release(session.agent_id).await;

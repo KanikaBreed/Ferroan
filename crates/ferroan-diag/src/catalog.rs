@@ -76,6 +76,7 @@ pub const REGION_CAP_BODY_BYTES: &str = "region.cap-body-bytes";
 pub const REGION_AGENT_CAPS: &str = "region.agent-caps";
 pub const REGION_CHILD_DESTINATIONS: &str = "region.child-destinations";
 pub const REGION_CHILD_NOTICES: &str = "region.child-notices";
+pub const REGION_CHILD_ADMISSIONS: &str = "region.child-admissions";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_PARCELS: &str = "region.parcels";
 pub const GROUPS_MEMBERSHIP_ROWS: &str = "groups.membership-rows";
