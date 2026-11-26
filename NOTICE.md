@@ -25,6 +25,8 @@ Q62's `tools/permissions-oracle` runs Tranquillity's `Source/OpenSim.Region.Core
 
 Q63's `crates/ferroan-scene/src/client_flags.rs` follows `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs` and the scene files `Scene.Permissions.cs`, `SceneObjectGroup.Inventory.cs`, `SceneObjectPart.cs`, `SceneObjectPartInventory.cs` and `GodController.cs` under `Source/OpenSim.Region.Framework/Scenes/` at the same revision. The group power for object manipulation comes from `OpenMetaverse/GroupManager.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`.
 
+Q64's `crates/ferroan-scene/src/object_permissions.rs` follows `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs` and `Source/OpenSim.Region.Framework/Scenes/Scene.Permissions.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Parcel flags and group powers follow `OpenMetaverse/ParcelManager.cs` and `OpenMetaverse/GroupManager.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`.
+
 `crates/ferroan-llsd` is adapted from Aurora Viewer `crates/aurora-llsd` at `48cb76e830a13965ac080128bb874afedda86d69` (GPL-3.0-or-later). Aurora describes that crate as a port of the Second Life viewer's `llcommon/llsd.cpp` and `llsdserialize*.cpp`, originally LGPL 2.1. Each adapted file names that path and revision. `number.rs`, the fixture test and `llsd-fuzz` are new Ferroan files. The encodings follow libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`; that C# source is not copied into this repository.
 
 `crates/ferroan-types/src/wire.rs` is ported from libopenmetaverse `OpenMetaverse.Types` at the same revision (BSD-3-Clause). `src/texture.rs` is ported from `OpenMetaverse/Primitives/TextureEntry.cs` and `OpenMetaverse/Helpers.cs`. `src/extra.rs` and `src/shape.rs` are ported from `OpenMetaverse/Primitives/Primitive.cs`, `OpenMetaverse.Types/EnumsPrimitive.cs` and `UtilsConversions.cs`. Those files keep the BSD notice. `src/permissions.rs` is ported from Tranquillity `Source/OpenSim.Framework/Util.cs` and `PermissionsUtil.cs` at `713857f10b8e91a639a967d4354a4682b080793c` (BSD-3-Clause) and also names OpenMetaverse `Permissions.cs` for the shared bits. The rest of the crate is new Ferroan code.
@@ -123,10 +125,15 @@ Pin3 updates the implemented region/client paths to the maintainer's Tranquillit
 
 Q60a's `crates/ferroan-scene/src/parcels.rs` follows `Source/OpenSim.Data.SQLite/SQLiteSimulationData.cs`, `Source/OpenSim.Framework/LandData.cs`, `Source/OpenSim.Framework/{ViewerEnvironment,ViewerDaycycle,ViewerSky,ViewerWater}.cs` and `Source/OpenSim.Region.CoreModules/World/Land/{LandObject,LandManagementModule}.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. The file retains the OpenSimulator BSD notice.
 
+Q60b's `crates/ferroan-scene/src/parcels/overlay.rs` follows `Source/OpenSim.Region.CoreModules/World/Land/{LandManagementModule,LandChannel}.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` and parcel flags in libopenmetaverse `OpenMetaverse/ParcelManager.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. It retains both BSD notices.
+
 The parcel vector text parser in `crates/ferroan-scene/src/parcels/vector_text.rs` follows `OpenMetaverse.Types/{Vector2,Vector3,Quaternion}.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` under the retained BSD notice.
 
 The PostgreSQL Presence provider follows `Source/OpenSim.Data.PGSQL/PGSQLPresenceData.cs`, `PGSQLGenericTableHandler.cs`, `PGSQLManager.cs` and `Resources/Presence.migrations` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
 
 The Presence row and in-memory store in `crates/ferroan-services/src/presence` follow `Source/OpenSim.Data/IPresenceData.cs` and `Source/OpenSim.Data.Null/NullPresenceData.cs` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
+
+Q65c2's stored-prim admission and initial feed follow `Source/OpenSim.Region.Framework/Scenes/{Scene,SceneGraph,SceneObjectGroup,SceneObjectPart,ScenePresence,Prioritizer}.cs` and `Source/OpenSim.Framework/RegionInfo.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Scale admission uses `OpenMetaverse.Types/Utils.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. The port in `crates/ferroan-scene/src/stored_scene.rs` retains both BSD notices.
+
 
 The MySQL Presence v4 store follows `Source/OpenSim.Data.MySQL/MySQLPresenceData.cs`, `MySQLGenericTableHandler.cs`, `MySQLFramework.cs` and `Resources/Presence.migrations` at the same Pin8 revision (BSD-3-Clause, copyright OpenSimulator contributors).
