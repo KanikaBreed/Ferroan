@@ -290,6 +290,19 @@ static class Program
             Parse("physics-empty", "", "0.0909", ""),
             Parse("physics-jolt", "Jolt", "0.0909", ""),
             Parse("physics-lower", "jolt", "0.0909", ""),
+            Parse("enum-plus-one", "Jolt", "0.0909",
+                "FrictionCombine = +1\nRestitutionCombine = +1\nVehicleBehaviour = +1\n"
+                + "VehiclePresets = +1\nBasicForcesBehaviour = +1\n"),
+            Parse("enum-plus-zero", "Jolt", "0.0909",
+                "FrictionCombine = +0\nRestitutionCombine = +0\nVehicleBehaviour = +0\n"
+                + "VehiclePresets = +0\nBasicForcesBehaviour = +0\n"),
+            Parse("enum-or-names", "Jolt", "0.0909",
+                "FrictionCombine = Average, Min\nRestitutionCombine = Average, Min\n"
+                + "VehicleBehaviour = SecondLife,InWorldz\nVehiclePresets = Documented, Legacy\n"
+                + "BasicForcesBehaviour = InWorldz, SecondLife\n"),
+            Parse("enum-undefined", "Jolt", "0.0909",
+                "FrictionCombine = Min,Max\nRestitutionCombine = Min,Max\nVehicleBehaviour = +2\n"
+                + "VehiclePresets = +2\nBasicForcesBehaviour = +2\n"),
             new Case("shipped", "region-ref",
                 "reference_appdata OpenSim.Server.RegionServer/AppData\nini_master RegionServerDefaults.ini\nini_file RegionServer.ini.example\n"),
         };

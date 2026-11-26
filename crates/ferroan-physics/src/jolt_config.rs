@@ -1180,16 +1180,48 @@ fn try_b(raw: &str) -> Option<bool> {
     }
 }
 
+/// `E<T>` (`JoltConfig.cs` 496–509) after `Enum.TryParse(ignoreCase)` and
+/// `Enum.IsDefined`.
+///
+/// A leading Unicode digit or `-` is rejected before the parse. A leading `+`
+/// is one signed integer (`+1`, `+0`, `+01`). Any other string is a comma
+/// list of names: split, trim, match ignoring case, and OR the values. A name
+/// list does not accept numbers (`Average, +1` is invalid). The OR must be
+/// exactly one named value.
 fn try_e<'a>(raw: &str, names: &'a [&'a str]) -> Option<&'a str> {
     let name = raw.trim();
     let first = name.chars().next()?;
-    if first.is_ascii_digit() || first == '-' {
+    if first.is_digit(10) || first == '-' {
         return None;
     }
-    names
-        .iter()
-        .copied()
-        .find(|item| item.eq_ignore_ascii_case(name))
+    let combined = if first == '+' {
+        match name.parse::<i32>() {
+            Ok(value) => value,
+            Err(_) => parse_enum_names(name, names)?,
+        }
+    } else {
+        parse_enum_names(name, names)?
+    };
+    names.get(usize::try_from(combined).ok()?).copied()
+}
+
+/// Comma-separated names, as `Enum.TryParse` ORs them. An empty part fails.
+fn parse_enum_names(name: &str, names: &[&str]) -> Option<i32> {
+    if name.is_empty() {
+        return None;
+    }
+    let mut combined = 0i32;
+    for part in name.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        let index = names
+            .iter()
+            .position(|item| item.eq_ignore_ascii_case(part))?;
+        combined |= i32::try_from(index).ok()?;
+    }
+    Some(combined)
 }
 
 fn csharp_bool(value: bool) -> &'static str {
@@ -1291,6 +1323,30 @@ mod tests {
             JoltConfig::default().vehicle_max_angular_speed.to_bits(),
             bits("41490FDB").to_bits()
         );
+    }
+
+    #[test]
+    fn enum_try_parse_matches_the_pin() {
+        assert_eq!(try_e("+1", MATERIAL_COMBINES), Some("GeometricMean"));
+        assert_eq!(try_e("Average, Min", MATERIAL_COMBINES), Some("Min"));
+        assert_eq!(try_e("Min,Max", MATERIAL_COMBINES), None);
+        assert_eq!(try_e("1", MATERIAL_COMBINES), None);
+        assert_eq!(try_e("-Max", MATERIAL_COMBINES), None);
+        assert_eq!(try_e("Average, +1", MATERIAL_COMBINES), None);
+        assert_eq!(try_e("+0", VEHICLE_BEHAVIOURS), Some("SecondLife"));
+        assert_eq!(
+            try_e("SecondLife,InWorldz", VEHICLE_BEHAVIOURS),
+            Some("InWorldz")
+        );
+        assert_eq!(try_e("+1", VEHICLE_PRESETS), Some("Legacy"));
+        assert_eq!(try_e("+2", VEHICLE_PRESETS), None);
+        assert_eq!(try_e("+0", BASIC_FORCES), Some("InWorldz"));
+        assert_eq!(try_e("+1", BASIC_FORCES), Some("SecondLife"));
+        assert_eq!(
+            try_e("InWorldz, SecondLife", BASIC_FORCES),
+            Some("SecondLife")
+        );
+        assert_eq!(try_e("Documented, Legacy", VEHICLE_PRESETS), Some("Legacy"));
     }
 
     #[test]

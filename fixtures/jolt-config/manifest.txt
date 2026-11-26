@@ -38,4 +38,8 @@ physics-other
 physics-empty
 physics-jolt
 physics-lower
+enum-plus-one
+enum-plus-zero
+enum-or-names
+enum-undefined
 shipped
