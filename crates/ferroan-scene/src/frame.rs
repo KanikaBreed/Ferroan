@@ -2375,6 +2375,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         note_parcel_crossings(&mut scene);
         assert!(sent.lock().unwrap().is_empty());
@@ -2413,6 +2414,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         assert_eq!(sent.lock().unwrap().len(), 1);
         note_parcel_crossings(&mut scene);
@@ -2508,6 +2510,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         {
             let avatar = scene.presences.get_mut(&agent).unwrap();
@@ -2617,6 +2620,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         scene
             .presences
@@ -2649,6 +2653,7 @@ mod tests {
             None,
             crate::PhysicsScaleLimits::default(),
             true,
+            default_jolt_config().unwrap(),
         )
         .unwrap();
         let stored = frame.parcels().unwrap();
