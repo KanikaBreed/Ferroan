@@ -558,14 +558,20 @@ fn server_zone_from_probes(
 /// Highest precedence first: this database and role, this role, this
 /// database, then a setting for every database and role. Within one row the
 /// last `timezone` assignment wins. The role oid keeps the session name
-/// exactly, and an unknown name is NULL rather than an error. The database
-/// oid is this backend's `datid`, so the read does not use `pg_database`.
-const ROLE_DATABASE_ZONE: &str = "\
-SELECT source_rank, setting FROM ( \
+/// exactly, and an unknown name is NULL rather than an error.
+///
+/// `{database_oid}` is this backend's `datid` when `pg_stat_get_activity` is
+/// executable, and otherwise the `pg_database` row for `current_database()`.
+/// The two reads stay separate statements. PostgreSQL checks function and
+/// table privileges while it plans a statement, before any branch runs, so a
+/// `CASE` would still raise 42501 for the source this login cannot use.
+fn role_database_zone_sql(database_oid: &str) -> String {
+    format!(
+        "SELECT source_rank, setting FROM ( \
   SELECT 1 AS source_rank, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT datid FROM pg_stat_get_activity(pg_backend_pid())) \
+  WHERE setting.setdatabase = ({database_oid}) \
     AND setting.setrole = to_regrole(quote_ident(session_user)) \
   UNION ALL \
   SELECT 2, entry.setting, entry.ord \
@@ -577,7 +583,7 @@ SELECT source_rank, setting FROM ( \
   SELECT 3, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT datid FROM pg_stat_get_activity(pg_backend_pid())) \
+  WHERE setting.setdatabase = ({database_oid}) \
     AND setting.setrole = 0 \
   UNION ALL \
   SELECT 4, entry.setting, entry.ord \
@@ -585,26 +591,43 @@ SELECT source_rank, setting FROM ( \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = 0 AND setting.setrole = 0 \
 ) AS levels \
-ORDER BY source_rank, ord";
+ORDER BY source_rank, ord"
+    )
+}
 
+const DATABASE_OID_FROM_ACTIVITY: &str = "SELECT datid FROM pg_stat_get_activity(pg_backend_pid())";
+
+const DATABASE_OID_FROM_CATALOG: &str =
+    "SELECT oid FROM pg_database WHERE datname = current_database()";
+
+/// `pg_db_role_setting` readable and `to_regrole(text)` executable, then
+/// `pg_stat_get_activity(integer)` executable, then `pg_database` readable.
 const ROLE_SETTINGS_PRIVILEGE: &str = "\
-SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')";
+SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT') \
+       AND has_function_privilege(session_user, 'pg_catalog.to_regrole(text)', 'EXECUTE'), \
+       has_function_privilege(session_user, 'pg_catalog.pg_stat_get_activity(integer)', 'EXECUTE'), \
+       has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')";
 
 async fn role_database_timezone(
     conn: &mut sqlx::postgres::PgConnection,
 ) -> Result<Option<String>, sqlx::Error> {
-    // Ask before reading. A refused SELECT is written to the server log and
-    // sqlx retries it until the acquire timeout. No privilege falls through.
-    let allowed: bool = sqlx::query_scalar(ROLE_SETTINGS_PRIVILEGE)
-        .fetch_one(&mut *conn)
-        .await?;
-    if !allowed {
+    // Ask before reading. A refused SELECT or EXECUTE is written to the
+    // server log and sqlx retries it until the acquire timeout. No usable
+    // source falls through without running the denied statement.
+    let (settings, activity, database): (bool, bool, bool) =
+        sqlx::query_as(ROLE_SETTINGS_PRIVILEGE)
+            .fetch_one(&mut *conn)
+            .await?;
+    if !settings || (!activity && !database) {
         return Ok(None);
     }
-    let rows: Vec<(i32, String)> = match sqlx::query_as(ROLE_DATABASE_ZONE)
-        .fetch_all(&mut *conn)
-        .await
-    {
+    let database_oid = if activity {
+        DATABASE_OID_FROM_ACTIVITY
+    } else {
+        DATABASE_OID_FROM_CATALOG
+    };
+    let sql = role_database_zone_sql(database_oid);
+    let rows: Vec<(i32, String)> = match sqlx::query_as(&sql).fetch_all(&mut *conn).await {
         Ok(rows) => rows,
         Err(error) if insufficient_privilege(&error) => return Ok(None),
         Err(error) => return Err(error),
@@ -1289,14 +1312,32 @@ mod tests {
 
     #[test]
     fn role_catalog_is_checked_before_the_read() {
-        assert!(ROLE_SETTINGS_PRIVILEGE.contains("has_table_privilege"));
-        assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_db_role_setting"));
-        assert!(!ROLE_SETTINGS_PRIVILEGE.contains("pg_database"));
-        assert!(ROLE_DATABASE_ZONE.contains("to_regrole(quote_ident(session_user))"));
-        assert!(ROLE_DATABASE_ZONE.contains("pg_stat_get_activity(pg_backend_pid())"));
-        assert!(!ROLE_DATABASE_ZONE.contains("session_user::regrole"));
-        assert!(!ROLE_DATABASE_ZONE.contains("pg_roles"));
-        assert!(!ROLE_DATABASE_ZONE.contains("pg_database"));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')"
+        ));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_function_privilege(session_user, 'pg_catalog.to_regrole(text)', 'EXECUTE')"
+        ));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_function_privilege(session_user, 'pg_catalog.pg_stat_get_activity(integer)', 'EXECUTE')"
+        ));
+        assert!(
+            ROLE_SETTINGS_PRIVILEGE
+                .contains("has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')")
+        );
+        let activity = role_database_zone_sql(DATABASE_OID_FROM_ACTIVITY);
+        let catalog = role_database_zone_sql(DATABASE_OID_FROM_CATALOG);
+        assert_ne!(activity, catalog);
+        for sql in [&activity, &catalog] {
+            assert!(sql.contains("to_regrole(quote_ident(session_user))"));
+            assert!(!sql.contains("session_user::regrole"));
+            assert!(!sql.contains("pg_roles"));
+            assert!(!sql.contains("CASE"));
+        }
+        assert!(activity.contains("pg_stat_get_activity(pg_backend_pid())"));
+        assert!(!activity.contains("pg_database"));
+        assert!(catalog.contains("SELECT oid FROM pg_database WHERE datname = current_database()"));
+        assert!(!catalog.contains("pg_stat_get_activity"));
         assert!(FILE_SETTINGS_PRIVILEGE.contains("has_function_privilege"));
         assert!(FILE_SETTINGS_PRIVILEGE.contains("pg_show_all_file_settings()"));
     }

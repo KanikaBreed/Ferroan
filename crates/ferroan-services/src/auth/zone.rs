@@ -35,7 +35,7 @@ async fn session_zone_csharp_reads_ferroan_rows() {
             .parse()
             .unwrap_or_else(|_| panic!("FERROAN_ZONE_ROLE_OFFSET is not an integer"));
         assert_postgres_zone(&ado, &name, offset).await;
-        println!("session zone: role {name} kept its zone");
+        println!("session zone: kept zone {name}");
         return;
     }
     if std::env::var("FERROAN_ZONE_CATALOG_ONLY").is_ok() {

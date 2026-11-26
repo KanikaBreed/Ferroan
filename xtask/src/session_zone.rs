@@ -396,12 +396,33 @@ ALTER ROLE \"OpenSim\" SET timezone TO 'Asia/Tokyo';
         eprintln!("session-zone: {error}");
         return ExitCode::FAILURE;
     }
-    if let Err(error) = psql("REVOKE SELECT ON pg_catalog.pg_database FROM PUBLIC") {
+    if let Err(error) = psql(
+        "REVOKE SELECT ON pg_catalog.pg_database FROM PUBLIC;\n\
+         REVOKE SELECT ON pg_catalog.pg_roles FROM PUBLIC",
+    ) {
         eprintln!("session-zone: {error}");
         return ExitCode::FAILURE;
     }
     if !cargo_named_role(
-        "postgres role OpenSim with pg_database revoked",
+        "postgres role OpenSim with pg_database and pg_roles revoked",
+        &opensim_ado,
+        &tokyo,
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql(
+        "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_stat_get_activity(integer) FROM PUBLIC;\n\
+         GRANT SELECT ON pg_catalog.pg_database TO PUBLIC",
+    ) {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_named_role(
+        "postgres role OpenSim with pg_stat_get_activity revoked",
         &opensim_ado,
         &tokyo,
     ) {
