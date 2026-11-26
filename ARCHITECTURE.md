@@ -45,6 +45,8 @@ hash before the write transaction, then commits the metadata if another store
 has already inserted the same hash. This also works under MariaDB snapshot
 isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
 
+The grid harness captures riderless object crossings on two separate C# simulators. Each viewer edits the linkset from its own circuit. The [object-crossing fixtures](fixtures/object-cross/README.md) correlate the local IDs in the outbound XML with the viewer packets on the sending region.
+
 ## Planned
 
 ### Programs

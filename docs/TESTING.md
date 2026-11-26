@@ -72,6 +72,8 @@ The oracle command `probe` reads the review probes and writes [objects-xml-probe
 
 Q65a uses a separate SQLite scene persisted by Pin8. `cargo xtask live run prim-capture grid --physics basicphysics` reopens it on the C# home region, waits for the viewer to receive all three prims and extracts their full updates. The [prim capture fixture](../fixtures/prim-updates/README.md) documents regeneration and ID redaction.
 
+`cargo xtask live run object-cross grid --physics basicphysics` moves the seeded two-part linkset between separate Pin8 regions and back. The [object-crossing fixture](../fixtures/object-cross/README.md) contains both object POSTs, their replies and the two viewers' edit and update packets. The offline replay checks the captured bytes and link relationships.
+
 Release `ferroan-region`, idle `VmRSS` two seconds after initialization completed, one process per size: 500 prims 17044 kB, 1,000 prims 18624 kB, 5,000 prims 27520 kB, 10,000 prims 37816 kB, 40,000 prims 98204 kB. The startup high-water marks were 17044 kB, 18624 kB, 34052 kB, 53276 kB and 167936 kB. The load log for those sizes was 15 ms, 36 ms, 128 ms, 305 ms and 1171 ms, and each log matched the prim count. The stores were the `bulk` files above. Terrain and estate were not opened for that measurement.
 
 Release `open_objects` on stores that also have a shape and an item for every extra prim uses a `LIST SUBQUERY` for the item rows. The median of three runs was: one prim in the loaded region and 1,000 elsewhere, 3.9 ms (1 part, 1 item); 5,000 elsewhere, 11.1 ms; 40,000 elsewhere, 73.5 ms. The seeded region in those same stores loaded 7 parts and 4 items in 3.1 ms, 9.6 ms and 73.3 ms. Those times are not the idle RSS points above.
