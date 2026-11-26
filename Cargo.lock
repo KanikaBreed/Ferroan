@@ -487,6 +487,7 @@ name = "ferroan-region"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "ferroan-capture",
  "ferroan-client",
  "ferroan-config",
@@ -2734,12 +2735,14 @@ version = "0.1.0"
 dependencies = [
  "ferroan-bot",
  "ferroan-capture",
+ "ferroan-config",
  "ferroan-db",
  "ferroan-diag",
  "ferroan-http",
  "ferroan-llsd",
  "ferroan-log",
  "ferroan-protocol",
+ "ferroan-region",
  "ferroan-scene",
  "ferroan-services",
  "flate2",
