@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. It is the one crate allowed unsafe besides `ferroan-scripting`, once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys` and Jolt licence texts. joltc and `joltc_ext` stay with P3.1b.
+`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys` and Jolt licence texts. joltc and `joltc_ext` stay with P3.1b.
 
 What touches motion today:
 
