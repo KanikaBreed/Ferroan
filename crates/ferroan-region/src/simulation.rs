@@ -305,6 +305,8 @@ pub struct AcceptedAgent {
     pub last_name: String,
     /// `ViaLogin`. A hop child is not one, so its end is not a failed login.
     pub via_login: bool,
+    pub client_ip: String,
+    pub service_session_id: String,
     pub viewer: String,
     pub channel: String,
     pub mac: String,
@@ -785,6 +787,8 @@ impl SimulationState {
             first_name: fields.first_name,
             last_name: fields.last_name,
             via_login: fields.via_login,
+            client_ip: fields.client_ip,
+            service_session_id: fields.service_session_id,
             viewer: fields.viewer,
             channel: fields.channel,
             mac: fields.mac,
@@ -1745,6 +1749,8 @@ struct AgentFields {
     child: bool,
     /// `ViaLogin`. A child login stays refused.
     via_login: bool,
+    client_ip: String,
+    service_session_id: String,
     viewer: String,
     channel: String,
     mac: String,
@@ -1839,6 +1845,8 @@ impl AgentFields {
             last_name: required_str(args, "last_name")?.to_owned(),
             child,
             via_login,
+            client_ip: optional_string(args, "client_ip"),
+            service_session_id: optional_string(args, "service_session_id"),
             viewer: optional_string(args, "viewer"),
             channel: optional_string(args, "channel"),
             mac: optional_string(args, "mac"),
@@ -1907,6 +1915,7 @@ fn required_str<'a>(
 
 #[cfg(test)]
 mod tests {
+    mod child_neighbours;
     use super::*;
     use std::io::Write;
 
@@ -2479,6 +2488,8 @@ mod tests {
             last_name: "Test".into(),
             child: false,
             via_login: true,
+            client_ip: String::new(),
+            service_session_id: String::new(),
             viewer: String::new(),
             channel: String::new(),
             mac: String::new(),
