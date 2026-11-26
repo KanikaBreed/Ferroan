@@ -318,6 +318,44 @@ mod tests {
 
     #[tokio::test]
     async fn stored_parts_match_every_byte_of_the_pin8_full_updates() {
+        let groups = load_capture_store().await;
+        assert_capture_blocks(&groups, FIXTURE, None);
+    }
+
+    #[tokio::test]
+    async fn committed_handoff_linkset_matches_the_resized_pin8_blocks() {
+        let copy = CopiedStore::new("prim-updates/scene.db");
+        let connection = copy.connection();
+        let pool =
+            ferroan_db::Pool::open(ferroan_db::Backend::Sqlite, &connection, &["RegionStore"])
+                .await
+                .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../fixtures/store-handoff/committed-linkset.sql"
+        ))
+        .execute(pool.sqlite().unwrap())
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let region = Uuid::from_u128(0x6d1a7f4e_0c3b_4f53_9a1e_5f0e3c2a9b01);
+        let root = Uuid::from_u128(0x65000000_0000_4000_8000_000000000001);
+        let groups = open_objects(&connection, region, ObjectStoreKind::Sqlite)
+            .await
+            .unwrap();
+        let group = groups
+            .iter()
+            .find(|group| group.parts[0].uuid == root)
+            .unwrap();
+        assert_eq!(group.parts.len(), 2);
+        assert_capture_blocks(
+            std::slice::from_ref(group),
+            "../../fixtures/store-handoff",
+            Some(root),
+        );
+    }
+
+    fn assert_capture_blocks(groups: &[ObjectGroup], blocks: &str, only_root: Option<Uuid>) {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
         let map: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("map.json")).unwrap()).unwrap();
@@ -326,11 +364,15 @@ mod tests {
         let capture_owner: Uuid = owner["capture_uuid"].as_str().unwrap().parse().unwrap();
         let mut aliases = BTreeMap::new();
         for entry in map["parts"].as_array().unwrap() {
+            let root: Uuid = entry["store_root_uuid"].as_str().unwrap().parse().unwrap();
+            if only_root.is_some_and(|id| id != root) {
+                continue;
+            }
             let store: Uuid = entry["store_uuid"].as_str().unwrap().parse().unwrap();
             let alias: Uuid = entry["capture_uuid"].as_str().unwrap().parse().unwrap();
             aliases.insert(store, (alias, entry));
         }
-        let groups = load_capture_store().await;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(blocks);
         assert_eq!(
             groups.iter().map(|g| g.parts.len()).sum::<usize>(),
             aliases.len()
