@@ -3,10 +3,11 @@
 
 //! Physics for Ferroan.
 //!
-//! P3.0b ports the Jolt module's substep accumulator. P3.1 binds Jolt through
-//! `oxijolt-sys` from this crate only. Unsafe is allowed in `native`, and in
-//! `ferroan-scripting` once that crate exists. The workspace forbids it
-//! everywhere else.
+//! P3.0b ports the Jolt module's substep accumulator. A heartbeat past 16
+//! steps drops the extra time and reports `physics.steps-per-frame`. P3.1
+//! binds Jolt through `oxijolt-sys` from this crate only. Unsafe is allowed
+//! in `native`, and in `ferroan-scripting` once that crate exists. The
+//! workspace forbids it everywhere else.
 
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]

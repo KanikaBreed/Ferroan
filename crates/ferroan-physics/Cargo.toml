@@ -14,6 +14,7 @@ publish.workspace = true
 # and refuses `JOLTC_LIB_DIR`. The safe `oxijolt` crate is not a dependency.
 # No other Ferroan crate depends on `oxijolt-sys`.
 [dependencies]
+ferroan-diag = { path = "../ferroan-diag" }
 oxijolt-sys = { version = "=1.6.0", default-features = false, features = [
     "prebuilt",
     "cross-platform-deterministic",
