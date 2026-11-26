@@ -15,7 +15,7 @@ impl Seed {
     pub(super) fn scenario(name: &str) -> Option<Self> {
         match name {
             "parcel-empty" => Some(Self::Empty),
-            "parcel-multi" | "parcel-timing" => Some(Self::Multi),
+            "parcel-multi" | "parcel-timing" | "parcel-properties" => Some(Self::Multi),
             "parcel-lone" => Some(Self::Lone),
             "parcel-legacy" => Some(Self::Legacy),
             _ => None,
@@ -52,6 +52,24 @@ impl Seed {
                 apply(&groups, &[capture.join("membership.sql")]).await
             })
     }
+}
+
+/// The groups store Robust serves for a remote connector. The same membership
+/// script the region install applies, on a copy of the unredacted groups file.
+pub(super) fn seed_memberships(dest: &Path) -> Result<(), String> {
+    let fixtures = crate::repo_root().join("fixtures");
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(fixtures.join("db/sqlite/os_groups_Store.db"), dest).map_err(|e| e.to_string())?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(apply(
+            dest,
+            &[fixtures.join("parcel-overlay/membership.sql")],
+        ))
 }
 
 async fn apply(db: &Path, scripts: &[std::path::PathBuf]) -> Result<(), String> {

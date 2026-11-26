@@ -4,7 +4,7 @@
 //! Circuit send-path regressions against the pinned C# socket capture.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -45,6 +45,23 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
     let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    assert!(
+        state.pending_land.is_empty(),
+        "terrain waits for CompleteAgentMovement"
+    );
+    let expect = identity(Uuid::from_u128(1));
+    let request = movement(expect, 1, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
     release_throttled(&mut state, &io).await;
     let sent = io.sent.lock().unwrap();
     let bodies: Vec<(u8, Vec<u8>)> = sent
@@ -63,6 +80,265 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
         vec![(0x4c, b"patch-a".to_vec()), (0x4c, b"patch-b".to_vec()),]
     );
     assert!(state.pending_land.is_empty());
+}
+
+fn overlay_chunk(sequence_id: i32, byte: u8) -> crate::ParcelOverlayChunk {
+    crate::ParcelOverlayChunk {
+        sequence_id,
+        data: vec![byte; 8],
+    }
+}
+
+fn overlay_message(sequence_id: i32, byte: u8) -> ferroan_protocol::msgs::ParcelOverlay {
+    let mut message = ferroan_protocol::msgs::ParcelOverlay::default();
+    message.parcel_data.sequence_id = sequence_id;
+    message.parcel_data.data = vec![byte; 8];
+    message
+}
+
+fn sample_land() -> ArrivalConfig {
+    ArrivalConfig {
+        overlay: vec![overlay_chunk(0, 0x11), overlay_chunk(1, 0x22)],
+        land: vec![crate::LandLayer {
+            kind: 0x4c,
+            data: b"patch".to_vec(),
+        }],
+        ..ArrivalConfig::default()
+    }
+}
+
+fn land_ids(bytes: &[Vec<u8>]) -> Vec<ferroan_protocol::MsgId> {
+    bytes
+        .iter()
+        .filter_map(|packet| {
+            let parsed = parse_packet(packet).ok()?;
+            matches!(
+                parsed.id,
+                ferroan_protocol::msgs::ParcelOverlay::ID | ferroan_protocol::msgs::LayerData::ID
+            )
+            .then_some(parsed.id)
+        })
+        .collect()
+}
+
+async fn complete(state: &mut State, io: &FakeIo, expect: &CircuitExpect, sequence: u32) {
+    let request = movement(*expect, sequence, &[]);
+    state
+        .handle(
+            io,
+            peer(),
+            expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Eligible completion queues the overlay ahead of staged terrain and drains
+/// both on Land while the reliable window has room.
+#[tokio::test]
+async fn overlay_precedes_land_and_drains_through_the_reliable_window() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    assert!(state.pending_land.is_empty());
+    complete(&mut state, &io, &expect, 1).await;
+    let mut layer = ferroan_protocol::msgs::LayerData::default();
+    layer.layer_id.type_ = 0x4c;
+    layer.layer_data.data = b"patch".to_vec();
+    let queued = [
+        encode_payload(&overlay_message(0, 0x11)).unwrap().bytes,
+        encode_payload(&overlay_message(1, 0x22)).unwrap().bytes,
+        encode_payload(&layer).unwrap().bytes,
+    ];
+    let pending: Vec<_> = state
+        .pending_land
+        .iter()
+        .map(|payload| payload.bytes.clone())
+        .collect();
+    assert_eq!(pending, queued);
+    release_throttled(&mut state, &io).await;
+    assert_eq!(
+        land_ids(&io.sent.lock().unwrap()),
+        vec![
+            ferroan_protocol::msgs::ParcelOverlay::ID,
+            ferroan_protocol::msgs::ParcelOverlay::ID,
+            ferroan_protocol::msgs::LayerData::ID,
+        ]
+    );
+    let sent = io.sent.lock().unwrap();
+    let sequences: Vec<i32> = sent
+        .iter()
+        .filter_map(|bytes| {
+            let packet = parse_packet(bytes).ok()?;
+            if packet.id != ferroan_protocol::msgs::ParcelOverlay::ID {
+                return None;
+            }
+            Some(
+                packet
+                    .decode::<ferroan_protocol::msgs::ParcelOverlay>()
+                    .unwrap()
+                    .parcel_data
+                    .sequence_id,
+            )
+        })
+        .collect();
+    assert_eq!(sequences, vec![0, 1]);
+}
+
+/// A crossing update that teleport flags did not clear suppresses terrain and
+/// the overlay. AgentMovementComplete still goes out.
+#[tokio::test]
+async fn a_crossing_update_suppresses_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut config = sample_land();
+    config.teleport_flags = 0;
+    config.crossing_flags = 4;
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    assert!(state.pending_land.is_empty());
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    assert!(message_ids(&io).contains(&ferroan_protocol::msgs::AgentMovementComplete::ID));
+    state.maintain(&io).await.unwrap();
+    assert!(state.pending_land.is_empty());
+}
+
+/// Positive teleport flags clear the crossing update, so the pass is sent.
+#[tokio::test]
+async fn positive_teleport_flags_clear_a_crossing_update() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut config = sample_land();
+    config.crossing_flags = 4;
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    assert_eq!(state.pending_land.len(), 3);
+}
+
+/// A second CompleteAgentMovement does not send another arrival or overlay.
+#[tokio::test]
+async fn a_second_complete_movement_does_not_repeat_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    let queued = state.pending_land.len();
+    complete(&mut state, &io, &expect, 2).await;
+    assert_eq!(state.pending_land.len(), queued);
+    let arrivals = message_ids(&io)
+        .iter()
+        .filter(|id| **id == ferroan_protocol::msgs::AgentMovementComplete::ID)
+        .count();
+    assert_eq!(arrivals, 1);
+}
+
+#[derive(Default)]
+struct LandPass {
+    flag: std::sync::atomic::AtomicBool,
+}
+
+impl crate::EntityUpdates for LandPass {
+    fn has_updates(&self) -> bool {
+        false
+    }
+
+    fn take_updates(&self, _: &mut crate::TaskBatch) {}
+
+    fn take_avatar_packets(&self, _: usize) -> Vec<AvatarPacket> {
+        Vec::new()
+    }
+
+    fn take_land_pass(&self) -> bool {
+        self.flag.swap(false, Ordering::AcqRel)
+    }
+}
+
+fn with_pass(flags: u32, pass: Arc<LandPass>) -> ArrivalConfig {
+    ArrivalConfig {
+        teleport_flags: flags,
+        updates: Some(crate::EntityFeed {
+            updates: pass,
+            wake: Arc::new(Notify::new()),
+        }),
+        ..sample_land()
+    }
+}
+
+/// Zero teleport flags append another copy when SendInitialData asks.
+/// ViaLogin ignores that signal.
+#[tokio::test]
+async fn the_initial_data_gate_repeats_land_only_for_zero_teleport_flags() {
+    let expect = identity(Uuid::from_u128(1));
+    let pass = Arc::new(LandPass::default());
+    let mut state = State::new(captured_config(), with_pass(0, Arc::clone(&pass)));
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    release_throttled(&mut state, &io).await;
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
+    pass.flag.store(true, Ordering::Release);
+    state.advance_throttle(std::time::Duration::from_secs(1));
+    state.maintain(&io).await.unwrap();
+    release_throttled(&mut state, &io).await;
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 6);
+
+    let login = Arc::new(LandPass::default());
+    let mut state = State::new(
+        captured_config(),
+        with_pass(crate::VIA_LOGIN, Arc::clone(&login)),
+    );
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    release_throttled(&mut state, &io).await;
+    login.flag.store(true, Ordering::Release);
+    state.advance_throttle(std::time::Duration::from_secs(1));
+    state.maintain(&io).await.unwrap();
+    assert!(state.pending_land.is_empty());
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
+}
+
+/// The overlay waits on Land with the same reliable-window stall as terrain.
+#[tokio::test(start_paused = true)]
+async fn a_full_reliable_window_holds_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    for _ in 0..=ACK_STALL {
+        state
+            .send_payload(
+                &io,
+                peer(),
+                Payload {
+                    bytes: vec![0xff, 0xff, 0x00, 0x01, 1],
+                    coding: Coding::Plain,
+                    reliable: true,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    io.sent.lock().unwrap().clear();
+    complete(&mut state, &io, &expect, 1).await;
+    assert_eq!(state.pending_land.len(), 3);
+    state.advance_throttle(std::time::Duration::from_millis(200));
+    state.maintain(&io).await.unwrap();
+    assert_eq!(state.pending_land.len(), 3);
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    state.unacked.acknowledge(1..=10);
+    release_throttled(&mut state, &io).await;
+    assert!(state.pending_land.is_empty());
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
 }
 
 fn teleport_request(
@@ -356,6 +632,10 @@ impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
         assert!(self.take_avatar_packets(max).is_empty());
         Vec::new()
     }
+
+    fn take_land_pass(&self) -> bool {
+        ferroan_scene::terse::ViewerFeed::take_land_pass(self)
+    }
 }
 
 #[tokio::test]
@@ -381,6 +661,7 @@ async fn local_teleport_stays_behind_the_frames_preteleport_terse() {
             height: 1.9,
             hover: 0.0,
         }),
+        teleport_flags: 1 << 7,
     };
     let local_id = frame
         .attach(expect.agent_id, link)
@@ -979,6 +1260,9 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         channel_version:
             "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)".into(),
         land: Vec::new(),
+        overlay: Vec::new(),
+        teleport_flags: 1 << 7,
+        crossing_flags: 0,
         avatar: None,
         teleport: None,
         source_hop: None,
@@ -1326,6 +1610,505 @@ async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
     let pending = &shared.fan.lock().unwrap().pending;
     let ports: Vec<_> = pending.iter().map(|d| d.from.port()).collect();
     assert_eq!(ports, (3..=61).chain([1, 62]).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn a_pending_login_keeps_the_movement_burst_until_its_serve() {
+    let server = CircuitServer::bind().await.unwrap();
+    let expect = identity(Uuid::from_u128(7));
+    let from = SocketAddr::from(([127, 0, 0, 1], 4400));
+    let opened = use_circuit(expect);
+    let first = movement(expect, 2, &[]);
+    let second = movement(expect, 3, &[]);
+    {
+        let shared = &server.inner.shared;
+        assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+        assert_eq!(route(shared, from, first.clone()), None);
+        assert_eq!(route(shared, from, second.clone()), None);
+        // A resent UseCircuitCode is acknowledged and does not join the burst.
+        assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+        let other = SocketAddr::from(([127, 0, 0, 1], 4401));
+        assert_eq!(route(shared, other, first.clone()), None);
+        let pending = &shared.fan.lock().unwrap().pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].packets.len(), 3);
+    }
+    let session = server.open_session(expect);
+    let mut buf = [0u8; 2048];
+    let mut taken = Vec::new();
+    while let Some((len, source)) = session.try_recv_from(&mut buf).unwrap() {
+        assert_eq!(source, from);
+        taken.push(buf[..len].to_vec());
+    }
+    assert_eq!(taken, vec![opened, first, second]);
+}
+
+fn relogin(agent: u128, session: u128, code: u32) -> CircuitExpect {
+    CircuitExpect {
+        agent_id: Uuid::from_u128(agent),
+        session_id: Uuid::from_u128(session),
+        circuit_code: code,
+        region_id: captured_config().region_id,
+    }
+}
+
+/// A UseCircuitCode nobody claimed must not ack and drop the next login
+/// from the same socket.
+#[tokio::test]
+async fn a_new_use_circuit_code_reaches_a_waiter_while_the_old_login_is_pending() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4600));
+    let stale = relogin(21, 210, 21);
+    let fresh = relogin(21, 211, 22);
+    let shared = &server.inner.shared;
+    assert_eq!(route(shared, from, use_circuit(stale)), Some((from, 1)));
+    let session = server.open_session(fresh);
+    assert!(route(shared, from, use_circuit(fresh)).is_none());
+    assert!(shared.fan.lock().unwrap().bound.contains_key(&from));
+    let mut buf = [0u8; 2048];
+    let (len, source) = session.try_recv_from(&mut buf).unwrap().unwrap();
+    assert_eq!(source, from);
+    assert_eq!(&buf[..len], &use_circuit(fresh));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+}
+
+/// The new code can arrive before its serve is registered. It replaces the
+/// unclaimed burst instead of being acknowledged and dropped.
+#[tokio::test]
+async fn a_new_use_circuit_code_replaces_a_pending_burst_before_its_serve() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4601));
+    let stale = relogin(23, 230, 23);
+    let fresh = relogin(23, 231, 24);
+    let shared = &server.inner.shared;
+    assert_eq!(route(shared, from, use_circuit(stale)), Some((from, 1)));
+    assert_eq!(route(shared, from, movement(stale, 2, &[])), None);
+    let fresh_bytes = use_circuit(fresh);
+    assert_eq!(route(shared, from, fresh_bytes.clone()), Some((from, 1)));
+    {
+        let pending = &shared.fan.lock().unwrap().pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].packets.len(), 1);
+    }
+    // A resend of the replacement, with a new sequence, is still only an ack.
+    let mut resent = UseCircuitCode::default();
+    resent.circuit_code.id = fresh.agent_id;
+    resent.circuit_code.session_id = fresh.session_id;
+    resent.circuit_code.code = fresh.circuit_code;
+    assert_eq!(route(shared, from, wire(&resent, 9, &[])), Some((from, 9)));
+    assert_eq!(shared.fan.lock().unwrap().pending[0].packets.len(), 1);
+    let session = server.open_session(fresh);
+    assert!(shared.fan.lock().unwrap().bound.contains_key(&from));
+    let mut buf = [0u8; 2048];
+    let (len, source) = session.try_recv_from(&mut buf).unwrap().unwrap();
+    assert_eq!(source, from);
+    assert_eq!(&buf[..len], &fresh_bytes);
+    assert!(session.try_recv_from(&mut buf).unwrap().is_none());
+}
+
+/// Accept reserves the code before the lookups. The stored burst is still
+/// claimed after the 60 second cache, and an unreserved entry is not.
+#[tokio::test]
+async fn a_reserved_login_keeps_its_burst_past_the_pending_ttl() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4610));
+    let expect = relogin(27, 270, 27);
+    let opened = use_circuit(expect);
+    let burst = movement(expect, 2, &[]);
+    let hold = server.reserve_login(
+        expect,
+        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(120)),
+    );
+    let shared = &server.inner.shared;
+    assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+    assert_eq!(route(shared, from, burst.clone()), None);
+
+    let other_from = SocketAddr::from(([127, 0, 0, 1], 4611));
+    let other = relogin(29, 290, 29);
+    assert_eq!(
+        route(shared, other_from, use_circuit(other)),
+        Some((other_from, 1))
+    );
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        let stale = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+        for login in &mut fan.pending {
+            login.seen = stale;
+        }
+    }
+
+    let session = server.open_session(expect);
+    // The hold is still alive. The serve itself releases the reservation.
+    assert_eq!(server.reserved_logins(), 0);
+    assert!(shared.fan.lock().unwrap().bound.contains_key(&from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    let mut buf = [0u8; 2048];
+    let mut taken = Vec::new();
+    while let Some((len, source)) = session.try_recv_from(&mut buf).unwrap() {
+        assert_eq!(source, from);
+        taken.push(buf[..len].to_vec());
+    }
+    assert_eq!(taken, vec![opened, burst]);
+    drop(hold);
+
+    let late = relogin(28, 280, 28);
+    let late_from = SocketAddr::from(([127, 0, 0, 1], 4612));
+    let late_open = use_circuit(late);
+    let late_burst = movement(late, 2, &[]);
+    let late_hold = server.reserve_login(
+        late,
+        Some(
+            tokio::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+        ),
+    );
+    assert_eq!(
+        route(shared, late_from, late_open.clone()),
+        Some((late_from, 1))
+    );
+    assert_eq!(route(shared, late_from, late_burst.clone()), None);
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        fan.pending[0].seen = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    let late_session = server.open_session(late);
+    assert!(!shared.fan.lock().unwrap().bound.contains_key(&late_from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    assert!(late_session.try_recv_from(&mut buf).unwrap().is_none());
+    drop(late_hold);
+
+    let dropped = relogin(31, 310, 31);
+    let dropped_from = SocketAddr::from(([127, 0, 0, 1], 4613));
+    let dropped_hold = server.reserve_login(dropped, None);
+    assert_eq!(
+        route(shared, dropped_from, use_circuit(dropped)),
+        Some((dropped_from, 1))
+    );
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        fan.pending[0].seen = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    drop(dropped_hold);
+    let dropped_session = server.open_session(dropped);
+    assert!(!shared.fan.lock().unwrap().bound.contains_key(&dropped_from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    assert!(dropped_session.try_recv_from(&mut buf).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_expired_pending_login_is_not_claimed() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4602));
+    let stale = relogin(25, 250, 25);
+    let shared = &server.inner.shared;
+    assert_eq!(route(shared, from, use_circuit(stale)), Some((from, 1)));
+    route(shared, from, movement(stale, 2, &[]));
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        fan.pending[0].seen = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    let session = server.open_session(stale);
+    assert!(!shared.fan.lock().unwrap().bound.contains_key(&from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    let mut buf = [0u8; 64];
+    assert!(session.try_recv_from(&mut buf).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_pending_burst_refuses_past_32_datagrams() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4603));
+    let expect = relogin(26, 260, 26);
+    let shared = &server.inner.shared;
+    let before = limit_hits(UDP_PENDING_LOGIN_BURST, "refuse");
+    assert_eq!(route(shared, from, use_circuit(expect)), Some((from, 1)));
+    for sequence in 2..=PENDING_BURST_CAP as u32 {
+        assert_eq!(route(shared, from, movement(expect, sequence, &[])), None);
+    }
+    assert_eq!(route(shared, from, movement(expect, 100, &[])), None);
+    assert_eq!(limit_hits(UDP_PENDING_LOGIN_BURST, "refuse"), before + 1);
+    let pending = &shared.fan.lock().unwrap().pending;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].packets.len(), PENDING_BURST_CAP);
+    assert_eq!(
+        parse_packet(pending[0].packets.back().unwrap())
+            .unwrap()
+            .sequence,
+        PENDING_BURST_CAP as u32
+    );
+}
+
+/// Login datagrams queued before the serve reads. `recv_from` waits until
+/// `release`, then both it and `try_recv_from` take from the same queue.
+struct HeldBurst {
+    released: std::sync::atomic::AtomicBool,
+    waiting: std::sync::atomic::AtomicBool,
+    packets: Mutex<VecDeque<Vec<u8>>>,
+    sent: Mutex<Vec<Vec<u8>>>,
+    ready: Notify,
+}
+
+impl HeldBurst {
+    fn new(packets: Vec<Vec<u8>>) -> Self {
+        Self {
+            released: std::sync::atomic::AtomicBool::new(false),
+            waiting: std::sync::atomic::AtomicBool::new(false),
+            packets: Mutex::new(packets.into()),
+            sent: Mutex::new(Vec::new()),
+            ready: Notify::new(),
+        }
+    }
+
+    fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.ready.notify_one();
+    }
+
+    fn overlay_count(&self) -> usize {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|bytes| {
+                parse_packet(bytes)
+                    .is_ok_and(|packet| packet.id == ferroan_protocol::msgs::ParcelOverlay::ID)
+            })
+            .count()
+    }
+}
+
+impl DatagramIo for HeldBurst {
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        loop {
+            if self.released.load(std::sync::atomic::Ordering::Acquire)
+                && let Some(bytes) = self.packets.lock().unwrap().pop_front()
+            {
+                assert!(bytes.len() <= buf.len());
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                return Ok((bytes.len(), peer()));
+            }
+            self.waiting
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.ready.notified().await;
+        }
+    }
+
+    fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        if !self.released.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(None);
+        }
+        let Some(bytes) = self.packets.lock().unwrap().pop_front() else {
+            return Ok(None);
+        };
+        assert!(bytes.len() <= buf.len());
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(Some((bytes.len(), peer())))
+    }
+
+    async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        assert_eq!(to, peer());
+        self.sent.lock().unwrap().push(buf.to_vec());
+        Ok(buf.len())
+    }
+}
+
+fn land_throttle(expect: CircuitExpect, land_bits: f32, sequence: u32) -> Vec<u8> {
+    // Resend, Land, Wind, Cloud, Task, Texture, Asset. The side channels sit
+    // on their floors so the 0.125 scale does not shrink Land.
+    let rates = [8_000.0, land_bits, 400.0, 400.0, 8_000.0, 8_000.0, 8_000.0];
+    let mut blob = Vec::with_capacity(28);
+    for rate in rates {
+        blob.extend(rate.to_le_bytes());
+    }
+    let mut message = AgentThrottle::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    message.agent_data.circuit_code = expect.circuit_code;
+    message.throttle.throttles = blob;
+    wire(&message, sequence, &[])
+}
+
+fn overlay_wire_len(len: usize) -> usize {
+    let mut message = ferroan_protocol::msgs::ParcelOverlay::default();
+    message.parcel_data.sequence_id = 1;
+    message.parcel_data.data = vec![0x11; len];
+    let payload = encode_payload(&message).unwrap();
+    ferroan_protocol::packet::raw_len(&payload.bytes, payload.coding == Coding::Zero)
+}
+
+/// The three login datagrams are queued before the serve reads them. The
+/// throttle clock has already moved, so a maintain between movement and the
+/// throttle would empty the default Land burst. Only the first overlay leaves
+/// until Land refills.
+#[tokio::test(start_paused = true)]
+async fn the_login_burst_applies_land_before_the_first_overlay_pass() {
+    let expect = identity(Uuid::from_u128(1));
+    let wire_len = overlay_wire_len(24);
+    assert!(
+        wire_len > 10 && wire_len * 2 <= 91 && wire_len * 3 > 91,
+        "overlay datagram is {wire_len} bytes; the slow burst is 10 and the default burst is 91"
+    );
+    let overlay = (1..=3)
+        .map(|sequence| crate::ParcelOverlayChunk {
+            sequence_id: sequence,
+            data: vec![0x11; 24],
+        })
+        .collect();
+    let arrival = ArrivalConfig {
+        overlay,
+        ..ArrivalConfig::default()
+    };
+    let packets = vec![
+        use_circuit(expect),
+        movement(expect, 2, &[]),
+        land_throttle(expect, 8_000.0, 3),
+    ];
+    let io = Arc::new(HeldBurst::new(packets));
+    let serving_io = Arc::clone(&io);
+    let serving = tokio::spawn(async move {
+        serve_socket(
+            serving_io.as_ref(),
+            expect,
+            captured_config(),
+            arrival,
+            CircuitTiming::default(),
+        )
+        .await
+    });
+    for _ in 0..16 {
+        if io.waiting.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        io.waiting.load(std::sync::atomic::Ordering::Acquire),
+        "the serve did not reach its first read"
+    );
+    tokio::time::advance(std::time::Duration::from_millis(50)).await;
+    io.release();
+    let mut first = 0;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+        let count = io.overlay_count();
+        if count == first {
+            continue;
+        }
+        first = count;
+        if count >= 1 {
+            // One more quiet poll, so a second chunk in the same pass is visible.
+            tokio::task::yield_now().await;
+            first = io.overlay_count();
+            break;
+        }
+    }
+    assert_eq!(first, 1, "the first pass let {} overlay chunks out", first);
+    tokio::time::advance(std::time::Duration::from_millis(500)).await;
+    let mut later = first;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+        later = io.overlay_count();
+    }
+    assert_eq!(
+        later, 2,
+        "Land should release the next chunk and hold the last"
+    );
+    serving.abort();
+}
+
+/// `try_recv_from` never goes empty. Without a drain cap the serve never
+/// returns to the stop check.
+struct FloodIo {
+    opened: Mutex<Option<Vec<u8>>>,
+    flood: Vec<u8>,
+    sent: Mutex<Vec<Vec<u8>>>,
+}
+
+impl DatagramIo for FloodIo {
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let bytes = self
+            .opened
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| self.flood.clone());
+        assert!(bytes.len() <= buf.len());
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok((bytes.len(), peer()))
+    }
+
+    fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        assert!(self.flood.len() <= buf.len());
+        buf[..self.flood.len()].copy_from_slice(&self.flood);
+        Ok(Some((self.flood.len(), peer())))
+    }
+
+    async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        assert_eq!(to, peer());
+        self.sent.lock().unwrap().push(buf.to_vec());
+        tokio::task::yield_now().await;
+        Ok(buf.len())
+    }
+}
+
+#[tokio::test]
+async fn a_full_inbox_does_not_starve_a_stop() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut ping = ferroan_protocol::msgs::StartPingCheck::default();
+    ping.ping_id.ping_id = 3;
+    let io = Arc::new(FloodIo {
+        opened: Mutex::new(Some(use_circuit(expect))),
+        flood: wire(&ping, 4, &[]),
+        sent: Mutex::new(Vec::new()),
+    });
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let serving_io = Arc::clone(&io);
+    let serving = tokio::spawn(async move {
+        serve_socket_reporting(
+            serving_io.as_ref(),
+            expect,
+            captured_config(),
+            ArrivalConfig::default(),
+            CircuitTiming::default(),
+            None,
+            SceneThrottle::stock(),
+            ServeExtra {
+                root_arrival: None,
+                connected: None,
+                pending: None,
+                stop: Some(stop_rx),
+                chat: None,
+                login_scene: None,
+                names: None,
+            },
+        )
+        .await
+    });
+    for _ in 0..1_000 {
+        let seen = io.sent.lock().unwrap().iter().any(|bytes| {
+            parse_packet(bytes)
+                .is_ok_and(|packet| packet.id == ferroan_protocol::msgs::RegionHandshake::ID)
+        });
+        if seen {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    stop_tx.send(CircuitStop::Shutdown).unwrap();
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+        .await
+        .expect("a full inbox held the serve past the stop");
+    assert!(matches!(finished.unwrap(), Err(CircuitError::Closed)));
 }
 
 #[tokio::test]

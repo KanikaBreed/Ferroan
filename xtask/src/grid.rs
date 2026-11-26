@@ -85,6 +85,8 @@ mod material_override;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
+#[path = "parcel_properties.rs"]
+mod parcel_properties;
 #[path = "parcel_timing.rs"]
 mod parcel_timing;
 #[path = "prim_arrival.rs"]
@@ -127,6 +129,10 @@ pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
 
 pub fn parcel_timing_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(parcel_timing::extract(directory))
+}
+
+pub fn parcel_properties_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(parcel_properties::extract(directory))
 }
 
 pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -262,6 +268,8 @@ struct ServiceUris<'a> {
     asset: Option<&'a str>,
     account: Option<&'a str>,
     auth: Option<&'a str>,
+    /// `URI=file:` connection for Robust's groups service. Absent leaves groups off.
+    groups: Option<&'a str>,
 }
 
 fn robust_ini(
@@ -288,6 +296,21 @@ fn robust_ini(
     let accounts = sqlite(database);
     let asset_store = sqlite(&asset_db);
     let auth_store = sqlite(&auth_db);
+    let (groups_connector, groups_section) = if let Some(connection) = services.groups {
+        plain(connection, "groups database")?;
+        (
+            format!(
+                "    GroupsServiceConnector = \"{private_port}/OpenSim.Addons.Groups.dll:GroupsServiceRobustConnector\"\n"
+            ),
+            format!(
+                "[Groups]\n    \
+                 StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+                 ConnectionString = \"{connection}\"\n\n"
+            ),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     let (asset_connector, asset_section) = if let Some(uri) = services.asset {
         service_uri(uri)?;
         (
@@ -421,7 +444,7 @@ fn robust_ini(
     MapAddServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:MapAddServiceConnector"
     MapGetServiceConnector = "{public_port}/OpenSim.Server.Handlers.dll:MapGetServiceConnector"
     MuteListConnector = "{private_port}/OpenSim.Server.Handlers.dll:MuteListServiceConnector"
-
+{groups_connector}
 [DatabaseService]
     StorageProvider = "OpenSim.Data.SQLite.dll"
     ConnectionString = "{accounts}"
@@ -476,7 +499,7 @@ fn robust_ini(
     AllowRemoteSetLoginLevel = "false"
     AllowLoginFallbackToAnyRegion = false
 
-[GridInfoService]
+{groups_section}[GridInfoService]
     login = http://{bind}:{public_port}/
     gridname = "Ferroan Test Grid"
     gridnick = "ferroan"
@@ -735,10 +758,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "prim-arrival"
                 | "material-override"
                 | "report"
+                | "parcel-timing"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report and parcel-timing scenarios"
                 .to_string(),
         );
     }
@@ -767,7 +791,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -936,6 +960,18 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         (None, None, None)
     };
+    // Parcel timing, and any Ferroan parcel seed, reads memberships from Robust.
+    // Other C# parcel scenarios keep the local connector and their region groups.db.
+    let remote_groups =
+        scenario == "parcel-timing" || (ferroan && ParcelSeed::scenario(scenario).is_some());
+    let groups_connection = if remote_groups {
+        let db = root.join("groups.db");
+        parcel_capture::seed_memberships(&db)?;
+        Some(format!("URI=file:{}", db.display()))
+    } else {
+        None
+    };
+    let groups_uri = remote_groups.then(|| format!("http://{ROBUST_BIND}:{robust_private}/"));
     println!(
         "live: grid Robust on {ROBUST_BIND}:{robust_public} (private {robust_private}), proxies {public_proxy}/{private_proxy}"
     );
@@ -948,6 +984,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             asset: asset_uri.as_deref(),
             account: account_uri.as_deref(),
             auth: auth_uri.as_deref(),
+            groups: groups_connection.as_deref(),
         },
         docker,
     )?);
@@ -1039,6 +1076,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         },
         patch_materials: scenario == "material-override",
         basic_physics: spec.basic_physics && !ferroan,
+        groups_uri: groups_uri.clone(),
     };
     if matches!(scenario, "store-handoff" | "prim-load") {
         if docker {
@@ -1095,6 +1133,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             },
             patch_materials: false,
             parcel_seed: None,
+            groups_uri: None,
             basic_physics: spec.basic_physics,
         },
         &grid.passwords,
@@ -1293,6 +1332,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if scenario == "parcel-timing" {
         let timing = parcel_timing::extract(&root)?;
         Ok(format!("{}\n{timing}", report.lines))
+    } else if scenario == "parcel-properties" {
+        let properties = parcel_properties::extract(&root)?;
+        Ok(format!("{}\n{properties}", report.lines))
     } else if scenario == "object-cross" {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
@@ -1677,6 +1719,11 @@ fn run_bot(
                 harness_ref
                     .http_trace
                     .scope(ferroan_bot::scenario::parcel_timing(harness_ref))
+                    .await
+            } else if selected == "parcel-properties" {
+                harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_properties(harness_ref))
                     .await
             } else if let Some(seed) = ParcelSeed::scenario(selected) {
                 let captures = harness_ref
@@ -2100,6 +2147,8 @@ struct RegionStart {
     basic_physics: bool,
     store: RegionStore,
     parcel_seed: Option<ParcelSeed>,
+    /// Groups Remote Service Connector target. Absent keeps the local connector.
+    groups_uri: Option<String>,
     patch_materials: bool,
 }
 
@@ -2232,7 +2281,13 @@ fn start_region(
         }
     }
     if spec.parcel_seed.is_some() {
-        ini.push_str("\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Local Service Connector\"\n");
+        if let Some(uri) = &spec.groups_uri {
+            ini.push_str(&format!(
+                "\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Remote Service Connector\"\n    GroupsServerURI = \"{uri}\"\n"
+            ));
+        } else {
+            ini.push_str("\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Local Service Connector\"\n");
+        }
     }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
     let mut definition = regions_ini(&region);
@@ -3093,6 +3148,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3122,6 +3178,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3160,6 +3217,7 @@ mod tests {
                 asset: Some("http://127.0.0.1:9"),
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3181,6 +3239,7 @@ mod tests {
                     asset: Some("http://bad uri"),
                     account: None,
                     auth: None,
+                    groups: None,
                 },
             )
             .is_err()
@@ -3219,6 +3278,7 @@ mod tests {
                 asset: None,
                 account: Some("http://127.0.0.1:9"),
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3259,6 +3319,7 @@ mod tests {
                 asset: Some("http://127.0.0.1:9"),
                 account: Some("http://127.0.0.1:9"),
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3281,6 +3342,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: Some("http://127.0.0.1:9"),
+                groups: None,
             },
         )
         .unwrap();
@@ -3315,6 +3377,7 @@ mod tests {
                 asset: None,
                 account: Some("http://127.0.0.1:9"),
                 auth: Some("http://127.0.0.1:9"),
+                groups: None,
             },
         )
         .unwrap();
@@ -3353,6 +3416,7 @@ mod tests {
                     asset: None,
                     account: None,
                     auth: None,
+                    groups: None,
                 },
             )
             .unwrap();

@@ -473,6 +473,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-physics"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "ferroan-protocol"
 version = "0.1.0"
 dependencies = [
@@ -544,6 +551,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

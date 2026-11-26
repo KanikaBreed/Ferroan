@@ -73,6 +73,7 @@
 //! C# reads the presence when it writes the packet.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::Notify;
@@ -407,6 +408,8 @@ pub struct ViewerFeed {
     packets: Mutex<AvatarPackets>,
     board: AvatarBoard,
     wake: Arc<Notify>,
+    /// `SendInitialData` with zero teleport flags. The circuit takes it once.
+    land_pass: AtomicBool,
 }
 
 impl ViewerFeed {
@@ -421,7 +424,20 @@ impl ViewerFeed {
             packets: Mutex::new(AvatarPackets::default()),
             board,
             wake: Arc::new(Notify::new()),
+            land_pass: AtomicBool::new(false),
         }
+    }
+
+    /// `ScenePresence.SendInitialData` asked for terrain and the overlay again.
+    /// The circuit's entity wake is the same notify an avatar offer uses.
+    pub fn request_land_pass(&self) {
+        self.land_pass.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
+    /// Take that request. A later call is false until the frame asks again.
+    pub fn take_land_pass(&self) -> bool {
+        self.land_pass.swap(false, Ordering::AcqRel)
     }
 
     fn queue(&self) -> MutexGuard<'_, EntityUpdateQueue> {

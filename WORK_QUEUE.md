@@ -180,30 +180,30 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
-| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | DONE (split into Q60a–Q60c, all done) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
-| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | DONE (split into Q60c1–Q60c3, all done) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
-| Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
+| Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | DONE (this PR) |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
-| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | READY |
+| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
 | Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
 | Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
-| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | DONE (split into Q65a–Q65d, all done) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
-| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | DONE (split into Q65c1–Q65c3, all done) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
-| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | DONE (split into Q65c3a–Q65c3b, all done) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | DONE (split into Q65d1–Q65d2, all done) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
@@ -224,7 +224,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | DONE (this PR) |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
-| Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | READY after Q79b |
+| Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | DONE (this PR) |
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
 | Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
@@ -277,11 +277,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
-| Q101 | P3.0b: `SubstepAccumulator` | READY |
-| Q102 | P3.0c: Move the C# Jolt module | READY |
-| Q103 | P3.0d: Pin move | READY after Q102 |
-| Q104 | P3.0e: Decision entry | READY after Q103 |
+| Q100 | P3.0: Jolt oracle | BLOCKED (needs Q102 and Q103, deferred to a later upgrade) |
+| Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
+| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | READY |
 | Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
@@ -855,7 +855,7 @@ The manager approved Q60c1 to Q60c3 on 25 November 2026, as proposed above. Q60c
 
 **BLOCKED, 25 November 2026** (`docs/q61-parcel-properties`). The row is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
 
-The evidence the row asks for is the event element `EndEventToBytes` returns, byte for byte, at three moments. That element is `OpenMetaverse.StructuredData.LLSDxmlEncode2` (libopenmetaverse `OpenMetaverse.StructuredData/LLSD/LLSDxmlEncode.cs`, 972 lines). `EventQueueGetModule.StartEvent` writes `<map><key>message</key>…<key>body</key><map>`, and `GetEvents` wraps the queued elements in `<llsd><map><key>events</key><array>`. The poll id is random, so the compared bytes are the `ParcelProperties` element. Ferroan's queue stores `ferroan_llsd::to_xml` with the `<llsd>` wrapper removed (`crates/ferroan-client/src/event_queue.rs`). Encode2 writes boolean `0`/`1`, `<integer />` for zero, `<uuid />`, `<string />` and `<binary />` for empty values, a uint as little-endian binary, a `Vector3` as an array of reals, and a date as an empty epoch, a date-only day, or `yyyy-MM-ddTHH:mm:ssZ` / `.ffZ`. `ParcelFlags` is a uint. A map passed through `to_xml` cannot match a capture.
+The evidence the row asks for is the event element `EndEventToBytes` returns, byte for byte, at three moments. That element is `OpenMetaverse.StructuredData.LLSDxmlEncode2` (libopenmetaverse `OpenMetaverse.StructuredData/LLSD/LLSDxmlEncode.cs`, 972 lines). `EventQueueGetModule.StartEvent` writes `<map><key>message</key>…<key>body</key><map>`, and `GetEvents` wraps the queued elements in `<llsd><map><key>events</key><array>`. The poll id is random, so the compared bytes are the `ParcelProperties` element. Ferroan's queue stores `ferroan_llsd::to_xml` with the `<llsd>` wrapper removed (`crates/ferroan-client/src/event_queue.rs`). Encode2 writes boolean `0`/`1`, `<integer />` for zero, `<uuid />`, `<string />` and `<binary />` for empty values, a uint as big-endian binary (`uintToByteArray` in libopenmetaverse `LLSDxmlEncode.cs` lines 961–969 writes the high byte first; the capture's ParcelFlags `KAAgSw==` is `28 00 20 4B`, `0x2800204B`), a `Vector3` as an array of reals, and a date as an empty epoch, a date-only day, or `yyyy-MM-ddTHH:mm:ssZ` / `.ffZ`. `ParcelFlags` is a uint. A map passed through `to_xml` cannot match a capture.
 
 `LandObject.SendLandProperties` (`LandObject.cs` 490–525) passes prim capacities, the object bonus and `IEstateModule.GetRegionFlags`. `GetParcelMaxPrimCount` (437) and `GetSimulatorMaxPrimCount` (463) are area × object capacity × object bonus / region area + 0.5, clamped to the region capacity. Object counts come from `PrimCounts`. `LLClientView.SendLandProperties` (6757–6893) writes `ParcelData`, `MediaData`, `ParcelExtendedFlags`, `AgeVerificationBlock`, `ParcelEnvironmentBlock` and `RegionAllowAccessBlock`. `GetRegionFlags` (`EstateManagementModule.cs` 134–191) does not set the four deny bits that method reads (TB152, D108). `RegionAllowAccessOverride` is `!EstateSettings.TaxFree` (6888). Obscure media and music in `MediaData` are hardcoded false; `ParcelExtendedFlags.Flags` is 1 when `ObscureMedia` is set.
 
