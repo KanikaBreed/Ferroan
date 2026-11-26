@@ -212,7 +212,7 @@ impl<L: OwnerLookups> OwnerResolver<L> {
     }
 
     /// `ResolveUserUuid`: the account exists. Asked once per id.
-    async fn resolve_user(&mut self, id: Uuid) -> bool {
+    pub(crate) async fn resolve_user(&mut self, id: Uuid) -> bool {
         if let Some(known) = self.users.get(&id) {
             return *known;
         }
@@ -222,7 +222,7 @@ impl<L: OwnerLookups> OwnerResolver<L> {
     }
 
     /// `ResolveGroupUuid`: the group record exists. Asked once per id.
-    async fn resolve_group(&mut self, id: Uuid) -> bool {
+    pub(crate) async fn resolve_group(&mut self, id: Uuid) -> bool {
         if let Some(known) = self.groups.get(&id) {
             return *known;
         }
