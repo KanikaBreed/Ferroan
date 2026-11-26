@@ -318,7 +318,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
 | Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q193, Q157, Q122, Q123, Q115 and Q156 |
-| Q109 | P3.13a: Capsule, marker and intent | READY |
+| Q109 | P3.13a: Capsule, marker and intent | DONE (this PR) |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
 | Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
 | Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
