@@ -2753,6 +2753,7 @@ mod tests {
                 None,
                 &[],
                 0,
+                no_physics(),
             ));
         };
         ask(
@@ -2843,6 +2844,7 @@ mod tests {
                 None,
                 &[],
                 0,
+                no_physics(),
             ));
         };
         ask(&mut scene, 8, false);
