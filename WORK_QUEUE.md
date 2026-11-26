@@ -80,7 +80,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
-| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY |
+| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | DONE (this PR) |
 | Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | READY |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
@@ -179,7 +179,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
-| Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
+| Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
@@ -195,7 +195,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
-| Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
+| Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
@@ -231,7 +231,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
 | Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
-| Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | READY after Q27a |
+| Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
 | Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | READY after Q27b1 |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
@@ -575,7 +575,7 @@ Q27b BLOCKED (25 November 2026, `feat/q27b-avatar-service`). Estimate at Pin8 `c
 
 Proposed split for review:
 
-1. **Q27b1 / P1.4b1, raw avatar service and HTTP**, after Q27a. Implement the key/value methods in `AvatarService.cs` over the Q27a stores and expose all five `POST /avatar` forms sent by `AvatarServicesConnector.cs`. Compare response bytes with the Pin8 C# server, including the get reply without a BOM, the BOM-prefixed Success and Failure replies, missing and invalid principals, and malformed item lists. Read back successive writes to prove stale appearance names disappear, omitted `Bake*` names survive, explicit items can be changed or removed, out-of-range heights are rectified, and reset clears the bake index. Exercise failed-store cleanup after a partial save with the service's database seam. Estimate about one day including the fixtures.
+1. **Q27b1 / P1.4b1, raw avatar service and HTTP**, after Q27a. Implement the key/value methods in `AvatarService.cs` over the Q27a stores and expose all five `POST /avatar` forms sent by `AvatarServicesConnector.cs`. Compare response bytes with the Pin8 C# server, including the get reply without a BOM, the indented Success and Failure replies (the Pin8 capture has no BOM), missing and invalid principals, and malformed item lists. Read back successive writes to prove stale appearance names disappear, omitted `Bake*` names survive, explicit items can be changed or removed, out-of-range heights are rectified, and reset clears the bake index. Exercise failed-store cleanup after a partial save with the service's database seam. Estimate about one day including the fixtures.
 2. **Q27b2 / P1.4b2, typed appearance codec**, after Q27b1. Implement the conversions used by `GetAppearance` and `SetAppearance` in `IAvatarService.cs` (213–460). Record Pin8 input rows and the decoded appearance, and independently record rows written from a constructed appearance. Cover constructor defaults, the four required body parts restored on a nonempty record, legacy item/asset pairs, multiple layers read in index order, types 15 and 16, attachment points with multiple items, visual parameters, locale-independent height (TB44) and malformed input. Compare both directions with these observations; an HTTP echo cannot establish the layer order. Estimate about one day including the fixtures.
 
 Q27b is complete when both pieces pass. The proposed split leaves Q27c–Q27e in their current order and P1.4 open through Q27e.
@@ -747,6 +747,10 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
+
+### Q76 object-crossing fixture scope
+
+The manager approved the riderless scope on 25 November 2026. At Pin8 `c401bceecd`, `SceneObjectGroup.cs` 1185 and 1265–1272 take a linkset without riders from the grid lookup directly to transfer. `SimulationServiceConnector.cs` 487–516 posts the linkset and includes `state` only for a nonempty script snapshot. Q76 records these messages and both viewer circuits in each direction. A seated avatar's access check uses its own UUID (`EntityTransferModule.cs` 1764–1777) and belongs to a later item.
 
 ## Found while working
 

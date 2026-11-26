@@ -114,13 +114,12 @@ fn compare_linux() -> Result<String, String> {
         return Err("a live harness is already running; stop it before compare region".to_string());
     }
     crate::live::ensure_region_built()?;
-    // One port block apart, so the two grids never share a listener or a
-    // directory. They run one after the other.
-    const CSHARP_BASE: u16 = 22016;
-    const FERROAN_BASE: u16 = 22048;
+    // Each child owns a separate run directory. They run in sequence and
+    // release the assigned block between homes.
+    let base = crate::ports::current().base;
     const SIDE_LIMIT: Duration = Duration::from_secs(15 * 60);
-    let csharp = run_side(CSHARP_BASE, false, SIDE_LIMIT)?;
-    let ferroan = run_side(FERROAN_BASE, true, SIDE_LIMIT)?;
+    let csharp = run_side(base.unwrap_or(22016), false, SIDE_LIMIT)?;
+    let ferroan = run_side(base.unwrap_or(22048), true, SIDE_LIMIT)?;
     compare_reports(&csharp, &ferroan, ALLOWED)
 }
 

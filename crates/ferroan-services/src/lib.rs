@@ -3,7 +3,7 @@
 
 //! Grid services. This crate holds the asset service, the user-account
 //! service (including user aliases), authentication, the grid-user service,
-//! the in-memory Presence store, and the avatar stores.
+//! the in-memory Presence store, and the raw avatar service.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies
@@ -27,6 +27,7 @@ mod shard_header;
 pub use account::AccountHttp;
 pub use alias::AliasHttp;
 pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};
+pub use avatar::AvatarHttp;
 pub use griduser::GridUserHttp;
 
 pub use asset::{
