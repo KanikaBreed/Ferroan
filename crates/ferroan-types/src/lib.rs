@@ -8,12 +8,14 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod appearance;
 mod extra;
 mod permissions;
 mod shape;
 mod texture;
 mod wire;
 
+pub use appearance::DEFAULT_VISUAL_PARAMS;
 pub use extra::{ExtraParams, FlexibleData, LightData, LightImage, MAX_EXTRA_BYTES, SculptData};
 pub use glam::{DVec3, Quat, Vec2, Vec3, Vec4};
 pub use permissions::{
