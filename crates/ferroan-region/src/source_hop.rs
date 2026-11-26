@@ -791,29 +791,12 @@ fn needs_closing(session: &HopSession, destination: &HopDestination) -> bool {
         return true;
     }
     let (new_x, new_y) = handle_cells(destination_handle(destination));
-    outside_view(
+    crate::children::outside_cells(
         (session.source.loc_x >> 8, session.source.loc_y >> 8),
         (new_x, new_y),
         (session.size_x, session.size_y),
         (destination.size_x, destination.size_y),
     )
-}
-
-fn outside_view(
-    old: (u32, u32),
-    new: (u32, u32),
-    old_size: (u32, u32),
-    new_size: (u32, u32),
-) -> bool {
-    let draw = REGION_VIEW_METRES - 1;
-    let old_x = u64::from(old.0) * 256;
-    let new_x = u64::from(new.0) * 256;
-    let old_y = u64::from(old.1) * 256;
-    let new_y = u64::from(new.1) * 256;
-    old_x + u64::from(old_size.0) + draw < new_x
-        || new_x + u64::from(new_size.0) + draw < old_x
-        || old_y + u64::from(old_size.1) + draw < new_y
-        || new_y + u64::from(new_size.1) + draw < old_y
 }
 
 fn release_uri(session: &HopSession) -> String {
@@ -991,8 +974,9 @@ mod tests {
 
     use super::{
         EmptyDirectory, HopDestination, HopEnv, HopGrid, HopPresence, HopSession, PresenceWatch,
-        RegionDirectory, drive, outside_view, viewer_endpoint,
+        RegionDirectory, drive, viewer_endpoint,
     };
+    use crate::children::outside_cells;
     use crate::simulation_client::{RegionEnd, SimulationClient};
     use ferroan_client::{
         ArrivalConfig, CONNECT_INNER, CapsServer, CircuitExpect, CircuitServer, EventQueueError,
@@ -1048,7 +1032,7 @@ mod tests {
         dest.end.loc_y = 256;
         dest.size_x = 768;
         dest.size_y = 256;
-        assert!(outside_view((0, 1), (2, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 1), (2, 1), (256, 256), (256, 256)));
         assert!(!super::needs_closing(&home, &dest));
         dest.end.loc_x = 1024;
         assert!(super::needs_closing(&home, &dest));
@@ -2096,9 +2080,9 @@ mod tests {
 
     #[test]
     fn an_adjacent_region_stays_in_view_and_two_cells_do_not() {
-        assert!(!outside_view((0, 0), (1, 0), (256, 256), (256, 256)));
-        assert!(!outside_view((0, 0), (1, 1), (256, 256), (256, 256)));
-        assert!(outside_view((0, 0), (3, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 0), (3, 0), (256, 256), (256, 256)));
     }
 
     fn watched(budget: Duration, handle: u64) -> (Arc<PresenceWatch>, HopChoice) {

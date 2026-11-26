@@ -65,8 +65,10 @@
 //! a close only for an open child that call would close: outside the
 //! destination's view at draw distance 255, or every known child when the
 //! destination's grid Y is 0, and never the destination itself
-//! (`ScenePresence.cs` 5002–5058). A child that stays in view is forgotten.
-//! Ferroan sends no `children_seeds`.
+//! (`ScenePresence.cs` 5002–5058). The view uses that child's stored
+//! footprint, or 256 m when the size was unknown
+//! (`m_knownChildRegionsSizeInfo`, `ScenePresence.cs` 5036–5044). A child
+//! that stays in view is forgotten. Ferroan sends no `children_seeds`.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -125,6 +127,9 @@ struct Destination {
     promoted: bool,
     /// The viewer was told once. A second completion stays quiet.
     announced: bool,
+    /// This child's footprint, in metres. Unknown sizes are stored as
+    /// [`DEFAULT_REGION_SIZE`].
+    size: [u32; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -171,8 +176,8 @@ impl PostReport {
 /// (`EntityTransferModule.cs` 2780–2786 at Pin8 `c401bceecd`).
 pub const ANNOUNCE_DELAY: Duration = Duration::from_millis(500);
 
-/// `Constants.RegionSize`. A far hop has no per-child size map, so every known
-/// child uses this (`ScenePresence.cs` 5049).
+/// `Constants.RegionSize`. A child whose size was not stored uses this
+/// (`ScenePresence.cs` 5049). A stored size is that child's own footprint.
 const DEFAULT_REGION_SIZE: u32 = 256;
 
 /// Draw distance `GetChildAgentsToClose` passes to `IsOutsideView`. The
@@ -196,8 +201,10 @@ pub async fn pause_before_announce() {
 
 /// Holds the one [`Claim::New`] returned by [`ChildBook::claim_work`].
 /// Dropping the guard, including when the admission task is cancelled, follows
-/// [`ChildBook::failed`]: the claim is dropped before logout, and after logout
-/// or on a stale generation a close is staged with this claim's session.
+/// [`ChildBook::failed`]: the claim is dropped before logout. After logout, or
+/// on a stale generation, a close is staged with this claim's session, unless
+/// the current generation already owns that region and this claim is not the
+/// remote root. That owner is left alone.
 pub struct ClaimWork {
     book: Arc<ChildBook>,
     agent: Uuid,
@@ -363,7 +370,25 @@ impl ChildBook {
     }
 
     /// Claim `end` for one admission. The seed is stored before the POST.
+    /// The child's size is [`DEFAULT_REGION_SIZE`] until a caller knows it.
     pub fn claim(&self, agent: Uuid, generation: Uuid, end: RegionEnd) -> Claim {
+        self.claim_sized(
+            agent,
+            generation,
+            end,
+            [DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE],
+        )
+    }
+
+    /// [`Self::claim`] that remembers this child's footprint. A zero extent is
+    /// unknown and falls back to [`DEFAULT_REGION_SIZE`].
+    pub fn claim_sized(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+        size: [u32; 2],
+    ) -> Claim {
         let mut books = self.lock();
         let Some(book) = books.agents.get_mut(&agent) else {
             return Claim::Unavailable;
@@ -396,6 +421,7 @@ impl ChildBook {
                 phase: Phase::Pending,
                 promoted: false,
                 announced: false,
+                size: known_region_size(size),
             },
         );
         Claim::New { seed }
@@ -403,15 +429,32 @@ impl ChildBook {
 
     /// Claim `end` and return the only guard for that claim. Any other
     /// [`Claim`] stores nothing and carries no guard, so a guard cannot drop
-    /// a destination another task owns.
+    /// a destination another task owns. The child's size is
+    /// [`DEFAULT_REGION_SIZE`].
     pub fn claim_work(
         self: &Arc<Self>,
         agent: Uuid,
         generation: Uuid,
         end: RegionEnd,
     ) -> Result<ClaimWork, Claim> {
+        self.claim_work_sized(
+            agent,
+            generation,
+            end,
+            [DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE],
+        )
+    }
+
+    /// [`Self::claim_work`] that remembers this child's footprint.
+    pub fn claim_work_sized(
+        self: &Arc<Self>,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+        size: [u32; 2],
+    ) -> Result<ClaimWork, Claim> {
         let region = end.region_id;
-        match self.claim(agent, generation, end) {
+        match self.claim_sized(agent, generation, end, size) {
             Claim::New { seed } => Ok(ClaimWork::watch(
                 Arc::clone(self),
                 agent,
@@ -534,7 +577,8 @@ impl ChildBook {
     /// still logged in, drop the claim the way [`Self::refuse`] does, so the
     /// next pass can POST again. Logout that already won closes once,
     /// including a timeout or a transport failure (D106). The hop's remote
-    /// root stays.
+    /// root stays. A replaced generation whose region the current generation
+    /// already owns is removed and closes nothing.
     pub fn failed(&self, agent: Uuid, generation: Uuid, region: Uuid) -> Admission {
         let mut books = self.lock();
         let current = books
@@ -559,6 +603,14 @@ impl ChildBook {
         else {
             return Admission::Quiet;
         };
+        // The same-session replacement already owns this region. CloseAgent
+        // would accept this claim's session and remove the child that
+        // generation is using (`Scene.cs` 5100–5104). Drop the stale entry.
+        let current_owns = current != generation && generation_owns(&books, agent, current, region);
+        if current_owns && !promoted {
+            remove_destination(&mut books, agent, generation, region);
+            return Admission::Quiet;
+        }
         let stale = generation != current || logged_out || phase == Phase::CloseWhenAccepted;
         if promoted && !stale {
             return Admission::Quiet;
@@ -603,6 +655,13 @@ impl ChildBook {
         else {
             return;
         };
+        // Same rule as `failed`. A guard for a generation the replacement
+        // already superseded must not stage a close of that region.
+        let current_owns = current != generation && generation_owns(&books, agent, current, region);
+        if current_owns && !promoted {
+            remove_destination(&mut books, agent, generation, region);
+            return;
+        }
         let stale = generation != current || logged_out || phase == Phase::CloseWhenAccepted;
         if promoted && !stale {
             return;
@@ -686,6 +745,8 @@ impl ChildBook {
     /// selects, with this generation's session. The same generation's lease
     /// drop must not stage those closes; this is the only path that does.
     /// A seeded hop has no session row, so it closes the current generation.
+    /// Production uses [`Self::end_generation_far`].
+    #[cfg(test)]
     pub fn close_far(&self, agent: Uuid, destination: &FarDestination) {
         let generation = {
             let books = self.lock();
@@ -737,7 +798,7 @@ impl ChildBook {
                 }
                 let closing = match mode {
                     Finish::Forget => false,
-                    Finish::Far(hop) => child_should_close(&destination.end, hop),
+                    Finish::Far(hop) => child_should_close(destination, hop),
                 };
                 match destination.phase {
                     Phase::Pending => {
@@ -816,6 +877,7 @@ impl ChildBook {
                 phase: Phase::Open,
                 promoted: true,
                 announced: false,
+                size: [DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE],
             },
         );
     }
@@ -953,27 +1015,45 @@ enum Finish<'a> {
 /// `GetChildAgentsToClose` (`ScenePresence.cs` 5002–5058). Grid Y 0 closes
 /// every known child. The destination itself is never closed. Otherwise the
 /// child is closed when `IsOutsideView(255, child, destination)` says it is
-/// outside the destination's footprint. The child's size is
-/// [`DEFAULT_REGION_SIZE`].
-fn child_should_close(child: &RegionEnd, destination: &FarDestination) -> bool {
-    if child.region_id == destination.end.region_id {
+/// outside the destination's footprint. The extent is the child's stored
+/// size (`m_knownChildRegionsSizeInfo`), which is [`DEFAULT_REGION_SIZE`]
+/// when that size was unknown.
+fn child_should_close(child: &Destination, destination: &FarDestination) -> bool {
+    if child.end.region_id == destination.end.region_id {
         return false;
     }
     if (destination.end.loc_y >> 8) == 0 {
         return true;
     }
     outside_cells(
-        (child.loc_x >> 8, child.loc_y >> 8),
+        (child.end.loc_x >> 8, child.end.loc_y >> 8),
         (destination.end.loc_x >> 8, destination.end.loc_y >> 8),
-        (DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE),
+        (child.size[0], child.size[1]),
         (destination.size_x, destination.size_y),
     )
 }
 
+/// A zero extent is unknown. Pin8 falls back to `Constants.RegionSize`.
+fn known_region_size(size: [u32; 2]) -> [u32; 2] {
+    [
+        if size[0] == 0 {
+            DEFAULT_REGION_SIZE
+        } else {
+            size[0]
+        },
+        if size[1] == 0 {
+            DEFAULT_REGION_SIZE
+        } else {
+            size[1]
+        },
+    ]
+}
+
 /// `Util.IsOutsideView` (`Util.cs` 1636–1656). Coordinates are region grid
-/// cells. Sizes are metres. The draw distance steps in by one metre, so
+/// cells. Sizes are metres. Origins are the cell times [`DEFAULT_REGION_SIZE`],
+/// not the region's own size. The draw distance steps in by one metre, so
 /// adjacent 256 m regions stay inside.
-fn outside_cells(
+pub(crate) fn outside_cells(
     child: (u32, u32),
     destination: (u32, u32),
     child_size: (u32, u32),
@@ -1832,6 +1912,97 @@ mod tests {
         assert_eq!(staged[0].0, session());
         assert_eq!(staged[0].1.region_id, neighbour.region_id);
         assert!(book.seed(agent, destination.region_id).is_none());
+    }
+
+    /// B is 512 m at grid (1000, 1000). A far hop from A's cell (1002, 1000)
+    /// to D at (1000, 1002) still sees B: the child's own size reaches D.
+    /// The same cell with an unknown size uses 256 m and is outside.
+    #[test]
+    fn a_varregion_child_stays_inside_a_far_hop() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let wide = placed(2, 1000 * 256, 1000 * 256);
+        let unknown = placed(3, 1000 * 256, 1000 * 256);
+        let destination = placed(4, 1000 * 256, 1002 * 256);
+        let Claim::New { .. } = book.claim_sized(agent, generation, wide.clone(), [512, 512])
+        else {
+            panic!("wide claim");
+        };
+        let Claim::New { .. } = book.claim_sized(agent, generation, unknown.clone(), [0, 0]) else {
+            panic!("unknown claim");
+        };
+        for region in [&wide, &unknown] {
+            assert!(matches!(
+                book.accepted(agent, generation, region.region_id),
+                Admission::Announce { .. }
+            ));
+        }
+        book.close_far(
+            agent,
+            &FarDestination {
+                end: destination,
+                size_x: DEFAULT_REGION_SIZE,
+                size_y: DEFAULT_REGION_SIZE,
+            },
+        );
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, unknown.region_id);
+        assert!(book.seed(agent, wide.region_id).is_none());
+    }
+
+    /// claim_work(G1, C), attach(G2, S), claim(G2, C), accepted(G2) announces.
+    /// G1's cancelled admission and its timeout must not close C: G2 owns it
+    /// on the same session, and CloseAgent would accept that session.
+    #[test]
+    fn a_replaced_admission_does_not_close_the_child_its_successor_owns() {
+        let agent = Uuid::from_u128(4);
+        let first = Uuid::from_u128(8);
+        let second = Uuid::from_u128(9);
+        let region = end(5);
+        let shared = session();
+
+        let book = Arc::new(ChildBook::new());
+        book.attach(agent, first, shared);
+        let guard = book
+            .claim_work(agent, first, region.clone())
+            .unwrap_or_else(|_| panic!("claim"));
+        book.attach(agent, second, shared);
+        let Claim::New { .. } = book.claim(agent, second, region.clone()) else {
+            panic!("replacement claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, second, region.region_id),
+            Admission::Announce { .. }
+        ));
+        drop(guard);
+        assert!(
+            book.take_staged_closes(agent).is_empty(),
+            "dropping the replaced guard staged a close"
+        );
+        assert!(book.seed(agent, region.region_id).is_some());
+
+        let book = ChildBook::new();
+        book.attach(agent, first, shared);
+        let Claim::New { .. } = book.claim(agent, first, region.clone()) else {
+            panic!("claim");
+        };
+        book.attach(agent, second, shared);
+        let Claim::New { .. } = book.claim(agent, second, region.clone()) else {
+            panic!("replacement claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, second, region.region_id),
+            Admission::Announce { .. }
+        ));
+        assert_eq!(
+            book.report(agent, first, region.region_id, PostReport::TimedOut),
+            Admission::Quiet
+        );
+        assert!(book.take_staged_closes(agent).is_empty());
+        assert!(book.seed(agent, region.region_id).is_some());
     }
 
     #[tokio::test]

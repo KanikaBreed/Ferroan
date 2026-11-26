@@ -1101,8 +1101,9 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             .await;
     }
     // The circuit that was replaced drains the same list when it ends first.
-    // The sends do not hold this cleanup. A cancelled admission stages its
-    // close when the guard drops, so this take runs after that task has stopped.
+    // The sends do not hold this cleanup. Abort and await this circuit's
+    // admission tasks before this take: a cancelled admission stages its
+    // close when the guard drops, and an earlier take leaves it in the book.
     hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without

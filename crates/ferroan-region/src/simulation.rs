@@ -4301,6 +4301,56 @@ mod tests {
         drop(again);
     }
 
+    /// Production far hop: `close_departed` stages only the child outside the
+    /// destination's view, with this session. Dropping the lease afterwards
+    /// stages nothing more.
+    #[tokio::test]
+    async fn a_far_hop_stages_only_the_outside_child() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        let agent = accepted.expect.agent_id;
+        // `far_destination` is cell (3, 3). The next cell stays inside.
+        // Cell (7, 3) is outside: 768 + 256 + 254 < 1792.
+        let neighbour = |id: u128, loc_x: u32| RegionEnd {
+            server_uri: format!("http://192.0.2.{id}/"),
+            region_id: Uuid::from_u128(id),
+            name: "Neighbour".to_string(),
+            loc_x,
+            loc_y: 768,
+        };
+        let adjacent = neighbour(11, 1024);
+        let outside = neighbour(12, 1792);
+        let generation = state.root_generation(agent).unwrap();
+        for region in [&adjacent, &outside] {
+            assert!(matches!(
+                state.claim_child(agent, generation, region.clone()),
+                crate::children::Claim::New { .. }
+            ));
+            assert!(matches!(
+                state.finish_child(agent, generation, region.region_id),
+                crate::children::Admission::Announce { .. }
+            ));
+        }
+        state.close_departed(agent, &far_destination());
+        let staged = state.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, Uuid::from_u128(2));
+        assert_eq!(staged[0].1.region_id, outside.region_id);
+        drop(accepted);
+        assert!(
+            state.take_staged_closes(agent).is_empty(),
+            "the lease drop staged another close"
+        );
+    }
+
     /// `MakeChildAgent` spares a root whose open child is in the destination.
     #[tokio::test]
     async fn a_hop_away_spares_a_root_with_a_child_in_the_destination() {
