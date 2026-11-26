@@ -14,6 +14,9 @@ use ferroan_capture::{Kind, Record, read_complete_prefix};
 use ferroan_http::{Field, FieldMap, build_query_string, parse_query_string};
 use serde_json::{Map, Value, json};
 
+#[path = "object_cross_capture.rs"]
+pub(super) mod object_cross;
+
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
 const MAX_BODY: u64 = 1024 * 1024;
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";

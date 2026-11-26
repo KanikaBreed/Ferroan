@@ -6,3 +6,4 @@
 *.iar binary
 *.bin binary
 *.pcap binary
+fixtures/object-cross/*.http -text whitespace=cr-at-eol

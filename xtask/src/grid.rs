@@ -108,6 +108,10 @@ pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
     live::finish(run_inner(spec))
 }
 
+pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(login_capture::object_cross::extract(directory))
+}
+
 pub fn login_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(login_capture::generate(directory))
 }
@@ -728,12 +732,13 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "hop"
             | "uploads"
             | "avatars"
+            | "object-cross"
             | "prim-capture"
             | "report"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -994,7 +999,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
-            prim_capture: scenario == "prim-capture",
+            prim_capture: matches!(scenario, "prim-capture" | "object-cross"),
             basic_physics: spec.basic_physics && !ferroan,
         },
         &grid.passwords,
@@ -1026,7 +1031,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
-            prim_capture: false,
+            prim_capture: scenario == "object-cross",
             basic_physics: spec.basic_physics,
         },
         &grid.passwords,
@@ -1217,7 +1222,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "prim-capture" {
+    if scenario == "object-cross" {
+        let capture = login_capture::object_cross::extract(&root)?;
+        Ok(format!("{}\n{capture}", report.lines))
+    } else if scenario == "prim-capture" {
         let fixture = prim_capture::extract(&root)?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "report" {
@@ -1979,7 +1987,7 @@ fn start_region(
         return Err("run cargo xtask live build first".to_string());
     }
     prepare_region_cwd(cwd, publish, source)?;
-    if spec.prim_capture {
+    if spec.prim_capture && spec.name == HOME_NAME {
         fs::copy(
             crate::repo_root().join("fixtures/prim-updates/scene.db"),
             cwd.join("OpenSim.db"),

@@ -130,6 +130,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask config verify [directory]
        cargo xtask http generate [directory]
        cargo xtask http verify [directory]
+       cargo xtask http auth-generate
+       cargo xtask http auth-verify
        cargo xtask http status-generate
        cargo xtask http status-verify
        cargo xtask throttle generate
@@ -162,6 +164,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
+       cargo xtask live run object-cross grid --physics basicphysics
+       cargo xtask live object-cross-fixtures <capture-dir>
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
@@ -211,7 +215,7 @@ fn main() -> ExitCode {
     // Docker smoke and console-forms open listeners too. `live` installs from
     // the flag or the environment inside dispatch; every other command reads
     // the environment here.
-    if let Err(text) = ports::install(None) {
+    if let Err(text) = ports::install(None, false) {
         eprintln!("xtask: {text}");
         return ExitCode::from(2);
     }
@@ -248,6 +252,8 @@ fn main() -> ExitCode {
         ["http", "generate", directory] => http_oracle::generate(Some(PathBuf::from(directory))),
         ["http", "verify"] => http_oracle::verify(None),
         ["http", "verify", directory] => http_oracle::verify(Some(PathBuf::from(directory))),
+        ["http", "auth-generate"] => http_oracle::auth_generate(),
+        ["http", "auth-verify"] => http_oracle::auth_verify(),
         ["http", "status-generate"] => http_oracle::status_generate(),
         ["http", "status-verify"] => http_oracle::status_verify(),
         ["throttle", "generate"] => throttle_oracle::generate(),

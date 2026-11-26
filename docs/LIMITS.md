@@ -11,7 +11,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `http.post-body` | 1 MiB | `crates/ferroan-region/src/simulation.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | no | No matching cap. The region answers 413 on an oversized inbound body. The outbound connector refuses oversized JSON before compression or delivery. |
 | `http.asset-body` | 50,000,000 bytes | `crates/ferroan-services/src/asset/http.rs` | hard | no | `ServerUtils.cs` sets `XmlReaderSettings.MaxCharactersInDocument` to 50,000,000. |
 | `http.xml-chars` | 50,000,000 characters | `crates/ferroan-http/src/xml.rs`, asset parser | hard | no | Same `MaxCharactersInDocument`. The asset parser measures bytes. |
-| `http.xml-depth` | 64 | `crates/ferroan-http/src/xml.rs` | hard | no | Tranquillity's reader has no depth cap. |
+| `http.xml-depth` | 64 | `crates/ferroan-http/src/xml.rs`, `crates/ferroan-services/src/auth/authorize.rs` | hard | no | Tranquillity's reader has no depth cap. |
 | `http.query-bytes` | 1 MiB | `crates/ferroan-http/src/query.rs` | hard | no | Query strings are not capped. |
 | `http.fields` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | Query fields are not capped. |
 | `http.list-items` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | A `[]` list is not capped. |

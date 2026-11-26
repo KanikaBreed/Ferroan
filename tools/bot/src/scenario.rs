@@ -4,6 +4,8 @@
 //! Scenarios for `cargo xtask live run`. Each check uses a reply from the
 //! region. The caller starts and stops the region and supplies the accounts.
 
+#[path = "object_cross.rs"]
+mod object_cross;
 mod observer;
 use observer::{ObservedAvatar, ObserverSession};
 
@@ -132,7 +134,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let http = login::http_client().map_err(|error| error.to_string())?;
     if name == "caps" {
-        let (mut session, login) = enter(&http, harness, &harness.owner).await?;
+        let (mut session, login) = enter(&http, harness, &harness.owner, "last").await?;
         let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
         leave(harness, &mut session, &harness.owner).await?;
         return Ok(format!("{line}\nlive: run passed"));
@@ -153,8 +155,11 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let line = uploads_scenario(&http, harness).await?;
         return Ok(format!("{line}\nlive: run passed"));
     }
+    if name == "object-cross" {
+        return object_cross::run(&http, harness).await;
+    }
     if name == "prim-capture" {
-        let (mut session, _) = enter(&http, harness, &harness.owner).await?;
+        let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
         let result = wait_for_stored_prims(&mut session).await;
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
@@ -170,7 +175,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {name}; expected all, object-cross, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };
@@ -240,7 +245,7 @@ async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
 }
 
 async fn login_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner).await?;
+    let (mut session, _) = enter(http, harness, &harness.owner, "last").await?;
     let region = session.region_id().ok_or("the handshake set no region")?;
     if region != harness.region_id {
         let _ = leave(harness, &mut session, &harness.owner).await;
@@ -330,7 +335,7 @@ where
 {
     harness.http_trace.scope(async {
         let http = login::http_client().map_err(|error| error.to_string())?;
-        let (mut session, _) = enter(&http, harness, &harness.owner).await?;
+        let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
         let observed = async {
             let region = session.region_id().ok_or("the handshake set no region")?;
             if region != harness.region_id { return Err("arrival region differs from the test region".to_owned()); }
@@ -378,9 +383,9 @@ async fn enter_observed_pair(
     first: &Account,
     second: &Account,
 ) -> Result<(ObserverSession, ObserverSession), String> {
-    let (session, _) = enter(http, harness, first).await?;
+    let (session, _) = enter(http, harness, first, "last").await?;
     let mut observer = ObserverSession::new(session, second.principal_id);
-    let (login, observation) = observer.during(enter(http, harness, second)).await;
+    let (login, observation) = observer.during(enter(http, harness, second, "last")).await;
     let error = match (login, observation) {
         (Ok((session, _)), Ok(())) => {
             return Ok((observer, ObserverSession::new(session, first.principal_id)));
@@ -569,8 +574,8 @@ async fn observed_forward(
 async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
     const SAY: &str = "ferroan harness chat";
     const DEBUG: &str = "ferroan harness debug";
-    let (mut listener, _) = enter(http, harness, &harness.chat).await?;
-    let (mut speaker, _) = enter(http, harness, &harness.owner).await?;
+    let (mut listener, _) = enter(http, harness, &harness.chat, "last").await?;
+    let (mut speaker, _) = enter(http, harness, &harness.owner, "last").await?;
     let speaker_id = speaker.agent();
     for (channel, text) in [(0, SAY), (i32::MAX, DEBUG)] {
         let mut chat = world::say(speaker_id, text);
@@ -621,9 +626,9 @@ async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Stri
 
 /// Both harness accounts in the region at once. No chat is sent or required.
 async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut chat, _) = enter(http, harness, &harness.chat).await?;
+    let (mut chat, _) = enter(http, harness, &harness.chat, "last").await?;
     refuse_chat(&mut chat)?;
-    let owner_login = enter(http, harness, &harness.owner);
+    let owner_login = enter(http, harness, &harness.owner, "last");
     tokio::pin!(owner_login);
     let owner_result = loop {
         tokio::select! {
@@ -665,12 +670,12 @@ async fn roots_scenario(http: &reqwest::Client, harness: &Harness) -> Result<Str
 
 /// Both harness accounts upload one texture while they are in the region together.
 async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut owner, owner_login) = enter(http, harness, &harness.owner).await?;
+    let (mut owner, owner_login) = enter(http, harness, &harness.owner, "last").await?;
     let Some(owner_folder) = textures_folder(&owner_login) else {
         let _ = leave(harness, &mut owner, &harness.owner).await;
         return Err("the owner login reply has no Textures folder".to_string());
     };
-    let chat_login = enter(http, harness, &harness.chat);
+    let chat_login = enter(http, harness, &harness.chat, "last");
     tokio::pin!(chat_login);
     let chat_result = loop {
         tokio::select! {
@@ -1078,8 +1083,8 @@ async fn leave_while_driving(
 }
 
 async fn build_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut owner, _) = enter(http, harness, &harness.owner).await?;
-    let (mut other, _) = enter(http, harness, &harness.chat).await?;
+    let (mut owner, _) = enter(http, harness, &harness.owner, "last").await?;
+    let (mut other, _) = enter(http, harness, &harness.chat, "last").await?;
     let owner_agent = owner.agent();
     let stand = world::agent_update(
         owner_agent,
@@ -1158,7 +1163,7 @@ async fn teleport_neighbour(http: &reqwest::Client, harness: &Harness) -> Result
         .neighbour
         .as_ref()
         .ok_or("neighbour teleport needs a grid-mode harness")?;
-    let (session, _) = enter(http, harness, &harness.owner).await?;
+    let (session, _) = enter(http, harness, &harness.owner, "last").await?;
     // Circuits the source region kept as children. The return hop reuses
     // one instead of sending a second UseCircuitCode.
     let mut parked: Vec<Session> = Vec::new();
@@ -1212,7 +1217,7 @@ async fn teleport_hop(http: &reqwest::Client, harness: &Harness) -> Result<Strin
         .neighbour
         .as_ref()
         .ok_or("neighbour hop needs a grid-mode harness")?;
-    let (session, _) = enter(http, harness, &harness.owner).await?;
+    let (session, _) = enter(http, harness, &harness.owner, "last").await?;
     let mut parked: Vec<Session> = Vec::new();
     let away = cross_to(
         http,
@@ -1590,7 +1595,7 @@ impl AbortPoll {
 }
 
 async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner).await?;
+    let (mut session, _) = enter(http, harness, &harness.owner, "last").await?;
     let agent = session.agent();
     let mut start = None;
     let mut handle = None;
@@ -1659,7 +1664,7 @@ async fn teleport_scenario(http: &reqwest::Client, harness: &Harness) -> Result<
 }
 
 async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, login) = enter(http, harness, &harness.owner).await?;
+    let (mut session, login) = enter(http, harness, &harness.owner, "last").await?;
     let folder = textures_folder(&login).ok_or("the login reply has no Textures folder")?;
     let uploaded = upload_texture(http, &session, folder, &harness.texture).await?;
     let fetched = fetch_texture(http, &session, uploaded).await?;
@@ -1684,7 +1689,7 @@ async fn texture_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
 }
 
 async fn inventory_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, login) = enter(http, harness, &harness.owner).await?;
+    let (mut session, login) = enter(http, harness, &harness.owner, "last").await?;
     let root = login.inventory_root;
     if root.is_nil() {
         let _ = leave(harness, &mut session, &harness.owner).await;
@@ -1707,6 +1712,7 @@ async fn enter(
     http: &reqwest::Client,
     harness: &Harness,
     account: &Account,
+    start: &str,
 ) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
@@ -1718,7 +1724,7 @@ async fn enter(
             login_uri: harness.login_uri.clone(),
             username: format!("{} {}", account.first_name, account.last_name),
             password: account.password.clone(),
-            start: "last".to_string(),
+            start: start.to_owned(),
         },
     )
     .await

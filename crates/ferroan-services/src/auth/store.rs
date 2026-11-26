@@ -51,6 +51,7 @@ use ferroan_db::Pool;
 use sqlx::Row;
 use uuid::Uuid;
 
+use super::hash::ZERO_KEY;
 use super::model::AuthRow;
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +109,56 @@ impl AuthStore {
         } else {
             self.insert(row).await
         }
+    }
+
+    /// D79: exactly one caller can clear the key it read. A concurrent clear,
+    /// replacement or deletion leaves the row untouched and refuses the token.
+    pub(crate) async fn consume_web_key(
+        &self,
+        principal: Uuid,
+        key: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = if let Some(pool) = self.pool.sqlite() {
+            let sql = format!(
+                "UPDATE `{}` SET webLoginKey = ? WHERE UUID = ? AND webLoginKey = ? COLLATE BINARY",
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal.to_string())
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else if let Some(pool) = self.pool.mysql() {
+            // The auth table can use a case-insensitive collation. The key comparison is ordinal.
+            let sql = format!(
+                "UPDATE `{}` SET webLoginKey = ? WHERE UUID = ? AND webLoginKey = CAST(? AS BINARY)",
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal.to_string())
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else if let Some(pool) = self.pool.postgres() {
+            let sql = format!(
+                r#"UPDATE {} SET "webLoginKey" = $1 WHERE uuid = $2 AND "webLoginKey" = $3"#,
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(ZERO_KEY)
+                .bind(principal)
+                .bind(key)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else {
+            return Err(StoreError::Backend);
+        };
+        Ok(changed > 0)
     }
 
     /// `SetDataItem`. The column name is part of the statement, so it has to
