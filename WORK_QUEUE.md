@@ -284,7 +284,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
 | Q106 | P3.1b: notices and the vendored-fork fallback | READY after Q105 |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
-| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q108 | P3.29: Limits and native-boundary fuzz | DONE (this PR) |
 | Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
 | Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
