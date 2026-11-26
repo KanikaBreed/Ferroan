@@ -2,6 +2,8 @@
 
 Grid services. This crate holds the asset service and the user-account service, including user aliases. `ferroan-robust` mounts a service only when its ini section is present.
 
+The avatar service exposes `get_appearance` and `set_appearance` over the configured avatar store. An empty record yields the constructor outfit. A nonempty record restores missing body parts, reads legacy item/asset pairs and applies indexed layers in numeric order. Malformed appearance rows return `Ok(None)`; store and size errors propagate to the caller. Attachment rows retain item order within each point and omit asset IDs. Heights are written with a decimal point and read with either decimal separator (TB44).
+
 The asset service is what a Tranquillity region calls on Robust.
 
 The routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`:
@@ -90,6 +92,8 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 | Estates and experiences (P1.12) | Off in the shipped GridServer config. Experience's own section loads `UserAccountService` when the service is on. | `EstateServerURI` and `ExperienceServerURI`. |
 
 ## Presence rows
+
+`presence::PgPresenceData` opens `Presence` by default. Pass `[PresenceService] Realm` to `new` for a different PostgreSQL v4 table. PostgreSQL folds the validated identifier to lowercase as in Pin8. A store with an existing session ID updates the supplied fields. A new session defaults to a zero secure session ID and SQL NULL for LastSeen. The row exposes SQL NULL as an empty string. For a non-null timestamp, Ferroan's `Data["LastSeen"]` holds PostgreSQL ISO text with microsecond precision. Pin8 under Robust gives en-US text without fractional seconds. Q26d must accept the provider's representation and LoginAgent must store a fresh row without LastSeen. Ferroan preserves the fetched value on re-store (TB105, D84). A successful region report stamps the database clock in the session zone.
 
 The service can use `dyn PresenceStore` for all seven asynchronous operations. A store returns `Ok(false)` when it writes nothing. Bound and database errors have distinct variants. After a successful region report the service can call `set_region_id` on its cached row, including a detached row fetched from SQL.
 

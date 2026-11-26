@@ -182,13 +182,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
-| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
-| Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
+| Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
+| Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
-| Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
+| Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | READY after Q65c2 |
@@ -237,7 +237,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
 | Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
-| Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
+| Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
@@ -245,7 +245,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
 | Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
-| Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | READY after Q27b1 |
+| Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | DONE (this PR) |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
 | Q27e | P1.4e: `cargo xtask live compare avatar` and `--rust avatar` | READY after Q27d |
@@ -550,11 +550,11 @@ Proposed split, each with its own acceptance:
 
 1. **Shared Presence row and Null store** (after Q26b, about half a day). Cover Store, session and field Get, field Delete, ReportAgent, LogoutRegionAgents and VerifyAgent. Compare the same sequence with Pin8 Null in a single process, including visibility through two instances, replacement by session, arbitrary data fields, missing rows, a zero-region report and the always-false verification result. Bound the in-memory store and result sizes. This part supplies the common API for both SQL stores.
 2. **MySQL Presence v4** (after part 1, about three quarters of a day). Exercise the seven operations against the table created by the Pin8 migration. Cross-read C# writes from Rust and Rust writes from C#, including replacement, two sessions for one user, a region move and logout, and secure-session verification. Check the timestamp default and report update. Record the Pin8 refused re-store next to the Rust re-store that preserves the fetched timestamp (TB104, proposed D84).
-3. **PostgreSQL Presence v4** (after part 1, about three quarters of a day). Use the same two-way check with native UUIDs, the unique session index and the nullable timestamp. Cover a fresh row, partial store, report, region logout and verification. Check preservation of both a null timestamp and a reported timestamp. Record the Pin8 re-store exception alongside the Rust result (TB105, proposed D84). Q26d waits for all three parts.
+3. **PostgreSQL Presence v4** (after part 1, about three quarters of a day). Use the same two-way check with native UUIDs, the unique session index and the nullable timestamp. Cover a fresh row, partial store, report, region logout and verification. Check preservation of both a null timestamp and a reported timestamp. Record the Pin8 exceptions for fetched NULL and reported timestamps alongside the Rust results (TB105, D84). Q26d waits for all three parts.
 
 Validation of this split: `cargo xtask check` passed locally. The probes used Pin8 directly. Rust/C# cross-reads remain acceptance work for parts 2 and 3.
 
-The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. Q26c2 and Q26c3 implement the same seven-operation `PresenceStore` trait as Null. Q26d uses it to call the configured provider. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
+The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. Q26c2 and Q26c3 implement the same seven-operation `PresenceStore` trait as Null. Q26d uses it to call the configured provider. The manager approved the MySQL half of D84. Keep the Pin8 refusal and the Rust timestamp assertion in the cross-read. Q26d LoginAgent must store a fresh row without LastSeen. PostgreSQL is also approved on these conditions. Its cross-read checks both Pin8 re-store exceptions, for NULL and reported timestamps, and the Rust results.
 
 Q25 (21 November 2026, `feat/p1-2-auth`): [PR #160](https://github.com/KanikaBreed/Ferroan/pull/160). `ferroan-robust` serves `POST /auth` and `POST /authorization`. The stored password is `MD5(MD5(password) + ":" + salt)`. `live compare auth` matches the HTTP records and a cross-read. Login stays on `PasswordAuthenticationService` and opens the same `auth.db`: `LLLoginService` loads authentication with `(config, userAccountService)`, and `AuthenticationServicesConnector` has no such constructor. An invalid web login key is a failure and the password is then tried (TB41, D33). Authorization checks the module and opens no database (TB42, D34). [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812393) on `e9f7aa0`: Linux 11m13s, Windows 4m4s, macOS 4m3s. [Live](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812271): scope 1m7s, scenarios 11m9s, ferrobot 10m40s, images 5m43s, services 22m18s, gate 1m3s. `login: pass`. `auth: match (16 http records); cross-read ok`.
 

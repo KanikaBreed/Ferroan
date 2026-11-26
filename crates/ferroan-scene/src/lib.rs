@@ -73,6 +73,7 @@
 
 pub mod avatars;
 mod bits;
+pub mod client_flags;
 pub mod coarse;
 mod compress;
 pub mod entity_queue;
@@ -82,6 +83,7 @@ mod frame;
 mod height;
 mod initial;
 mod motion;
+pub mod object_permissions;
 mod objects;
 pub mod parcels;
 mod payloads;

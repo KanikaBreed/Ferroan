@@ -53,6 +53,15 @@ const AVATAR_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_AVATAR_ADO",
 };
 
+const PRESENCE_CROSS: PluginCross = PluginCross {
+    label: "presence",
+    artifacts: ".scratch/presence-oracle/artifacts",
+    project: "tools/presence-oracle/PresenceOracle.csproj",
+    dll: "bin/PresenceOracle/release/PresenceOracle.dll",
+    oracle_env: "FERROAN_PRESENCE_ORACLE",
+    ado_prefix: "FERROAN_PRESENCE_ADO",
+};
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///
@@ -133,6 +142,16 @@ pub fn avatar_cross() -> ExitCode {
     )
 }
 
+/// The pinned PostgreSQL provider migrates the database named in the environment.
+pub fn presence_postgres_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "postgres_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_PG_CROSS",
+        false,
+    )
+}
+
 /// Record or check the pinned loopback HTTP responses for the five avatar forms.
 pub fn avatar_service(writing: bool) -> ExitCode {
     let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
@@ -170,6 +189,25 @@ pub fn avatar_service(writing: bool) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+pub fn avatar_appearance(writing: bool) -> ExitCode {
+    let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
+    let action = if writing { "generate" } else { "verify" };
+    let status = crate::dotnet_ci::command("dotnet")
+        .arg(dll)
+        .args(["appearance", action, &pin])
+        .arg(crate::repo_root().join("fixtures/avatar/appearance.json"))
+        .status();
+    if matches!(status, Ok(status) if status.success()) {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("avatar: appearance oracle failed: {status:?}");
+        ExitCode::FAILURE
+    }
 }
 
 fn build_plugin_oracle(target: &PluginCross) -> Result<(PathBuf, String), ExitCode> {

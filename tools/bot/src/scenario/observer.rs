@@ -52,7 +52,7 @@ impl ObserverSession {
     }
 }
 
-const HISTORY: usize = 256;
+use crate::session::OBSERVER_HISTORY as HISTORY;
 
 fn remember<T>(history: &mut Vec<T>, entry: T) -> Result<(), String> {
     if history.len() >= HISTORY {
@@ -75,6 +75,7 @@ pub(super) struct ObservedAvatar {
     /// The local id of the other avatar's full `ObjectUpdate`.
     pub(super) local_id: Option<u32>,
     appearance: bool,
+    pub(super) prim_arrival: Option<super::prim_arrival::ObservedPrims>,
     /// Local ids in every `KillObject` this bot received.
     pub(super) killed: Vec<u32>,
     /// Every `UUIDNameReply` block: the id, then the first and last name.
@@ -113,6 +114,9 @@ impl ObservedAvatar {
     }
 
     fn record(&mut self, packet: &IncomingPacket, me: Uuid, other: Uuid) -> Result<(), String> {
+        if let Some(trace) = &mut self.prim_arrival {
+            trace.note(packet)?;
+        }
         if world::chat_heard(packet).is_some() {
             return Err("the region sent ChatFromSimulator".to_string());
         }
