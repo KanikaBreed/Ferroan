@@ -175,7 +175,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
-| Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
+| Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | READY |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | READY after Q60b |

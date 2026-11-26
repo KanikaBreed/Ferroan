@@ -125,6 +125,8 @@ Pin3 updates the implemented region/client paths to the maintainer's Tranquillit
 
 Q60a's `crates/ferroan-scene/src/parcels.rs` follows `Source/OpenSim.Data.SQLite/SQLiteSimulationData.cs`, `Source/OpenSim.Framework/LandData.cs`, `Source/OpenSim.Framework/{ViewerEnvironment,ViewerDaycycle,ViewerSky,ViewerWater}.cs` and `Source/OpenSim.Region.CoreModules/World/Land/{LandObject,LandManagementModule}.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. The file retains the OpenSimulator BSD notice.
 
+Q60b's `crates/ferroan-scene/src/parcels/overlay.rs` follows `Source/OpenSim.Region.CoreModules/World/Land/{LandManagementModule,LandChannel}.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` and parcel flags in libopenmetaverse `OpenMetaverse/ParcelManager.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. It retains both BSD notices.
+
 The parcel vector text parser in `crates/ferroan-scene/src/parcels/vector_text.rs` follows `OpenMetaverse.Types/{Vector2,Vector3,Quaternion}.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` under the retained BSD notice.
 
 The PostgreSQL Presence provider follows `Source/OpenSim.Data.PGSQL/PGSQLPresenceData.cs`, `PGSQLGenericTableHandler.cs`, `PGSQLManager.cs` and `Resources/Presence.migrations` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).

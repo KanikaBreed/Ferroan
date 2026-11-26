@@ -33,7 +33,10 @@
 
 //! SQLite land rows and the immutable region parcel map, in four-metre cells.
 
+mod overlay;
 mod vector_text;
+
+pub use overlay::OverlayPacket;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

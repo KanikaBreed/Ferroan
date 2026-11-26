@@ -74,6 +74,8 @@ The grid harness captures riderless object crossings on two separate C# simulato
 
 The scene aggregates the root's permission masks with every linked part's inventory. For each recipient the dispatcher intersects its input with the permission module's result before writing `ObjectUpdate.UpdateFlags` (TB95). `ferroan-scene::object_permissions` evaluates the build actions against the resolved prim, linkset and parcel. Live-client calls use the presence's god state and cached group powers. UUID calls use administrator eligibility and group service membership. Rez checks the requested parcel and duplicate checks the parcel under the object. Selection and build actions use one friendship lookup. Delete and take preserve Pin8's object-UUID lookups (TB96). The [permissions oracle](tools/permissions-oracle/README.md) records the module and viewer words and the object and parcel decisions for P2.7b and P2.7c.
 
+The scene's `ParcelMap::overlay` encodes the loaded 4 m cells for one viewer using the requester's ID and membership in each owning group. It yields numbered 1,024-byte payloads in south-to-north row order. Q60c supplies arrival timing and delivery on the Land throttle.
+
 ## Where code comes from
 
 The grid harness schedules scenarios individually and waits for bounded

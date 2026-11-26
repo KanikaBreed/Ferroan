@@ -98,6 +98,8 @@ Release `open_objects` on stores that also have a shape and an item for every ex
 
 `cargo xtask regionstore parcels` compares Pin8 and Rust on the same SQLite file, including access entries and the environment version. The checked-in seed and dump also run in the workspace tests. See the [parcel fixture](../fixtures/regionstore/README.md#sqlite-parcels).
 
+`cargo test -p ferroan-scene parcels::overlay` compares two viewers' parcel sequences and payloads with [Pin8 captures](../fixtures/parcel-overlay/README.md) on four SQLite scenes, including the 512-byte legacy bitmap in a wider region. A separate test checks zero padding on the last partial packet.
+
 ## Region settings
 
 `cargo xtask regionstore settings` builds the same oracle and writes [fixtures/regionstore/settings.db](../fixtures/regionstore/settings.db) and [settings.json](../fixtures/regionstore/settings.json). The file is RegionStore 48. The dump is one region's settings and spawn points. Ordinary tests replay it and do not start the oracle. `cargo xtask regionstore verify` also reloads that file when it runs the `regionstore_` tests. The command does not start a server or the live harness. MySQL and PostgreSQL settings stay on the fresh handshake defaults. Scene tests copy SQLite fixtures into private directories. Store loaders await pool closure, and fixture teardown tolerates transient Windows file locks.
