@@ -919,6 +919,12 @@ impl Extras {
     }
 }
 
+/// The same shape getter supplies the XML writer and the full LLUDP block.
+pub(crate) fn shape_update_extras(data: &[u8]) -> (u8, Vec<u8>) {
+    let extras = decode_extras(data);
+    (extras.sculpt_type, extras.bytes)
+}
+
 fn decode_extras(data: &[u8]) -> Extras {
     let mut extras = Extras::blank();
     if data.len() > 1 && data[0] != 0 {

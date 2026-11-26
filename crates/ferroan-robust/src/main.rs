@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use axum::Router;
 use ferroan_config::GridLoad;
 use ferroan_services::{
-    AccountHttp, AliasHttp, AssetHttp, AuthHttp, GridUserHttp, authorization_router,
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, authorization_router,
     listen_address, network_port, open_authorization,
 };
 
@@ -77,10 +77,11 @@ fn run() -> Result<(), String> {
         let authorization = config
             .section_names()
             .any(|name| name == "AuthorizationService");
+        let avatars = config.section_names().any(|name| name == "AvatarService");
         let griduser = config.section_names().any(|name| name == "GridUserService");
-        if !assets && !accounts && !aliases && !auth && !authorization && !griduser {
+        if !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars {
             return Err(
-                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService or GridUserService section"
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService or GridUserService section"
                     .to_string(),
             );
         }
@@ -122,6 +123,12 @@ fn run() -> Result<(), String> {
             open_authorization(config).map_err(|error| error.to_string())?;
             router = router.merge(authorization_router());
             tracing::info!("ferroan-robust: authorization service on {listen}:{port}");
+        }
+        if avatars {
+            let http = AvatarHttp::open(config).await.map_err(|error| error.to_string())?;
+            pools = pools.avatar(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: avatar service on {listen}:{port}");
         }
         if griduser {
             let http = GridUserHttp::open(config)

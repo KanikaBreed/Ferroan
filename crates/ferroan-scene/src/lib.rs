@@ -66,8 +66,8 @@
 //! crate does not write those packets.
 //!
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
-//! `ferroan-region` keeps this load at startup. A prim `ObjectUpdate` is a
-//! later row.
+//! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
+//! Viewer delivery follows in P2.5a3.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -84,6 +84,7 @@ mod initial;
 mod motion;
 mod objects;
 mod payloads;
+pub mod prim_update;
 pub mod prioritizer;
 mod settings;
 mod store;

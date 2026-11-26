@@ -133,24 +133,58 @@ pub fn avatar_cross() -> ExitCode {
     )
 }
 
-fn run_plugin_cross(
-    target: &PluginCross,
-    test_name: &str,
-    gate: &str,
-    databases: bool,
-) -> ExitCode {
+/// Record or check the pinned loopback HTTP responses for the five avatar forms.
+pub fn avatar_service(writing: bool) -> ExitCode {
+    let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
+    let plan = match crate::ports::Plan::resolve(None) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("avatar: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(port) = plan.today_or_base(crate::ports::Slot::RobustPrivate) else {
+        return ExitCode::FAILURE;
+    };
+    let action = if writing { "generate" } else { "verify" };
+    let fixtures = crate::repo_root().join("fixtures/avatar");
+    for (mode, file) in [
+        ("service", "service.json"),
+        ("service-mysql", "service-mysql.json"),
+    ] {
+        if mode == "service-mysql" && std::env::var_os("FERROAN_AVATAR_ADO_MYSQL").is_none() {
+            println!("avatar: MySQL HTTP oracle skipped (FERROAN_AVATAR_ADO_MYSQL unset)");
+            continue;
+        }
+        let status = crate::dotnet_ci::command("dotnet")
+            .arg(&dll)
+            .args([mode, action, &pin, &port.to_string()])
+            .arg(fixtures.join(file))
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            eprintln!("avatar: {mode} HTTP oracle failed: {status:?}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn build_plugin_oracle(target: &PluginCross) -> Result<(PathBuf, String), ExitCode> {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("{}: {error}", target.label);
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
-    if let Err(error) = pinned_and_checked(&root, &reference) {
+    let revision = pinned_and_checked(&root, &reference).map_err(|error| {
         eprintln!("{}: {error}", target.label);
-        return ExitCode::FAILURE;
-    }
+        ExitCode::FAILURE
+    })?;
     let artifacts = root.join(target.artifacts);
     if let Err(error) = fs::create_dir_all(&artifacts) {
         eprintln!(
@@ -158,7 +192,7 @@ fn run_plugin_cross(
             target.label,
             artifacts.display()
         );
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let project = root.join(target.project);
     if !dotnet(
@@ -171,16 +205,30 @@ fn run_plugin_cross(
         false,
         &[],
     ) {
-        return fail_if_dirty(target.label, &reference);
+        return Err(fail_if_dirty(target.label, &reference));
     }
     if !checkout_is_clean(target.label, &reference) {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let dll = artifacts.join(target.dll);
     if !dll.is_file() {
         eprintln!("{}: missing {}", target.label, dll.display());
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
+    Ok((dll, revision))
+}
+
+fn run_plugin_cross(
+    target: &PluginCross,
+    test_name: &str,
+    gate: &str,
+    databases: bool,
+) -> ExitCode {
+    let root = crate::repo_root();
+    let (dll, _) = match build_plugin_oracle(target) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
     let mut command = Command::new("cargo");
     command
         .current_dir(&root)
