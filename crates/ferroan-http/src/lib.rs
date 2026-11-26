@@ -50,6 +50,9 @@ pub const MAX_QUERY_BYTES: usize = 1024 * 1024;
 /// Keys in one map, including list items added one at a time.
 pub const MAX_FIELDS: usize = 4096;
 
+/// Default page returned by BaseHttpServer.GetHTTP404 at Pin8.
+pub const HTTP_404: &str = "<HTML><HEAD><TITLE>404 Page not found</TITLE><BODY><BR /><H1>Ooops!</H1><P>The page you requested has been obsconded with by knomes. Find hippos quick!</P></BODY></HTML>";
+
 #[cfg(test)]
 mod tests {
     use super::*;

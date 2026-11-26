@@ -487,10 +487,17 @@ impl DatagramIo for CountingSocket {
         result
     }
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Coding {
+    Plain,
+    Zero,
+    Preencoded,
+}
+
 #[derive(Clone)]
 struct Payload {
     bytes: Vec<u8>,
-    zerocoded: bool,
+    coding: Coding,
     /// False only for a task packet C# sends unreliable.
     reliable: bool,
 }
@@ -752,7 +759,7 @@ impl State {
                     let Some(payload) = self.unacked.payload(seq) else {
                         continue;
                     };
-                    let size = packet::raw_len(&payload.bytes, payload.zerocoded);
+                    let size = packet::raw_len(&payload.bytes, payload.coding == Coding::Zero);
                     if !self
                         .throttle
                         .try_spend(RESEND, size, self.throttle_clock.now_secs())
@@ -828,7 +835,7 @@ impl State {
 
     /// `BeginFireQueueEmpty` for the task category: when its outbox holds
     /// fewer than five packets and the feed has updates, at most every 20 ms,
-    /// take what the task bucket drips in 30 ms and queue it as terse
+    /// take what the task bucket drips in 30 ms and queue full then terse
     /// packets. True when packets were queued.
     fn take_entity_updates(&mut self) -> Result<bool, CircuitError> {
         let Some(feed) = self.feed.as_ref() else {
@@ -844,13 +851,22 @@ impl State {
         }
         self.queue_empty_at = now + QUEUE_EMPTY_INTERVAL;
         let budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
-        let blocks = feed.updates.take_terse(budget);
         let region_handle = self.arrival.region_handle;
-        let mut queued = false;
+        let room = MAX_UNACKED.saturating_sub(self.unacked.len() + self.pending_task.len());
+        let (full, blocks) =
+            crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
+        let mut queued = !full.is_empty();
+        for bytes in full {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Preencoded,
+                reliable: true,
+            });
+        }
         for packet in terse_packets(region_handle, &blocks) {
             // `terseUpdateHeader` zero-codes a message the template leaves plain.
             let mut payload = encode_payload(&packet)?;
-            payload.zerocoded = true;
+            payload.coding = Coding::Zero;
             self.pending_task.push_back(payload);
             queued = true;
         }
@@ -903,7 +919,7 @@ impl State {
     /// True when this category can carry `payload` right now. The size is the
     /// reliable datagram that would leave, including the header.
     fn spend(&mut self, category: usize, payload: &Payload) -> bool {
-        let size = packet::raw_len(&payload.bytes, payload.zerocoded);
+        let size = packet::raw_len(&payload.bytes, payload.coding == Coding::Zero);
         self.throttle
             .try_spend(category, size, self.throttle_clock.now_secs())
     }
@@ -1798,13 +1814,16 @@ fn wire(payload: &Payload, sequence: u32, reliable: bool, resent: bool) -> Vec<u
     let mut bytes = Vec::new();
     packet::build_raw(
         &payload.bytes,
-        payload.zerocoded,
+        payload.coding == Coding::Zero,
         sequence,
         reliable,
         resent,
         &[],
         &mut bytes,
     );
+    if payload.coding == Coding::Preencoded {
+        bytes[0] |= ferroan_protocol::PacketFlags::ZEROCODED;
+    }
     bytes
 }
 
@@ -1824,7 +1843,11 @@ fn encode_payload<M: Msg>(message: &M) -> Result<Payload, CircuitError> {
     }
     Ok(Payload {
         bytes: writer.buf,
-        zerocoded: M::ZEROCODED,
+        coding: if M::ZEROCODED {
+            Coding::Zero
+        } else {
+            Coding::Plain
+        },
         reliable: true,
     })
 }
@@ -3381,7 +3404,7 @@ mod tests {
 
         use ferroan_protocol::reliability::Resend;
 
-        use super::{Payload, State, UdpCounters};
+        use super::{Coding, Payload, State, UdpCounters};
         use crate::{ArrivalConfig, HandshakeConfig};
 
         let udp = Arc::new(UdpCounters::default());
@@ -3398,7 +3421,7 @@ mod tests {
         let now = std::time::Instant::now();
         let payload = Payload {
             bytes: vec![1],
-            zerocoded: false,
+            coding: Coding::Plain,
             reliable: true,
         };
         first

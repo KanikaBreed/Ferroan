@@ -191,7 +191,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
-| Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | READY after Q65c2 |
+| Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3a |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
@@ -246,7 +246,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
 | Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
 | Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | DONE (this PR) |
-| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
+| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | DONE (this PR) |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
 | Q27e | P1.4e: `cargo xtask live compare avatar` and `--rust avatar` | READY after Q27d |
 | Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |
@@ -772,7 +772,7 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
-### Q65c3 review and proposed split
+### Q65c3 review and approved split
 
 **BLOCKED** (`feat/q65c3-task-drain`, Pin8 `c401bceecd`). Estimated one day for the mixed Task drain and live comparison, plus half to one day for the negotiated material send and its C# evidence. `LLClientView.ProcessEntityUpdates` sends the full and terse lists on Task. Its separate `needMaterials` path sends reliable `GenericStreamingMessage` method 16757 for a PBR viewer. The P2.5d row also names this path.
 

@@ -436,6 +436,11 @@ impl ClientThrottle {
     }
 
     #[cfg(test)]
+    pub(crate) fn balance(&self, category: usize) -> f32 {
+        self.categories[category].tokens
+    }
+
+    #[cfg(test)]
     pub(crate) fn view(&self) -> TreeView {
         let scene = self.scene.lock();
         let scene_rate = scene_drip(&scene);

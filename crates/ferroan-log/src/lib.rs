@@ -156,6 +156,27 @@ impl Drop for Guard {
 }
 
 impl Guard {
+    /// Advertise a server command to authenticated remote-console sessions.
+    /// Its blocking handler receives the arguments after the registered words.
+    pub fn register_console_command(
+        &self,
+        words: &'static [&'static str],
+        help_xml: &'static str,
+        run: impl Fn(&[&str]) -> String + Send + Sync + 'static,
+    ) {
+        if let Some(state) = &self.hub.console {
+            state
+                .service_commands
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(console::ServiceCommand {
+                    words,
+                    help_xml,
+                    run: Arc::new(run),
+                });
+        }
+    }
+
     pub fn console_router(&self) -> Option<axum::Router> {
         self.hub.console.clone().map(console::router)
     }
