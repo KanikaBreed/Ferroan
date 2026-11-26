@@ -15,6 +15,7 @@ mod caps_probe;
 pub mod circuit;
 pub mod login;
 mod redact_scan;
+pub mod register;
 pub mod scenario;
 pub mod session;
 pub mod throttle;
