@@ -172,7 +172,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
-| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (proposed split below) |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
@@ -728,6 +728,14 @@ The "Found while working" rule (manager, 25 November 2026): every PR added its f
 **BLOCKED, 25 November 2026** (`feat/q60-parcel-overlay`). Estimated two engineering days for SQLite land loading, a store-backed packet comparison and delivery on the viewer circuit. The existing login capture includes `ParcelOverlay`, but does not associate a multi-parcel seed with the expected bytes for a particular viewer. The circuit already drains terrain through the Land throttle. It still needs the parcel map, the viewer's relationship to each parcel and the Pin8 send conditions. Pin8 `c401bceecd` checks membership in the parcel's owning group even when the viewer has a different active group (`LLClientView.IsGroupMember`, line 421).
 
 The manager approved Q60a through Q60c. Their dependencies and acceptance checks are in TASKS.md.
+
+### Q60c proposed split
+
+**BLOCKED, 25 November 2026** (`feat/q60c-parcel-delivery`). Estimate 1½–2 engineering days for the remaining P2.6a3 acceptance. The circuit already drains a Land FIFO and the frame already waits for a handshake reply, seed capabilities and initial-data ticks. The missing work is independently testable:
+
+1. **Read the viewer's parcel-group memberships** (about half a day). Pin8 `c401bceecd`, `LLClientView.RefreshGroupMembership` (13199) obtains all memberships from `GroupsModule.GetMembershipData` (926). `IsGroupMember` (421) tests for a key, including when its powers are zero. Ferroan's transfer data carries an active group, and its region has no membership-list reader. Supply a bounded read-only lookup for the configured groups source. Q60b exercises the local SQLite connector; the Pin8 remote connector requests the whole list with `GETMEMBERSHIP` and `ALL`. Check it against Pin8 with groups disabled, a non-member and Q60b's inactive, zero-power member. The latter receives 0xf2 at East's border where the estate owner receives 0xf4. Group creation, role edits and other P1.10 operations stay with P1.10.
+2. **Capture the Pin8 arrival timeline** (about half a day, independent of 1). Q60b's receiver saves one body per parcel sequence and exits when the set is full. It cannot distinguish a later overlay pass from a reliable resend or measure Land contention. Use the Q65c1 recording pattern with only Land varied. Capture through the initial-data gate, retaining movement, handshake/seed milestones, terrain, overlay parcel sequences, reliable datagram sequences and relative times. Verify each published datagram against the original before redaction. Replay the send counts, order and throttle response alongside Q60b's payload bytes.
+3. **Deliver and compare on Ferroan** (half to one day, after 1 and 2). Use the frame-owned map and the viewer's memberships on both Pin8 paths. At movement completion Pin8 sends terrain then requests the overlay unless it received a crossing update; positive teleport flags clear that crossing state. At the later initial-data gate it requests terrain and overlay only for zero teleport flags (`ScenePresence.cs` 2402, 2475, 4266–4343, 5427–5428). Ferroan currently retains only `via_login` on its accepted agent. Carry the teleport and crossing state needed by those two guards to the frame and circuit. Test suppression at that boundary, the eligible sends and duplicate movement/handshake packets. Drain on Land through the reliable window. Compare both viewer timelines and bodies on the same store, then run walk, avatars, teleport and require `live compare region` to report `region: match`.
 
 ### Q65 split
 
