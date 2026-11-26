@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>Ferroan.JoltConfigOracle</RootNamespace>
+    <AssemblyName>JoltConfigOracle</AssemblyName>
+    <Description>JoltConfig.FromConfig results from the pinned Jolt module. No native load.</Description>
+    <AnalysisLevel>none</AnalysisLevel>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(USERPROFILE)' != ''">$(USERPROFILE)/Git/reference</FerroanRef>
+  </PropertyGroup>
+
+  <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/JoltConfig.cs')"
+           Text="Set FerroanRef (or FERROAN_REF) to the scratch clone from oracle_reference::prepare. Missing JoltConfig.cs." />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="nini-core" Version="0.9.2.16" />
+    <!-- Calls the pinned module. FromConfig does not load joltc. Do not copy JoltConfig.cs. -->
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/OpenSim.Region.PhysicsModules.Jolt.csproj">
+      <Private>true</Private>
+      <AdditionalProperties>GeneratePackageOnBuild=false;TreatWarningsAsErrors=false</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+</Project>

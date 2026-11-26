@@ -28,6 +28,7 @@ use glam::Vec3;
 use uuid::Uuid;
 
 use crate::login::{self, LoginRequest, LoginResponse};
+use crate::register::Bot;
 use crate::session::{Agent, PrimTrace, Session};
 use crate::world::{self, SeenObject};
 
@@ -83,7 +84,7 @@ pub struct Harness {
     /// Require the viewer's wire acknowledgement; do not accept a server log.
     pub require_logout_reply: bool,
     /// Set by grid mode. Standalone leaves this empty, and `all` then stays
-    /// the seven names in [`NAMES`].
+    /// the seven names from the registration table.
     pub neighbour: Option<Neighbour>,
     /// Presence and GridUser listener. Robust in grid mode, the region in
     /// standalone. The hook reads it; the login itself uses [`Harness::login_uri`].
@@ -101,35 +102,12 @@ pub fn region_handle(x: u32, y: u32) -> u64 {
 }
 
 /// The scenarios `all` runs, in order.
-pub const NAMES: &[&str] = &[
-    "login",
-    "walk",
-    "chat",
-    "build",
-    "teleport",
-    "texture",
-    "inventory",
-];
+pub fn names() -> &'static [&'static str] {
+    crate::register::names()
+}
 
 pub fn selection(name: &str) -> Option<&'static [&'static str]> {
-    if name == "all" {
-        Some(NAMES)
-    } else if name == "assets" {
-        Some(&NAMES[5..7])
-    } else if NAMES.contains(&name) {
-        Some(match name {
-            "login" => &NAMES[0..1],
-            "walk" => &NAMES[1..2],
-            "chat" => &NAMES[2..3],
-            "build" => &NAMES[3..4],
-            "teleport" => &NAMES[4..5],
-            "texture" => &NAMES[5..6],
-            "inventory" => &NAMES[6..7],
-            _ => return None,
-        })
-    } else {
-        None
-    }
+    crate::register::selection(name)
 }
 
 /// Run the named scenario, or every scenario when `name` is `all`.
@@ -143,94 +121,123 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         return Err("the texture does not start with a JPEG 2000 codestream".to_string());
     }
     let http = login::http_client().map_err(|error| error.to_string())?;
-    if name == "caps" {
-        let (mut session, login) = enter(&http, harness, &harness.owner, "last").await?;
-        let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
-        leave(harness, &mut session, &harness.owner).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "neighbour" {
-        let line = teleport_neighbour(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "hop" {
-        let line = teleport_hop(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "roots" {
-        let line = roots_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "uploads" {
-        let line = uploads_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
-    if name == "object-cross" {
-        return object_cross::run(&http, harness).await;
-    }
-    if name == "prim-arrival" {
-        return prim_arrival::run(&http, harness).await;
-    }
-    if name == "material-override" {
-        return material_override::run(&http, harness).await;
-    }
-    if matches!(name, "prim-capture" | "store-handoff" | "prim-load") {
-        let (count, throttle) = match name {
-            "prim-load" => (PRIM_LOAD_COUNT, ArrivalThrottle::Task(PrimTrace::Load)),
-            "store-handoff" => (
-                PRIM_CAPTURE_COUNT,
-                ArrivalThrottle::Task(PrimTrace::Arrival(HANDOFF_TASK_BPS)),
-            ),
-            _ => (PRIM_CAPTURE_COUNT, ArrivalThrottle::Default),
-        };
-        let (mut session, _) =
-            enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
-        let result = wait_for_stored_prims(&mut session, count).await;
-        let logout = leave(harness, &mut session, &harness.owner).await;
-        result?;
-        logout?;
-        if name != "prim-capture" {
-            let records = session
-                .take_arrival_records()
-                .ok_or("missing handoff viewer capture")?;
-            let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
-            std::fs::write(harness.region_log.with_extension("viewer.cap"), bytes)
-                .map_err(|e| e.to_string())?;
+    match crate::register::get(name).map(|row| row.bot) {
+        Some(Bot::Caps) => {
+            let (mut session, login) = enter(&http, harness, &harness.owner, "last").await?;
+            let line = crate::caps_probe::run(&http, &mut session, &login.seed_capability).await?;
+            leave(harness, &mut session, &harness.owner).await?;
+            Ok(format!("{line}\nlive: run passed"))
         }
-        return Ok(format!(
-            "{name}: viewer received {count} distinct full prim updates\nlive: run passed"
-        ));
+        Some(Bot::Neighbour) => {
+            let line = teleport_neighbour(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Hop) => {
+            let line = teleport_hop(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Roots) => {
+            let line = roots_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::Uploads) => {
+            let line = uploads_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(Bot::ObjectCross) => object_cross::run(&http, harness).await,
+        Some(Bot::PrimArrival) => prim_arrival::run(&http, harness).await,
+        Some(Bot::MaterialOverride) => material_override::run(&http, harness).await,
+        Some(Bot::Stored(kind)) => {
+            let (count, throttle, handoff) = match kind {
+                crate::register::Stored::Load => (
+                    PRIM_LOAD_COUNT,
+                    ArrivalThrottle::Task(PrimTrace::Load),
+                    true,
+                ),
+                crate::register::Stored::Handoff => (
+                    PRIM_CAPTURE_COUNT,
+                    ArrivalThrottle::Task(PrimTrace::Arrival(HANDOFF_TASK_BPS)),
+                    true,
+                ),
+                crate::register::Stored::Capture => {
+                    (PRIM_CAPTURE_COUNT, ArrivalThrottle::Default, false)
+                }
+            };
+            let (mut session, _) =
+                enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
+            let result = wait_for_stored_prims(&mut session, count).await;
+            let logout = leave(harness, &mut session, &harness.owner).await;
+            result?;
+            logout?;
+            if handoff {
+                let records = session
+                    .take_arrival_records()
+                    .ok_or("missing handoff viewer capture")?;
+                let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
+                std::fs::write(harness.region_log.with_extension("viewer.cap"), bytes)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(format!(
+                "{name}: viewer received {count} distinct full prim updates\nlive: run passed"
+            ))
+        }
+        Some(Bot::Avatars) => {
+            let line = avatars_scenario(&http, harness).await?;
+            Ok(format!("{line}\nlive: run passed"))
+        }
+        Some(
+            Bot::Login
+            | Bot::Walk
+            | Bot::Chat
+            | Bot::Build
+            | Bot::Teleport
+            | Bot::Texture
+            | Bot::Inventory
+            | Bot::All
+            | Bot::Assets,
+        ) => run_selected(name, harness, &http).await,
+        Some(
+            Bot::ChildView
+            | Bot::ParcelTiming
+            | Bot::ParcelProperties
+            | Bot::ParcelOverlay
+            | Bot::Limits
+            | Bot::Report
+            | Bot::Ferrobot,
+        )
+        | None => Err(crate::register::bot_unknown(name)),
     }
-    if name == "avatars" {
-        let line = avatars_scenario(&http, harness).await?;
-        return Ok(format!("{line}\nlive: run passed"));
-    }
+}
+
+async fn run_selected(
+    name: &str,
+    harness: &Harness,
+    http: &reqwest::Client,
+) -> Result<String, String> {
     let Some(names) = selection(name) else {
-        return Err(format!(
-            "unknown scenario {name}; expected all, object-cross, prim-load, store-handoff, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
-            NAMES.join(", ")
-        ));
+        return Err(crate::register::bot_unknown(name));
     };
     let mut lines = Vec::new();
     for scenario in names {
-        match *scenario {
-            "login" => login_scenario(&http, harness).await,
-            "walk" => walk_scenario(&http, harness).await,
-            "chat" => chat_scenario(&http, harness).await,
-            "build" => build_scenario(&http, harness).await,
-            "teleport" => teleport_scenario(&http, harness).await,
-            "texture" => texture_scenario(&http, harness).await,
-            "inventory" => inventory_scenario(&http, harness).await,
+        let step = match crate::register::get(scenario).map(|row| row.bot) {
+            Some(Bot::Login) => login_scenario(http, harness).await,
+            Some(Bot::Walk) => walk_scenario(http, harness).await,
+            Some(Bot::Chat) => chat_scenario(http, harness).await,
+            Some(Bot::Build) => build_scenario(http, harness).await,
+            Some(Bot::Teleport) => teleport_scenario(http, harness).await,
+            Some(Bot::Texture) => texture_scenario(http, harness).await,
+            Some(Bot::Inventory) => inventory_scenario(http, harness).await,
             _ => Err(format!("unknown scenario {scenario}")),
-        }
-        .map(|line| lines.push(line))
-        .map_err(|error| {
+        };
+        step.map(|line| lines.push(line)).map_err(|error| {
             lines.push(format!("{scenario}: fail ({error})"));
             lines.join("\n")
         })?;
     }
-    if name == "all" && harness.neighbour.is_some() {
-        teleport_neighbour(&http, harness)
+    if crate::register::get(name).is_some_and(|row| row.bot == Bot::All)
+        && harness.neighbour.is_some()
+    {
+        teleport_neighbour(http, harness)
             .await
             .map(|line| lines.push(line))
             .map_err(|error| {
