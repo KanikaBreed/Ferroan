@@ -154,6 +154,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore generate
        cargo xtask regionstore prim-seed
        cargo xtask regionstore settings
+       cargo xtask regionstore coalesced
        cargo xtask regionstore parcels
        cargo xtask regionstore serialize
        cargo xtask regionstore read
@@ -284,6 +285,7 @@ fn main() -> ExitCode {
         ["regionstore", "generate"] => regionstore::generate(),
         ["regionstore", "parcels"] => regionstore::parcels(),
         ["regionstore", "settings"] => regionstore::settings(),
+        ["regionstore", "coalesced"] => regionstore::coalesced(),
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),

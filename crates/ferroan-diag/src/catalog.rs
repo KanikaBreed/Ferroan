@@ -76,6 +76,7 @@ pub const REGION_PARCEL_ACCESS: &str = "region.parcel-access";
 pub const REGION_PARCEL_BYTES: &str = "region.parcel-bytes";
 pub const REGION_OBJECTS: &str = "region.objects";
 pub const REGION_LINKSET_PRIMS: &str = "region.linkset-prims";
+pub const OBJECT_COALESCED_PRIMS: &str = "object.coalesced-prims";
 pub const OBJECT_UPDATE_FIELD: &str = "object.update-field";
 pub const OBJECT_XML_BYTES: &str = "object.xml-bytes";
 pub const OBJECT_TASK_ITEMS: &str = "object.task-items";

@@ -144,6 +144,8 @@ pub(crate) const DEFAULT_BOX_TEXTURE: &[u8] = &[
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectGroup {
+    /// Inventory item that supplied this group. Carried separately in crossing XML.
+    pub from_item_id: Uuid,
     pub rez_parameter: Option<String>,
     pub parts: Vec<ObjectPart>,
 }
@@ -523,6 +525,7 @@ fn assemble(mut rows: Vec<PrimRow>) -> Vec<ObjectGroup> {
         }
         index.insert(part.uuid, groups.len());
         groups.push(ObjectGroup {
+            from_item_id: Uuid::nil(),
             rez_parameter: row.start.clone(),
             parts: vec![part],
         });
@@ -1506,6 +1509,7 @@ fn assemble_mysql(rows: Vec<MysqlBuilt>) -> Vec<ObjectGroup> {
         let mut part = row.part;
         part.link_num = 0;
         groups.push(ObjectGroup {
+            from_item_id: Uuid::nil(),
             rez_parameter: row.start,
             parts: vec![part],
         });
@@ -2274,6 +2278,7 @@ fn flush_pg_batch(
         parts.push(part);
     }
     groups.push(ObjectGroup {
+        from_item_id: Uuid::nil(),
         rez_parameter: start,
         parts,
     });

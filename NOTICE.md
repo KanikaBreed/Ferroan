@@ -65,6 +65,8 @@ Q10g additionally follows the root-transition ordering in `Source/OpenSim.Region
 
 Q10 runs Ferrobot at the revision in [REFERENCES.md](docs/REFERENCES.md) as a separate test executable. It is not vendored, copied into Ferroan, or linked by a Ferroan crate. Its build and runtime dependencies remain in that external executable. The harness build, signed API client, process orchestration and capture relay are new Ferroan code. The companion bot's IM construction in `xtask/src/ferrobot.rs` follows libopenmetaverse `OpenMetaverse/AgentManager.cs` (`InstantMessage`) at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`, retaining its BSD notice and source attribution.
 
+Q59's `crates/ferroan-scene/src/coalesced.rs` follows `CoalescedSceneObjectsSerializer.cs`, `CoalescedSceneObjects.cs`, `Scene.cs` (combined bounds), `SceneObjectGroup.cs` (linkset bounds and extra XML) and `SceneObjectPart.cs` (world transforms) under `Source/OpenSim.Region.Framework/Scenes` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Quaternion multiplication, vector rotation and matrix axes follow libopenmetaverse `OpenMetaverse.Types/{Quaternion,Vector3,Matrix4}.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. Both BSD notices are retained in the port.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).

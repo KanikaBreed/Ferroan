@@ -47,6 +47,8 @@ isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
 
 The grid harness captures riderless object crossings on two separate C# simulators. Each viewer edits the linkset from its own circuit. The [object-crossing fixtures](fixtures/object-cross/README.md) correlate the local IDs in the outbound XML with the viewer packets on the sending region.
 
+`ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The member reader follows `TryFromXml` and restores positions from the parts. Rez must also parse the wrapper sizes and offsets and refuse invalid values, as `GetObjectsToRez` does (3185–3208). The member reader alone cannot place these groups for rez. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
+
 ## Planned
 
 ### Programs

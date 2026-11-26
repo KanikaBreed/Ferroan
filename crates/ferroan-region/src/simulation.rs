@@ -1927,6 +1927,7 @@ mod tests {
             SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
         assert_eq!(state.stored_object_counts(), (0, 0));
         let groups = Arc::new(vec![ferroan_scene::ObjectGroup {
+            from_item_id: Uuid::nil(),
             rez_parameter: None,
             parts: Vec::new(),
         }]);
