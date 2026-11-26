@@ -122,7 +122,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
 | QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
-| QR42 | R42: live scenarios register in one table | READY |
+| QR42 | R42: live scenarios register in one table | DONE (this PR) |
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
