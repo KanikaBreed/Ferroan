@@ -754,15 +754,12 @@ pub(crate) fn item_creator(identification: &str) -> (Uuid, Option<String>) {
         return (Uuid::nil(), None);
     }
     if !identification.contains(';') {
-        return (Uuid::parse_str(identification).unwrap_or(Uuid::nil()), None);
+        return (crate::omv_uuid(identification), None);
     }
-    let parts: Vec<&str> = identification.split(';').collect();
-    let id = parts
-        .first()
-        .and_then(|text| Uuid::parse_str(text).ok())
-        .unwrap_or(Uuid::nil());
-    let home = parts.get(1).copied().unwrap_or("");
-    let name = parts.get(2).copied().unwrap_or("Unknown User");
+    let mut parts = identification.split(';');
+    let id = parts.next().map(crate::omv_uuid).unwrap_or(Uuid::nil());
+    let home = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("Unknown User");
     (id, Some(format!("{home};{name}")))
 }
 

@@ -168,12 +168,17 @@ pub struct ViewerLink {
     /// `TeleportFlags` from the accepted login. Zero asks for terrain and the
     /// overlay again at `SendInitialData` (`ScenePresence.cs` 4338).
     pub teleport_flags: u32,
-    /// `CanDeleteObject` inputs for this viewer. Empty until the region sets them.
+    /// `CanDeleteObject` inputs for this viewer. The region sets `groups` at
+    /// attach. `is_god` and `friend_roots` stay unset in production, as in
+    /// Pin8: god mode is not granted, and the friend path is dead through TB96.
     pub rights: DeleteRights,
 }
 
 /// God, group powers and friend modify grants for `CanDeleteObject`.
 /// A restored group is never an attachment, so that input stays on the scene.
+/// `is_god` and `friend_roots` stay unset in production. The region sets only
+/// `groups` at attach, matching Pin8: god mode is not granted, and the friend
+/// path is dead through TB96.
 #[derive(Clone, Debug, Default)]
 pub struct DeleteRights {
     pub is_god: bool,
@@ -385,7 +390,6 @@ struct Viewer {
     initial: InitialData,
     last: LastSent,
     coarse: CoarseState,
-    rights: DeleteRights,
 }
 
 /// The presences, the attached viewers and the board their blocks read.
@@ -935,7 +939,7 @@ fn apply(post: Inbound, scene: &mut Scene) {
         Inbound::DeRezDelete { agent, local_ids } => scene.delete_owned_roots(agent, &local_ids),
         Inbound::DeleteRights { agent, rights } => {
             if let Some(viewer) = scene.viewers.get_mut(&agent) {
-                viewer.rights = rights;
+                viewer.link.rights = rights;
             }
         }
     }
@@ -998,7 +1002,6 @@ fn answer(
                 Some(viewer) => viewer.local_id,
                 None => scene.local_ids.allocate(),
             };
-            let rights = link.rights.clone();
             scene.viewers.insert(
                 agent,
                 Viewer {
@@ -1007,7 +1010,6 @@ fn answer(
                     initial: InitialData::default(),
                     last: LastSent::default(),
                     coarse: CoarseState::default(),
-                    rights,
                 },
             );
             let _ = reply.send(local_id);
@@ -1756,11 +1758,18 @@ impl Scene {
     /// `DeRezObjects` Delete: `CanDeleteObject`, the root, and not an attachment.
     /// The group leaves the in-memory scene. The store row stays.
     fn delete_owned_roots(&self, agent: Uuid, local_ids: &[u32]) {
+        let Some(rights) = self
+            .viewers
+            .get(&agent)
+            .map(|viewer| viewer.link.rights.clone())
+        else {
+            return;
+        };
         for &local_id in local_ids {
             let Some(facts) = self.objects.describe(local_id) else {
                 continue;
             };
-            if !facts.is_root || facts.attachment || !self.can_delete(agent, local_id) {
+            if !facts.is_root || facts.attachment || !self.can_delete(agent, local_id, &rights) {
                 continue;
             }
             if !self.objects.remove_group(facts.root_local_id) {
@@ -1772,10 +1781,7 @@ impl Scene {
 
     /// `PermissionsModule.CanDeleteObject` for a live client: god, the owner,
     /// a friend modify grant on the root, or group powers.
-    fn can_delete(&self, agent: Uuid, local_id: u32) -> bool {
-        let Some(rights) = self.viewers.get(&agent).map(|viewer| viewer.rights.clone()) else {
-            return false;
-        };
+    fn can_delete(&self, agent: Uuid, local_id: u32, rights: &DeleteRights) -> bool {
         let Some(live) = self.objects.live_linkset(local_id) else {
             return false;
         };
@@ -1786,10 +1792,10 @@ impl Scene {
         };
         let group = live.root.group_id;
         let membership = rights.groups.get(&group).map(|powers| (group, *powers));
-        let masks = LinksetPermissions::from_parts(&live.root, &live.children);
+        let masks = LinksetPermissions::from_parts(live.root, live.children);
         let target = ActionTarget {
-            root: &live.root,
-            part: &live.part,
+            root: live.root,
+            part: live.part,
             masks,
             attachment: false,
             deleted: false,

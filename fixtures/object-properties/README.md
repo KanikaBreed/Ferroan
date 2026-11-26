@@ -13,7 +13,7 @@ The estate owner and a second viewer logged in to Pin8 on the [Q65b stored-objec
 | `family-7.bin` | Root part 8 | 123 |
 | `object-1.bin` | One `ObjectProperties` packet, eight blocks, store-uuid order | 1,512 |
 | `kill-1.bin` | First `KillObject` for the linkset root | 5 |
-| `kill-2.bin` | Second `KillObject` for the same root | 5 |
+| `kill-2.bin` | the first two of four identical root kills | 5 |
 | `physics-1.xml` | One `ObjectPhysicsProperties` event, parts 1 through 8 | 2,027 |
 
 The child of the linkset is part 2. Its family request is merged into the root, so the seven family files are the seven roots. Both kill bodies are the one-block packet for that root. The physics element lists the eight selected parts in the same store-uuid order. Empty integers use Encode2's `<integer />`. A zero real is `<real>0</real>`.

@@ -1082,5 +1082,11 @@ mod tests {
         ));
         feed.queue().enqueue(8, child_id, FULL_UPDATE);
         assert!(feed.take_update().is_none());
+
+        // A fresh pass that holds only the child sends nothing. Pin8 does not
+        // turn that update into a root kill.
+        feed.begin_update_pass();
+        feed.queue().enqueue(8, child_id, FULL_UPDATE);
+        assert!(feed.take_update().is_none());
     }
 }

@@ -167,11 +167,11 @@ pub(crate) struct PartFacts {
     pub attachment: bool,
 }
 
-/// One live part and the rest of its linkset, owned so the frame can drop the borrow.
-pub(crate) struct LiveLinkset {
-    pub part: ObjectPart,
-    pub root: ObjectPart,
-    pub children: Vec<ObjectPart>,
+/// One live part and the rest of its linkset. The slices borrow the stored group.
+pub(crate) struct LiveLinkset<'a> {
+    pub part: &'a ObjectPart,
+    pub root: &'a ObjectPart,
+    pub children: &'a [ObjectPart],
 }
 
 /// A hidden part of a removed group, for the deleted-update kill conversion.
@@ -348,16 +348,20 @@ impl StoredScene {
     }
 
     /// The addressed part, with the root first in `parts`. A removed id is absent.
-    pub(crate) fn live_linkset(&self, local_id: u32) -> Option<LiveLinkset> {
+    pub(crate) fn live_linkset(&self, local_id: u32) -> Option<LiveLinkset<'_>> {
         if self.hidden(local_id) {
             return None;
         }
         let index = *self.by_local_id.get(&local_id)?;
         let entry = self.parts.get(index)?;
         let group = &self.groups[entry.group];
-        let root = group.parts.first()?.clone();
-        let part = group.parts.get(entry.part)?.clone();
-        let children = group.parts.iter().skip(1).cloned().collect();
+        let root = group.parts.first()?;
+        let part = group.parts.get(entry.part)?;
+        let children = if group.parts.len() > 1 {
+            &group.parts[1..]
+        } else {
+            &[]
+        };
         Some(LiveLinkset {
             part,
             root,

@@ -64,9 +64,10 @@
 //! (6222–6395) at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 //! String limits follow `osUTF8` (`SceneObjectPart.cs` 693–716, 1151–1201)
 //! and `Utils.StringToBytesNoTerm` at libopenmetaverse `a3596616`.
+//! Description, SitName and TouchName are cut when a prim row is loaded.
+//! Name is cut when the property block is encoded. Neither cut keeps the text.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, VecDeque};
 
 use ferroan_diag::{Action, Hit, Kind, OBJECT_UPDATE_FIELD, hit};
 use ferroan_protocol::msgs::ObjectPropertiesFamily;
@@ -89,9 +90,9 @@ pub(crate) const FAMILY_COST: i32 = 100;
 pub(crate) const OBJECT_COST: i32 = 200;
 
 const NAME_LIMIT: usize = 63;
-const DESCRIPTION_LIMIT: usize = 127;
-const TOUCH_LIMIT: usize = 36;
-const SIT_LIMIT: usize = 36;
+pub(crate) const DESCRIPTION_LIMIT: usize = 127;
+pub(crate) const TOUCH_LIMIT: usize = 36;
+pub(crate) const SIT_LIMIT: usize = 36;
 
 /// One waiting property request. A second enqueue for the same local id ORs
 /// the flags and the family request flags. Drain order is the first enqueue.
@@ -154,44 +155,63 @@ impl PropertyQueue {
     }
 }
 
-/// `osUTF8` then `AddShortLimitedUTF8`. Empty is an empty vector, which
-/// `var1` writes as one zero byte. A nonempty value keeps a trailing NUL.
-pub(crate) fn limited_text(field: &'static str, text: &str, max: usize) -> Vec<u8> {
+/// Byte length of `osUTF8(text, max)`: stop at the first NUL in the first
+/// `max + 1` bytes, otherwise end on a character boundary.
+pub(crate) fn osutf8_len(text: &str, max: usize) -> usize {
     let prefix = &text.as_bytes()[..text.len().min(max + 1)];
-    let len = if let Some(nul) = prefix.iter().position(|byte| *byte == 0) {
+    if let Some(nul) = prefix.iter().position(|byte| *byte == 0) {
         nul
     } else if text.len() > max {
-        // C# cuts once, when the value is stored. A later encode of the same
-        // field and text does not report the cut again.
-        report_cut(field, text, max);
         text.floor_char_boundary(max)
     } else {
         text.len()
-    };
+    }
+}
+
+/// Cut a stored prim field the way `SceneObjectPart`'s setter does. The stored
+/// string has no trailing NUL. A value longer than `max` reports
+/// `object.update-field` and the discarded text is not retained.
+pub(crate) fn cut_stored_text(field: &'static str, mut text: String, max: usize) -> String {
+    if text.len() > max {
+        hit(&Hit {
+            id: OBJECT_UPDATE_FIELD,
+            kind: Kind::Hard,
+            configured: max as u64,
+            observed: text.len() as u64,
+            action: Action::Truncate,
+            route: field,
+            agent_id: None,
+        });
+    }
+    let len = osutf8_len(&text, max);
+    text.truncate(len);
+    text
+}
+
+/// `osUTF8` then `AddShortLimitedUTF8`. Empty is an empty vector, which
+/// `var1` writes as one zero byte. A nonempty value keeps a trailing NUL.
+/// Name is cut here. Description, SitName and TouchName are already within
+/// their limits when a prim row was loaded, so a stored value does not
+/// report again. A NUL inside the prefix is not a limit hit.
+pub(crate) fn limited_text(field: &'static str, text: &str, max: usize) -> Vec<u8> {
+    let prefix = &text.as_bytes()[..text.len().min(max + 1)];
+    if text.len() > max && prefix.iter().all(|byte| *byte != 0) {
+        hit(&Hit {
+            id: OBJECT_UPDATE_FIELD,
+            kind: Kind::Hard,
+            configured: max as u64,
+            observed: text.len() as u64,
+            action: Action::Truncate,
+            route: field,
+            agent_id: None,
+        });
+    }
+    let len = osutf8_len(text, max);
     let mut bytes = text.as_bytes()[..len].to_vec();
     if !bytes.is_empty() {
         bytes.push(0);
     }
     bytes
-}
-
-/// One `object.update-field` hit per distinct field and stored text.
-fn report_cut(field: &'static str, text: &str, max: usize) {
-    static SEEN: OnceLock<Mutex<HashSet<(&'static str, String)>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut seen = seen.lock().unwrap_or_else(|poison| poison.into_inner());
-    if !seen.insert((field, text.to_owned())) {
-        return;
-    }
-    hit(&Hit {
-        id: OBJECT_UPDATE_FIELD,
-        kind: Kind::Hard,
-        configured: max as u64,
-        observed: text.len() as u64,
-        action: Action::Truncate,
-        route: field,
-        agent_id: None,
-    });
 }
 
 /// `CreatorIdentification`: the text before `;`, or `UUID.Zero` when that
@@ -399,6 +419,42 @@ mod tests {
         let limited = limited_text("Name", &long, 63);
         assert_eq!(limited.len(), 64);
         assert_eq!(limited[63], 0);
+    }
+
+    fn truncate_hits() -> u64 {
+        let prefix = "ferroan_limit_hits_total{limit=\"object.update-field\",action=\"truncate\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// The load cut stops at a NUL without a hit, ends on a character
+    /// boundary, and reports each long value. The discarded text is not kept.
+    #[test]
+    fn a_stored_field_is_cut_once_at_load_without_keeping_the_text() {
+        let before = truncate_hits();
+        let long = "a".repeat(200);
+        let cut = cut_stored_text("Description", long.clone(), DESCRIPTION_LIMIT);
+        assert_eq!(cut, "a".repeat(DESCRIPTION_LIMIT));
+        let again = cut_stored_text("Description", long, DESCRIPTION_LIMIT);
+        assert_eq!(again, cut);
+        assert_eq!(truncate_hits(), before + 2);
+        let quiet = truncate_hits();
+        assert_eq!(
+            cut_stored_text("TouchName", "hi\0rest".to_owned(), TOUCH_LIMIT),
+            "hi"
+        );
+        assert_eq!(truncate_hits(), quiet);
+        let mixed = "a".repeat(126) + "é" + "tail";
+        assert_eq!(
+            cut_stored_text("Description", mixed, DESCRIPTION_LIMIT),
+            "a".repeat(126)
+        );
+        assert_eq!(
+            cut_stored_text("SitName", "s".repeat(40), SIT_LIMIT).len(),
+            SIT_LIMIT
+        );
     }
 
     #[test]

@@ -127,10 +127,14 @@ struct DeRezCollect {
     ids: Vec<u32>,
 }
 
+/// Pending multi-packet `DeRezObject` transactions kept per circuit.
+const MAX_DEREZ_TRANSACTIONS: usize = 8;
+
 /// `HandlerDeRezObject` (`LLClientView.cs` 9218–9276). `PacketCount` of 1 or 0
 /// acts at once. A larger count collects by `TransactionID`, ignores a repeated
 /// `PacketNumber`, and returns the ids only when the current packet's count
-/// has all arrived.
+/// has all arrived. A new transaction past `MAX_DEREZ_TRANSACTIONS` is refused
+/// and not stored. One already in the map still accepts its remaining packets.
 fn collect_derez(
     pending: &mut HashMap<Uuid, DeRezCollect>,
     transaction: Uuid,
@@ -140,6 +144,16 @@ fn collect_derez(
 ) -> Option<Vec<u32>> {
     if count <= 1 {
         return Some(ids);
+    }
+    if !pending.contains_key(&transaction) && pending.len() >= MAX_DEREZ_TRANSACTIONS {
+        ferroan_diag::refuse(
+            ferroan_diag::UDP_DEREZ_TRANSACTIONS,
+            Kind::Hard,
+            MAX_DEREZ_TRANSACTIONS as u64,
+            pending.len() as u64 + 1,
+            "udp",
+        );
+        return None;
     }
     let entry = pending.entry(transaction).or_insert_with(|| DeRezCollect {
         seen: HashSet::new(),
@@ -3247,6 +3261,51 @@ mod derez_collect_tests {
             collect_derez(&mut pending, transaction, 1, 0, vec![4]).unwrap(),
             vec![4]
         );
+    }
+
+    fn refuse_hits() -> u64 {
+        let prefix =
+            "ferroan_limit_hits_total{limit=\"udp.derez-transactions\",action=\"refuse\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// A ninth unfinished transaction is refused. An open one still finishes,
+    /// a repeated packet number is not a new transaction, and a single packet
+    /// never enters the map.
+    #[test]
+    fn a_new_derez_transaction_past_the_cap_is_refused() {
+        let before = refuse_hits();
+        let mut pending = HashMap::new();
+        for n in 0..super::MAX_DEREZ_TRANSACTIONS {
+            let id = Uuid::from_u128(n as u128);
+            assert!(collect_derez(&mut pending, id, 2, 0, vec![n as u32]).is_none());
+        }
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
+        assert_eq!(refuse_hits(), before);
+        let extra = Uuid::from_u128(100);
+        assert!(collect_derez(&mut pending, extra, 2, 0, vec![9]).is_none());
+        assert!(!pending.contains_key(&extra));
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
+        assert_eq!(refuse_hits(), before + 1);
+        let open = Uuid::from_u128(0);
+        assert!(collect_derez(&mut pending, open, 2, 0, vec![99]).is_none());
+        assert_eq!(refuse_hits(), before + 1);
+        assert_eq!(pending[&open].ids, vec![0]);
+        let ids = collect_derez(&mut pending, open, 2, 1, vec![1]).unwrap();
+        assert_eq!(ids, vec![0, 1]);
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS - 1);
+        assert!(collect_derez(&mut pending, extra, 2, 0, vec![9]).is_none());
+        assert!(pending.contains_key(&extra));
+        assert_eq!(refuse_hits(), before + 1);
+        assert_eq!(
+            collect_derez(&mut pending, Uuid::from_u128(200), 1, 0, vec![4]).unwrap(),
+            vec![4]
+        );
+        assert!(!pending.contains_key(&Uuid::from_u128(200)));
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
     }
 }
 

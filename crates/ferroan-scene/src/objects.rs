@@ -111,6 +111,7 @@ use sqlx::sqlite::SqliteRow;
 use uuid::Uuid;
 
 use crate::error::ObjectError;
+use crate::object_properties::{DESCRIPTION_LIMIT, SIT_LIMIT, TOUCH_LIMIT, cut_stored_text};
 use crate::payloads::{
     DynAttrs, KeyframeMotion, LinksetData, ObjectAnimation, PhysicsInertia, Vehicle,
     parse_animations, parse_dyn_attrs, parse_inertia, parse_keyframe, parse_linkset,
@@ -826,9 +827,13 @@ fn build_part(row: &SqliteRow) -> Result<ObjectPart, ()> {
         name: optional_text(row, "Name").unwrap_or_default(),
         text: required_text(row, "Text")?,
         color: color(row)?,
-        description: required_text(row, "Description")?,
-        sit_name: required_text(row, "SitName")?,
-        touch_name: required_text(row, "TouchName")?,
+        description: cut_stored_text(
+            "Description",
+            required_text(row, "Description")?,
+            DESCRIPTION_LIMIT,
+        ),
+        sit_name: cut_stored_text("SitName", required_text(row, "SitName")?, SIT_LIMIT),
+        touch_name: cut_stored_text("TouchName", required_text(row, "TouchName")?, TOUCH_LIMIT),
         flags,
         creator_id: part_creator_identification(&required_text(row, "CreatorID")?),
         xml_creator_data: None,
@@ -1653,9 +1658,21 @@ fn mysql_part(row: &MySqlRow, shapes: &HashMap<String, MySqlRow>) -> Result<Mysq
         name: mysql_text(row, "Name").unwrap_or_default(),
         text: mysql_text(row, "Text").unwrap_or_default(),
         color: mysql_color(row)?,
-        description: mysql_text(row, "Description").unwrap_or_default(),
-        sit_name: mysql_text(row, "SitName").unwrap_or_default(),
-        touch_name: mysql_text(row, "TouchName").unwrap_or_default(),
+        description: cut_stored_text(
+            "Description",
+            mysql_text(row, "Description").unwrap_or_default(),
+            DESCRIPTION_LIMIT,
+        ),
+        sit_name: cut_stored_text(
+            "SitName",
+            mysql_text(row, "SitName").unwrap_or_default(),
+            SIT_LIMIT,
+        ),
+        touch_name: cut_stored_text(
+            "TouchName",
+            mysql_text(row, "TouchName").unwrap_or_default(),
+            TOUCH_LIMIT,
+        ),
         flags,
         creator_id: part_creator_identification(&creator),
         xml_creator_data: None,
@@ -2379,9 +2396,13 @@ fn pg_part(row: &PgRow, shapes: &HashMap<Uuid, PgRow>) -> Result<PgBuilt, ()> {
         name: pg_text_req(row, "Name")?,
         text: pg_text_req(row, "Text")?,
         color: pg_color(row)?,
-        description: pg_text_req(row, "Description")?,
-        sit_name: pg_text_req(row, "SitName")?,
-        touch_name: pg_text_req(row, "TouchName")?,
+        description: cut_stored_text(
+            "Description",
+            pg_text_req(row, "Description")?,
+            DESCRIPTION_LIMIT,
+        ),
+        sit_name: cut_stored_text("SitName", pg_text_req(row, "SitName")?, SIT_LIMIT),
+        touch_name: cut_stored_text("TouchName", pg_text_req(row, "TouchName")?, TOUCH_LIMIT),
         flags,
         creator_id: part_creator_identification(&creator),
         xml_creator_data: None,
@@ -3929,6 +3950,57 @@ mod tests {
                 != Uuid::parse_str("d1000000-0000-0000-0000-000000000002").unwrap())
         );
         assert_eq!(groups[3].parts[0].name, "no-shape");
+        pool.close().await;
+    }
+
+    /// Description, SitName and TouchName follow the part setters at load.
+    /// Name and an inventory item's description stay whole.
+    #[tokio::test]
+    async fn a_loaded_prim_cuts_description_sit_and_touch_once() {
+        let store = CopiedStore::new("regionstore/objects.db");
+        let connection = store.connection();
+        let pool = Pool::open(Backend::Sqlite, &connection, &["RegionStore"])
+            .await
+            .unwrap();
+        let sqlite = pool.sqlite().unwrap();
+        let name = "N".repeat(80);
+        let description = "a".repeat(200);
+        let sit = "s".repeat(40);
+        let touch = "t".repeat(50);
+        let item_text = "i".repeat(200);
+        sqlx::query(
+            "UPDATE prims SET Name = ?, Description = ?, SitName = ?, TouchName = ? \
+             WHERE Name = 'no-shape'",
+        )
+        .bind(&name)
+        .bind(&description)
+        .bind(sit)
+        .bind(touch)
+        .execute(sqlite)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE primitems SET description = ? \
+             WHERE primID IN (SELECT UUID FROM prims WHERE Name = ?)",
+        )
+        .bind(&item_text)
+        .bind(&name)
+        .execute(sqlite)
+        .await
+        .unwrap();
+        let groups = load_objects(&pool, Uuid::parse_str(REGION).unwrap())
+            .await
+            .unwrap();
+        let part = groups
+            .iter()
+            .flat_map(|group| group.parts.iter())
+            .find(|part| part.name == name)
+            .unwrap();
+        assert_eq!(part.name.len(), 80);
+        assert_eq!(part.description, "a".repeat(DESCRIPTION_LIMIT));
+        assert_eq!(part.sit_name.len(), SIT_LIMIT);
+        assert_eq!(part.touch_name.len(), TOUCH_LIMIT);
+        assert!(part.items.iter().any(|item| item.description == item_text));
         pool.close().await;
     }
 
