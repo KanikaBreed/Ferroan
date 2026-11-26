@@ -75,7 +75,14 @@ pub enum SessionError {
     ArrivalCaptureFull,
 }
 
+pub const LOAD_RECEIPT_LIMIT: usize = 2048;
+pub(crate) enum PrimTrace {
+    Arrival(f32),
+    Load,
+}
+
 struct ArrivalCapture {
+    limit: usize,
     task_bps: f32,
     start: Instant,
     records: Vec<Record>,
@@ -83,11 +90,11 @@ struct ArrivalCapture {
 
 impl ArrivalCapture {
     fn record(&mut self, kind: Kind, bytes: &[u8]) -> Result<(), SessionError> {
-        if self.records.len() >= OBSERVER_HISTORY {
+        if self.records.len() >= self.limit {
             ferroan_diag::refuse(
                 ferroan_diag::BOT_OBSERVER_HISTORY,
                 ferroan_diag::Kind::Hard,
-                OBSERVER_HISTORY as u64,
+                self.limit as u64,
                 self.records.len() as u64 + 1,
                 "bot",
             );
@@ -358,8 +365,13 @@ impl Session {
         self.land_rate = rate;
     }
 
-    pub(crate) fn capture_prim_arrival(&mut self, task_bps: f32) {
+    pub(crate) fn capture_prim_arrival(&mut self, trace: PrimTrace) {
+        let (task_bps, limit) = match trace {
+            PrimTrace::Arrival(rate) => (rate, OBSERVER_HISTORY),
+            PrimTrace::Load => (crate::scenario::HANDOFF_TASK_BPS, LOAD_RECEIPT_LIMIT),
+        };
         self.arrival_capture = Some(ArrivalCapture {
+            limit,
             task_bps,
             start: Instant::now(),
             records: Vec::new(),
@@ -714,7 +726,7 @@ mod tests {
         let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let peer = sim.local_addr().unwrap();
         let mut session = Session::connect(peer, agent()).await.unwrap();
-        session.capture_prim_arrival(8000.0);
+        session.capture_prim_arrival(PrimTrace::Arrival(8000.0));
         let mut first = Vec::new();
         build_packet(&ObjectUpdate::default(), 41, true, false, &[], &mut first);
         let mut resend = first.clone();

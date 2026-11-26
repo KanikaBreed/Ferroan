@@ -754,6 +754,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "avatars"
             | "object-cross"
             | "child-view"
+            | "prim-load"
             | "store-handoff"
             | "prim-capture"
             | "prim-arrival"
@@ -762,7 +763,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -783,9 +784,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         None
     };
+    let needs_region_metrics = ferroan || scenario == "prim-load";
     let port_count = 6
         + usize::from(rust_assets || rust_accounts || rust_auth)
-        + usize::from(ferroan)
+        + usize::from(needs_region_metrics)
         + usize::from(rust_assets || rust_accounts || rust_auth);
     let ports = crate::ports::alloc_grid(port_count)?;
     let robust_public = ports[0];
@@ -796,9 +798,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let neighbour_port = ports[5];
     let rust_services = rust_assets || rust_accounts || rust_auth;
     let rust_port = rust_services.then(|| ports[6]);
-    let region_metrics = ferroan.then(|| ports[6 + usize::from(rust_services)]);
-    let robust_metrics =
-        rust_services.then(|| ports[6 + usize::from(rust_services) + usize::from(ferroan)]);
+    let region_metrics = needs_region_metrics.then(|| ports[6 + usize::from(rust_services)]);
+    let robust_metrics = rust_services
+        .then(|| ports[6 + usize::from(rust_services) + usize::from(needs_region_metrics)]);
     let root = grid_root();
     if root.exists() {
         fs::remove_dir_all(&root)
@@ -1019,7 +1021,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         auth_uri: auth_uri.clone(),
         metrics_port: region_metrics,
         parcel_seed: ParcelSeed::scenario(scenario),
-        store: if scenario == "store-handoff" {
+        store: if scenario == "prim-load" {
+            RegionStore::LoadFixture
+        } else if scenario == "store-handoff" {
             RegionStore::EditPrimFixture
         } else if matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross") {
             RegionStore::PrimFixture
@@ -1028,11 +1032,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         },
         basic_physics: spec.basic_physics && !ferroan,
     };
-    if scenario == "store-handoff" {
+    if matches!(scenario, "store-handoff" | "prim-load") {
         if docker {
-            return Err(
-                "store-handoff needs local region processes on the same SQLite file".into(),
-            );
+            return Err(format!(
+                "{scenario} needs local region processes on the same SQLite file"
+            ));
         }
         let report =
             store_handoff::run(home, &root, robust_public, &estate, &chat, &grid.passwords)?;
@@ -2057,6 +2061,7 @@ enum RegionStore {
     EmptyPrimCapture,
     PrimFixture,
     EditPrimFixture,
+    LoadFixture,
     Existing,
 }
 
@@ -2110,7 +2115,9 @@ fn start_region(
         }
     } else {
         prepare_region_cwd(cwd, publish, source)?;
-        if matches!(
+        if spec.store == RegionStore::LoadFixture {
+            crate::regionstore::seed_prim_load(&cwd.join("OpenSim.db"))?;
+        } else if matches!(
             spec.store,
             RegionStore::PrimFixture | RegionStore::EditPrimFixture
         ) {
@@ -2218,7 +2225,7 @@ fn start_region(
     fs::write(regions.join("Regions.ini"), definition)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = cwd.join(match (spec.store, spec.ferroan) {
-        (RegionStore::EditPrimFixture, false) => "region-edit.log",
+        (RegionStore::EditPrimFixture | RegionStore::LoadFixture, false) => "region-edit.log",
         (RegionStore::Existing, false) => "region-reference.log",
         _ => "region.log",
     });
@@ -2263,7 +2270,7 @@ fn start_region(
     } else if !spec.ferroan
         && matches!(
             spec.store,
-            RegionStore::EditPrimFixture | RegionStore::Existing
+            RegionStore::EditPrimFixture | RegionStore::LoadFixture | RegionStore::Existing
         )
     {
         spawn_proc(

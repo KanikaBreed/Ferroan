@@ -466,6 +466,13 @@ impl EntityUpdateQueue {
             })
             .map(|(&local_id, _)| local_id);
         if let Some(local_id) = victim {
+            ferroan_diag::drop_bound(
+                REGION_ENTITY_UPDATES,
+                Kind::Hard,
+                MAX_ENTITY_UPDATES as u64,
+                self.slots.len() as u64 + 1,
+                "entity-updates",
+            );
             self.remove(&[local_id]);
         }
     }
@@ -879,6 +886,11 @@ mod tests {
         assert!(queue.enqueue(1, other, POSITION));
         assert_eq!(queue.get(other).map(|update| update.priority), Some(1));
         assert!(queue.get(newest - 2).is_none());
+        assert!(
+            ferroan_diag::metrics().contains(
+                r#"ferroan_limit_hits_total{limit="region.entity-updates",action="drop"} "#
+            )
+        );
         assert_eq!(queue.len(), MAX_ENTITY_UPDATES);
     }
 
