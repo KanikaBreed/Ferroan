@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
     return 2;
 }
 
@@ -79,6 +79,9 @@ try
             return 0;
         case "postgres-load" when args.Length == 4:
             LoadPostgres(args[1], args[2], args[3]);
+            return 0;
+        case "parcels" when args.Length == 5:
+            LoadParcels(args[1], args[2], args[3], args[4]);
             return 0;
         case "settings-seed" when args.Length == 2:
             SeedSettings(args[1]);
@@ -116,7 +119,7 @@ try
             SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
             return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
             return 2;
     }
 }
@@ -1706,6 +1709,95 @@ static string[] SceneSavedPbr(RegionSettings source)
     }
     throw new InvalidOperationException("Scene did not save the empty PBR set");
 }
+
+// Load the same SQL seed as the Rust test through Pin8's SQLite provider.
+static void LoadParcels(string path, string seed, string region, string pin)
+{
+    string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
+    using (SQLiteConnection db = new(connection))
+    {
+        db.Open();
+        using SQLiteCommand command = db.CreateCommand();
+        command.CommandText = File.ReadAllText(seed);
+        command.ExecuteNonQuery();
+    }
+    SQLiteSimulationData store = new();
+    try
+    {
+        store.Initialise(connection);
+        var parcels = store.LoadLandObjects(new UUID(region));
+        var defaults = new LandData { GlobalID = UUID.Zero };
+        List<string> environments = new() {
+            "{}", "null", "unknown", "{\"env_version\":2.5}", "{\"env_version\":true}",
+            "{\"env_version\":\"-1.6\"}", "{\"env_version\":2147483649}",
+            """{"env_version":5,"day_cycle":{"frames":{"bad":7}}}""",
+            """{"env_version":5,"day_cycle":{"tracks":[[],[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","absorption_config":[{},7]}}}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","mie_config":[{},7]}},"tracks":[[{}],0,[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","rayleigh_config":[7]}}}}""",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>sky</key><map><key>type</key><string>sky</string><key>glow</key><string/></map></map></map></map></llsd>",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'tracks':[[i7]]}}",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'frames':{'s':{'type':'sky','glow':'x'}}}}",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><string>x</string></map></map></map></map></llsd>",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><uri>x</uri></map></map></map></map></llsd>",
+            "<llsd><map><key>env_version</key><integer>42</integer></map></llsd>"
+        };
+        void VectorProbe(string type, string key, object value, bool haze = false)
+        {
+            Dictionary<string, object> frame = new() { ["type"] = type };
+            if (haze) frame["legacy_haze"] = new Dictionary<string, object> { [key] = value };
+            else frame[key] = value;
+            environments.Add(JsonSerializer.Serialize(new { env_version = 5, day_cycle = new { frames = new { probe = frame } } }));
+        }
+        foreach (string key in new[] { "glow", "cloud_color", "cloud_pos_density1", "cloud_pos_density2", "cloud_scroll_rate", "moon_rotation", "sun_rotation" })
+            VectorProbe("sky", key, "x");
+        foreach (string key in new[] { "ambient", "blue_density", "blue_horizon" })
+            VectorProbe("sky", key, "bad", haze: true);
+        foreach (string key in new[] { "normal_scale", "water_fog_color", "wave1_direction", "wave2_direction" })
+            VectorProbe("water", key, "bad");
+        foreach (string value in new[] { "<1,2,3>", "1,2,3 trailing", "", "1,2", "1,2,inf", "1,2,Infinity", "1,2,∞", "1,2,+NaN" })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "1,2", "prefix<1,2>tail", "1,2 extra" })
+            VectorProbe("water", "wave1_direction", value);
+        foreach (string value in new[] { "bad", "<1,2,3>", "1,2,3", "1,2,3,4", "<1,2,3,4>tail" })
+            VectorProbe("sky", "sun_rotation", value);
+        VectorProbe("sky", "moon_rotation", "1,2,3>");
+        foreach (string value in new[] { "1,2, 3", "1,2,3\0", "1,2, ∞", "1,2,\u00a0∞", "1,2,\u00a03", "11,2," })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "11,2,", "12," })
+            VectorProbe("sky", "cloud_scroll_rate", value);
+        VectorProbe("sky", "glow", new[] { 1, 2 });
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            pin, region, parcels = parcels.Select(ParcelFields), defaults = ParcelFields(defaults),
+            environments = environments.Select(text => new {
+                text, version = ViewerEnvironment.FromOSDString(text)?.version
+            })
+        }, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    finally { store.Dispose(); }
+}
+
+static object ParcelFields(LandData p) => new
+{
+    id = p.GlobalID.ToString(), local_id = p.LocalID,
+    bitmap = Convert.ToHexString(p.Bitmap).ToLowerInvariant(), name = p.Name,
+    description = p.Description, owner = p.OwnerID.ToString(), group_owned = p.IsGroupOwned,
+    area = p.Area, auction = p.AuctionID, category = (int)p.Category, claim_date = p.ClaimDate,
+    claim_price = p.ClaimPrice, group = p.GroupID.ToString(), sale_price = p.SalePrice,
+    status = (int)p.Status, flags = p.Flags, landing_type = p.LandingType,
+    media_auto_scale = p.MediaAutoScale, media_id = p.MediaID.ToString(),
+    media_url = p.MediaURL, music_url = p.MusicURL, pass_hours = p.PassHours,
+    pass_price = p.PassPrice, snapshot = p.SnapshotID.ToString(), dwell = p.Dwell,
+    media_type = p.MediaType, media_description = p.MediaDescription,
+    media_size = new[] {p.MediaWidth, p.MediaHeight}, media_loop = p.MediaLoop,
+    obscure_media = p.ObscureMedia, obscure_music = p.ObscureMusic, see_avs = p.SeeAVs,
+    any_av_sounds = p.AnyAVSounds, group_av_sounds = p.GroupAVSounds,
+    location = new[] {p.UserLocation.X, p.UserLocation.Y, p.UserLocation.Z},
+    look_at = new[] {p.UserLookAt.X, p.UserLookAt.Y, p.UserLookAt.Z},
+    auth_buyer = p.AuthBuyerID.ToString(), other_clean_time = p.OtherCleanTime,
+    environment_version = p.EnvironmentVersion,
+    access = p.ParcelAccessList.Select(e => new { agent = e.AgentID.ToString(), flags = (uint)e.Flags, expires = e.Expires })
+};
 
 static void LoadSettings(string path, string regionText, string pin)
 {

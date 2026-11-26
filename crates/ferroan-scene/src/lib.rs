@@ -83,6 +83,7 @@ mod height;
 mod initial;
 mod motion;
 mod objects;
+pub mod parcels;
 mod payloads;
 pub mod prim_update;
 pub mod prioritizer;
