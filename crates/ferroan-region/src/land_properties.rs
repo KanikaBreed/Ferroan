@@ -3,8 +3,9 @@
 
 //! Queue the `ParcelProperties` element `LLClientView.SendLandProperties` builds.
 //!
-//! Delivery on arrival, on request and on a walk is a later item. This queues
-//! the raw element for one agent.
+//! Arrival, the initial-data gate, a parcel-changing walk and a
+//! `ParcelPropertiesRequest` queue through the frame. This queues the raw
+//! element for one agent.
 
 use ferroan_client::{CapsRegistry, EventQueueError};
 use ferroan_scene::parcels::{ParcelMap, ParcelPropertiesSend};
@@ -24,12 +25,12 @@ pub fn enqueue_land_properties(
     agent_id: Uuid,
     map: &ParcelMap,
     local_id: i32,
-    send: &ParcelPropertiesSend<'_>,
+    send: &ParcelPropertiesSend,
 ) -> Result<(), LandPropertiesError> {
     let element = map
         .parcel_properties(local_id, send)
         .ok_or(LandPropertiesError::Missing(local_id))?;
-    caps.enqueue_raw_for(agent_id, &element)?;
+    caps.enqueue_raw_for(agent_id, &element, "parcel-properties")?;
     Ok(())
 }
 
@@ -60,10 +61,11 @@ mod tests {
             .await
             .unwrap();
         pool.close().await;
-        let map = open_parcels_at(Some(&connection), REGION, [256, 256], ESTATE, CLAIM)
+        let mut map = open_parcels_at(Some(&connection), REGION, [256, 256], ESTATE, CLAIM)
             .await
             .unwrap();
         let height: Heightmap = InitialTerrain::PinheadIsland.generate(256, 256).unwrap();
+        map.update_geometry(Some(&height));
         let agent = Uuid::from_u128(9);
         let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
         caps.register_agent(&format!("/CAPS/{agent}0000/"), agent)
@@ -84,21 +86,22 @@ mod tests {
                 .find(|parcel| parcel.name == name)
                 .unwrap()
                 .local_id;
-            let send = send(sequence, result, &height);
+            let send = send(sequence, result);
             enqueue_land_properties(&caps, agent, &map, local_id, &send).unwrap();
             let queued = caps.queued_events(agent).unwrap();
             let expected = std::fs::read(root.join(file)).unwrap();
             assert_eq!(queued.last().unwrap(), &expected, "{file}");
         }
-        assert!(enqueue_land_properties(&caps, agent, &map, 99, &send(0, 0, &height)).is_err());
+        assert!(enqueue_land_properties(&caps, agent, &map, 99, &send(0, 0)).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_4096_metre_element_fits_on_the_queue() {
-        let map = open_parcels_at(None, REGION, [4096, 4096], ESTATE, CLAIM)
+        let mut map = open_parcels_at(None, REGION, [4096, 4096], ESTATE, CLAIM)
             .await
             .unwrap();
+        map.update_geometry(None);
         let local_id = map.parcels()[0].local_id;
         let send = ParcelPropertiesSend {
             sequence_id: 0,
@@ -110,7 +113,6 @@ mod tests {
             object_bonus: 1.0,
             prims: PrimCounts::default(),
             agent_environment_version: 0,
-            heightmap: None,
         };
         let agent = Uuid::from_u128(9);
         let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
@@ -124,7 +126,7 @@ mod tests {
         assert!(queued.iter().all(|element| element.len() == 177_823));
     }
 
-    fn send<'a>(sequence: i32, result: i32, height: &'a Heightmap) -> ParcelPropertiesSend<'a> {
+    fn send(sequence: i32, result: i32) -> ParcelPropertiesSend {
         ParcelPropertiesSend {
             sequence_id: sequence,
             snap_selection: false,
@@ -135,7 +137,6 @@ mod tests {
             object_bonus: 1.0,
             prims: PrimCounts::default(),
             agent_environment_version: 0,
-            heightmap: Some(height),
         }
     }
 }

@@ -159,6 +159,25 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
     }))
 }
 
+/// `SendLandProperties` region values. The handshake word is the one stored
+/// settings already applied, including `RestrictPushing`. A missing settings
+/// row sends bonus 1. A missing estate leaves tax-free and the environment
+/// override clear.
+fn parcel_region(
+    config: &RegionConfig,
+    settings: Option<&ferroan_scene::RegionSettings>,
+    estate: Option<&ferroan_scene::EstateAccess>,
+) -> ferroan_scene::parcels::ParcelRegion {
+    let object_bonus = settings.map(|row| row.object_bonus).unwrap_or(1.0);
+    ferroan_scene::parcels::ParcelRegion::from_handshake(
+        config.handshake.region_flags,
+        object_bonus,
+        config.object_capacity,
+        estate.is_some_and(|access| access.tax_free),
+        estate.is_some_and(|access| access.allow_environment_override),
+    )
+}
+
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     if ferroan_region::config::prioritization_scheme_differs(
@@ -170,7 +189,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         );
     }
     let terrain = load_terrain(&config).await?;
-    let _region_settings = load_stored_settings(&mut config).await?;
+    let region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -251,13 +270,57 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
                 tracing::warn!("ferroan-region: child neighbours will not be posted: {error}");
             }
         }
+        let caps_out = caps.clone();
+        let installed = frame.set_parcel_sender(Arc::new(move |agent, element| {
+            if let Err(error) = caps_out.enqueue_raw_for(agent, element, "parcel-properties") {
+                tracing::warn!(
+                    "ferroan-region: parcel properties were not queued for {agent}: {error}"
+                );
+            }
+        }));
+        match installed {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+            }
+        }
     }
+    let mut stored_estate = None;
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
-            Ok(Some(access)) => simulation.apply_estate(access),
+            Ok(Some(access)) => {
+                stored_estate = Some(access.clone());
+                simulation.apply_estate(access);
+            }
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!("ferroan-region: estate tables were not read: {error}");
+            }
+        }
+    }
+    if let Some(frame) = &terrain {
+        if let Some(map) = frame.parcels() {
+            if let Some(access) = stored_estate.as_ref() {
+                map.set_estate(access.owner, access.managers.clone(), access.tax_free);
+            }
+            let staff = simulation.staff_gate();
+            map.set_administrator(Arc::new(move |agent| staff.is_administrator(agent)));
+        }
+        let installed = parcel_region(&config, region_settings.as_deref(), stored_estate.as_ref());
+        match frame.set_parcel_region(installed) {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!(
+                        "ferroan-region: parcel region values were not installed: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel region values were not installed: {error}");
             }
         }
     }
@@ -492,8 +555,15 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         config.prim_scale_limits,
         config.physics_scale_limits,
         config.collidable_prims,
+        config.server.clone(),
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;
+    frame
+        .set_fly_slow(config.fly_slow)
+        .map_err(|error| RunError::Terrain(error.to_string()))?
+        .wait()
+        .await
+        .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -630,6 +700,36 @@ fn motion_of(update: ferroan_client::AgentMotionUpdate) -> ferroan_scene::Motion
     }
 }
 
+/// A returning `UpdateAgent`'s animator fields for the frame's `CopyFrom`.
+fn scene_animations(sent: ferroan_client::AgentAnimations) -> ferroan_scene::AnimationTransfer {
+    let anim = |anim: ferroan_client::Anim| ferroan_scene::Anim {
+        animation: anim.animation,
+        sequence: anim.sequence,
+        object_id: anim.object_id,
+    };
+    ferroan_scene::AnimationTransfer {
+        animations: sent.animations.into_iter().map(anim).collect(),
+        default_animation: sent.default_animation.map(anim),
+        animation_state: sent.animation_state.map(anim),
+        motion_state: sent.motion_state,
+    }
+}
+
+/// The frame's animator for a departure's `CopyTo`.
+fn agent_animations(live: ferroan_scene::AnimationTransfer) -> ferroan_client::AgentAnimations {
+    let anim = |anim: ferroan_scene::Anim| ferroan_client::Anim {
+        animation: anim.animation,
+        object_id: anim.object_id,
+        sequence: anim.sequence,
+    };
+    ferroan_client::AgentAnimations {
+        animations: live.animations.into_iter().map(anim).collect(),
+        default_animation: live.default_animation.map(anim),
+        animation_state: live.animation_state.map(anim),
+        motion_state: live.motion_state,
+    }
+}
+
 fn pose_reply(stored: ferroan_scene::Presence) -> SceneReply {
     SceneReply::Pose(ferroan_client::LoginPose {
         position: stored.position,
@@ -715,6 +815,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         head_rotation: pose.head_rotation,
                         control_flags: pose.control_flags,
                         always_run: pose.always_run,
+                        animations: scene_animations(pose.animations),
                     },
                 },
             ),
@@ -734,6 +835,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
+        SceneCall::InitialLand => answered(frame.initial_land(agent), |()| Ok(SceneReply::Applied)),
         SceneCall::Read => answered(frame.presence(agent), |stored| {
             Ok(stored.map_or(SceneReply::Missing, pose_reply))
         }),
@@ -750,6 +852,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
                         center: departure.camera_center,
                         head_rotation: departure.head_rotation,
                         body_rotation: departure.body_rotation,
+                        animations: agent_animations(departure.animations),
                     },
                 },
             );
@@ -760,7 +863,22 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         }),
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+        SceneCall::AgentAnimation(changes) => queued(frame.agent_animation(agent, changes)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
+        SceneCall::ParcelRequest(query) => answered(
+            frame.parcel_request(
+                agent,
+                ferroan_scene::parcels::PropertiesRequest {
+                    west: query.west,
+                    south: query.south,
+                    east: query.east,
+                    north: query.north,
+                    sequence_id: query.sequence_id,
+                    snap_selection: query.snap_selection,
+                },
+            ),
+            |()| Ok(SceneReply::Applied),
+        ),
     }
 }
 
@@ -1011,7 +1129,6 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             mac: agent.mac.clone(),
             id0: agent.id0.clone(),
             service_urls: agent.service_urls.clone(),
-            animations: Arc::clone(&agent.animations),
             appearance: agent.appearance.clone(),
         }));
         let (report, mut report_ready) = oneshot::channel();
@@ -1283,6 +1400,19 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
                         avatar_wire(agent, 0, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Animations { agent, animations } => {
+                    let set: Vec<ferroan_client::Anim> = animations
+                        .iter()
+                        .map(|anim| ferroan_client::Anim {
+                            animation: anim.animation,
+                            object_id: anim.object_id,
+                            sequence: anim.sequence,
+                        })
+                        .collect();
+                    out.push(ferroan_client::AvatarPacket::Animation(
+                        ferroan_client::avatar_animation(self.viewer, agent, &set),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -3445,6 +3575,55 @@ mod tests {
         }
     }
 
+    /// A returning `UpdateAgent`'s animator fields go through the frame's
+    /// `CopyFrom`, and the next departure's `CopyTo` reads them back.
+    #[tokio::test]
+    async fn a_return_animation_set_reaches_the_next_departure_through_the_frame() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(8);
+        let fly = Uuid::from_u128(0xaec4610c_757f_bc4e_c092_c6e9caf18daf);
+        let extra = ferroan_client::Anim {
+            animation: Uuid::from_u128(5),
+            object_id: Uuid::from_u128(6),
+            sequence: 41,
+        };
+        let sent = ferroan_client::Anim {
+            animation: fly,
+            object_id: Uuid::from_u128(9),
+            sequence: 40,
+        };
+        let pose = ferroan_client::ReturnPose {
+            origin: Uuid::from_u128(70),
+            animations: ferroan_client::AgentAnimations {
+                animations: vec![extra],
+                default_animation: Some(sent),
+                animation_state: None,
+                motion_state: 1,
+            },
+            ..Default::default()
+        };
+        scene_call(&frame, agent, SceneCall::Complete(pose))
+            .reply()
+            .await
+            .unwrap();
+        let SceneReply::Departure(departure) = scene_call(&frame, agent, SceneCall::Departure)
+            .reply()
+            .await
+            .unwrap()
+        else {
+            panic!("expected the frame's departure state");
+        };
+        let copied = ferroan_client::Anim {
+            object_id: Uuid::nil(),
+            ..sent
+        };
+        let animations = departure.pose.animations;
+        assert_eq!(animations.default_animation, Some(copied));
+        assert_eq!(animations.animation_state, Some(copied));
+        assert_eq!(animations.animations, [extra]);
+        assert_eq!(animations.motion_state, 1);
+    }
+
     #[tokio::test]
     async fn the_scene_feed_delivers_the_child_in_the_same_drain_as_a_refused_root() {
         use ferroan_protocol::msgs::ObjectUpdate;
@@ -3539,7 +3718,73 @@ mod tests {
 
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
-    /// its appearance, and the kill.
+    /// its appearance, its animations as another viewer gets them, and the
+    /// kill.
+    /// `SendAnimations` picks the layout by the viewer the feed belongs to:
+    /// the agent's own viewer gets an animation that names another object
+    /// first, with that object, and any other viewer gets the set in order
+    /// with no objects. No set the frame makes today names another object,
+    /// so the set is queued on the feed directly.
+    #[test]
+    fn the_scene_feed_gives_only_the_agents_own_viewer_the_object_layout() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(95);
+        let other = Uuid::from_u128(96);
+        let object = Uuid::from_u128(97);
+        let stand = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
+            sequence: 1,
+            object_id: agent,
+        };
+        let held = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0xa11),
+            sequence: 9,
+            object_id: object,
+        };
+        let packets_for = |viewer: Uuid| {
+            let feed = frame.new_feed();
+            feed.send_avatar_packet(ferroan_scene::AvatarPacket::Animations {
+                agent,
+                animations: vec![stand, held],
+            });
+            let scene_feed = SceneFeed {
+                viewer,
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+                feed,
+                region_handle: 77,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 1);
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[0] else {
+                panic!("an AvatarAnimation");
+            };
+            assert_eq!(animation.sender.id, agent);
+            let list: Vec<(Uuid, i32)> = animation
+                .animation_list
+                .iter()
+                .map(|block| (block.anim_id, block.anim_sequence_id))
+                .collect();
+            let sources: Vec<Uuid> = animation
+                .animation_source_list
+                .iter()
+                .map(|block| block.object_id)
+                .collect();
+            (list, sources)
+        };
+        assert_eq!(
+            packets_for(agent),
+            (
+                vec![(held.animation, 9), (stand.animation, 1)],
+                vec![object]
+            )
+        );
+        assert_eq!(
+            packets_for(other),
+            (vec![(stand.animation, 1), (held.animation, 9)], Vec::new())
+        );
+    }
+
     #[test]
     fn the_scene_feed_writes_another_avatars_packets() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3595,14 +3840,14 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
-                viewer: agent,
+                viewer: watcher,
                 object_animations: Arc::default(),
                 supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
             };
             let packets = scene_feed.take_avatar_packets(usize::MAX);
-            assert_eq!(packets.len(), 3);
+            assert_eq!(packets.len(), 4);
             let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
                 panic!("the full update comes first");
             };
@@ -3621,7 +3866,18 @@ mod tests {
             };
             assert_eq!(appearance.sender.id, agent);
             assert_eq!(appearance.visual_param.len(), 2);
-            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[2] else {
+                panic!("the animations follow");
+            };
+            assert_eq!(animation.sender.id, agent);
+            assert_eq!(animation.animation_list.len(), 1);
+            assert_eq!(
+                animation.animation_list[0].anim_id,
+                Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f)
+            );
+            assert_eq!(animation.animation_list[0].anim_sequence_id, 1);
+            assert!(animation.animation_source_list.is_empty());
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[3] else {
                 panic!("the kill comes last");
             };
             assert_eq!(kill.object_data[0].id, local_id);
@@ -3801,5 +4057,115 @@ mod tests {
         let (parts, notes) = delivered(group, false).await;
         assert!(parts.iter().any(|part| part.0 == root));
         assert!(notes.is_empty());
+    }
+
+    /// A stored row with restrict pushing and object bonus 2 reaches the
+    /// parcel region. `InitialLand` is posted for that agent.
+    #[tokio::test]
+    async fn a_stored_row_sets_push_override_and_bonus_and_initial_land_uses_the_agent() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-parcel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/regionstore/settings.db"),
+            &path,
+        )
+        .unwrap();
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let updated = sqlx::query(
+            "UPDATE regionsettings SET object_bonus = 2.0, restrict_pushing = 1 \
+             WHERE lower(regionUUID) = '11111111-1111-1111-1111-111111111111'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        pool.close().await;
+        assert_eq!(updated, 1);
+
+        let server = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n",
+        )
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=11111111-1111-1111-1111-111111111111\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\nMaxPrims=22000\n",
+        )
+        .unwrap();
+        let mut config = RegionConfig::from_configs(&server, &regions).unwrap();
+        assert_eq!(config.object_capacity, 22_000);
+        config.object_store = Some(ferroan_region::config::ObjectStore {
+            connection: format!("Data Source={};Version=3", path.display()),
+            kind: ferroan_scene::ObjectStoreKind::Sqlite,
+        });
+        let settings = load_stored_settings(&mut config).await.unwrap().unwrap();
+        assert!(settings.restrict_pushing);
+        assert_eq!(settings.object_bonus, 2.0);
+        let estate = ferroan_scene::EstateAccess {
+            owner: None,
+            managers: Vec::new(),
+            tax_free: false,
+            allow_environment_override: true,
+        };
+        let region = parcel_region(&config, Some(settings.as_ref()), Some(&estate));
+        assert_eq!(region.object_bonus, 2.0);
+        assert_eq!(region.object_capacity, 22_000);
+        assert_eq!(region.region_flags & (1 << 22), 1 << 22);
+        assert_eq!(region.region_flags & (1 << 9), 1 << 9);
+        assert!(!region.tax_free);
+
+        let parcels =
+            ferroan_scene::parcels::open_parcels(None, config.id, [256, 256], Uuid::nil())
+                .await
+                .unwrap();
+        let frame = TerrainFrame::start_region(None, Some(parcels)).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        frame
+            .set_parcel_sender(Arc::new(move |agent, _element| {
+                record.lock().unwrap().push(agent);
+            }))
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let agent = Uuid::from_u128(0x61c1);
+        frame
+            .arrive(
+                agent,
+                ferroan_scene::Presence {
+                    position: [128.0, 128.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 64.0,
+                },
+                [1.0, 0.0, 0.0],
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        scene_call(&frame, agent, SceneCall::InitialLand)
+            .reply()
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(), &[agent]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

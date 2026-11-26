@@ -38,9 +38,11 @@ mod properties;
 mod vector_text;
 
 pub use overlay::OverlayPacket;
-pub use properties::{ParcelPropertiesSend, PrimCounts};
+pub(crate) use properties::prim_counts;
+pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts, PropertiesRequest};
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ferroan_db::{Backend, Pool};
@@ -117,6 +119,12 @@ pub struct Parcel {
     pub group_av_sounds: bool,
     pub location: [f32; 3],
     pub look_at: [f32; 3],
+    /// Bounding box from `LandObject.UpdateGeometryValues`, stored when the
+    /// land is loaded. A later encode reads these samples.
+    #[cfg_attr(test, serde(default))]
+    pub aabb_min: [f32; 3],
+    #[cfg_attr(test, serde(default))]
+    pub aabb_max: [f32; 3],
     pub auth_buyer: Uuid,
     pub other_clean_time: i32,
     #[cfg_attr(test, serde(skip))]
@@ -167,6 +175,8 @@ impl Parcel {
             obscure_music: false,
             location: [0.0; 3],
             look_at: [0.0; 3],
+            aabb_min: [0.0; 3],
+            aabb_max: [0.0; 3],
             auth_buyer: Uuid::nil(),
             other_clean_time: 0,
             environment: None,
@@ -180,10 +190,39 @@ struct StoredParcel {
     bitmap: Vec<u8>,
 }
 
+/// `PermissionsModule.IsAdministrator`, supplied by the region. The default
+/// answers false. The region installs `StaffGate`'s god rule.
+pub type Administrator = Arc<dyn Fn(Uuid) -> bool + Send + Sync>;
+
+struct EstateBan {
+    /// `EstateSettings.EstateOwner`. Absent from the row keeps the INI owner.
+    owner: Uuid,
+    /// `EstateSettings.l_EstateManagers`.
+    managers: Vec<Uuid>,
+    /// `EstateSettings.TaxFree`. Region access control is the only check then.
+    tax_free: bool,
+    administrator: Administrator,
+}
+
+impl EstateBan {
+    fn fresh(owner: Uuid) -> Self {
+        Self {
+            owner,
+            managers: Vec::new(),
+            tax_free: false,
+            administrator: Arc::new(|_| false),
+        }
+    }
+}
+
 pub struct ParcelMap {
     width: usize,
     cells: Vec<u32>,
     parcels: Vec<Parcel>,
+    /// Shared so a later estate read updates every holder of this map.
+    ban: Arc<Mutex<EstateBan>>,
+    /// Empty element for this region plus 8192 bytes. Fixed with the map size.
+    text_limit: u64,
 }
 
 impl ParcelMap {
@@ -224,11 +263,71 @@ impl ParcelMap {
         }
         let width = size[0] as usize / 4;
         let count = width * (size[1] as usize / 4);
+        let cells_y = count.checked_div(width).unwrap_or(0);
         Ok(Self {
             width,
             cells: vec![0; count],
             parcels: Vec::new(),
+            ban: Arc::new(Mutex::new(EstateBan::fresh(Uuid::nil()))),
+            text_limit: properties::empty_text_limit(width, cells_y),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_description(&mut self, local_id: i32, description: String) {
+        if let Some(parcel) = self
+            .parcels
+            .iter_mut()
+            .find(|parcel| parcel.local_id == local_id)
+        {
+            parcel.description = description;
+        }
+    }
+
+    /// The stored estate row. `owner` of `None` keeps the owner already stored,
+    /// which is `[Estates] DefaultEstateOwnerUUID` until this runs.
+    pub fn set_estate(&self, owner: Option<Uuid>, managers: Vec<Uuid>, tax_free: bool) {
+        let mut ban = self.ban.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(owner) = owner {
+            ban.owner = owner;
+        }
+        ban.managers = managers;
+        ban.tax_free = tax_free;
+    }
+
+    /// `IsAdministrator`. The region passes the permissions god rule.
+    pub fn set_administrator(&self, administrator: Administrator) {
+        self.ban
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .administrator = administrator;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tax_free(&self, tax_free: bool) {
+        self.ban
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .tax_free = tax_free;
+    }
+
+    /// `IsBannedFromLand`'s exemptions (`LandObject.cs` 873–885): `TaxFree`,
+    /// `IsAdministrator`, `IsEstateManagerOrOwner`, then the parcel owner.
+    pub(crate) fn exempts(&self, agent: Uuid, parcel_owner: Uuid) -> bool {
+        let (tax_free, owner, managers, administrator) = {
+            let ban = self.ban.lock().unwrap_or_else(|poison| poison.into_inner());
+            (
+                ban.tax_free,
+                ban.owner,
+                ban.managers.clone(),
+                Arc::clone(&ban.administrator),
+            )
+        };
+        tax_free
+            || administrator(agent)
+            || agent == owner
+            || managers.contains(&agent)
+            || agent == parcel_owner
     }
 
     fn insert(&mut self, StoredParcel { mut data, bitmap }: StoredParcel) {
@@ -280,6 +379,21 @@ impl ParcelMap {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn limit_hits(id: &str, action: &str) -> u64 {
+    let needle = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"{action}\"}} ");
+    ferroan_diag::metrics()
+        .lines()
+        .find_map(|line| line.strip_prefix(&needle)?.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn limits_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// ConvertBytesToLandBitmap clips the input first. A resulting 512 bytes
 /// has the legacy 64-cell stride even in a larger or rectangular region.
 fn bitmap_cells(
@@ -328,6 +442,7 @@ pub async fn open_parcels_at(
     now: i32,
 ) -> Result<ParcelMap, ParcelError> {
     let mut map = ParcelMap::empty(size)?;
+    map.set_estate(Some(estate), Vec::new(), false);
     if let Some(connection) = connection
         && ferroan_db::sqlite_filename(connection)?
             .try_exists()
@@ -744,6 +859,8 @@ fn build_land_data(row: &SqliteRow) -> Result<Parcel, ParcelError> {
         group_av_sounds: boolean(row, "GroupAVSounds")?,
         location,
         look_at,
+        aabb_min: [0.0; 3],
+        aabb_max: [0.0; 3],
         auth_buyer: Uuid::parse_str(required::<&str>(row, "AuthbuyerID")?.trim())
             .unwrap_or_default(),
         other_clean_time: integer(row, "OtherCleanTime")?,

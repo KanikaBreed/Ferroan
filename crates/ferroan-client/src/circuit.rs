@@ -86,11 +86,11 @@ use ferroan_diag::{
     UDP_UNACKED,
 };
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
-    CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, ParcelOverlay, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocal,
-    TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack,
-    start_ping_check,
+    AgentAnimation, AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer,
+    CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply,
+    LogoutRequest, PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply,
+    SetAlwaysRun, StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest,
+    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -279,6 +279,9 @@ pub enum SceneCall {
     /// turns to the look `AgentMovementComplete` carries (`RotateToLookAt`),
     /// and the other viewers are told of it. One call.
     Arrive(LoginPose, [f32; 3]),
+    /// The parcel element `sendClientInitialLandInfo` queues after
+    /// `AgentMovementComplete` is sent (`ScenePresence.cs` 2441, then 2475).
+    InitialLand,
     /// `ChatFromViewer` forwarded so distance uses the stored poses.
     Places(Vec<Uuid>),
     /// `TeleportLocationRequest` for this region. The frame owns the landing
@@ -294,15 +297,31 @@ pub enum SceneCall {
     /// `SetAlwaysRun`. One inbound slot, no answer. A refused post waits on
     /// the circuit (the latest only) and is posted again first.
     AlwaysRun(bool),
+    /// `AgentAnimation`: each block's id and `StartAnim`. One inbound slot,
+    /// no answer. A refused post is dropped with the inbound readout.
+    AgentAnimation(Vec<(Uuid, bool)>),
     /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
     /// inbound slot, no answer. A refused post waits on the circuit.
     HandshakeReply,
+    /// `ParcelPropertiesRequest`. The frame queues the elements, then answers.
+    ParcelRequest(ParcelQuery),
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
 }
 
+/// Bounds from `ParcelPropertiesRequest`. `MathF.Round` happens on the frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ParcelQuery {
+    pub west: f32,
+    pub south: f32,
+    pub east: f32,
+    pub north: f32,
+    pub sequence_id: i32,
+    pub snap_selection: bool,
+}
+
 /// The departing avatar for a source hop.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneDeparture {
     pub flying: bool,
     pub pose: HopPose,
@@ -847,6 +866,7 @@ impl State {
                 AvatarPacket::Full(update) => encode_payload(update)?,
                 AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,
                 AvatarPacket::Kill(kill) => encode_payload(kill)?,
+                AvatarPacket::Animation(animation) => encode_payload(animation)?,
                 // `CoarseLocationUpdateHeader` leaves the reliable flag off.
                 AvatarPacket::Coarse(coarse) => Payload {
                     reliable: false,
@@ -1341,6 +1361,10 @@ impl State {
             if let Ok(request) = packet.decode::<TeleportLocationRequest>() {
                 self.local_teleport(sock, from, expect, &request).await?;
             }
+        } else if packet.id == ParcelPropertiesRequest::ID {
+            if let Ok(request) = packet.decode::<ParcelPropertiesRequest>() {
+                self.forward_parcel_request(expect, &request).await?;
+            }
         } else if packet.id == RegionHandshakeReply::ID {
             if packet.decode::<RegionHandshakeReply>().is_ok() {
                 self.forward_handshake_reply(expect);
@@ -1355,6 +1379,10 @@ impl State {
         } else if packet.id == AgentUpdate::ID {
             if let Ok(update) = packet.decode::<AgentUpdate>() {
                 self.forward_agent_update(expect, packet.sequence, &update);
+            }
+        } else if packet.id == AgentAnimation::ID {
+            if let Ok(animation) = packet.decode::<AgentAnimation>() {
+                self.forward_agent_animation(expect, &animation);
             }
         } else if packet.id == SetAlwaysRun::ID {
             if let Ok(update) = packet.decode::<SetAlwaysRun>() {
@@ -1391,6 +1419,12 @@ impl State {
         let look_at = self.arrival.look_at;
         reply.data.position = position.into();
         self.send_message(sock, to, &reply, true).await?;
+        // `MoveAgentIntoRegion` has gone out. `sendClientInitialLandInfo`
+        // queues the parcel element next (`ScenePresence.cs` 2441, then 2475).
+        // A refused post does not stop the rest of this arrival.
+        if let Some(scene) = self.login_scene.clone() {
+            let _ = scene(expect.agent_id, SceneCall::InitialLand).reply().await;
+        }
         // CompleteMovement queues the avatar full update, then appearance, on
         // the task category (`SendEntityFullUpdateImmediate`, `SendAppearance`).
         // Land stays queued until its bucket and the reliable window have room.
@@ -1514,6 +1548,20 @@ impl State {
         self.flush_motion();
     }
 
+    /// `HandleAgentAnimation` onto the frame, without waiting. The frame
+    /// refuses a child. The ids were checked with the packet.
+    fn forward_agent_animation(&mut self, expect: &CircuitExpect, message: &AgentAnimation) {
+        let Some(scene) = self.login_scene.clone() else {
+            return;
+        };
+        let changes = message
+            .animation_list
+            .iter()
+            .map(|block| (block.anim_id, block.start_anim))
+            .collect();
+        let _ = scene(expect.agent_id, SceneCall::AgentAnimation(changes));
+    }
+
     /// `SetAlwaysRun` onto the frame, without waiting. Only the latest value
     /// matters, so a refused post replaces any older one still waiting.
     fn forward_always_run(&mut self, expect: &CircuitExpect, always_run: bool) {
@@ -1556,6 +1604,34 @@ impl State {
         {
             self.pending_update = None;
         }
+    }
+
+    /// `ParcelPropertiesRequest`. The frame queues every element before this
+    /// returns. No scene, or a stopped frame, sends nothing: the packet has
+    /// no failure reply.
+    async fn forward_parcel_request(
+        &self,
+        expect: &CircuitExpect,
+        request: &ParcelPropertiesRequest,
+    ) -> Result<(), CircuitError> {
+        let Some(scene) = self.login_scene.clone() else {
+            return Ok(());
+        };
+        let data = &request.parcel_data;
+        let _ = scene(
+            expect.agent_id,
+            SceneCall::ParcelRequest(ParcelQuery {
+                west: data.west,
+                south: data.south,
+                east: data.east,
+                north: data.north,
+                sequence_id: data.sequence_id,
+                snap_selection: data.snap_selection,
+            }),
+        )
+        .reply()
+        .await;
+        Ok(())
     }
 
     /// Forward the seated ids. The frame answers with the poses it has.
@@ -1790,10 +1866,8 @@ impl State {
         // A full inbound queue does not stop the return. The arrival packet
         // reads the frame. This token carries the position the frame stored,
         // or the mailbox position when the frame did not accept the post.
-        let position = self
-            .complete_scene(agent, pose)
-            .await
-            .unwrap_or(pose.position);
+        let mailbox = pose.position;
+        let position = self.complete_scene(agent, pose).await.unwrap_or(mailbox);
         self.arrival.position = position;
         let Some(slot) = self.return_slot.clone() else {
             self.return_started = false;
@@ -3290,9 +3364,12 @@ mod tests {
                         flags: request.flags,
                     }))
                 }
-                SceneCall::AgentUpdate(_) | SceneCall::AlwaysRun(_) | SceneCall::HandshakeReply => {
-                    Ok(SceneReply::Applied)
-                }
+                SceneCall::AgentUpdate(_)
+                | SceneCall::AlwaysRun(_)
+                | SceneCall::AgentAnimation(_)
+                | SceneCall::HandshakeReply
+                | SceneCall::InitialLand
+                | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),

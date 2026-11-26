@@ -113,6 +113,8 @@ mod xml_read;
 mod coalesced;
 pub use coalesced::{from_coalesced_xml, from_coalesced_xml_data, to_coalesced_xml};
 
+#[cfg(test)]
+pub(crate) use xml_read::blank_part;
 pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.
@@ -729,7 +731,7 @@ fn utf8_limit(text: &str, max: usize) -> Vec<u8> {
     out
 }
 
-fn part_creator(identification: &str) -> (Uuid, Option<String>) {
+pub(crate) fn part_creator(identification: &str) -> (Uuid, Option<String>) {
     if identification.is_empty() {
         return (Uuid::nil(), None);
     }
@@ -750,7 +752,7 @@ fn part_creator(identification: &str) -> (Uuid, Option<String>) {
     (id, Some(data))
 }
 
-fn item_creator(identification: &str) -> (Uuid, Option<String>) {
+pub(crate) fn item_creator(identification: &str) -> (Uuid, Option<String>) {
     if identification.is_empty() {
         return (Uuid::nil(), None);
     }

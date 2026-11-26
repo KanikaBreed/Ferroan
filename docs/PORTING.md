@@ -13,7 +13,7 @@ Ferroan is GPL-3.0-or-later. A Rust file ported from C#, or copied and adapted f
 | BSD-3-Clause (OpenSimulator, Halcyon, OpenMetaverse) | Yes | The original copyright lines and the BSD notice |
 | MPL-2.0 (Tranquillity's own files) | Yes | The original copyright lines and the MPL notice; the ported file stays available under MPL-2.0 as well |
 | Apache-2.0 (Phlox) | Yes | The original notice, plus a statement that the file was changed |
-| MIT (Luau, lsl-definitions, Linden's SLua) | Yes | The original copyright line and MIT notice |
+| MIT (Luau, lsl-definitions, Linden's SLua, and the .NET parts [D131](DECISIONS.md) names) | Yes | The original copyright line and MIT notice |
 | GPL-3.0-or-later (Aurora Viewer) | Yes | Aurora's notice, its source path and revision |
 | LGPL-2.1 (Second Life viewer, Firestorm) | Yes, under GPL-3.0-or-later as LGPL-2.1 section 3 permits | The original copyright line and "originally LGPL 2.1" |
 | AGPL (Benthic) | No | Read for comparison only |

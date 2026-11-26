@@ -34,8 +34,11 @@
 //! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
 //! and compare `fixtures/jolt-config`. `jolt file` and `jolt file-verify`
 //! run the pinned `JoltScene.NoteDilationSample` and compare
-//! `fixtures/jolt-file`. None of them starts a region. `jolt generate` and
-//! `jolt verify` stay with the harness.
+//! `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
+//! pinned harness in-process for the stock `drop` and compare
+//! `fixtures/jolt-record`. That command loads the stock native. None of
+//! them starts a region. `jolt generate` and `jolt verify` stay with the
+//! matched-native harness.
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
@@ -116,6 +119,7 @@ mod live;
 mod live_args;
 mod live_proxy;
 mod login_gate;
+mod memory;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
@@ -165,6 +169,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask jolt config-verify
        cargo xtask jolt file
        cargo xtask jolt file-verify
+       cargo xtask jolt record
+       cargo xtask jolt record-verify
        cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
@@ -198,6 +204,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask permissions generate|verify
+       cargo xtask oar-owners generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -205,6 +212,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
        cargo xtask live group-memberships
        cargo xtask live persistent-grid-check
+       cargo xtask live memory [--bulk]
        cargo xtask live diag [url...]
        cargo xtask live down
 ";
@@ -252,6 +260,8 @@ fn main() -> ExitCode {
         ["access", "verify"] => access_oracle::run("access", "AccessOracle", false),
         ["permissions", "generate"] => access_oracle::run("permissions", "PermissionsOracle", true),
         ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
+        ["oar-owners", "generate"] => access_oracle::run("oar-owners", "OarOwnersOracle", true),
+        ["oar-owners", "verify"] => access_oracle::run("oar-owners", "OarOwnersOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
@@ -299,6 +309,8 @@ fn main() -> ExitCode {
         ["jolt", "config-verify"] => jolt::config(false),
         ["jolt", "file"] => jolt::file(true),
         ["jolt", "file-verify"] => jolt::file(false),
+        ["jolt", "record"] => jolt::record(true),
+        ["jolt", "record-verify"] => jolt::record(false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run(
             "presence",
@@ -677,6 +689,7 @@ mod tests {
             "       cargo xtask live run parcel-timing grid --region ferroan\n",
             "       cargo xtask live parcel-timing-fixtures <capture-dir>\n",
             "       cargo xtask live run parcel-properties grid --physics basicphysics\n",
+            "       cargo xtask live run parcel-properties grid --region ferroan\n",
             "       cargo xtask live parcel-properties-fixtures <capture-dir>\n",
             "       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics\n",
             "       cargo xtask live run prim-load grid --physics basicphysics\n",

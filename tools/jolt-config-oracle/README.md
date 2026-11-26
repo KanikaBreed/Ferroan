@@ -48,3 +48,45 @@ same lock, and `Init` then calls `JPH_Init`. A zero refcount and an unmapped
 `joltc` mean that call did not happen. The project reference may load the
 managed assembly that references `JoltPhysics.Native`. Linking joltc is not
 the test. `cargo xtask jolt generate` and `jolt verify` stay on P3.0.
+
+`cargo xtask jolt record` writes `fixtures/jolt-record/`.
+`cargo xtask jolt record-verify` runs the pinned harness again and requires
+the same bytes. The recorder is `JoltRecordOracle.csproj` in this directory.
+`JoltConfigOracle.csproj` does not compile it, and the recorder does not
+compile the config or file sources. The config and file commands still do
+not load joltc.
+
+The record command runs `Harness.Run` in-process for the harness `drop`.
+The samples are the harness `Sample` fields. `ToCsv` is not the trace.
+The harness awake-body count is written as `awake_bodies`. `awake` is
+`IsBodyAwake` for the dropped body after that step.
+The heartbeat is `1/11` s (`RateHz` 11). `PhysicsStepRate` 0 is one step
+per heartbeat, read from `JoltScene.Substeps` when that accumulator exists
+and from `JoltScene.StepCount` when it does not. The host subscribes to the
+actor and records collision updates. The stock drop attaches no step
+provider. After the samples, events and step marks are stored, the proof
+attaches `ScriptForceStepProvider` to the dropped box and replaces that
+entry's `Provider` field with a recording wrapper. One extra simulate
+forwards to the stock provider. The field is restored, and disposing the
+attachment leaves no provider and no step listener. The wrapper does not
+replace the entry: detach removes that entry by reference.
+
+Each fixture records the native file name, size and sha256, the harness
+commit, the heartbeat, the step count, the config, the warm-up count, the
+body ids, the clock and the effective materials. Asset bytes, the cold
+sculpt-cache result, the first heartbeat and a hash of each channel are in
+the same provenance. `material_pins`, `use_defaults`, `shipped_config`,
+`warm_up`, `simulator_prims` and `region_mesher` are read from the options,
+`MaterialPins.Enabled` and whether the run installed a mesher.
+`files_before` is the sculpt-cache count before the run. `provider_calls`
+counts stock `OnStep` calls the seam forwarded. `first_heartbeat` is the
+first heartbeat index the host observed. A wrong-clock file and a
+wrong-collider file change one captured number each. Verify writes each
+file over its channel and requires the tree compare to reject it. The
+baseline name is `pin8-linux-x86_64`. An unknown native prints `SKIPPED`
+and exits 3, and that result does not pass.
+The command clears `JOLT_HARNESS_PHYSICS_RATE` before it builds the harness
+options. It does not patch the pin and it does not start a region.
+
+Build output goes under `.scratch/jolt-record-oracle/`. The project sets
+`UseSharedCompilation` to false. The live workflow runs `record-verify`.

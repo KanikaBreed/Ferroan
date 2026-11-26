@@ -24,6 +24,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 
 # The workspace forbids unsafe. This crate denies it too, and `src/lib.rs`
 # allows it only on `mod native` (AGENTS.md section 2). `ferroan-scripting`

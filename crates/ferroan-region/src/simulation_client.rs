@@ -179,91 +179,41 @@ pub struct Circuit {
     pub service_urls: Vec<(String, String)>,
 }
 
-/// An animation block. A nil object id is left off the wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Anim {
-    pub animation: Uuid,
-    pub object_id: Uuid,
-    pub sequence: i32,
+/// An animation block (`OpenSim.Framework.Animation`). A nil object id is
+/// left off the wire.
+pub use ferroan_client::{AgentAnimations, Anim};
+
+fn unpack_anim(value: &Value) -> Option<Anim> {
+    let map = value.as_object()?;
+    Some(Anim {
+        animation: uuid_value(map.get("animation")),
+        object_id: uuid_value(map.get("object_id")),
+        sequence: json_i32_value(map.get("seq_num")),
+    })
 }
 
-impl Anim {
-    fn unpack(value: &Value) -> Option<Self> {
-        let map = value.as_object()?;
-        Some(Self {
-            animation: uuid_value(map.get("animation")),
-            object_id: uuid_value(map.get("object_id")),
-            sequence: json_i32_value(map.get("seq_num")),
-        })
-    }
-}
-
-/// The animation set retained across a transfer. A fresh presence stands on the surface.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransferAnimations {
-    pub extra: Vec<Anim>,
-    pub default_animation: Anim,
-    pub animation_state: Anim,
-    pub motion_state: u8,
-}
-
-impl Anim {
-    const STAND: Self = Self {
-        animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
-        object_id: Uuid::nil(),
-        sequence: 1,
-    };
-}
-
-impl Default for TransferAnimations {
-    fn default() -> Self {
-        Self {
-            extra: Vec::new(),
-            default_animation: Anim::STAND,
-            animation_state: Anim::STAND,
-            motion_state: 6,
-        }
-    }
-}
-
-impl TransferAnimations {
-    pub(crate) fn copy_from(&mut self, data: &Map<String, Value>) {
-        self.set_default(Anim::STAND);
-        self.extra = data
+/// `AgentData.Unpack`'s animator fields: the animations that are maps (D77), each
+/// default when it is a map, and `motion_state` cast to a byte. The region
+/// frame applies them (`CopyFrom`) when the child becomes root. Only the first
+/// `MAX_OTHER_ANIMATIONS` maps are carried: the frame's set keeps no more
+/// (`region.agent-animations`, reported there).
+pub(crate) fn agent_animations(data: &Map<String, Value>) -> AgentAnimations {
+    AgentAnimations {
+        animations: data
             .get("animations")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(Anim::unpack)
-            .collect();
-        if let Some(anim) = data.get("default_animation").and_then(Anim::unpack) {
-            self.set_default(anim);
-        }
-        if let Some(anim) = data.get("animation_state").and_then(Anim::unpack) {
-            self.animation_state = Anim {
-                object_id: Uuid::nil(),
-                ..anim
-            };
-        }
-        if let Some(state) = data
+            .filter_map(unpack_anim)
+            .take(ferroan_scene::MAX_OTHER_ANIMATIONS)
+            .collect(),
+        default_animation: data.get("default_animation").and_then(unpack_anim),
+        animation_state: data.get("animation_state").and_then(unpack_anim),
+        // `(byte)tmp.AsInteger()` keeps the low byte.
+        motion_state: data
             .get("motion_state")
-            .and_then(Value::as_u64)
-            .and_then(|n| u8::try_from(n).ok())
-            .filter(|n| *n != 0)
-        {
-            self.motion_state = state;
-        }
-    }
-
-    // AnimationSet retains the sequence and implicit animation when the id already matches.
-    fn set_default(&mut self, anim: Anim) {
-        if self.default_animation.animation != anim.animation {
-            self.default_animation = Anim {
-                object_id: Uuid::nil(),
-                ..anim
-            };
-            self.animation_state = self.default_animation;
-        }
+            .and_then(Value::as_i64)
+            .map_or(0, |state| state.to_le_bytes()[0]),
     }
 }
 
@@ -1593,44 +1543,69 @@ mod tests {
         }
     }
 
+    /// The carried list stops at the frame's bound; a non-map entry does
+    /// not count towards it.
     #[test]
-    fn copy_from_resets_to_stand_and_keeps_the_sequence_for_the_same_default_id() {
-        let mut animations = TransferAnimations::default();
+    fn agent_data_carries_at_most_the_animation_bound() {
+        let mut animations = vec![json!("not a map")];
+        animations.extend(
+            (0..300u128).map(
+                |n| json!({"animation": Uuid::from_u128(1_000 + n).to_string(), "seq_num": 1}),
+            ),
+        );
+        let data = json!({ "animations": animations });
+        let read = agent_animations(data.as_object().unwrap());
+        assert_eq!(read.animations.len(), ferroan_scene::MAX_OTHER_ANIMATIONS);
+        assert_eq!(read.animations[0].animation, Uuid::from_u128(1_000));
+        assert_eq!(read.animations[253].animation, Uuid::from_u128(1_253));
+    }
+
+    #[test]
+    fn agent_data_animations_unpack_as_csharp_reads_them() {
         let incoming = Uuid::from_u128(20);
         let implicit = Uuid::from_u128(21);
         let object = Uuid::from_u128(22);
         let data = json!({
+            "animations": [
+                {"animation": incoming.to_string(), "seq_num": 3, "object_id": object.to_string()},
+                "not a map"
+            ],
             "default_animation": {"animation": incoming.to_string(), "seq_num": 7, "object_id": object.to_string()},
-            "animation_state": {"animation": implicit.to_string(), "seq_num": 8, "object_id": object.to_string()}
+            "animation_state": {"animation": implicit.to_string(), "seq_num": 8},
+            "motion_state": 261
         });
-        animations.copy_from(data.as_object().unwrap());
+        let read = agent_animations(data.as_object().unwrap());
         assert_eq!(
-            animations.default_animation,
-            Anim {
+            read.animations,
+            [Anim {
                 animation: incoming,
-                sequence: 7,
-                object_id: Uuid::nil(),
-            }
+                object_id: object,
+                sequence: 3,
+            }]
         );
         assert_eq!(
-            animations.animation_state,
-            Anim {
-                animation: implicit,
-                sequence: 8,
-                object_id: Uuid::nil(),
-            }
+            read.default_animation,
+            Some(Anim {
+                animation: incoming,
+                object_id: object,
+                sequence: 7,
+            })
         );
-
-        // CopyFrom resets the prior animator even when the incoming data has no animations.
-        animations.copy_from(&Map::new());
-        assert_eq!(animations.default_animation, Anim::STAND);
-        assert_eq!(animations.animation_state, Anim::STAND);
-
-        // Reapplying STAND with another sequence keeps the sequence from the reset.
-        let stand = json!({"default_animation": {"animation": Anim::STAND.animation.to_string(), "seq_num": 99}});
-        animations.copy_from(stand.as_object().unwrap());
-        assert_eq!(animations.default_animation, Anim::STAND);
-        assert_eq!(animations.animation_state, Anim::STAND);
+        assert_eq!(
+            read.animation_state,
+            Some(Anim {
+                animation: implicit,
+                object_id: Uuid::nil(),
+                sequence: 8,
+            })
+        );
+        assert_eq!(read.motion_state, 5);
+        // A default that is not a map is absent, as is everything else here.
+        let bare = json!({"default_animation": "STAND"});
+        assert_eq!(
+            agent_animations(bare.as_object().unwrap()),
+            AgentAnimations::default()
+        );
     }
 
     #[tokio::test]

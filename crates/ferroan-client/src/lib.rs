@@ -8,6 +8,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod agent_animations;
 mod appearance;
 mod arrival;
 mod caps;
@@ -27,6 +28,7 @@ mod source_hop;
 mod teleport;
 mod throttle;
 
+pub use agent_animations::{AgentAnimations, Anim};
 pub use appearance::{
     AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
 };
@@ -39,12 +41,13 @@ pub use caps::{
 };
 pub use circuit::{
     AgentMotionUpdate, CircuitError, CircuitExpect, CircuitServer, CircuitStop, CircuitTiming,
-    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, RootArrival,
-    SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply, SceneResult,
-    TeleportRequest, UdpCounters,
+    LoginPose, LoginReservation, LoginScene, MAX_NAME_REPLIES, PENDING_LOGINS, ParcelQuery,
+    RootArrival, SceneAnswer, SceneCall, SceneDeparture, SceneMove, SceneRefused, SceneReply,
+    SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
-    AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,
+    AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, avatar_animation, coarse_update,
+    kill_packets,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};

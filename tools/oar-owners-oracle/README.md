@@ -1,0 +1,11 @@
+# OAR owner and group fixtures
+
+Run `cargo xtask oar-owners generate` to write [objects.json](../../fixtures/oar-owners/objects.json). Run `cargo xtask oar-owners verify` to repeat the observations and require the same file. The runner builds the pinned `OpenSim.Region.CoreModules` from a clean scratch checkout at the revision in [REFERENCES.md](../../docs/REFERENCES.md). It does not start a region.
+
+The oracle builds two objects, writes them with `SceneObjectSerializer.ToXml2Format`, and stores that XML2 in the fixture. Each case reads both objects back with `FromXml2Format`, as `LoadObjects` does, and passes them in order through one `ArchiveReadRequest`. It calls the private `ModifySceneObject` by reflection. The request is built with the console constructor, `ArchiveReadRequest(Scene, string, Guid, options)`, on an empty file, and a lightweight scene. The second object repeats ids the first one already resolved, so it shows the caches lasting for the whole load.
+
+Test services answer from the fixture's rows. The user account service holds `users` in `scope`, the groups module holds `groups`, and the alias service holds `aliases`. Local1 has an alias row too, which is never read. Each call is logged in order: `GetUserAccount`, `GetGroupRecord`, `GetUserForAlias` and `AddCreatorUser` with the creator data. A service a case leaves out is not registered.
+
+The parts and items cover a local creator, a creator with creator data (with and without the slash before the name), a group as creator, as owner and as last owner, an unknown group, the zero id, an alias to an account, an alias to a stranger, an alias to a group and an alias to another alias. The twelve cases are the default (the estate owner), `default-user`, `no-defaultuser`, `lookup-aliases` alone and with each of those two, no groups module (alone and with `lookup-aliases`), `lookup-aliases` with no alias service, no user management module, and a zero estate owner with and without `no-defaultuser`.
+
+`expected` records each part's and item's creator id, creator data, owner, last owner and group after the rewrite, and the service calls. The scene test `every_rewrite_and_lookup_matches_pin8` reads the same XML with Ferroan's reader and compares every field and the call list.

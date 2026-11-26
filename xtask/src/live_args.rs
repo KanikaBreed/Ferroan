@@ -103,6 +103,9 @@ enum Command {
         bind: Option<String>,
     },
     PersistentGridCheck,
+    Memory {
+        bulk: bool,
+    },
     Down,
     Run(RunSpec),
     RecordTwice,
@@ -221,6 +224,7 @@ fn execute(command: Command) -> ExitCode {
             }
         }
         Command::PersistentGridCheck => crate::grid_smoke::run(),
+        Command::Memory { bulk } => grid::memory(bulk),
         Command::Down => live::down(),
         Command::Run(spec) => run_spec(spec),
         Command::RecordTwice => live::record_twice(),
@@ -343,6 +347,8 @@ fn parse(args: &[&str]) -> Result<Command, ParseFail> {
             Ok(Command::UpGrid { bind: flags.bind })
         }
         ["persistent-grid-check"] => Ok(Command::PersistentGridCheck),
+        ["memory"] => Ok(Command::Memory { bulk: false }),
+        ["memory", "--bulk"] => Ok(Command::Memory { bulk: true }),
         ["down"] => Ok(Command::Down),
         ["diag", rest @ ..] => Ok(Command::Diag {
             urls: rest.iter().map(|url| (*url).to_owned()).collect(),
@@ -530,10 +536,9 @@ fn enforce_flags(
         let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
         let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
         if !pin8 && !ferroan {
-            return Err(ParseFail::Message(
-                "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
-                    .to_string(),
-            ));
+            return Err(ParseFail::Message(format!(
+                "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+            )));
         }
         return Ok(());
     }
@@ -839,6 +844,10 @@ mod tests {
         assert!(ferroan.ferroan_region);
         assert!(!ferroan.basic_physics);
         assert!(parse(&["run", "parcel-timing", "grid", "--region", "ferroan"]).is_ok());
+        let properties = run(&["run", "parcel-properties", "grid", "--region", "ferroan"]);
+        assert!(properties.ferroan_region);
+        assert!(!properties.basic_physics);
+        assert!(parse(&["run", "parcel-properties", "grid", "--region", "ferroan"]).is_ok());
     }
 
     #[test]
@@ -1116,23 +1125,25 @@ mod tests {
                 }
                 return;
             }
-        } else if scenario == "parcel-timing" {
+        } else if matches!(scenario, "parcel-timing" | "parcel-properties") {
             let pin8 = grid && physics && !region;
             let ferroan = grid && region && !physics;
             if !pin8 && !ferroan {
                 match parsed {
                     Err(ParseFail::Message(text)) => assert_eq!(
                         text,
-                        "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it",
+                        format!(
+                            "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+                        ),
                         "{label}"
                     ),
-                    other => panic!("{label} should name both parcel-timing forms, got {other:?}"),
+                    other => panic!("{label} should name both forms, got {other:?}"),
                 }
                 return;
             }
         } else if (matches!(
             scenario,
-            "prim-capture" | "object-cross" | "store-handoff" | "prim-load" | "parcel-properties"
+            "prim-capture" | "object-cross" | "store-handoff" | "prim-load"
         ) || (matches!(scenario, "prim-arrival" | "material-override") && !region))
             && (!grid || region || !physics)
         {

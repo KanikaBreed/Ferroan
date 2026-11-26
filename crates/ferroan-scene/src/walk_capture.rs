@@ -38,10 +38,13 @@
 
 use ferroan_capture::{Kind, Record, check_udp, read_capture};
 use ferroan_protocol::msgs::{
-    AgentMovementComplete, AgentUpdate, ImprovedTerseObjectUpdate, LayerData, ObjectUpdate,
+    AgentMovementComplete, AgentUpdate, AvatarAnimation, ImprovedTerseObjectUpdate, LayerData,
+    ObjectUpdate,
 };
 use ferroan_protocol::{Msg, parse_packet};
+use uuid::Uuid;
 
+use crate::animation::{Movement, STAND, default_animation};
 use crate::frame::{FRAME_TIME, Presence};
 use crate::height::Heightmap;
 use crate::motion::{Body, CONTROL_AT_POS, MotionUpdate};
@@ -146,8 +149,18 @@ struct Walk {
     start_rotation: [f32; 4],
     updates: Vec<MotionUpdate>,
     terse: Vec<Terse>,
+    animations: Vec<Animations>,
     first_layer_ms: u64,
     last_ms: u64,
+}
+
+/// One `AvatarAnimation` to the walker.
+#[derive(Clone, Debug)]
+struct Animations {
+    time_ms: u64,
+    sender: Uuid,
+    list: Vec<(Uuid, i32)>,
+    sources: usize,
 }
 
 fn motion_update(record: &Record, sequence: u32, message: &AgentUpdate) -> MotionUpdate {
@@ -180,6 +193,7 @@ fn read_walk() -> Walk {
     let mut arrival = None;
     let mut updates = Vec::new();
     let mut terse_blocks = Vec::new();
+    let mut animations = Vec::new();
     let mut first_layer_ms = None;
     for record in &records {
         let Ok(packet) = parse_packet(&record.bytes) else {
@@ -218,6 +232,19 @@ fn read_walk() -> Walk {
             Kind::UdpOut if packet.id == LayerData::ID => {
                 first_layer_ms.get_or_insert(record.time_ms);
             }
+            Kind::UdpOut if packet.id == AvatarAnimation::ID => {
+                let message = packet.decode::<AvatarAnimation>().unwrap();
+                animations.push(Animations {
+                    time_ms: record.time_ms,
+                    sender: message.sender.id,
+                    list: message
+                        .animation_list
+                        .iter()
+                        .map(|anim| (anim.anim_id, anim.anim_sequence_id))
+                        .collect(),
+                    sources: message.animation_source_list.len(),
+                });
+            }
             _ => {}
         }
     }
@@ -233,6 +260,7 @@ fn read_walk() -> Walk {
         start_rotation: start_rotation.unwrap(),
         updates,
         terse: terse_blocks,
+        animations,
         first_layer_ms: first_layer_ms.expect("the LayerData burst"),
         last_ms: records.last().unwrap().time_ms,
     }
@@ -404,6 +432,118 @@ fn the_csharp_walk_matches_the_stand_in_and_the_terse_thresholds() {
         .unwrap();
     let deadline = (release.now_ms + 250) as f64;
     assert!(clock(stop.tick - 1) <= deadline && deadline < clock(stop.tick));
+}
+
+/// The animator on the same walk. The region sent the walker three
+/// `AvatarAnimation` packets: `STAND` sequence 1 from `CompleteMovement`,
+/// `WALK` about 10 ms after the first forward `AgentUpdate` (well before the
+/// next frame: `AddNewMovement` runs the animator on the packet), and `STAND`
+/// on the next sequence number after the release, on a frame. The release
+/// takes the 250 ms path (the avatar is on the surface), so only
+/// `RegionHeartbeatEnd` can stand it, and only on every second heartbeat.
+/// `CompleteMovement` subscribed before tick 0 (its `STAND` packet came
+/// first), so the animator runs at the end of ticks 1, 3, 5 and so on: the
+/// release lands between ticks 27 and 28, tick 28 skips, and tick 29 stands.
+/// The actor stepped at tick 0, so it was on the ground for the `WALK`.
+///
+/// The sequence numbers start from a clock in C#, so only the step between
+/// them is compared. The packet itself is P2.3b2.
+#[test]
+fn the_csharp_walk_animates_walk_then_stand_on_the_heartbeat() {
+    let walk = read_walk();
+    let map = terrain();
+    let walk_id = default_animation("WALK").unwrap();
+
+    // What the capture holds.
+    assert_eq!(walk.animations.len(), 3, "arrival, walk, stand");
+    let agent = walk.animations[0].sender;
+    assert!(walk.animations.iter().all(|anims| anims.sender == agent));
+    assert!(walk.animations.iter().all(|anims| anims.sources == 0));
+    assert_eq!(walk.animations[0].list, [(STAND, 1)]);
+    let [(walked, walk_seq)] = walk.animations[1].list[..] else {
+        panic!("one animation: {:?}", walk.animations[1].list)
+    };
+    assert_eq!(walked, walk_id);
+    assert_eq!(walk.animations[2].list, [(STAND, walk_seq + 1)]);
+
+    let t0 = walk.terse[0].time_ms as f64;
+    let clock = |k: u64| t0 + (k as f64 - 4.0) * FRAME_MS;
+    let forward = walk.updates[0];
+    let release = walk.updates[24];
+    // CompleteMovement's pack came before tick 0, the forward update after it.
+    assert!((walk.animations[0].time_ms as f64) < clock(0));
+    assert!(clock(0) < forward.now_ms as f64 && (forward.now_ms as f64) < clock(1));
+
+    // The replay: the arrival's actor before tick 0, every input on the
+    // clock, each tick's step, then the heartbeat's end.
+    let mut pose = login_pose(&walk);
+    let mut body = Body::new(&pose);
+    body.set_agent(agent);
+    body.new_actor();
+    let initial = body.animator().animations().arrays();
+    assert_eq!(initial.len(), 1);
+    assert_eq!((initial[0].animation, initial[0].sequence), (STAND, 1));
+
+    let edge = REGION_EDGE as f32;
+    let mut pending = walk.updates.iter().peekable();
+    let mut changes = Vec::new();
+    let mut k = 0u64;
+    while clock(k) <= walk.last_ms as f64 {
+        let now = clock(k);
+        while let Some(update) = pending.next_if(|update| (update.now_ms as f64) < now) {
+            body.apply(update, &mut pose);
+            if body.take_animation_pack() {
+                changes.push((
+                    update.now_ms as f64,
+                    None,
+                    body.animator().current(),
+                    default_sequence(&body),
+                ));
+            }
+        }
+        let terrain = walk::terrain_height(Some(&map), pose.position, edge, edge);
+        body.step_physics(&mut pose, terrain, edge, edge, FRAME_TIME, now as u64);
+        body.heartbeat(now as u64);
+        if body.take_animation_pack() {
+            changes.push((
+                now,
+                Some(k),
+                body.animator().current(),
+                default_sequence(&body),
+            ));
+        }
+        k += 1;
+    }
+
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    // WALK on the first forward update, not on a frame.
+    let (walked_at, walked_tick, walked, ferroan_walk_seq) = changes[0];
+    assert_eq!(
+        (walked_at, walked_tick, walked),
+        (forward.now_ms as f64, None, Movement::Walk)
+    );
+    let walk_sent = walk.animations[1].time_ms as f64;
+    assert!(walk_sent >= forward.now_ms as f64 && walk_sent < forward.now_ms as f64 + 20.0);
+    // STAND on tick 29, the second heartbeat after the release.
+    assert_eq!(changes[1].1, Some(29), "{changes:?}");
+    assert_eq!(changes[1].2, Movement::Stand);
+    // Ferroan steps its own numbers as C# did: STAND is WALK's plus one.
+    assert_eq!(changes[1].3, ferroan_walk_seq + 1, "{changes:?}");
+    assert!(clock(27) < release.now_ms as f64 && (release.now_ms as f64) < clock(28));
+    let stand_offset = walk.animations[2].time_ms as f64 - clock(29);
+    assert!(stand_offset.abs() < FRAME_MS / 2.0, "{stand_offset} ms");
+
+    // The set the pack would carry: the walk, then the stand, one number on,
+    // with the agent as the object.
+    let set = body.animator().animations();
+    assert_eq!(set.default_animation().animation, STAND);
+    assert_eq!(set.default_animation().object_id, agent);
+    assert_eq!(set.default_animation().sequence, ferroan_walk_seq + 1);
+    assert!(set.others().is_empty());
+}
+
+fn default_sequence(body: &Body) -> i32 {
+    body.animator().animations().default_animation().sequence
 }
 
 /// The `LayerData` burst C# sent from its generated `pinhead-island` holds

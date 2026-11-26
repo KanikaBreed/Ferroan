@@ -57,7 +57,8 @@
 //! the frame thread. The frame ticks at the shipped `FrameTime`,
 //! stores the login presence, and answers a forwarded chat with those positions.
 //! A landing updates the position. An `AgentUpdate` stores movement intent on
-//! that presence. Each tick integrates that intent with the walking stand-in.
+//! that presence. Each tick integrates that intent with the walking stand-in,
+//! and the movement animation follows it ([`animation`]).
 //! Each viewer has an entity-update queue. A second update for the same local
 //! id merges flags. The default prioritizer places that viewer's avatar first,
 //! then other avatars, attachments, and prims by distance. Beside it, each
@@ -68,9 +69,11 @@
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
 //! Initial data queues them in link order. Q65c3 drains them onto the wire.
+//! An OAR load's creator, owner and group rewrite is [`oar_owners`].
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod animation;
 pub mod avatars;
 mod bits;
 pub mod client_flags;
@@ -83,6 +86,7 @@ mod frame;
 mod height;
 mod initial;
 mod motion;
+pub mod oar_owners;
 pub mod object_permissions;
 mod objects;
 pub mod parcels;
@@ -101,6 +105,7 @@ mod walk;
 mod walk_capture;
 mod xml;
 
+pub use animation::{Anim, AnimationSet, AnimationTransfer, MAX_OTHER_ANIMATIONS, Movement};
 pub use avatars::{AvatarFull, AvatarLook, AvatarPacket, MAX_AVATAR_PACKETS};
 pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;
@@ -113,7 +118,8 @@ pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
     CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway,
-    Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
+    ParcelSender, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink,
+    landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};

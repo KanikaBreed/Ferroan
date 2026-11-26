@@ -23,6 +23,7 @@ pub enum Flags {
     /// `--region ferroan` without `grid` is usage.
     Pin8OrFerroan,
     /// The Pin8 shape, or `grid --region ferroan` without basicphysics.
+    /// `parcel-timing` and `parcel-properties` use this.
     ParcelTiming,
     /// `grid --physics basicphysics`, with or without `--region ferroan`.
     /// The neighbour stays C#.
@@ -77,6 +78,7 @@ pub enum Bot {
     MaterialOverride,
     Stored(Stored),
     Avatars,
+    Animations,
     ChildView,
     ParcelTiming,
     ParcelProperties,
@@ -110,6 +112,9 @@ pub enum Compare {
     Proxy,
     TwoRoots,
     Avatars,
+    /// A Ferroan run compares the walker's `AvatarAnimation` bytes with the
+    /// C# capture in `fixtures/animations/`. A C# run finishes the capture.
+    Animations,
     Chat,
     Teleport,
     Neighbour,
@@ -331,6 +336,7 @@ const HELP_PARCEL_TIMING: &str = concat!(
 
 const HELP_PARCEL_PROPERTIES: &str = concat!(
     "       cargo xtask live run parcel-properties grid --physics basicphysics\n",
+    "       cargo xtask live run parcel-properties grid --region ferroan\n",
     "       cargo xtask live parcel-properties-fixtures <capture-dir>\n",
 );
 
@@ -540,6 +546,14 @@ pub const SCENARIOS: &[Scenario] = &[
     )
     .settle_second(),
     row(
+        "animations",
+        Flags::Pin8OrFerroan,
+        Ferroan::Allow(22),
+        Bot::Animations,
+        Compare::Animations,
+    )
+    .settle_second(),
+    row(
         "neighbour",
         Flags::Any,
         Ferroan::Allow(14),
@@ -641,8 +655,8 @@ pub const SCENARIOS: &[Scenario] = &[
     .help(20, HELP_PARCEL_TIMING),
     row(
         "parcel-properties",
-        Flags::Pin8,
-        Ferroan::Deny,
+        Flags::ParcelTiming,
+        Ferroan::Allow(21),
         Bot::ParcelProperties,
         Compare::ParcelProperties,
     )
@@ -893,7 +907,7 @@ mod tests {
     fn ferroan_refusal_lists_the_allowed_rows_in_order() {
         assert_eq!(
             ferroan_denied(),
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, child-view, prim-arrival, material-override, report and parcel-timing scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, child-view, prim-arrival, material-override, report, parcel-timing, parcel-properties and animations scenarios"
         );
     }
 }

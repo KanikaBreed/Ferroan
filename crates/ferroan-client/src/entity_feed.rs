@@ -26,7 +26,7 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (ProcessEntityUpdates' terse packets, HandleQueueEmpty, HandleHasUpdates,
-//      SendKillObject, SendCoarseLocationUpdate's header)
+//      SendKillObject, SendCoarseLocationUpdate's header, SendAnimations)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs
 //     (DequeueOutgoing's empty categories, BeginFireQueueEmpty,
 //      GetCatBytesCanSend)
@@ -45,9 +45,10 @@
 //! drips in 30 ms. The packets are reliable and zero-coded on the task
 //! category ("zero code is not as spec").
 //!
-//! Other avatars' full updates, appearances and kills do not wait for that:
-//! C# writes them straight onto the task outbox
-//! (`SendEntityFullUpdateImmediate`, `SendAppearance`, `SendKillObject`).
+//! Other avatars' full updates, appearances, animations and kills do not
+//! wait for that: C# writes them straight onto the task outbox
+//! (`SendEntityFullUpdateImmediate`, `SendAppearance`, `SendAnimations`,
+//! `SendKillObject`).
 //! The minimap dots (`SendCoarseLocationUpdate`) go the same way, unreliable.
 //! The circuit queues them, in order, on every pass.
 
@@ -56,8 +57,8 @@ use std::time::Duration;
 
 use ferroan_protocol::msgs::improved_terse_object_update::{ObjectData, RegionData};
 use ferroan_protocol::msgs::{
-    AvatarAppearance, CoarseLocationUpdate, ImprovedTerseObjectUpdate, KillObject, ObjectUpdate,
-    kill_object,
+    AvatarAnimation, AvatarAppearance, CoarseLocationUpdate, ImprovedTerseObjectUpdate, KillObject,
+    ObjectUpdate, avatar_animation, kill_object,
 };
 use tokio::sync::Notify;
 
@@ -93,8 +94,53 @@ pub enum AvatarPacket {
     Appearance(AvatarAppearance),
     /// `SendKillObject`: reliable, not zero-coded.
     Kill(KillObject),
+    /// `SendAnimations`: reliable, not zero-coded.
+    Animation(AvatarAnimation),
     /// `SendCoarseLocationUpdate`: unreliable, not zero-coded.
     Coarse(CoarseLocationUpdate),
+}
+
+/// `SendAnimations` (`LLClientView.cs` 4666–4732) of `source`'s set to
+/// `viewer`. Its own viewer gets the animations that name an object first,
+/// then the rest, and the objects of the first group: an animation whose
+/// object is the agent or nil names none. Every other viewer gets the
+/// animations in set order and no objects. `PhysicalAvatarEventList` is
+/// empty. The set holds at most 255 animations (`region.agent-animations`),
+/// so the one-byte count C# writes always matches the blocks.
+pub fn avatar_animation(
+    viewer: uuid::Uuid,
+    source: uuid::Uuid,
+    set: &[crate::Anim],
+) -> AvatarAnimation {
+    let block = |anim: &crate::Anim| avatar_animation::AnimationList {
+        anim_id: anim.animation,
+        anim_sequence_id: anim.sequence,
+    };
+    let mut message = AvatarAnimation {
+        sender: avatar_animation::Sender { id: source },
+        omitted_trailing_blocks: 0,
+        ..Default::default()
+    };
+    if source == viewer {
+        let names_object =
+            |anim: &&crate::Anim| !(anim.object_id == source || anim.object_id.is_nil());
+        let (with, without): (Vec<&crate::Anim>, Vec<&crate::Anim>) =
+            set.iter().partition(names_object);
+        message.animation_list = with
+            .iter()
+            .chain(&without)
+            .map(|anim| block(anim))
+            .collect();
+        message.animation_source_list = with
+            .iter()
+            .map(|anim| avatar_animation::AnimationSourceList {
+                object_id: anim.object_id,
+            })
+            .collect();
+    } else {
+        message.animation_list = set.iter().map(block).collect();
+    }
+    message
 }
 
 /// `SendKillObject`: the ids in order, 200 to a packet.
@@ -232,6 +278,122 @@ mod tests {
         let mut writer = ferroan_protocol::Writer::new();
         ferroan_protocol::Msg::encode_body(&empty, &mut writer);
         assert_eq!(writer.buf, [0, 0xff, 0xff, 0xff, 0xff, 0]);
+    }
+
+    fn anim(animation: u128, sequence: i32, object_id: uuid::Uuid) -> crate::Anim {
+        crate::Anim {
+            animation: uuid::Uuid::from_u128(animation),
+            object_id,
+            sequence,
+        }
+    }
+
+    /// The three `AvatarAnimation` packets C# sent the walker in
+    /// `fixtures/walk/walk.cap` (`STAND` 1, `WALK`, `STAND`), each built again
+    /// from its own set and framed with the captured header, sequence and
+    /// acks, are the captured datagram byte for byte. Each default names the
+    /// agent (or nothing), so its own viewer gets no objects.
+    #[test]
+    fn the_csharp_walk_animation_packets_are_built_byte_for_byte() {
+        use ferroan_protocol::{Msg, Writer, parse_packet, reencode_datagram};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/walk/walk.cap");
+        let records = ferroan_capture::read_capture(&std::fs::read(path).unwrap()).unwrap();
+        let mut built = 0;
+        for record in records
+            .iter()
+            .filter(|record| record.kind == ferroan_capture::Kind::UdpOut)
+        {
+            let packet = parse_packet(&record.bytes).unwrap();
+            if packet.id != AvatarAnimation::ID {
+                continue;
+            }
+            // The capture re-encodes as it is before anything is built from it.
+            assert_eq!(reencode_datagram(&record.bytes).unwrap(), record.bytes);
+            let sent = packet.decode::<AvatarAnimation>().unwrap();
+            assert!(sent.animation_source_list.is_empty());
+            assert!(sent.physical_avatar_event_list.is_empty());
+            let agent = sent.sender.id;
+            let set: Vec<crate::Anim> = sent
+                .animation_list
+                .iter()
+                .map(|block| crate::Anim {
+                    animation: block.anim_id,
+                    object_id: agent,
+                    sequence: block.anim_sequence_id,
+                })
+                .collect();
+            let message = avatar_animation(agent, agent, &set);
+            let mut payload = Writer::new();
+            AvatarAnimation::ID.encode(&mut payload.buf);
+            message.encode_body(&mut payload);
+            let mut datagram = Vec::new();
+            ferroan_protocol::packet::build_raw(
+                &payload.buf,
+                AvatarAnimation::ZEROCODED,
+                packet.sequence,
+                true,
+                packet.resent(),
+                &packet.acks,
+                &mut datagram,
+            );
+            assert_eq!(datagram, record.bytes);
+            built += 1;
+        }
+        assert_eq!(built, 3);
+    }
+
+    /// `SendAnimations` to the agent's own viewer: the animations that name
+    /// another object first, then the rest (the agent or nil), each group in
+    /// set order, and the objects of the first group. Any other viewer gets
+    /// the set in order and no objects.
+    #[test]
+    fn its_own_viewer_gets_the_object_animations_first_with_their_objects() {
+        let agent = uuid::Uuid::from_u128(10);
+        let viewer = uuid::Uuid::from_u128(11);
+        let object = uuid::Uuid::from_u128(12);
+        let other = uuid::Uuid::from_u128(13);
+        let set = [
+            anim(1, 5, agent),
+            anim(2, 6, object),
+            anim(3, 7, uuid::Uuid::nil()),
+            anim(4, 8, other),
+        ];
+        let own = avatar_animation(agent, agent, &set);
+        assert_eq!(own.sender.id, agent);
+        let order: Vec<(u128, i32)> = own
+            .animation_list
+            .iter()
+            .map(|block| (block.anim_id.as_u128(), block.anim_sequence_id))
+            .collect();
+        assert_eq!(order, [(2, 6), (4, 8), (1, 5), (3, 7)]);
+        let objects: Vec<_> = own
+            .animation_source_list
+            .iter()
+            .map(|block| block.object_id)
+            .collect();
+        assert_eq!(objects, [object, other]);
+        assert!(own.physical_avatar_event_list.is_empty());
+
+        let seen = avatar_animation(viewer, agent, &set);
+        let order: Vec<(u128, i32)> = seen
+            .animation_list
+            .iter()
+            .map(|block| (block.anim_id.as_u128(), block.anim_sequence_id))
+            .collect();
+        assert_eq!(order, [(1, 5), (2, 6), (3, 7), (4, 8)]);
+        assert!(seen.animation_source_list.is_empty());
+        // Every block count is written: one animation, then two empty lists.
+        let mut writer = ferroan_protocol::Writer::new();
+        ferroan_protocol::Msg::encode_body(
+            &avatar_animation(viewer, agent, &set[..1]),
+            &mut writer,
+        );
+        let mut expected = agent.as_bytes().to_vec();
+        expected.push(1);
+        expected.extend_from_slice(uuid::Uuid::from_u128(1).as_bytes());
+        expected.extend_from_slice(&5i32.to_le_bytes());
+        expected.extend_from_slice(&[0, 0]);
+        assert_eq!(writer.buf, expected);
     }
 
     #[test]

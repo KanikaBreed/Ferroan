@@ -86,6 +86,9 @@ pub(super) struct ObservedAvatar {
     pub(super) peer_terse: Option<Vec3>,
     /// Last animation message for the peer, including animation UUIDs and sequences.
     pub(super) animations: Option<AvatarAnimation>,
+    /// Every animation list received for the peer, in order: each block's
+    /// animation and sequence number.
+    pub(super) peer_animations: Vec<Vec<(Uuid, i32)>>,
     /// Own validated movement completion, with the landing look direction.
     pub(super) arrival: Option<(Vec3, Vec3)>,
     own_local_id: Option<u32>,
@@ -178,6 +181,12 @@ impl ObservedAvatar {
                 .decode::<AvatarAnimation>()
                 .map_err(|e| e.to_string())?;
             if message.sender.id == other {
+                let list = message
+                    .animation_list
+                    .iter()
+                    .map(|block| (block.anim_id, block.anim_sequence_id))
+                    .collect();
+                remember(&mut self.peer_animations, list)?;
                 self.animations = Some(message);
             }
         }
@@ -482,7 +491,17 @@ mod tests {
         let mut watcher = ObservedAvatar::default();
         watcher.record(&packet, peer, Uuid::from_u128(1)).unwrap();
         assert!(watcher.animations.is_none());
+        assert!(watcher.peer_animations.is_empty());
         watcher.record(&packet, Uuid::from_u128(1), peer).unwrap();
+        assert_eq!(watcher.peer_animations.len(), 1);
+        assert_eq!(
+            watcher.peer_animations[0],
+            expected
+                .animation_list
+                .iter()
+                .map(|block| (block.anim_id, block.anim_sequence_id))
+                .collect::<Vec<_>>()
+        );
         let seen = watcher.animations.unwrap();
         assert_eq!(seen.sender.id, peer);
         assert_eq!(seen.animation_list.len(), expected.animation_list.len());

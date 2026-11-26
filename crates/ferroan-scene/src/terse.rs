@@ -231,6 +231,11 @@ impl InitialData {
         self.handshake = false;
     }
 
+    /// `NeedInitialData > 0`. `Update` returns before the movement check.
+    pub(crate) fn waiting(&self) -> bool {
+        self.need > 0
+    }
+
     /// One frame: return early, run `SendInitialData` and return, or run
     /// the threshold test.
     pub fn frame(&mut self, seeds_sent: bool) -> InitialStep {
@@ -454,8 +459,9 @@ impl ViewerFeed {
 
     /// Queue one avatar packet for the circuit. A kill first drops the
     /// waiting updates for those ids (`SendKillObject` removes them from
-    /// `m_entityUpdates`).
-    pub(crate) fn send_avatar_packet(&self, packet: AvatarPacket) {
+    /// `m_entityUpdates`). The frame queues these; a region test may queue
+    /// a set the frame cannot make yet.
+    pub fn send_avatar_packet(&self, packet: AvatarPacket) {
         if let AvatarPacket::Kill(ids) = &packet {
             self.queue().remove(ids);
         }
