@@ -848,6 +848,21 @@ mod tests {
     }
 
     #[test]
+    fn every_row_keeps_its_registered_fields() {
+        let actual = SCENARIOS
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expected = include_str!("register_rows.snap");
+        assert_eq!(
+            actual,
+            expected.trim_end_matches('\n'),
+            "a scenario row field changed"
+        );
+    }
+
+    #[test]
     fn ferroan_refusal_lists_the_allowed_rows_in_order() {
         assert_eq!(
             ferroan_denied(),
