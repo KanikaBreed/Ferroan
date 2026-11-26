@@ -52,7 +52,7 @@
 //     (Update, SendTerseUpdateToAllClients, RegionHandShakeReply,
 //      SendInitialData's wait, Lookat)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (CreateAvatartImprovedTerseBlock, ProcessEntityUpdates' terse budget)
+//     (CreateAvatartImprovedTerseBlock, ProcessEntityUpdates' terse budget and object animation selection)
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 //   OpenMetaverse.Types/UtilsConversions.cs (FloatToUInt16, FloatToUnitUInt16),
 //   Vector3.cs (ClampedToShortsBytes, Normalize), Quaternion.cs (ToShortsBytes)
@@ -89,6 +89,8 @@ pub enum ViewerUpdate<'a> {
     Full {
         queued: QueuedUpdate,
         part: &'a crate::ObjectPart,
+        /// Collection selected for a separate object-animation update at dequeue.
+        animations: Option<&'a [crate::ObjectAnimation]>,
         update: Result<&'a StoredPrimUpdate, &'a PrimUpdateError>,
     },
     Terse([u8; AVATAR_TERSE_LEN]),
@@ -475,12 +477,29 @@ impl ViewerFeed {
     /// Dequeue one full or terse entry in Q42 priority order. A caller can
     /// stop at its batch budget without consuming the following entry.
     pub fn take_update(&self) -> Option<ViewerUpdate<'_>> {
+        self.take_update_for_viewer(false)
+    }
+
+    /// Select a separate animation update only when this viewer supports it
+    /// and the queued part still has an animation collection.
+    pub fn take_update_for_viewer(
+        &self,
+        supports_object_animations: bool,
+    ) -> Option<ViewerUpdate<'_>> {
         let mut queue = self.queue();
         while let Some(queued) = queue.dequeue() {
             if let Some((part, update)) = self.objects.get(queued.local_id) {
+                let animations = if supports_object_animations
+                    && queued.flags & crate::entity_queue::ANIMATIONS != 0
+                {
+                    part.animations.as_deref()
+                } else {
+                    None
+                };
                 return Some(ViewerUpdate::Full {
                     queued,
                     part,
+                    animations,
                     update,
                 });
             }
@@ -533,6 +552,60 @@ impl ViewerFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn animation_dequeue_requires_the_flag_viewer_support_and_a_collection() {
+        use crate::entity_queue::{FULL_UPDATE, FULL_UPDATE_WITH_ANIM};
+        use crate::test_store::CopiedStore;
+        use crate::{ObjectAnimation, ObjectStoreKind, TerrainFrame, open_objects};
+        use uuid::Uuid;
+
+        let store = CopiedStore::new("prim-updates/scene.db");
+        let region = Uuid::from_u128(0x6d1a7f4e_0c3b_4f53_9a1e_5f0e3c2a9b01);
+        let mut groups = open_objects(&store.connection(), region, ObjectStoreKind::Sqlite)
+            .await
+            .unwrap();
+        let animation = ObjectAnimation {
+            id: Uuid::from_u128(1),
+            name: "turn".into(),
+        };
+        for (group, collection) in
+            groups
+                .iter_mut()
+                .zip([None, Some(vec![]), Some(vec![animation.clone()])])
+        {
+            group.parts[0].animations = collection;
+        }
+        let frame = TerrainFrame::with_objects(None, Arc::new(groups), None).unwrap();
+        let groups = frame.stored_groups();
+        let feed = frame.new_feed();
+
+        // Inject the flag even on the part with no collection, independently
+        // of the SendUpdateToClient filter that normally clears it at offer.
+        for (index, flags, supported, expected) in [
+            (0, FULL_UPDATE_WITH_ANIM, true, None),
+            (1, FULL_UPDATE_WITH_ANIM, true, Some(&[][..])),
+            (
+                2,
+                FULL_UPDATE_WITH_ANIM,
+                true,
+                Some(std::slice::from_ref(&animation)),
+            ),
+            (2, FULL_UPDATE_WITH_ANIM, false, None),
+            (2, FULL_UPDATE, true, None),
+        ] {
+            let id = groups[index].parts[0].local_id;
+            assert!(feed.queue().enqueue(4, id, flags));
+            let Some(ViewerUpdate::Full {
+                queued, animations, ..
+            }) = feed.take_update_for_viewer(supported)
+            else {
+                panic!("missing full update for {id}");
+            };
+            assert_eq!(queued.flags, flags);
+            assert_eq!(animations, expected);
+        }
+    }
 
     fn standing(position: [f32; 3], velocity: [f32; 3]) -> AvatarTerse {
         AvatarTerse {
