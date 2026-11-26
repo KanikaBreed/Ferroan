@@ -31,16 +31,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::collections::{BTreeMap, HashMap};
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash, RandomState};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncGuard, RwLock};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use super::{
-    MAX_RESULTS, MAX_ROW_BYTES, PresenceData, PresenceStore, PresenceStoreError, check, lock,
-};
+use super::{MAX_ROW_BYTES, PresenceData, PresenceStore, PresenceStoreError, check, lock};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct PresenceInfo {
@@ -62,35 +60,83 @@ const TTL: Duration = Duration::from_secs(300);
 const SWEEP: Duration = Duration::from_secs(60);
 const CACHE_CAP: usize = 4096;
 
+// Even an empty value needs one "&uuids[]" term. Every list that fits a
+// getagents HTTP body can pass this count check, including compact UUIDs.
+pub(super) const MAX_AGENT_IDS: usize =
+    (ferroan_http::MAX_QUERY_BYTES - "METHOD=getagents".len()) / "&uuids[]".len();
+
 #[derive(Default)]
-struct Cache<K> {
-    entries: HashMap<K, (Instant, Row)>,
+struct Cached {
+    sessions: HashMap<Uuid, (Instant, Row)>,
+    users: HashMap<String, Uuid>,
     next_sweep: Option<Instant>,
+    // Cold lookups may return a snapshot taken before a concurrent mutation.
+    // Only publish it to the shared indexes if no mutation has completed since.
+    generation: u64,
 }
 
-impl<K: Hash + Eq> Cache<K> {
+impl Cached {
+    fn changed(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     fn sweep(&mut self, now: Instant) {
         if let Some(next) = self.next_sweep
             && now >= next
         {
             let elapsed = now.duration_since(next);
             let tick = next + Duration::from_secs((elapsed.as_secs() / 60) * 60);
-            self.entries.retain(|_, (expires, _)| *expires >= tick);
-            self.next_sweep = (!self.entries.is_empty()).then_some(tick + SWEEP);
+            self.sessions.retain(|id, (expires, row)| {
+                if *expires >= tick {
+                    return true;
+                }
+                if self.users.get(&row.user_id) == Some(id) {
+                    self.users.remove(&row.user_id);
+                }
+                false
+            });
+            self.next_sweep = (!self.sessions.is_empty()).then_some(tick + SWEEP);
         }
     }
 
-    fn insert(&mut self, key: K, row: Row, now: Instant)
-    where
-        K: Clone,
-    {
-        self.sweep(now);
-        if self.entries.len() == CACHE_CAP
-            && !self.entries.contains_key(&key)
-            && let Some((oldest, _)) = self.entries.iter().min_by_key(|(_, (expires, _))| *expires)
+    fn session(&mut self, id: Uuid) -> Option<Row> {
+        self.sweep(Instant::now());
+        self.sessions.get(&id).map(|(_, row)| row.clone())
+    }
+
+    fn user(&mut self, user: &str) -> Option<Row> {
+        let session = *self.users.get(user)?;
+        self.session(session)
+    }
+
+    fn remove_session(&mut self, session: Uuid) {
+        if let Some((_, row)) = self.sessions.remove(&session)
+            && self.users.get(&row.user_id) == Some(&session)
         {
-            let oldest = oldest.clone();
-            self.entries.remove(&oldest);
+            self.users.remove(&row.user_id);
+        }
+        if self.sessions.is_empty() {
+            self.next_sweep = None;
+        }
+    }
+
+    fn remember(&mut self, row: Row) {
+        self.remember_at(row, Instant::now());
+    }
+
+    fn remember_at(&mut self, row: Row, now: Instant) {
+        self.sweep(now);
+        if let Some((_, old)) = self.sessions.get(&row.session_id) {
+            if old.user_id != row.user_id && self.users.get(&old.user_id) == Some(&row.session_id) {
+                self.users.remove(&old.user_id);
+            }
+        } else if self.sessions.len() == CACHE_CAP
+            && let Some((&id, _)) = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, (expires, _))| *expires)
+        {
+            self.remove_session(id);
             ferroan_diag::drop_bound(
                 ferroan_diag::PRESENCE_CACHE,
                 ferroan_diag::Kind::Hard,
@@ -100,39 +146,41 @@ impl<K: Hash + Eq> Cache<K> {
             );
         }
         self.next_sweep.get_or_insert(now + SWEEP);
-        self.entries.insert(key, (now + TTL, row));
+        self.users.insert(row.user_id.clone(), row.session_id);
+        self.sessions.insert(row.session_id, (now + TTL, row));
     }
 
-    fn get<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<Row>
-    where
-        K: std::borrow::Borrow<Q>,
-    {
-        self.sweep(Instant::now());
-        self.entries.get(key).map(|(_, row)| Arc::clone(row))
+    fn forget(&mut self, row: &PresenceData) {
+        self.remove_session(row.session_id);
+        self.users.remove(&row.user_id);
     }
 
-    fn remove(&mut self, key: &K) {
-        self.entries.remove(key);
-        if self.entries.is_empty() {
+    fn forget_user(&mut self, user: &str) {
+        self.sessions.retain(|_, (_, row)| row.user_id != user);
+        self.users.remove(user);
+        if self.sessions.is_empty() {
             self.next_sweep = None;
         }
     }
 }
 
-#[derive(Default)]
-struct Cached {
-    sessions: Cache<Uuid>,
-    users: Cache<String>,
+// Fixed stripes bound lock storage even when every request names a new ID.
+struct KeyLocks<L> {
+    hash: RandomState,
+    locks: [L; 128],
 }
-impl Cached {
-    fn remember(&mut self, row: Row) {
-        let now = Instant::now();
-        self.sessions.insert(row.session_id, Arc::clone(&row), now);
-        self.users.insert(row.user_id.clone(), row, now);
+impl<L: Default> Default for KeyLocks<L> {
+    fn default() -> Self {
+        Self {
+            hash: RandomState::new(),
+            locks: std::array::from_fn(|_| L::default()),
+        }
     }
-    fn forget(&mut self, row: &PresenceData) {
-        self.sessions.remove(&row.session_id);
-        self.users.remove(&row.user_id);
+}
+impl<L> KeyLocks<L> {
+    fn for_key(&self, key: impl Hash) -> &L {
+        let slot = self.hash.hash_one(key) as usize % self.locks.len();
+        &self.locks[slot]
     }
 }
 
@@ -140,10 +188,12 @@ pub struct PresenceService {
     store: Arc<dyn PresenceStore>,
     allow_duplicates: bool,
     cached: Mutex<Cached>,
-    // A delayed read must not repopulate the cache after a logout. Reads
-    // proceed together; changes to the store and its two indexes are atomic
-    // with respect to other calls on this configured service.
-    lifecycle: RwLock<()>,
+    // A region delete excludes reports entering that region (and logins into region zero).
+    // Mutators acquire region, session and (for duplicate suppression) user
+    // guards in that order. Reads take none of these across provider calls.
+    region_logout: KeyLocks<RwLock<()>>,
+    session_writes: KeyLocks<AsyncMutex<()>>,
+    user_writes: KeyLocks<AsyncMutex<()>>,
 }
 
 impl PresenceService {
@@ -152,7 +202,9 @@ impl PresenceService {
             store,
             allow_duplicates,
             cached: Mutex::default(),
-            lifecycle: RwLock::default(),
+            region_logout: KeyLocks::default(),
+            session_writes: KeyLocks::default(),
+            user_writes: KeyLocks::default(),
         }
     }
 
@@ -171,58 +223,73 @@ impl PresenceService {
             BTreeMap::from([("SecureSessionID".into(), secure.to_string())]),
         ));
         row.validate()?;
-        let _guard = self.lifecycle.write().await;
+        let _region = self.region_logout.for_key(Uuid::nil()).read().await;
+        let _session = self.session_writes.for_key(session).lock().await;
+        let _user = self.duplicate_guard(user).await;
         if !self.allow_duplicates {
-            let previous = lock(&self.cached).users.get(user);
-            let exists =
-                previous.is_some() || !self.store.get_by_field("UserID", user).await?.is_empty();
-            if exists {
+            let cached = lock(&self.cached).user(user).is_some();
+            if cached || !self.store.get_by_field("UserID", user).await?.is_empty() {
                 self.store.delete("UserID", user).await?;
-                if let Some(previous) = previous {
-                    lock(&self.cached).forget(&previous);
-                }
+                let mut cache = lock(&self.cached);
+                cache.changed();
+                cache.forget_user(user);
             }
         }
         if !self.store.store(Arc::clone(&row)).await? {
             return Ok(false);
         }
-        lock(&self.cached).remember(row);
+        let mut cache = lock(&self.cached);
+        cache.changed();
+        cache.remember(row);
         Ok(true)
     }
 
+    async fn duplicate_guard(&self, user: &str) -> Option<AsyncGuard<'_, ()>> {
+        if self.allow_duplicates {
+            None
+        } else {
+            Some(self.user_writes.for_key(user).lock().await)
+        }
+    }
+
     pub async fn logout_agent(&self, session: Uuid) -> Result<bool, PresenceStoreError> {
-        let _guard = self.lifecycle.write().await;
-        let hit = lock(&self.cached).sessions.get(&session);
+        let _session = self.session_writes.for_key(session).lock().await;
         let deleted = self.store.delete("SessionID", &session.to_string()).await?;
-        if let Some(row) = hit {
-            lock(&self.cached).forget(&row);
+        let mut cache = lock(&self.cached);
+        cache.changed();
+        if let Some(row) = cache.session(session) {
+            cache.forget(&row);
         }
         Ok(deleted)
     }
 
     pub async fn logout_region_agents(&self, region: Uuid) -> Result<bool, PresenceStoreError> {
-        let _guard = self.lifecycle.write().await;
-        let members = self
+        let _region = self.region_logout.for_key(region).write().await;
+        let members = match self
             .store
             .get_by_field("RegionID", &region.to_string())
-            .await;
-        match members {
+            .await
+        {
             Ok(rows) if rows.is_empty() => return Ok(true),
-            Ok(rows) => {
-                let mut cached = lock(&self.cached);
-                for row in rows {
-                    cached.forget(&row);
-                }
-            }
+            Ok(rows) => Some(rows),
             Err(PresenceStoreError::Limit(limit)) if limit.id == ferroan_diag::PRESENCE_RESULTS => {
-                // The bulk delete is unbounded by the field lookup. A cache miss
-                // will reload any unaffected row on the next call.
-                *lock(&self.cached) = Cached::default();
+                None
             }
             Err(error) => return Err(error),
+        };
+        let result = self.store.logout_region_agents(region).await;
+        let mut cache = lock(&self.cached);
+        cache.changed();
+        if let Some(rows) = members {
+            for row in rows {
+                cache.forget(&row);
+            }
+        } else {
+            cache.sessions.clear();
+            cache.users.clear();
+            cache.next_sweep = None;
         }
-        self.store.logout_region_agents(region).await?;
-        Ok(true)
+        result.map(|()| true)
     }
 
     pub async fn report_agent(
@@ -240,8 +307,9 @@ impl PresenceService {
     }
 
     async fn report(&self, session: Uuid, region: Uuid) -> Result<bool, PresenceStoreError> {
-        let _guard = self.lifecycle.write().await;
-        let hit = lock(&self.cached).sessions.get(&session);
+        let _region = self.region_logout.for_key(region).read().await;
+        let _session = self.session_writes.for_key(session).lock().await;
+        let hit = lock(&self.cached).session(session);
         let cached = hit.is_some();
         let Some(row) = (match hit {
             Some(row) => Some(row),
@@ -249,12 +317,15 @@ impl PresenceService {
         }) else {
             return Ok(false);
         };
+        let _user = self.duplicate_guard(&row.user_id).await;
         let success = self.store.report_agent(session, region).await?;
+        let mut cache = lock(&self.cached);
+        cache.changed();
         if success {
             row.set_region_id(region);
-            lock(&self.cached).remember(row);
+            cache.remember(row);
         } else if cached {
-            lock(&self.cached).forget(&row);
+            cache.forget(&row);
         }
         Ok(success)
     }
@@ -263,131 +334,62 @@ impl PresenceService {
         &self,
         session: Uuid,
     ) -> Result<Option<PresenceInfo>, PresenceStoreError> {
-        let _guard = self.lifecycle.read().await;
-        let hit = lock(&self.cached).sessions.get(&session);
-        let row = match hit {
-            Some(row) => Some(row),
-            None => self.store.get(session).await?,
-        };
-        Ok(row.map(|row| {
-            let info = PresenceInfo::from(row.as_ref());
-            lock(&self.cached).remember(row);
-            info
-        }))
+        self.lookup(Lookup::Session(session)).await
     }
 
     pub async fn get_agents(
         &self,
         users: &[String],
     ) -> Result<Vec<PresenceInfo>, PresenceStoreError> {
-        check(ferroan_diag::PRESENCE_RESULTS, MAX_RESULTS, users.len())?;
-        let _guard = self.lifecycle.read().await;
+        check(ferroan_diag::PRESENCE_AGENT_IDS, MAX_AGENT_IDS, users.len())?;
         let mut result = Vec::new();
         for user in users {
             check(ferroan_diag::PRESENCE_ROW_BYTES, MAX_ROW_BYTES, user.len())?;
-            let hit = lock(&self.cached).users.get(user.as_str());
-            let row = match hit {
-                Some(row) => Some(row),
-                None => self
-                    .store
-                    .get_by_field("UserID", user)
-                    .await?
-                    .into_iter()
-                    .next(),
-            };
-            if let Some(row) = row {
-                result.push(PresenceInfo::from(row.as_ref()));
-                lock(&self.cached).remember(row);
+            if let Some(info) = self.lookup(Lookup::User(user)).await? {
+                result.push(info);
             }
         }
         Ok(result)
     }
+
+    async fn lookup(&self, key: Lookup<'_>) -> Result<Option<PresenceInfo>, PresenceStoreError> {
+        let generation = {
+            let mut cache = lock(&self.cached);
+            let hit = match key {
+                Lookup::Session(id) => cache.session(id),
+                Lookup::User(user) => cache.user(user),
+            };
+            if let Some(row) = hit {
+                let info = PresenceInfo::from(row.as_ref());
+                cache.remember(row);
+                return Ok(Some(info));
+            }
+            cache.generation
+        };
+        let row = match key {
+            Lookup::Session(id) => self.store.get(id).await?,
+            Lookup::User(user) => self
+                .store
+                .get_by_field("UserID", user)
+                .await?
+                .into_iter()
+                .next(),
+        };
+        Ok(row.map(|row| {
+            let info = PresenceInfo::from(row.as_ref());
+            let mut cache = lock(&self.cached);
+            if cache.generation == generation {
+                cache.remember(row);
+            }
+            info
+        }))
+    }
+}
+
+enum Lookup<'a> {
+    Session(Uuid),
+    User(&'a str),
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::presence::{NullPresenceData, Sessions};
-
-    fn row(user: String, session: Uuid, region: Uuid) -> Row {
-        Arc::new(PresenceData::new(user, session, region, BTreeMap::new()))
-    }
-
-    #[tokio::test]
-    async fn cold_user_lookup_chooses_the_first_session_and_reads_refresh_both_indexes() {
-        let store = Arc::new(NullPresenceData {
-            sessions: Arc::new(Mutex::new(Sessions::default())),
-        });
-        let service = PresenceService::new(store.clone(), true);
-        let user = Uuid::new_v4().to_string();
-        let first = row(user.clone(), Uuid::new_v4(), Uuid::new_v4());
-        let second = row(user.clone(), Uuid::new_v4(), Uuid::new_v4());
-        for r in [&first, &second] {
-            assert!(store.store(Arc::clone(r)).await.unwrap());
-        }
-        assert_eq!(
-            service
-                .get_agents(std::slice::from_ref(&user))
-                .await
-                .unwrap(),
-            [PresenceInfo::from(first.as_ref())]
-        );
-        assert_eq!(
-            service.get_agent(second.session_id).await.unwrap(),
-            Some(PresenceInfo::from(second.as_ref()))
-        );
-        assert_eq!(
-            service.get_agents(&[user]).await.unwrap(),
-            [PresenceInfo::from(second.as_ref())]
-        );
-    }
-
-    #[tokio::test]
-    async fn region_logout_survives_the_store_lookup_limit() {
-        let store = Arc::new(NullPresenceData {
-            sessions: Arc::new(Mutex::new(Sessions::default())),
-        });
-        let service = PresenceService::new(store.clone(), true);
-        let region = Uuid::new_v4();
-        let first = row("first".into(), Uuid::new_v4(), region);
-        assert!(store.store(Arc::clone(&first)).await.unwrap());
-        assert!(service.get_agent(first.session_id).await.unwrap().is_some());
-        for i in 0..MAX_RESULTS {
-            assert!(
-                store
-                    .store(row(i.to_string(), Uuid::new_v4(), region))
-                    .await
-                    .unwrap()
-            );
-        }
-        assert!(service.logout_region_agents(region).await.unwrap());
-        assert!(service.get_agent(first.session_id).await.unwrap().is_none());
-        assert!(
-            store
-                .get_by_field("RegionID", &region.to_string())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn cache_sweeps_after_expiry_and_stays_bounded() {
-        let session = Uuid::new_v4();
-        let r = row("user".into(), session, Uuid::new_v4());
-        let mut cache = Cache::<usize>::default();
-        let start = Instant::now();
-        cache.insert(0, Arc::clone(&r), start);
-        assert_eq!(cache.entries[&0].0, start + Duration::from_secs(300));
-        cache.sweep(start + Duration::from_secs(359));
-        assert!(cache.entries.contains_key(&0));
-        cache.sweep(start + Duration::from_secs(360));
-        assert!(cache.entries.is_empty());
-        for i in 0..=CACHE_CAP {
-            cache.insert(i, Arc::clone(&r), start + Duration::from_millis(i as u64));
-        }
-        assert_eq!(cache.entries.len(), CACHE_CAP);
-        assert!(cache.get(&CACHE_CAP).is_some());
-        assert!(cache.get(&0).is_none());
-    }
-}
+mod tests;

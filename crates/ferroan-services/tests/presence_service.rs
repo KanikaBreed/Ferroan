@@ -85,6 +85,28 @@ async fn null_presence_http_matches_pin8() {
 }
 
 #[tokio::test]
+async fn getagents_accepts_a_full_size_http_form() {
+    let router = PresenceHttp::open(&config("OpenSim.Data.Null.dll"))
+        .await
+        .unwrap()
+        .into_router();
+    let mut form = String::from("METHOD=getagents");
+    form.push_str(&"&uuids[]".repeat((ferroan_http::MAX_QUERY_BYTES - form.len()) / 8));
+    assert_eq!(form.len(), ferroan_http::MAX_QUERY_BYTES);
+    let request = |form: String| Request::post("/presence").body(Body::from(form)).unwrap();
+    let response = router.clone().oneshot(request(form.clone())).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("<result>null</result>")
+    );
+    form.push('&');
+    assert_eq!(router.oneshot(request(form)).await.unwrap().status(), 413);
+}
+
+#[tokio::test]
 async fn postgres_presence_http_matches_pin8() {
     let Ok(connection) = std::env::var("FERROAN_PRESENCE_ADO_POSTGRES") else {
         eprintln!("FERROAN_PRESENCE_ADO_POSTGRES unset; PostgreSQL HTTP comparison skipped");
@@ -243,6 +265,45 @@ async fn mysql_service_honors_the_configured_realm() {
     .unwrap();
     assert_eq!(stored, (user, region.to_string(), secure.to_string()));
     assert!(http.service().logout_agent(session).await.unwrap());
+    // MySQLFramework turns a refused statement into false. The service must
+    // return that result without publishing the refused session (D95).
+    let trigger = format!(
+        "CREATE TRIGGER refuse_{realm} BEFORE INSERT ON {realm} FOR EACH ROW \
+         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='refused fixture insert'"
+    );
+    if let Err(error) = sqlx::raw_sql(&trigger).execute(mysql).await {
+        // Binary-logging servers can reserve trigger creation to administrators
+        // (ER_BINLOG_CREATE_ROUTINE_NEED_SUPER). Exercise the same failed INSERT
+        // with a table-local constraint under the ordinary CI database account.
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|e| e.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+                .map(|e| e.number()),
+            Some(1419),
+            "creating refusal trigger: {error}"
+        );
+        sqlx::query(&format!("ALTER TABLE {realm} ADD CHECK (1 = 0)"))
+            .execute(mysql)
+            .await
+            .unwrap();
+    }
+    let refused_user = Uuid::new_v4().to_string();
+    assert!(
+        !http
+            .service()
+            .login_agent(&refused_user, session, secure)
+            .await
+            .unwrap()
+    );
+    assert!(http.service().get_agent(session).await.unwrap().is_none());
+    assert!(
+        http.service()
+            .get_agents(&[refused_user])
+            .await
+            .unwrap()
+            .is_empty()
+    );
     drop(http);
     sqlx::query(&format!("DROP TABLE {realm}"))
         .execute(mysql)

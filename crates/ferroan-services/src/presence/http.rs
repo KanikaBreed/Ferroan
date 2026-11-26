@@ -38,7 +38,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use ferroan_http::{Field, FieldMap, MAX_QUERY_BYTES, build_xml_response, parse_query_string};
+use ferroan_http::{
+    Field, FieldMap, MAX_QUERY_BYTES, build_xml_response, parse_query_with_list_limit,
+};
 use std::sync::Arc;
 
 use super::{PresenceInfo, PresenceService, parse_id};
@@ -90,7 +92,12 @@ async fn post_presence(
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
     let text = String::from_utf8_lossy(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes));
-    let reply = match parse_query_string(text.trim()) {
+    let reply = match parse_query_with_list_limit(
+        text.trim(),
+        "uuids",
+        super::service::MAX_AGENT_IDS,
+        ferroan_diag::PRESENCE_AGENT_IDS,
+    ) {
         Ok(fields) => dispatch(&http.service, fields).await,
         Err(_) => None,
     };

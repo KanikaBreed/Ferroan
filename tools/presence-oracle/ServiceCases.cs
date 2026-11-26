@@ -80,6 +80,7 @@ static class ServiceCases
                 Get("local login", s1);
                 Post("zero region report", Form("report", $"SessionID={s1}&RegionID={zero}"));
                 Post("move", Form("report", $"SessionID={s1}&RegionID={region}"));
+                Many("online member after 1024 misses", Enumerable.Repeat("x", 1024).Append(user).ToArray());
                 Get("moved", s1);
                 Login(user, s2);
                 Many("cached session for duplicate user", user);
