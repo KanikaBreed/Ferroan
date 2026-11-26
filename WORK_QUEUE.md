@@ -193,7 +193,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (review the proposed store handoff and viewer load split below) |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -804,7 +804,9 @@ The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 no
 1. **Q65d1 — hand off one persisted store** (after Q65c3a, ½–1 day). Exercise the handoff on a small scene with a linked child and distinguishable shapes and textures. Capture the C# viewer's full updates, confirm the observed scene is committed, wait for the C# home process to exit, then start Ferroan on that same SQLite file with fixture installation disabled. Include a persisted object change that would disappear on reseeding. Reuse Q65a's original-block byte check and parent validation. Compare every delivered full block by persistent part UUID, mapping the local and parent IDs separately for each circuit. A missing child, a changed texture or replacing the handed-off store must fail the check.
 2. **Q65d2 — measure delivery of 500 parts** (after Q65d1, about one day). Reuse the handoff with exactly 500 C#-persisted parts, including linked children and varied transforms, shapes and textures. Keep bounded per-circuit receipts and distinguish first deliveries from repeats. Compare all 500 mapped full blocks on the same store and report each viewer's first-to-last delivery time at the same Task rate. Read the entity-update refusal/drop counters across the Ferroan run and require zero new losses. Record `live compare region` showing `region: match` and passing Ferroan walk, avatars and teleport runs.
 
-Q65c3b's material-override send is independent of both proposed items.
+Q65c3b's material-override send is independent of both items. The manager approved this split on 25 November 2026.
+
+**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child. Q65d2 owns the 500-part load.
 
 ### Q76 object-crossing fixture scope
 

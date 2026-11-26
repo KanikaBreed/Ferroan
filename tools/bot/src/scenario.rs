@@ -165,14 +165,24 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "prim-arrival" {
         return prim_arrival::run(&http, harness).await;
     }
-    if name == "prim-capture" {
-        let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
+    if matches!(name, "prim-capture" | "store-handoff") {
+        let task = (name == "store-handoff").then_some(512_000.0);
+        let (mut session, _) =
+            enter_with_task(&http, harness, &harness.owner, "last", task).await?;
         let result = wait_for_stored_prims(&mut session).await;
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
         logout?;
+        if name == "store-handoff" {
+            let records = session
+                .take_arrival_records()
+                .ok_or("missing handoff viewer capture")?;
+            let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
+            std::fs::write(harness.region_log.with_extension("viewer.cap"), bytes)
+                .map_err(|e| e.to_string())?;
+        }
         return Ok(format!(
-            "prim-capture: viewer received {PRIM_CAPTURE_COUNT} distinct full prim updates\nlive: run passed"
+            "{name}: viewer received {PRIM_CAPTURE_COUNT} distinct full prim updates\nlive: run passed"
         ));
     }
     if name == "avatars" {

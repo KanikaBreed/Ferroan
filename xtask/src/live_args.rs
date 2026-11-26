@@ -472,7 +472,7 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
     if *scenario == "prim-arrival" && flags.region_ferroan && !grid {
         return Err(ParseFail::Usage);
     }
-    if (matches!(*scenario, "prim-capture" | "object-cross")
+    if (matches!(*scenario, "prim-capture" | "object-cross" | "store-handoff")
         || (*scenario == "prim-arrival" && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
@@ -755,7 +755,12 @@ mod tests {
 
     #[test]
     fn prim_capture_requires_the_csharp_grid_and_basicphysics() {
-        for scenario in ["prim-capture", "prim-arrival", "object-cross"] {
+        for scenario in [
+            "prim-capture",
+            "prim-arrival",
+            "object-cross",
+            "store-handoff",
+        ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
             assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
             assert!(parse(&["run", scenario, "--physics", "basicphysics"]).is_err());

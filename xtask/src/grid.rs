@@ -88,6 +88,9 @@ use parcel_capture::Seed as ParcelSeed;
 
 #[path = "prim_capture.rs"]
 mod prim_capture;
+#[cfg(target_os = "linux")]
+#[path = "store_handoff.rs"]
+mod store_handoff;
 
 #[path = "grid_up.rs"]
 mod persistent;
@@ -742,6 +745,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "uploads"
             | "avatars"
             | "object-cross"
+            | "store-handoff"
             | "prim-capture"
             | "prim-arrival"
             | "report"
@@ -749,7 +753,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, store-handoff, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -975,45 +979,63 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     live::copy_example(&publish, "GridCommon.ini")?;
     let source = live::source_dir();
     println!("live: grid region {HOME_NAME} on {HOME_BIND}:{home_port}");
+    let home = RegionStart {
+        ferroan,
+        login_only: ferroan || matches!(scenario, "login" | "caps" | "ferrobot"),
+        name: HOME_NAME,
+        uuid: live::REGION_UUID,
+        x: HOME_X,
+        y: HOME_Y,
+        http_bind: HOME_BIND,
+        advertised: ADVERTISED,
+        udp_bind: if ferroan && scenario == "ferrobot" {
+            HOME_BIND
+        } else {
+            ADVERTISED
+        },
+        http_port: home_port,
+        public_proxy,
+        private_proxy,
+        // With the Ferrobot relay the relay writes `capture-udp.cap`. Two
+        // writers on one path, each at its own offset, overwrote each
+        // other's records (the `live images` re-encode failures on
+        // AgentUpdate), so the region's own capture goes beside it.
+        capture: Some(root.join(if ferroan && scenario == "ferrobot" {
+            "capture-udp-region.cap"
+        } else {
+            "capture-udp.cap"
+        })),
+        asset_uri: asset_uri.clone(),
+        account_uri: account_uri.clone(),
+        auth_uri: auth_uri.clone(),
+        metrics_port: region_metrics,
+        parcel_seed: ParcelSeed::scenario(scenario),
+        store: if scenario == "store-handoff" {
+            RegionStore::EditPrimFixture
+        } else if matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross") {
+            RegionStore::PrimFixture
+        } else {
+            RegionStore::Standard
+        },
+        basic_physics: spec.basic_physics && !ferroan,
+    };
+    if scenario == "store-handoff" {
+        if docker {
+            return Err(
+                "store-handoff needs local region processes on the same SQLite file".into(),
+            );
+        }
+        let report =
+            store_handoff::run(home, &root, robust_public, &estate, &chat, &grid.passwords)?;
+        grid.stop()?;
+        return Ok(report);
+    }
     grid.home = Some(start_region(
         &root.join("home"),
         &publish,
         &source,
         &estate,
-        RegionStart {
-            ferroan,
-            login_only: ferroan || matches!(scenario, "login" | "caps" | "ferrobot"),
-            name: HOME_NAME,
-            uuid: live::REGION_UUID,
-            x: HOME_X,
-            y: HOME_Y,
-            http_bind: HOME_BIND,
-            advertised: ADVERTISED,
-            udp_bind: if ferroan && scenario == "ferrobot" {
-                HOME_BIND
-            } else {
-                ADVERTISED
-            },
-            http_port: home_port,
-            public_proxy,
-            private_proxy,
-            // With the Ferrobot relay the relay writes `capture-udp.cap`. Two
-            // writers on one path, each at its own offset, overwrote each
-            // other's records (the `live images` re-encode failures on
-            // AgentUpdate), so the region's own capture goes beside it.
-            capture: Some(root.join(if ferroan && scenario == "ferrobot" {
-                "capture-udp-region.cap"
-            } else {
-                "capture-udp.cap"
-            })),
-            asset_uri: asset_uri.clone(),
-            account_uri: account_uri.clone(),
-            auth_uri: auth_uri.clone(),
-            metrics_port: region_metrics,
-            prim_capture: matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross"),
-            parcel_seed: ParcelSeed::scenario(scenario),
-            basic_physics: spec.basic_physics && !ferroan,
-        },
+        &home,
         &grid.passwords,
         docker,
     )?);
@@ -1023,7 +1045,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         &publish,
         &source,
         &estate,
-        RegionStart {
+        &RegionStart {
             ferroan: false,
             login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
             name: NEIGHBOUR_NAME,
@@ -1043,7 +1065,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
-            prim_capture: scenario == "object-cross",
+            store: if scenario == "object-cross" {
+                RegionStore::PrimFixture
+            } else {
+                RegionStore::Standard
+            },
             parcel_seed: None,
             basic_physics: spec.basic_physics,
         },
@@ -1977,6 +2003,15 @@ fn in_process_user_account(log: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegionStore {
+    Standard,
+    PrimFixture,
+    EditPrimFixture,
+    Existing,
+}
+
+#[cfg(target_os = "linux")]
 struct RegionStart {
     ferroan: bool,
     login_only: bool,
@@ -1996,7 +2031,7 @@ struct RegionStart {
     auth_uri: Option<String>,
     metrics_port: Option<u16>,
     basic_physics: bool,
-    prim_capture: bool,
+    store: RegionStore,
     parcel_seed: Option<ParcelSeed>,
 }
 
@@ -2006,7 +2041,7 @@ fn start_region(
     publish: &Path,
     source: &Path,
     password: &str,
-    spec: RegionStart,
+    spec: &RegionStart,
     passwords: &[String],
     docker: bool,
 ) -> Result<Proc, String> {
@@ -2020,17 +2055,23 @@ fn start_region(
     if (!docker || !spec.ferroan) && !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
-    prepare_region_cwd(cwd, publish, source)?;
-    if spec.prim_capture && spec.name == HOME_NAME {
-        fs::copy(
-            crate::repo_root().join("fixtures/prim-updates/scene.db"),
-            cwd.join("OpenSim.db"),
-        )
-        .map_err(|error| format!("install prim capture store: {error}"))?;
-    } else if let Some(seed) = spec.parcel_seed {
-        seed.install(cwd)?;
-    } else if spec.ferroan {
-        install_seeded_region_store(cwd)?;
+    if spec.store == RegionStore::Existing {
+        if !cwd.join("OpenSim.db").is_file() {
+            return Err("missing handed-off region store".into());
+        }
+    } else {
+        prepare_region_cwd(cwd, publish, source)?;
+        if spec.store != RegionStore::Standard && spec.name == HOME_NAME {
+            fs::copy(
+                crate::repo_root().join("fixtures/prim-updates/scene.db"),
+                cwd.join("OpenSim.db"),
+            )
+            .map_err(|error| format!("install prim capture store: {error}"))?;
+        } else if let Some(seed) = spec.parcel_seed {
+            seed.install(cwd)?;
+        } else if spec.ferroan {
+            install_seeded_region_store(cwd)?;
+        }
     }
     let mut rewrites = Vec::new();
     if let Some(uri) = &spec.asset_uri {
@@ -2064,7 +2105,7 @@ fn start_region(
         None => None,
     };
     let region = RegionIni {
-        prim_capture: spec.prim_capture,
+        prim_capture: spec.store != RegionStore::Standard,
         name: spec.name,
         uuid: spec.uuid,
         x: spec.x,
@@ -2110,7 +2151,11 @@ fn start_region(
     }
     fs::write(regions.join("Regions.ini"), definition)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
-    let log = cwd.join("region.log");
+    let log = cwd.join(match (spec.store, spec.ferroan) {
+        (RegionStore::EditPrimFixture, false) => "region-edit.log",
+        (RegionStore::Existing, false) => "region-reference.log",
+        _ => "region.log",
+    });
     let config_arg = config.to_str().ok_or("region config path is not utf-8")?;
     let mut proc = if docker {
         // region-start.sh cds to /app. The prepared working directory holds
@@ -2149,6 +2194,19 @@ fn start_region(
             redact: &secrets,
         })?;
         proc_from_attached(attached, &log)?
+    } else if !spec.ferroan
+        && matches!(
+            spec.store,
+            RegionStore::EditPrimFixture | RegionStore::Existing
+        )
+    {
+        spawn_proc(
+            &binary,
+            &["--inidirectory", config_arg, "--console", "basic"],
+            cwd,
+            &log,
+            true,
+        )?
     } else {
         spawn_proc(
             &binary,

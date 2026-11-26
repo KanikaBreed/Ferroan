@@ -179,7 +179,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
             &publish,
             &source,
             &password,
-            RegionStart {
+            &RegionStart {
                 ferroan,
                 login_only: true,
                 name,
@@ -197,7 +197,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 account_uri: None,
                 auth_uri: None,
                 metrics_port: None,
-                prim_capture: false,
+                store: super::RegionStore::Standard,
                 parcel_seed: None,
                 basic_physics: false,
             },
