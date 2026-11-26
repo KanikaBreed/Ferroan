@@ -92,7 +92,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR8 | R8: the debug hex excerpt never carries capabilities or session ids, and harness limit hits leave a readout | DONE (#225) |
 | QR9 | R9: the region dispatcher is bounded, prunes finished agents, and never stalls everyone for one replacement | DONE (this PR) |
 | QR10 | R10: the full-region bypass keeps its deadline and follows the permissions settings | DONE (this PR) |
-| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | READY after QR8 |
+| QR11 | R11: local chat on DEBUG_CHANNEL, and no chat delivered from before a viewer connected | DONE (#268) |
 | QR12 | R12: the teleport ordering test uses a real terse producer, and a teleport just after login is not refused | DONE (this PR) |
 | QR13 | R13: authentication matches C# on the remaining edge cases | DONE (this PR) |
 | QR14 | R14: the FSAssets file store's remaining durability and test gaps | DONE (this PR) |
@@ -115,6 +115,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
+| QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
+| QR36 | R36: a concurrent password reset never writes back a consumed web key | READY after QR13 |
+| QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
+| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -172,10 +176,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
-| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
+| Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | READY |
+| Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | READY after Q60b |
+| Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
-| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
+| Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
@@ -183,8 +190,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
-| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | READY after Q65c2 |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3 |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
+| Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | READY after Q65c2 |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3a |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -196,10 +205,14 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
+| Q76b | P2.10a2: object-crossing fixture with a seated avatar, two C# regions | READY after Q76 |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
-| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79 |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (split into Q79a–Q79c) |
+| Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | READY |
+| Q79b | P2.11a2: discover visible neighbours and send child requests | READY after Q79a |
+| Q79c | P2.11a3: maintain each root's children and compare live visibility | READY after Q79b |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
@@ -420,9 +433,9 @@ Proposed split, in this order. Each piece is its own item. This note does not ad
 
 Q10w (manager, 20 November 2026): the Pin5 live failure is the record-twice rule, not C#: the bot resends `LogoutRequest` until it is answered, and the comparator counted each resent datagram as a message. P0.10n6 counts a resend once and reports resends. It is small and comes straight after Q10u, so the live job stops tripping on it.
 
-Q10v / Pin5 (manager, 20 November 2026, at the maintainer's request): the maintainer asked for every open upstream PR they have sent to be rolled into one build and used as the pin, because the reference needs the fixes. The manager merged `develop` and the 26 PRs into their fork's `dev-build`, then the manager's own fixes for TB17 (#465) and TB18 (#466), opened at the maintainer's request (no conflicts; pushed as a fast-forward, after a merge commit that brings the old Pin3 branch up to `develop`, whose content it already held), built it, ran the C# tests, and moved `/home/cinder/Git/reference/OpenSim-Tranquillity` to `c70fee2`. It goes first, before Q10u, because Q10u changes the capture patch and that patch must apply at the new pin. Q10h's block (the Grid connector's unchecked HTTP status) should be re-read after Pin5, because #438 fixes that in C#. When the carried PRs merge upstream, the pin goes back to `develop` as Pin4 did.
+Q10v / Pin5 (manager, 20 November 2026, at the maintainer's request): the maintainer asked for every open upstream PR they have sent to be rolled into one build and used as the pin, because the reference needs the fixes. The manager merged `develop` and the 26 PRs into their fork's `dev-build`, then the manager's own fixes for TB17 (#465) and TB18 (#466), opened at the maintainer's request (no conflicts; pushed as a fast-forward, after a merge commit that brings the old Pin3 branch up to `develop`, whose content it already held), built it, ran the C# tests, and moved the reference checkout to `c70fee2`. It goes first, before Q10u, because Q10u changes the capture patch and that patch must apply at the new pin. Q10h's block (the Grid connector's unchecked HTTP status) should be re-read after Pin5, because #438 fixes that in C#. When the carried PRs merge upstream, the pin goes back to `develop` as Pin4 did.
 
-Q10t / Pin4 (manager, 19 November 2026, at the maintainer's word): all eight PRs Pin3 carried (#418, #419, #422, #423, #425, #426, #428, #429) merged into OpenSim-NGC `develop` on 19 and 20 November, so under D21 the pin goes back to a `develop` commit: `f67db54399c027fd74e5aefcb2193905b4dc1646`. The manager moves `/home/cinder/Git/reference/OpenSim-Tranquillity` to it before the coder starts. TB11 is not fixed there: #428 merged without it, and the maintainer will send it as a new PR. It comes before Q11 because the SQLite region-store migration it brings matters to Q14 (terrain from the C# region store).
+Q10t / Pin4 (manager, 19 November 2026, at the maintainer's word): all eight PRs Pin3 carried (#418, #419, #422, #423, #425, #426, #428, #429) merged into OpenSim-NGC `develop` on 19 and 20 November, so under D21 the pin goes back to a `develop` commit: `f67db54399c027fd74e5aefcb2193905b4dc1646`. The manager moves the reference checkout to it before the coder starts. TB11 is not fixed there: #428 merged without it, and the maintainer will send it as a new PR. It comes before Q11 because the SQLite region-store migration it brings matters to Q14 (terrain from the C# region store).
 
 Q14 (21 November 2026, `feat/terrain`): [PR #126](https://github.com/KanikaBreed/Ferroan/pull/126). The newest `terrain` row is read after `ferroan-db` checks RegionStore migration 47. At pin `c70fee205f`, a 256² map cleared to 21 with cells `[0,15]` and `[128,128]` at 40 produces revision 23 and 256 land `LayerData` bodies; `captured_csharp_region_layers_match` matches every body. Login Z uses `movement_z` (bits `1109605744` for start 25 and ground 40). `Standalone.ini` names `URI=file:OpenSim.db`, which C# creates and this row does not, so a missing file is no saved heightmap and the live grid still starts. Estate edits, physics, wind and `ModifyLand` stay out of this row. Firestorm is pending. CI on `c6052ac`: [checks](https://github.com/KanikaBreed/Ferroan/actions/runs/44890379206) and [live](https://github.com/KanikaBreed/Ferroan/actions/runs/44890379220). Images ran on Home1 for 4m31s.
 
@@ -720,6 +733,8 @@ Q84 DONE (25 November 2026, `feat/q84-uuid-names`): `UUIDNameRequest` is answere
 
 Q82 to Q85 (manager, 25 November 2026): gaps found on 24 and 25 November. Q82 and Q83 come from Q46b's note that the Ferroan harness walk runs at Z 0: C# builds and stores a default terrain when the store has none, Ferroan leaves the ground at 0. Q82 does SQLite, generation and the harness; Q83 does MySQL and PostgreSQL, after QR22 settles how the region picks its backend from `StorageProvider`. Q84: Ferroan never answers `UUIDNameRequest`, which costs Ferrobot about 10 s per `nearby` call; it needs Q48 so that Ferrobot sees the other avatars at all. Q85 is Q43's child-throttle note; it waits for the child-agent items Q79 and Q80, and for QR26, which changes the same outgoing AgentData. Each item's scope, C# lines at `c401bceecd`, evidence and size are on its TASKS.md row. A fifth gap was not queued: C# `MakeRootAgent` lands a newcomer on another avatar's capsule with a filtered ray cast (`ScenePresence.cs` 1543–1602, `PrimsNonPhantomAgents`), but only when the physics engine supports filtered ray casts. BasicPhysics does not (`PhysicsScene.cs` 347–350 returns false, and BasicPhysics does not override it), so a `--physics basicphysics` C# region lands at ground height as the D38 stand-in does, and there is nothing in Phase 2 to match. It is recorded as a Phase 3 note in [docs/PLAN.md](docs/PLAN.md).
 
+QR35 to QR38 and Q76b (manager, 25 November 2026): from the 25 November reviews. QR35 and QR36 come from QR13's and Q26c3's found notes (the database session time zone, and a password reset racing a web-key consume). QR37 holds the Q10aj review's follow-ups. QR38 removes the last personal path, found by the Q76 review. Q76b is the seated-avatar crossing the manager split from Q76.
+
 The "Found while working" rule (manager, 25 November 2026): every PR added its findings to the same list, so nearly every merge conflicted with every open PR. Rule 8 now puts each item's findings in its own file, `docs/found/<item>.md`. The old list is closed and kept unchanged. Nothing was moved.
 
 
@@ -728,6 +743,16 @@ The "Found while working" rule (manager, 25 November 2026): every PR added its f
 **BLOCKED, 25 November 2026** (`feat/q60-parcel-overlay`). Estimated two engineering days for SQLite land loading, a store-backed packet comparison and delivery on the viewer circuit. The existing login capture includes `ParcelOverlay`, but does not associate a multi-parcel seed with the expected bytes for a particular viewer. The circuit already drains terrain through the Land throttle. It still needs the parcel map, the viewer's relationship to each parcel and the Pin8 send conditions. Pin8 `c401bceecd` checks membership in the parcel's owning group even when the viewer has a different active group (`LLClientView.IsGroupMember`, line 421).
 
 The manager approved Q60a through Q60c. Their dependencies and acceptance checks are in TASKS.md.
+
+### Q60c proposed split
+
+**BLOCKED, 25 November 2026** (`feat/q60c-parcel-delivery`). Estimate 1½–2 engineering days for the remaining P2.6a3 acceptance. The circuit already drains a Land FIFO and the frame already waits for a handshake reply, seed capabilities and initial-data ticks. The missing work is independently testable:
+
+1. **Read the viewer's parcel-group memberships** (about half a day). Pin8 `c401bceecd`, `LLClientView.RefreshGroupMembership` (13199) obtains all memberships from `GroupsModule.GetMembershipData` (926). `IsGroupMember` (421) tests for a key, including when its powers are zero. Ferroan's transfer data carries an active group, and its region has no membership-list reader. Supply a bounded read-only lookup for the configured groups source. Q60b exercises the local SQLite connector; the Pin8 remote connector requests the whole list with `GETMEMBERSHIP` and `ALL`. Check it against Pin8 with groups disabled, a non-member and Q60b's inactive, zero-power member. The latter receives 0xf2 at East's border where the estate owner receives 0xf4. Group creation, role edits and other P1.10 operations stay with P1.10.
+2. **Capture the Pin8 arrival timeline** (about half a day, independent of 1). Q60b's receiver saves one body per parcel sequence and exits when the set is full. It cannot distinguish a later overlay pass from a reliable resend or measure Land contention. Use the Q65c1 recording pattern with only Land varied. Capture through the initial-data gate, retaining movement, handshake/seed milestones, terrain, overlay parcel sequences, reliable datagram sequences and relative times. Verify each published datagram against the original before redaction. Replay the send counts, order and throttle response alongside Q60b's payload bytes.
+3. **Deliver and compare on Ferroan** (half to one day, after 1 and 2). Use the frame-owned map and the viewer's memberships on both Pin8 paths. At movement completion Pin8 sends terrain then requests the overlay unless it received a crossing update; positive teleport flags clear that crossing state. At the later initial-data gate it requests terrain and overlay only for zero teleport flags (`ScenePresence.cs` 2402, 2475, 4266–4343, 5427–5428). Ferroan currently retains only `via_login` on its accepted agent. Carry the teleport and crossing state needed by those two guards to the frame and circuit. Test suppression at that boundary, the eligible sends and duplicate movement/handshake packets. Drain on Land through the reliable window. Compare both viewer timelines and bodies on the same store, then run walk, avatars, teleport and require `live compare region` to report `region: match`.
+
+The manager approved Q60c1 to Q60c3 on 25 November 2026, as proposed above. Q60c1 and Q60c2 are independent; Q61 now waits for Q60c3.
 
 ### Q65 split
 
@@ -747,6 +772,30 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
+### Q65c3 review and proposed split
+
+**BLOCKED** (`feat/q65c3-task-drain`, Pin8 `c401bceecd`). Estimated one day for the mixed Task drain and live comparison, plus half to one day for the negotiated material send and its C# evidence. `LLClientView.ProcessEntityUpdates` sends the full and terse lists on Task. Its separate `needMaterials` path sends reliable `GenericStreamingMessage` method 16757 for a PBR viewer. The P2.5d row also names this path.
+
+The Q65c1 scene has eight shapes. Seven have no stored override blob and the mesh's blob is the single byte `00`. `PrimitiveBaseShape.RenderMaterialsOvrFromRawBin` reads this as zero entries. The capture bot's seed requests none of `VTPBR`, `VETPBR` or `ModifyMaterialParams`, and the recorder selects only full and terse updates and throttle requests. Q65c1 proves the arrival batches. A positive override comparison needs another Pin8 observation.
+
+1. **Mixed Task drain and two-viewer comparison** (after Q65c2, about one day). Use the Pin8 dequeue estimates (18 bytes per new list, 150 per ordinary full prim, 70 per vegetation full prim, 63 per avatar terse). Partition reliable full packets at incremental zero-encoder position 900, retaining the pending run at the cut. Exercise positions 899 and 900 and a refused oversized block followed by a deliverable part. Replay Q65c1 and run both viewers on Ferroan. Check the same eight identities and parent IDs, root before child, walking terse updates, 6+2 initial parts at 512,000 bit/s and single-part datagrams at 8,000 bit/s. Compare the limited viewer's delay and resumption after restore to its own capture clock. In the Pin8 fixture it restored Task at 1927 ms and received the last initial part at 1945 ms. Unrelated part order and terse grouping vary.
+2. **Material overrides on Task** (after the mixed drain, half to one day). Use a stored non-tree part with a nonempty override and two test viewers, only one requesting PBR in its seed. Capture the separate method 16757 datagram on Pin8, check the unredacted bytes before aliasing the local ID, and compare Ferroan's reliability, method, per-face notation payload and recipient with that evidence. Carry the negotiated seed flag to the circuit, exercise the reflection-probe exclusion and the oversized-payload skip, and keep the full update deliverable. The manager can assign this UDP send to the second item and leave the HTTP `RenderMaterials` capability in P2.5d.
+
+The manager approved Q65c3a and Q65c3b on 25 November 2026, as proposed above. The HTTP `RenderMaterials` capability stays in P2.5d ([D39](docs/DECISIONS.md)). Q65d waits only for Q65c3a.
+
+### Q79 proposed split (P2.11a)
+
+At Pin8 `c401bceecd`, a viewer can stay rooted on its home region while receiving updates directly from another simulator. Q18c proves a teleport and Q46b provides the home avatar's pose. Neither proves what reaches the child viewer. In the two-C# BasicPhysics grid walk capture, the neighbour HTTP proxy recorded two child admissions, one `AgentPosition` update and two closes. The neighbour UDP capture contained zero packets. The teleport bot's `Session::run_until_ready` sends `CompleteAgentMovement` and waits for `AgentMovementComplete`. On Pin8, `ScenePresence.CompleteMovement` calls `MakeRootAgent` (ScenePresence.cs 2315–2365). Reusing that wait would change the role being tested.
+
+The region connector currently looks up a region by position and sends the teleport's full `AgentData`. The hop remembers one open child endpoint. Pin8 instead selects all visible neighbours, keeps a seed for each, and sends a smaller `AgentPosition` to an existing child. Implementing the viewer, connector and per-root lifecycle and proving them together is about three days. Proposed steps, in dependency order:
+
+1. **Capture a viewer observing a C# neighbour while rooted at home** (about one day). Give the C# neighbour a known stored prim and a second account rooted there. Drive the home viewer's event queue and separate child circuit while keeping its home session active. Capture the child admission, a position update triggered by movement, and the close. Keep a redacted fixture that identifies the resident avatar and the prim by their full updates on the neighbour circuit. Assert both identities and the viewer's continued home-root status, so home traffic or a teleport cannot satisfy the check.
+2. **Discover visible neighbours and send child requests** (about one day, after the capture). Port the range query and the world-coordinate visibility test from `EntityTransferModule.GetNeighbors` and `RegionsInSPView` (2828 onward and 2295–2335). Test zero draw range, offline neighbours and touching edges of variable-size regions. Port the child circuit fields and translated start position from `EnableChildAgents` (2343–2498) and the `AgentPosition` update through `SimulationServiceConnector`. Compare the child POST and position PUT against the two-C# fixture, preserving relationships between generated fields. Q85 owns the packed viewer throttles.
+3. **Maintain each root's children and compare live visibility** (about one day, after the connector). Hook arrival and view changes to the root's neighbour set. Create each new child once, send `EnableSimulator` followed by `EstablishAgentCommunication` on acceptance (`InformClientOfNeighbourAsync`, 2759–2804), update retained children, and close departed children. Test refusals and logout during admission. Run the same viewer scenario with Ferroan as home and C# as neighbour. Compare the region-to-region bodies, event order and receipt of the same avatar and prim against the C# baseline, then run the existing Q18c teleport round trip.
+
+Together these steps satisfy P2.11a. Q80 retains inbound child handling, and walking across the border remains deferred under D38.
+
+The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 now waits for Q79c.
 
 ### Q76 object-crossing fixture scope
 
