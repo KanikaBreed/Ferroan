@@ -90,6 +90,8 @@ The oracle command `probe` reads the review probes and writes [objects-xml-probe
 
 Q65a uses a separate SQLite scene persisted by Pin8. `cargo xtask live run prim-capture grid --physics basicphysics` reopens it on the C# home region, waits for the viewer to receive all eight prims and extracts their full updates. Q65b's `stored_parts_match_every_byte_of_the_pin8_full_updates` reads that same store and compares each encoded block with the C# bytes after mapping identifiers. The grass and NewTree have the same stored rotation, and only the tree transmits it. Two ordinary roots isolate the particle-only and sound-only owner cases. They also exercise signed path values, non-ASCII and overlength hover text, and the flexible, light, projection and reflection-probe parameters. The speaker also checks MediaURL truncation and clearing Scripted on a stored root. An animated mesh adds the extended mesh flags to the wire comparison. The [prim capture fixture](../fixtures/prim-updates/README.md) documents regeneration and ID redaction.
 
+Q65d1 uses `cargo xtask live run store-handoff grid --physics basicphysics` to compare all eight viewer full blocks from the same edited SQLite file. The [persisted linkset fixture](../fixtures/store-handoff/README.md) records the box and its mesh child. `cargo test -p xtask store_handoff` checks the local-ID mapping and rejects a missing child, wrong parent, changed texture or stale root scale.
+
 The [Q79a child-view fixture](../fixtures/child-view/README.md) follows a viewer that stays rooted at home while receiving the neighbour's resident avatar and stored prim on a separate circuit. Its replay correlates the home movement and logout with the neighbour's child admission, position update and close.
 
 Q65c1 reopens the same scene for two viewers with `cargo xtask live run prim-arrival grid --physics basicphysics`. The [two circuit captures](../fixtures/prim-arrival/README.md) preserve first and repeat deliveries, linkset IDs, packet boundaries and avatar terse updates while the second viewer varies only Task. `cargo test -p xtask grid::prim_arrival` replays both circuits offline.
@@ -279,3 +281,5 @@ connection reaches its insert. It reads back both ids and counts the data
 rows for that hash. The [Pin8 oracle response](../fixtures/asset/pin8-xasset-race.json)
 records the corresponding C# result. The MySQL live HTTP report names TB58
 separately from its texture and inventory comparisons.
+
+`cargo test -p ferroan-region --lib child_neighbours` checks the scoped range form, cache lifetime, inclusive world-coordinate edges, and actual compressed child POST and PUT bodies against the [two-region Pin8 capture](../fixtures/child-view/README.md). It also checks position coalescing and the failed-simulator timeout.
