@@ -228,7 +228,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q214 | P2.0e4.1: OAR control file and region path | READY |
-| Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
+| Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
 | Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | READY |
