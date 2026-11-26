@@ -53,10 +53,13 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Pin8 reads every row. A membership, role or role-membership read past this
-/// count is refused (`groups.membership-rows`).
+/// Pin8 reads every row. A membership, group, role or role-membership read past
+/// this count is refused (`groups.membership-rows`).
 const MAX_MEMBERSHIP_ROWS: usize = 4096;
 const ROW_FETCH: usize = MAX_MEMBERSHIP_ROWS + 1;
+/// Longest selected GroupID, OwnerRoleID, RoleID, Powers or PrincipalID value
+/// (`groups.column-bytes`). Measured with `length()` before the value is fetched.
+const MAX_COLUMN_BYTES: i64 = 1024;
 /// `GroupsBatch.Size`. The IN list is split here. It is not a membership cap.
 const GROUP_BATCH: usize = 500;
 
@@ -303,6 +306,13 @@ async fn read_memberships(
 }
 
 async fn membership_ids(sqlite: &sqlx::SqlitePool, agent: &str) -> Result<Vec<String>, GridError> {
+    within_column_bytes(
+        sqlite,
+        &["GroupID"],
+        "FROM os_groups_membership WHERE PrincipalID = ?",
+        &[agent],
+    )
+    .await?;
     let sql =
         format!("SELECT GroupID FROM os_groups_membership WHERE PrincipalID = ? LIMIT {ROW_FETCH}");
     let rows: Vec<(String,)> = sqlx::query_as(&sql)
@@ -322,16 +332,32 @@ async fn group_rows(
 ) -> Result<Vec<(String, String)>, GridError> {
     let mut rows = Vec::new();
     for chunk in ids.chunks(GROUP_BATCH) {
+        let mut filter = String::from("FROM os_groups_groups WHERE GroupID IN (");
+        push_placeholders(&mut filter, chunk.len());
+        filter.push(')');
+        let binds: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        within_column_bytes(
+            sqlite,
+            &["GroupID", "CAST(OwnerRoleID AS TEXT)"],
+            &filter,
+            &binds,
+        )
+        .await?;
+        let room = ROW_FETCH.saturating_sub(rows.len());
         let mut sql = String::from(
             "SELECT GroupID, CAST(OwnerRoleID AS TEXT) FROM os_groups_groups WHERE GroupID IN (",
         );
         push_placeholders(&mut sql, chunk.len());
-        sql.push(')');
+        sql.push_str(&format!(") LIMIT {room}"));
         let mut query = sqlx::query_as::<_, (String, String)>(&sql);
         for id in chunk {
             query = query.bind(id);
         }
-        rows.extend(query.fetch_all(sqlite).await.map_err(store_error)?);
+        let batch = query.fetch_all(sqlite).await.map_err(store_error)?;
+        if rows.len() + batch.len() > MAX_MEMBERSHIP_ROWS {
+            return Err(too_many_rows());
+        }
+        rows.extend(batch);
     }
     Ok(rows)
 }
@@ -342,6 +368,17 @@ async fn role_rows(
 ) -> Result<Vec<(String, String, String)>, GridError> {
     let mut rows = Vec::new();
     for chunk in ids.chunks(GROUP_BATCH) {
+        let mut filter = String::from("FROM os_groups_roles WHERE GroupID IN (");
+        push_placeholders(&mut filter, chunk.len());
+        filter.push(')');
+        let binds: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        within_column_bytes(
+            sqlite,
+            &["GroupID", "RoleID", "CAST(Powers AS TEXT)"],
+            &filter,
+            &binds,
+        )
+        .await?;
         let room = ROW_FETCH.saturating_sub(rows.len());
         let mut sql = String::from(
             "SELECT GroupID, RoleID, CAST(Powers AS TEXT) FROM os_groups_roles WHERE GroupID IN (",
@@ -365,6 +402,13 @@ async fn held_rows(
     sqlite: &sqlx::SqlitePool,
     agent: &str,
 ) -> Result<Vec<(String, String, String)>, GridError> {
+    within_column_bytes(
+        sqlite,
+        &["GroupID", "RoleID", "PrincipalID"],
+        "FROM os_groups_rolemembership WHERE PrincipalID = ?",
+        &[agent],
+    )
+    .await?;
     let sql = format!(
         "SELECT GroupID, RoleID, PrincipalID FROM os_groups_rolemembership WHERE PrincipalID = ? LIMIT {ROW_FETCH}"
     );
@@ -476,6 +520,45 @@ fn parse_powers(text: &str) -> Option<u64> {
 
 fn same_principal(stored: &str, agent: &str) -> bool {
     stored.eq_ignore_ascii_case(agent)
+}
+
+fn byte_select(columns: &[&str]) -> String {
+    let parts: Vec<String> = columns
+        .iter()
+        .map(|column| format!("coalesce(length(CAST(({column}) AS BLOB)),0)"))
+        .collect();
+    if parts.len() == 1 {
+        format!("coalesce(max({}),0)", parts[0])
+    } else {
+        format!("coalesce(max(max({})),0)", parts.join(", "))
+    }
+}
+
+async fn within_column_bytes(
+    sqlite: &sqlx::SqlitePool,
+    columns: &[&str],
+    from: &str,
+    binds: &[&str],
+) -> Result<(), GridError> {
+    let sql = format!("SELECT {} {from}", byte_select(columns));
+    let mut query = sqlx::query_as::<_, (i64,)>(&sql);
+    for value in binds {
+        query = query.bind(*value);
+    }
+    let (longest,) = query.fetch_one(sqlite).await.map_err(store_error)?;
+    if longest > MAX_COLUMN_BYTES {
+        ferroan_diag::refuse(
+            ferroan_diag::GROUPS_COLUMN_BYTES,
+            ferroan_diag::Kind::Hard,
+            MAX_COLUMN_BYTES as u64,
+            longest as u64,
+            "groups",
+        );
+        return Err(GridError::Store(format!(
+            "a groups value is longer than {MAX_COLUMN_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn too_many_rows() -> GridError {
@@ -1192,5 +1275,71 @@ mod tests {
             Err(GridError::Store(_))
         ));
         assert!(ferroan_diag::render().contains("groups.membership-rows"));
+    }
+
+    #[tokio::test]
+    async fn more_than_4096_group_rows_are_refused() {
+        let scratch = Scratch::new();
+        let db = scratch.groups("groups.db");
+        apply_sql(
+            &db,
+            include_str!("../../../fixtures/group-memberships/seed.sql"),
+        )
+        .await;
+        apply_sql(
+            &db,
+            "CREATE TABLE os_groups_groups_open AS SELECT * FROM os_groups_groups;
+             DROP TABLE os_groups_groups;
+             ALTER TABLE os_groups_groups_open RENAME TO os_groups_groups;
+             INSERT INTO os_groups_groups (GroupID, Name, OwnerRoleID)
+             SELECT '00000000-0000-0000-0000-00000000000a', 'dup-' || n, '00000000-0000-0000-0000-000000000000'
+             FROM (WITH RECURSIVE seq(n) AS (
+                 SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 4096
+             ) SELECT n FROM seq);",
+        )
+        .await;
+        let client = GroupsClient::from_config(&local_ini(&connection(&db))).unwrap();
+        assert!(matches!(
+            client.memberships(Uuid::from_u128(1)).await,
+            Err(GridError::Store(_))
+        ));
+        assert!(ferroan_diag::render().contains("groups.membership-rows"));
+    }
+
+    #[tokio::test]
+    async fn a_ten_megabyte_role_id_is_refused() {
+        let scratch = Scratch::new();
+        let db = scratch.groups("groups.db");
+        apply_sql(
+            &db,
+            include_str!("../../../fixtures/group-memberships/seed.sql"),
+        )
+        .await;
+        let mut role_id = String::from("00000000-0000-0000-0000-000000000010");
+        role_id.extend(std::iter::repeat_n('a', 10 * 1024 * 1024));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE os_groups_roles SET RoleID = ? WHERE GroupID = '00000000-0000-0000-0000-00000000000a' AND Name = 'Land'",
+        )
+        .bind(&role_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        drop(role_id);
+        let client = GroupsClient::from_config(&local_ini(&connection(&db))).unwrap();
+        assert!(matches!(
+            client.memberships(Uuid::from_u128(1)).await,
+            Err(GridError::Store(_))
+        ));
+        assert!(ferroan_diag::render().contains("groups.column-bytes"));
     }
 }

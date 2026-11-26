@@ -78,6 +78,7 @@ pub const REGION_CHILD_DESTINATIONS: &str = "region.child-destinations";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_PARCELS: &str = "region.parcels";
 pub const GROUPS_MEMBERSHIP_ROWS: &str = "groups.membership-rows";
+pub const GROUPS_COLUMN_BYTES: &str = "groups.column-bytes";
 pub const REGION_PARCEL_ACCESS: &str = "region.parcel-access";
 pub const REGION_PARCEL_BYTES: &str = "region.parcel-bytes";
 pub const REGION_OBJECTS: &str = "region.objects";
