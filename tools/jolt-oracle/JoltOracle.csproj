@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>Ferroan.JoltOracle</RootNamespace>
+    <AssemblyName>JoltOracle</AssemblyName>
+    <Description>SubstepAccumulator counts from the pinned Jolt module. No native code.</Description>
+    <AnalysisLevel>none</AnalysisLevel>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(HOME)' != ''">$(HOME)/Git/reference</FerroanRef>
+    <FerroanRef Condition="'$(FerroanRef)' == '' AND '$(USERPROFILE)' != ''">$(USERPROFILE)/Git/reference</FerroanRef>
+  </PropertyGroup>
+
+  <Target Name="RequireFerroanRef" BeforeTargets="Restore;Build">
+    <Error Condition="!Exists('$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs')"
+           Text="Set FerroanRef (or FERROAN_REF) to the scratch clone from oracle_reference::prepare. Missing SubstepAccumulator.cs." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs">
+      <Link>SubstepAccumulator.cs</Link>
+    </Compile>
+  </ItemGroup>
+</Project>

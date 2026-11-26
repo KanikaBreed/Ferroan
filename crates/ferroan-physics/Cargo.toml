@@ -1,0 +1,15 @@
+[package]
+name = "ferroan-physics"
+description = "Fixed physics substeps for one heartbeat. No native code until P3.1 binds Jolt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+serde_json = "1.0.154"
+
+# Workspace lints forbid unsafe code. lib.rs also forbids it, until P3.1 binds Jolt.
+[lints]
+workspace = true

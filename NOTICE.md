@@ -77,6 +77,8 @@ Q59's `crates/ferroan-scene/src/coalesced.rs` follows `CoalescedSceneObjectsSeri
 
 Q79b follows `Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs`, `Source/OpenSim.Region.Framework/Scenes/Scene.cs` and `ScenePresence.cs`, `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`, `Source/OpenSim.Services.Connectors/Grid/GridServicesConnector.cs` and `Simulation/SimulationServiceConnector.cs`, and `Source/OpenSim.Framework/AgentCircuitData.cs`, `AvatarAppearance.cs`, `AvatarWearable.cs` and `ChildAgentDataUpdate.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause).
 
+Q101's `crates/ferroan-physics/src/substep.rs` ports `Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (MPL-2.0, Copyright (c) 2026 Legion Builds). The file keeps that notice and remains available under MPL-2.0. The C# source is not copied. `tools/jolt-oracle` compiles that pinned file for the step-count fixture and is new Ferroan code. No native library is linked.
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).
