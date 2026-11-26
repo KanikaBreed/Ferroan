@@ -90,3 +90,9 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 | Groups (P1.10) | Not in the harness Robust.ini. | `[Groups] GroupsServerURI`. |
 | Profiles (P1.11) | `[UserProfilesService] LocalServiceModule` loads the service, which then loads `UserAccountService`. | The account key is the accounts row above. The harness does not load profiles. |
 | Estates and experiences (P1.12) | Off in the shipped GridServer config. Experience's own section loads `UserAccountService` when the service is on. | `EstateServerURI` and `ExperienceServerURI`. |
+
+## Presence rows
+
+The service can use `dyn PresenceStore` for all seven asynchronous operations. A store returns `Ok(false)` when it writes nothing. Bound and database errors have distinct variants. After a successful region report the service can call `set_region_id` on its cached row, including a detached row fetched from SQL.
+
+`presence::PresenceData` holds the user ID as text, session and region UUIDs, and the provider's named data fields. Each `NullPresenceData::default()` uses the same process-wide session map. A report updates a held row; storing a replacement by session ID leaves earlier references pointing to the old row. Field lookups and deletes compare user IDs and additional fields exactly. The Null provider accepts a report to the zero region and returns false from agent verification. The [Presence fixture](../../fixtures/presence/README.md) records the Pin8 calls.

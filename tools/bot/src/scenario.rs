@@ -6,6 +6,8 @@
 
 #[path = "object_cross.rs"]
 mod object_cross;
+mod observer;
+use observer::{ObservedAvatar, ObserverSession};
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -16,10 +18,7 @@ use std::time::Duration;
 
 use ferroan_llsd::{Llsd, from_xml, to_xml};
 use ferroan_protocol::Msg;
-use ferroan_protocol::msgs::{
-    AvatarAppearance, CoarseLocationUpdate, ObjectUpdate, UUIDNameReply, UUIDNameRequest,
-    uuid_name_request,
-};
+use ferroan_protocol::msgs::{AvatarAppearance, ObjectUpdate, UUIDNameRequest, uuid_name_request};
 use glam::Vec3;
 use uuid::Uuid;
 
@@ -380,83 +379,198 @@ where
     }).await
 }
 
-async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (mut session, _) = enter(http, harness, &harness.owner, "last").await?;
-    let agent = session.agent();
-    let mut start = None;
-    let mut look = Vec3::X;
-    let mut handle = 0u64;
-    let mut local_id = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while start.is_none() && std::time::Instant::now() < deadline {
-        session
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        while let Some(packet) = session.poll_inbox() {
-            // The full avatar update arrives in this same burst. Recording it
-            // here is what lets later terse updates match our local id.
-            let _ = avatar_position(&packet, agent.agent_id, &mut local_id);
-            if packet.id == ferroan_protocol::msgs::AgentMovementComplete::ID
-                && let Some(position) = world::movement_position(&packet)
-            {
-                start = Some(position);
-                if let Some((seen_look, seen_handle)) = world::movement_look(&packet) {
-                    look = seen_look;
-                    handle = seen_handle;
-                }
-            }
+async fn enter_observed_pair(
+    http: &reqwest::Client,
+    harness: &Harness,
+    first: &Account,
+    second: &Account,
+) -> Result<(ObserverSession, ObserverSession), String> {
+    let (session, _) = enter(http, harness, first, "last").await?;
+    let mut observer = ObserverSession::new(session, second.principal_id);
+    let (login, observation) = observer.during(enter(http, harness, second, "last")).await;
+    let error = match (login, observation) {
+        (Ok((session, _)), Ok(())) => {
+            return Ok((observer, ObserverSession::new(session, first.principal_id)));
         }
-    }
-    let Some(start) = start else {
-        let _ = leave(harness, &mut session, &harness.owner).await;
-        return Err("no AgentMovementComplete".to_string());
+        (Ok((mut session, _)), Err(error)) => {
+            let _ = leave(harness, &mut session, second).await;
+            error
+        }
+        (Err(error), observed) => observed.err().unwrap_or(error),
     };
-    let _ = handle;
+    let _ = leave(harness, &mut observer.session, first).await;
+    Err(error)
+}
+
+/// The staying viewer must witness the walker leaving on the same circuit.
+/// Drive and log out both accounts even if a movement assertion failed.
+async fn finish_observed_walk(
+    harness: &Harness,
+    mut watcher: ObserverSession,
+    watcher_account: &Account,
+    mut walker: ObserverSession,
+    walker_account: &Account,
+    check: Result<(), String>,
+    check_minimap: bool,
+) -> Result<(ObservedAvatar, usize), String> {
+    let early = watcher.seen.peer_kills();
+    let walker_id = watcher.seen.local_id;
+    let mut leaving_kills = walker
+        .seen
+        .killed
+        .iter()
+        .filter(|&&id| Some(id) == walker_id)
+        .count();
+    let (left, observation) = watcher
+        .during(leave_observing_before_request(
+            harness,
+            &mut walker.session,
+            walker_account,
+            |packet| {
+                leaving_kills += world::killed(packet)
+                    .iter()
+                    .filter(|&&id| Some(id) == walker_id)
+                    .count();
+            },
+        ))
+        .await;
+    drop(walker); // The leaving circuit ends at logout (D70).
+    let departure = async {
+        check?;
+        observation?;
+        left?;
+        if early != 0 {
+            return Err("observer saw the walker killed before logout".into());
+        }
+        watcher.seen.coarse = None;
+        let alone = |view: &ObservedAvatar| {
+            !check_minimap
+                || view
+                    .dots_match(
+                        watcher_account.principal_id,
+                        walker_account.principal_id,
+                        &[watcher_account.principal_id],
+                    )
+                    .is_ok()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !(watcher.seen.peer_kills() != 0 && alone(&watcher.seen))
+            && std::time::Instant::now() < deadline
+        {
+            watcher.step().await?;
+        }
+        if watcher.seen.peer_kills() == 0 {
+            return Err(format!(
+                "no KillObject for the walker's local id {:?}",
+                watcher.seen.local_id
+            ));
+        }
+        // Observe late duplicate kills on the circuit that stays in the region.
+        let settle = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < settle {
+            watcher.step().await?;
+        }
+        watcher.seen.check_departure(leaving_kills)?;
+        if check_minimap {
+            watcher.seen.dots_match(
+                watcher_account.principal_id,
+                walker_account.principal_id,
+                &[watcher_account.principal_id],
+            )?;
+        }
+        Ok(())
+    }
+    .await;
+    let logout = leave(harness, &mut watcher.session, watcher_account).await;
+    departure?;
+    logout?;
+    Ok((watcher.seen, leaving_kills))
+}
+
+async fn walk_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
+    let (mut walker, mut watcher) =
+        enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
+    let moved = observed_forward(&mut walker, &mut watcher).await;
+    let (seen, leaving_kills) = finish_observed_walk(
+        harness,
+        watcher,
+        &harness.chat,
+        walker,
+        &harness.owner,
+        moved,
+        false,
+    )
+    .await?;
+    Ok(format!(
+        "walk: pass (forward movement, observer kills={}, leaving viewer kills={leaving_kills})",
+        seen.peer_kills()
+    ))
+}
+
+async fn observed_forward(
+    walker: &mut ObserverSession,
+    watcher: &mut ObserverSession,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let (arrival, look, peer_start) = loop {
+        walker.step().await?;
+        watcher.step().await?;
+        if let (Some((pos, look)), Some(_), Some(peer)) = (
+            walker.seen.arrival,
+            walker.seen.own_position,
+            watcher.seen.position,
+        ) {
+            break (pos, look, peer);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("no walker arrival or matching full avatar update".into());
+        }
+    };
     let facing = world::facing_look(look);
     let forward = world::horizontal_forward(facing);
-    let mut latest = start;
-    let mut moved = false;
-    let mut samples = 0u32;
+    let advanced = |pos: Vec3, start: Vec3| {
+        Vec3::new(pos.x - start.x, pos.y - start.y, 0.0).dot(forward) >= 1.0
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while std::time::Instant::now() < deadline {
-        let update = world::agent_update(agent, latest, facing, world::CONTROL_AT_POS);
-        session
+    let mut latest = walker.seen.own_position.unwrap_or(arrival);
+    watcher.seen.peer_terse = None;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "forward walk timed out: own {arrival:?} to {latest:?}, observer {peer_start:?} to {:?}",
+                watcher.seen.peer_terse
+            ));
+        }
+        let update = world::agent_update(
+            walker.session.agent(),
+            latest,
+            facing,
+            world::CONTROL_AT_POS,
+        );
+        walker
+            .session
             .send(&update, false)
             .await
-            .map_err(|error| error.to_string())?;
-        session
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        while let Some(packet) = session.poll_inbox() {
-            if let Some(position) = avatar_position(&packet, agent.agent_id, &mut local_id) {
-                latest = position;
-                samples += 1;
-            }
-        }
-        let delta = Vec3::new(latest.x - start.x, latest.y - start.y, 0.0);
-        if delta.dot(forward) >= 1.0 {
-            moved = true;
+            .map_err(|e| e.to_string())?;
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
+        if advanced(latest, arrival)
+            && watcher
+                .seen
+                .peer_terse
+                .is_some_and(|p| advanced(p, peer_start))
+        {
             break;
         }
     }
-    // Release forward control so the region stops the movement burst
-    // before logout. LogoutReply sits on that same throttle.
-    let stop = world::agent_update(agent, latest, facing, 0);
-    let _ = session.send(&stop, false).await;
-    let logged_out = leave(harness, &mut session, &harness.owner).await;
-    if !moved {
-        return Err(format!(
-            "position stayed at {:.1},{:.1},{:.1} under forward control ({samples} position updates, local id {local_id:?})",
-            latest.x, latest.y, latest.z
-        ));
-    }
-    logged_out?;
-    Ok(format!(
-        "walk: pass ({:.1},{:.1},{:.1} to {:.1},{:.1},{:.1})",
-        start.x, start.y, start.z, latest.x, latest.y, latest.z
-    ))
+    let stop = world::agent_update(walker.session.agent(), latest, facing, 0);
+    walker
+        .session
+        .send(&stop, false)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn chat_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
@@ -635,172 +749,6 @@ async fn uploads_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     ))
 }
 
-/// What one bot has seen of the other avatar, of its own, and on its minimap.
-#[derive(Debug, Default)]
-struct OtherAvatar {
-    /// The local id of the other avatar's full `ObjectUpdate`.
-    local_id: Option<u32>,
-    appearance: bool,
-    /// Local ids in every `KillObject` this bot received.
-    killed: Vec<u32>,
-    /// Every `UUIDNameReply` block: the id, then the first and last name.
-    names: Vec<(Uuid, String, String)>,
-    /// The other avatar's position in its latest full or terse update.
-    position: Option<Vec3>,
-    own_local_id: Option<u32>,
-    /// This bot's own position in its latest full or terse update.
-    own_position: Option<Vec3>,
-    /// The latest `CoarseLocationUpdate`.
-    coarse: Option<CoarseLocationUpdate>,
-    /// The other avatar's minimap cells, X and Y, each change in order.
-    other_cells: Vec<(u8, u8)>,
-    /// This bot's own minimap cells, the same way.
-    own_cells: Vec<(u8, u8)>,
-    /// The first malformed minimap update.
-    coarse_error: Option<String>,
-}
-
-impl OtherAvatar {
-    fn note(&mut self, session: &mut Session, other: Uuid) -> Result<(), String> {
-        let me = session.agent().agent_id;
-        while let Some(packet) = session.poll_inbox() {
-            if world::chat_heard(&packet).is_some() {
-                return Err("the region sent ChatFromSimulator".to_string());
-            }
-            for object in world::objects_in(&packet) {
-                if object.pcode != world::PCODE_AVATAR {
-                    continue;
-                }
-                if object.full_id == other {
-                    self.local_id = Some(object.local_id);
-                    self.position = Some(Vec3::from(object.position));
-                } else if object.full_id == me {
-                    self.own_local_id = Some(object.local_id);
-                    self.own_position = Some(Vec3::from(object.position));
-                }
-            }
-            for (local_id, _, position) in world::terse_in(&packet) {
-                if Some(local_id) == self.local_id {
-                    self.position = Some(position);
-                } else if Some(local_id) == self.own_local_id {
-                    self.own_position = Some(position);
-                }
-            }
-            if packet.id == AvatarAppearance::ID
-                && let Ok(message) = packet.decode::<AvatarAppearance>()
-                && message.sender.id == other
-                && !message.visual_param.is_empty()
-                // A viewer drops an appearance for an avatar it does not
-                // know yet: only one after the full update counts.
-                && self.local_id.is_some()
-            {
-                self.appearance = true;
-            }
-            self.killed.extend(world::killed(&packet));
-            if packet.id == UUIDNameReply::ID {
-                let reply = packet
-                    .decode::<UUIDNameReply>()
-                    .map_err(|_| "a UUIDNameReply did not decode".to_string())?;
-                for block in reply.uuid_name_block {
-                    self.names.push((
-                        block.id,
-                        ferroan_protocol::field_str(&block.first_name),
-                        ferroan_protocol::field_str(&block.last_name),
-                    ));
-                }
-            }
-        }
-        for coarse in session.take_coarse() {
-            self.note_coarse(me, other, coarse);
-        }
-        Ok(())
-    }
-
-    /// `SendCoarseLocationUpdate`: one location per listed agent, this bot's
-    /// own index in `You` when it is listed, and `Prey` -1.
-    fn note_coarse(&mut self, me: Uuid, other: Uuid, coarse: CoarseLocationUpdate) {
-        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
-        let you = agents
-            .iter()
-            .position(|agent| *agent == me)
-            .map_or(-1, |index| index as i16);
-        if self.coarse_error.is_none() {
-            if coarse.location.len() != agents.len() {
-                self.coarse_error = Some(format!(
-                    "a minimap update lists {} locations for {} agents",
-                    coarse.location.len(),
-                    agents.len()
-                ));
-            } else if coarse.index.you != you || coarse.index.prey != -1 {
-                self.coarse_error = Some(format!(
-                    "a minimap update has You {} and Prey {} for index {you}",
-                    coarse.index.you, coarse.index.prey
-                ));
-            }
-        }
-        for (agent, cells) in [(other, &mut self.other_cells), (me, &mut self.own_cells)] {
-            if let Some(index) = agents.iter().position(|listed| *listed == agent)
-                && let Some(location) = coarse.location.get(index)
-            {
-                let cell = (location.x, location.y);
-                if cells.last() != Some(&cell) {
-                    cells.push(cell);
-                }
-            }
-        }
-        self.coarse = Some(coarse);
-    }
-
-    /// The latest minimap update lists exactly `expected`, each at the cell of
-    /// the position this bot last saw for it.
-    fn dots_match(&self, me: Uuid, other: Uuid, expected: &[Uuid]) -> Result<(), String> {
-        if let Some(error) = &self.coarse_error {
-            return Err(error.clone());
-        }
-        let coarse = self.coarse.as_ref().ok_or("no minimap update")?;
-        let agents: Vec<Uuid> = coarse.agent_data.iter().map(|data| data.agent_id).collect();
-        if agents.len() != expected.len() || expected.iter().any(|agent| !agents.contains(agent)) {
-            return Err(format!("the minimap lists {} agent(s)", agents.len()));
-        }
-        for (index, agent) in agents.iter().enumerate() {
-            let seen = if *agent == me {
-                self.own_position
-            } else if *agent == other {
-                self.position
-            } else {
-                None
-            };
-            let seen = seen.ok_or("no position for a listed agent")?;
-            let location = &coarse.location[index];
-            let got = [location.x, location.y, location.z];
-            if !coarse_cell_near(got, seen) {
-                return Err(format!(
-                    "a minimap dot is at {},{},{} for an avatar seen at {:.2},{:.2},{:.2}",
-                    got[0], got[1], got[2], seen.x, seen.y, seen.z
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn named(&self, id: Uuid) -> Vec<(String, String)> {
-        self.names
-            .iter()
-            .filter(|(named, _, _)| *named == id)
-            .map(|(_, first, last)| (first.clone(), last.clone()))
-            .collect()
-    }
-
-    fn seen(&self) -> bool {
-        self.local_id.is_some() && self.appearance
-    }
-
-    fn saw_kill(&self) -> bool {
-        self.local_id
-            .is_some_and(|local_id| self.killed.contains(&local_id))
-    }
-}
-
 /// Both harness accounts in the region together. Each bot gets the other's
 /// full avatar `ObjectUpdate` and `AvatarAppearance`: the one already there
 /// when the other arrives, the newcomer once its initial data is sent. Then
@@ -810,118 +758,19 @@ impl OtherAvatar {
 /// gets `KillObject` for the local id it saw, and its minimap lists only
 /// itself.
 async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let owner_id = harness.owner.principal_id;
-    let chat_id = harness.chat.principal_id;
-    let (mut owner, _) = enter(http, harness, &harness.owner, "last").await?;
-    let mut owner_saw = OtherAvatar::default();
-    let chat_login = enter(http, harness, &harness.chat, "last");
-    tokio::pin!(chat_login);
-    let chat_result = loop {
-        tokio::select! {
-            result = &mut chat_login => break result,
-            step = owner.drive(STEP) => {
-                step.map_err(|error| error.to_string())?;
-                owner_saw.note(&mut owner, chat_id)?;
-            }
-        }
-    };
-    let (mut chat, _) = match chat_result {
-        Ok(pair) => pair,
-        Err(error) => {
-            let _ = leave(harness, &mut owner, &harness.owner).await;
-            return Err(error);
-        }
-    };
-    let mut chat_saw = OtherAvatar::default();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while !(owner_saw.seen() && chat_saw.seen()) && std::time::Instant::now() < deadline {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        chat.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(&mut owner, chat_id)?;
-        chat_saw.note(&mut chat, owner_id)?;
-    }
-    let early_kill = [owner_saw.local_id, chat_saw.local_id]
-        .into_iter()
-        .flatten()
-        .any(|id| owner_saw.killed.contains(&id) || chat_saw.killed.contains(&id));
-    if !(owner_saw.seen() && chat_saw.seen()) || early_kill {
-        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        if early_kill {
-            return Err("an avatar was killed while both were in the region".to_string());
-        }
-        return Err(format!(
-            "the bots did not see each other (owner saw {owner_saw:?}, second bot saw {chat_saw:?})"
-        ));
-    }
-    let walked = walk_east(&mut chat, &mut chat_saw, &mut owner, &mut owner_saw).await;
-    let dots = walked.and_then(|start| {
-        owner_saw.dots_match(owner_id, chat_id, &[owner_id, chat_id])?;
-        chat_saw.dots_match(chat_id, owner_id, &[owner_id, chat_id])?;
-        let from = (start.x as i32) as u8;
-        let walked_to = |cells: &[(u8, u8)]| cells.last().map(|(x, _)| *x);
-        let far = |cell: Option<u8>| cell.is_some_and(|x| x >= from.saturating_add(2));
-        if !far(walked_to(&owner_saw.other_cells)) || !far(walked_to(&chat_saw.own_cells)) {
-            return Err(format!(
-                "the walking bot's dot did not follow it east of cell {from} (owner saw cells {:?}, second bot saw its own at {:?})",
-                owner_saw.other_cells, chat_saw.own_cells
-            ));
-        }
-        Ok(())
-    });
-    if let Err(error) = dots {
-        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        return Err(format!("minimap: {error}"));
-    }
-    let named = exchange_names(
+    let (mut owner, mut chat) =
+        enter_observed_pair(http, harness, &harness.owner, &harness.chat).await?;
+    let checked = check_avatars(harness, &mut owner, &mut chat).await;
+    let (owner_saw, _) = finish_observed_walk(
         harness,
-        (&mut owner, &mut owner_saw),
-        (&mut chat, &mut chat_saw),
+        owner,
+        &harness.owner,
+        chat,
+        &harness.chat,
+        checked,
+        true,
     )
-    .await;
-    if let Err(error) = named {
-        let _ = leave_while_driving(harness, &mut chat, &harness.chat, &mut owner).await;
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        return Err(error);
-    }
-    let left = {
-        let logout = leave(harness, &mut chat, &harness.chat);
-        tokio::pin!(logout);
-        loop {
-            tokio::select! {
-                result = &mut logout => break result,
-                step = owner.drive(STEP) => {
-                    step.map_err(|error| error.to_string())?;
-                    owner_saw.note(&mut owner, chat_id)?;
-                }
-            }
-        }
-    };
-    if let Err(error) = left {
-        let _ = leave(harness, &mut owner, &harness.owner).await;
-        return Err(error);
-    }
-    let alone = |seen: &OtherAvatar| seen.dots_match(owner_id, chat_id, &[owner_id]).is_ok();
-    // A list sent before the departure may still arrive after the kill.
-    owner_saw.coarse = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !(owner_saw.saw_kill() && alone(&owner_saw)) && std::time::Instant::now() < deadline {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(&mut owner, chat_id)?;
-    }
-    let killed = owner_saw.saw_kill();
-    let dots = owner_saw.dots_match(owner_id, chat_id, &[owner_id]);
-    leave(harness, &mut owner, &harness.owner).await?;
-    if !killed {
-        return Err(format!(
-            "no KillObject for the second bot's local id {:?} after it left",
-            owner_saw.local_id
-        ));
-    }
-    if let Err(error) = dots {
-        return Err(format!("minimap after the second bot left: {error}"));
-    }
+    .await?;
     let cells = |cells: &[(u8, u8)]| {
         cells
             .iter()
@@ -935,42 +784,84 @@ async fn avatars_scenario(http: &reqwest::Client, harness: &Harness) -> Result<S
     ))
 }
 
+async fn check_avatars(
+    harness: &Harness,
+    owner: &mut ObserverSession,
+    chat: &mut ObserverSession,
+) -> Result<(), String> {
+    let owner_id = harness.owner.principal_id;
+    let chat_id = harness.chat.principal_id;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !(owner.seen.seen() && chat.seen.seen()) && std::time::Instant::now() < deadline {
+        owner.step().await?;
+        chat.step().await?;
+    }
+    let early_kill = [owner.seen.local_id, chat.seen.local_id]
+        .into_iter()
+        .flatten()
+        .any(|id| owner.seen.killed.contains(&id) || chat.seen.killed.contains(&id));
+    if !(owner.seen.seen() && chat.seen.seen()) || early_kill {
+        if early_kill {
+            return Err("an avatar was killed while both were in the region".to_string());
+        }
+        return Err(format!(
+            "the bots did not see each other (owner saw full {:?}, appearance {}; second bot saw full {:?}, appearance {})",
+            owner.seen.local_id,
+            owner.seen.seen(),
+            chat.seen.local_id,
+            chat.seen.seen()
+        ));
+    }
+    let walked = walk_east(chat, owner).await;
+    let dots = walked.and_then(|start| {
+        owner.seen.dots_match(owner_id, chat_id, &[owner_id, chat_id])?;
+        chat.seen.dots_match(chat_id, owner_id, &[owner_id, chat_id])?;
+        let from = (start.x as i32) as u8;
+        let walked_to = |cells: &[(u8, u8)]| cells.last().map(|(x, _)| *x);
+        let far = |cell: Option<u8>| cell.is_some_and(|x| x >= from.saturating_add(2));
+        if !far(walked_to(&owner.seen.other_cells)) || !far(walked_to(&chat.seen.own_cells)) {
+            return Err(format!(
+                "the walking bot's dot did not follow it east of cell {from} (owner saw cells {:?}, second bot saw its own at {:?})",
+                owner.seen.other_cells, chat.seen.own_cells
+            ));
+        }
+        Ok(())
+    });
+    dots.map_err(|e| format!("minimap: {e}"))?;
+    exchange_names(harness, owner, chat).await
+}
+
 /// The walking bot goes east under forward control until it is 2.5 m from
 /// where it stood, or eight seconds pass, then stops. After a second at rest
 /// both bots wait for their next minimap update, which the region sends
 /// every 50 frames (about 4.5 s). Both circuits are driven throughout.
 /// Returns where the walk started.
 async fn walk_east(
-    walker: &mut Session,
-    walker_saw: &mut OtherAvatar,
-    watcher: &mut Session,
-    watcher_saw: &mut OtherAvatar,
+    walker: &mut ObserverSession,
+    watcher: &mut ObserverSession,
 ) -> Result<Vec3, String> {
-    let walker_id = walker.agent().agent_id;
-    let watcher_id = watcher.agent().agent_id;
-    let start = walker_saw
+    let start = walker
+        .seen
         .own_position
         .ok_or("the walking bot has not seen its own avatar")?;
     let facing = glam::Quat::IDENTITY;
     let mut latest = start;
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     while std::time::Instant::now() < deadline && latest.x - start.x < 2.5 {
-        let update = world::agent_update(walker.agent(), latest, facing, world::CONTROL_AT_POS);
+        let update = world::agent_update(
+            walker.session.agent(),
+            latest,
+            facing,
+            world::CONTROL_AT_POS,
+        );
         walker
+            .session
             .send(&update, false)
             .await
             .map_err(|error| error.to_string())?;
-        walker
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        watcher
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        walker_saw.note(walker, watcher_id)?;
-        watcher_saw.note(watcher, walker_id)?;
-        latest = walker_saw.own_position.unwrap_or(latest);
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
     }
     if latest.x - start.x < 2.5 {
         return Err(format!(
@@ -985,41 +876,25 @@ async fn walk_east(
     while std::time::Instant::now() < deadline {
         if !fresh && std::time::Instant::now() >= settle {
             // Only a list made after the walker stopped counts.
-            walker_saw.coarse = None;
-            watcher_saw.coarse = None;
+            walker.seen.coarse = None;
+            watcher.seen.coarse = None;
             fresh = true;
         }
-        if fresh && walker_saw.coarse.is_some() && watcher_saw.coarse.is_some() {
+        if fresh && walker.seen.coarse.is_some() && watcher.seen.coarse.is_some() {
             break;
         }
         // `AgentUpdate` is unreliable: repeat the stop as a viewer does.
-        let stop = world::agent_update(walker.agent(), latest, facing, 0);
+        let stop = world::agent_update(walker.session.agent(), latest, facing, 0);
         walker
+            .session
             .send(&stop, false)
             .await
             .map_err(|error| error.to_string())?;
-        walker
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        watcher
-            .drive(STEP)
-            .await
-            .map_err(|error| error.to_string())?;
-        walker_saw.note(walker, watcher_id)?;
-        watcher_saw.note(watcher, walker_id)?;
-        latest = walker_saw.own_position.unwrap_or(latest);
+        walker.step().await?;
+        watcher.step().await?;
+        latest = walker.seen.own_position.unwrap_or(latest);
     }
     Ok(start)
-}
-
-/// `SendCoarseLocationUpdate`'s cell for `position`: X and Y as bytes, Z
-/// divided by four. Up to 0.1 m either way is allowed, because an update
-/// below the terse thresholds is not sent.
-fn coarse_cell_near(cell: [u8; 3], position: Vec3) -> bool {
-    let byte = |value: f32| (value as i32) as u8;
-    let near = |got: u8, value: f32| got == byte(value - 0.1) || got == byte(value + 0.1);
-    near(cell[0], position.x) && near(cell[1], position.y) && near(cell[2], position.z * 0.25)
 }
 
 /// An id no harness grid has: `UUIDNameRequest` for it gets no reply.
@@ -1044,29 +919,27 @@ fn name_request(ids: &[Uuid]) -> UUIDNameRequest {
 /// `Unknown` and the id from the cached miss.
 async fn exchange_names(
     harness: &Harness,
-    owner: (&mut Session, &mut OtherAvatar),
-    chat: (&mut Session, &mut OtherAvatar),
+    owner: &mut ObserverSession,
+    chat: &mut ObserverSession,
 ) -> Result<(), String> {
-    let (owner, owner_saw) = owner;
-    let (chat, chat_saw) = chat;
     let owner_id = harness.owner.principal_id;
     let chat_id = harness.chat.principal_id;
     owner
+        .session
         .send(&name_request(&[chat_id, UNKNOWN_NAME_ID]), true)
         .await
         .map_err(|error| error.to_string())?;
-    chat.send(&name_request(&[owner_id, UNKNOWN_NAME_ID]), true)
+    chat.session
+        .send(&name_request(&[owner_id, UNKNOWN_NAME_ID]), true)
         .await
         .map_err(|error| error.to_string())?;
     let mut settle_until = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        chat.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(owner, chat_id)?;
-        chat_saw.note(chat, owner_id)?;
-        unknown_answers(owner_saw, chat_saw, 1)?;
-        let both = !owner_saw.named(chat_id).is_empty() && !chat_saw.named(owner_id).is_empty();
+        owner.step().await?;
+        chat.step().await?;
+        unknown_answers(&owner.seen, &chat.seen, 1)?;
+        let both = !owner.seen.named(chat_id).is_empty() && !chat.seen.named(owner_id).is_empty();
         match settle_until {
             None if both => {
                 settle_until = Some(std::time::Instant::now() + Duration::from_secs(1));
@@ -1077,13 +950,13 @@ async fn exchange_names(
         if settle_until.is_none() && std::time::Instant::now() >= deadline {
             return Err(format!(
                 "UUIDNameReply did not name the other bot (owner got {:?}, second bot got {:?})",
-                owner_saw.names, chat_saw.names
+                owner.seen.names, chat.seen.names
             ));
         }
     }
     for (saw, other, account) in [
-        (&*owner_saw, chat_id, &harness.chat),
-        (&*chat_saw, owner_id, &harness.owner),
+        (&owner.seen, chat_id, &harness.chat),
+        (&chat.seen, owner_id, &harness.owner),
     ] {
         let named = saw.named(other);
         let want = (account.first_name.clone(), account.last_name.clone());
@@ -1093,30 +966,34 @@ async fn exchange_names(
             ));
         }
     }
-    let before = owner_saw.named(UNKNOWN_NAME_ID).len();
+    let before = owner.seen.named(UNKNOWN_NAME_ID).len();
     owner
+        .session
         .send(&name_request(&[UNKNOWN_NAME_ID]), true)
         .await
         .map_err(|error| error.to_string())?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while owner_saw.named(UNKNOWN_NAME_ID).len() == before && std::time::Instant::now() < deadline {
-        owner.drive(STEP).await.map_err(|error| error.to_string())?;
-        chat.drive(STEP).await.map_err(|error| error.to_string())?;
-        owner_saw.note(owner, chat_id)?;
-        chat_saw.note(chat, owner_id)?;
+    while owner.seen.named(UNKNOWN_NAME_ID).len() == before && std::time::Instant::now() < deadline
+    {
+        owner.step().await?;
+        chat.step().await?;
     }
-    if owner_saw.named(UNKNOWN_NAME_ID).len() != before + 1 {
+    if owner.seen.named(UNKNOWN_NAME_ID).len() != before + 1 {
         return Err(format!(
             "the second request for the unknown id got {:?}, not Unknown and the id from the cached miss",
-            owner_saw.named(UNKNOWN_NAME_ID)
+            owner.seen.named(UNKNOWN_NAME_ID)
         ));
     }
-    unknown_answers(owner_saw, chat_saw, 2)
+    unknown_answers(&owner.seen, &chat.seen, 2)
 }
 
 /// Every reply for [`UNKNOWN_NAME_ID`] is `Unknown` and the id, and the two
 /// bots got at most `most` of them.
-fn unknown_answers(owner: &OtherAvatar, chat: &OtherAvatar, most: usize) -> Result<(), String> {
+fn unknown_answers(
+    owner: &ObservedAvatar,
+    chat: &ObservedAvatar,
+    most: usize,
+) -> Result<(), String> {
     let want = ("Unknown".to_string(), UNKNOWN_NAME_ID.to_string());
     let answers: Vec<_> = owner
         .named(UNKNOWN_NAME_ID)
@@ -1883,6 +1760,15 @@ async fn enter(
 }
 
 async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> Result<(), String> {
+    leave_observing_before_request(harness, session, account, |_| {}).await
+}
+
+async fn leave_observing_before_request(
+    harness: &Harness,
+    session: &mut Session,
+    account: &Account,
+    mut record: impl FnMut(&ferroan_protocol::IncomingPacket),
+) -> Result<(), String> {
     // LogoutReply is queued on the task throttle. The outgoing loop sleeps
     // while that queue is idle, and closing the agent then clears the queue,
     // so the reply is often never sent. HandleLogout logs the request before
@@ -1899,7 +1785,9 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             .drive(Duration::from_millis(200))
             .await
             .map_err(|error| error.to_string())?;
-        while session.poll_inbox().is_some() {}
+        while let Some(packet) = session.poll_inbox() {
+            record(&packet);
+        }
         if session.received() == seen {
             let since = quiet_since.unwrap_or_else(std::time::Instant::now);
             quiet_since = Some(since);
@@ -1910,7 +1798,10 @@ async fn leave(harness: &Harness, session: &mut Session, account: &Account) -> R
             quiet_since = None;
         }
     }
-    if session.logout(Duration::from_secs(2)).await.is_ok() {
+    // Stop recording when we send LogoutRequest. Pin8 can send its departing
+    // viewer a kill for its own avatar during teardown (TB87).
+    let logout = session.logout(Duration::from_secs(2)).await;
+    if logout.is_ok() {
         return Ok(());
     }
     if harness.require_logout_reply {
@@ -1941,32 +1832,6 @@ fn logout_requests(path: &Path, name: &str) -> Result<usize, String> {
     let text = String::from_utf8_lossy(&bytes);
     let needle = format!("Got a logout request for {name} ");
     Ok(text.matches(&needle).count())
-}
-
-fn avatar_position(
-    packet: &ferroan_protocol::IncomingPacket,
-    agent: Uuid,
-    local_id: &mut Option<u32>,
-) -> Option<Vec3> {
-    for object in world::objects_in(packet) {
-        if object.full_id == agent {
-            // A non-avatar update can share the agent id. Keep an avatar local
-            // id once one arrives, and still report the position either way.
-            if local_id.is_none() || object.pcode == world::PCODE_AVATAR {
-                *local_id = Some(object.local_id);
-            }
-            return Some(Vec3::from(object.position));
-        }
-    }
-    for (seen, avatar, position) in world::terse_in(packet) {
-        if local_id.is_none() && avatar {
-            *local_id = Some(seen);
-        }
-        if *local_id == Some(seen) {
-            return Some(position);
-        }
-    }
-    None
 }
 
 async fn wait_object<F>(

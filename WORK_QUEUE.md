@@ -147,7 +147,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q46 | P2.2b2: terse updates to self and others, the shared observer session, `walk: pass` | SPLIT into Q46a to Q46c |
 | Q46a | P2.2b2a: C# walk fixture: record `live run walk grid --physics basicphysics` into `fixtures/walk/` and replay it through the Q45 stepper and the C# change thresholds (closes Q45's AWAITING VALIDATION) | DONE (this PR) |
 | Q46b | P2.2b2b: terse updates on Ferroan to self and others through the per-viewer queue and Q43's throttle, GridUser's real last position and look, `walk: pass` on Ferroan in live.yml | DONE (this PR) |
-| Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | READY after Q46b and Q48 |
+| Q46c | P2.2b2c: the shared observer session replacing `wait_object`/`wait_kill`, report lines comparable between C# and Ferroan | DONE (this PR) |
 | Q82 | P2.0e2: default terrain: a store with no `terrain` row gets C#'s `pinhead-island` (or the stored baked map), written back as both rows on SQLite, so the Ferroan walk runs at C#'s height | DONE (this PR) |
 | Q83 | P2.0e3: terrain load and the default-terrain writes on MySQL and PostgreSQL | DONE (this PR) |
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | DONE (this PR) |
@@ -168,9 +168,9 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q56 | P2.4c: region settings and spawn points from the store | DONE (#224) |
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
-| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | READY after Q57 and Q58 |
+| Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
-| Q60a | P2.6a1: load SQLite parcels and create the in-memory default | READY |
+| Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
@@ -222,7 +222,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | DONE (#172) |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
-| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | READY after Q26b |
+| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
@@ -541,7 +541,7 @@ Proposed split, each with its own acceptance:
 
 Validation of this split: `cargo xtask check` passed locally. The probes used Pin8 directly. Rust/C# cross-reads remain acceptance work for parts 2 and 3.
 
-The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
+The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. Q26c2 and Q26c3 implement the same seven-operation `PresenceStore` trait as Null. Q26d uses it to call the configured provider. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
 
 Q25 (21 November 2026, `feat/p1-2-auth`): [PR #160](https://github.com/KanikaBreed/Ferroan/pull/160). `ferroan-robust` serves `POST /auth` and `POST /authorization`. The stored password is `MD5(MD5(password) + ":" + salt)`. `live compare auth` matches the HTTP records and a cross-read. Login stays on `PasswordAuthenticationService` and opens the same `auth.db`: `LLLoginService` loads authentication with `(config, userAccountService)`, and `AuthenticationServicesConnector` has no such constructor. An invalid web login key is a failure and the password is then tried (TB41, D33). Authorization checks the module and opens no database (TB42, D34). [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812393) on `e9f7aa0`: Linux 11m13s, Windows 4m4s, macOS 4m3s. [Live](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812271): scope 1m7s, scenarios 11m9s, ferrobot 10m40s, images 5m43s, services 22m18s, gate 1m3s. `login: pass`. `auth: match (16 http records); cross-read ok`.
 

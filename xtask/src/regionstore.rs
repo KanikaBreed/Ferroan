@@ -93,6 +93,60 @@ pub fn verify() -> ExitCode {
     dispatch(false)
 }
 
+/// Regenerate the SQLite parcel load from the same schema and seed as the Rust test.
+pub fn parcels() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let result = (|| -> Result<(), String> {
+        let pin = pinned_revision(
+            &fs::read_to_string(root.join("docs/REFERENCES.md")).map_err(|e| e.to_string())?,
+        )?;
+        let db = root.join(".scratch/regionstore-oracle/parcels.db");
+        fs::copy(root.join(FIXTURE), &db).map_err(|e| e.to_string())?;
+        let json = oracle_stdout(
+            &dll,
+            &[
+                "parcels",
+                &db.to_string_lossy(),
+                "fixtures/regionstore/parcels.sql",
+                REGION,
+                &pin,
+            ],
+        )
+        .ok_or("parcel oracle failed")?;
+        fs::write(root.join("fixtures/regionstore/parcels.json"), json)
+            .map_err(|e| e.to_string())?;
+        let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .current_dir(&root)
+            .env("FERROAN_PARCEL_ORACLE_DB", db)
+            .args([
+                "test",
+                "--locked",
+                "-p",
+                "ferroan-scene",
+                "--lib",
+                "regionstore_parcels_match_pin8_load_and_access_entries",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("SQLite parcel comparison exited with {status}"))
+        }
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Seed a SQLite region store and write the settings dump for one region.
 pub fn settings() -> ExitCode {
     let root = crate::repo_root();
@@ -181,6 +235,14 @@ pub fn serialize() -> ExitCode {
 /// from the objects it read. One group also carries an unknown part element
 /// and an unknown shape element; both are skipped.
 pub fn read() -> ExitCode {
+    xml_capture("read", XML_READ_DUMP)
+}
+
+pub fn coalesced() -> ExitCode {
+    xml_capture("coalesced", "fixtures/regionstore/coalesced.json")
+}
+
+fn xml_capture(command: &str, output: &str) -> ExitCode {
     let root = crate::repo_root();
     let dll = match build_oracle() {
         Ok(path) => path,
@@ -202,16 +264,16 @@ pub fn read() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let source_arg = source.display().to_string();
-    let json = match oracle_stdout(&dll, &["read", &source_arg, &pinned]) {
+    let json = match oracle_stdout(&dll, &[command, &source_arg, &pinned]) {
         Some(text) => text,
         None => return ExitCode::FAILURE,
     };
-    let dump = root.join(XML_READ_DUMP);
+    let dump = root.join(output);
     if let Err(error) = fs::write(&dump, json) {
         eprintln!("{LABEL}: could not write {}: {error}", dump.display());
         return ExitCode::FAILURE;
     }
-    println!("{LABEL}: wrote {XML_READ_DUMP}");
+    println!("{LABEL}: wrote {output}");
     ExitCode::SUCCESS
 }
 

@@ -30,6 +30,7 @@ uuid = { version = "1.27.0", features = ["v4"] }
 workspace = true
 
 [dev-dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 ferroan-capture = { path = "../ferroan-capture" }
 ferroan-protocol = { path = "../ferroan-protocol" }
 tokio = { version = "1", features = ["test-util"] }
