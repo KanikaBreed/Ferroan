@@ -280,6 +280,52 @@ impl SimulationClient {
 mod tests {
     use super::*;
 
+    #[test]
+    fn default_child_wearable_items_and_assets_match_pin8() {
+        // AvatarWearable.cs at c401bceecd, DEFAULT_{BODY,SKIN,HAIR,EYES,SHIRT,PANTS}_{ITEM,ASSET}.
+        let expected = [
+            (
+                "body",
+                uuid::uuid!("66c41e39-38f9-f75a-024e-585989bfaba9"),
+                uuid::uuid!("66c41e39-38f9-f75a-024e-585989bfab73"),
+            ),
+            (
+                "skin",
+                uuid::uuid!("77c41e39-38f9-f75a-024e-585989bfabc9"),
+                uuid::uuid!("77c41e39-38f9-f75a-024e-585989bbabbb"),
+            ),
+            (
+                "hair",
+                uuid::uuid!("d342e6c1-b9d2-11dc-95ff-0800200c9a66"),
+                uuid::uuid!("d342e6c0-b9d2-11dc-95ff-0800200c9a66"),
+            ),
+            (
+                "eyes",
+                uuid::uuid!("cdc31054-eed8-4021-994f-4e0c6e861b50"),
+                uuid::uuid!("4bb6fa4d-1cd2-498a-a84c-95c1a0e745a7"),
+            ),
+            (
+                "shirt",
+                uuid::uuid!("77c41e39-38f9-f75a-0000-585989bf0000"),
+                uuid::uuid!("00000000-38f9-1111-024e-222222111110"),
+            ),
+            (
+                "pants",
+                uuid::uuid!("77c41e39-38f9-f75a-0000-5859892f1111"),
+                uuid::uuid!("00000000-38f9-1111-024e-222222111120"),
+            ),
+        ];
+        let wearables = child_appearance(1.8).wearables;
+        assert_eq!(wearables.len(), 15);
+        for (slot, (name, item, asset)) in expected.into_iter().enumerate() {
+            let actual = &wearables[slot];
+            assert_eq!(actual.len(), 1, "{name} slot");
+            assert_eq!(actual[0].item, item, "{name} item");
+            assert_eq!(actual[0].asset, asset, "{name} asset");
+        }
+        assert!(wearables[expected.len()..].iter().all(Vec::is_empty));
+    }
+
     #[tokio::test]
     async fn position_endpoint_bound_still_accepts_an_update_for_an_active_agent() {
         let client = SimulationClient::new().unwrap();

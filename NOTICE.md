@@ -73,6 +73,8 @@ Q10 runs Ferrobot at the revision in [REFERENCES.md](docs/REFERENCES.md) as a se
 
 Q59's `crates/ferroan-scene/src/coalesced.rs` follows `CoalescedSceneObjectsSerializer.cs`, `CoalescedSceneObjects.cs`, `Scene.cs` (combined bounds), `SceneObjectGroup.cs` (linkset bounds and extra XML) and `SceneObjectPart.cs` (world transforms) under `Source/OpenSim.Region.Framework/Scenes` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Quaternion multiplication, vector rotation and matrix axes follow libopenmetaverse `OpenMetaverse.Types/{Quaternion,Vector3,Matrix4}.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. Both BSD notices are retained in the port.
 
+Q79b follows `Source/OpenSim.Region.CoreModules/Framework/EntityTransfer/EntityTransferModule.cs`, `Source/OpenSim.Region.Framework/Scenes/Scene.cs` and `ScenePresence.cs`, `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs`, `Source/OpenSim.Services.Connectors/Grid/GridServicesConnector.cs` and `Simulation/SimulationServiceConnector.cs`, and `Source/OpenSim.Framework/AgentCircuitData.cs`, `AvatarAppearance.cs`, `AvatarWearable.cs` and `ChildAgentDataUpdate.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause).
+
 ## Native libraries (planned)
 
 - [Jolt Physics](https://github.com/jrouwe/JoltPhysics), MIT, through `oxijolt-sys` (MIT OR Apache-2.0).
