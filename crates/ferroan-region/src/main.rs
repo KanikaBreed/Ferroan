@@ -871,6 +871,8 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
                     updates: Arc::new(SceneFeed {
+                        viewer: expect.agent_id,
+                        object_animations: Arc::clone(&agent.object_animations),
                         feed,
                         region_handle: arrival.region_handle,
                     }),
@@ -1120,17 +1122,35 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
 
 /// One viewer's frame feed, as the circuit drains it.
 struct SceneFeed {
+    object_animations: Arc<std::sync::atomic::AtomicBool>,
+    viewer: Uuid,
     feed: Arc<ferroan_scene::terse::ViewerFeed>,
     region_handle: u64,
 }
 
 impl ferroan_client::EntityUpdates for SceneFeed {
     fn has_updates(&self) -> bool {
-        self.feed.has_avatar_terse()
+        self.feed.has_updates()
     }
 
-    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
-        self.feed.take_terse(max_bytes)
+    fn take_updates(&self, batch: &mut ferroan_client::TaskBatch) {
+        use ferroan_scene::terse::ViewerUpdate;
+        let supports_animations = self
+            .object_animations
+            .load(std::sync::atomic::Ordering::Acquire);
+        while batch.has_room() {
+            match self.feed.take_update_for_viewer(supports_animations) {
+                Some(ViewerUpdate::Terse(block)) => batch.push_terse(block),
+                Some(ViewerUpdate::Full {
+                    update: Ok(update),
+                    animations,
+                    ..
+                }) => batch.push_full(&update.block_for(self.viewer), animations.map(<[_]>::len)),
+                // Oversize fields were reported at admission. Continue with the next part.
+                Some(ViewerUpdate::Full { update: Err(_), .. }) => continue,
+                None => break,
+            }
+        }
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
@@ -3334,6 +3354,8 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
+                viewer: agent,
+                object_animations: Arc::default(),
                 feed,
                 region_handle: 77,
             };

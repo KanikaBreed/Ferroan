@@ -469,7 +469,11 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
-    if matches!(*scenario, "prim-capture" | "prim-arrival" | "object-cross")
+    if *scenario == "prim-arrival" && flags.region_ferroan && !grid {
+        return Err(ParseFail::Usage);
+    }
+    if (matches!(*scenario, "prim-capture" | "object-cross")
+        || (*scenario == "prim-arrival" && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
@@ -755,18 +759,16 @@ mod tests {
             assert!(parse(&["run", scenario, "grid"]).is_err());
             assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
             assert!(parse(&["run", scenario, "--physics", "basicphysics"]).is_err());
-            assert!(
-                parse(&[
-                    "run",
-                    scenario,
-                    "grid",
-                    "--region",
-                    "ferroan",
-                    "--physics",
-                    "basicphysics"
-                ])
-                .is_err()
-            );
+            let ferroan = parse(&[
+                "run",
+                scenario,
+                "grid",
+                "--region",
+                "ferroan",
+                "--physics",
+                "basicphysics",
+            ]);
+            assert_eq!(ferroan.is_ok(), scenario == "prim-arrival");
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
         }
     }

@@ -35,8 +35,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! One viewer's entity updates, as the circuit sees them. The region fills
-//! the feed; the circuit takes terse blocks when the task category asks for
-//! more and writes them as `ImprovedTerseObjectUpdate` packets.
+//! the feed. When Task asks for more, the circuit takes full prim updates and
+//! avatar terse blocks, charging their separate estimated list and block sizes.
 //!
 //! C# asks when the task outbox holds fewer than five packets and the feed
 //! has updates, at most every 20 ms, with a budget of what the task bucket
@@ -140,8 +140,8 @@ pub fn coarse_update(
 pub trait EntityUpdates: Send + Sync {
     /// `HandleHasUpdates` for the task category.
     fn has_updates(&self) -> bool;
-    /// `ProcessEntityUpdates(max_bytes)` for avatar terse updates.
-    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; AVATAR_TERSE_LEN]>;
+    /// `ProcessEntityUpdates(max_bytes)` for stored full and avatar terse updates.
+    fn take_updates(&self, batch: &mut crate::TaskBatch);
     /// At most `max` waiting avatar packets, the oldest first, in the order
     /// the region sent them. The rest wait for a later pass.
     fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket>;

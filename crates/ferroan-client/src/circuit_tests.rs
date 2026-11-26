@@ -186,7 +186,7 @@ async fn a_task_flood_stays_within_the_viewer_task_rate() {
     for _ in 0..200 {
         state.pending_task.push_back(Payload {
             bytes: body.clone(),
-            zerocoded: false,
+            coding: Coding::Plain,
             reliable: true,
         });
     }
@@ -230,7 +230,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
     for _ in 0..=ACK_STALL {
         let payload = Payload {
             bytes: vec![0xff, 0xff, 0x00, 0x01, 1, 2, 3],
-            zerocoded: false,
+            coding: Coding::Plain,
             reliable: true,
         };
         state
@@ -242,7 +242,7 @@ async fn an_ack_backlog_holds_land_and_task_but_not_resends() {
     io.sent.lock().unwrap().clear();
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
-        zerocoded: false,
+        coding: Coding::Plain,
         reliable: true,
     });
     state
@@ -325,7 +325,7 @@ async fn a_nan_throttle_blob_keeps_the_circuit_sending() {
     assert_eq!(state.throttle.view(), before);
     state.pending_task.push_back(Payload {
         bytes: vec![0xff, 0xff, 0x00, 0x02, 4],
-        zerocoded: false,
+        coding: Coding::Plain,
         reliable: true,
     });
     release_throttled(&mut state, &io).await;
@@ -345,8 +345,10 @@ impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
         self.has_avatar_terse()
     }
 
-    fn take_terse(&self, budget: i32) -> Vec<[u8; ferroan_scene::terse::AVATAR_TERSE_LEN]> {
-        self.take_terse(budget)
+    fn take_updates(&self, batch: &mut crate::TaskBatch) {
+        for block in self.take_terse(batch.budget()) {
+            batch.push_terse(block);
+        }
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket> {
@@ -2116,9 +2118,12 @@ impl crate::EntityUpdates for BlockFeed {
         !self.blocks.lock().unwrap().is_empty()
     }
 
-    fn take_terse(&self, max_bytes: i32) -> Vec<[u8; crate::AVATAR_TERSE_LEN]> {
-        self.budgets.lock().unwrap().push(max_bytes);
-        std::mem::take(&mut *self.blocks.lock().unwrap())
+    fn take_updates(&self, batch: &mut crate::TaskBatch) {
+        self.budgets.lock().unwrap().push(batch.budget());
+        let mut blocks = self.blocks.lock().unwrap();
+        while batch.has_room() && !blocks.is_empty() {
+            batch.push_terse(blocks.remove(0));
+        }
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<crate::AvatarPacket> {

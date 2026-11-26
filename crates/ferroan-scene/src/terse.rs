@@ -510,7 +510,7 @@ impl ViewerFeed {
         None
     }
 
-    /// Readiness for the avatar-only circuit drain, until Q65c3 sends prims.
+    /// Whether an avatar-only consumer can dequeue a terse entry without taking stored parts.
     pub fn has_avatar_terse(&self) -> bool {
         self.queue().has_avatar_terse()
     }
