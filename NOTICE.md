@@ -125,5 +125,6 @@ Q60a's `crates/ferroan-scene/src/parcels.rs` follows `Source/OpenSim.Data.SQLite
 
 The parcel vector text parser in `crates/ferroan-scene/src/parcels/vector_text.rs` follows `OpenMetaverse.Types/{Vector2,Vector3,Quaternion}.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b` under the retained BSD notice.
 
+The PostgreSQL Presence provider follows `Source/OpenSim.Data.PGSQL/PGSQLPresenceData.cs`, `PGSQLGenericTableHandler.cs`, `PGSQLManager.cs` and `Resources/Presence.migrations` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
 
 The Presence row and in-memory store in `crates/ferroan-services/src/presence` follow `Source/OpenSim.Data/IPresenceData.cs` and `Source/OpenSim.Data.Null/NullPresenceData.cs` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
