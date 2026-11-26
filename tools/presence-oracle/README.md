@@ -1,5 +1,9 @@
 # Presence oracle
 
+## Service HTTP observations
+
+Run `cargo xtask presence service-generate` or `service-verify` under the shared live lock with a free port base and `UseSharedCompilation=false`. Set `FERROAN_PRESENCE_ADO_POSTGRES` as below to include both providers. The oracle runs the Pin8 handler on loopback, calls local LoginAgent to seed the sessions, and saves the status, content type and original response body bytes (hex) for each form. Null allows duplicate presences in this sequence. PostgreSQL uses its default replacement policy and a private realm copied from the migrated table. Its final in-process call records the result of a refused insert (TB126).
+
 ## PostgreSQL
 
 Run `cargo xtask presence cross postgres` under the shared live lock with a free port base and `UseSharedCompilation=false`. Set `FERROAN_PRESENCE_ADO_POSTGRES` in the environment to a disposable PostgreSQL database, for example `Host=127.0.0.1;Port=5432;Database=presence_test;Username=presence_test`. If authentication requires a password, append the `Password` field to the environment value. Omit `Pooling` and `Maximum Pool Size` because ferroan-db refuses both keys. Both providers use that connection and repeat the sequence in a separately named realm with the same indexes and defaults. The Pin8 plugin runs its migrations, so the test account needs permission to create the schema.

@@ -5,8 +5,8 @@
 //! Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs, SetThrottles.
 
 use super::{
-    ArrivalThrottle, Harness, ObserverSession, PRIM_CAPTURE_COUNT, enter_with_throttle, leave,
-    world,
+    ArrivalThrottle, Harness, ObserverSession, PRIM_CAPTURE_COUNT, PrimTrace, enter_with_throttle,
+    leave, world,
 };
 use ferroan_protocol::msgs::ObjectUpdate;
 use ferroan_protocol::{IncomingPacket, Msg};
@@ -137,7 +137,7 @@ pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<Str
         harness,
         &harness.owner,
         "last",
-        ArrivalThrottle::Task(NORMAL_TASK_BPS),
+        ArrivalThrottle::Task(PrimTrace::Arrival(NORMAL_TASK_BPS)),
     )
     .await?;
     let mut control = ObserverSession::new(session, harness.chat.principal_id);
@@ -148,7 +148,7 @@ pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<Str
             harness,
             &harness.chat,
             "last",
-            ArrivalThrottle::Task(8000.0),
+            ArrivalThrottle::Task(PrimTrace::Arrival(8000.0)),
         ))
         .await;
     let result = match login {

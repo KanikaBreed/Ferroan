@@ -1,0 +1,249 @@
+{
+  "pin": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "allowDuplicates": false,
+  "refusedStoreLogin": true,
+  "steps": [
+    {
+      "label": "HTTP login refused",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=login\u0026UserID=00000000-0000-4000-8000-000000000001\u0026SessionID=00000000-0000-4000-8000-000000000002\u0026SecureSessionID=00000000-0000-4000-8000-000000000005",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "absent session",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c743e6e756c6c3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "missing method",
+      "body": "SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "method list",
+      "body": "METHOD[]=getagent",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "unknown method",
+      "body": "METHOD=LOGIN",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "getagents missing list",
+      "body": "METHOD=getagents",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "getagents scalar",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids=00000000-0000-4000-8000-000000000001",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "no known users",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=00000000-0000-4000-8000-000000000001",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c743e6e756c6c3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "malformed session",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logout\u0026SessionID=bad",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "report missing region",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=report\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "malformed region",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logoutregion\u0026RegionID=bad",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "script header",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": true,
+      "status": 403,
+      "contentType": "text/plain",
+      "reply": ""
+    },
+    {
+      "login": "00000000-0000-4000-8000-000000000001",
+      "session": "00000000-0000-4000-8000-000000000002",
+      "secure": "00000000-0000-4000-8000-000000000005",
+      "result": true
+    },
+    {
+      "label": "local login",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c7420747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "zero region report",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=report\u0026SessionID=00000000-0000-4000-8000-000000000002\u0026RegionID=00000000-0000-0000-0000-000000000000",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "move",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=report\u0026SessionID=00000000-0000-4000-8000-000000000002\u0026RegionID=00000000-0000-4000-8000-000000000004",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e537563636573733c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "online member after 1024 misses",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=x\u0026uuids[]=00000000-0000-4000-8000-000000000001",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c70726573656e63653020747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d343030302d383030302d3030303030303030303030343c2f526567696f6e49443e3c2f70726573656e6365303e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "moved",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c7420747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d343030302d383030302d3030303030303030303030343c2f526567696f6e49443e3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "login": "00000000-0000-4000-8000-000000000001",
+      "session": "00000000-0000-4000-8000-000000000003",
+      "secure": "00000000-0000-4000-8000-000000000005",
+      "result": true
+    },
+    {
+      "label": "cached session for duplicate user",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=00000000-0000-4000-8000-000000000001",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c70726573656e63653020747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f70726573656e6365303e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "previous session after second login",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000002",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c743e6e756c6c3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "new session",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000003",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c7420747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "login": "visitor \u0026 guest",
+      "session": "00000000-0000-4000-8000-000000000007",
+      "secure": "00000000-0000-4000-8000-000000000005",
+      "result": true
+    },
+    {
+      "label": "requested order and repeats",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=visitor%20%26%20guest\u0026uuids[]=00000000-0000-4000-8000-000000000014\u0026uuids[]=00000000-0000-4000-8000-000000000001\u0026uuids[]=visitor%20%26%20guest",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c70726573656e63653020747970653d224c697374223e3c5573657249443e76697369746f722026616d703b2067756573743c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f70726573656e6365303e3c70726573656e63653120747970653d224c697374223e3c5573657249443e30303030303030302d303030302d343030302d383030302d3030303030303030303030313c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f70726573656e6365313e3c70726573656e63653220747970653d224c697374223e3c5573657249443e76697369746f722026616d703b2067756573743c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f70726573656e6365323e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "move replacement",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=report\u0026SessionID=00000000-0000-4000-8000-000000000003\u0026RegionID=00000000-0000-4000-8000-000000000004",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e537563636573733c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "logout region",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logoutregion\u0026RegionID=00000000-0000-4000-8000-000000000004",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e537563636573733c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "region cleared",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagents\u0026uuids[]=00000000-0000-4000-8000-000000000001\u0026uuids[]=visitor%20%26%20guest",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c70726573656e63653020747970653d224c697374223e3c5573657249443e76697369746f722026616d703b2067756573743c2f5573657249443e3c526567696f6e49443e30303030303030302d303030302d303030302d303030302d3030303030303030303030303c2f526567696f6e49443e3c2f70726573656e6365303e3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "empty region",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logoutregion\u0026RegionID=00000000-0000-4000-8000-000000000004",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e537563636573733c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "logout",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logout\u0026SessionID=00000000-0000-4000-8000-000000000007",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e537563636573733c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "repeat logout",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=logout\u0026SessionID=00000000-0000-4000-8000-000000000007",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e0a3c536572766572526573706f6e73653e0a20203c726573756c743e4661696c7572653c2f726573756c743e0a3c2f536572766572526573706f6e73653e"
+    },
+    {
+      "label": "after logout",
+      "body": "VERSIONMIN=1\u0026VERSIONMAX=1\u0026METHOD=getagent\u0026SessionID=00000000-0000-4000-8000-000000000007",
+      "shard": false,
+      "status": 200,
+      "contentType": "application/xml",
+      "reply": "3c3f786d6c2076657273696f6e3d22312e30223f3e3c536572766572526573706f6e73653e3c726573756c743e6e756c6c3c2f726573756c743e3c2f536572766572526573706f6e73653e"
+    }
+  ]
+}

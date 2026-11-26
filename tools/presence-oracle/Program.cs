@@ -6,6 +6,11 @@ using OpenMetaverse;
 using OpenSim.Data;
 using OpenSim.Data.Null;
 
+if (args.Length == 5 && args[0] is ("service" or "service-postgres") && ushort.TryParse(args[3], out var port) && port != 0)
+{
+    try { return ServiceCases.Run(args[1], args[2], port, args[4], args[0] == "service-postgres"); }
+    catch (Exception e) { Console.Error.WriteLine($"Presence HTTP oracle failed: {e.GetType().Name}"); return 1; }
+}
 if (args is ["mysql", var mysqlPhase, var mysqlPrefix, "default" or "alternate"])
     return MysqlCross.Run(mysqlPhase, mysqlPrefix, args[3] == "alternate");
 

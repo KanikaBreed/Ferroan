@@ -185,7 +185,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
+| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | READY |
+| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
@@ -199,6 +202,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
+| Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -245,7 +250,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
 | Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
-| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
+| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | DONE (this PR) |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
@@ -763,6 +768,30 @@ The manager approved Q60a through Q60c. Their dependencies and acceptance checks
 
 The manager approved Q60c1 to Q60c3 on 25 November 2026, as proposed above. Q60c1 and Q60c2 are independent; Q61 now waits for Q60c3.
 
+### Q61 proposed split
+
+**BLOCKED, 25 November 2026** (`docs/q61-parcel-properties`). The row is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
+
+The evidence the row asks for is the event element `EndEventToBytes` returns, byte for byte, at three moments. That element is `OpenMetaverse.StructuredData.LLSDxmlEncode2` (libopenmetaverse `OpenMetaverse.StructuredData/LLSD/LLSDxmlEncode.cs`, 972 lines). `EventQueueGetModule.StartEvent` writes `<map><key>message</key>…<key>body</key><map>`, and `GetEvents` wraps the queued elements in `<llsd><map><key>events</key><array>`. The poll id is random, so the compared bytes are the `ParcelProperties` element. Ferroan's queue stores `ferroan_llsd::to_xml` with the `<llsd>` wrapper removed (`crates/ferroan-client/src/event_queue.rs`). Encode2 writes boolean `0`/`1`, `<integer />` for zero, `<uuid />`, `<string />` and `<binary />` for empty values, a uint as little-endian binary, a `Vector3` as an array of reals, and a date as an empty epoch, a date-only day, or `yyyy-MM-ddTHH:mm:ssZ` / `.ffZ`. `ParcelFlags` is a uint. A map passed through `to_xml` cannot match a capture.
+
+`LandObject.SendLandProperties` (`LandObject.cs` 490–525) passes prim capacities, the object bonus and `IEstateModule.GetRegionFlags`. `GetParcelMaxPrimCount` (437) and `GetSimulatorMaxPrimCount` (463) are area × object capacity × object bonus / region area + 0.5, clamped to the region capacity. Object counts come from `PrimCounts`. `LLClientView.SendLandProperties` (6757–6893) writes `ParcelData`, `MediaData`, `ParcelExtendedFlags`, `AgeVerificationBlock`, `ParcelEnvironmentBlock` and `RegionAllowAccessBlock`. `GetRegionFlags` (`EstateManagementModule.cs` 134–191) does not set the four deny bits that method reads (TB152, D108). `RegionAllowAccessOverride` is `!EstateSettings.TaxFree` (6888). Obscure media and music in `MediaData` are hardcoded false; `ParcelExtendedFlags.Flags` is 1 when `ObscureMedia` is set.
+
+The three sends:
+
+1. Arrival. `ScenePresence.CompleteMovement` (2475) calls `sendClientInitialLandInfo` after terrain when the avatar is not an NPC. `LandManagementModule.sendClientInitialLandInfo` (492–507) returns when the presence or the parcel is missing. A child skips properties and can still receive the overlay. Otherwise it sets `currentParcelUUID` and calls `SendLandUpdateToClient`, which is `SendLandProperties(0, false, 0)`, and then the overlay. The initial-data gate (4343) calls the same method with the overlay only when teleport flags are `<= 0`. A login sets `ViaLogin`, so that gate does not send a second body. Q60c3 already carries those flags for the overlay.
+2. Request. `LLClientView.HandleParcelPropertiesRequest` (10874) rounds West, South, East and North into `ClientOnParcelPropertiesRequest` (1594–1646). Empty land, a negative bound or a bound outside the region returns. A span of at most one land unit sends `LAND_RESULT_SINGLE` for that cell. A larger span scans every cell, skips a parcel the agent is banned from, and sends `LAND_RESULT_MULTIPLE` when more than one parcel remains. Every parcel in the reply uses the request's sequence id. Snap with sequence 0 resends `m_lastSeqId` (510–518).
+3. Walk. `EventManagerOnClientMovement` (536–553) runs for a root on movement. When the parcel under the avatar differs from `currentParcelUUID`, it triggers `EventManagerOnAvatarEnteringNewParcel` (449–466). That sends when `GlobalID` differs, then stores the new id. `SendLandUpdate` (510) returns for a child. `EnforceBans` (464) and `SendOutNearestBanLine` (469) are access collisions. `ScenePresence.ParcelCrossCheck` (7405) shows and hides avatars. Neither is this body.
+
+`UpdateLandProperties` (`LandManagementModule.cs` 1648, `LandObject.cs` 528) is the editor. It reads the unsigned power mask through `CanEditParcelProperties`. The send path does not. Q60c1's memberships are the ban test on a multi-cell request. The region guide's sentence that ParcelProperties reads the power mask is recorded in `docs/found/Q61.md`.
+
+Use the Q60b multi-parcel store. A lone stored parcel keeps its old bitmap, area and bounding box while the overlay covers the region (TB97, D80). Q60a asked the properties comparison to notice that. This capture should not be that store.
+
+Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until all three are `DONE`. The delivery part waits for Q60c3. The capture and the encoder do not.
+
+1. **Capture the Pin8 elements** (about a day). On the Q60b store, record the `ParcelProperties` element on arrival, on a one-cell `ParcelPropertiesRequest`, on a span that covers two parcels, and on a walk across a parcel border. Publish those original bytes. When the extractor rebuilds a body, assert first that re-encoding the unredacted original reproduces the captured bytes, as `xtask/src/prim_capture.rs` does, and take the body from the capture. Keep the poll id out of the fixture. No Ferroan sender.
+2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
+3. **Deliver and compare** (about a day, after 1, 2 and Q60c3). Send on arrival, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. Handle `ParcelPropertiesRequest` for one cell, for several parcels, for a banned parcel and for a bound the handler ignores. Send again when a walk changes the parcel `GlobalID`. The bot reads the parcel flags from the arrival element. Live-compare those moments with the capture. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them. Ban lines, ban enforcement and avatar hiding stay out.
+
 ### Q65 split
 
 **BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
@@ -815,7 +844,9 @@ The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 no
 
 Q65c3b's material-override send is independent of both items.
 
-**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child. Q65d2 owns the 500-part load.
+**Q65d1 — DONE (#304)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child.
+
+**Q65d2 — DONE (this PR)** on `feat/q65d2-prim-load`. Both viewers received all 500 parts at 512,000 bit/s. The [receipts](fixtures/prim-load/README.md) record first deliveries and repeats. The mapped block bytes matched and the Ferroan entity queue recorded no new refusals or drops.
 
 ### Q76 object-crossing fixture scope
 

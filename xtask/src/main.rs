@@ -142,6 +142,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
        cargo xtask presence cross mysql
@@ -185,6 +186,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run parcel-timing grid --physics basicphysics
        cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
+       cargo xtask live run prim-load grid --physics basicphysics
        cargo xtask live run store-handoff grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
@@ -283,6 +285,8 @@ fn main() -> ExitCode {
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "service-generate"] => asset_oracle::presence_service(true),
+        ["presence", "service-verify"] => asset_oracle::presence_service(false),
         ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),

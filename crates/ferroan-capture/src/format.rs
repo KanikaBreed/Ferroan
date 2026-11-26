@@ -92,6 +92,12 @@ fn header_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], FormatError> {
 }
 
 pub fn read_capture(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
+    read_capture_limited(bytes, MAX_RECORDS)
+}
+
+/// Refuse excess records before allocating them for a bounded viewer trace.
+pub fn read_capture_limited(bytes: &[u8], limit: usize) -> Result<Vec<Record>, FormatError> {
+    let limit = limit.min(MAX_RECORDS);
     if bytes.len() < MAGIC.len() {
         return Err(FormatError::Short);
     }
@@ -101,7 +107,7 @@ pub fn read_capture(bytes: &[u8]) -> Result<Vec<Record>, FormatError> {
     let mut i = MAGIC.len();
     let mut records = Vec::new();
     while i < bytes.len() {
-        if records.len() == MAX_RECORDS {
+        if records.len() == limit {
             return Err(FormatError::Count);
         }
         if bytes.len() - i < 13 {
