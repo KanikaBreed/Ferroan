@@ -326,6 +326,9 @@ struct Scene {
     parcel_region: crate::parcels::ParcelRegion,
     /// Groups admitted at startup. The prim tally reads this set.
     groups: Arc<Vec<ObjectGroup>>,
+    /// Prim counts for the admitted groups. Filled on the first element.
+    /// The set does not change after startup.
+    admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -423,6 +426,7 @@ impl TerrainFrame {
             parcel_out: None,
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::clone(&objects.groups),
+            admitted_counts: None,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -1258,11 +1262,18 @@ impl Scene {
     }
 
     /// The element for one parcel: installed region values and the tally of
-    /// admitted groups.
-    fn parcel_element(&self, local_id: i32, parcel_id: Uuid) -> Option<Vec<u8>> {
-        let parcels = self.parcels.as_ref()?;
-        let counts = crate::parcels::prim_counts(parcels, &self.groups);
-        let prims = counts.get(&parcel_id).copied().unwrap_or_default();
+    /// admitted groups. The tally is computed once; the admitted set does not
+    /// change.
+    fn parcel_element(&mut self, local_id: i32, parcel_id: Uuid) -> Option<Vec<u8>> {
+        let parcels = Arc::clone(self.parcels.as_ref()?);
+        if self.admitted_counts.is_none() {
+            self.admitted_counts = Some(crate::parcels::prim_counts(&parcels, &self.groups));
+        }
+        let prims = self
+            .admitted_counts
+            .as_ref()
+            .and_then(|counts| counts.get(&parcel_id).copied())
+            .unwrap_or_default();
         parcels.parcel_properties(local_id, &self.parcel_region.element(prims))
     }
 
@@ -2114,6 +2125,7 @@ mod tests {
             parcel_out: None,
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::default(),
+            admitted_counts: None,
         }
     }
 
