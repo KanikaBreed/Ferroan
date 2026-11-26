@@ -24,25 +24,37 @@
 //! `ScenePresence.cs` lines 1141–1143 and 3953–3955). The vector is rotated
 //! by the body, flattened to yaw when not flying, scaled, and multiplied by
 //! four while flying. Flying into the ground (the last step was colliding and
-//! the command's Z is negative) zeros the whole command instead; the animator
-//! lands in a later row (`AddNewMovement`, lines 3987–4048). Releasing the keys
-//! on the ground or in the air leaves that command for 250 ms. Stop replaces
-//! it immediately, at 0.2 times 4.096.
+//! the command's Z is negative) zeros the whole command instead, and the
+//! animator lands it (`AddNewMovement`, lines 3987–4048). On the ground an up
+//! or a downward result adds no Z; while falling, a stop with no direction
+//! brakes Z. `AddNewMovement` then runs the animator ([`crate::animation`]).
+//! Releasing the keys on the surface or in flight leaves that command for
+//! 250 ms; in any other motion state (landing, jumping, falling) the release
+//! stops at once. Stop replaces it immediately, at 0.2 times 4.096. A packet
+//! that changes no movement but holds finish-anim runs the animator alone.
+//! Sitting on the ground and standing set their animations.
 //!
 //! A camera-only update stores the far plane of the last movement-significant
 //! update: `LLClientView` passes its stored arguments, and only the movement
 //! branch copies `Far` into them (lines 8870–8894). Packet times are the
 //! monotonic [`clock_ms`], as `Util.GetTimeStampMS` is a stopwatch.
 //!
-//! The frame tick integrates this command (`walk`). Terse updates, the camera
-//! ray, scripted control grabs, the hide-title broadcast, and the animation
-//! machine stay later rows. The animator starts on the surface, so a key
-//! release takes the 250 ms path. The avatar counts as on the ground when it
-//! is not flying. Move-to-target stays off: neither of these packets starts it.
+//! The frame tick integrates this command (`walk`) and runs the animator on
+//! every second heartbeat. "Colliding" is the stand-in's ground contact from
+//! the last step; a new actor (an arrival, a local teleport, standing up) has
+//! none until its first step. The camera ray, scripted control grabs and the
+//! hide-title broadcast stay later rows. Move-to-target stays off: neither of
+//! these packets starts it.
 
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use uuid::Uuid;
+
+use crate::animation::{
+    Actor, AnimationTransfer, Animator, Inputs, MOTION_FALLING, MOTION_FLYING, MOTION_ON_SURFACE,
+    Update,
+};
 use crate::frame::Presence;
 
 /// `Scene.m_maxDrawDistance`, the shipped default (`[Startup] MaxDrawDistance`
@@ -223,8 +235,9 @@ pub struct Motion {
     pub needs_camera_collision: bool,
 }
 
-/// The movement fields of a returning `UpdateAgent` (`AgentData.Unpack`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The movement fields of a returning `UpdateAgent` (`AgentData.Unpack`),
+/// and the animator fields `CopyFrom` takes.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReturnData {
     pub velocity: [f32; 3],
     pub far: f32,
@@ -232,6 +245,7 @@ pub struct ReturnData {
     pub head_rotation: [f32; 4],
     pub control_flags: u32,
     pub always_run: bool,
+    pub animations: AnimationTransfer,
 }
 
 /// Whether a packet was kept, and which half of it changed the record.
@@ -259,7 +273,7 @@ struct Filter {
     camera_up: [f32; 3],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Body {
     motion: Motion,
     filter: Filter,
@@ -282,6 +296,10 @@ pub(crate) struct Body {
     /// normalised. `CameraAtAxis.Normalize()` (line 3043) runs on a copy of
     /// the auto-property and changes nothing (TB86).
     camera_at_axis: [f32; 3],
+    /// `ScenePresence.Animator`.
+    animator: Animator,
+    /// `Scene.m_useFlySlow`.
+    fly_slow: bool,
 }
 
 impl Body {
@@ -339,6 +357,76 @@ impl Body {
             // Direct steps in tests have an actor. A login pose holds it.
             actor: true,
             camera_at_axis: [0.0, 0.0, 0.0],
+            animator: Animator::new(Uuid::nil()),
+            fly_slow: false,
+        }
+    }
+
+    /// `[Startup] enableflyslow`: flying with a direction plays `FLYSLOW`.
+    pub(crate) fn set_fly_slow(&mut self, fly_slow: bool) {
+        self.fly_slow = fly_slow;
+    }
+
+    /// The agent a movement animation names as its object.
+    pub(crate) fn set_agent(&mut self, agent: Uuid) {
+        self.animator.set_owner(agent);
+    }
+
+    pub(crate) fn animator(&self) -> &Animator {
+        &self.animator
+    }
+
+    /// Whether C# would have sent the animation pack since the last call.
+    /// The packet is P2.3b2.
+    #[cfg(test)]
+    pub(crate) fn take_animation_pack(&mut self) -> bool {
+        self.animator.take_pack_due()
+    }
+
+    /// `MakeChildAgent`'s `ResetAnimations`.
+    pub(crate) fn reset_animations(&mut self) {
+        self.animator.reset();
+    }
+
+    /// What the animator reads now. The actor is the physics actor: none
+    /// while sitting on the ground, away, or before the arrival.
+    fn animator_inputs(&self, now_ms: u64) -> Inputs {
+        let actor = (!self.seated && !self.child && self.actor).then_some(Actor {
+            flying: self.motion.flying,
+            colliding: self.colliding,
+            velocity_z: self.physics_velocity[2],
+        });
+        Inputs {
+            sit_ground: self.motion.sit_ground,
+            control_flags: self.motion.control_flags,
+            actor,
+            stop_active: self.motion.stop_active,
+            always_run: self.motion.always_run,
+            fly_slow: self.fly_slow,
+            now_ms: i64::try_from(now_ms).unwrap_or(i64::MAX),
+        }
+    }
+
+    /// `UpdateMovementAnimations`. Holding down onto the ground while flying
+    /// lands, and the actor stops flying.
+    pub(crate) fn animate(&mut self, now_ms: u64) -> Update {
+        let inputs = self.animator_inputs(now_ms);
+        let update = self.animator.update(&inputs);
+        self.land(update);
+        update
+    }
+
+    /// `RegionHeartbeatEnd` for a root presence.
+    pub(crate) fn heartbeat(&mut self, now_ms: u64) -> Update {
+        let inputs = self.animator_inputs(now_ms);
+        let update = self.animator.heartbeat(&inputs);
+        self.land(update);
+        update
+    }
+
+    fn land(&mut self, update: Update) {
+        if update.land {
+            self.motion.flying = false;
         }
     }
 
@@ -360,6 +448,35 @@ impl Body {
 
     pub(crate) fn set_actor(&mut self, actor: bool) {
         self.actor = actor;
+    }
+
+    /// `AddToPhysicalScene` on arrival: a new actor, which has not collided yet.
+    pub(crate) fn new_actor(&mut self) {
+        self.actor = true;
+        self.colliding = false;
+    }
+
+    /// A local teleport replaces the actor (`TeleportWithMomentum`): the new
+    /// one has not collided yet.
+    pub(crate) fn clear_contact(&mut self) {
+        self.colliding = false;
+    }
+
+    /// `StandUp`: a ground sitter gets a new actor, not flying and not yet
+    /// colliding. `STAND` is set either way.
+    pub(crate) fn stand_up(&mut self) {
+        if self.seated {
+            self.motion.flying = false;
+            self.colliding = false;
+        }
+        self.motion.sit_ground = false;
+        self.seated = false;
+        self.animator.stand_up();
+    }
+
+    /// `IsSitting`: on the ground here; nothing sits on an object yet.
+    pub(crate) fn is_sitting(&self) -> bool {
+        self.motion.sit_ground
     }
 
     pub(crate) fn view(&self) -> Motion {
@@ -405,6 +522,7 @@ impl Body {
         self.motion.control_flags = data.control_flags;
         pose.control_flags = data.control_flags;
         self.motion.always_run = data.always_run;
+        self.animator.copy_from(&data.animations);
         self.motion.flying = data.control_flags & CONTROL_FLY != 0;
     }
 
@@ -479,9 +597,10 @@ impl Body {
         self.motion.state = update.state;
 
         // An experience-held seat would refuse the stand. This row has none.
+        // `StandUp` gives a ground sitter a new actor, not flying and not
+        // yet colliding, and always sets `STAND`.
         if update.control_flags & CONTROL_STAND_UP != 0 {
-            self.motion.sit_ground = false;
-            self.seated = false;
+            self.stand_up();
         }
         if update.control_flags & CONTROL_SIT_ON_GROUND != 0 {
             self.motion.sit_ground = true;
@@ -490,6 +609,7 @@ impl Body {
             self.motion.target_velocity = [0.0, 0.0, 0.0];
             self.physics_velocity = [0.0, 0.0, 0.0];
             pose.velocity = [0.0, 0.0, 0.0];
+            self.animator.sit_on_ground();
         }
 
         self.motion.control_flags = update.control_flags;
@@ -564,22 +684,34 @@ impl Body {
                 let step = roll_reset(self.motion.angular_velocity[2], FLY_ROLL_RESET);
                 self.motion.angular_velocity[2] += step;
             }
-        } else if command[2] < 0.0 {
+        } else if self.colliding && command[2] < 0.0 {
             // On the ground, a downward control does not enter the command.
             command[2] = 0.0;
         }
 
         if !changed {
+            if update.control_flags & CONTROL_FINISH_ANIM != 0 {
+                self.animate(update.now_ms);
+            }
             return;
         }
+        let state = self.animator.state();
         if self.motion.stop_active {
-            // Falling would pass the breaking flag. The animator still says
-            // the avatar is on the surface, so the stop is the slow command.
-            self.add_new_movement(command, STOP_SPEED, update.body_rotation);
+            // A stop with no direction while falling brakes the fall.
+            let breaking = movement_flags == 0 && state == MOTION_FALLING;
+            self.add_new_movement(
+                command,
+                STOP_SPEED,
+                update.body_rotation,
+                breaking,
+                update.now_ms,
+            );
             return;
         }
-        if movement_flags != 0 {
-            self.add_new_movement(command, speed, update.body_rotation);
+        // Off the surface and not flying (landing, jumping, falling), a
+        // release stops at once. Otherwise it waits 250 ms.
+        if (state != MOTION_FLYING && state != MOTION_ON_SURFACE) || movement_flags != 0 {
+            self.add_new_movement(command, speed, update.body_rotation, false, update.now_ms);
         } else {
             self.motion.delayed_stop_ms = (now as i64).saturating_add(STOP_HOLD_MS);
         }
@@ -605,7 +737,14 @@ impl Body {
         pose.draw_distance = far;
     }
 
-    fn add_new_movement(&mut self, command: [f32; 3], speed: f32, body: [f32; 4]) {
+    fn add_new_movement(
+        &mut self,
+        command: [f32; 3],
+        speed: f32,
+        body: [f32; 4],
+        breaking: bool,
+        now_ms: u64,
+    ) {
         self.motion.delayed_stop_ms = -1;
         let mut rotation = body;
         if !self.motion.flying {
@@ -618,20 +757,28 @@ impl Body {
             direc[2] = 0.0;
         }
         direc = scale3(direc, speed);
-        // Flying into the ground zeros the whole command. The animator lands
-        // in a later row. Otherwise flying is scaled by four. On the ground an
-        // up or a downward result contributes no Z: the jump itself is the animator's.
-        if self.motion.flying {
+        // Falling, a brake tells physics to stop on Z. Flying into the ground
+        // zeros the whole command and the animator lands. Otherwise flying is
+        // scaled by four. On the ground an up or a downward result
+        // contributes no Z: the jump itself is the animator's.
+        if self.animator.state() == MOTION_FALLING {
+            if breaking {
+                direc[2] = -9999.0;
+            }
+        } else if self.motion.flying {
             if self.colliding && direc[2] < 0.0 {
                 direc = [0.0, 0.0, 0.0];
             } else {
                 direc = scale3(direc, FLY_SPEED_SCALE);
             }
-        } else if self.motion.control_flags & CONTROL_UP_POS != 0 || direc[2] < 0.0 {
+        } else if self.colliding
+            && (self.motion.control_flags & CONTROL_UP_POS != 0 || direc[2] < 0.0)
+        {
             direc[2] = 0.0;
         }
         self.motion.target_velocity = direc;
         self.physics_velocity = direc;
+        self.animate(now_ms);
     }
 
     /// One tick. A seated avatar, a child, and a pose that the arrival packet
@@ -675,6 +822,8 @@ impl Body {
             self.motion.target_velocity = [0.0, 0.0, 0.0];
             self.physics_velocity = [0.0, 0.0, 0.0];
             pose.velocity = [0.0, 0.0, 0.0];
+            // `AddNewMovement(Vector3.Zero, 0)` ends in the animator.
+            self.animate(now_ms);
         }
     }
 }
@@ -1268,6 +1417,7 @@ mod tests {
                 head_rotation: [0.0, 0.0, 0.5, 0.5],
                 control_flags: CONTROL_FLY,
                 always_run: true,
+                animations: crate::animation::AnimationTransfer::default(),
             },
             &mut pose,
         );
@@ -1287,6 +1437,7 @@ mod tests {
                 head_rotation: [0.0, 0.0, 0.0, 1.0],
                 control_flags: 0,
                 always_run: false,
+                animations: crate::animation::AnimationTransfer::default(),
             },
             &mut pose,
         );
@@ -1456,6 +1607,285 @@ mod tests {
         body.apply(&update(1_200, 2, down), &mut pose);
         assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
         assert_eq!(body.physics_velocity, [0.0, 0.0, 0.0]);
+    }
+
+    /// One frame on flat ground 21, then the heartbeat's end.
+    fn frame_at(body: &mut Body, pose: &mut Presence, now_ms: u64) {
+        body.step_physics(pose, 21.0, 256.0, 256.0, crate::frame::FRAME_TIME, now_ms);
+        body.heartbeat(now_ms);
+    }
+
+    fn movement(body: &Body) -> crate::animation::Movement {
+        body.animator().current()
+    }
+
+    #[test]
+    fn walk_and_run_start_on_the_packet_once_the_actor_is_on_the_ground() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        // A new actor has not collided: the packet leaves the state alone.
+        body.apply(&update(1_000, 1, CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+        // The step lands it; the second heartbeat walks it.
+        frame_at(&mut body, &mut pose, 1_090);
+        assert_eq!(movement(&body), Movement::Stand);
+        frame_at(&mut body, &mut pose, 1_180);
+        assert_eq!(movement(&body), Movement::Walk);
+
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        body.set_always_run(true);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::Run);
+        // The release waits for the heartbeat on the surface.
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        assert_eq!(movement(&body), Movement::Run);
+        assert!(body.view().delayed_stop_ms > 0);
+        frame_at(&mut body, &mut pose, 1_180);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    #[test]
+    fn holding_down_onto_the_ground_lands_and_stops_flying() {
+        use crate::animation::{MOTION_LANDING, MOTION_ON_SURFACE, Movement};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        // Fly with no direction takes the delayed path; the heartbeat hovers.
+        body.apply(&update(1_000, 1, CONTROL_FLY), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+        frame_at(&mut body, &mut pose, 1_000);
+        frame_at(&mut body, &mut pose, 1_000);
+        assert_eq!(movement(&body), Movement::Hover);
+        let down = CONTROL_FLY | CONTROL_UP_NEG;
+        body.apply(&update(1_010, 2, down), &mut pose);
+        assert_eq!(movement(&body), Movement::HoverDown);
+        assert!(body.view().target_velocity[2] < 0.0);
+        // Down at four times the walk speed until the stand-in snaps to the ground.
+        let mut now = 1_010;
+        while !body.colliding {
+            now += 91;
+            body.step_physics(&mut pose, 21.0, 256.0, 256.0, crate::frame::FRAME_TIME, now);
+            assert!(now < 2_000, "the flight did not reach the ground");
+        }
+        assert!(body.flying());
+        body.apply(&update(now + 10, 3, down), &mut pose);
+        assert_eq!(movement(&body), Movement::Land);
+        assert_eq!(body.animator().state(), MOTION_LANDING);
+        assert!(!body.flying(), "the animator lands the actor");
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        // The land holds no time: the next update stands.
+        body.apply(&update(now + 20, 4, 0), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+        assert_eq!(body.animator().state(), MOTION_ON_SURFACE);
+    }
+
+    #[test]
+    fn a_flight_released_in_the_air_lands_on_the_heartbeat() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        pose.position[2] = 40.0;
+        let mut body = Body::new(&pose);
+        body.apply(&update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::Fly);
+        frame_at(&mut body, &mut pose, 1_090);
+        assert!(!body.colliding);
+        // Fly off: the step snaps to the ground.
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        assert!(!body.flying());
+        frame_at(&mut body, &mut pose, 1_180);
+        assert!(body.colliding);
+        assert_eq!(movement(&body), Movement::Land);
+        frame_at(&mut body, &mut pose, 1_270);
+        assert_eq!(movement(&body), Movement::Land);
+        frame_at(&mut body, &mut pose, 1_360);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    #[test]
+    fn a_release_off_the_surface_stops_at_once() {
+        use crate::animation::{MOTION_PREJUMPING, Movement};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(
+            &update(1_050, 1, CONTROL_UP_POS | CONTROL_AT_POS),
+            &mut pose,
+        );
+        assert_eq!(movement(&body), Movement::PreJump);
+        assert_eq!(body.animator().state(), MOTION_PREJUMPING);
+        // No jump impulse on the stand-in: an up on the ground adds no Z.
+        assert_eq!(body.view().target_velocity[2], 0.0);
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(body.view().delayed_stop_ms, -1);
+        // 450 ms after the prejump the jump starts, and 1575 ms after it lands.
+        frame_at(&mut body, &mut pose, 1_499);
+        frame_at(&mut body, &mut pose, 1_499);
+        assert_eq!(movement(&body), Movement::PreJump);
+        frame_at(&mut body, &mut pose, 1_500);
+        frame_at(&mut body, &mut pose, 1_500);
+        assert_eq!(movement(&body), Movement::Jump);
+        frame_at(&mut body, &mut pose, 2_626);
+        frame_at(&mut body, &mut pose, 2_626);
+        assert_eq!(movement(&body), Movement::Land);
+        frame_at(&mut body, &mut pose, 2_700);
+        frame_at(&mut body, &mut pose, 2_700);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    #[test]
+    fn sitting_on_the_ground_and_standing_set_the_animation() {
+        use crate::animation::{Movement, STAND, default_animation};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_SIT_ON_GROUND), &mut pose);
+        assert_eq!(movement(&body), Movement::SitGround);
+        assert_eq!(
+            body.animator().animations().default_animation().animation,
+            default_animation("SIT_GROUND_CONSTRAINED").unwrap()
+        );
+        // The heartbeat skips a ground sitter.
+        frame_at(&mut body, &mut pose, 1_100);
+        frame_at(&mut body, &mut pose, 1_200);
+        assert_eq!(movement(&body), Movement::SitGround);
+        body.apply(&update(1_250, 2, CONTROL_STAND_UP), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+        assert_eq!(
+            body.animator().animations().default_animation().animation,
+            STAND
+        );
+        // The new actor has not collided yet.
+        assert!(!body.colliding);
+    }
+
+    /// A body on the ground that a returning `UpdateAgent` left falling.
+    fn falling_on_the_ground() -> (Body, Presence) {
+        use crate::animation::{AnimationTransfer, MOTION_FALLING};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        assert!(body.colliding);
+        body.apply_return(
+            &ReturnData {
+                velocity: [0.0, 0.0, 0.0],
+                far: 128.0,
+                body_rotation: [0.0, 0.0, 0.0, 1.0],
+                head_rotation: [0.0, 0.0, 0.0, 1.0],
+                control_flags: 0,
+                always_run: false,
+                animations: AnimationTransfer {
+                    motion_state: MOTION_FALLING,
+                    ..AnimationTransfer::default()
+                },
+            },
+            &mut pose,
+        );
+        assert_eq!(body.animator().state(), MOTION_FALLING);
+        (body, pose)
+    }
+
+    /// A finish-anim packet with nothing else changed still runs the
+    /// animator (`HandleAgentUpdate`'s `AGENT_CONTROL_FINISH_ANIM` branch),
+    /// which skips the landing hold. A held movement flag would take the
+    /// `AddNewMovement` path instead, so the packet holds only the flag.
+    #[test]
+    fn a_finish_anim_packet_runs_the_animator_and_ends_the_landing() {
+        use crate::animation::Movement;
+        let (mut body, mut pose) = falling_on_the_ground();
+        frame_at(&mut body, &mut pose, 1_090);
+        // The landing holds for 600 ms.
+        assert_eq!(movement(&body), Movement::Land);
+        body.apply(&update(1_100, 1, CONTROL_FINISH_ANIM), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    /// A stop with no direction while falling brakes on Z.
+    #[test]
+    fn a_stop_while_falling_brakes_the_fall() {
+        let (mut body, mut pose) = falling_on_the_ground();
+        body.apply(&update(1_050, 1, CONTROL_STOP), &mut pose);
+        assert_eq!(body.view().target_velocity[2], -9999.0);
+    }
+
+    /// Only a colliding actor drops a downward command on the ground.
+    #[test]
+    fn the_downward_clamps_apply_only_on_the_ground() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        // A new actor has not collided yet: down enters the command.
+        body.apply(&update(1_000, 1, CONTROL_UP_NEG), &mut pose);
+        assert!(body.view().target_velocity[2] < 0.0);
+
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        assert!(body.colliding);
+        body.apply(
+            &update(1_050, 1, CONTROL_UP_NEG | CONTROL_AT_POS),
+            &mut pose,
+        );
+        assert_eq!(body.view().target_velocity[2], 0.0);
+        assert!(body.view().target_velocity[0] > 0.0);
+    }
+
+    /// The delayed stop is `AddNewMovement(Vector3.Zero, 0)`, which ends in
+    /// the animator: the frame that stops the body also stands it, before
+    /// any heartbeat.
+    #[test]
+    fn the_delayed_stop_runs_the_animator() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::Walk);
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        let deadline = body.view().delayed_stop_ms;
+        assert_eq!(deadline, 1_350);
+        // Steps alone, with no heartbeat: the walk stays until the deadline.
+        let step = |body: &mut Body, pose: &mut Presence, now_ms: u64| {
+            body.step_physics(pose, 21.0, 256.0, 256.0, crate::frame::FRAME_TIME, now_ms);
+        };
+        step(&mut body, &mut pose, 1_350);
+        assert_eq!(movement(&body), Movement::Walk);
+        step(&mut body, &mut pose, 1_351);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    /// A local teleport stands a ground sitter up first, as
+    /// `TeleportWithMomentum`'s `StandUp(false)` does.
+    #[test]
+    fn standing_up_from_a_ground_sit_clears_the_sit() {
+        use crate::animation::{Movement, STAND};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_SIT_ON_GROUND), &mut pose);
+        assert!(body.is_sitting());
+        body.stand_up();
+        assert!(!body.is_sitting());
+        assert!(!body.seated);
+        assert_eq!(movement(&body), Movement::Stand);
+        assert_eq!(
+            body.animator().animations().default_animation().animation,
+            STAND
+        );
+        assert!(!body.colliding && !body.flying());
+    }
+
+    #[test]
+    fn the_region_fly_slow_setting_reaches_the_animator() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        pose.position[2] = 40.0;
+        let mut body = Body::new(&pose);
+        body.set_fly_slow(true);
+        body.apply(&update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::FlySlow);
     }
 
     #[test]

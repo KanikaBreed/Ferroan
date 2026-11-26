@@ -165,7 +165,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | DONE (this PR) |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | DONE (this PR) |
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | DONE (this PR) |
-| Q49 | P2.3b1: the animation state machine | READY after Q46b and Q48 |
+| Q49 | P2.3b1: the animation state machine | DONE (this PR) |
 | Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |

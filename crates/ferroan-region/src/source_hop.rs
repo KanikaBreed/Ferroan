@@ -49,9 +49,9 @@
 //! asked when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -68,8 +68,7 @@ use crate::config::RegionConfig;
 use crate::grid::{GridClient, GridError, LocatedRegion};
 use crate::simulation::SimulationState;
 use crate::simulation_client::{
-    AccessQuery, AgentData, Appearance, Circuit, RegionEnd, SimulationClient, TransferAnimations,
-    TransferContext,
+    AccessQuery, AgentData, Appearance, Circuit, RegionEnd, SimulationClient, TransferContext,
 };
 
 /// One accepted root, plus the region it is leaving.
@@ -88,7 +87,6 @@ struct HopSession {
     channel: String,
     mac: String,
     id0: String,
-    animations: Arc<Mutex<TransferAnimations>>,
     service_urls: Vec<(String, String)>,
     appearance: Option<Appearance>,
 }
@@ -375,7 +373,6 @@ pub struct HopLogin {
     pub channel: String,
     pub mac: String,
     pub id0: String,
-    pub animations: Arc<Mutex<TransferAnimations>>,
     pub service_urls: Vec<(String, String)>,
     pub appearance: Option<Appearance>,
 }
@@ -467,7 +464,6 @@ impl HopEnv {
             channel: login.channel,
             mac: login.mac,
             id0: login.id0,
-            animations: login.animations,
             service_urls: login.service_urls,
             appearance: login.appearance,
         };
@@ -905,10 +901,9 @@ fn agent_update(
     callback: Option<String>,
 ) -> AgentData {
     let (at_axis, left_axis, up_axis) = look_axes(request.look_at);
-    let animations = session
-        .animations
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+    // `CopyTo`: the frame's animator when the hop started. C# freezes the
+    // movement animation while the avatar is in transit.
+    let animations = &request.pose.animations;
     AgentData {
         region_id: session.source.region_id,
         circuit_code: session.circuit_code,
@@ -937,10 +932,10 @@ fn agent_update(
         active_group_id: Uuid::nil(),
         active_group_name: String::new(),
         active_group_title: None,
-        animations: animations.extra.clone(),
+        animations: animations.animations.clone(),
         agent_access: 0,
-        default_animation: Some(animations.default_animation),
-        animation_state: Some(animations.animation_state),
+        default_animation: animations.default_animation,
+        animation_state: animations.animation_state,
         motion_state: i32::from(animations.motion_state),
         appearance: None,
         sit_offset: [0.0; 3],
@@ -1100,7 +1095,6 @@ mod tests {
             channel: "Ferroan Bot".to_string(),
             mac: "aabb".to_string(),
             id0: "ccdd".to_string(),
-            animations: Default::default(),
             service_urls: vec![("HomeURI".into(), "/".into())],
             appearance: Some(crate::simulation_client::Appearance {
                 serial: 1,
@@ -1510,7 +1504,11 @@ mod tests {
             object_id: Uuid::from_u128(8),
             sequence: 3,
         };
-        session.animations.lock().unwrap().extra.push(extra);
+        let walk = crate::simulation_client::Anim {
+            animation: Uuid::from_u128(0x6ed24bd8_91aa_4b12_ccc7_c97c857ab4e0),
+            object_id: session.agent_id,
+            sequence: 875_949,
+        };
         let request = ferroan_client::HopRequest {
             agent_id: session.agent_id,
             session_id: session.session_id,
@@ -1521,12 +1519,21 @@ mod tests {
             client_ip: "127.0.0.1".into(),
             pose: ferroan_client::HopPose {
                 always_run: true,
+                animations: ferroan_client::AgentAnimations {
+                    animations: vec![extra],
+                    default_animation: Some(walk),
+                    animation_state: Some(walk),
+                    motion_state: 6,
+                },
                 ..Default::default()
             },
         };
         let data = super::agent_update(&session, &request, request.position, None);
         assert!(data.always_run);
         assert_eq!(data.animations, [extra]);
+        assert_eq!(data.default_animation, Some(walk));
+        assert_eq!(data.animation_state, Some(walk));
+        assert_eq!(data.motion_state, 6);
     }
 
     #[tokio::test]

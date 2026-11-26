@@ -482,7 +482,7 @@ pub(super) fn compare_avatars(directory: &Path) -> Result<String, String> {
         chat,
     )?;
     Ok(format!(
-        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked, and {names} UUIDNameReply (each bot's name, and the unknown id's cached miss) match fixtures/avatars/names.cap byte for byte; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# can also send the kill to the leaving viewer after its LogoutReply (TB87, racing the circuit close; {} kill(s) in the C# capture), and AvatarAnimation is P2.3b1",
+        "{minimap}\navatar bytes: {} full ObjectUpdate, {} AvatarAppearance and {} KillObject match the C# capture with local ids masked, and {names} UUIDNameReply (each bot's name, and the unknown id's cached miss) match fixtures/avatars/names.cap byte for byte; Z and the collision plane are folded (absolute Z: the home store has no terrain row; relative Z: C#'s landing ray cast stacks the newcomer on the other avatar and the stand-in has none; plane: the stand-in sets none); known differences: C# can also send the kill to the leaving viewer after its LogoutReply (TB87, racing the circuit close; {} kill(s) in the C# capture), and AvatarAnimation is P2.3b2",
         ferroan.fulls.len(),
         ferroan.appearances.len(),
         kills.len(),

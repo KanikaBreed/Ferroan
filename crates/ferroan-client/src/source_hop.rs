@@ -55,6 +55,7 @@ use ferroan_protocol::msgs::{MapBlockReply, map_block_reply};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::agent_animations::AgentAnimations;
 use crate::teleport::{IS_FLYING, VIA_LOCATION};
 
 /// `TeleportFinishEvent` stores this access byte. The caller passes 13.
@@ -125,13 +126,15 @@ fn u32_binary(value: u32) -> Llsd {
     Llsd::Binary(value.to_be_bytes().to_vec())
 }
 
-/// Camera and body from the last viewer update. Rotations start as identity.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Camera and body from the last viewer update, and the frame's animator
+/// for `CopyTo`. Rotations start as identity, the animator standing.
+#[derive(Clone, Debug, PartialEq)]
 pub struct HopPose {
     pub always_run: bool,
     pub center: [f32; 3],
     pub head_rotation: [f32; 4],
     pub body_rotation: [f32; 4],
+    pub animations: AgentAnimations,
 }
 
 impl Default for HopPose {
@@ -141,6 +144,7 @@ impl Default for HopPose {
             center: [0.0; 3],
             head_rotation: [0.0, 0.0, 0.0, 1.0],
             body_rotation: [0.0, 0.0, 0.0, 1.0],
+            animations: AgentAnimations::standing(),
         }
     }
 }

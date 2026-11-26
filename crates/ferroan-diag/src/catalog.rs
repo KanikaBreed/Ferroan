@@ -91,6 +91,7 @@ pub const OBJECT_MATERIAL_NOTATION_BYTES: &str = "object.material-notation-bytes
 pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";
 pub const REGION_ENTITY_UPDATES: &str = "region.entity-updates";
 pub const REGION_AVATAR_PACKETS: &str = "region.avatar-packets";
+pub const REGION_AGENT_ANIMATIONS: &str = "region.agent-animations";
 pub const REGION_NAME_LOOKUPS: &str = "region.name-lookups";
 pub const REGION_NAME_CIRCUIT_LOOKUPS: &str = "region.name-circuit-lookups";
 pub const REGION_NAME_CACHE: &str = "region.name-cache";
