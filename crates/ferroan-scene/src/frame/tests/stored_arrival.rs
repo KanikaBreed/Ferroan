@@ -96,6 +96,7 @@ fn batch(feed: &ViewerFeed, count: usize, aliases: &BTreeMap<Uuid, Uuid>, seen: 
             part,
             update,
             queued,
+            ..
         } = next
         else {
             continue;
@@ -253,6 +254,7 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
                 queued,
                 part,
                 update,
+                ..
             }) = feed.take_update()
             else {
                 panic!("missing part")

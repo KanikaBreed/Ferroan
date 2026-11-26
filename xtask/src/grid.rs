@@ -721,11 +721,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "avatars"
                 | "neighbour"
                 | "walk"
+                | "prim-arrival"
                 | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival and report scenarios"
                 .to_string(),
         );
     }
@@ -1251,7 +1252,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let fixture = prim_capture::extract(&root)?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "prim-arrival" {
-        let fixture = prim_arrival::extract(&root, &home_log).map_err(|e| e.to_string())?;
+        let fixture =
+            prim_arrival::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "report" {
         // The capture still has to pass check, redact and replay. Its packet

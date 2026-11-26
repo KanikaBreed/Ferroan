@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Join the two observers' receipts to the Pin8 server capture before redaction.
+//! Join the two observers' receipts to the region socket capture before redaction.
 //! Pin8 c401bceecd1684832ae8ba86a31b5ee01a4ded7b,
 //! Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs, ProcessEntityUpdates.
 
@@ -159,17 +159,19 @@ fn match_window(server: &[Record], viewers: [Vec<Record>; 2]) -> Result<[Vec<Rec
                 Some([inside, outside]) if *inside > 0 && *outside > 0 => {
                     return Err("identical datagram on both sides of the capture boundary".into());
                 }
-                _ => return Err("viewer datagram has no matching Pin8 occurrence".into()),
+                _ => return Err("viewer datagram has no matching region occurrence".into()),
             }
         }
     }
     if counts.values().any(|c| c[0] != 0) {
-        return Err("missing viewer receipt for a Pin8 datagram inside the arrival window".into());
+        return Err(
+            "missing viewer receipt for a region datagram inside the arrival window".into(),
+        );
     }
     Ok(matched)
 }
 
-pub(super) fn extract(run: &Path, home_log: &Path) -> Result<String> {
+pub(super) fn extract(run: &Path, home_log: &Path, ferroan: bool) -> Result<String> {
     let map: serde_json::Value =
         serde_json::from_str(include_str!("../../fixtures/prim-updates/map.json"))?;
     let mut aliases = BTreeMap::new();
@@ -201,6 +203,13 @@ pub(super) fn extract(run: &Path, home_log: &Path) -> Result<String> {
             return Err("unexpected viewer datagram".into());
         };
     }
+    if ferroan {
+        let reference = [
+            read_capture(include_bytes!("../../fixtures/prim-arrival/control.cap"))?,
+            read_capture(include_bytes!("../../fixtures/prim-arrival/limited.cap"))?,
+        ];
+        return compare_arrival(&reference, &circuits);
+    }
     let report = replay(&circuits)?;
     let dir = run.join("prim-arrival");
     fs::create_dir_all(&dir)?;
@@ -211,6 +220,121 @@ pub(super) fn extract(run: &Path, home_log: &Path) -> Result<String> {
     Ok(format!(
         "prim-arrival: two Pin8 circuits, matching part and parent IDs, Task delayed and resumed; fixture in {}",
         dir.display()
+    ))
+}
+
+/// Compare first deliveries and circuit-relative times. Absolute local IDs,
+/// the order of unrelated parts and terse grouping can vary at every start.
+#[derive(Default)]
+struct Arrival {
+    ids: BTreeMap<Uuid, u32>,
+    batches: Vec<usize>,
+    constrained: Vec<usize>,
+    first: Option<u64>,
+    restored: Option<u64>,
+    last: u64,
+}
+
+fn arrival(records: &[Record]) -> Result<Arrival> {
+    let mut result = Arrival::default();
+    let mut constrained = false;
+    for record in records {
+        let packet = parse_packet(&record.bytes)?;
+        if packet.id == AgentThrottle::ID {
+            if constrained {
+                result.restored = Some(record.time_ms);
+            }
+            constrained = packet
+                .decode::<AgentThrottle>()?
+                .throttle
+                .throttles
+                .get(16..20)
+                == Some(8000f32.to_le_bytes().as_slice());
+        } else if packet.id == ObjectUpdate::ID {
+            let mut firsts = 0;
+            for block in packet.decode::<ObjectUpdate>()?.object_data {
+                if block.p_code != 47 && result.ids.insert(block.full_id, block.id).is_none() {
+                    result.first.get_or_insert(record.time_ms);
+                    result.last = record.time_ms;
+                    firsts += 1;
+                }
+            }
+            if firsts > 0 {
+                result.batches.push(firsts);
+                if constrained {
+                    result.constrained.push(firsts);
+                }
+            }
+        }
+    }
+    let base = *result.ids.values().min().ok_or("no first prims")?;
+    for id in result.ids.values_mut() {
+        *id -= base;
+    }
+    Ok(result)
+}
+
+fn compare_arrival(reference: &[Vec<Record>; 2], live: &[Vec<Record>; 2]) -> Result<String> {
+    // Both streams must independently satisfy the link, reliability, throttle
+    // and moving peer checks before comparing their stable properties.
+    replay(reference)?;
+    replay(live)?;
+    let mut report = Vec::new();
+    for (i, name) in VIEWERS.iter().enumerate() {
+        let pin = arrival(&reference[i])?;
+        let got = arrival(&live[i])?;
+        if got.ids != pin.ids {
+            return Err(format!("{name}: relative part IDs differ from Pin8").into());
+        }
+        if i == 0 {
+            if got.batches != pin.batches {
+                return Err(format!(
+                    "control: first batches {:?}, Pin8 {:?}",
+                    got.batches, pin.batches
+                )
+                .into());
+            }
+            report.push(format!("control batches {:?}", got.batches));
+        } else {
+            if got.constrained.is_empty()
+                || !got
+                    .constrained
+                    .iter()
+                    .chain(&pin.constrained)
+                    .all(|n| *n == 1)
+            {
+                return Err(format!(
+                    "limited: unexpected constrained batches {:?}",
+                    got.constrained
+                )
+                .into());
+            }
+            let timing = |a: &Arrival| -> Result<(u64, u64)> {
+                let restore = a.restored.ok_or("missing Task restore")?;
+                Ok((
+                    restore
+                        .checked_sub(a.first.ok_or("no initial prim")?)
+                        .ok_or("restore before first prim")?,
+                    a.last
+                        .checked_sub(restore)
+                        .ok_or("no parts outstanding at the restore")?,
+                ))
+            };
+            let (pin_delay, pin_resume) = timing(&pin)?;
+            let (delay, resume) = timing(&got)?;
+            // Allow two 20 ms queue-empty intervals of scheduler variance.
+            if resume > pin_resume + 40 {
+                return Err(format!(
+                    "limited: completion {resume} ms after restore, Pin8 {pin_resume} ms"
+                )
+                .into());
+            }
+            report.push(format!("limited batches of one, constrained {delay} ms (Pin8 {pin_delay}), complete {resume} ms after restore (Pin8 {pin_resume})"));
+        }
+    }
+    Ok(format!(
+        "prim-arrival: matching local-ID offsets, parents and peer movement; {}",
+        report.join("; ")
     ))
 }
 
@@ -226,7 +350,8 @@ fn replay(circuits: &[Vec<Record>; 2]) -> Result<String> {
         let mut avatars = BTreeMap::new();
         let mut throttles = 0;
         let mut first_prim = None;
-        let mut peer_terse = false;
+        let mut first_peer_xy = None;
+        let mut peer_moved = false;
         let mut referenced = BTreeSet::new();
         for record in records {
             let packet = parse_packet(&record.bytes)?;
@@ -306,10 +431,14 @@ fn replay(circuits: &[Vec<Record>; 2]) -> Result<String> {
                 writeln!(text)?;
             } else if packet.id == ImprovedTerseObjectUpdate::ID && record.kind == Kind::UdpOut {
                 write!(text, " terse")?;
-                for (id, avatar, _) in ferroan_bot::terse_in(&packet) {
+                for (id, avatar, position) in ferroan_bot::terse_in(&packet) {
                     if avatar {
                         referenced.insert(id);
-                        peer_terse |= avatars.get(&id) == Some(&(101 - i as u128));
+                        if avatars.get(&id) == Some(&(101 - i as u128)) && position.is_finite() {
+                            let xy = position.truncate();
+                            let first = first_peer_xy.get_or_insert(xy);
+                            peer_moved |= xy.distance_squared(*first) > 0.01;
+                        }
                         write!(text, " avatar@{id}")?;
                     }
                 }
@@ -321,7 +450,7 @@ fn replay(circuits: &[Vec<Record>; 2]) -> Result<String> {
         if ids.len() != PRIM_CAPTURE_COUNT
             || throttles != i + 1
             || !referenced.iter().all(|id| avatars.contains_key(id))
-            || (i == 1 && !peer_terse)
+            || (i == 1 && !peer_moved)
         {
             return Err("incomplete prim arrival, throttle or avatar history".into());
         }
@@ -360,6 +489,52 @@ mod tests {
     #[test]
     fn pin8_prim_arrival_replays_each_viewers_order_and_packet_boundaries() {
         assert_eq!(replay(&circuits()).unwrap(), EXPECTED);
+    }
+
+    #[test]
+    fn live_comparison_accepts_unrelated_part_order_but_detects_late_resumption() {
+        let reference = circuits();
+        let mut changed = reference.clone();
+        for record in &mut changed[0] {
+            let packet = parse_packet(&record.bytes).unwrap();
+            if packet.id == ObjectUpdate::ID {
+                let mut msg = packet.decode::<ObjectUpdate>().unwrap();
+                if msg.object_data.len() >= 6 {
+                    msg.object_data.swap(2, 3);
+                    record.bytes = encoded(&packet, &msg);
+                }
+            }
+        }
+        compare_arrival(&reference, &changed).unwrap();
+        let restore = arrival(&reference[1]).unwrap().restored.unwrap();
+        for record in &mut changed[1] {
+            if record.time_ms > restore {
+                record.time_ms += 200;
+            }
+        }
+        assert!(
+            compare_arrival(&reference, &changed)
+                .unwrap_err()
+                .to_string()
+                .contains("after restore")
+        );
+    }
+
+    #[test]
+    fn stationary_peer_terse_records_do_not_prove_movement() {
+        let mut streams = circuits();
+        for record in &mut streams[1] {
+            let packet = parse_packet(&record.bytes).unwrap();
+            if packet.id != ImprovedTerseObjectUpdate::ID {
+                continue;
+            }
+            let mut msg = packet.decode::<ImprovedTerseObjectUpdate>().unwrap();
+            for block in &mut msg.object_data {
+                block.data[22..30].fill(0);
+            }
+            record.bytes = encoded(&packet, &msg);
+        }
+        assert!(replay(&streams).is_err());
     }
 
     #[test]
@@ -447,7 +622,8 @@ mod tests {
 
     #[test]
     fn moving_one_prim_over_the_datagram_boundary_changes_the_replay() {
-        let mut circuits = circuits();
+        let reference = circuits();
+        let mut circuits = reference.clone();
         let mut batches = circuits[0].iter_mut().filter_map(|record| {
             let packet = parse_packet(&record.bytes).ok()?;
             if packet.id != ObjectUpdate::ID {
@@ -468,6 +644,12 @@ mod tests {
             .insert(0, l_update.object_data.pop().unwrap());
         left.bytes = encoded(&l_packet, &l_update);
         right.bytes = encoded(&r_packet, &r_update);
+        assert!(
+            compare_arrival(&reference, &circuits)
+                .unwrap_err()
+                .to_string()
+                .contains("first batches")
+        );
         assert_ne!(replay(&circuits).unwrap(), EXPECTED);
     }
 }
