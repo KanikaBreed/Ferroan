@@ -89,6 +89,7 @@ jobs:
           cargo xtask presence verify
           cargo xtask access verify
           cargo xtask permissions verify
+          cargo xtask oar-owners verify
       - name: Run the live harness
         run: |
           set -euo pipefail
