@@ -25,6 +25,9 @@ pub enum Flags {
     /// The Pin8 shape, or `grid --region ferroan` without basicphysics.
     /// `parcel-timing` and `parcel-properties` use this.
     ParcelTiming,
+    /// `grid --physics basicphysics`, with or without `--region ferroan`.
+    /// The neighbour stays C#.
+    ChildView,
 }
 
 /// Whether `grid --region ferroan` may run this scenario.
@@ -119,8 +122,9 @@ pub enum Compare {
     /// Walk, texture, inventory, assets and caps use this.
     Region,
     /// A C# run finishes the capture, as [`Compare::Region`] does on C#.
-    /// Build, `all`, child-view, store-handoff, prim-load and the parcel
-    /// overlays use this. Those rows deny the Ferroan region.
+    /// Build, `all`, store-handoff, prim-load and the parcel overlays use
+    /// this. Those rows deny the Ferroan region. Child-view uses it too, and
+    /// its home region may be Ferroan.
     Finish,
 }
 
@@ -346,8 +350,10 @@ const HELP_STORE_HANDOFF: &str =
 const HELP_PRIM_CAPTURE: &str =
     "       cargo xtask live run prim-capture grid --physics basicphysics\n";
 
-const HELP_CHILD_VIEW: &str =
-    "       cargo xtask live run child-view grid --physics basicphysics\n";
+const HELP_CHILD_VIEW: &str = concat!(
+    "       cargo xtask live run child-view grid --physics basicphysics\n",
+    "       cargo xtask live run child-view grid --region ferroan --physics basicphysics\n",
+);
 
 const HELP_PRIM_ARRIVAL: &str = concat!(
     "       cargo xtask live run prim-arrival grid --region ferroan\n",
@@ -542,7 +548,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "animations",
         Flags::Pin8OrFerroan,
-        Ferroan::Allow(21),
+        Ferroan::Allow(22),
         Bot::Animations,
         Compare::Animations,
     )
@@ -558,7 +564,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "report",
         Flags::Any,
-        Ferroan::Allow(18),
+        Ferroan::Allow(19),
         Bot::Report,
         Compare::Report,
     )
@@ -580,7 +586,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "prim-arrival",
         Flags::Pin8OrFerroan,
-        Ferroan::Allow(16),
+        Ferroan::Allow(17),
         Bot::PrimArrival,
         Compare::PrimArrival,
     )
@@ -589,7 +595,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "material-override",
         Flags::Pin8OrFerroan,
-        Ferroan::Allow(17),
+        Ferroan::Allow(18),
         Bot::MaterialOverride,
         Compare::MaterialOverride,
     )
@@ -609,8 +615,8 @@ pub const SCENARIOS: &[Scenario] = &[
     .help(10, HELP_OBJECT_CROSS),
     row(
         "child-view",
-        Flags::Pin8,
-        Ferroan::Deny,
+        Flags::ChildView,
+        Ferroan::Allow(16),
         Bot::ChildView,
         Compare::Finish,
     )
@@ -640,7 +646,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "parcel-timing",
         Flags::ParcelTiming,
-        Ferroan::Allow(19),
+        Ferroan::Allow(20),
         Bot::ParcelTiming,
         Compare::ParcelTiming,
     )
@@ -650,7 +656,7 @@ pub const SCENARIOS: &[Scenario] = &[
     row(
         "parcel-properties",
         Flags::ParcelTiming,
-        Ferroan::Allow(20),
+        Ferroan::Allow(21),
         Bot::ParcelProperties,
         Compare::ParcelProperties,
     )
@@ -901,7 +907,7 @@ mod tests {
     fn ferroan_refusal_lists_the_allowed_rows_in_order() {
         assert_eq!(
             ferroan_denied(),
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing, parcel-properties and animations scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, child-view, prim-arrival, material-override, report, parcel-timing, parcel-properties and animations scenarios"
         );
     }
 }
