@@ -5,7 +5,9 @@
 //! `JoltScene.NoteDilationSample` record. The Rust test checks the fixture's
 //! structure; the dilation window port that replays it is P3.3b. All twelve
 //! scene A dilation values are pinned here, so a hand edit of the fixture
-//! fails ordinary CI. This test does not recompute the ratio.
+//! fails ordinary CI. This test does not recompute the ratio. The manifest
+//! also names the `JoltCharacter` compile; `character_oracle` replays that
+//! fixture.
 
 use std::path::PathBuf;
 
@@ -41,7 +43,9 @@ fn note_dilation_fixture_keeps_the_pinned_structure() {
     assert!(revision.chars().all(|ch| ch.is_ascii_hexdigit()));
     assert_eq!(revision, value(&config, "revision "));
     assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n"));
+    assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n"));
     assert!(manifest.lines().any(|line| line == "note-dilation"));
+    assert!(manifest.lines().any(|line| line == "character"));
 
     let calls = std::fs::read_to_string(root.join("note-dilation/calls.txt")).expect("calls");
     assert_eq!(calls, expected_calls());
