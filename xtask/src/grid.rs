@@ -78,8 +78,14 @@ mod avatars_capture;
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[cfg(target_os = "linux")]
+#[path = "parcel_capture.rs"]
+mod parcel_capture;
 #[path = "prim_arrival.rs"]
 mod prim_arrival;
+#[cfg(target_os = "linux")]
+use parcel_capture::Seed as ParcelSeed;
+
 #[path = "prim_capture.rs"]
 mod prim_capture;
 
@@ -738,10 +744,11 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "prim-capture"
             | "prim-arrival"
             | "report"
-    ) && ferroan_bot::scenario::selection(scenario).is_none()
+    ) && ParcelSeed::scenario(scenario).is_none()
+        && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1003,6 +1010,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
             prim_capture: matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross"),
+            parcel_seed: ParcelSeed::scenario(scenario),
             basic_physics: spec.basic_physics && !ferroan,
         },
         &grid.passwords,
@@ -1019,7 +1027,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
-            x: NEIGHBOUR_X,
+            x: NEIGHBOUR_X + u32::from(ParcelSeed::scenario(scenario) == Some(ParcelSeed::Legacy)),
             y: NEIGHBOUR_Y,
             http_bind: NEIGHBOUR_BIND,
             advertised: ADVERTISED,
@@ -1035,6 +1043,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             auth_uri: auth_uri.clone(),
             metrics_port: None,
             prim_capture: scenario == "object-cross",
+            parcel_seed: None,
             basic_physics: spec.basic_physics,
         },
         &grid.passwords,
@@ -1578,7 +1587,23 @@ fn run_bot(
         scenario,
         private_uri,
         |selected| async move {
-            if scenario == "login" {
+            if let Some(seed) = ParcelSeed::scenario(selected) {
+                let captures = harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_overlays(
+                        harness_ref,
+                        seed.packets(),
+                    ))
+                    .await?;
+                for (viewer, bytes) in ["owner", "member"].into_iter().zip(captures) {
+                    fs::write(directory.join(format!("{selected}-{viewer}.bin")), bytes)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(format!(
+                    "{selected}: both viewers received {} ParcelOverlay packets",
+                    seed.packets()
+                ))
+            } else if scenario == "login" {
                 ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| async move {
                     let mut line =
                         login_probe::online(private_uri, directory, ferroan, arrival).await?;
@@ -1970,6 +1995,7 @@ struct RegionStart {
     metrics_port: Option<u16>,
     basic_physics: bool,
     prim_capture: bool,
+    parcel_seed: Option<ParcelSeed>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1999,6 +2025,8 @@ fn start_region(
             cwd.join("OpenSim.db"),
         )
         .map_err(|error| format!("install prim capture store: {error}"))?;
+    } else if let Some(seed) = spec.parcel_seed {
+        seed.install(cwd)?;
     } else if spec.ferroan {
         install_seeded_region_store(cwd)?;
     }
@@ -2070,8 +2098,15 @@ fn start_region(
             ));
         }
     }
+    if spec.parcel_seed.is_some() {
+        ini.push_str("\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Local Service Connector\"\n");
+    }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
-    fs::write(regions.join("Regions.ini"), regions_ini(&region))
+    let mut definition = regions_ini(&region);
+    if spec.parcel_seed == Some(ParcelSeed::Legacy) {
+        definition.push_str("SizeX = 512\nSizeY = 512\n");
+    }
+    fs::write(regions.join("Regions.ini"), definition)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = cwd.join("region.log");
     let config_arg = config.to_str().ok_or("region config path is not utf-8")?;

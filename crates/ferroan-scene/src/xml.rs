@@ -925,6 +925,14 @@ pub(crate) fn shape_update_extras(data: &[u8]) -> (u8, Vec<u8>) {
     (extras.sculpt_type, extras.bytes)
 }
 
+pub(crate) fn shape_update_entries(data: &[u8]) -> (bool, bool) {
+    let mut extras = Extras::blank();
+    if data.first().is_some_and(|count| *count != 0) {
+        parse_extras(&mut extras, data);
+    }
+    (extras.mesh_flags.is_some(), extras.probe.is_some())
+}
+
 fn decode_extras(data: &[u8]) -> Extras {
     let mut extras = Extras::blank();
     if data.len() > 1 && data[0] != 0 {

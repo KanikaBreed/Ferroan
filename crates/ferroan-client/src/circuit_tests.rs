@@ -342,7 +342,7 @@ fn message_ids(io: &FakeIo) -> Vec<ferroan_protocol::MsgId> {
 
 impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
     fn has_updates(&self) -> bool {
-        self.has_updates()
+        self.has_avatar_terse()
     }
 
     fn take_terse(&self, budget: i32) -> Vec<[u8; ferroan_scene::terse::AVATAR_TERSE_LEN]> {
