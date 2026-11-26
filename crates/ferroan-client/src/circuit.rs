@@ -853,9 +853,8 @@ impl State {
         let budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
         let region_handle = self.arrival.region_handle;
         let room = MAX_UNACKED.saturating_sub(self.unacked.len() + self.pending_task.len());
-        let mut batch = crate::TaskBatch::new(region_handle, budget, room);
-        feed.updates.take_updates(&mut batch);
-        let (full, blocks) = batch.finish();
+        let (full, blocks) =
+            crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
         let mut queued = !full.is_empty();
         for bytes in full {
             self.pending_task.push_back(Payload {

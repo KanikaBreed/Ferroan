@@ -3298,6 +3298,95 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn the_scene_feed_delivers_the_child_in_the_same_drain_as_a_refused_root() {
+        use ferroan_protocol::msgs::ObjectUpdate;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/regionstore/objects-xml.json"
+        ))
+        .unwrap();
+        let mut group =
+            ferroan_scene::from_xml2(fixture["groups"][1]["xml2"].as_str().unwrap()).unwrap();
+        assert_eq!(group.parts.len(), 2);
+        group.parts[0]
+            .shape
+            .texture
+            .resize(usize::from(u16::MAX) + 1, 1);
+        let child = group.parts[1].uuid;
+        let frame = TerrainFrame::with_objects(None, Arc::new(vec![group]), None).unwrap();
+        let viewer = Uuid::from_u128(91);
+        let feed = frame.new_feed();
+        frame
+            .attach(
+                viewer,
+                ferroan_scene::ViewerLink {
+                    feed: Arc::clone(&feed),
+                    seeds_sent: Arc::new(true.into()),
+                    circuit_open: Arc::new(true.into()),
+                    look: Arc::new(ferroan_scene::AvatarLook {
+                        first_name: "Test".into(),
+                        last_name: "User".into(),
+                        title: String::new(),
+                        texture: Vec::new(),
+                        visual_params: Vec::new(),
+                        height: 1.8,
+                        hover: 0.0,
+                    }),
+                },
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let pose = ferroan_scene::Presence {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        frame
+            .post_login(viewer, pose)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame
+            .arrive(viewer, pose, [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame.handshake_reply(viewer).unwrap();
+        let wake = feed.wake();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !feed.has_updates() {
+                wake.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Wait for the frame that offered the root to finish offering its child.
+        frame.frames().unwrap().wait().await.unwrap();
+        let scene_feed = SceneFeed {
+            feed,
+            viewer,
+            region_handle: 7,
+            object_animations: Arc::default(),
+        };
+        let (full, _) = ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
+        assert_eq!(full.len(), 1);
+        let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
+        wire.extend_from_slice(&full[0]);
+        let packet = ferroan_protocol::parse_packet(&wire)
+            .unwrap()
+            .decode::<ObjectUpdate>()
+            .unwrap();
+        assert_eq!(packet.object_data.len(), 1);
+        assert_eq!(packet.object_data[0].full_id, child);
+    }
+
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
     /// its appearance, and the kill.

@@ -2105,9 +2105,10 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
     assert_eq!(avatar_z, Some(41.5));
 }
 
-/// A feed the test fills with ready blocks. `take_terse` records the budget.
+/// Ready viewer updates and the budgets supplied by the circuit.
 #[derive(Default)]
 struct BlockFeed {
+    full: Mutex<Option<ferroan_protocol::msgs::object_update::ObjectData>>,
     blocks: Mutex<Vec<[u8; crate::AVATAR_TERSE_LEN]>>,
     budgets: Mutex<Vec<i32>>,
     packets: Mutex<Vec<crate::AvatarPacket>>,
@@ -2115,7 +2116,7 @@ struct BlockFeed {
 
 impl crate::EntityUpdates for BlockFeed {
     fn has_updates(&self) -> bool {
-        !self.blocks.lock().unwrap().is_empty()
+        !self.blocks.lock().unwrap().is_empty() || self.full.lock().unwrap().is_some()
     }
 
     fn take_updates(&self, batch: &mut crate::TaskBatch) {
@@ -2123,6 +2124,11 @@ impl crate::EntityUpdates for BlockFeed {
         let mut blocks = self.blocks.lock().unwrap();
         while batch.has_room() && !blocks.is_empty() {
             batch.push_terse(blocks.remove(0));
+        }
+        if batch.has_room()
+            && let Some(full) = self.full.lock().unwrap().take()
+        {
+            batch.push_full(&full, None);
         }
     }
 
@@ -2315,6 +2321,78 @@ async fn a_coarse_location_update_leaves_unreliable_with_the_csharp_layout() {
     body.extend_from_slice(second.as_bytes());
     assert_eq!(&bytes[6..], &body[..]);
     assert_eq!(state.unacked.len(), 1, "only the kill waits for an ack");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_circuit_sends_the_captured_full_before_terse_and_resends_the_same_body() {
+    use ferroan_protocol::msgs::{ImprovedTerseObjectUpdate, ObjectUpdate};
+    let capture = include_bytes!("../../../fixtures/prim-arrival/limited.cap");
+    let records = ferroan_capture::read_capture(capture.as_slice()).unwrap();
+    let datagram = |seq| {
+        &records
+            .iter()
+            .find(|record| {
+                record.kind == ferroan_capture::Kind::UdpOut
+                    && parse_packet(&record.bytes).unwrap().sequence == seq
+            })
+            .unwrap()
+            .bytes
+    };
+    let full = datagram(32);
+    let terse = datagram(29);
+    let mut update = parse_packet(full)
+        .unwrap()
+        .decode::<ObjectUpdate>()
+        .unwrap();
+    assert_eq!(update.object_data.len(), 1);
+    let motion = parse_packet(terse)
+        .unwrap()
+        .decode::<ImprovedTerseObjectUpdate>()
+        .unwrap();
+    let source = Arc::new(BlockFeed::default());
+    *source.full.lock().unwrap() = update.object_data.pop();
+    source
+        .blocks
+        .lock()
+        .unwrap()
+        .push(motion.object_data[0].data.as_slice().try_into().unwrap());
+    let mut state = State::new(
+        captured_config(),
+        ArrivalConfig {
+            region_handle: update.region_data.region_handle,
+            updates: Some(crate::EntityFeed {
+                updates: source,
+                wake: Arc::new(Notify::new()),
+            }),
+            ..Default::default()
+        },
+    );
+    state.peer = Some(peer());
+    state.advance_throttle(Duration::from_secs(1));
+    let now = state.throttle_clock.now_secs();
+    assert!(state.throttle.try_spend(TASK, 0, now));
+    let credit = state.throttle.balance(TASK);
+    let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    let sent = io.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    for (actual, captured) in sent.iter().zip([full, terse]) {
+        assert_eq!(actual[0], 0xc0);
+        assert_eq!(&actual[5..], &captured[5..]);
+    }
+    assert_eq!(
+        credit - state.throttle.balance(TASK),
+        (full.len() + terse.len()) as f32
+    );
+    tokio::time::advance(RESEND_AFTER + Duration::from_millis(20)).await;
+    state.maintain(&io).await.unwrap();
+    let all = io.sent.lock().unwrap();
+    let resend = all[2..]
+        .iter()
+        .find(|packet| packet[1..5] == sent[0][1..5])
+        .unwrap();
+    assert_eq!(resend[0], 0xe0);
+    assert_eq!(&resend[5..], &full[5..]);
 }
 
 #[tokio::test]

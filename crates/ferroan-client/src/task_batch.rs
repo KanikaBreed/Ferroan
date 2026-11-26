@@ -51,7 +51,19 @@ pub struct TaskBatch {
 }
 
 impl TaskBatch {
-    pub(crate) fn new(handle: u64, budget: i32, slots: usize) -> Self {
+    /// Drain one callback, preserving full packet boundaries and the pending terse blocks.
+    pub fn drain(
+        feed: &dyn crate::EntityUpdates,
+        handle: u64,
+        budget: i32,
+        slots: usize,
+    ) -> (Vec<Vec<u8>>, Vec<[u8; AVATAR_TERSE_LEN]>) {
+        let mut batch = Self::new(handle, budget, slots);
+        feed.take_updates(&mut batch);
+        batch.finish()
+    }
+
+    fn new(handle: u64, budget: i32, slots: usize) -> Self {
         Self {
             budget: if budget <= 0 { i32::MAX } else { budget },
             slots,
@@ -92,7 +104,7 @@ impl TaskBatch {
             .push(&writer.buf);
     }
 
-    pub(crate) fn finish(self) -> (Vec<Vec<u8>>, Vec<[u8; AVATAR_TERSE_LEN]>) {
+    fn finish(self) -> (Vec<Vec<u8>>, Vec<[u8; AVATAR_TERSE_LEN]>) {
         (
             self.full.map(FullPackets::finish).unwrap_or_default(),
             self.terse,
@@ -296,6 +308,84 @@ mod tests {
             batch.push_full(&ObjectData::default(), count);
             assert_eq!(batch.budget(), 500 - 18 - 150 - cost);
         }
+    }
+
+    #[test]
+    fn eight_control_blocks_in_one_callback_reproduce_both_pin8_datagrams() {
+        let capture = include_bytes!("../../../fixtures/prim-arrival/control.cap");
+        let mut expected = Vec::new();
+        let mut parts = Vec::new();
+        let mut handle = None;
+        for record in ferroan_capture::read_capture(capture.as_slice()).unwrap() {
+            let packet = parse_packet(&record.bytes).unwrap();
+            if record.kind != ferroan_capture::Kind::UdpOut || !matches!(packet.sequence, 32 | 33) {
+                continue;
+            }
+            assert_eq!(record.bytes[0], 0xc0);
+            let update = packet.decode::<ObjectUpdate>().unwrap();
+            handle = Some(update.region_data.region_handle);
+            assert_eq!(
+                update.object_data.len(),
+                if packet.sequence == 32 { 6 } else { 2 }
+            );
+            parts.extend(update.object_data);
+            expected.push(record.bytes[HEADER_SIZE..].to_vec());
+        }
+        assert_eq!(parts.len(), 8);
+        assert_eq!(
+            expected
+                .iter()
+                .map(|body| HEADER_SIZE + body.len())
+                .collect::<Vec<_>>(),
+            [754, 733]
+        );
+        let mut batch = TaskBatch::new(handle.unwrap(), 0, 8);
+        for part in parts {
+            batch.push_full(&part, None);
+        }
+        assert_eq!(batch.finish().0, expected);
+    }
+
+    #[test]
+    fn a_large_texture_is_charged_by_its_coded_size_and_later_updates_survive() {
+        let mut batch = TaskBatch::new(7, 0, 4);
+        // Pin8's room estimate for this single field already exceeds its buffer.
+        let compressible = vec![0; 3000];
+        assert!(compressible.len() + compressible.len() / 2 + 4 > MAX_DATAGRAM);
+        for (id, texture_entry) in [
+            (1, compressible.clone()),
+            (2, vec![1; MAX_DATAGRAM]),
+            (3, vec![7]),
+        ] {
+            batch.push_full(
+                &ObjectData {
+                    id,
+                    texture_entry,
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+        batch.push_terse([9; AVATAR_TERSE_LEN]);
+        let (full, terse) = batch.finish();
+        let mut received = Vec::new();
+        for body in full {
+            let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
+            wire.extend(body);
+            assert!(wire.len() <= MAX_DATAGRAM);
+            let update = parse_packet(&wire)
+                .unwrap()
+                .decode::<ObjectUpdate>()
+                .unwrap();
+            received.extend(
+                update
+                    .object_data
+                    .into_iter()
+                    .map(|part| (part.id, part.texture_entry)),
+            );
+        }
+        assert_eq!(received, [(1, compressible), (3, vec![7])]);
+        assert_eq!(terse, [[9; AVATAR_TERSE_LEN]]);
     }
 
     #[test]
