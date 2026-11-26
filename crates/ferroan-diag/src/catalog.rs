@@ -4,6 +4,8 @@
 //! Stable limit ids. `docs/LIMITS.md` must list every one, and `cargo xtask
 //! check` fails when a const here is missing from that file or from a call site.
 
+pub const AVATAR_ROWS: &str = "avatar.rows";
+pub const AVATAR_ROW_BYTES: &str = "avatar.row-bytes";
 pub const HTTP_POST_BODY: &str = "http.post-body";
 pub const HTTP_ASSET_BODY: &str = "http.asset-body";
 pub const HTTP_XML_CHARS: &str = "http.xml-chars";
@@ -69,8 +71,12 @@ pub const REGION_AGENT_UPLOADS: &str = "region.agent-uploads";
 pub const REGION_CAP_BODY_BYTES: &str = "region.cap-body-bytes";
 pub const REGION_AGENT_CAPS: &str = "region.agent-caps";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
+pub const REGION_PARCELS: &str = "region.parcels";
+pub const REGION_PARCEL_ACCESS: &str = "region.parcel-access";
+pub const REGION_PARCEL_BYTES: &str = "region.parcel-bytes";
 pub const REGION_OBJECTS: &str = "region.objects";
 pub const REGION_LINKSET_PRIMS: &str = "region.linkset-prims";
+pub const OBJECT_UPDATE_FIELD: &str = "object.update-field";
 pub const OBJECT_XML_BYTES: &str = "object.xml-bytes";
 pub const OBJECT_TASK_ITEMS: &str = "object.task-items";
 pub const REGION_SCENE_INBOUND: &str = "region.scene-inbound";

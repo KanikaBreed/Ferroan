@@ -1,0 +1,421 @@
+{
+  "pin": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "region": "11111111-1111-1111-1111-111111111111",
+  "parcels": [
+    {
+      "id": "aaaaaaaa-0000-0000-0000-000000000001",
+      "local_id": 91,
+      "bitmap": "8201",
+      "name": "West",
+      "description": "First parcel",
+      "owner": "00000000-0000-0000-0000-000000000001",
+      "group_owned": false,
+      "area": 48,
+      "auction": 7,
+      "category": 3,
+      "claim_date": 1700000000,
+      "claim_price": 21,
+      "group": "00000000-0000-0000-0000-000000000003",
+      "sale_price": 41,
+      "status": 1,
+      "flags": 2147516420,
+      "landing_type": 1,
+      "media_auto_scale": 1,
+      "media_id": "00000000-0000-0000-0000-000000000004",
+      "media_url": "https://example.invalid/media",
+      "music_url": "https://example.invalid/music",
+      "pass_hours": 1.5,
+      "pass_price": 8,
+      "snapshot": "00000000-0000-0000-0000-000000000005",
+      "dwell": 17,
+      "media_type": "video/test",
+      "media_description": "Screen",
+      "media_size": [
+        640,
+        320
+      ],
+      "media_loop": true,
+      "obscure_media": false,
+      "obscure_music": true,
+      "see_avs": false,
+      "any_av_sounds": true,
+      "group_av_sounds": false,
+      "location": [
+        1.25,
+        2.5,
+        3.75
+      ],
+      "look_at": [
+        -1,
+        0,
+        1
+      ],
+      "auth_buyer": "00000000-0000-0000-0000-000000000006",
+      "other_clean_time": 12,
+      "environment_version": 7,
+      "access": [
+        {
+          "agent": "00000000-0000-0000-0000-000000000011",
+          "flags": 1,
+          "expires": 0
+        },
+        {
+          "agent": "00000000-0000-0000-0000-000000000012",
+          "flags": 2,
+          "expires": 0
+        },
+        {
+          "agent": "00000000-0000-0000-0000-000000000011",
+          "flags": 2,
+          "expires": 0
+        }
+      ]
+    },
+    {
+      "id": "99999999-0000-0000-0000-000000000002",
+      "local_id": 2,
+      "bitmap": "04",
+      "name": "East",
+      "description": "First parcel",
+      "owner": "00000000-0000-0000-0000-000000000003",
+      "group_owned": true,
+      "area": 48,
+      "auction": 7,
+      "category": 1,
+      "claim_date": 1700000000,
+      "claim_price": 21,
+      "group": "00000000-0000-0000-0000-000000000003",
+      "sale_price": 41,
+      "status": -1,
+      "flags": 2147516420,
+      "landing_type": 1,
+      "media_auto_scale": 1,
+      "media_id": "00000000-0000-0000-0000-000000000004",
+      "media_url": "https://example.invalid/media",
+      "music_url": "https://example.invalid/music",
+      "pass_hours": 1.5,
+      "pass_price": 8,
+      "snapshot": "00000000-0000-0000-0000-000000000005",
+      "dwell": 17,
+      "media_type": "video/test",
+      "media_description": "Screen",
+      "media_size": [
+        0,
+        0
+      ],
+      "media_loop": true,
+      "obscure_media": false,
+      "obscure_music": true,
+      "see_avs": false,
+      "any_av_sounds": true,
+      "group_av_sounds": false,
+      "location": [
+        0,
+        0,
+        0
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ],
+      "auth_buyer": "00000000-0000-0000-0000-000000000000",
+      "other_clean_time": 12,
+      "environment_version": -1,
+      "access": [
+        {
+          "agent": "00000000-0000-0000-0000-000000000021",
+          "flags": 2,
+          "expires": 0
+        }
+      ]
+    }
+  ],
+  "defaults": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "local_id": 0,
+    "bitmap": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "name": "Your Parcel",
+    "description": "",
+    "owner": "00000000-0000-0000-0000-000000000000",
+    "group_owned": false,
+    "area": 0,
+    "auction": 0,
+    "category": 0,
+    "claim_date": 0,
+    "claim_price": 0,
+    "group": "00000000-0000-0000-0000-000000000000",
+    "sale_price": 0,
+    "status": 0,
+    "flags": 671096907,
+    "landing_type": 2,
+    "media_auto_scale": 0,
+    "media_id": "00000000-0000-0000-0000-000000000000",
+    "media_url": "",
+    "music_url": "",
+    "pass_hours": 0,
+    "pass_price": 0,
+    "snapshot": "00000000-0000-0000-0000-000000000000",
+    "dwell": 0,
+    "media_type": "none/none",
+    "media_description": "",
+    "media_size": [
+      0,
+      0
+    ],
+    "media_loop": false,
+    "obscure_media": false,
+    "obscure_music": false,
+    "see_avs": true,
+    "any_av_sounds": true,
+    "group_av_sounds": true,
+    "location": [
+      0,
+      0,
+      0
+    ],
+    "look_at": [
+      0,
+      0,
+      0
+    ],
+    "auth_buyer": "00000000-0000-0000-0000-000000000000",
+    "other_clean_time": 0,
+    "environment_version": -1,
+    "access": []
+  },
+  "environments": [
+    {
+      "text": "{}",
+      "version": 1
+    },
+    {
+      "text": "null",
+      "version": null
+    },
+    {
+      "text": "unknown",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:2.5}",
+      "version": 2
+    },
+    {
+      "text": "{\u0022env_version\u0022:true}",
+      "version": 1
+    },
+    {
+      "text": "{\u0022env_version\u0022:\u0022-1.6\u0022}",
+      "version": -2
+    },
+    {
+      "text": "{\u0022env_version\u0022:2147483649}",
+      "version": -2147483647
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022bad\u0022:7}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022tracks\u0022:[[],[],[],[],[7]]}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022sky\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022absorption_config\u0022:[{},7]}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022sky\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022mie_config\u0022:[{},7]}},\u0022tracks\u0022:[[{}],0,[],[],[],[7]]}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022sky\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022rayleigh_config\u0022:[7]}}}}",
+      "version": null
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E5\u003C/integer\u003E\u003Ckey\u003Eday_cycle\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Eframes\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Esky\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Etype\u003C/key\u003E\u003Cstring\u003Esky\u003C/string\u003E\u003Ckey\u003Eglow\u003C/key\u003E\u003Cstring/\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": null
+    },
+    {
+      "text": "\u003C? llsd/notation ?\u003E{\u0027env_version\u0027:i5,\u0027day_cycle\u0027:{\u0027tracks\u0027:[[i7]]}}",
+      "version": null
+    },
+    {
+      "text": "\u003C? llsd/notation ?\u003E{\u0027env_version\u0027:i5,\u0027day_cycle\u0027:{\u0027frames\u0027:{\u0027s\u0027:{\u0027type\u0027:\u0027sky\u0027,\u0027glow\u0027:\u0027x\u0027}}}}",
+      "version": null
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E5\u003C/integer\u003E\u003Ckey\u003Eday_cycle\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Eframes\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Es\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Etype\u003C/key\u003E\u003Curi\u003Esky\u003C/uri\u003E\u003Ckey\u003Eglow\u003C/key\u003E\u003Cstring\u003Ex\u003C/string\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": null
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E5\u003C/integer\u003E\u003Ckey\u003Eday_cycle\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Eframes\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Es\u003C/key\u003E\u003Cmap\u003E\u003Ckey\u003Etype\u003C/key\u003E\u003Curi\u003Esky\u003C/uri\u003E\u003Ckey\u003Eglow\u003C/key\u003E\u003Curi\u003Ex\u003C/uri\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": 5
+    },
+    {
+      "text": "\u003Cllsd\u003E\u003Cmap\u003E\u003Ckey\u003Eenv_version\u003C/key\u003E\u003Cinteger\u003E42\u003C/integer\u003E\u003C/map\u003E\u003C/llsd\u003E",
+      "version": 42
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_color\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_pos_density1\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_pos_density2\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_scroll_rate\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022moon_rotation\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u0022x\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022legacy_haze\u0022:{\u0022ambient\u0022:\u0022bad\u0022}}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022legacy_haze\u0022:{\u0022blue_density\u0022:\u0022bad\u0022}}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022legacy_haze\u0022:{\u0022blue_horizon\u0022:\u0022bad\u0022}}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022normal_scale\u0022:\u0022bad\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022water_fog_color\u0022:\u0022bad\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022wave1_direction\u0022:\u0022bad\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022wave2_direction\u0022:\u0022bad\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u0022\\u003C1,2,3\\u003E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,3 trailing\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u0022\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,inf\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,Infinity\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u221E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u002BNaN\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022wave1_direction\u0022:\u00221,2\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022wave1_direction\u0022:\u0022prefix\\u003C1,2\\u003Etail\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022water\u0022,\u0022wave1_direction\u0022:\u00221,2 extra\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u0022bad\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u0022\\u003C1,2,3\\u003E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u00221,2,3\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u00221,2,3,4\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022sun_rotation\u0022:\u0022\\u003C1,2,3,4\\u003Etail\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022moon_rotation\u0022:\u00221,2,3\\u003E\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2, 3\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,3\\u0000\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2, \\u221E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u00A0\\u221E\u0022}}}}",
+      "version": 5
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u00221,2,\\u00A03\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:\u002211,2,\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_scroll_rate\u0022:\u002211,2,\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022cloud_scroll_rate\u0022:\u002212,\u0022}}}}",
+      "version": null
+    },
+    {
+      "text": "{\u0022env_version\u0022:5,\u0022day_cycle\u0022:{\u0022frames\u0022:{\u0022probe\u0022:{\u0022type\u0022:\u0022sky\u0022,\u0022glow\u0022:[1,2]}}}}",
+      "version": 5
+    }
+  ]
+}
