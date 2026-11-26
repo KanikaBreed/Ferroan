@@ -52,9 +52,9 @@
 //     (LoadControlFile)
 //   Source/OpenSim.Region.CoreModules/World/Archiver/DearchiveScenesGroup.cs
 //     (DearchiveScenesInfo)
-//   OpenMetaverse.Types/Vector3.cs (TryParse)
-//     libopenmetaverse a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+//   OpenMetaverse.Types/Vector3.cs (TryParse)
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 

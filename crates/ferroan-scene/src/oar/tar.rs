@@ -35,12 +35,17 @@
 //! `next_member` yields the path, type and declared size before the body is
 //! read, so a caller can skip or cap a member. The checksum is not read. A
 //! GNU long-name header's following header is not tested for a zero block or
-//! an empty read. A negative size throws and aborts. Each bound is one row in
-//! `docs/LIMITS.md`.
+//! an empty read. A negative size throws and aborts. A member above
+//! `oar.member-bytes` is refused before its body, whether the caller keeps or
+//! skips it. A kept member can also hit a path-class cap. There is no
+//! archive-wide decompressed total. Each bound is one row in `docs/LIMITS.md`.
 
 use std::io::Read;
 
-use ferroan_diag::{Kind, OAR_DECOMPRESSED_BYTES, OAR_MEMBER_BYTES, OAR_MEMBERS, OAR_PATH_BYTES};
+use ferroan_diag::{
+    Kind, OAR_CONTROL_BYTES, OAR_LANDDATA_BYTES, OAR_MEMBER_BYTES, OAR_MEMBERS, OAR_OBJECT_BYTES,
+    OAR_PATH_BYTES, OAR_SETTINGS_BYTES, OAR_TERRAIN_BYTES,
+};
 
 pub(super) const TYPE_UNKNOWN: &str = "TYPE_UNKNOWN";
 pub(super) const TYPE_NORMAL_FILE: &str = "TYPE_NORMAL_FILE";
@@ -52,6 +57,10 @@ pub(super) const TYPE_DIRECTORY: &str = "TYPE_DIRECTORY";
 pub(super) const TYPE_FIFO: &str = "TYPE_FIFO";
 pub(super) const TYPE_CONTIGUOUS_FILE: &str = "TYPE_CONTIGUOUS_FILE";
 
+/// The limit counters are process-wide. Tests that read them take this lock.
+#[cfg(test)]
+pub(super) static LIMIT_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const INDEX_ERROR: &str = "Index was outside the bounds of the array.";
 const BUFFER_ERROR: &str =
     "Index and count must refer to a location within the buffer. (Parameter 'bytes')";
@@ -62,9 +71,17 @@ const CHUNK: usize = 8192;
 const MAX_MEMBERS: u64 = 262_144;
 /// 1536 MiB. Above the garbage size a 200-byte header declares. Pin8 allocates
 /// the declared size. Ferroan refuses before allocating it.
-const MAX_MEMBER_BYTES: u64 = 1_610_612_736;
-/// 1 GiB of bytes the decoder actually yields, including headers and padding.
-const MAX_DECOMPRESSED: u64 = 1_073_741_824;
+pub(super) const MAX_MEMBER_BYTES: u64 = 1_610_612_736;
+/// Kept `archive.xml`. Checked after `oar.member-bytes`.
+pub(super) const MAX_CONTROL_BYTES: u64 = 8 * 1024 * 1024;
+/// Kept `objects/` member.
+pub(super) const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+/// Kept `terrains/` member. Above Q216b's later 75,759,615-byte `.r32`/`.f32` rule.
+pub(super) const MAX_TERRAIN_BYTES: u64 = 128 * 1024 * 1024;
+/// Kept `settings/` member.
+pub(super) const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
+/// Kept `landdata/` member.
+pub(super) const MAX_LANDDATA_BYTES: u64 = 32 * 1024 * 1024;
 /// 1024 bytes after the ASCII replacement Pin8 applies to a path.
 const MAX_PATH_BYTES: u64 = 1024;
 
@@ -82,7 +99,6 @@ enum Pending {
 
 pub(super) struct Session<R> {
     reader: R,
-    decompressed: u64,
     members: u64,
     pending: Pending,
 }
@@ -91,20 +107,9 @@ impl<R: Read> Session<R> {
     pub(super) fn new(reader: R) -> Self {
         Self {
             reader,
-            decompressed: 0,
             members: 0,
             pending: Pending::Clear,
         }
-    }
-
-    /// Add `extra` to the decompressed-byte count. A read charges the same way.
-    pub(super) fn charge(&mut self, extra: u64) -> Result<(), String> {
-        let next = self.decompressed.saturating_add(extra);
-        if next > MAX_DECOMPRESSED {
-            return Err(refuse(OAR_DECOMPRESSED_BYTES, MAX_DECOMPRESSED, next));
-        }
-        self.decompressed = next;
-        Ok(())
     }
 
     pub(super) fn next_member(&mut self) -> Result<Option<Member>, String> {
@@ -213,6 +218,12 @@ impl<R: Read> Session<R> {
 
     fn take_bytes(&mut self, want: usize, keep: bool) -> Result<Vec<u8>, String> {
         let mut out = Vec::new();
+        if keep {
+            // One reservation. Doubling would hold the member twice for a moment.
+            // A garbage declared size cannot reserve past the member cap.
+            let bound = usize::try_from(MAX_MEMBER_BYTES).unwrap_or(usize::MAX);
+            out.reserve(want.min(bound));
+        }
         let mut left = want;
         let mut buf = [0u8; CHUNK];
         while left > 0 {
@@ -230,11 +241,53 @@ impl<R: Read> Session<R> {
     }
 
     fn read_chunk(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        let n = self.reader.read(buf).map_err(|error| error.to_string())?;
-        if n > 0 {
-            self.charge(n as u64)?;
-        }
-        Ok(n)
+        self.reader.read(buf).map_err(|error| error.to_string())
+    }
+}
+
+/// Refuse a declaration above `oar.member-bytes` before the body is read.
+/// A negative size is left for the read, which reports Pin8's count text.
+pub(super) fn member_limit(size: i32) -> Result<(), String> {
+    if size < 0 {
+        return Ok(());
+    }
+    let declared = u64::from(size as u32);
+    if declared > MAX_MEMBER_BYTES {
+        return Err(refuse(OAR_MEMBER_BYTES, MAX_MEMBER_BYTES, declared));
+    }
+    Ok(())
+}
+
+/// Path-class cap for a body the caller is keeping. A skipped member does not
+/// call this. A negative size is left for the read. `assets/`, `inventory/`,
+/// `userprofiles/` and any other path have no class cap.
+pub(super) fn kept_limit(relative: &str, size: i32) -> Result<(), String> {
+    if size < 0 {
+        return Ok(());
+    }
+    let declared = u64::from(size as u32);
+    let Some((id, cap)) = class_cap(relative) else {
+        return Ok(());
+    };
+    if declared > cap {
+        return Err(refuse(id, cap, declared));
+    }
+    Ok(())
+}
+
+fn class_cap(relative: &str) -> Option<(&'static str, u64)> {
+    if relative == "archive.xml" {
+        Some((OAR_CONTROL_BYTES, MAX_CONTROL_BYTES))
+    } else if relative.starts_with("objects/") {
+        Some((OAR_OBJECT_BYTES, MAX_OBJECT_BYTES))
+    } else if relative.starts_with("terrains/") {
+        Some((OAR_TERRAIN_BYTES, MAX_TERRAIN_BYTES))
+    } else if relative.starts_with("settings/") {
+        Some((OAR_SETTINGS_BYTES, MAX_SETTINGS_BYTES))
+    } else if relative.starts_with("landdata/") {
+        Some((OAR_LANDDATA_BYTES, MAX_LANDDATA_BYTES))
+    } else {
+        None
     }
 }
 
@@ -415,6 +468,7 @@ mod tests {
 
     #[test]
     fn the_member_after_the_cap_is_refused() {
+        let _guard = LIMIT_TEST.lock().unwrap();
         let block = header("a.txt", octal_field(0).as_bytes(), b'0');
         let mut session = Session::new(Repeat {
             block,
@@ -433,6 +487,7 @@ mod tests {
 
     #[test]
     fn a_long_name_past_the_path_cap_is_refused_before_the_body() {
+        let _guard = LIMIT_TEST.lock().unwrap();
         let field = octal_field(i32::try_from(MAX_PATH_BYTES).unwrap() + 1);
         let block = header("././@LongLink", field.as_bytes(), b'L');
         let mut session = Session::new(Cursor::new(block));
@@ -444,6 +499,7 @@ mod tests {
 
     #[test]
     fn a_declared_size_past_the_member_cap_is_refused_before_allocating() {
+        let _guard = LIMIT_TEST.lock().unwrap();
         let field = octal_field(i32::try_from(MAX_MEMBER_BYTES).unwrap() + 1);
         let block = header("big.bin", field.as_bytes(), b'0');
         let mut session = Session::new(Cursor::new(block));
@@ -455,12 +511,32 @@ mod tests {
     }
 
     #[test]
-    fn decompressed_bytes_past_the_cap_are_refused() {
-        let mut session = Session::new(Cursor::new(Vec::<u8>::new()));
-        let before = hits(OAR_DECOMPRESSED_BYTES);
-        let error = session.charge(MAX_DECOMPRESSED + 1).unwrap_err();
-        assert!(error.contains(OAR_DECOMPRESSED_BYTES), "{error}");
-        assert_eq!(hits(OAR_DECOMPRESSED_BYTES), before + 1);
+    fn a_kept_path_hits_its_class_cap_and_a_negative_size_does_not() {
+        let _guard = LIMIT_TEST.lock().unwrap();
+        assert!(kept_limit("objects/a.xml", -1).is_ok());
+        assert!(
+            kept_limit(
+                "archive.xml.bak",
+                i32::try_from(MAX_CONTROL_BYTES).unwrap() + 1
+            )
+            .is_ok()
+        );
+        assert!(kept_limit("assets/a.jp2", i32::try_from(MAX_OBJECT_BYTES).unwrap() + 1).is_ok());
+        // Q216b's later .r32 rule starts at 75,759,616. This cap stays above it.
+        assert!(kept_limit("terrains/r.r32", 75_759_616).is_ok());
+        let cases = [
+            ("archive.xml", MAX_CONTROL_BYTES, OAR_CONTROL_BYTES),
+            ("objects/a.xml", MAX_OBJECT_BYTES, OAR_OBJECT_BYTES),
+            ("terrains/r.r32", MAX_TERRAIN_BYTES, OAR_TERRAIN_BYTES),
+            ("settings/a.ini", MAX_SETTINGS_BYTES, OAR_SETTINGS_BYTES),
+            ("landdata/a.bin", MAX_LANDDATA_BYTES, OAR_LANDDATA_BYTES),
+        ];
+        for (path, cap, id) in cases {
+            let before = hits(id);
+            let error = kept_limit(path, i32::try_from(cap).unwrap() + 1).unwrap_err();
+            assert!(error.contains(id), "{path}: {error}");
+            assert_eq!(hits(id), before + 1, "{path}");
+        }
     }
 
     struct Repeat {

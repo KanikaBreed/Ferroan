@@ -33,10 +33,11 @@
 //! OAR control file and the region a path belongs to.
 //!
 //! `load_oar` is `FindAndLoadControlFile` plus the `GetRegionFromPath` test
-//! `DearchiveRegion` applies to every later member. Terrain, objects, parcels,
-//! settings and assets stay with their own rows. A throw reports an empty
-//! scene list. The regions parsed before a throw that happens after the
-//! control file stay on the report.
+//! `DearchiveRegion` applies to every later member. The walk decides from the
+//! path and the declared size, then reads or skips. `load_oar` keeps no member
+//! body after the control file. Terrain, objects, parcels, settings and assets
+//! stay with their own rows. A throw reports an empty scene list. The regions
+//! parsed before a throw that happens after the control file stay on the report.
 
 mod control;
 mod tar;
@@ -94,6 +95,7 @@ pub struct OarEntry {
     pub use_entry: bool,
     pub scene_id: Option<Uuid>,
     pub relative: String,
+    /// Bytes the caller asked to keep. A skipped member stores nothing.
     pub body: Vec<u8>,
 }
 
@@ -126,6 +128,7 @@ pub fn load_oar(
             tar::Session::new(MultiGzDecoder::new(bytes)),
             true,
             || tar::Session::new(MultiGzDecoder::new(bytes)),
+            |_, _, _| false,
         ),
         OarSource::TarSeek => load_from(
             root,
@@ -133,6 +136,7 @@ pub fn load_oar(
             tar::Session::new(Cursor::new(bytes)),
             true,
             || tar::Session::new(Cursor::new(bytes)),
+            |_, _, _| false,
         ),
         OarSource::TarNoSeek => load_from(
             root,
@@ -140,20 +144,23 @@ pub fn load_oar(
             tar::Session::new(Cursor::new(bytes)),
             false,
             || tar::Session::new(Cursor::new(bytes)),
+            |_, _, _| false,
         ),
     }
 }
 
-fn load_from<R, F>(
+fn load_from<R, F, K>(
     root: &SimulatorRegion,
     scenes: &[SimulatorRegion],
     mut session: tar::Session<R>,
     can_reopen: bool,
     reopen: F,
+    mut keep: K,
 ) -> OarReport
 where
     R: Read,
     F: FnOnce() -> tar::Session<R>,
+    K: FnMut(&str, &str, i32) -> bool,
 {
     let mut incoming = control::default_size_bits();
     let found = match find_control(&mut session) {
@@ -177,7 +184,7 @@ where
         }
         session = reopen();
     }
-    let (entries, error) = walk(&mut session, &state);
+    let (entries, error) = walk(&mut session, &state, &mut keep);
     report_of(state.finish(error, true, incoming), entries)
 }
 
@@ -200,6 +207,8 @@ fn find_control<R: Read>(session: &mut tar::Session<R>) -> Result<Found, String>
             continue;
         }
         if member.path == CONTROL_FILE {
+            tar::member_limit(member.size)?;
+            tar::kept_limit(CONTROL_FILE, member.size)?;
             let body = session.read_body()?;
             return Ok(Found {
                 body: Some(body),
@@ -211,10 +220,17 @@ fn find_control<R: Read>(session: &mut tar::Session<R>) -> Result<Found, String>
     }
 }
 
-fn walk<R: Read>(
+/// `keep` sees the archive path, the tar type and the declared size. It does
+/// not see the body. A directory is skipped and is not offered to `keep`.
+fn walk<R, K>(
     session: &mut tar::Session<R>,
     state: &control::Scenes,
-) -> (Vec<OarEntry>, Option<String>) {
+    keep: &mut K,
+) -> (Vec<OarEntry>, Option<String>)
+where
+    R: Read,
+    K: FnMut(&str, &str, i32) -> bool,
+{
     let mut entries = Vec::new();
     loop {
         let member = match session.next_member() {
@@ -222,22 +238,38 @@ fn walk<R: Read>(
             Ok(None) => return (entries, None),
             Err(error) => return (entries, Some(error)),
         };
-        let body = match session.read_body() {
-            Ok(body) => body,
-            Err(error) => return (entries, Some(error)),
-        };
+        if let Err(error) = tar::member_limit(member.size) {
+            return (entries, Some(error));
+        }
         if member.kind == TYPE_DIRECTORY {
+            if let Err(error) = session.skip_body() {
+                return (entries, Some(error));
+            }
             entries.push(OarEntry {
                 path: member.path.clone(),
                 kind: member.kind,
                 use_entry: false,
                 scene_id: None,
                 relative: member.path,
-                body,
+                body: Vec::new(),
             });
             continue;
         }
         let (use_entry, scene_id, relative) = state.region_from_path(&member.path);
+        let body = if keep(&member.path, member.kind, member.size) {
+            if let Err(error) = tar::kept_limit(&relative, member.size) {
+                return (entries, Some(error));
+            }
+            match session.read_body() {
+                Ok(body) => body,
+                Err(error) => return (entries, Some(error)),
+            }
+        } else {
+            match session.skip_body() {
+                Ok(()) => Vec::new(),
+                Err(error) => return (entries, Some(error)),
+            }
+        };
         entries.push(OarEntry {
             path: member.path,
             kind: member.kind,
@@ -313,6 +345,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use std::fs;
+    use std::io::{Cursor, Read};
     use std::path::Path;
 
     #[test]
@@ -432,6 +465,167 @@ mod tests {
         load_oar(&root, &[root], &bytes, OarSource::TarSeek)
     }
 
+    fn limit_hits(id: &str) -> u64 {
+        let prefix = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"refuse\"}} ");
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    fn header_only(path: &str, size: i32) -> Vec<u8> {
+        let mut header = vec![0u8; 512];
+        header[..path.len()].copy_from_slice(path.as_bytes());
+        let field = format!("{size:011o}");
+        header[124..135].copy_from_slice(field.as_bytes());
+        header[156] = b'0';
+        header
+    }
+
+    fn tar_member(path: &str, data: &[u8]) -> Vec<u8> {
+        let mut bytes = header_only(path, i32::try_from(data.len()).unwrap());
+        bytes.extend(data);
+        if !data.len().is_multiple_of(512) {
+            bytes.extend(vec![0u8; 512 - (data.len() % 512)]);
+        }
+        bytes
+    }
+
+    /// Reads the bytes it was given. The next read panics, so a cap that is
+    /// checked after the body starts fails the test.
+    struct PanicAfter {
+        data: Vec<u8>,
+        at: usize,
+    }
+
+    impl PanicAfter {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, at: 0 }
+        }
+    }
+
+    impl Read for PanicAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.at >= self.data.len() {
+                panic!("read past the provided header");
+            }
+            let n = (self.data.len() - self.at).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    fn control_xml() -> &'static [u8] {
+        b"<archive major_version=\"0\" minor_version=\"8\">\n\
+          <id>11111111-1111-1111-1111-111111111111</id>\n\
+          <size_in_meters>256,256</size_in_meters></archive>"
+    }
+
+    fn load_bytes<R, K>(bytes: R, keep: K) -> OarReport
+    where
+        R: Read,
+        K: FnMut(&str, &str, i32) -> bool,
+    {
+        let root = SimulatorRegion {
+            id: Uuid::nil(),
+            loc_x: 0,
+            loc_y: 0,
+        };
+        load_from(
+            &root,
+            &[root],
+            tar::Session::new(bytes),
+            false,
+            || panic!("reopen"),
+            keep,
+        )
+    }
+
+    #[test]
+    fn a_kept_member_past_its_class_cap_is_refused_before_the_body() {
+        let mut bytes = tar_member("archive.xml", control_xml());
+        let declared = i32::try_from(tar::MAX_TERRAIN_BYTES).unwrap() + 1;
+        bytes.extend(header_only("terrains/r.r32", declared));
+        let _guard = tar::LIMIT_TEST.lock().unwrap();
+        let before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
+        let report = load_bytes(PanicAfter::new(bytes), |path, _, _| {
+            path.starts_with("terrains/")
+        });
+        let error = report.error.expect("class cap");
+        assert!(error.contains(ferroan_diag::OAR_TERRAIN_BYTES), "{error}");
+        assert!(!error.contains(ferroan_diag::OAR_MEMBER_BYTES), "{error}");
+        assert_eq!(limit_hits(ferroan_diag::OAR_TERRAIN_BYTES), before + 1);
+    }
+
+    #[test]
+    fn a_skipped_member_past_its_class_cap_is_not_a_class_hit() {
+        let mut bytes = tar_member("archive.xml", control_xml());
+        let declared = i32::try_from(tar::MAX_TERRAIN_BYTES).unwrap() + 1;
+        bytes.extend(header_only("terrains/r.r32", declared));
+        let _guard = tar::LIMIT_TEST.lock().unwrap();
+        let before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
+        let report = load_bytes(Cursor::new(bytes), |_, _, _| false);
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(limit_hits(ferroan_diag::OAR_TERRAIN_BYTES), before);
+        let terrain = report
+            .entries
+            .iter()
+            .find(|entry| entry.path == "terrains/r.r32")
+            .unwrap();
+        assert!(terrain.body.is_empty());
+    }
+
+    #[test]
+    fn member_bytes_is_checked_before_the_class_cap() {
+        let mut bytes = tar_member("archive.xml", control_xml());
+        let declared = i32::try_from(tar::MAX_MEMBER_BYTES).unwrap() + 1;
+        bytes.extend(header_only("terrains/r.r32", declared));
+        let _guard = tar::LIMIT_TEST.lock().unwrap();
+        let before = limit_hits(ferroan_diag::OAR_MEMBER_BYTES);
+        let class_before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
+        let report = load_bytes(PanicAfter::new(bytes), |_, _, _| true);
+        let error = report.error.expect("member cap");
+        assert!(error.contains(ferroan_diag::OAR_MEMBER_BYTES), "{error}");
+        assert!(!error.contains(ferroan_diag::OAR_TERRAIN_BYTES), "{error}");
+        assert_eq!(limit_hits(ferroan_diag::OAR_MEMBER_BYTES), before + 1);
+        assert_eq!(limit_hits(ferroan_diag::OAR_TERRAIN_BYTES), class_before);
+    }
+
+    #[test]
+    fn a_control_file_past_its_cap_is_refused_before_the_body() {
+        let declared = i32::try_from(tar::MAX_CONTROL_BYTES).unwrap() + 1;
+        let _guard = tar::LIMIT_TEST.lock().unwrap();
+        let before = limit_hits(ferroan_diag::OAR_CONTROL_BYTES);
+        let report = load_bytes(
+            PanicAfter::new(header_only("archive.xml", declared)),
+            |_, _, _| true,
+        );
+        let error = report.error.expect("control cap");
+        assert!(error.contains(ferroan_diag::OAR_CONTROL_BYTES), "{error}");
+        assert_eq!(limit_hits(ferroan_diag::OAR_CONTROL_BYTES), before + 1);
+    }
+
+    #[test]
+    fn a_keep_callback_stores_only_the_member_it_names() {
+        let mut bytes = tar_member("archive.xml", control_xml());
+        bytes.extend(tar_member("notes/a.txt", b"hello"));
+        bytes.extend(tar_member("notes/b.txt", b"world"));
+        let report = load_bytes(Cursor::new(bytes), |path, _, _| path.ends_with("b.txt"));
+        assert!(report.error.is_none(), "{:?}", report.error);
+        let body = |path: &str| {
+            report
+                .entries
+                .iter()
+                .find(|entry| entry.path == path)
+                .unwrap()
+                .body
+                .clone()
+        };
+        assert!(body("notes/a.txt").is_empty());
+        assert_eq!(body("notes/b.txt"), b"world");
+    }
+
     fn tar_file(path: &str, data: &[u8]) -> Vec<u8> {
         let mut header = vec![0u8; 512];
         header[..path.len()].copy_from_slice(path.as_bytes());
@@ -500,7 +694,7 @@ mod tests {
     }
 
     /// Pin8's record, adjusted where Ferroan deliberately differs.
-    /// A throw carries the event's empty scene list (D1). Compact XML that
+    /// A throw carries the event's empty scene list (`OarFileLoaded`). Compact XML that
     /// skips the next element is loaded (D132). A culture-sensitive region
     /// prefix is compared ordinally (D133, TB196).
     fn expected(case: &Value) -> Value {
