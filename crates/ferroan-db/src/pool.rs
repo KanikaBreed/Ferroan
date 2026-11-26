@@ -17,8 +17,9 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
 use crate::backend::Backend;
 use crate::connect::{
-    apply_postgres_timezone, mysql_options, mysql_target, mysql_url_options, postgres_options,
-    postgres_target, postgres_url_options, scrub_driver_message, sqlite_options, sqlite_target,
+    apply_postgres_timezone, mysql_options, mysql_target, mysql_url_options, pgtz_from_env,
+    postgres_options, postgres_target, postgres_url_options, scrub_driver_message, sqlite_options,
+    sqlite_target,
 };
 use crate::error::DbError;
 use crate::expected::expected_version;
@@ -334,10 +335,15 @@ async fn connect_postgres(
     timezone: Option<String>,
 ) -> Result<PgPool, sqlx::Error> {
     // sqlx retries an `after_connect` error until the acquire timeout, so an
-    // invalid Timezone= would surface as a pool timeout. Check it once first.
-    // One pool logs the unreadable-zone warning once, not once per connection.
+    // invalid Timezone= or PGTZ would surface as a pool timeout. Check the
+    // zone Npgsql would send, once, first. One pool logs the unreadable-zone
+    // warning once, not once per connection.
     let warned = Arc::new(AtomicBool::new(false));
-    if let Some(zone) = timezone.clone() {
+    let startup = match timezone.clone() {
+        Some(zone) => Some(zone),
+        None => pgtz_from_env()?,
+    };
+    if let Some(zone) = startup {
         use sqlx::Connection;
         let mut conn = sqlx::postgres::PgConnection::connect_with(&options).await?;
         let applied = apply_postgres_timezone(&mut conn, Some(zone), &warned).await;

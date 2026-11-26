@@ -58,6 +58,7 @@ pub const LLSD_BINARY_DEPTH: &str = "llsd.binary-depth";
 pub const LLSD_XML_DEPTH: &str = "llsd.xml-depth";
 pub const LLSD_NOTATION_DEPTH: &str = "llsd.notation-depth";
 pub const DB_POOL: &str = "db.pool";
+pub const DB_TIMEZONE: &str = "db.timezone";
 pub const TEXTURE_BYTES: &str = "texture.bytes";
 pub const TEXTURE_FACES: &str = "texture.faces";
 pub const TEXTURE_BITFIELD: &str = "texture.bitfield";

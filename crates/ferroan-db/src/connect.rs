@@ -29,7 +29,7 @@ use sqlx::sqlite::SqliteConnectOptions;
 
 use crate::backend::Backend;
 use crate::error::DbError;
-use crate::limits::MAX_POOL_CONNECTIONS;
+use crate::limits::{MAX_POOL_CONNECTIONS, TIMEZONE_BYTES};
 
 const MAX_CONNECTION_STRING: usize = 4096;
 const MAX_PATH: usize = 4096;
@@ -298,28 +298,39 @@ fn url_sets_timezone(url: &str) -> bool {
 }
 
 fn require_timezone(value: &str) -> Result<String, DbError> {
-    if acceptable_timezone(value) {
+    if zone_within_limit(value) {
         Ok(value.to_string())
     } else {
-        Err(DbError::Input(
-            "PostgreSQL Timezone is empty or has an unsupported character".to_string(),
-        ))
+        Err(DbError::Input(format!(
+            "PostgreSQL Timezone is empty or longer than {}",
+            ferroan_diag::DB_TIMEZONE
+        )))
     }
 }
 
-fn acceptable_timezone(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 128
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b'_' | b'+' | b'-' | b':')
-        })
+/// Length bound only. The value is a bound parameter, so a character filter
+/// adds no safety and rejects zones PostgreSQL accepts (`5.5`, POSIX strings,
+/// `<+0330>-03:30`). Empty is not a zone. A longer value reports `db.timezone`.
+fn zone_within_limit(value: &str) -> bool {
+    if value.len() > TIMEZONE_BYTES {
+        let observed = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        let configured = u64::try_from(TIMEZONE_BYTES).unwrap_or(u64::MAX);
+        ferroan_diag::refuse(
+            ferroan_diag::DB_TIMEZONE,
+            ferroan_diag::Kind::Hard,
+            configured,
+            observed,
+            "db",
+        );
+        return false;
+    }
+    !value.is_empty()
 }
 
 /// The last `timezone` or `TimeZone` assignment in PostgreSQL's `postmaster.opts`.
 ///
-/// The file is one shell-quoted command line. A value that is not a time-zone
-/// name is ignored so the caller can try the configuration file next.
+/// The file is one shell-quoted command line. The value is taken as stored.
+/// An empty or over-long value is ignored so the caller can try the configuration file.
 pub(crate) fn timezone_from_postmaster_opts(text: &str) -> Option<String> {
     let tokens = shell_tokens(text)?;
     let mut found = None;
@@ -357,8 +368,7 @@ fn zone_assignment(token: &str) -> Option<&str> {
 }
 
 fn accepted_zone(value: &str) -> Option<String> {
-    let value = value.trim();
-    if acceptable_timezone(value) {
+    if zone_within_limit(value) {
         Some(value.to_string())
     } else {
         None
@@ -449,45 +459,49 @@ pub(crate) async fn apply_postgres_timezone(
 
 /// Npgsql's `PostgresEnvironment.TimeZone`: the `PGTZ` variable.
 ///
-/// An unset variable is not a zone. A value this parser would refuse for
-/// `Timezone=` refuses the connection instead of being sent.
-fn pgtz_from_env() -> Result<Option<String>, sqlx::Error> {
+/// An unset variable is not a zone. The value is sent as given, with no trim.
+/// An empty or over-long value refuses the connection instead of being sent.
+pub(crate) fn pgtz_from_env() -> Result<Option<String>, sqlx::Error> {
     match std::env::var("PGTZ") {
         Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(unsupported_pgtz()),
-        Ok(value) => {
-            let value = value.trim();
-            if acceptable_timezone(value) {
-                Ok(Some(value.to_string()))
-            } else {
-                Err(unsupported_pgtz())
-            }
-        }
+        Err(std::env::VarError::NotUnicode(_)) => Err(unsupported_pgtz("PGTZ is not Unicode")),
+        Ok(value) => pgtz_value(&value).map(Some),
     }
 }
 
-fn unsupported_pgtz() -> sqlx::Error {
-    sqlx::Error::Configuration(Box::new(UnsupportedZone(
-        "PGTZ is empty or has an unsupported character",
-    )))
+/// `PGTZ` as given. No trim. Empty and over-long values refuse the connection.
+fn pgtz_value(value: &str) -> Result<String, sqlx::Error> {
+    if zone_within_limit(value) {
+        Ok(value.to_string())
+    } else {
+        Err(unsupported_pgtz(&format!(
+            "PGTZ is empty or longer than {}",
+            ferroan_diag::DB_TIMEZONE
+        )))
+    }
+}
+
+fn unsupported_pgtz(message: &str) -> sqlx::Error {
+    sqlx::Error::Configuration(Box::new(UnsupportedZone(message.to_string())))
 }
 
 #[derive(Debug)]
-struct UnsupportedZone(&'static str);
+struct UnsupportedZone(String);
 
 impl std::fmt::Display for UnsupportedZone {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.0)
+        formatter.write_str(&self.0)
     }
 }
 
 impl std::error::Error for UnsupportedZone {}
 
+#[derive(Debug, PartialEq, Eq)]
 enum ServerZone {
     Found(String),
     /// Role, database, command line and configuration file named no zone.
     Absent,
-    /// No role or database zone, and this login cannot read the files (D104).
+    /// No role or database zone, and this login cannot read `pg_file_settings` (D104).
     Unreadable,
 }
 
@@ -500,17 +514,35 @@ async fn server_timezone(
     if let Some(zone) = role_database_timezone(conn).await? {
         return Ok(ServerZone::Found(zone));
     }
-    let mut readable = false;
-    if let Some(zone) = command_line_timezone(conn, &mut readable).await? {
-        return Ok(ServerZone::Found(zone));
-    }
-    if let Some(zone) = configured_timezone(conn, &mut readable).await? {
-        return Ok(ServerZone::Found(zone));
-    }
-    if readable {
-        Ok(ServerZone::Absent)
+    let command_line = command_line_timezone(conn).await?;
+    let (file_readable, file_zone) = if command_line.is_some() {
+        (false, None)
     } else {
-        Ok(ServerZone::Unreadable)
+        configured_timezone(conn).await?
+    };
+    Ok(server_zone_from_probes(
+        command_line,
+        file_readable,
+        file_zone,
+    ))
+}
+
+/// `Absent` only when `pg_file_settings` itself was readable and named no zone.
+/// A readable `postmaster.opts` that names no zone does not decide that.
+fn server_zone_from_probes(
+    command_line: Option<String>,
+    file_readable: bool,
+    file_zone: Option<String>,
+) -> ServerZone {
+    if let Some(zone) = command_line {
+        return ServerZone::Found(zone);
+    }
+    if !file_readable {
+        return ServerZone::Unreadable;
+    }
+    match file_zone {
+        Some(zone) => ServerZone::Found(zone),
+        None => ServerZone::Absent,
     }
 }
 
@@ -544,19 +576,36 @@ SELECT source_rank, setting FROM ( \
 ) AS levels \
 ORDER BY source_rank, ord";
 
+const ROLE_SETTINGS_PRIVILEGE: &str =
+    "SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')";
+
 async fn role_database_timezone(
     conn: &mut sqlx::postgres::PgConnection,
 ) -> Result<Option<String>, sqlx::Error> {
-    let rows: Vec<(i32, String)> = sqlx::query_as(ROLE_DATABASE_ZONE)
-        .fetch_all(&mut *conn)
+    // Ask before reading. A refused SELECT is written to the server log and
+    // sqlx retries it until the acquire timeout. No privilege falls through.
+    let allowed: bool = sqlx::query_scalar(ROLE_SETTINGS_PRIVILEGE)
+        .fetch_one(&mut *conn)
         .await?;
+    if !allowed {
+        return Ok(None);
+    }
+    let rows: Vec<(i32, String)> = match sqlx::query_as(ROLE_DATABASE_ZONE)
+        .fetch_all(&mut *conn)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) if insufficient_privilege(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     Ok(timezone_from_ranked_settings(
         rows.iter().map(|(rank, setting)| (*rank, setting.as_str())),
     ))
 }
 
-/// The last acceptable `timezone` assignment. A lower rank does not replace
-/// a higher one. `entries` are in the order PostgreSQL applies them.
+/// The last in-limit `timezone` assignment. A lower rank does not replace a
+/// higher one. `entries` are in the order PostgreSQL applies them. The value
+/// is taken as stored.
 pub(crate) fn timezone_from_ranked_settings<'a>(
     entries: impl IntoIterator<Item = (i32, &'a str)>,
 ) -> Option<String> {
@@ -578,8 +627,7 @@ fn timezone_from_setting(entry: &str) -> Option<&str> {
     if !key.eq_ignore_ascii_case("timezone") {
         return None;
     }
-    let value = value.trim();
-    if acceptable_timezone(value) {
+    if zone_within_limit(value) {
         Some(value)
     } else {
         None
@@ -601,29 +649,21 @@ ORDER BY seqno DESC LIMIT 1";
 
 async fn command_line_timezone(
     conn: &mut sqlx::postgres::PgConnection,
-    readable: &mut bool,
 ) -> Result<Option<String>, sqlx::Error> {
     match probe_text(conn, READ_FILE_PRIVILEGE, POSTMASTER_OPTS).await? {
         Probe::Denied => Ok(None),
-        Probe::Value(text) => {
-            *readable = true;
-            Ok(text.as_deref().and_then(timezone_from_postmaster_opts))
-        }
+        Probe::Value(text) => Ok(text.as_deref().and_then(timezone_from_postmaster_opts)),
     }
 }
 
+/// Readable is true only when this probe itself was allowed. The setting is
+/// taken as stored.
 async fn configured_timezone(
     conn: &mut sqlx::postgres::PgConnection,
-    readable: &mut bool,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<(bool, Option<String>), sqlx::Error> {
     match probe_text(conn, FILE_SETTINGS_PRIVILEGE, FILE_TIMEZONE).await? {
-        Probe::Denied => Ok(None),
-        Probe::Value(zone) => {
-            *readable = true;
-            Ok(zone
-                .map(|zone| zone.trim().to_string())
-                .filter(|zone| acceptable_timezone(zone)))
-        }
+        Probe::Denied => Ok((false, None)),
+        Probe::Value(zone) => Ok((true, zone.filter(|zone| zone_within_limit(zone)))),
     }
 }
 
@@ -1038,11 +1078,20 @@ mod tests {
             .unwrap_err();
         let text = error.to_string();
         assert!(text.contains("Timezone"), "{text}");
-        let odd = postgres_target(
+        assert!(text.contains(ferroan_diag::DB_TIMEZONE), "{text}");
+        let (spaced, _) = postgres_target(
             "Server=localhost;Database=db;User Id=u;Password=p;Timezone=America/New York",
         )
+        .unwrap();
+        assert_eq!(spaced.timezone.as_deref(), Some("America/New York"));
+        let long = "A".repeat(TIMEZONE_BYTES + 1);
+        let too_long = postgres_target(&format!(
+            "Server=localhost;Database=db;User Id=u;Password=p;Timezone={long}"
+        ))
         .unwrap_err();
-        assert!(!odd.to_string().contains("New York"));
+        let too_long = too_long.to_string();
+        assert!(too_long.contains(ferroan_diag::DB_TIMEZONE), "{too_long}");
+        assert!(!too_long.contains(&long));
         let mysql = mysql_target("Server=localhost;Database=db;User ID=u;Password=p;Timezone=UTC")
             .unwrap_err();
         assert!(mysql.to_string().contains("unsupported MySQL"));
@@ -1084,12 +1133,16 @@ mod tests {
         );
         let database_when_the_role_row_names_no_zone = [
             (1, "search_path=public"),
-            (2, "TimeZone=not a zone"),
+            (2, "TimeZone="),
             (3, "TimeZone=Europe/Berlin"),
         ];
         assert_eq!(
             timezone_from_ranked_settings(database_when_the_role_row_names_no_zone).as_deref(),
             Some("Europe/Berlin")
+        );
+        assert_eq!(
+            timezone_from_ranked_settings([(2, "TimeZone=not a zone")]).as_deref(),
+            Some("not a zone")
         );
         assert_eq!(
             timezone_from_ranked_settings([(4, "TimeZone=UTC")]).as_deref(),
@@ -1124,6 +1177,92 @@ mod tests {
         );
         assert!(timezone_from_postmaster_opts("postgres -c listen_addresses=*").is_none());
         assert!(timezone_from_postmaster_opts("postgres \"-c").is_none());
+        assert_eq!(
+            timezone_from_postmaster_opts("postgres \"-ctimezone=5.5 \"").as_deref(),
+            Some("5.5 ")
+        );
+    }
+
+    #[test]
+    fn numeric_and_posix_zones_are_sent_as_given() {
+        let samples = ["5.5", "EST5EDT,M3.2.0,M11.1.0", "<+0330>-03:30"];
+        for sample in samples {
+            let (target, _) = postgres_target(&format!(
+                "Server=localhost;Database=db;User Id=u;Password=p;Timezone={sample}"
+            ))
+            .unwrap();
+            assert_eq!(target.timezone.as_deref(), Some(sample));
+            assert_eq!(require_timezone(sample).unwrap(), sample);
+            let ranked = format!("TimeZone={sample}");
+            assert_eq!(
+                timezone_from_ranked_settings([
+                    (1, ranked.as_str()),
+                    (2, "TimeZone=Europe/Berlin")
+                ])
+                .as_deref(),
+                Some(sample)
+            );
+            let command = format!("postgres -ctimezone={sample}");
+            assert_eq!(
+                timezone_from_postmaster_opts(&command).as_deref(),
+                Some(sample)
+            );
+            let setting = format!("timezone={sample}");
+            assert_eq!(timezone_from_setting(&setting), Some(sample));
+        }
+        assert_eq!(require_timezone(" 5.5").unwrap(), " 5.5");
+        assert_eq!(timezone_from_setting("TimeZone= 5.5"), Some(" 5.5"));
+        assert_eq!(
+            timezone_from_setting("TimeZone=<+0330>-03:30"),
+            Some("<+0330>-03:30")
+        );
+        let too_long = format!("TimeZone={}", "B".repeat(TIMEZONE_BYTES + 1));
+        assert!(timezone_from_setting(&too_long).is_none());
+        assert_eq!(
+            timezone_from_ranked_settings([(1, too_long.as_str()), (2, "TimeZone=Europe/Berlin")])
+                .as_deref(),
+            Some("Europe/Berlin")
+        );
+    }
+
+    #[test]
+    fn pgtz_keeps_surrounding_characters() {
+        for sample in ["5.5", "EST5EDT,M3.2.0,M11.1.0", "<+0330>-03:30", " 5.5"] {
+            assert_eq!(pgtz_value(sample).unwrap(), sample);
+        }
+        let empty = pgtz_value("").unwrap_err().to_string();
+        assert!(empty.contains(ferroan_diag::DB_TIMEZONE), "{empty}");
+        let long = "C".repeat(TIMEZONE_BYTES + 1);
+        let too_long = pgtz_value(&long).unwrap_err().to_string();
+        assert!(too_long.contains(ferroan_diag::DB_TIMEZONE), "{too_long}");
+        assert!(!too_long.contains(&long));
+    }
+
+    #[test]
+    fn absent_requires_a_readable_file_settings_probe() {
+        assert_eq!(
+            server_zone_from_probes(None, false, None),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, None),
+            ServerZone::Absent
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, Some("America/New_York".to_string())),
+            ServerZone::Found("America/New_York".to_string())
+        );
+        assert_eq!(
+            server_zone_from_probes(Some("America/New_York".to_string()), false, None),
+            ServerZone::Found("America/New_York".to_string())
+        );
+    }
+
+    #[test]
+    fn role_catalog_is_checked_before_the_read() {
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains("has_table_privilege"));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_db_role_setting"));
+        assert!(ROLE_DATABASE_ZONE.contains("session_user"));
     }
 
     #[test]

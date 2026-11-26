@@ -257,6 +257,111 @@ pub fn run() -> ExitCode {
     ) {
         return ExitCode::FAILURE;
     }
+    // PostgreSQL reports 5.5 as <+05:30>-05:30 (+330). Asia/Kolkata is the
+    // same offset, so the process clock matches the session.
+    let fixed = match measured_literal("5.5", "5.5") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_offset(&fixed, "330") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let fixed_ado = postgres_connection(Some("5.5"));
+    if !cargo_zone(
+        "postgres Timezone=5.5",
+        &zone_dll,
+        "postgres",
+        &fixed_ado,
+        &fixed,
+        "Asia/Kolkata",
+        &[],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres PGTZ=5.5",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &fixed,
+        "Asia/Kolkata",
+        &[("PGTZ", "5.5")],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    let posix = "EST5EDT,M3.2.0,M11.1.0";
+    let posix_zone = match measured_literal("posix", posix) {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if posix_zone.name != posix {
+        eprintln!(
+            "session-zone: POSIX zone was reported as {}, not {posix}",
+            posix_zone.name
+        );
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres PGTZ=EST5EDT,M3.2.0,M11.1.0",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &posix_zone,
+        "America/New_York",
+        &[("PGTZ", posix)],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql("ALTER ROLE ferroan SET timezone TO 'Europe/Berlin'") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) =
+        psql("ALTER ROLE ferroan IN DATABASE ferroan SET timezone TO '<+0330>-03:30'")
+    {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let ranked = match measured("postgres") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_offset(&ranked, "210") {
+        eprintln!("session-zone: rank-1 <+0330>-03:30 was not applied: {error}");
+        return ExitCode::FAILURE;
+    }
+    if ranked.name == "Europe/Berlin" {
+        eprintln!("session-zone: rank-2 Europe/Berlin replaced <+0330>-03:30");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres role-in-database <+0330>-03:30",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &ranked,
+        "Asia/Tehran",
+        &[],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql("REVOKE SELECT ON pg_catalog.pg_db_role_setting FROM PUBLIC") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_catalog(&unpriv_plain) {
+        return ExitCode::FAILURE;
+    }
     if let Err(error) = postgres_log_has_no_privilege_denial() {
         eprintln!("session-zone: {error}");
         return ExitCode::FAILURE;
@@ -336,6 +441,36 @@ fn measured(kind: &str) -> Result<Measured, String> {
     parse_measured(kind, &String::from_utf8_lossy(&output.stdout))
 }
 
+fn measured_literal(label: &str, zone: &str) -> Result<Measured, String> {
+    let sql = format!(
+        "BEGIN; SET TIME ZONE '{}'; SELECT current_setting('TimeZone') || ' ' || ((EXTRACT(TIMEZONE FROM now()) / 60)::integer)::text; ROLLBACK;",
+        zone.replace('\'', "''")
+    );
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            POSTGRES_NAME,
+            "psql",
+            "-U",
+            "ferroan",
+            "-d",
+            "ferroan",
+            "-tA",
+            "-c",
+            &sql,
+        ])
+        .output()
+        .map_err(|error| format!("could not read the {label} zone: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "could not read the {label} zone: {}",
+            stderr.trim()
+        ));
+    }
+    parse_measured(label, &String::from_utf8_lossy(&output.stdout))
+}
+
 fn parse_measured(kind: &str, text: &str) -> Result<Measured, String> {
     for line in text.lines().rev() {
         let line = line.trim();
@@ -394,6 +529,41 @@ fn cargo_zone(
         Ok(status) if status.success() => true,
         Ok(status) => {
             eprintln!("session-zone: {label} exited with {status}");
+            false
+        }
+        Err(error) => {
+            eprintln!("session-zone: could not run cargo: {error}");
+            false
+        }
+    }
+}
+
+fn cargo_catalog(ado: &str) -> bool {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(crate::repo_root())
+        .env_remove("FERROAN_MYSQL_URL")
+        .env_remove("FERROAN_POSTGRES_URL")
+        .env_remove("DATABASE_URL")
+        .env_remove("PGTZ")
+        .env("FERROAN_ZONE_CATALOG_ONLY", "1")
+        .env("FERROAN_ZONE_CATALOG_ADO", ado)
+        .args([
+            "test",
+            "-p",
+            "ferroan-services",
+            "--lib",
+            "session_zone_csharp_reads_ferroan_rows",
+            "--",
+            "--nocapture",
+        ]);
+    println!(
+        "$ cargo test -p ferroan-services --lib session_zone_csharp_reads_ferroan_rows (pg_db_role_setting revoked)"
+    );
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            eprintln!("session-zone: revoked catalog exited with {status}");
             false
         }
         Err(error) => {
@@ -663,6 +833,17 @@ fn psql(sql: &str) -> Result<(), String> {
         } else {
             Err(format!("psql failed: {}", stderr.trim()))
         }
+    }
+}
+
+fn expect_offset(zone: &Measured, offset: &str) -> Result<(), String> {
+    if zone.offset == offset {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} offset is {}, not {offset}",
+            zone.name, zone.offset
+        ))
     }
 }
 

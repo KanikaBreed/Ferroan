@@ -59,6 +59,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `llsd.xml-depth` | 256 | `crates/ferroan-llsd/src/xml.rs` | hard | no | No matching depth cap. |
 | `llsd.notation-depth` | 128 | `crates/ferroan-llsd/src/notation.rs` | hard | no | No matching depth cap. |
 | `db.pool` | 8 connections | `crates/ferroan-db/src/limits.rs` | soft | no | Tranquillity's `Maximum Pool Size` is not honoured. A full pool waits up to 10 seconds. High-water is 7 open connections. |
+| `db.timezone` | 128 bytes | `crates/ferroan-db/src/connect.rs` | hard | no | Npgsql sends `Timezone=` and `PGTZ` as given. PostgreSQL accepts a fixed offset (`5.5`), a POSIX zone (`EST5EDT,M3.2.0,M11.1.0`) and a quoted abbreviation (`<+0330>-03:30`). Ferroan checks only this length before `set_config`. An empty value is not a zone. A longer `Timezone=` or `PGTZ` refuses the connection. A longer stored role, database, command-line or file value is not applied. |
 | `texture.bytes` | 64 KiB | `crates/ferroan-types/src/texture.rs` | hard | no | OpenMetaverse does not cap a texture entry. |
 | `texture.faces` | 45 | `crates/ferroan-types/src/texture.rs` | hard | no | `maxfaces` is 45 in `GetBytes`. A higher index is refused. |
 | `texture.bitfield` | 8 groups | `crates/ferroan-types/src/texture.rs` | hard | no | The face bitfield is not capped at 8 groups. |

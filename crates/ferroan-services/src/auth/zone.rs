@@ -28,6 +28,12 @@ struct ZoneEnv {
 
 #[tokio::test]
 async fn session_zone_csharp_reads_ferroan_rows() {
+    if std::env::var("FERROAN_ZONE_CATALOG_ONLY").is_ok() {
+        let ado = required("FERROAN_ZONE_CATALOG_ADO");
+        assert_postgres_zone(&ado, "UTC", 0).await;
+        println!("session zone: a login without SELECT on pg_db_role_setting still connects");
+        return;
+    }
     let Some(dll) = std::env::var_os("FERROAN_ZONE_ORACLE") else {
         eprintln!(
             "FERROAN_ZONE_ORACLE is unset; run cargo xtask session-zone for the Pin8 comparison"
