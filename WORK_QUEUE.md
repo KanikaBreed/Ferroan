@@ -183,7 +183,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
-| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | READY after Q65c2 |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (review the Task drain and material-override split below) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3 |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
@@ -746,6 +746,16 @@ The manager approved Q65a through Q65d on 25 November. Their dependencies and ac
 The store swap and the 500-prim acceptance remain in Q65d. The proposed parts complete P2.5a3 together.
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
+
+### Q65c3 review and proposed split
+
+**BLOCKED** (`feat/q65c3-task-drain`, Pin8 `c401bceecd`). Estimated one day for the mixed Task drain and live comparison, plus half to one day for the negotiated material send and its C# evidence. `LLClientView.ProcessEntityUpdates` sends the full and terse lists on Task. Its separate `needMaterials` path sends reliable `GenericStreamingMessage` method 16757 for a PBR viewer. The P2.5d row also names this path.
+
+The Q65c1 scene has eight shapes. Seven have no stored override blob and the mesh's blob is the single byte `00`. `PrimitiveBaseShape.RenderMaterialsOvrFromRawBin` reads this as zero entries. The capture bot's seed requests none of `VTPBR`, `VETPBR` or `ModifyMaterialParams`, and the recorder selects only full and terse updates and throttle requests. Q65c1 proves the arrival batches. A positive override comparison needs another Pin8 observation.
+
+1. **Mixed Task drain and two-viewer comparison** (after Q65c2, about one day). Use the Pin8 dequeue estimates (18 bytes per new list, 150 per ordinary full prim, 70 per vegetation full prim, 63 per avatar terse). Partition reliable full packets at incremental zero-encoder position 900, retaining the pending run at the cut. Exercise positions 899 and 900 and a refused oversized block followed by a deliverable part. Replay Q65c1 and run both viewers on Ferroan. Check the same eight identities and parent IDs, root before child, walking terse updates, 6+2 initial parts at 512,000 bit/s and single-part datagrams at 8,000 bit/s. Compare the limited viewer's delay and resumption after restore to its own capture clock. In the Pin8 fixture it restored Task at 1927 ms and received the last initial part at 1945 ms. Unrelated part order and terse grouping vary.
+2. **Material overrides on Task** (after the mixed drain, half to one day). Use a stored non-tree part with a nonempty override and two test viewers, only one requesting PBR in its seed. Capture the separate method 16757 datagram on Pin8, check the unredacted bytes before aliasing the local ID, and compare Ferroan's reliability, method, per-face notation payload and recipient with that evidence. Carry the negotiated seed flag to the circuit, exercise the reflection-probe exclusion and the oversized-payload skip, and keep the full update deliverable. The manager can assign this UDP send to the second item and leave the HTTP `RenderMaterials` capability in P2.5d.
+
 
 
 ### Q79 proposed split (P2.11a)
