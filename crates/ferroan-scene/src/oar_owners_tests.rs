@@ -429,12 +429,15 @@ async fn missing_services_answer_no_group_and_no_alias() {
     );
 }
 
-#[tokio::test]
-async fn a_full_cache_repeats_the_call_and_keeps_the_answer() {
+// Synchronous, so the limit counter lock is never held across an await.
+#[test]
+fn a_full_cache_repeats_the_call_and_keeps_the_answer() {
+    let _limits = crate::parcels::limits_lock();
+    let before = crate::parcels::limit_hits("oar.owner-lookups", "drop");
     let mut resolver = OwnerResolver::with_cache_limit(grid(), options(false, false), 2);
     for _ in 0..2 {
         let mut object = single(LOCAL, STRANGER, LOCAL2, GROUP);
-        resolver.modify_scene_object(&mut object).await;
+        ready(resolver.modify_scene_object(&mut object));
         let part = &object.parts[0];
         assert_eq!(part.creator_id, LOCAL.to_string());
         assert_eq!(
@@ -451,4 +454,34 @@ async fn a_full_cache_repeats_the_call_and_keeps_the_answer() {
     assert_eq!(count(format!("GetUserAccount {LOCAL2}")), 2);
     assert_eq!(resolver.users.len(), 2);
     assert_eq!(resolver.groups.len(), 2);
+    // Per object: STRANGER twice and LOCAL2 once as accounts, GROUP twice as a group.
+    let dropped = crate::parcels::limit_hits("oar.owner-lookups", "drop") - before;
+    assert_eq!(dropped, 10);
+}
+
+// Synchronous, so the limit counter lock is never held across an await.
+#[test]
+fn an_absent_alias_past_the_bound_is_warned_about_once() {
+    let _limits = crate::parcels::limits_lock();
+    const OTHER: Uuid = Uuid::from_u128(0xb2);
+    let mut resolver = OwnerResolver::with_cache_limit(grid(), options(true, false), 1);
+    for _ in 0..2 {
+        let mut object = single(LOCAL, STRANGER, OTHER, GROUP);
+        ready(resolver.modify_scene_object(&mut object));
+        let part = &object.parts[0];
+        assert_eq!((part.owner_id, part.last_owner_id), (ESTATE, ESTATE));
+    }
+    // STRANGER fills the alias cache. OTHER is asked again each time, and
+    // goes into the warned set once.
+    let calls = &resolver.lookups().calls;
+    let count = |call: String| calls.iter().filter(|seen| **seen == call).count();
+    assert_eq!(count(format!("GetUserForAlias {STRANGER}")), 1);
+    assert_eq!(count(format!("GetUserForAlias {OTHER}")), 2);
+    assert_eq!(resolver.aliases.keys().collect::<Vec<_>>(), [&STRANGER]);
+    assert_eq!(resolver.warned, HashSet::from([OTHER]));
+}
+
+/// The test lookups answer at once, so the rewrite finishes on its first poll.
+fn ready(future: impl Future<Output = ()>) {
+    futures_util::FutureExt::now_or_never(future).expect("test lookups are ready");
 }

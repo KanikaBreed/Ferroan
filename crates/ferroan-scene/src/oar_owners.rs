@@ -56,13 +56,16 @@
 //! one. Every answer, including an absent alias, is remembered for the whole
 //! load, so each id is asked about once. A cache that reaches
 //! [`MAX_OWNER_LOOKUPS`] stops remembering new ids and reports
-//! `oar.owner-lookups`; the answers stay the same, only the calls repeat.
+//! `oar.owner-lookups`. Those ids are asked about again each time they
+//! appear, so their answers match Pin8's only while the services answer
+//! consistently. The absent-alias warning is still written once per id while
+//! a second set of the same size has room.
 //!
 //! This is the console path, `ArchiveReadRequest(Scene, string, …)`. The
 //! stream constructor does not read `default-user` and does not seed the
 //! zero group, so there the zero group id is asked about once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 
 use ferroan_diag::{Kind, OAR_OWNER_LOOKUPS, drop_bound};
@@ -121,6 +124,8 @@ pub struct OwnerResolver<L> {
     users: HashMap<Uuid, bool>,
     groups: HashMap<Uuid, bool>,
     aliases: HashMap<Uuid, Option<Uuid>>,
+    /// Absent aliases already warned about that the full alias cache could not keep.
+    warned: HashSet<Uuid>,
     cache_limit: usize,
 }
 
@@ -139,6 +144,7 @@ impl<L: OwnerLookups> OwnerResolver<L> {
             users,
             groups,
             aliases: HashMap::new(),
+            warned: HashSet::new(),
             cache_limit,
         }
     }
@@ -238,8 +244,14 @@ impl<L: OwnerLookups> OwnerResolver<L> {
                 Some(alias) => *alias,
                 None => {
                     let alias = self.lookups.alias_user(id).await;
-                    remember(&mut self.aliases, id, alias, self.cache_limit);
-                    if alias.is_none() {
+                    let kept = remember(&mut self.aliases, id, alias, self.cache_limit);
+                    // Pin8 warns the first time an id has no alias. An id the
+                    // full cache did not keep is warned about once while
+                    // `warned` has room.
+                    if alias.is_none()
+                        && (kept
+                            || (self.warned.len() < self.cache_limit && self.warned.insert(id)))
+                    {
                         tracing::warn!(
                             "[ARCHIVEREADREQUEST] No alias found for User {id} and not a local user"
                         );
@@ -261,9 +273,11 @@ impl<L: OwnerLookups> OwnerResolver<L> {
     }
 }
 
-fn remember<V>(cache: &mut HashMap<Uuid, V>, id: Uuid, value: V, limit: usize) {
+/// Keep the answer while the cache has room. False when it was full.
+fn remember<V>(cache: &mut HashMap<Uuid, V>, id: Uuid, value: V, limit: usize) -> bool {
     if cache.len() < limit {
         cache.insert(id, value);
+        true
     } else {
         let observed = u64::try_from(cache.len())
             .unwrap_or(u64::MAX)
@@ -276,6 +290,7 @@ fn remember<V>(cache: &mut HashMap<Uuid, V>, id: Uuid, value: V, limit: usize) {
             observed,
             "oar-load",
         );
+        false
     }
 }
 
