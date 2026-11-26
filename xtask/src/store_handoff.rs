@@ -369,6 +369,7 @@ pub(super) fn run(
             true,
             (&private, root, ferroan),
             None,
+            None,
         )?;
         viewer(&proc.log, count)
     };

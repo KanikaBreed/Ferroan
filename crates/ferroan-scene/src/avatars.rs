@@ -25,9 +25,9 @@
 //
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs
-//     (CompleteMovement's SendInitialAvatarDataToAllAgents and appearance
-//      loop, SendOtherAgentsAvatarFullToMe, HasMovedAway, MakeChildAgent's
-//      kills, SendKillTo)
+//     (CompleteMovement's SendInitialAvatarDataToAllAgents, appearance and
+//      animation loop, SendOtherAgentsAvatarFullToMe, SendAnimPack,
+//      HasMovedAway, MakeChildAgent's kills, SendKillTo)
 //   Source/OpenSim.Region.Framework/Scenes/Scene.cs (RemoveClient's kill)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
 //     (SendEntityFullUpdateImmediate, CreateAvatarUpdateBlock's live values,
@@ -38,15 +38,20 @@
 
 //! What one viewer is told about the other avatars, outside the entity
 //! queue. C# writes these straight onto the viewer's task category:
-//! `SendEntityFullUpdateImmediate`, `SendAppearance` and `SendKillObject`.
+//! `SendEntityFullUpdateImmediate`, `SendAppearance`, `SendAnimations` and
+//! `SendKillObject`.
 //! The frame decides when and to whom; the circuit writes the packets in
 //! the order they were queued.
 //!
 //! - An arrival (`CompleteMovement`) sends the avatar's full update to every
 //!   other attached viewer, then its appearance to each of them. Its own
-//!   viewer gets both from its circuit.
-//! - `SendInitialData` sends every other root avatar's full update and
-//!   appearance to the viewer that has just finished its wait.
+//!   viewer gets both from its circuit. Its animations follow, on its own
+//!   viewer and on each of the others (`SendAnimPackToAgent`,
+//!   `SendAnimPackToAgentNF`).
+//! - `SendInitialData` sends every other root avatar's full update,
+//!   appearance and animations to the viewer that has just finished its wait.
+//! - A root's animation pack (`SendAnimPack`) goes to every viewer, its own
+//!   and children included, whenever its animator owes one.
 //! - A root that leaves the region (`RemoveClient`) is killed on every other
 //!   viewer. A hop away kills it on every root viewer that has no child in
 //!   the destination (`MakeChildAgent`), and a hop out of view range kills
@@ -55,7 +60,8 @@
 //! - Every 50th frame each viewer whose circuit is open gets the minimap
 //!   dots ([`crate::coarse`]), behind whatever is already waiting.
 //!
-//! Animations and attachments are later rows (P2.3b, P2.4).
+//! Attachments are a later row (P2.4). Nothing hides an avatar by parcel
+//! yet (`ParcelHideThisAvatar`).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -63,6 +69,7 @@ use std::sync::Arc;
 use ferroan_diag::{Kind, REGION_AVATAR_PACKETS, refuse};
 use uuid::Uuid;
 
+use crate::animation::Anim;
 use crate::coarse::CoarseLocations;
 
 /// Waiting avatar packets per viewer. C# writes them to the outbox with no
@@ -111,6 +118,9 @@ pub enum AvatarPacket {
     Full(AvatarFull),
     /// `SendAppearanceToAgentNF` with cofVersion -1.
     Appearance { agent: Uuid, look: Arc<AvatarLook> },
+    /// `SendAnimations`: `agent`'s set as `GetArrays` reads it when queued,
+    /// the default first. The circuit builds the blocks for its viewer.
+    Animations { agent: Uuid, animations: Vec<Anim> },
     /// `SendKillObject`.
     Kill(Vec<u32>),
     /// `SendCoarseLocationUpdate`.

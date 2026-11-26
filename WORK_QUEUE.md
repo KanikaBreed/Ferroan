@@ -76,7 +76,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | DONE (#185) |
 | Q10af | Pin8: move the Tranquillity pin to the maintainer's `dev-build` roll-up (`develop` `923a4cd70b` plus their 29 open OpenSim-NGC PRs #499 and #503 to #530) | DONE (#190) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (#192) |
-| Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
+| Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | DONE (this PR) |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
@@ -165,8 +165,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q47 | P2.2c: minimap dots (`CoarseLocationUpdate`) | DONE (this PR) |
 | Q48 | P2.3a: avatars see each other, `KillObject` on leave, `avatars: pass` | DONE (this PR) |
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | DONE (this PR) |
-| Q49 | P2.3b1: the animation state machine | READY after Q46b and Q48 |
-| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
+| Q49 | P2.3b1: the animation state machine | DONE (this PR) |
+| Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | DONE (this PR) |
+| Q379 | P2.3e: hide avatars by parcel (`ParcelHideThisAvatar`, `SeeAVs`) | READY after Q50 |
+| Q380 | P2.3f: retry refused inbound posts in order (`AgentAnimation`) | READY after Q50 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
@@ -229,9 +231,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q214 | P2.0e4.1: OAR control file and region path | READY |
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
+| Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
 | Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
-| Q218 | P2.0e4.5a: OAR owner and group resolution | READY |
+| Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
+| Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
 | Q220 | P2.0e4.6a: OAR parcels in memory | READY |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |

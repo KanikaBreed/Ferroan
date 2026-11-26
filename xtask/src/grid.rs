@@ -71,7 +71,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::live;
+use crate::memory;
 
+#[path = "animations_capture.rs"]
+mod animations_capture;
 #[path = "avatars_capture.rs"]
 mod avatars_capture;
 #[path = "child_capture.rs"]
@@ -102,6 +105,25 @@ mod store_handoff;
 
 #[path = "grid_up.rs"]
 mod persistent;
+
+#[cfg(target_os = "linux")]
+#[path = "memory_run.rs"]
+mod memory_run;
+
+/// `cargo xtask live memory [--bulk]`: memory of the C# and Ferroan region
+/// processes on the same scenes with bots logged in, and the C# cost per
+/// extra region (P0.10n11).
+pub fn memory(bulk: bool) -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    {
+        live::finish(memory_run::run(bulk))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bulk;
+        live::finish(Err("cargo xtask live runs on Linux".to_string()))
+    }
+}
 
 pub fn up(bind: Ipv4Addr) -> std::process::ExitCode {
     live::finish(persistent::up(bind))
@@ -240,6 +262,10 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
         if region.prim_capture {
             ini.push_str("    SupportViewerObjectsCache = false\n");
         }
+    } else if region.prim_capture {
+        // A stored scene without a capture (`live memory`): the bot still
+        // counts full updates, so the viewer cache stays off.
+        ini.push_str("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n");
     }
     Ok(ini)
 }
@@ -1080,6 +1106,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         docker,
     )?);
     let home_log = require_started(&grid.home, "home region")?.log.clone();
+    let meter = watch_grid(&grid, ferroan, docker)?;
     if ferroan {
         let extra = docker.then(|| crate::docker::host_log_dir(crate::docker::NAME_HOME));
         ferroan_bot::set_log_redaction_check(true, extra);
@@ -1156,6 +1183,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         ferroan,
         (&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan),
         status.as_ref().map(|(region, metrics)| (region.as_str(), metrics.as_str())),
+        Some(meter.after_login()),
     ).and_then(|mut report| {
         if row.login_probe {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
@@ -1172,7 +1200,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                     }
                     report.lines.push_str("\nmetrics: root agents 0 after logout");
                 }
-                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true), None)?;
+                let second = run_bot(scenario, &format!("http://{ROBUST_BIND}:{robust_public}/"), &estate, &chat, &home_log, true, (&private_uri, &root, true), None, Some(meter.after_login()))?;
                 report.http.extend(second.http);
                 report.lines.push_str("\nlogout state: GridUser offline, Presence empty; second login and logout pass");
             }
@@ -1234,9 +1262,37 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         String::new()
     };
+    // Every bot has logged out and the scenario's service checks are done.
+    let memory = if failed {
+        Ok(Vec::new())
+    } else {
+        meter
+            .last_point("after logout")
+            .and_then(|()| meter.lines())
+            .map(|mut lines| {
+                lines.insert(0, memory::machine_line(&publish));
+                lines
+            })
+            .and_then(|lines| {
+                memory::publish_summary(&run_title(spec, docker), &lines)?;
+                Ok(lines)
+            })
+    };
     let cleanup = grid.stop();
-    let report = match (report, relay_result, cleanup, scrape, smoke_logs, redaction) {
-        (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(())) => {
+    let report = match (
+        report,
+        relay_result,
+        cleanup,
+        scrape,
+        smoke_logs,
+        redaction,
+        memory,
+    ) {
+        (Ok(mut report), Ok(()), Ok(()), Ok(lines), Ok(smoke), Ok(()), Ok(memory)) => {
+            for line in memory {
+                report.lines.push('\n');
+                report.lines.push_str(&line);
+            }
             if !lines.is_empty() {
                 report.lines.push('\n');
                 report.lines.push_str(&lines);
@@ -1247,7 +1303,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             }
             report
         }
-        (report, relay, cleanup, scrape, smoke, redaction) => {
+        (report, relay, cleanup, scrape, smoke, redaction, memory) => {
             let mut parts = [
                 report.err(),
                 relay.err(),
@@ -1255,6 +1311,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 scrape.err(),
                 smoke.err(),
                 redaction.err(),
+                memory.err(),
             ]
             .into_iter()
             .flatten()
@@ -1328,6 +1385,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{roots}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
+    } else if ferroan && compare == ferroan_bot::register::Compare::Animations {
+        let comparison = animations_capture::compare_animations(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{comparison}\n{capture}\n{proxy_report}",
+            report.lines
+        ))
     } else if ferroan && compare == ferroan_bot::register::Compare::Chat {
         let comparison = login_capture::compare_local_chat(&root)?;
         let capture = live::finish_capture(
@@ -1394,6 +1462,64 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         )?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
     }
+}
+
+/// How long a server is left after its startup line before the `idle`
+/// memory point. QR22 measured the Ferroan region two seconds after
+/// initialization completed; the C# servers get the same wait.
+const IDLE_SETTLE: Duration = Duration::from_secs(2);
+
+/// Watch every server the grid started and take the `idle` point.
+#[cfg(target_os = "linux")]
+fn watch_grid(
+    grid: &Grid,
+    ferroan: bool,
+    docker: bool,
+) -> Result<std::sync::Arc<memory::Meter>, String> {
+    let meter = memory::Meter::new();
+    let home = require_started(&grid.home, "home region")?;
+    // Host grid runs build the Ferroan servers with the dev profile; `live
+    // memory` compares the release build.
+    let rust = if docker { "ferroan" } else { "ferroan (debug)" };
+    meter.watch(
+        "region",
+        if ferroan { rust } else { "csharp" },
+        home.listen_pid,
+    );
+    meter.watch(
+        "neighbour",
+        "csharp",
+        require_started(&grid.neighbour, "neighbour region")?.listen_pid,
+    );
+    meter.watch(
+        "robust",
+        "csharp",
+        require_started(&grid.robust, "Robust")?.listen_pid,
+    );
+    if let Some(services) = &grid.rust_assets {
+        meter.watch("robust", rust, services.listen_pid());
+    }
+    thread::sleep(IDLE_SETTLE);
+    meter.point("idle")?;
+    Ok(meter)
+}
+
+/// The command line a grid run was started with, for the job summary.
+fn run_title(spec: &crate::live_args::RunSpec, docker: bool) -> String {
+    let mut title = format!("live run {} grid", spec.scenario);
+    if spec.ferroan_region {
+        title.push_str(" --region ferroan");
+    }
+    if !spec.rust_services.is_empty() {
+        title.push_str(&format!(" --rust {}", spec.rust_services.join(",")));
+    }
+    if spec.basic_physics {
+        title.push_str(" --physics basicphysics");
+    }
+    if !docker && (spec.ferroan_region || !spec.rust_services.is_empty()) {
+        title.push_str(" (debug Ferroan builds)");
+    }
+    title
 }
 
 #[cfg(target_os = "linux")]
@@ -1612,11 +1738,13 @@ fn run_bot(
     strict_logout: bool,
     online: (&str, &Path, bool),
     status: Option<(&str, &str)>,
+    after_login: Option<ferroan_bot::scenario::AfterLogin>,
 ) -> Result<BotReport, String> {
     let neighbour_id = uuid::Uuid::parse_str(NEIGHBOUR_UUID)
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
     let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
+    harness.after_login = after_login;
     if ferroan_bot::register::get(scenario).is_some_and(|row| row.pass_metrics) {
         harness.metrics = status.map(|(_, metrics)| metrics.to_string());
     }
@@ -2108,6 +2236,30 @@ struct RegionStart {
     patch_materials: bool,
 }
 
+/// More than one ordinary grid region needs: the memory run's store, build
+/// profile and extra regions in the same C# process.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct RegionExtras<'a> {
+    /// Copied to `OpenSim.db` in the working directory, for either server,
+    /// in place of the committed fixture.
+    store: Option<&'a Path>,
+    /// Build `ferroan-region` with the release profile.
+    release: bool,
+    /// More regions in the same C# process, each on its own UDP port.
+    more: &'a [ExtraRegion],
+}
+
+/// One more region in a C# region process. The HTTP listener is shared.
+#[cfg(target_os = "linux")]
+struct ExtraRegion {
+    name: String,
+    uuid: String,
+    x: u32,
+    y: u32,
+    udp_port: u16,
+}
+
 #[cfg(target_os = "linux")]
 fn start_region(
     cwd: &Path,
@@ -2118,8 +2270,35 @@ fn start_region(
     passwords: &[String],
     docker: bool,
 ) -> Result<Proc, String> {
+    start_region_with(
+        cwd,
+        (publish, source),
+        password,
+        spec,
+        passwords,
+        docker,
+        &RegionExtras::default(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn start_region_with(
+    cwd: &Path,
+    (publish, source): (&Path, &Path),
+    password: &str,
+    spec: &RegionStart,
+    passwords: &[String],
+    docker: bool,
+    extras: &RegionExtras<'_>,
+) -> Result<Proc, String> {
+    if spec.ferroan && !extras.more.is_empty() {
+        return Err("ferroan-region runs one region per process".to_string());
+    }
     let binary = if spec.ferroan && !docker {
-        live::build_binary("ferroan-region")?
+        live::build_binary_with_profile(
+            "ferroan-region",
+            if extras.release { "release" } else { "dev" },
+        )?
     } else if spec.ferroan {
         PathBuf::new()
     } else {
@@ -2134,7 +2313,15 @@ fn start_region(
         }
     } else {
         prepare_region_cwd(cwd, publish, source)?;
-        if spec.store == RegionStore::LoadFixture {
+        if let Some(store) = extras.store {
+            fs::copy(store, cwd.join("OpenSim.db")).map_err(|error| {
+                format!(
+                    "could not copy {} to {}: {error}",
+                    store.display(),
+                    cwd.display()
+                )
+            })?;
+        } else if spec.store == RegionStore::LoadFixture {
             crate::regionstore::seed_prim_load(&cwd.join("OpenSim.db"))?;
         } else if matches!(
             spec.store,
@@ -2250,6 +2437,17 @@ fn start_region(
     if spec.parcel_seed == Some(ParcelSeed::Legacy) {
         definition.push_str("SizeX = 512\nSizeY = 512\n");
     }
+    for more in extras.more {
+        definition.push('\n');
+        definition.push_str(&regions_ini(&RegionIni {
+            name: &more.name,
+            uuid: &more.uuid,
+            x: more.x,
+            y: more.y,
+            http_port: more.udp_port,
+            ..region
+        }));
+    }
     fs::write(regions.join("Regions.ini"), definition)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
     let log = cwd.join(match (spec.store, spec.ferroan) {
@@ -2328,6 +2526,15 @@ fn start_region(
         live::START_TIMEOUT,
         passwords,
     )?;
+    for more in extras.more {
+        wait_log(
+            &mut proc.child,
+            &log,
+            &format!("INITIALIZATION COMPLETE FOR {} - LOGINS ENABLED", more.name),
+            live::START_TIMEOUT,
+            passwords,
+        )?;
+    }
     if spec.basic_physics && !spec.ferroan {
         live::require_basic_physics(&log, cwd, region.name)?;
     }
@@ -3048,6 +3255,21 @@ mod tests {
         let ini = region_server_ini(&region).unwrap();
         assert_eq!(ini.matches("[ClientStack.LindenUDP]").count(), 1);
         assert!(ini.contains("[ClientStack.LindenUDP]\n    CaptureFile = \"capture-udp.cap\"\n    SupportViewerObjectsCache = false"));
+    }
+
+    #[test]
+    fn a_stored_scene_without_a_capture_still_turns_the_viewer_cache_off() {
+        let mut region = sample_region(None);
+        region.prim_capture = true;
+        let ini = region_server_ini(&region).unwrap();
+        assert!(
+            ini.ends_with("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n")
+        );
+        assert!(
+            !region_server_ini(&sample_region(None))
+                .unwrap()
+                .contains("ClientStack")
+        );
     }
 
     #[test]

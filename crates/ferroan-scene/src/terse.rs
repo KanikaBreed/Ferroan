@@ -459,8 +459,9 @@ impl ViewerFeed {
 
     /// Queue one avatar packet for the circuit. A kill first drops the
     /// waiting updates for those ids (`SendKillObject` removes them from
-    /// `m_entityUpdates`).
-    pub(crate) fn send_avatar_packet(&self, packet: AvatarPacket) {
+    /// `m_entityUpdates`). The frame queues these; a region test may queue
+    /// a set the frame cannot make yet.
+    pub fn send_avatar_packet(&self, packet: AvatarPacket) {
         if let AvatarPacket::Kill(ids) = &packet {
             self.queue().remove(ids);
         }
