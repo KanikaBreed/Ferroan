@@ -35,7 +35,7 @@ The module runs single precision (`Foundation.Init(false)`, noted in `JoltPhysic
 
 `DeterministicMode` defaults to false (`JoltConfig.cs` 43). The backend path at `JoltPhysicsBackend.cs` 1014–1023 only forces one worker thread and sets `DeterministicSimulation = true` explicitly. Left off, Jolt's own default still applies: true in 5.4 and 5.6. Jolt 5.7 removes the switch and is always deterministic. Body poses repeat run to run on one binary, including with several workers. What varies is the order of `OnContactAdded` callbacks from worker threads. `DispatchContacts` keeps the first report of a pair per heartbeat, so the contact point and the normal can vary. Body positions do not have to. The oracle runs with `DeterministicMode = true`, so the `OnContactAdded` order is fixed as well. With `CROSS_PLATFORM_DETERMINISTIC` on the same joltc and Jolt commits, those traces are bit-identical across platforms when Ferroan uses the same calls in the same order. `BaselineCheck.cs` treats rows as repeatable per build. The stock Windows file and the stock Linux file disagree because that native is not built with `JPH_CROSS_PLATFORM_DETERMINISTIC`. P3.0c regenerates the gate baselines. The `stock-1.0.4` files stay as the record of the 5.4 native.
 
-`JoltPhysicsSharp` is MIT. `JoltPhysics.Native` and joltc are MIT (Amer Koleci). Jolt itself is MIT (copyright Jorrit Rouwe). Ferroan does not port the C# binding. It binds Jolt 5.6 through `oxijolt-sys` 1.6.0 (MIT OR Apache-2.0, copyright Artem Balashow). [NOTICE.md](../../NOTICE.md) carries those two licence texts. It does not yet name joltc, or the `joltc_ext` sources `oxijolt-sys` vendors and compiles in. P3.1b adds those notices.
+`JoltPhysicsSharp` is MIT. `JoltPhysics.Native` and joltc are MIT (Amer Koleci). Jolt itself is MIT (copyright Jorrit Rouwe). Ferroan does not port the C# binding. It binds Jolt 5.6 through `oxijolt-sys` 1.6.0 (MIT OR Apache-2.0, copyright Artem Balashow). [NOTICE.md](../../NOTICE.md) carries the `oxijolt-sys` and Jolt texts, and the joltc text. `joltc_ext` revision 30 is MIT like joltc and is recorded there.
 
 ### What 5.6 changed, and what Ferroan can bind
 
@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys` and Jolt licence texts. joltc and `joltc_ext` stay with P3.1b.
+`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys`, Jolt, joltc and `joltc_ext` notices. The vendored-fork fallback is beside [D8](../DECISIONS.md).
 
 What touches motion today:
 
