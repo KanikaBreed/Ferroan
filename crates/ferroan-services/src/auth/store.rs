@@ -111,6 +111,80 @@ impl AuthStore {
         }
     }
 
+    /// AuthenticationServiceBase.SetPassword at Pin8 c401bceecd. Existing
+    /// accounts keep their current key and type, including concurrent changes (D79).
+    pub(crate) async fn set_password(
+        &self,
+        principal: Uuid,
+        hash: String,
+        salt: String,
+    ) -> Result<bool, StoreError> {
+        if self.update_password(principal, &hash, &salt).await? {
+            return Ok(true);
+        }
+        let new = AuthRow {
+            principal_id: principal,
+            password_hash: hash,
+            password_salt: salt,
+            web_login_key: ZERO_KEY.into(),
+            account_type: "UserAccount".into(),
+        };
+        match self.insert(&new).await {
+            // Another writer created the principal between UPDATE and INSERT.
+            Err(StoreError::Db(sqlx::Error::Database(error))) if error.is_unique_violation() => {
+                self.update_password(principal, &new.password_hash, &new.password_salt)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    async fn update_password(
+        &self,
+        principal: Uuid,
+        hash: &str,
+        salt: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = if let Some(pool) = self.pool.postgres() {
+            let sql = format!(
+                r#"UPDATE {} SET "passwordHash" = $1, "passwordSalt" = $2 WHERE uuid = $3"#,
+                self.realm
+            );
+            sqlx::query(&sql)
+                .bind(hash)
+                .bind(salt)
+                .bind(principal)
+                .execute(pool)
+                .await?
+                .rows_affected()
+        } else {
+            let sql = format!(
+                "UPDATE `{}` SET passwordHash = ?, passwordSalt = ? WHERE UUID = ?",
+                self.realm
+            );
+            if let Some(pool) = self.pool.mysql() {
+                sqlx::query(&sql)
+                    .bind(hash)
+                    .bind(salt)
+                    .bind(principal.to_string())
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            } else if let Some(pool) = self.pool.sqlite() {
+                sqlx::query(&sql)
+                    .bind(hash)
+                    .bind(salt)
+                    .bind(principal.to_string())
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            } else {
+                return Err(StoreError::Backend);
+            }
+        };
+        Ok(changed > 0)
+    }
+
     /// D79: exactly one caller can clear the key it read. A concurrent clear,
     /// replacement or deletion leaves the row untouched and refuses the token.
     pub(crate) async fn consume_web_key(

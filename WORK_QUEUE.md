@@ -116,7 +116,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
 | QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
-| QR36 | R36: a concurrent password reset never writes back a consumed web key | READY after QR13 |
+| QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
