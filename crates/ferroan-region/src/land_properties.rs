@@ -3,8 +3,8 @@
 
 //! Queue the `ParcelProperties` element `LLClientView.SendLandProperties` builds.
 //!
-//! Arrival, the initial-data gate and a parcel-changing walk queue through the
-//! frame. A `ParcelPropertiesRequest` is a later item. This queues the raw
+//! Arrival, the initial-data gate, a parcel-changing walk and a
+//! `ParcelPropertiesRequest` queue through the frame. This queues the raw
 //! element for one agent.
 
 use ferroan_client::{CapsRegistry, EventQueueError};

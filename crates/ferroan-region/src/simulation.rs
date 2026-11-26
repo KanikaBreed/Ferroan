@@ -571,6 +571,11 @@ impl SimulationState {
         self.staff.apply_store(access);
     }
 
+    /// The god rule `IsAdministrator` uses. The clone shares the level cache.
+    pub fn staff_gate(&self) -> StaffGate {
+        self.staff.clone()
+    }
+
     pub fn meters(&self) -> Arc<RegionMeters> {
         self.meters.clone()
     }

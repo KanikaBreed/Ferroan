@@ -109,3 +109,5 @@ pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";
 pub const BOT_OBSERVER_HISTORY: &str = "bot.observer-history";
 pub const PHYSICS_STEPS_PER_FRAME: &str = "physics.steps-per-frame";
 pub const PHYSICS_REQUEST_QUEUE: &str = "physics.request-queue";
+pub const PARCEL_REPLY: &str = "parcel.reply";
+pub const PARCEL_TEXT: &str = "parcel.text";

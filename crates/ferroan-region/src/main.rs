@@ -281,6 +281,13 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         }
     }
     if let Some(frame) = &terrain {
+        if let Some(map) = frame.parcels() {
+            if let Some(access) = stored_estate.as_ref() {
+                map.set_estate(access.owner, access.managers.clone(), access.tax_free);
+            }
+            let staff = simulation.staff_gate();
+            map.set_administrator(Arc::new(move |agent| staff.is_administrator(agent)));
+        }
         let installed = parcel_region(&config, region_settings.as_deref(), stored_estate.as_ref());
         match frame.set_parcel_region(installed) {
             Ok(pending) => {
@@ -783,6 +790,20 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
+        SceneCall::ParcelRequest(query) => answered(
+            frame.parcel_request(
+                agent,
+                ferroan_scene::parcels::PropertiesRequest {
+                    west: query.west,
+                    south: query.south,
+                    east: query.east,
+                    north: query.north,
+                    sequence_id: query.sequence_id,
+                    snap_selection: query.snap_selection,
+                },
+            ),
+            |()| Ok(SceneReply::Applied),
+        ),
     }
 }
 
