@@ -1,0 +1,3 @@
+reference_appdata OpenSim.Server.RegionServer/AppData
+ini_master RegionServerDefaults.ini
+ini_file RegionServer.ini.example
