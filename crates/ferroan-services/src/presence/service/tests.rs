@@ -128,91 +128,6 @@ async fn session_eviction_keeps_the_user_index_consistent_with_duplicate_presenc
     );
 }
 
-/// Hold a detached user lookup after its snapshot was read, as a delayed SQL response.
-struct PausedLookup {
-    inner: NullPresenceData,
-    captured: tokio::sync::Notify,
-    resume: tokio::sync::Notify,
-}
-
-impl PresenceStore for PausedLookup {
-    fn store(&self, row: Row) -> PresenceFuture<'_, bool> {
-        self.inner.store(row)
-    }
-    fn get(&self, session: Uuid) -> PresenceFuture<'_, Option<Row>> {
-        self.inner.get(session)
-    }
-    fn get_by_field<'a>(&'a self, field: &'a str, value: &'a str) -> PresenceFuture<'a, Vec<Row>> {
-        Box::pin(async move {
-            let rows = self.inner.get_by_field(field, value).await?;
-            if field != "UserID" || value != "slow" {
-                return Ok(rows);
-            }
-            let snapshot = rows
-                .iter()
-                .map(|r| {
-                    Arc::new(PresenceData::new(
-                        r.user_id.clone(),
-                        r.session_id,
-                        r.region_id(),
-                        r.data.clone(),
-                    ))
-                })
-                .collect();
-            self.captured.notify_one();
-            self.resume.notified().await;
-            Ok(snapshot)
-        })
-    }
-    fn delete<'a>(&'a self, field: &'a str, value: &'a str) -> PresenceFuture<'a, bool> {
-        self.inner.delete(field, value)
-    }
-    fn report_agent(&self, session: Uuid, region: Uuid) -> PresenceFuture<'_, bool> {
-        self.inner.report_agent(session, region)
-    }
-    fn logout_region_agents(&self, region: Uuid) -> PresenceFuture<'_, ()> {
-        self.inner.logout_region_agents(region)
-    }
-    fn verify_agent(&self, agent: Uuid, secure: Uuid) -> PresenceFuture<'_, bool> {
-        self.inner.verify_agent(agent, secure)
-    }
-}
-
-#[tokio::test]
-async fn a_report_completes_during_getagents_and_the_stale_read_is_not_cached() {
-    let store = Arc::new(PausedLookup {
-        inner: NullPresenceData {
-            sessions: Arc::new(Mutex::new(Sessions::default())),
-        },
-        captured: Default::default(),
-        resume: Default::default(),
-    });
-    let session = Uuid::new_v4();
-    let old = Uuid::new_v4();
-    let new = Uuid::new_v4();
-    assert!(store.store(row("slow".into(), session, old)).await.unwrap());
-    let service = Arc::new(PresenceService::new(store.clone(), false));
-    let reader = service.clone();
-    let lookup =
-        tokio::spawn(async move { reader.get_agents(&["missing".into(), "slow".into()]).await });
-    let guard = Duration::from_secs(2);
-    tokio::time::timeout(guard, store.captured.notified())
-        .await
-        .unwrap();
-    assert!(
-        tokio::time::timeout(guard, service.report_agent(session, new))
-            .await
-            .expect("a region report must progress during a blocked GetAgents")
-            .unwrap()
-    );
-    store.resume.notify_one();
-    assert_eq!(lookup.await.unwrap().unwrap()[0].region_id, old);
-    assert_eq!(
-        service.get_agent(session).await.unwrap().unwrap().region_id,
-        new
-    );
-}
-
 #[test]
 fn cache_sweeps_both_indexes_after_expiry() {
     let session = Uuid::new_v4();
@@ -227,3 +142,5 @@ fn cache_sweeps_both_indexes_after_expiry() {
     assert!(cache.sessions.is_empty());
     assert!(cache.users.is_empty());
 }
+
+mod concurrency;
