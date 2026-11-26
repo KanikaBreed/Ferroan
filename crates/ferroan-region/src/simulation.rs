@@ -91,7 +91,9 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
-use crate::simulation_client::{Appearance, RegionEnd, agent_animations, appearance_from_json};
+use crate::simulation_client::{
+    Appearance, ChildIdentity, RegionEnd, agent_animations, appearance_from_json,
+};
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -106,7 +108,7 @@ use ferroan_client::{
     CapsError, CapsRegistry, CircuitExpect, CircuitServer, CircuitStop, LoginReservation,
     ROOT_WAIT, ReturnPose, ReturnSlot,
 };
-use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
+use ferroan_diag::{self, HTTP_POST_BODY, Kind, REGION_CHILD_ADMISSIONS, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
@@ -262,6 +264,20 @@ pub struct SimulationState {
     login_connect_wait: Duration,
     /// Child destinations and seeds for each root circuit generation.
     children: Arc<crate::children::ChildBook>,
+    /// Root identities the child driver copies onto neighbour circuits.
+    /// A visibility child does not replace one. The matching generation's
+    /// lease removes it. A teleport arrives as a child, so the identity is
+    /// stored at accept when nothing is held yet, and again when this
+    /// generation becomes root.
+    roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    /// One identity per circuit generation, kept until that lease drops.
+    /// `mark_root` publishes it even when an older root identity was held
+    /// at accept.
+    prepared: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    /// Admission HTTP started by the child drive. Aborting the drive task
+    /// does not stop these. Serve end and process shutdown abort them, then
+    /// take whatever close the guard staged.
+    admissions: Arc<Mutex<HashMap<Uuid, Vec<tokio::task::JoinHandle<()>>>>>,
 }
 
 struct ActiveSession {
@@ -417,7 +433,31 @@ impl AcceptedAgent {
             // neighbour it left is an ordinary open child, so logout closes it.
             self._lease.children.release_promoted(self._lease.agent_id);
             publish_agents(&sessions, &self._lease.meters);
+            drop(sessions);
+            // A teleport's CreateAgent is a child. SendInitialData can arm
+            // before this report, so accept stored the identity when none
+            // was held. A far-hop return kept the previous identity at
+            // accept; publish this generation now, before the return handshake.
+            self.publish_prepared_root();
         }
+    }
+
+    fn publish_prepared_root(&self) {
+        let Some(identity) = self
+            ._lease
+            .prepared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&self._lease.generation)
+            .cloned()
+        else {
+            return;
+        };
+        self._lease
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(self._lease.agent_id, identity);
     }
 
     /// The grid logout runs only while this generation is still the root.
@@ -471,6 +511,8 @@ struct SessionLease {
     departed: Arc<AtomicBool>,
     rooted_when_replaced: Arc<AtomicBool>,
     children: Arc<crate::children::ChildBook>,
+    roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    prepared: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
 }
 
 impl Drop for SessionLease {
@@ -492,6 +534,37 @@ impl Drop for SessionLease {
                 session.slot.close();
             }
             publish_agents(&sessions, &self.meters);
+        }
+        // The successor is whoever replaced this lease. Captured before the
+        // sessions lock drops: a child accepted while this identity was held
+        // wrote only `prepared`, and SendInitialData can arm before mark_root.
+        let successor = sessions
+            .get(&self.agent_id)
+            .filter(|session| session.generation != self.generation)
+            .map(|session| session.generation);
+        drop(sessions);
+        // `remember_identity` takes `prepared` then `roots`. Do not take
+        // `prepared` while `sessions` or `roots` is held.
+        let published = {
+            let mut prepared = self
+                .prepared
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            prepared.remove(&self.generation);
+            successor.and_then(|generation| prepared.get(&generation).cloned())
+        };
+        let mut roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if roots
+            .get(&self.agent_id)
+            .is_some_and(|identity| identity.generation == self.generation)
+        {
+            roots.remove(&self.agent_id);
+            if let Some(identity) = published {
+                roots.insert(self.agent_id, identity);
+            }
         }
     }
 }
@@ -531,6 +604,9 @@ impl SimulationState {
             releases: Arc::new(Mutex::new(HashMap::new())),
             objects: Arc::new(Vec::new()),
             children: Arc::new(crate::children::ChildBook::new()),
+            roots: Arc::new(Mutex::new(HashMap::new())),
+            prepared: Arc::new(Mutex::new(HashMap::new())),
+            admissions: Arc::new(Mutex::new(HashMap::new())),
             scene: None,
             circuit: Arc::new(OnceLock::new()),
             login_connect_wait: config.login_connect_wait,
@@ -541,6 +617,182 @@ impl SimulationState {
     /// A second call keeps the first listener.
     pub fn bind_circuit(&self, circuit: CircuitServer) {
         let _ = self.circuit.set(circuit);
+    }
+
+    /// Capabilities for the root whose child events this process queues.
+    pub fn caps(&self) -> CapsRegistry {
+        self.caps.clone()
+    }
+
+    /// The child book admission and the frame driver share.
+    pub(crate) fn child_book(&self) -> Arc<crate::children::ChildBook> {
+        Arc::clone(&self.children)
+    }
+
+    /// The root identity stored at acceptance, if this generation is still it.
+    pub fn child_identity(&self, agent: Uuid) -> Option<ChildIdentity> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&agent)
+            .cloned()
+    }
+
+    /// Admission tasks one agent may have in flight. A create can hang for
+    /// 30 s, so several enables overlap. Past this, another enable is refused
+    /// and does not claim. Closes already decided are still sent.
+    pub const CHILD_ADMISSION_TASKS: usize = 8;
+
+    /// Drop finished handles. True when another admission would pass
+    /// [`Self::CHILD_ADMISSION_TASKS`].
+    pub(crate) fn admission_full(&self, agent: Uuid) -> bool {
+        let mut admissions = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(queued) = admissions.get_mut(&agent) else {
+            return false;
+        };
+        queued.retain(|running| !running.is_finished());
+        let count = queued.len();
+        if count < Self::CHILD_ADMISSION_TASKS {
+            return false;
+        }
+        ferroan_diag::refuse(
+            REGION_CHILD_ADMISSIONS,
+            Kind::Hard,
+            Self::CHILD_ADMISSION_TASKS as u64,
+            count.saturating_add(1) as u64,
+            "child-admission",
+        );
+        true
+    }
+
+    /// Remember one child-drive admission. A finished handle is dropped.
+    pub fn track_admission(&self, agent: Uuid, handle: tokio::task::JoinHandle<()>) {
+        let mut admissions = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let queued = admissions.entry(agent).or_default();
+        queued.retain(|running| !running.is_finished());
+        queued.push(handle);
+    }
+
+    /// Stop this agent's admission HTTP and wait until each guard has dropped.
+    /// A logout that already won stages its close here, before the serve-end take.
+    pub async fn abort_admissions(&self, agent: Uuid) {
+        let handles = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
+            .unwrap_or_default();
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Stop every admission the drive spawned. Process shutdown calls this
+    /// after the drive task itself has stopped, so no new task is tracked.
+    pub async fn abort_every_admission(&self) {
+        let handles: Vec<_> = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .drain()
+            .flat_map(|(_, queued)| queued)
+            .collect();
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// A current generation with no circuit. Hop tests store a child size
+    /// through the live presence without a login.
+    #[cfg(test)]
+    pub(crate) fn seat_generation(&self, agent: Uuid, generation: Uuid, session: Uuid) {
+        let (_, logout_wait) = watch::channel(());
+        let (cancel, _) = oneshot::channel();
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(
+                agent,
+                ActiveSession {
+                    session_id: session,
+                    generation,
+                    root: true,
+                    child: Arc::new(Mutex::new(None)),
+                    departed: Arc::new(AtomicBool::new(false)),
+                    rooted_when_replaced: Arc::new(AtomicBool::new(false)),
+                    cancel: Some(cancel),
+                    logout_done: logout_wait,
+                    slot: ReturnSlot::new(false),
+                },
+            );
+    }
+
+    /// Wait until this agent's admission tasks finish. Tests use it so a
+    /// later assertion sees the POST's report.
+    #[cfg(test)]
+    pub(crate) async fn finish_admissions(&self, agent: Uuid) {
+        let handles = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Store this generation's child-circuit identity. A visibility child
+    /// does not replace an identity already held for the agent. A teleport
+    /// is a child with nothing held yet, and `SendInitialData` can arm
+    /// before [`AcceptedAgent::mark_root`], so that case is stored now.
+    fn remember_identity(&self, generation: Uuid, fields: &AgentFields) {
+        let height = fields
+            .appearance
+            .as_ref()
+            .map(|appearance| appearance.height)
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(1.9);
+        let identity = ChildIdentity {
+            agent_id: fields.agent_id,
+            session_id: fields.session_id,
+            secure_session_id: fields.secure_session_id,
+            service_session_id: fields.service_session_id.clone(),
+            circuit_code: fields.circuit_code,
+            first_name: fields.first_name.clone(),
+            last_name: fields.last_name.clone(),
+            client_ip: fields.client_ip.clone(),
+            viewer: fields.viewer.clone(),
+            channel: fields.channel.clone(),
+            mac: fields.mac.clone(),
+            id0: fields.id0.clone(),
+            service_urls: fields.service_urls.clone(),
+            generation,
+            height,
+        };
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(generation, identity.clone());
+        let mut roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !fields.child || !roots.contains_key(&fields.agent_id) {
+            roots.insert(fields.agent_id, identity);
+        }
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -780,6 +1032,7 @@ impl SimulationState {
             },
         );
         publish_agents(&sessions, &self.meters);
+        self.remember_identity(generation, &fields);
         let lease = SessionLease {
             secrets,
             sessions: self.sessions.clone(),
@@ -792,6 +1045,8 @@ impl SimulationState {
             departed,
             rooted_when_replaced,
             children: Arc::clone(&self.children),
+            roots: Arc::clone(&self.roots),
+            prepared: Arc::clone(&self.prepared),
         };
         let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
@@ -1075,10 +1330,11 @@ impl SimulationState {
         self.generation_of(agent)
     }
 
-    /// Claim one child destination for `generation`.
+    /// Claim one child destination for `generation` at 256 m on each side.
     /// The returned seed is the admission POST's caps path. `Existing` means
     /// the POST is already owned. The caller passes this same generation to
-    /// [`Self::finish_child`] or [`Self::refuse_child`].
+    /// [`Self::finish_child`] or [`Self::refuse_child`]. A caller that knows
+    /// the footprint uses [`Self::claim_child_sized`].
     pub fn claim_child(
         &self,
         agent: Uuid,
@@ -1086,6 +1342,18 @@ impl SimulationState {
         end: RegionEnd,
     ) -> crate::children::Claim {
         self.children.claim(agent, generation, end)
+    }
+
+    /// [`Self::claim_child`] that stores this neighbour's footprint. A zero
+    /// extent stays the 256 m fallback.
+    pub fn claim_child_sized(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+        size: [u32; 2],
+    ) -> crate::children::Claim {
+        self.children.claim_sized(agent, generation, end, size)
     }
 
     /// The neighbour refused that destination. No viewer events follow.
@@ -1128,6 +1396,15 @@ impl SimulationState {
             return;
         }
         self.children.promote(agent, end, seed);
+    }
+
+    /// [`Self::promote_child`] that stores this neighbour's footprint. A zero
+    /// extent stays the 256 m fallback. An existing destination takes the new size.
+    pub fn promote_child_sized(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: [u32; 2]) {
+        if self.generation_of(agent).is_none() {
+            return;
+        }
+        self.children.promote_sized(agent, end, seed, size);
     }
 
     fn generation_of(&self, agent: Uuid) -> Option<Uuid> {

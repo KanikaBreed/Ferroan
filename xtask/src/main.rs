@@ -703,6 +703,7 @@ mod tests {
             "       cargo xtask live run store-handoff grid --physics basicphysics\n",
             "       cargo xtask live run prim-capture grid --physics basicphysics\n",
             "       cargo xtask live run child-view grid --physics basicphysics\n",
+            "       cargo xtask live run child-view grid --region ferroan --physics basicphysics\n",
             "       cargo xtask live run prim-arrival grid --region ferroan\n",
             "       cargo xtask live run prim-arrival grid --physics basicphysics\n",
             "       cargo xtask live run material-override grid --physics basicphysics\n",
