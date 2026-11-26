@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# oxijolt-sys downloads a SHA-checked archive. `require` refuses a CMake
+# fallback. `force` keeps a shell setting from selecting the source build.
+# The archive hashes are recorded beside D8.
+[env]
+JOLTC_PREBUILT = { value = "require", force = true }

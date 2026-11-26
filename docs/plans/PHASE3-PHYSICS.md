@@ -35,7 +35,7 @@ The module runs single precision (`Foundation.Init(false)`, noted in `JoltPhysic
 
 `DeterministicMode` defaults to false (`JoltConfig.cs` 43). The backend path at `JoltPhysicsBackend.cs` 1014–1023 only forces one worker thread and sets `DeterministicSimulation = true` explicitly. Left off, Jolt's own default still applies: true in 5.4 and 5.6. Jolt 5.7 removes the switch and is always deterministic. Body poses repeat run to run on one binary, including with several workers. What varies is the order of `OnContactAdded` callbacks from worker threads. `DispatchContacts` keeps the first report of a pair per heartbeat, so the contact point and the normal can vary. Body positions do not have to. The oracle runs with `DeterministicMode = true`, so the `OnContactAdded` order is fixed as well. With `CROSS_PLATFORM_DETERMINISTIC` on the same joltc and Jolt commits, those traces are bit-identical across platforms when Ferroan uses the same calls in the same order. `BaselineCheck.cs` treats rows as repeatable per build. The stock Windows file and the stock Linux file disagree because that native is not built with `JPH_CROSS_PLATFORM_DETERMINISTIC`. P3.0c regenerates the gate baselines. The `stock-1.0.4` files stay as the record of the 5.4 native.
 
-`JoltPhysicsSharp` is MIT. `JoltPhysics.Native` and joltc are MIT (Amer Koleci). Jolt itself is MIT. Ferroan does not port the C# binding. It binds Jolt 5.6 through `oxijolt-sys` (MIT OR Apache-2.0). [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys`. It does not yet name joltc, or the `joltc_ext` sources `oxijolt-sys` vendors and compiles in. P3.1b adds those notices when the dependency lands. This plan does not edit NOTICE.md.
+`JoltPhysicsSharp` is MIT. `JoltPhysics.Native` and joltc are MIT (Amer Koleci). Jolt itself is MIT (copyright Jorrit Rouwe). Ferroan does not port the C# binding. It binds Jolt 5.6 through `oxijolt-sys` 1.6.0 (MIT OR Apache-2.0, copyright Artem Balashow). [NOTICE.md](../../NOTICE.md) carries those two licence texts. It does not yet name joltc, or the `joltc_ext` sources `oxijolt-sys` vendors and compiles in. P3.1b adds those notices.
 
 ### What 5.6 changed, and what Ferroan can bind
 
@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and forbids unsafe code. Nothing in the workspace depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys` as planned. Their licence texts, and joltc's, are added when the dependency lands (P3.1b).
+`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. It is the one crate allowed unsafe besides `ferroan-scripting`, once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys` and Jolt licence texts. joltc and `joltc_ext` stay with P3.1b.
 
 What touches motion today:
 
@@ -359,7 +359,7 @@ The live harness comes after the library cases. `cargo xtask live run walk grid`
 
 Jolt is MIT. joltc is MIT (Amer Koleci). `oxijolt-sys` is MIT OR Apache-2.0. The Jolt region module, the backend, the vehicles and the diagnostics are MPL-2.0, Legion Builds 2026, except `HalcyonPhysicalLimits.cs` (InWorldz BSD). The mesher and SharedBase are BSD. `ConvexDecompositionDotNet` is MIT and is not ported.
 
-[PORTING.md](../PORTING.md) requires the notice, and a ported MPL file stays available under MPL-2.0. Each row that ports Jolt-module code carries MPL-2.0 headers. Each row that ports the mesher carries BSD headers. P3.1b adds joltc and `joltc_ext` to NOTICE.md when the dependency lands.
+[PORTING.md](../PORTING.md) requires the notice, and a ported MPL file stays available under MPL-2.0. Each row that ports Jolt-module code carries MPL-2.0 headers. Each row that ports the mesher carries BSD headers. P3.1 adds the `oxijolt-sys` and Jolt texts to NOTICE.md. P3.1b adds joltc and `joltc_ext`.
 
 ## 4. Queue items
 
@@ -379,7 +379,7 @@ The first slice, in this order. Engine-independent rows come first. Then the Tra
 
 P3.1b is the rest of the bind row (the other two CI platforms, the NOTICE lines, the vendored-fork fallback), with `cross-platform-deterministic` on. It does not block P3.2a on linux. It does block calling a later row done on Windows or macOS.
 
-[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.0, P3.0c, P3.0d, P3.0e, P3.1, P3.1b, P3.2c and P3.29 `READY` (Q100 and Q102 to Q108). P3.0b (Q101) is done. The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
+[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.0, P3.0c, P3.0d, P3.0e, P3.1b, P3.2c and P3.29 `READY` (Q100 and Q102 to Q104, Q106 to Q108). P3.0b (Q101) and P3.1 (Q105) are done. The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
 
 Every Jolt-backed row below is an exact trace against the deterministic C# build, and it also depends on P3.0d and P3.1 even when the depends cell names only the physics row it builds on. Geometry rows (P3.4, P3.7a, P3.7b, P3.10a) and P3.20a stay on the ulp or exact rules in section 3.
 
