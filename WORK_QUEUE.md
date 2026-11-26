@@ -231,7 +231,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
 | Q27a | P1.4a: avatar stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#174) |
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
-| Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | READY after Q27a |
+| Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
 | Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | READY after Q27b1 |
 | Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
@@ -575,7 +575,7 @@ Q27b BLOCKED (25 November 2026, `feat/q27b-avatar-service`). Estimate at Pin8 `c
 
 Proposed split for review:
 
-1. **Q27b1 / P1.4b1, raw avatar service and HTTP**, after Q27a. Implement the key/value methods in `AvatarService.cs` over the Q27a stores and expose all five `POST /avatar` forms sent by `AvatarServicesConnector.cs`. Compare response bytes with the Pin8 C# server, including the get reply without a BOM, the BOM-prefixed Success and Failure replies, missing and invalid principals, and malformed item lists. Read back successive writes to prove stale appearance names disappear, omitted `Bake*` names survive, explicit items can be changed or removed, out-of-range heights are rectified, and reset clears the bake index. Exercise failed-store cleanup after a partial save with the service's database seam. Estimate about one day including the fixtures.
+1. **Q27b1 / P1.4b1, raw avatar service and HTTP**, after Q27a. Implement the key/value methods in `AvatarService.cs` over the Q27a stores and expose all five `POST /avatar` forms sent by `AvatarServicesConnector.cs`. Compare response bytes with the Pin8 C# server, including the get reply without a BOM, the indented Success and Failure replies (the Pin8 capture has no BOM), missing and invalid principals, and malformed item lists. Read back successive writes to prove stale appearance names disappear, omitted `Bake*` names survive, explicit items can be changed or removed, out-of-range heights are rectified, and reset clears the bake index. Exercise failed-store cleanup after a partial save with the service's database seam. Estimate about one day including the fixtures.
 2. **Q27b2 / P1.4b2, typed appearance codec**, after Q27b1. Implement the conversions used by `GetAppearance` and `SetAppearance` in `IAvatarService.cs` (213–460). Record Pin8 input rows and the decoded appearance, and independently record rows written from a constructed appearance. Cover constructor defaults, the four required body parts restored on a nonempty record, legacy item/asset pairs, multiple layers read in index order, types 15 and 16, attachment points with multiple items, visual parameters, locale-independent height (TB44) and malformed input. Compare both directions with these observations; an HTTP echo cannot establish the layer order. Estimate about one day including the fixtures.
 
 Q27b is complete when both pieces pass. The proposed split leaves Q27c–Q27e in their current order and P1.4 open through Q27e.
