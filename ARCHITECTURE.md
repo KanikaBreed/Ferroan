@@ -49,6 +49,8 @@ The grid harness captures riderless object crossings on two separate C# simulato
 
 `ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The member reader follows `TryFromXml` and restores positions from the parts. Rez must also parse the wrapper sizes and offsets and refuse invalid values, as `GetObjectsToRez` does (3185–3208). The member reader alone cannot place these groups for rez. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
 
+The region configuration supplies a read-only Groups V2 remote connector for parcel decisions. One lookup returns the viewer's complete group IDs and their unsigned power masks, including memberships with zero powers. Overlay delivery consumes it in Q60c3.
+
 ## Planned
 
 ### Programs

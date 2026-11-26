@@ -19,7 +19,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `http.query-bytes` | 1 MiB | `crates/ferroan-http/src/query.rs` | hard | no | Query strings are not capped. |
 | `http.fields` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | Query fields are not capped. |
 | `http.list-items` | 4096 | `crates/ferroan-http/src/query.rs` | hard | no | A `[]` list is not capped. |
-| `http.response-bytes` | caller limit, default 50,000,000 | `crates/ferroan-http/src/client.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | the form caller passes it, fixed for simulation | Region grid replies and outbound simulation replies use 1 MiB. The simulation connector checks both the advertised length and the streamed bytes. C# does not cap the read. |
+| `http.response-bytes` | caller limit, default 50,000,000 | `crates/ferroan-http/src/client.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | the form caller passes it, fixed for simulation | Region grid replies (including Groups V2 memberships at 1 MiB) and outbound simulation replies use 1 MiB. The simulation connector checks both the advertised length and the streamed bytes. C# does not cap the read. |
 | `inventory.fetch-folders` | 64 | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | `FetchInvDescHandler.cs` loops every requested folder, with no cap. |
 | `inventory.fetch-items` | 256 | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | `FetchInventory2Handler.cs` has no item-count cap. |
 | `inventory.fetch-llsd` | 2 MiB | `crates/ferroan-region/src/fetch_caps.rs` | hard | no | The handlers do not cap the LLSD they write. |
