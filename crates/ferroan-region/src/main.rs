@@ -1101,7 +1101,8 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             .await;
     }
     // The circuit that was replaced drains the same list when it ends first.
-    // The sends do not hold this cleanup.
+    // The sends do not hold this cleanup. A cancelled admission stages its
+    // close when the guard drops, so this take runs after that task has stopped.
     hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without
@@ -2843,7 +2844,20 @@ mod tests {
         wait_arrival(&socket).await;
         assert_eq!(harness.count("logout"), 0);
         assert_eq!(harness.count("loggedout"), 0);
-        harness.state.close_departed(expect.agent_id);
+        harness.state.close_departed(
+            expect.agent_id,
+            &ferroan_region::children::FarDestination {
+                end: ferroan_region::simulation_client::RegionEnd {
+                    server_uri: "http://127.0.0.1:9/".to_string(),
+                    region_id: Uuid::from_u128(99),
+                    name: "Away".to_string(),
+                    loc_x: 768,
+                    loc_y: 768,
+                },
+                size_x: 256,
+                size_y: 256,
+            },
+        );
         harness.finish().await.unwrap();
         assert_eq!(harness.count("logout"), 0);
         assert_eq!(harness.count("loggedout"), 0);

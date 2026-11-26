@@ -41,16 +41,32 @@
 //! drops the claim the same way, so the next pass can POST again. Logout
 //! during the POST closes an accepted child once and does not announce it
 //! (D106). A timeout or a transport failure after logout closes once too.
-//! Every new claim is finished by acceptance, failure or refusal. Dropping
-//! the claim's guard refuses it, so a cancelled admission cannot leave the
-//! entry behind. After the neighbour accepts, the caller waits
-//! [`ANNOUNCE_DELAY`] before the viewer events. A
-//! completion after the hop promoted the destination still announces once,
-//! including when the same session has carried that neighbour forward. The
-//! carry keeps the promoted flag until this generation is root again, so a
-//! later login does not close a destination that is still the remote root.
-//! A different session closes the old root's other open children with the
-//! old session id. An in-view hop reads the same seed.
+//! Every new claim is finished by acceptance, failure or refusal. The guard
+//! is returned only from [`ChildBook::claim_work`]. Dropping it, including
+//! when the admission task is cancelled, follows [`ChildBook::failed`]: before
+//! logout the claim is dropped, and after logout or on a stale generation one
+//! close is staged with the claim's session. Take those closes only after the
+//! admission task has stopped.
+//!
+//! The admission order is the POST, then [`ANNOUNCE_DELAY`], then
+//! [`ChildBook::report`], then the viewer events when the report is
+//! [`Admission::Announce`]. Pin8 sleeps and then checks the presence again
+//! (`EntityTransferModule.cs` 2780–2786 at `c401bceecd`), so logout during the
+//! wait still closes. A completion after the hop promoted the destination
+//! still announces once, including when the same session has carried that
+//! neighbour forward. The carry keeps the promoted flag until this generation
+//! is root again, so a later login does not close a destination that is still
+//! the remote root. A different session closes the old root's other open
+//! children with the old session id. An in-view hop reads the same seed.
+//!
+//! Dropping the circuit lease forgets open children and stages nothing. Pin8
+//! closes children from a root (`Scene.cs` 3969, `closeChildAgents &&
+//! !isChildAgent`) and at hop time (`GetChildAgentsToClose`). A far hop stages
+//! a close only for an open child that call would close: outside the
+//! destination's view at draw distance 255, or every known child when the
+//! destination's grid Y is 0, and never the destination itself
+//! (`ScenePresence.cs` 5002–5058). A child that stays in view is forgotten.
+//! Ferroan sends no `children_seeds`.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -151,37 +167,70 @@ impl PostReport {
 }
 
 /// `InformClientOfNeighbourAsync` sleeps this long after `CreateAgent` returns
-/// and before `EnableSimulator` (`EntityTransferModule.cs` 2780 at Pin8
-/// `c401bceecd`).
+/// and before it checks the presence and sends `EnableSimulator`
+/// (`EntityTransferModule.cs` 2780–2786 at Pin8 `c401bceecd`).
 pub const ANNOUNCE_DELAY: Duration = Duration::from_millis(500);
 
-/// Wait before telling the viewer about a neighbour that accepted the child.
+/// `Constants.RegionSize`. A far hop has no per-child size map, so every known
+/// child uses this (`ScenePresence.cs` 5049).
+const DEFAULT_REGION_SIZE: u32 = 256;
+
+/// Draw distance `GetChildAgentsToClose` passes to `IsOutsideView`. The
+/// comparison then steps one metre in (`Util.cs` 1640).
+const CHILD_VIEW_METRES: u64 = 255;
+
+/// Where a far hop is going. Sizes are that region's footprint, in metres.
+#[derive(Clone, Debug)]
+pub struct FarDestination {
+    pub end: RegionEnd,
+    pub size_x: u32,
+    pub size_y: u32,
+}
+
+/// Wait after the admission POST and before [`ChildBook::report`].
+/// Logout during the wait still sees a pending claim, so the report closes
+/// instead of announcing. Send viewer events only for [`Admission::Announce`].
 pub async fn pause_before_announce() {
     tokio::time::sleep(ANNOUNCE_DELAY).await;
 }
 
-/// Holds one [`Claim::New`] until the caller settles it. Dropping the guard,
-/// including when the admission task is cancelled, refuses the claim.
+/// Holds the one [`Claim::New`] returned by [`ChildBook::claim_work`].
+/// Dropping the guard, including when the admission task is cancelled, follows
+/// [`ChildBook::failed`]: the claim is dropped before logout, and after logout
+/// or on a stale generation a close is staged with this claim's session.
 pub struct ClaimWork {
     book: Arc<ChildBook>,
     agent: Uuid,
     generation: Uuid,
     region: Uuid,
+    seed: String,
     open: bool,
 }
 
 impl ClaimWork {
-    pub fn watch(book: Arc<ChildBook>, agent: Uuid, generation: Uuid, region: Uuid) -> Self {
+    /// The caps path stored for this claim.
+    pub fn seed(&self) -> &str {
+        &self.seed
+    }
+
+    fn watch(
+        book: Arc<ChildBook>,
+        agent: Uuid,
+        generation: Uuid,
+        region: Uuid,
+        seed: String,
+    ) -> Self {
         Self {
             book,
             agent,
             generation,
             region,
+            seed,
             open: true,
         }
     }
 
-    /// The claim was accepted, refused or failed. Drop will not refuse it again.
+    /// The claim was accepted, refused or failed. Drop will not settle it again.
     pub fn settle(mut self) {
         self.open = false;
     }
@@ -190,7 +239,7 @@ impl ClaimWork {
 impl Drop for ClaimWork {
     fn drop(&mut self) {
         if self.open {
-            self.book.refuse(self.agent, self.generation, self.region);
+            self.book.abandon(self.agent, self.generation, self.region);
         }
     }
 }
@@ -289,7 +338,10 @@ impl ChildBook {
         book.generations.entry(generation).or_default().session = session;
     }
 
-    /// Closes owed to a session a later login replaced. One take sends them.
+    /// Closes owed to a session a later login replaced, including one staged
+    /// when an admission guard dropped after logout. One take sends them.
+    /// Call this only after that admission task has stopped: the guard stages
+    /// the close as it drops, and an earlier take misses it.
     pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
         let mut books = self.lock();
         let (staged, finished) = {
@@ -347,6 +399,28 @@ impl ChildBook {
             },
         );
         Claim::New { seed }
+    }
+
+    /// Claim `end` and return the only guard for that claim. Any other
+    /// [`Claim`] stores nothing and carries no guard, so a guard cannot drop
+    /// a destination another task owns.
+    pub fn claim_work(
+        self: &Arc<Self>,
+        agent: Uuid,
+        generation: Uuid,
+        end: RegionEnd,
+    ) -> Result<ClaimWork, Claim> {
+        let region = end.region_id;
+        match self.claim(agent, generation, end) {
+            Claim::New { seed } => Ok(ClaimWork::watch(
+                Arc::clone(self),
+                agent,
+                generation,
+                region,
+                seed,
+            )),
+            other => Err(other),
+        }
     }
 
     /// The neighbour refused the POST. Drop the claim. No viewer events.
@@ -502,6 +576,50 @@ impl ChildBook {
         Admission::Quiet
     }
 
+    /// [`Self::failed`] for a guard that nobody is waiting on. A close is
+    /// staged, with the claim's session, instead of being returned. Callers
+    /// that still send the close use [`Self::failed`] and then [`ClaimWork::settle`].
+    fn abandon(&self, agent: Uuid, generation: Uuid, region: Uuid) {
+        let mut books = self.lock();
+        let current = books
+            .agents
+            .get(&agent)
+            .map(|book| book.current)
+            .unwrap_or_default();
+        let Some((promoted, phase, logged_out, end)) = books
+            .agents
+            .get(&agent)
+            .and_then(|book| book.generations.get(&generation))
+            .and_then(|generation_book| {
+                generation_book.by_region.get(&region).map(|destination| {
+                    (
+                        destination.promoted,
+                        destination.phase,
+                        generation_book.logged_out,
+                        destination.end.clone(),
+                    )
+                })
+            })
+        else {
+            return;
+        };
+        let stale = generation != current || logged_out || phase == Phase::CloseWhenAccepted;
+        if promoted && !stale {
+            return;
+        }
+        if stale {
+            let session = generation_session(&books, agent, generation);
+            if let Some(book) = books.agents.get_mut(&agent) {
+                book.staged.push(StagedClose { session, end });
+            }
+            remove_destination(&mut books, agent, generation, region);
+            return;
+        }
+        if !promoted && matches!(phase, Phase::Pending | Phase::CloseWhenAccepted) {
+            remove_destination(&mut books, agent, generation, region);
+        }
+    }
+
     /// Finish one admission POST. Acceptance follows [`Self::accepted`]. A
     /// refusal drops the claim. A timeout and a transport failure follow
     /// [`Self::failed`], so logout still closes once (D106).
@@ -555,11 +673,43 @@ impl ChildBook {
         close
     }
 
-    /// The circuit generation is gone. A far hop has not logged out, so each
-    /// open child is staged for one close with this generation's session. A
-    /// promoted destination is the remote root and is not closed. A pending
-    /// admission still completes.
+    /// The circuit lease dropped. Open children are forgotten and nothing is
+    /// staged: Pin8 closes children from a root and at hop time, not when a
+    /// child circuit ends. A pending admission still completes, and closes if
+    /// logout already won. A promoted destination is the remote root and is
+    /// not closed.
     pub fn end_generation(&self, agent: Uuid, generation: Uuid) {
+        self.finish_generation(agent, generation, Finish::Forget);
+    }
+
+    /// A far hop. Stage a close for each open child [`child_should_close`]
+    /// selects, with this generation's session. The same generation's lease
+    /// drop must not stage those closes; this is the only path that does.
+    /// A seeded hop has no session row, so it closes the current generation.
+    pub fn close_far(&self, agent: Uuid, destination: &FarDestination) {
+        let generation = {
+            let books = self.lock();
+            books
+                .agents
+                .get(&agent)
+                .map(|book| book.current)
+                .unwrap_or_default()
+        };
+        if !generation.is_nil() {
+            self.end_generation_far(agent, generation, destination);
+        }
+    }
+
+    pub(crate) fn end_generation_far(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        destination: &FarDestination,
+    ) {
+        self.finish_generation(agent, generation, Finish::Far(destination));
+    }
+
+    fn finish_generation(&self, agent: Uuid, generation: Uuid, mode: Finish<'_>) {
         let mut books = self.lock();
         let session = {
             let Some(book) = books.agents.get(&agent) else {
@@ -585,14 +735,27 @@ impl ChildBook {
                 if destination.promoted {
                     return false;
                 }
+                let closing = match mode {
+                    Finish::Forget => false,
+                    Finish::Far(hop) => child_should_close(&destination.end, hop),
+                };
                 match destination.phase {
                     Phase::Pending => {
-                        destination.phase = Phase::CloseWhenAccepted;
-                        true
+                        // An in-view child is forgotten. A lease drop, and a
+                        // child the far hop would close, still close when the
+                        // POST finishes.
+                        if matches!(mode, Finish::Forget) || closing {
+                            destination.phase = Phase::CloseWhenAccepted;
+                            true
+                        } else {
+                            false
+                        }
                     }
                     Phase::CloseWhenAccepted => true,
                     Phase::Open => {
-                        stage.push(destination.end.clone());
+                        if closing {
+                            stage.push(destination.end.clone());
+                        }
                         false
                     }
                 }
@@ -606,21 +769,6 @@ impl ChildBook {
         }
         if empty {
             drop_generation(&mut books, agent, generation);
-        }
-    }
-
-    /// Stage closes for the generation that currently owns `agent`.
-    pub fn end_current(&self, agent: Uuid) {
-        let generation = {
-            let books = self.lock();
-            books
-                .agents
-                .get(&agent)
-                .map(|book| book.current)
-                .unwrap_or_default()
-        };
-        if !generation.is_nil() {
-            self.end_generation(agent, generation);
         }
     }
 
@@ -794,6 +942,54 @@ fn drop_generation(books: &mut Books, agent: Uuid, generation: Uuid) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Finish<'a> {
+    /// The circuit lease dropped. Open children are forgotten.
+    Forget,
+    /// A far hop. Close only what `GetChildAgentsToClose` would.
+    Far(&'a FarDestination),
+}
+
+/// `GetChildAgentsToClose` (`ScenePresence.cs` 5002–5058). Grid Y 0 closes
+/// every known child. The destination itself is never closed. Otherwise the
+/// child is closed when `IsOutsideView(255, child, destination)` says it is
+/// outside the destination's footprint. The child's size is
+/// [`DEFAULT_REGION_SIZE`].
+fn child_should_close(child: &RegionEnd, destination: &FarDestination) -> bool {
+    if child.region_id == destination.end.region_id {
+        return false;
+    }
+    if (destination.end.loc_y >> 8) == 0 {
+        return true;
+    }
+    outside_cells(
+        (child.loc_x >> 8, child.loc_y >> 8),
+        (destination.end.loc_x >> 8, destination.end.loc_y >> 8),
+        (DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE),
+        (destination.size_x, destination.size_y),
+    )
+}
+
+/// `Util.IsOutsideView` (`Util.cs` 1636–1656). Coordinates are region grid
+/// cells. Sizes are metres. The draw distance steps in by one metre, so
+/// adjacent 256 m regions stay inside.
+fn outside_cells(
+    child: (u32, u32),
+    destination: (u32, u32),
+    child_size: (u32, u32),
+    destination_size: (u32, u32),
+) -> bool {
+    let draw = CHILD_VIEW_METRES - 1;
+    let child_x = u64::from(child.0) * u64::from(DEFAULT_REGION_SIZE);
+    let destination_x = u64::from(destination.0) * u64::from(DEFAULT_REGION_SIZE);
+    let child_y = u64::from(child.1) * u64::from(DEFAULT_REGION_SIZE);
+    let destination_y = u64::from(destination.1) * u64::from(DEFAULT_REGION_SIZE);
+    child_x + u64::from(child_size.0) + draw < destination_x
+        || destination_x + u64::from(destination_size.0) + draw < child_x
+        || child_y + u64::from(child_size.1) + draw < destination_y
+        || destination_y + u64::from(destination_size.1) + draw < child_y
+}
+
 fn generation_session(books: &Books, agent: Uuid, generation: Uuid) -> Uuid {
     let Some(book) = books.agents.get(&agent) else {
         return Uuid::nil();
@@ -902,6 +1098,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn end(region: u128) -> RegionEnd {
         RegionEnd {
@@ -911,6 +1108,13 @@ mod tests {
             loc_x: 256,
             loc_y: 256,
         }
+    }
+
+    fn placed(region: u128, loc_x: u32, loc_y: u32) -> RegionEnd {
+        let mut end = end(region);
+        end.loc_x = loc_x;
+        end.loc_y = loc_y;
+        end
     }
 
     fn session() -> Uuid {
@@ -1418,29 +1622,42 @@ mod tests {
     fn a_dropped_claim_can_be_claimed_again() {
         let agent = Uuid::from_u128(4);
         let generation = Uuid::from_u128(8);
-        let region = Uuid::from_u128(5);
         let book = Arc::new(book_for(agent, generation));
-        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
-            panic!("claim");
-        };
-        {
-            let _guard = ClaimWork::watch(Arc::clone(&book), agent, generation, region);
-        }
+        let guard = book
+            .claim_work(agent, generation, end(5))
+            .unwrap_or_else(|_| panic!("claim"));
+        assert!(!guard.seed().is_empty());
+        drop(guard);
         let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
             panic!("a dropped claim should be free");
         };
     }
 
     #[test]
+    fn a_guard_is_not_issued_for_a_claim_another_task_owns() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = Arc::new(book_for(agent, generation));
+        let guard = book
+            .claim_work(agent, generation, end(5))
+            .unwrap_or_else(|_| panic!("claim"));
+        assert!(matches!(
+            book.claim_work(agent, generation, end(5)),
+            Err(Claim::Existing { .. })
+        ));
+        drop(guard);
+        assert!(book.claim_work(agent, generation, end(5)).is_ok());
+    }
+
+    #[test]
     fn a_settled_claim_keeps_the_open_child() {
         let agent = Uuid::from_u128(4);
         let generation = Uuid::from_u128(8);
-        let region = Uuid::from_u128(5);
         let book = Arc::new(book_for(agent, generation));
-        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
-            panic!("claim");
-        };
-        let guard = ClaimWork::watch(Arc::clone(&book), agent, generation, region);
+        let guard = book
+            .claim_work(agent, generation, end(5))
+            .unwrap_or_else(|_| panic!("claim"));
+        let region = Uuid::from_u128(5);
         assert!(matches!(
             book.accepted(agent, generation, region),
             Admission::Announce { .. }
@@ -1522,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_generation_stages_open_children_for_close() {
+    fn a_dropped_lease_forgets_open_children_and_stages_nothing() {
         let agent = Uuid::from_u128(4);
         let generation = Uuid::from_u128(8);
         let book = book_for(agent, generation);
@@ -1537,12 +1754,9 @@ mod tests {
             panic!("pending claim");
         };
         book.promote(agent, &end(3), "seed");
-        book.end_current(agent);
-        let staged = book.take_staged_closes(agent);
-        assert_eq!(staged.len(), 1);
-        assert_eq!(staged[0].0, session());
-        assert_eq!(staged[0].1.region_id, Uuid::from_u128(1));
+        book.end_generation(agent, generation);
         assert!(book.take_staged_closes(agent).is_empty());
+        assert!(book.seed(agent, Uuid::from_u128(1)).is_none());
         assert_eq!(
             book.accepted(agent, generation, Uuid::from_u128(2)),
             Admission::Close {
@@ -1551,6 +1765,141 @@ mod tests {
             }
         );
         assert!(book.seed(agent, Uuid::from_u128(3)).is_none());
+    }
+
+    #[test]
+    fn a_far_hop_closes_a_farther_child_and_forgets_an_adjacent_one() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        // Destination at cell (1, 1). The next cell stays inside a 255 m view.
+        // Four cells away does not. The destination itself is an open child.
+        let destination = placed(9, 256, 256);
+        let adjacent = placed(2, 512, 256);
+        let farther = placed(3, 1024, 256);
+        for region in [&destination, &adjacent, &farther] {
+            let Claim::New { .. } = book.claim(agent, generation, region.clone()) else {
+                panic!("claim");
+            };
+            assert!(matches!(
+                book.accepted(agent, generation, region.region_id),
+                Admission::Announce { .. }
+            ));
+        }
+        book.close_far(
+            agent,
+            &FarDestination {
+                end: destination.clone(),
+                size_x: DEFAULT_REGION_SIZE,
+                size_y: DEFAULT_REGION_SIZE,
+            },
+        );
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, farther.region_id);
+        assert!(book.seed(agent, adjacent.region_id).is_none());
+        assert!(book.seed(agent, destination.region_id).is_none());
+        assert!(book.take_staged_closes(agent).is_empty());
+    }
+
+    #[test]
+    fn a_far_hop_to_grid_y_zero_closes_every_child_except_the_destination() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let destination = placed(9, 256, 0);
+        let neighbour = placed(2, 512, 256);
+        for region in [&destination, &neighbour] {
+            let Claim::New { .. } = book.claim(agent, generation, region.clone()) else {
+                panic!("claim");
+            };
+            assert!(matches!(
+                book.accepted(agent, generation, region.region_id),
+                Admission::Announce { .. }
+            ));
+        }
+        book.close_far(
+            agent,
+            &FarDestination {
+                end: destination.clone(),
+                size_x: DEFAULT_REGION_SIZE,
+                size_y: DEFAULT_REGION_SIZE,
+            },
+        );
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, neighbour.region_id);
+        assert!(book.seed(agent, destination.region_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn aborting_an_admission_post_drops_the_claim_until_logout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = Arc::new(book_for(agent, generation));
+
+        let hold = {
+            let book = Arc::clone(&book);
+            tokio::spawn(async move {
+                let guard = book
+                    .claim_work(agent, generation, end(5))
+                    .unwrap_or_else(|_| panic!("claim"));
+                let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                stream
+                    .write_all(
+                        b"POST /agent HTTP/1.1\r\nHost: neighbour\r\nContent-Length: 0\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                let mut buf = [0u8; 8];
+                let _ = stream.read(&mut buf).await;
+                guard.settle();
+            })
+        };
+        let (mut accepted, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 128];
+        let _ = accepted.read(&mut request).await.unwrap();
+        hold.abort();
+        let _ = hold.await;
+        assert!(
+            book.take_staged_closes(agent).is_empty(),
+            "a cancelled admission before logout must not close"
+        );
+        assert!(book.claim_work(agent, generation, end(5)).is_ok());
+
+        let hold = {
+            let book = Arc::clone(&book);
+            tokio::spawn(async move {
+                let guard = book
+                    .claim_work(agent, generation, end(6))
+                    .unwrap_or_else(|_| panic!("claim"));
+                let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                stream
+                    .write_all(
+                        b"POST /agent HTTP/1.1\r\nHost: neighbour\r\nContent-Length: 0\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                let mut buf = [0u8; 8];
+                let _ = stream.read(&mut buf).await;
+                guard.settle();
+            })
+        };
+        let (mut accepted, _) = listener.accept().await.unwrap();
+        let _ = accepted.read(&mut request).await.unwrap();
+        book.begin_logout(agent);
+        // The task is still blocked on the POST. The close is staged when
+        // the guard drops, so the take has to wait until the task stops.
+        hold.abort();
+        let _ = hold.await;
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, Uuid::from_u128(6));
     }
 
     #[test]

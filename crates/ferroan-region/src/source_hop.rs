@@ -43,10 +43,10 @@
 //! caps seed already stored for that destination, and the circuit stays. The
 //! hop does not release or close the agent. A destination
 //! outside that view, or one whose grid Y is 0, waits for the destination's
-//! release DELETE, stages one close for each open child that is not the
-//! remote root, and then closes the circuit without a kick. Those child
-//! closes run on a separate task. The grid is asked when the local directory
-//! has no handle.
+//! release DELETE, stages a close for each open child that destination's view
+//! would drop (never the destination itself), and then closes the circuit
+//! without a kick. Those child closes run on a separate task. The grid is
+//! asked when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
 #[cfg(test)]
@@ -339,12 +339,17 @@ impl HopPresence {
         }
     }
 
-    fn close_local(&self, agent: Uuid) {
+    fn close_local(&self, agent: Uuid, destination: &HopDestination) {
+        let far = crate::children::FarDestination {
+            end: destination.end.clone(),
+            size_x: destination.size_x,
+            size_y: destination.size_y,
+        };
         match self {
             Self::Idle => {}
             #[cfg(test)]
-            Self::Seeded(book) => book.end_current(agent),
-            Self::Live(state) => state.close_departed(agent),
+            Self::Seeded(book) => book.close_far(agent, &far),
+            Self::Live(state) => state.close_departed(agent, &far),
             #[cfg(test)]
             Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
         }
@@ -673,7 +678,7 @@ async fn perform(work: HopWork<'_>) {
     }
     if outside {
         presence.wait_release(session.agent_id).await;
-        presence.close_local(session.agent_id);
+        presence.close_local(session.agent_id, &destination);
         let staged = presence.take_staged(session.agent_id);
         spawn_staged_closes(client.clone(), session.agent_id, staged);
         out.leave().await;
@@ -1715,6 +1720,60 @@ mod tests {
                 .as_str(),
             ferroan_client::caps_seed(&format!("http://{addr}/"), &seed)
         );
+    }
+
+    #[tokio::test]
+    async fn a_far_hop_deletes_an_open_child_with_the_claim_session() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let book = Arc::new(crate::children::ChildBook::new());
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        let session = Uuid::from_u128(2);
+        book.attach(agent, generation, session);
+        // Cell (0, 1) is outside a destination at cell (3, 1). Same listener,
+        // so the staged DELETE is the script's fourth request.
+        let child = RegionEnd {
+            server_uri: format!("http://{addr}/"),
+            region_id: Uuid::from_u128(15),
+            name: "FarChild".to_string(),
+            loc_x: 0,
+            loc_y: 256,
+        };
+        let crate::children::Claim::New { .. } = book.claim(agent, generation, child.clone())
+        else {
+            panic!("claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, child.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
+        let mut opened = open_at(
+            listed_for(addr, FAR_HANDLE, 256),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+                (200, "closed".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            HopChoice {
+                presence: HopPresence::Seeded(book),
+                handle: FAR_HANDLE,
+                grid: None,
+            },
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 4);
+        let (method, target) = request_parts(&hits[3].header);
+        assert_eq!(method, "DELETE");
+        assert!(target.contains(&child.region_id.to_string()));
+        assert!(target.contains(&format!("auth={session}")));
+        assert!(!target.contains(&Uuid::from_u128(7).to_string()));
     }
 
     #[test]
