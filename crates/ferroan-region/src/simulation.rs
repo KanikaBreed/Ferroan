@@ -1030,7 +1030,9 @@ impl SimulationState {
     }
 
     /// Local close after a far hop. Caps go. The grid presence stays put.
-    pub fn close_departed(&self, agent: Uuid) {
+    /// Open children outside `destination`'s view are staged for one close
+    /// each. The lease drop that follows does not stage them again.
+    pub fn close_departed(&self, agent: Uuid, destination: &crate::children::FarDestination) {
         let mut sessions = self
             .sessions
             .lock()
@@ -1039,7 +1041,8 @@ impl SimulationState {
             return;
         };
         let generation = session.generation;
-        self.children.end_generation(agent, generation);
+        self.children
+            .end_generation_far(agent, generation, destination);
         session.departed.store(true, Ordering::Release);
         let slot = session.slot.clone();
         self.caps.clear_agent(agent);
@@ -2572,6 +2575,20 @@ mod tests {
         assert!(AgentFields::parse(&args, agent, region).is_err());
     }
 
+    fn far_destination() -> crate::children::FarDestination {
+        crate::children::FarDestination {
+            end: RegionEnd {
+                server_uri: "http://127.0.0.1:9/".to_string(),
+                region_id: Uuid::from_u128(99),
+                name: "Away".to_string(),
+                loc_x: 768,
+                loc_y: 768,
+            },
+            size_x: 256,
+            size_y: 256,
+        }
+    }
+
     fn synthetic_agent() -> AgentFields {
         AgentFields {
             agent_id: Uuid::from_u128(1),
@@ -2701,7 +2718,7 @@ mod tests {
         assert!(agent.still_root());
         assert!(state.meters().diag_lines().contains("root_agents: 1\n"));
         state.demote_child(agent.expect.agent_id).unwrap();
-        state.close_departed(agent.expect.agent_id);
+        state.close_departed(agent.expect.agent_id, &far_destination());
         assert!(
             caps.enqueue_for(synthetic_agent().agent_id, ferroan_llsd::Llsd::new_map())
                 .is_err()
@@ -2906,7 +2923,7 @@ mod tests {
 
         // A removed child remains charged until its worker has finished cleanup.
         let leaving = receiver.try_recv().unwrap();
-        state.close_departed(leaving.expect.agent_id);
+        state.close_departed(leaving.expect.agent_id, &far_destination());
         assert_eq!(state.accept(child(extra + 1)), Err(busy));
         drop(leaving);
         state.accept(child(extra + 1)).unwrap();
@@ -4109,7 +4126,7 @@ mod tests {
         state.accept(login.clone()).unwrap();
         let departed = receiver.recv().await.unwrap();
         departed.mark_root();
-        state.close_departed(login.agent_id);
+        state.close_departed(login.agent_id, &far_destination());
         let mut after = other;
         after.session_id = Uuid::from_u128(76);
         after.secure_session_id = Uuid::from_u128(77);
@@ -4147,7 +4164,7 @@ mod tests {
             state.finish_child(agent, generation, end.region_id),
             crate::children::Admission::Announce { .. }
         ));
-        state.close_departed(agent);
+        state.close_departed(agent, &far_destination());
         assert!(state.take_open_children(agent).is_empty());
 
         state.accept(synthetic_agent()).unwrap();
@@ -4282,6 +4299,115 @@ mod tests {
         assert_eq!(staged[0].1.region_id, end.region_id);
         drop(old);
         drop(current);
+    }
+
+    /// A with neighbours B and E. After A-B-A, B is an ordinary open child.
+    /// An in-view hop promotes E, and E then closes A's child circuit. That
+    /// lease drop must not stage a close of B: the next login, child arrivals
+    /// included, would send it with the old session.
+    #[tokio::test]
+    async fn a_child_circuit_drop_after_an_in_view_hop_stages_nothing() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let root = receiver.recv().await.unwrap();
+        root.mark_root();
+        let agent = root.expect.agent_id;
+        let neighbour = |id: u128, name: &str, loc_x: u32| RegionEnd {
+            server_uri: format!("http://{name}/"),
+            region_id: Uuid::from_u128(id),
+            name: name.to_string(),
+            loc_x,
+            loc_y: 256,
+        };
+        let b = neighbour(11, "B", 256);
+        let e = neighbour(12, "E", 512);
+        let generation = state.root_generation(agent).unwrap();
+        assert!(matches!(
+            state.claim_child(agent, generation, b.clone()),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(agent, generation, b.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
+        // Round trip A-B-A. The return carries B, then the new root releases it
+        // so B is an ordinary open child. `child_seed` does not consume it.
+        state.promote_child(agent, &b, "seed-b");
+        state.accept(synthetic_agent()).unwrap();
+        let returned = receiver.recv().await.unwrap();
+        drop(root);
+        returned.mark_root();
+        assert!(state.child_seed(agent, b.region_id).is_some());
+        // In-view hop A-E. E is the remote root. B stays open.
+        state.promote_child(agent, &e, "seed-e");
+        assert!(state.child_seed(agent, b.region_id).is_some());
+        state.demote_child(agent).unwrap();
+        // E closes A's child circuit.
+        drop(returned);
+        assert!(
+            state.take_staged_closes(agent).is_empty(),
+            "dropping the child circuit staged a close"
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let again = receiver.recv().await.unwrap();
+        assert!(state.take_staged_closes(agent).is_empty());
+        drop(again);
+    }
+
+    /// Production far hop: `close_departed` stages only the child outside the
+    /// destination's view, with this session. Dropping the lease afterwards
+    /// stages nothing more.
+    #[tokio::test]
+    async fn a_far_hop_stages_only_the_outside_child() {
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(
+            &test_config("http://127.0.0.1:9", Uuid::from_u128(5)),
+            caps,
+            sender,
+        );
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        let agent = accepted.expect.agent_id;
+        // `far_destination` is cell (3, 3). The next cell stays inside.
+        // Cell (7, 3) is outside: 768 + 256 + 254 < 1792.
+        let neighbour = |id: u128, loc_x: u32| RegionEnd {
+            server_uri: format!("http://192.0.2.{id}/"),
+            region_id: Uuid::from_u128(id),
+            name: "Neighbour".to_string(),
+            loc_x,
+            loc_y: 768,
+        };
+        let adjacent = neighbour(11, 1024);
+        let outside = neighbour(12, 1792);
+        let generation = state.root_generation(agent).unwrap();
+        for region in [&adjacent, &outside] {
+            assert!(matches!(
+                state.claim_child(agent, generation, region.clone()),
+                crate::children::Claim::New { .. }
+            ));
+            assert!(matches!(
+                state.finish_child(agent, generation, region.region_id),
+                crate::children::Admission::Announce { .. }
+            ));
+        }
+        state.close_departed(agent, &far_destination());
+        let staged = state.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, Uuid::from_u128(2));
+        assert_eq!(staged[0].1.region_id, outside.region_id);
+        drop(accepted);
+        assert!(
+            state.take_staged_closes(agent).is_empty(),
+            "the lease drop staged another close"
+        );
     }
 
     /// `MakeChildAgent` spares a root whose open child is in the destination.

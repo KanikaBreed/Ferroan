@@ -252,7 +252,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
 | Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | DONE (this PR) |
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
-| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
+| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | DONE (this PR) |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split into Q80a–Q80b) |
 | Q80a | P2.11b1: keep the C# neighbour's child a child presence | READY after Q79c2b |
@@ -306,7 +306,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
 | Q100 | P3.0: Jolt oracle | BLOCKED (the matched-native oracle waits on the deferred upgrade, 26 November 2026; file compiles are Q100a; stock recordings are Q177) |
-| Q100a | P3.0f: Engine-independent file oracle | READY |
+| Q100a | P3.0f: Engine-independent file oracle | DONE (this PR) |
 | Q177 | P3.57: Stock Pin8 integrated recordings | READY |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
 | Q102 | P3.0c: Move the C# Jolt module | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
@@ -325,7 +325,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
 | Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
-| Q115 | P3.3: Physics thread and the request queue | READY |
+| Q115 | P3.3: Physics thread and the request queue | DONE (this PR) |
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
 | Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
@@ -507,7 +507,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q320 | P4.S26: `bot` | BLOCKED (stage 2 plan pending) |
 | Q321 | P4.S27: `iw*` | BLOCKED (stage 2 plan pending) |
 
-Q100 to Q205 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q108 stays blocked because it is split into Q108a and Q108b. Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is taken with Q100a. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+Q100 to Q205 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and stays READY. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q321 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). P4.S1 to P4.S27 stay blocked until the stage 2 plan.
 

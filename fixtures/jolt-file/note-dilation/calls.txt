@@ -1,0 +1,21 @@
+format 1
+clock Stopwatch
+units time_step_seconds gap_ticks
+config unused
+
+scene A
+call 3F800000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3F000000 frequency
+call 3E800000 frequency
+
+scene B
+call 3F800000 1

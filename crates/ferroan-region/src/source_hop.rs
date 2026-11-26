@@ -43,8 +43,10 @@
 //! caps seed already stored for that destination, and the circuit stays. The
 //! hop does not release or close the agent. A destination
 //! outside that view, or one whose grid Y is 0, waits for the destination's
-//! release DELETE and then closes the circuit without a kick. The grid is asked
-//! when the local directory has no handle.
+//! release DELETE, stages a close for each open child that destination's view
+//! would drop (never the destination itself), and then closes the circuit
+//! without a kick. Those child closes run on a separate task. The grid is
+//! asked when the local directory has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
 #[cfg(test)]
@@ -281,7 +283,9 @@ impl HopPresence {
             Self::Idle => Vec::new(),
             Self::Live(state) => state.take_staged_closes(agent),
             #[cfg(test)]
-            Self::Seeded(_) | Self::Watch(_) => Vec::new(),
+            Self::Seeded(book) => book.take_staged_closes(agent),
+            #[cfg(test)]
+            Self::Watch(_) => Vec::new(),
         }
     }
 
@@ -335,12 +339,17 @@ impl HopPresence {
         }
     }
 
-    fn close_local(&self, agent: Uuid) {
+    fn close_local(&self, agent: Uuid, destination: &HopDestination) {
+        let far = crate::children::FarDestination {
+            end: destination.end.clone(),
+            size_x: destination.size_x,
+            size_y: destination.size_y,
+        };
         match self {
             Self::Idle => {}
             #[cfg(test)]
-            Self::Seeded(_) => {}
-            Self::Live(state) => state.close_departed(agent),
+            Self::Seeded(book) => book.close_far(agent, &far),
+            Self::Live(state) => state.close_departed(agent, &far),
             #[cfg(test)]
             Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
         }
@@ -424,16 +433,7 @@ impl HopEnv {
         let Some(client) = self.client.clone() else {
             return;
         };
-        if staged.is_empty() {
-            return;
-        }
-        let _detached = tokio::spawn(async move {
-            for (session, end) in staged {
-                if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
-                    tracing::debug!("replaced root child close: {error}");
-                }
-            }
-        });
+        spawn_staged_closes(client, agent, staged);
     }
 
     /// Close the in-view neighbour children this root opened. One attempt each.
@@ -678,9 +678,24 @@ async fn perform(work: HopWork<'_>) {
     }
     if outside {
         presence.wait_release(session.agent_id).await;
-        presence.close_local(session.agent_id);
+        presence.close_local(session.agent_id, &destination);
+        let staged = presence.take_staged(session.agent_id);
+        spawn_staged_closes(client.clone(), session.agent_id, staged);
         out.leave().await;
     }
+}
+
+fn spawn_staged_closes(client: SimulationClient, agent: Uuid, staged: Vec<(Uuid, RegionEnd)>) {
+    if staged.is_empty() {
+        return;
+    }
+    let _detached = tokio::spawn(async move {
+        for (session, end) in staged {
+            if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+                tracing::debug!("replaced root child close: {error}");
+            }
+        }
+    });
 }
 
 async fn locate(
@@ -776,29 +791,12 @@ fn needs_closing(session: &HopSession, destination: &HopDestination) -> bool {
         return true;
     }
     let (new_x, new_y) = handle_cells(destination_handle(destination));
-    outside_view(
+    crate::children::outside_cells(
         (session.source.loc_x >> 8, session.source.loc_y >> 8),
         (new_x, new_y),
         (session.size_x, session.size_y),
         (destination.size_x, destination.size_y),
     )
-}
-
-fn outside_view(
-    old: (u32, u32),
-    new: (u32, u32),
-    old_size: (u32, u32),
-    new_size: (u32, u32),
-) -> bool {
-    let draw = REGION_VIEW_METRES - 1;
-    let old_x = u64::from(old.0) * 256;
-    let new_x = u64::from(new.0) * 256;
-    let old_y = u64::from(old.1) * 256;
-    let new_y = u64::from(new.1) * 256;
-    old_x + u64::from(old_size.0) + draw < new_x
-        || new_x + u64::from(new_size.0) + draw < old_x
-        || old_y + u64::from(old_size.1) + draw < new_y
-        || new_y + u64::from(new_size.1) + draw < old_y
 }
 
 fn release_uri(session: &HopSession) -> String {
@@ -975,9 +973,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        EmptyDirectory, HopDestination, HopGrid, HopPresence, HopSession, PresenceWatch,
-        RegionDirectory, drive, outside_view, viewer_endpoint,
+        EmptyDirectory, HopDestination, HopEnv, HopGrid, HopPresence, HopSession, PresenceWatch,
+        RegionDirectory, drive, viewer_endpoint,
     };
+    use crate::children::outside_cells;
     use crate::simulation_client::{RegionEnd, SimulationClient};
     use ferroan_client::{
         ArrivalConfig, CONNECT_INNER, CapsServer, CircuitExpect, CircuitServer, EventQueueError,
@@ -1033,7 +1032,7 @@ mod tests {
         dest.end.loc_y = 256;
         dest.size_x = 768;
         dest.size_y = 256;
-        assert!(outside_view((0, 1), (2, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 1), (2, 1), (256, 256), (256, 256)));
         assert!(!super::needs_closing(&home, &dest));
         dest.end.loc_x = 1024;
         assert!(super::needs_closing(&home, &dest));
@@ -1710,6 +1709,118 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_far_hop_deletes_an_open_child_with_the_claim_session() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let book = Arc::new(crate::children::ChildBook::new());
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        let session = Uuid::from_u128(2);
+        book.attach(agent, generation, session);
+        // Cell (0, 1) is outside a destination at cell (3, 1). Same listener,
+        // so the staged DELETE is the script's fourth request.
+        let child = RegionEnd {
+            server_uri: format!("http://{addr}/"),
+            region_id: Uuid::from_u128(15),
+            name: "FarChild".to_string(),
+            loc_x: 0,
+            loc_y: 256,
+        };
+        let crate::children::Claim::New { .. } = book.claim(agent, generation, child.clone())
+        else {
+            panic!("claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, child.region_id),
+            crate::children::Admission::Announce { .. }
+        ));
+        let mut opened = open_at(
+            listed_for(addr, FAR_HANDLE, 256),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+                (200, "closed".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            HopChoice {
+                presence: HopPresence::Seeded(book),
+                handle: FAR_HANDLE,
+                grid: None,
+            },
+        )
+        .await;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 4);
+        let (method, target) = request_parts(&hits[3].header);
+        assert_eq!(method, "DELETE");
+        assert!(target.contains(&child.region_id.to_string()));
+        assert!(target.contains(&format!("auth={session}")));
+        assert!(!target.contains(&Uuid::from_u128(7).to_string()));
+    }
+
+    #[test]
+    fn close_staged_returns_while_the_neighbour_holds_the_close() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let agent = Uuid::from_u128(1);
+            let older = Uuid::from_u128(8);
+            let book = Arc::new(crate::children::ChildBook::new());
+            book.attach(agent, older, Uuid::from_u128(2));
+            let end = RegionEnd {
+                server_uri: format!("http://{addr}/"),
+                region_id: Uuid::from_u128(7),
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 256,
+            };
+            let crate::children::Claim::New { .. } = book.claim(agent, older, end.clone()) else {
+                panic!("claim");
+            };
+            assert!(matches!(
+                book.accepted(agent, older, end.region_id),
+                crate::children::Admission::Announce { .. }
+            ));
+            book.attach(agent, Uuid::from_u128(9), Uuid::from_u128(70));
+            let hop = HopEnv {
+                source: RegionEnd {
+                    server_uri: "http://127.0.0.1:9/".to_string(),
+                    region_id: Uuid::from_u128(9),
+                    name: "Home".to_string(),
+                    loc_x: 0,
+                    loc_y: 0,
+                },
+                size_x: 256,
+                size_y: 256,
+                client: client(),
+                caps: ferroan_client::CapsRegistry::new("http://127.0.0.1:9").unwrap(),
+                grid: HopGrid {
+                    client: crate::grid::GridClient::from_base("http://127.0.0.1:9"),
+                    scope: Uuid::nil(),
+                },
+                presence: HopPresence::Seeded(book),
+            };
+            let started = Instant::now();
+            hop.close_staged(agent).await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "close_staged waited {elapsed:?}"
+            );
+            let accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await;
+            assert!(accepted.is_ok(), "the neighbour did not accept the close");
+        });
+    }
+
     #[test]
     fn a_flying_departure_sends_the_fly_control() {
         assert_eq!(super::fly_control(ferroan_client::VIA_LOCATION), 0);
@@ -1972,9 +2083,9 @@ mod tests {
 
     #[test]
     fn an_adjacent_region_stays_in_view_and_two_cells_do_not() {
-        assert!(!outside_view((0, 0), (1, 0), (256, 256), (256, 256)));
-        assert!(!outside_view((0, 0), (1, 1), (256, 256), (256, 256)));
-        assert!(outside_view((0, 0), (3, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 0), (256, 256), (256, 256)));
+        assert!(!outside_cells((0, 0), (1, 1), (256, 256), (256, 256)));
+        assert!(outside_cells((0, 0), (3, 0), (256, 256), (256, 256)));
     }
 
     fn watched(budget: Duration, handle: u64) -> (Arc<PresenceWatch>, HopChoice) {

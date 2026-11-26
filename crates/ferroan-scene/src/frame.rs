@@ -16,6 +16,11 @@
 //! so one caller's calls apply in the order it made them. The serve's end
 //! removes the presence, so a later login starts fresh.
 //!
+//! Each tick posts one physics heartbeat and reads the pose only after that
+//! reply. The pose is not written onto avatars. The stand-in still steps them.
+//! A cached position read must not call `Physics::sample`: that call waits
+//! for the step, as `TryGetBodyState` does.
+//!
 //! After each tick the frame runs `ScenePresence.Update`'s terse test on every
 //! attached viewer's avatar ([`crate::terse`]) and offers a due update to
 //! every attached viewer's feed. The circuit drains its feed. Arrivals,
@@ -36,7 +41,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryS
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use ferroan_config::Config;
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
+use ferroan_physics::{Physics, Pose};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -207,6 +214,11 @@ enum Request {
     Frames {
         reply: oneshot::Sender<u64>,
     },
+    /// The pose from the latest physics heartbeat. Empty until the first tick.
+    #[cfg(test)]
+    PhysicsPose {
+        reply: oneshot::Sender<Pose>,
+    },
     /// The serve ended.
     Remove {
         agent: Uuid,
@@ -369,6 +381,7 @@ impl TerrainFrame {
             None,
             PhysicsScaleLimits::default(),
             true,
+            default_jolt_config()?,
         )
     }
 
@@ -385,10 +398,13 @@ impl TerrainFrame {
             limits,
             PhysicsScaleLimits::default(),
             true,
+            default_jolt_config()?,
         )
     }
 
-    /// Use the region's configured scale limits and CollidablePrims setting.
+    /// Use the region's configured scale limits, CollidablePrims setting and
+    /// ini. `config` is passed to `Physics::start`, so `[Jolt]` keys and the
+    /// warning for a `[Startup] physics` other than `Jolt` apply here.
     pub fn with_object_settings(
         map: Option<Heightmap>,
         mut parcels: Option<crate::parcels::ParcelMap>,
@@ -396,6 +412,7 @@ impl TerrainFrame {
         limits: Option<PrimScaleLimits>,
         physics: PhysicsScaleLimits,
         collidable_prims: bool,
+        config: Config,
     ) -> Result<Self, TerrainError> {
         // `ForceUpdateLandInfo` stores the bounding box before the first encode.
         if let Some(parcels) = parcels.as_mut() {
@@ -432,7 +449,7 @@ impl TerrainFrame {
         clock_ms(Instant::now());
         let thread = std::thread::Builder::new()
             .name("ferroan-scene".to_owned())
-            .spawn(move || run(map, scene, rx, inbound_rx, frame_wake, ready_tx))
+            .spawn(move || run(map, scene, rx, inbound_rx, frame_wake, ready_tx, config))
             .map_err(|_| TerrainError::Thread)?;
         ready_rx.recv().map_err(|_| TerrainError::Thread)?;
         Ok(Self {
@@ -670,6 +687,15 @@ impl TerrainFrame {
         Ok(answer)
     }
 
+    /// The pose the last heartbeat reply stored. Crate-internal: a cached
+    /// position read must not call [`Physics::sample`].
+    #[cfg(test)]
+    pub(crate) fn last_physics_pose(&self) -> Result<Pending<Pose>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::PhysicsPose { reply })?;
+        Ok(answer)
+    }
+
     fn request(&self, request: Request) -> Result<(), TerrainError> {
         self.tx.send(request).map_err(|_| TerrainError::Stopped)
     }
@@ -768,7 +794,10 @@ fn answer(
     map: Option<&Heightmap>,
     layers: &[TerrainLayer],
     frames: u64,
+    physics_pose: Pose,
 ) -> bool {
+    #[cfg(not(test))]
+    let _ = physics_pose;
     let presences = &mut scene.presences;
     match request {
         Request::Height { x, y, reply } => {
@@ -786,6 +815,10 @@ fn answer(
         }
         Request::Frames { reply } => {
             let _ = reply.send(frames);
+        }
+        #[cfg(test)]
+        Request::PhysicsPose { reply } => {
+            let _ = reply.send(physics_pose);
         }
         Request::Remove { agent, reply } => {
             let root = presences
@@ -1034,6 +1067,12 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
     [0.0, 0.0, sine, half.cos()]
 }
 
+/// `[Startup] physics = Jolt` and no `[Jolt]` keys. Callers that have the
+/// region's ini pass that to [`TerrainFrame::with_object_settings`] instead.
+fn default_jolt_config() -> Result<Config, TerrainError> {
+    Config::parse("[Startup]\nphysics = Jolt\n").map_err(|_| TerrainError::Thread)
+}
+
 fn run(
     map: Option<Heightmap>,
     mut scene: Scene,
@@ -1041,18 +1080,37 @@ fn run(
     inbound: Receiver<Inbound>,
     wake: Arc<AtomicBool>,
     ready: Sender<()>,
+    config: Config,
 ) {
     let layers = map.as_ref().map(compress::land_layers).unwrap_or_default();
+    // The frame's own period, not `[Startup] FrameTime`. The region's ini
+    // supplies `[Jolt]` and `[Startup] physics`. Drop detaches this thread;
+    // the frame does not join it.
+    let Ok(physics) = Physics::start(&config, FRAME_TIME) else {
+        return;
+    };
     if ready.send(()).is_err() {
         return;
     }
     let mut frames = 0u64;
+    let mut physics_pose = Pose {
+        ready: false,
+        last_count: 0,
+        total_steps: 0,
+    };
     let mut next = Instant::now() + frame_wait();
     loop {
         drain_inbound(&inbound, &wake, &mut scene);
         let now = Instant::now();
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
+            // Pose after the reply, then the stand-in. P3.64 reads a box pose.
+            // P3.76 is what removes the stand-in. A refused heartbeat is logged.
+            // The time is not dropped without a trace.
+            match physics.frame_tick(f64::from(FRAME_TIME)) {
+                Ok(pose) => physics_pose = pose,
+                Err(error) => log::error!("ferroan-scene: physics heartbeat: {error}"),
+            }
             frames = tick(&mut scene, map.as_ref(), frames);
             next = next_tick(next, now);
             continue;
@@ -1064,7 +1122,14 @@ fn run(
         };
         // A call sees every post its caller made before it.
         drain_inbound(&inbound, &wake, &mut scene);
-        if !answer(request, &mut scene, map.as_ref(), &layers, frames) {
+        if !answer(
+            request,
+            &mut scene,
+            map.as_ref(),
+            &layers,
+            frames,
+            physics_pose,
+        ) {
             break;
         }
     }
@@ -1567,8 +1632,93 @@ mod tests {
             .unwrap()
     }
 
+    fn no_physics() -> Pose {
+        Pose {
+            ready: false,
+            last_count: 0,
+            total_steps: 0,
+        }
+    }
+
     fn frames(frame: &TerrainFrame) -> u64 {
         frame.frames().unwrap().blocking_wait().unwrap()
+    }
+
+    fn substep_counts() -> Vec<i64> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/jolt/substeps.json");
+        let text = std::fs::read_to_string(path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        doc["sequence"]["counts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|count| count.as_i64().unwrap())
+            .collect()
+    }
+
+    fn wait_for_physics_steps(frame: &TerrainFrame, at_least: i64) -> Pose {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let pose = frame.last_physics_pose().unwrap().blocking_wait().unwrap();
+            if pose.total_steps >= at_least {
+                return pose;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "frame reached {} steps",
+                pose.total_steps
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn the_frame_steps_follow_the_substep_fixture() {
+        let counts = substep_counts();
+        let ticks = 12;
+        let expected: i64 = counts.iter().take(ticks).sum();
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let pose = wait_for_physics_steps(&frame, expected);
+        let mut total = 0i64;
+        let mut matched = None;
+        for (index, count) in counts.iter().copied().enumerate() {
+            total += count;
+            if total == pose.total_steps {
+                matched = Some((index, count));
+                break;
+            }
+            if total > pose.total_steps {
+                break;
+            }
+        }
+        let (index, count) = matched.expect("total_steps left the fixture sequence");
+        assert!(pose.ready);
+        assert_eq!(pose.last_count, i32::try_from(count).unwrap());
+        assert!(count == 4 || count == 5, "{count}");
+        assert!(index + 1 >= ticks, "saw only {} ticks", index + 1);
+    }
+
+    #[test]
+    fn a_zero_step_rate_takes_one_step_on_each_frame_tick() {
+        let config = ferroan_config::Config::parse(
+            "[Startup]\nphysics = Jolt\n[Jolt]\nPhysicsStepRate = 0\n",
+        )
+        .unwrap();
+        let frame = TerrainFrame::with_object_settings(
+            None,
+            None,
+            std::sync::Arc::default(),
+            None,
+            crate::PhysicsScaleLimits::default(),
+            true,
+            config,
+        )
+        .unwrap();
+        let pose = wait_for_physics_steps(&frame, 4);
+        assert!(pose.ready);
+        assert_eq!(pose.last_count, 1);
+        assert!(pose.total_steps >= 4);
     }
 
     fn places(frame: &TerrainFrame, agents: &[Uuid]) -> HashMap<Uuid, [f32; 3]> {
@@ -2159,7 +2309,8 @@ mod tests {
             scene,
             None,
             &[],
-            0
+            0,
+            no_physics(),
         ));
         (feed, circuit_open)
     }
@@ -2596,7 +2747,7 @@ mod tests {
             look_at: EAST,
             reply,
         };
-        assert!(answer(request, scene, None, &[], 0));
+        assert!(answer(request, scene, None, &[], 0, no_physics()));
     }
 
     /// The minimap packets a feed holds, dropping the rest.
@@ -2637,7 +2788,8 @@ mod tests {
             &mut scene,
             None,
             &[],
-            0
+            0,
+            no_physics(),
         ));
         assert!(packet_kinds(&feed).is_empty());
         open.store(true, Ordering::Release);
@@ -2762,7 +2914,8 @@ mod tests {
             &mut scene,
             None,
             &[],
-            0
+            0,
+            no_physics(),
         ));
         let _ = (0..EVERY).fold(frames, |frames, _| tick(&mut scene, None, frames));
         let got = dots(&feed);

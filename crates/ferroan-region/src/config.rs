@@ -203,6 +203,10 @@ pub struct RegionConfig {
     /// Absent leaves the shipped default. Startup warns when the value is not
     /// `BestAvatarResponsiveness`. This process does not compute another scheme.
     pub prioritization_scheme: Option<String>,
+    /// The region server ini. The frame passes it to `Physics::start`, so
+    /// `[Jolt]` keys apply (`PhysicsStepRate = 0` is one step) and a
+    /// `[Startup] physics` value other than `Jolt` logs the D110 warning.
+    pub server: Config,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -473,6 +477,7 @@ impl RegionConfig {
             prioritization_scheme: server
                 .get("InterestManagement", "UpdatePrioritizationScheme")
                 .map(str::to_owned),
+            server: server.clone(),
         })
     }
 
