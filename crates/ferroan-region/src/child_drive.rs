@@ -139,6 +139,13 @@ impl Inbox<'_> {
     }
 }
 
+struct Drive<'a> {
+    simulation: &'a SimulationState,
+    config: &'a RegionConfig,
+    frame: &'a TerrainFrame,
+    client: &'a SimulationClient,
+}
+
 async fn apply_notice(
     simulation: &SimulationState,
     config: &RegionConfig,
@@ -153,12 +160,15 @@ async fn apply_notice(
         finish(frame, notice, true);
         return;
     };
+    let drive = Drive {
+        simulation,
+        config,
+        frame,
+        client,
+    };
     match notice.pass {
         ChildPass::Enable => {
-            enable(
-                simulation, config, frame, client, notice, &identity, visible, inbox,
-            )
-            .await;
+            enable(&drive, notice, &identity, visible, inbox).await;
             finish(frame, notice, true);
         }
         ChildPass::Position => {
@@ -179,25 +189,25 @@ fn finish(frame: &TerrainFrame, notice: &ChildNotice, committed: bool) {
 }
 
 async fn enable(
-    simulation: &SimulationState,
-    config: &RegionConfig,
-    frame: &TerrainFrame,
-    client: &SimulationClient,
+    drive: &Drive<'_>,
     notice: &ChildNotice,
     identity: &ChildIdentity,
     visible: &[VisibleNeighbour],
     mut inbox: Option<&mut Inbox<'_>>,
 ) {
-    if let Err(error) = frame.note_child_neighbours(notice.agent, !visible.is_empty()) {
+    if let Err(error) = drive
+        .frame
+        .note_child_neighbours(notice.agent, !visible.is_empty())
+    {
         tracing::debug!("child neighbour flag was not stored: {error}");
     }
-    let book = simulation.child_book();
+    let book = drive.simulation.child_book();
     let before = book.tracked(notice.agent);
     let visible_ids: HashSet<Uuid> = visible
         .iter()
         .map(|neighbour| neighbour.region.region_id)
         .collect();
-    close_absent(client, &book, notice.agent, &before, &visible_ids).await;
+    close_absent(drive.client, &book, notice.agent, &before, &visible_ids).await;
     for neighbour in visible {
         if before
             .iter()
@@ -205,24 +215,22 @@ async fn enable(
         {
             continue;
         }
-        admit_one(
-            simulation,
-            config,
-            frame,
-            client,
-            notice,
-            identity,
-            neighbour,
-            inbox.as_deref_mut(),
-        )
-        .await;
+        admit_one(drive, notice, identity, neighbour, inbox.as_deref_mut()).await;
     }
     let staying: HashSet<Uuid> = before
         .iter()
         .filter(|child| child.open && !child.promoted && visible_ids.contains(&child.end.region_id))
         .map(|child| child.end.region_id)
         .collect();
-    send_open_positions(simulation, config, client, notice, identity, Some(&staying)).await;
+    send_open_positions(
+        drive.simulation,
+        drive.config,
+        drive.client,
+        notice,
+        identity,
+        Some(&staying),
+    )
+    .await;
 }
 
 async fn close_absent(
@@ -243,16 +251,13 @@ async fn close_absent(
 }
 
 async fn admit_one(
-    simulation: &SimulationState,
-    config: &RegionConfig,
-    frame: &TerrainFrame,
-    client: &SimulationClient,
+    drive: &Drive<'_>,
     notice: &ChildNotice,
     identity: &ChildIdentity,
     neighbour: &VisibleNeighbour,
-    mut inbox: Option<&mut Inbox<'_>>,
+    inbox: Option<&mut Inbox<'_>>,
 ) {
-    let book = simulation.child_book();
+    let book = drive.simulation.child_book();
     let Claim::New { seed } =
         book.claim(notice.agent, identity.generation, neighbour.region.clone())
     else {
@@ -275,14 +280,15 @@ async fn admit_one(
     let height = avatar_height(notice, identity);
     let mut circuit = child_circuit(
         identity,
-        &home_end(config),
+        &home_end(drive.config),
         &neighbour.region,
         notice.position,
         notice.draw_distance,
         height,
         &seed,
     );
-    let report = match client
+    let report = match drive
+        .client
         .create_visible_child(&neighbour.region, &mut circuit)
         .await
     {
@@ -307,12 +313,18 @@ async fn admit_one(
             // announce wait before the viewer learns the seed URL. The
             // neighbour then sees the PUT finish, and only afterwards the
             // viewer's seed request.
-            if let Some(inbox) = inbox.as_deref_mut() {
+            if let Some(inbox) = inbox {
                 for next in inbox.take_positions(notice.agent) {
-                    let updated =
-                        send_open_positions(simulation, config, client, &next, identity, None)
-                            .await;
-                    finish(frame, &next, updated);
+                    let updated = send_open_positions(
+                        drive.simulation,
+                        drive.config,
+                        drive.client,
+                        &next,
+                        identity,
+                        None,
+                    )
+                    .await;
+                    finish(drive.frame, &next, updated);
                 }
             }
             let view = NeighbourView {
@@ -325,12 +337,14 @@ async fn admit_one(
                 seed,
             };
             for event in admission_events(&admission, &view) {
-                if let Err(error) = simulation.caps().enqueue_for(notice.agent, event) {
+                if let Err(error) = drive.simulation.caps().enqueue_for(notice.agent, event) {
                     tracing::debug!("child event was not queued: {error}");
                 }
             }
         }
-        Admission::Close { end, session } => close_child(client, end, notice.agent, *session).await,
+        Admission::Close { end, session } => {
+            close_child(drive.client, end, notice.agent, *session).await
+        }
         Admission::Quiet => {}
     }
     work.settle();
