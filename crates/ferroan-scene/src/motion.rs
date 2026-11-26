@@ -377,10 +377,16 @@ impl Body {
     }
 
     /// Whether C# would have sent the animation pack since the last call.
-    /// The packet is P2.3b2.
-    #[cfg(test)]
     pub(crate) fn take_animation_pack(&mut self) -> bool {
         self.animator.take_pack_due()
+    }
+
+    /// `HandleAgentAnimation`'s starts and stops. A child (away, or not yet
+    /// arrived) changes nothing and owes no pack (`avnChangeAnim`).
+    pub(crate) fn viewer_animations(&mut self, changes: &[(Uuid, bool)]) {
+        if !self.is_child() {
+            self.animator.viewer_change(changes);
+        }
     }
 
     /// `MakeChildAgent`'s `ResetAnimations`.
@@ -432,6 +438,12 @@ impl Body {
 
     pub(crate) fn set_child(&mut self, child: bool) {
         self.child = child;
+    }
+
+    /// The child-agent flag alone. A login or a hop completion holds the
+    /// actor until arrival samples it; that hold is not a neighbour child.
+    pub(crate) fn child_agent(&self) -> bool {
+        self.child
     }
 
     /// Not root for `ScenePresence.Update`: away in another region, or not

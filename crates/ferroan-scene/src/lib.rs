@@ -70,6 +70,7 @@
 //! Estate edits, terrain upload, physics and wind `LayerData` are later rows.
 //! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
 //! Initial data queues them in link order. Q65c3 drains them onto the wire.
+//! An OAR load's creator, owner and group rewrite is [`oar_owners`].
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -87,6 +88,7 @@ mod height;
 mod initial;
 mod motion;
 pub mod oar;
+pub mod oar_owners;
 pub mod object_permissions;
 mod objects;
 pub mod parcels;
@@ -117,8 +119,9 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    HopReturn, Leaving, LocalTeleport, MovedAway, ParcelSender, Pending, Presence,
-    TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
+    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway,
+    ParcelSender, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink,
+    landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};

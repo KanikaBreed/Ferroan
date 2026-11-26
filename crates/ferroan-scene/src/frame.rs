@@ -38,6 +38,11 @@
 //! was loaded. The frame and circuit share avatar local IDs as in
 //! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
 //! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
+//!
+//! Child neighbours are decided here and carried out elsewhere. Arrival and
+//! the child half of `CheckForSignificantMovement` only `try_send` a
+//! [`ChildNotice`]. The 16 m significant-movement trigger is not this path.
+//! HTTP stays off this thread.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,12 +52,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferroan_config::Config;
-use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
+use ferroan_diag::{Kind, REGION_CHILD_NOTICES, REGION_SCENE_INBOUND, refuse};
 use ferroan_physics::{Physics, Pose};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::animation::AnimationTransfer;
+use crate::animation::{Anim, AnimationTransfer};
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
 use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
@@ -121,6 +126,10 @@ pub const FRAME_TIME: f32 = 0.0909;
 /// use this queue.
 pub const SCENE_INBOUND: usize = 256;
 
+/// Waiting child notices. Pin8's queue is unbounded. A full queue rolls a
+/// movement pass back and defers an arrival.
+pub const CHILD_NOTICE_QUEUE: usize = 64;
+
 /// Per-avatar pose owned by the frame thread.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Presence {
@@ -129,6 +138,145 @@ pub struct Presence {
     pub velocity: [f32; 3],
     pub control_flags: u32,
     pub draw_distance: f32,
+}
+
+/// `ScenePresence.CHILDUPDATES_TIME` at Pin8 `c401bceecd` (line 194).
+const CHILD_UPDATES_MS: i64 = 2_000;
+/// Arrival stores `EnvironmentTickCount() + 10000` (lines 2577 and 4400).
+const CHILD_ARRIVAL_STAMP_MS: i64 = 10_000;
+/// `Util.EnvironmentTickCountMask + 1` (`Util.cs` 3610 and 3623). A negative
+/// tick difference is this wrap, not a hold.
+const CHILD_TICK_MODULUS: i64 = 0x4000_0000;
+/// `CHILDAGENTSCHECK_MOVEMENT`, the square of 32 m (line 193).
+const CHILD_CHECK_DISTANCE_SQ: f32 = 1024.0;
+/// `CHILDUPDATES_MOVEMENT`, the square of 10 m (line 192).
+const CHILD_UPDATE_DISTANCE_SQ: f32 = 100.0;
+/// View and draw changes use a strict 32 m threshold (lines 4757 and 4790).
+const CHILD_RANGE_CHANGE: f32 = 32.0;
+/// `AvatarAppearance` height when the viewer has not stored one.
+const CHILD_DEFAULT_HEIGHT: f32 = 1.9;
+/// Shipped `MinRegionViewDistance` / `MaxRegionViewDistance` until the
+/// region installs its own limits.
+const CHILD_VIEW_MIN: f32 = 96.0;
+const CHILD_VIEW_MAX: f32 = 255.0;
+
+/// Which neighbour pass the region task should run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildPass {
+    /// `EnableChildAgents`: diff the visible set.
+    Enable,
+    /// `SendOutChildAgentUpdates`: `AgentPosition` for children already open.
+    Position,
+}
+
+/// One child pass. The scene thread builds it and does not wait for HTTP.
+#[derive(Clone, Debug)]
+pub struct ChildNotice {
+    pub agent: Uuid,
+    pub pass: ChildPass,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub camera: [f32; 3],
+    pub draw_distance: f32,
+    pub height: f32,
+    pub god: bool,
+    /// When set, the region answers with [`TerrainFrame::settle_child`].
+    /// An arrival sample does not settle, so it cannot clear a later pass.
+    pub settle: bool,
+    /// The pass this notice belongs to. A settle for another pass is ignored,
+    /// which keeps the arrival stamp if an older pass finishes afterwards.
+    pub epoch: u64,
+}
+
+/// What the child half of `CheckForSignificantMovement` would do now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildDue {
+    None,
+    Enable,
+    Position,
+}
+
+/// Positions and ranges a settle can restore when the pass did not commit.
+#[derive(Clone, Copy, Debug)]
+struct ChildSnap {
+    update_position: [f32; 3],
+    check_position: [f32; 3],
+    draw: f32,
+    view: f32,
+    god: bool,
+}
+
+/// The sample `due` compares with the gate. God is false on the frame;
+/// the comparison still sees a change when a test supplies one.
+struct ChildSample {
+    now_ms: i64,
+    child: bool,
+    position: [f32; 3],
+    draw: f32,
+    view: f32,
+    god: bool,
+}
+
+#[derive(Debug)]
+struct ChildGate {
+    last_ms: i64,
+    update_position: [f32; 3],
+    check_position: [f32; 3],
+    last_draw: f32,
+    last_view: f32,
+    last_god: bool,
+    busy: bool,
+    armed: bool,
+    known_other: bool,
+    arrival_pending: bool,
+    epoch: u64,
+    inflight: u64,
+    saved: Option<ChildSnap>,
+}
+
+impl Default for ChildGate {
+    fn default() -> Self {
+        Self {
+            last_ms: 0,
+            update_position: [0.0, 0.0, 0.0],
+            check_position: [0.0, 0.0, 0.0],
+            last_draw: 0.0,
+            last_view: 0.0,
+            last_god: false,
+            busy: false,
+            armed: false,
+            known_other: false,
+            arrival_pending: false,
+            epoch: 0,
+            inflight: 0,
+            saved: None,
+        }
+    }
+}
+
+/// The region task's sender and the view-distance clamp, shared with the
+/// scene thread. The scene thread only `try_lock`s the sender.
+struct ChildWatch {
+    sender: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<ChildNotice>>>,
+    view_min: AtomicU32,
+    view_max: AtomicU32,
+}
+
+impl ChildWatch {
+    fn new() -> Self {
+        Self {
+            sender: std::sync::Mutex::new(None),
+            view_min: AtomicU32::new(CHILD_VIEW_MIN.to_bits()),
+            view_max: AtomicU32::new(CHILD_VIEW_MAX.to_bits()),
+        }
+    }
+
+    fn limits(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.view_min.load(Ordering::Relaxed)),
+            f32::from_bits(self.view_max.load(Ordering::Relaxed)),
+        )
+    }
 }
 
 /// Where the departing avatar is, for a source hop: `ScenePresence.Flying`
@@ -281,6 +429,17 @@ enum Request {
         agent: Uuid,
         reply: oneshot::Sender<Option<Departure>>,
     },
+    /// The region finished one settle-bearing child pass.
+    ChildSettled {
+        agent: Uuid,
+        epoch: u64,
+        committed: bool,
+    },
+    /// The last enable saw at least one neighbour other than this region.
+    ChildKnown {
+        agent: Uuid,
+        others: bool,
+    },
     /// Install the sink that queues `ParcelProperties`.
     ParcelOut {
         send: ParcelSender,
@@ -318,6 +477,11 @@ enum Inbound {
         agent: Uuid,
         update: MotionUpdate,
     },
+    /// `AgentAnimation`: each block's id and `StartAnim`, in packet order.
+    Animations {
+        agent: Uuid,
+        changes: Vec<(Uuid, bool)>,
+    },
     AlwaysRun {
         agent: Uuid,
         always_run: bool,
@@ -331,6 +495,7 @@ enum Inbound {
 struct Avatar {
     pose: Presence,
     body: Body,
+    gate: ChildGate,
     /// `ScenePresence.currentParcelUUID`. Absent until a parcel is sent.
     parcel: Option<Uuid>,
     /// `ScenePresence.posLastMove`. Starts at the pose this avatar was built with.
@@ -352,6 +517,7 @@ struct Scene {
     viewers: HashMap<Uuid, Viewer>,
     board: AvatarBoard,
     local_ids: Arc<LocalIds>,
+    watch: Arc<ChildWatch>,
     parcels: Option<Arc<crate::parcels::ParcelMap>>,
     parcel_out: Option<ParcelSender>,
     parcel_region: crate::parcels::ParcelRegion,
@@ -379,6 +545,7 @@ pub struct TerrainFrame {
     objects: Arc<StoredScene>,
     local_ids: Arc<LocalIds>,
     board: AvatarBoard,
+    watch: Arc<ChildWatch>,
 }
 
 impl TerrainFrame {
@@ -457,11 +624,13 @@ impl TerrainFrame {
             collidable_prims,
             || local_ids.allocate(),
         ));
+        let watch = Arc::new(ChildWatch::new());
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),
             board: board.clone(),
             local_ids: Arc::clone(&local_ids),
+            watch: Arc::clone(&watch),
             parcels: parcels.clone(),
             parcel_out: None,
             parcel_region: crate::parcels::ParcelRegion::default(),
@@ -487,7 +656,44 @@ impl TerrainFrame {
             objects,
             local_ids,
             board,
+            watch,
         })
+    }
+
+    /// Where child notices go. The scene thread never waits on this sender.
+    pub fn watch_children(&self, tx: tokio::sync::mpsc::Sender<ChildNotice>) {
+        let mut slot = self
+            .watch
+            .sender
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *slot = Some(tx);
+    }
+
+    /// The region's `MinRegionViewDistance` and `MaxRegionViewDistance`.
+    pub fn set_view_limits(&self, min: f32, max: f32) {
+        self.watch.view_min.store(min.to_bits(), Ordering::Relaxed);
+        self.watch.view_max.store(max.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The child pass finished. A pass that did not commit restores the
+    /// ranges it had snapshotted. An arrival sample does not call this.
+    pub fn settle_child(
+        &self,
+        agent: Uuid,
+        epoch: u64,
+        committed: bool,
+    ) -> Result<(), TerrainError> {
+        self.request(Request::ChildSettled {
+            agent,
+            epoch,
+            committed,
+        })
+    }
+
+    /// `KnownRegionHandles` had a neighbour other than this region.
+    pub fn note_child_neighbours(&self, agent: Uuid, others: bool) -> Result<(), TerrainError> {
+        self.request(Request::ChildKnown { agent, others })
     }
 
     pub fn parcels(&self) -> Option<&crate::parcels::ParcelMap> {
@@ -688,6 +894,17 @@ impl TerrainFrame {
         self.push(Inbound::Agent { agent, update })
     }
 
+    /// One forwarded `AgentAnimation`: each block's id and `StartAnim`. A
+    /// missing avatar, or a child, is left alone (`avnChangeAnim`). One
+    /// inbound slot, no answer.
+    pub fn agent_animation(
+        &self,
+        agent: Uuid,
+        changes: Vec<(Uuid, bool)>,
+    ) -> Result<(), TerrainError> {
+        self.push(Inbound::Animations { agent, changes })
+    }
+
     /// One forwarded `SetAlwaysRun`. A missing avatar is left alone. One
     /// inbound slot, no answer.
     pub fn set_always_run(&self, agent: Uuid, always_run: bool) -> Result<(), TerrainError> {
@@ -805,6 +1022,8 @@ fn drain_inbound(rx: &Receiver<Inbound>, wake: &AtomicBool, scene: &mut Scene) {
     wake.swap(false, Ordering::AcqRel);
     while let Ok(post) = rx.try_recv() {
         apply(post, scene);
+        // C# sends the pack from the packet handler that changed the set.
+        scene.send_animation_packs();
     }
 }
 
@@ -827,6 +1046,11 @@ fn apply(post: Inbound, scene: &mut Scene) {
         Inbound::Agent { agent, update } => {
             if let Some(avatar) = presences.get_mut(&agent) {
                 avatar.body.apply(&update, &mut avatar.pose);
+            }
+        }
+        Inbound::Animations { agent, changes } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.viewer_animations(&changes);
             }
         }
         Inbound::AlwaysRun { agent, always_run } => {
@@ -1004,7 +1228,23 @@ fn answer(
                 .body
                 .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
             hold_for_arrival(avatar);
+            // A teleport sets CrossingFlags to 0, so this is not the
+            // border-crossing child pass (ScenePresence.cs 2573–2584).
             let _ = reply.send(avatar.pose);
+        }
+        Request::ChildSettled {
+            agent,
+            epoch,
+            committed,
+        } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                settle_gate(&mut avatar.gate, epoch, committed, scene_now_ms());
+            }
+        }
+        Request::ChildKnown { agent, others } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.gate.known_other = others;
+            }
         }
         Request::Departure { agent, reply } => {
             let departure = presences.get(&agent).map(|avatar| {
@@ -1057,6 +1297,7 @@ impl Avatar {
         Self {
             body,
             pose,
+            gate: ChildGate::default(),
             parcel: None,
             last_move: pose.position,
         }
@@ -1148,6 +1389,296 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
     [0.0, 0.0, sine, half.cos()]
 }
 
+fn scene_now_ms() -> i64 {
+    i64::try_from(clock_ms(Instant::now())).unwrap_or(i64::MAX)
+}
+
+/// `ScenePresence.RegionViewDistance`: draw + 64, clamped to the region limits.
+/// A zero result is the child half's early return.
+fn region_view(draw: f32, min: f32, max: f32) -> f32 {
+    let (low, high) = if min <= max { (min, max) } else { (max, min) };
+    if !low.is_finite() || !high.is_finite() {
+        return 0.0;
+    }
+    (draw + 64.0).clamp(low, high)
+}
+
+fn length_sq(left: [f32; 3], right: [f32; 3]) -> f32 {
+    let dx = left[0] - right[0];
+    let dy = left[1] - right[1];
+    let dz = left[2] - right[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+/// `Util.EnvironmentTickCountSubtract` (`Util.cs` 3620). TickCount is masked
+/// to 30 bits. A negative difference adds the modulus, so arrival's
+/// `now + 10000` looks older than the 2 s gate and does not hold it.
+fn child_elapsed_ms(now_ms: i64, last_ms: i64) -> i64 {
+    let diff = now_ms.wrapping_sub(last_ms);
+    if diff >= 0 {
+        diff
+    } else {
+        diff.saturating_add(CHILD_TICK_MODULUS)
+    }
+}
+
+/// The child half of `CheckForSignificantMovement` (lines 4750–4828).
+/// The 16 m trigger is not here: a move whose square is 256 enables nothing
+/// and, once a neighbour is known, sends `AgentPosition`.
+fn due(gate: &ChildGate, sample: &ChildSample) -> ChildDue {
+    if sample.child || !gate.armed || gate.busy || sample.view == 0.0 {
+        return ChildDue::None;
+    }
+    if child_elapsed_ms(sample.now_ms, gate.last_ms) < CHILD_UPDATES_MS {
+        return ChildDue::None;
+    }
+    let view_changed = (sample.view - gate.last_view).abs() > CHILD_RANGE_CHANGE;
+    let dx = sample.position[0] - gate.check_position[0];
+    let dy = sample.position[1] - gate.check_position[1];
+    if view_changed || dx * dx + dy * dy > CHILD_CHECK_DISTANCE_SQ {
+        return ChildDue::Enable;
+    }
+    if !gate.known_other {
+        return ChildDue::None;
+    }
+    let draw_changed = (sample.draw - gate.last_draw).abs() > CHILD_RANGE_CHANGE;
+    let moved = length_sq(sample.position, gate.update_position) > CHILD_UPDATE_DISTANCE_SQ;
+    if sample.god != gate.last_god || draw_changed || moved {
+        ChildDue::Position
+    } else {
+        ChildDue::None
+    }
+}
+
+fn child_notice(
+    presences: &HashMap<Uuid, Avatar>,
+    viewers: &HashMap<Uuid, Viewer>,
+    agent: Uuid,
+    pass: ChildPass,
+    settle: bool,
+    epoch: u64,
+) -> Option<ChildNotice> {
+    let avatar = presences.get(&agent)?;
+    let height = viewers
+        .get(&agent)
+        .map(|viewer| viewer.link.look.height)
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(CHILD_DEFAULT_HEIGHT);
+    Some(ChildNotice {
+        agent,
+        pass,
+        position: avatar.pose.position,
+        velocity: avatar.pose.velocity,
+        camera: avatar.body.view().camera_center,
+        draw_distance: avatar.pose.draw_distance,
+        height,
+        god: false,
+        settle,
+        epoch,
+    })
+}
+
+fn offer_child(watch: &ChildWatch, notice: ChildNotice) -> bool {
+    let slot = match watch.sender.try_lock() {
+        Ok(slot) => slot,
+        Err(std::sync::TryLockError::Poisoned(poison)) => poison.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    let Some(sender) = slot.as_ref() else {
+        return false;
+    };
+    match sender.try_send(notice) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            let configured = sender.max_capacity() as u64;
+            refuse(
+                REGION_CHILD_NOTICES,
+                Kind::Soft,
+                configured,
+                configured.saturating_add(1),
+                "child-notice",
+            );
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+fn snap_of(gate: &ChildGate) -> ChildSnap {
+    ChildSnap {
+        update_position: gate.update_position,
+        check_position: gate.check_position,
+        draw: gate.last_draw,
+        view: gate.last_view,
+        god: gate.last_god,
+    }
+}
+
+fn restore_snap(gate: &mut ChildGate, saved: ChildSnap) {
+    gate.update_position = saved.update_position;
+    gate.check_position = saved.check_position;
+    gate.last_draw = saved.draw;
+    gate.last_view = saved.view;
+    gate.last_god = saved.god;
+}
+
+fn stamp_arrival(gate: &mut ChildGate, pose: &Presence, view: f32, now_ms: i64) {
+    gate.last_ms = now_ms.saturating_add(CHILD_ARRIVAL_STAMP_MS);
+    gate.update_position = pose.position;
+    gate.check_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_view = view;
+    gate.last_god = false;
+    gate.busy = false;
+    gate.armed = true;
+    gate.arrival_pending = false;
+    gate.saved = None;
+    // Drop any pass that has not settled yet. Its later settle must not
+    // replace this stamp.
+    gate.epoch = gate.epoch.wrapping_add(1);
+    gate.inflight = 0;
+}
+
+fn advance_enable(gate: &mut ChildGate, pose: &Presence, view: f32, epoch: u64) {
+    gate.saved = Some(snap_of(gate));
+    gate.check_position = pose.position;
+    gate.update_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_view = view;
+    gate.last_god = false;
+    gate.busy = true;
+    gate.epoch = epoch;
+    gate.inflight = epoch;
+}
+
+fn advance_position(gate: &mut ChildGate, pose: &Presence, epoch: u64) {
+    gate.saved = Some(snap_of(gate));
+    gate.update_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_god = false;
+    gate.busy = true;
+    gate.epoch = epoch;
+    gate.inflight = epoch;
+}
+
+fn rollback_gate(gate: &mut ChildGate) {
+    gate.busy = false;
+    gate.inflight = 0;
+    if let Some(saved) = gate.saved.take() {
+        restore_snap(gate, saved);
+    }
+}
+
+fn settle_gate(gate: &mut ChildGate, epoch: u64, committed: bool, now_ms: i64) {
+    if epoch == 0 || gate.inflight != epoch {
+        return;
+    }
+    gate.busy = false;
+    gate.inflight = 0;
+    gate.last_ms = now_ms;
+    if committed {
+        gate.saved = None;
+    } else if let Some(saved) = gate.saved.take() {
+        restore_snap(gate, saved);
+    }
+}
+
+/// Arrival's `EnableChildAgents`. A full channel leaves the pass pending
+/// and does not stamp the arrival time.
+fn schedule_arrival(scene: &mut Scene, agent: Uuid, now_ms: i64) {
+    let away = scene
+        .presences
+        .get(&agent)
+        .is_none_or(|avatar| avatar.body.child_agent());
+    if away {
+        return;
+    }
+    let (min, max) = scene.watch.limits();
+    let Some(notice) = child_notice(
+        &scene.presences,
+        &scene.viewers,
+        agent,
+        ChildPass::Enable,
+        false,
+        0,
+    ) else {
+        return;
+    };
+    if offer_child(&scene.watch, notice) {
+        if let Some(avatar) = scene.presences.get_mut(&agent) {
+            let view = region_view(avatar.pose.draw_distance, min, max);
+            stamp_arrival(&mut avatar.gate, &avatar.pose, view, now_ms);
+        }
+    } else if let Some(avatar) = scene.presences.get_mut(&agent) {
+        avatar.gate.arrival_pending = true;
+    }
+}
+
+fn consider_children(scene: &mut Scene, now_ms: i64) {
+    let agents: Vec<Uuid> = scene.presences.keys().copied().collect();
+    for agent in agents {
+        consider_child(scene, agent, now_ms);
+    }
+}
+
+fn consider_child(scene: &mut Scene, agent: Uuid, now_ms: i64) {
+    let away = scene
+        .presences
+        .get(&agent)
+        .is_none_or(|avatar| avatar.body.child_agent());
+    if away {
+        if let Some(avatar) = scene.presences.get_mut(&agent) {
+            avatar.gate.arrival_pending = false;
+        }
+        return;
+    }
+    if scene
+        .presences
+        .get(&agent)
+        .is_some_and(|avatar| avatar.gate.arrival_pending)
+    {
+        schedule_arrival(scene, agent, now_ms);
+        return;
+    }
+    let (min, max) = scene.watch.limits();
+    let Some(avatar) = scene.presences.get(&agent) else {
+        return;
+    };
+    let view = region_view(avatar.pose.draw_distance, min, max);
+    let sample = ChildSample {
+        now_ms,
+        child: false,
+        position: avatar.pose.position,
+        draw: avatar.pose.draw_distance,
+        view,
+        god: false,
+    };
+    let decision = due(&avatar.gate, &sample);
+    let pass = match decision {
+        ChildDue::None => return,
+        ChildDue::Enable => ChildPass::Enable,
+        ChildDue::Position => ChildPass::Position,
+    };
+    let epoch = avatar.gate.epoch.wrapping_add(1);
+    let Some(notice) = child_notice(&scene.presences, &scene.viewers, agent, pass, true, epoch)
+    else {
+        return;
+    };
+    let Some(avatar) = scene.presences.get_mut(&agent) else {
+        return;
+    };
+    match decision {
+        ChildDue::Enable => advance_enable(&mut avatar.gate, &avatar.pose, view, epoch),
+        ChildDue::Position => advance_position(&mut avatar.gate, &avatar.pose, epoch),
+        ChildDue::None => return,
+    }
+    if !offer_child(&scene.watch, notice)
+        && let Some(avatar) = scene.presences.get_mut(&agent)
+    {
+        rollback_gate(&mut avatar.gate);
+    }
+}
+
 /// `[Startup] physics = Jolt` and no `[Jolt]` keys. Callers that have the
 /// region's ini pass that to [`TerrainFrame::with_object_settings`] instead.
 fn default_jolt_config() -> Result<Config, TerrainError> {
@@ -1213,6 +1744,8 @@ fn run(
         ) {
             break;
         }
+        // A local teleport stands a sitter up (`StandUp`), which sends.
+        scene.send_animation_packs();
     }
 }
 
@@ -1220,11 +1753,15 @@ fn run(
 /// the frame, and send the minimap dots on every 50th. Returns the count.
 fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     step_avatars(&mut scene.presences, map);
+    consider_children(scene, scene_now_ms());
+    // The delayed stop's `AddNewMovement` can change the movement state.
+    scene.send_animation_packs();
     // `EventManagerOnClientMovement` after the avatar has moved. A teleport
     // only stores the new position; this is the send on the next tick.
     note_parcel_crossings(scene);
     update_presences(scene);
     heartbeat_end(&mut scene.presences);
+    scene.send_animation_packs();
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
     if frames.is_multiple_of(COARSE_EVERY_FRAMES) {
@@ -1454,13 +1991,24 @@ impl Scene {
     }
 
     /// `CompleteMovement`: the avatar's full update to every other viewer
-    /// (`SendInitialAvatarDataToAllAgents`), then its appearance to each
-    /// (`SendAppearanceToAgentNF`). Its own viewer gets both from its
-    /// circuit, with the arrival packet.
+    /// (`SendInitialAvatarDataToAllAgents`), then its appearance and its
+    /// animations to each (`SendAppearanceToAgentNF`,
+    /// `SendAnimPackToAgentNF`). Its own viewer gets the full update and the
+    /// appearance from its circuit, with the arrival packet, and its
+    /// animations here (`SendAnimPackToAgent`): the circuit takes this feed
+    /// only after it has queued those two.
     fn announce(&self, agent: Uuid) {
         let Some(full) = self.full_of(agent) else {
             return;
         };
+        let animations = self.animations_of(agent).unwrap_or_default();
+        self.send(
+            &agent,
+            AvatarPacket::Animations {
+                agent,
+                animations: animations.clone(),
+            },
+        );
         let others: Vec<Uuid> = self
             .viewer_order()
             .into_iter()
@@ -1478,11 +2026,65 @@ impl Scene {
                     look: Arc::clone(&full.look),
                 },
             );
+            self.send(
+                other,
+                AvatarPacket::Animations {
+                    agent,
+                    animations: animations.clone(),
+                },
+            );
+        }
+    }
+
+    /// `Animator.GetArrays`: the default first unless it is nil, then the others.
+    fn animations_of(&self, agent: Uuid) -> Option<Vec<Anim>> {
+        self.presences
+            .get(&agent)
+            .map(|avatar| avatar.body.animator().animations().arrays())
+    }
+
+    /// `ScenePresenceAnimator.SendAnimPack` for every avatar whose animator
+    /// owes one: a root's set to every open viewer, its own and children
+    /// included (`ForEachScenePresence`). A child owes nothing and sends
+    /// nothing (`IsChildAgent`).
+    fn send_animation_packs(&mut self) {
+        let mut due = Vec::new();
+        for (agent, avatar) in &mut self.presences {
+            if avatar.body.take_animation_pack() && !avatar.body.is_child() {
+                due.push((*agent, avatar.body.animator().animations().arrays()));
+            }
+        }
+        if due.is_empty() {
+            return;
+        }
+        let order = self.viewer_order();
+        due.sort_by_key(|(agent, _)| {
+            order
+                .iter()
+                .position(|(viewer, _)| viewer == agent)
+                .unwrap_or(usize::MAX)
+        });
+        for (agent, animations) in due {
+            for (viewer, _) in &order {
+                if self.is_open(viewer) {
+                    self.send(
+                        viewer,
+                        AvatarPacket::Animations {
+                            agent,
+                            animations: animations.clone(),
+                        },
+                    );
+                }
+            }
         }
     }
 
     /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
-    /// then its appearance, to this viewer.
+    /// then its appearance, then its animations, to this viewer. A root then
+    /// arms one child pass, which is `EnableChildAgents` inside
+    /// `SendInitialData` (`ScenePresence.cs` 4395–4407), after the handshake
+    /// reply, the seeds and four more frames. A border crossing is a separate
+    /// site.
     fn send_initial_data(&mut self, agent: Uuid) {
         // ScenePresence.cs 4337 logs before the teleport-flag check.
         tracing::info!("SendInitialData for \"{agent}\"");
@@ -1508,6 +2110,15 @@ impl Scene {
             let look = Arc::clone(&full.look);
             self.send(&agent, AvatarPacket::Full(full));
             self.send(&agent, AvatarPacket::Appearance { agent: other, look });
+            if let Some(animations) = self.animations_of(other) {
+                self.send(
+                    &agent,
+                    AvatarPacket::Animations {
+                        agent: other,
+                        animations,
+                    },
+                );
+            }
         }
         if let (Some(viewer), Some(avatar)) = (self.viewers.get(&agent), self.presences.get(&agent))
         {
@@ -1517,6 +2128,7 @@ impl Scene {
                 sitting_on: None,
             });
         }
+        schedule_arrival(self, agent, scene_now_ms());
     }
 
     /// `SendCoarseLocations`: the root avatars in scene order, the same list
@@ -2145,14 +2757,15 @@ mod tests {
         assert_eq!(local_ids(&feed.take_terse(0)), [local_id]);
     }
 
-    /// The agent ids of the full updates and appearances, and the kills, in
-    /// the order a feed holds them.
+    /// The agent ids of the full updates, appearances and animations, and
+    /// the kills, in the order a feed holds them.
     fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
         feed.take_avatar_packets(usize::MAX)
             .into_iter()
             .filter_map(|packet| match packet {
                 AvatarPacket::Full(full) => Some(('F', full.agent.as_u128())),
                 AvatarPacket::Appearance { agent, .. } => Some(('A', agent.as_u128())),
+                AvatarPacket::Animations { agent, .. } => Some(('M', agent.as_u128())),
                 AvatarPacket::Kill(ids) => Some(('K', u128::from(ids[0]))),
                 // The frame thread's clock decides when a minimap list falls.
                 AvatarPacket::Coarse(_) => None,
@@ -2161,7 +2774,8 @@ mod tests {
     }
 
     /// `CompleteMovement` sends the newcomer's full update, then its
-    /// appearance, to the viewer already there. The newcomer learns of the
+    /// appearance and its animations, to each viewer already there, a
+    /// child's included. The newcomer learns of the
     /// other root at its `SendInitialData`: the reply, the seeds, four frames.
     #[test]
     fn an_arrival_is_announced_and_the_newcomer_hears_of_the_others() {
@@ -2171,10 +2785,18 @@ mod tests {
         let (_, first_feed, _) = attach(&frame, first);
         login(&frame, first, pose_at([128.0, 128.0, 25.0]));
         reuse(&frame, first);
-        assert!(
-            packet_kinds(&first_feed).is_empty(),
-            "its own update is the circuit's"
-        );
+        // Its own full update and appearance are the circuit's; its
+        // animations follow them (`SendAnimPackToAgent`).
+        assert_eq!(packet_kinds(&first_feed), [('M', 60)]);
+        // A viewer whose avatar is away here (a child) hears of arrivals
+        // too: `CompleteMovement` loops over every presence.
+        let child = Uuid::from_u128(59);
+        let (_, child_feed, _) = attach(&frame, child);
+        login(&frame, child, pose_at([130.0, 128.0, 25.0]));
+        reuse(&frame, child);
+        frame.set_child(child, true).unwrap();
+        let _ = first_feed.take_avatar_packets(usize::MAX);
+        let _ = child_feed.take_avatar_packets(usize::MAX);
         let (_, second_feed, second_seeds) = attach(&frame, second);
         login(&frame, second, pose_at([120.0, 128.0, 25.0]));
         // The newcomer turns to the arrival look before it is announced.
@@ -2185,8 +2807,9 @@ mod tests {
             .blocking_wait()
             .unwrap();
         assert_eq!(arrived.rotation, look_rotation(look));
+        assert_eq!(packet_kinds(&child_feed), [('F', 61), ('A', 61), ('M', 61)]);
         let announced = first_feed.take_avatar_packets(usize::MAX);
-        assert_eq!(announced.len(), 2);
+        assert_eq!(announced.len(), 3);
         let AvatarPacket::Full(full) = &announced[0] else {
             panic!("the full update comes first");
         };
@@ -2200,7 +2823,26 @@ mod tests {
             &announced[1],
             AvatarPacket::Appearance { agent, .. } if *agent == second
         ));
-        assert!(packet_kinds(&second_feed).is_empty());
+        // A new set: `STAND` sequence 1, no object.
+        let standing = vec![Anim {
+            animation: crate::animation::STAND,
+            sequence: 1,
+            object_id: Uuid::nil(),
+        }];
+        assert_eq!(
+            announced[2],
+            AvatarPacket::Animations {
+                agent: second,
+                animations: standing.clone()
+            }
+        );
+        assert_eq!(
+            second_feed.take_avatar_packets(usize::MAX),
+            [AvatarPacket::Animations {
+                agent: second,
+                animations: standing
+            }]
+        );
         // The wait: the reply and the seeds, then four frames. The frame
         // thread ticks on the wall clock, so the test does not count frames
         // by sleeping. The counter is read before the reply is posted, so
@@ -2223,7 +2865,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
         let seen = frames(&frame);
-        assert_eq!(sent, [('F', 60), ('A', 60)]);
+        assert_eq!(sent, [('F', 60), ('A', 60), ('M', 60)]);
         assert!(
             seen >= before + 4,
             "SendInitialData ran {} frames after the reply, before the fourth",
@@ -2233,6 +2875,7 @@ mod tests {
         wait_frames(&frame, 3);
         assert!(packet_kinds(&second_feed).is_empty());
         assert!(packet_kinds(&first_feed).is_empty());
+        assert!(packet_kinds(&child_feed).is_empty());
     }
 
     /// `SendOtherAgentsAvatarFullToMe` names root agents only.
@@ -2251,6 +2894,7 @@ mod tests {
         let (_, feed, seeds) = attach(&frame, newcomer);
         login(&frame, newcomer, pose_at([128.0, 128.0, 25.0]));
         reuse(&frame, newcomer);
+        assert_eq!(packet_kinds(&feed), [('M', newcomer.as_u128())]);
         seeds.store(true, Ordering::Release);
         frame.handshake_reply(newcomer).unwrap();
         wait_frames(&frame, 7);
@@ -2388,6 +3032,7 @@ mod tests {
             viewers: HashMap::new(),
             board: AvatarBoard::default(),
             local_ids: Arc::default(),
+            watch: Arc::new(ChildWatch::new()),
             parcels: None,
             parcel_out: None,
             parcel_region: crate::parcels::ParcelRegion::default(),
@@ -3082,10 +3727,16 @@ mod tests {
         assert!(packet_kinds(&feed).is_empty());
         open.store(true, Ordering::Release);
         arrive_in(&mut scene, coming, [130.0, 128.0, 25.0]);
+        // Its own animations, from `CompleteMovement`.
+        assert_eq!(packet_kinds(&feed), [('M', coming.as_u128())]);
         scene.send_initial_data(coming);
         assert_eq!(
             packet_kinds(&feed),
-            [('F', there.as_u128()), ('A', there.as_u128())]
+            [
+                ('F', there.as_u128()),
+                ('A', there.as_u128()),
+                ('M', there.as_u128())
+            ]
         );
     }
 
@@ -3701,6 +4352,158 @@ mod tests {
         assert_eq!(default(&frame), STAND);
     }
 
+    /// The `AvatarAnimation` sets a feed holds, dropping the rest.
+    fn animations_in(feed: &ViewerFeed) -> Vec<(Uuid, Vec<Anim>)> {
+        feed.take_avatar_packets(usize::MAX)
+            .into_iter()
+            .filter_map(|packet| match packet {
+                AvatarPacket::Animations { agent, animations } => Some((agent, animations)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Wait until `feed` holds an animation set, then take them all.
+    fn next_animations(feed: &ViewerFeed) -> Vec<(Uuid, Vec<Anim>)> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = animations_in(feed);
+            if !seen.is_empty() {
+                return seen;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no animation pack arrived"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A closed viewer link: attached, but its `UseCircuitCode` has not come.
+    fn attach_closed(frame: &TerrainFrame, agent: Uuid) -> Arc<ViewerFeed> {
+        let feed = frame.new_feed();
+        let link = ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
+            circuit_open: Arc::new(AtomicBool::new(false)),
+            look: look_of("closed"),
+            teleport_flags: 1 << 7,
+        };
+        frame.attach(agent, link).unwrap().blocking_wait().unwrap();
+        feed
+    }
+
+    /// `SendAnimPack` (`ForEachScenePresence`): a root's new movement state
+    /// goes to its own viewer and every other open one, children included,
+    /// as soon as the update that changed it applies; the release stands on
+    /// the heartbeat with the next number. A child's animator sends nothing,
+    /// and nothing goes to a viewer whose circuit is not open.
+    #[test]
+    fn a_walk_and_its_stop_reach_every_open_viewer_children_included() {
+        use crate::animation::{STAND, default_animation};
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let walker = Uuid::from_u128(110);
+        let watcher = Uuid::from_u128(111);
+        let child = Uuid::from_u128(112);
+        let (_, walker_feed, _) = attach(&frame, walker);
+        let (_, watcher_feed, _) = attach(&frame, watcher);
+        let (_, child_feed, _) = attach(&frame, child);
+        let closed_feed = attach_closed(&frame, Uuid::from_u128(113));
+        for agent in [walker, watcher, child] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        frame.set_child(child, true).unwrap();
+        wait_frames(&frame, 3);
+        let feeds = [&walker_feed, &watcher_feed, &child_feed];
+        for feed in feeds {
+            let _ = feed.take_avatar_packets(usize::MAX);
+        }
+        frame
+            .agent_update(walker, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        // The answer comes after the post has applied, and so sent.
+        let _ = frames(&frame);
+        let walk = {
+            let seen = animations_in(&walker_feed);
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, walker);
+            assert_eq!(seen[0].1.len(), 1);
+            seen[0].1[0]
+        };
+        assert_eq!(walk.animation, default_animation("WALK").unwrap());
+        assert_eq!(walk.object_id, walker);
+        for feed in [&watcher_feed, &child_feed] {
+            assert_eq!(animations_in(feed), [(walker, vec![walk])]);
+        }
+        frame
+            .agent_update(walker, walking_update(1_100, 2, 0))
+            .unwrap();
+        let stand = Anim {
+            animation: STAND,
+            sequence: walk.sequence + 1,
+            object_id: walker,
+        };
+        assert_eq!(next_animations(&walker_feed), [(walker, vec![stand])]);
+        for feed in [&watcher_feed, &child_feed] {
+            assert_eq!(animations_in(feed), [(walker, vec![stand])]);
+        }
+        frame
+            .agent_update(child, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 3);
+        for feed in feeds {
+            assert!(animations_in(feed).is_empty());
+        }
+        assert!(animations_in(&closed_feed).is_empty());
+    }
+
+    /// `HandleAgentAnimation`: one pack per packet to every open viewer, with
+    /// the started animation after the default and no object, and one even
+    /// when nothing changed. A child is refused: no change and no pack.
+    #[test]
+    fn a_viewer_animation_packet_sends_one_pack_and_a_child_is_refused() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let dancer = Uuid::from_u128(120);
+        let watcher = Uuid::from_u128(121);
+        let (_, dancer_feed, _) = attach(&frame, dancer);
+        let (_, watcher_feed, _) = attach(&frame, watcher);
+        for agent in [dancer, watcher] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        wait_frames(&frame, 3);
+        for feed in [&dancer_feed, &watcher_feed] {
+            let _ = feed.take_avatar_packets(usize::MAX);
+        }
+        let dance = Uuid::from_u128(0xda);
+        frame.agent_animation(dancer, vec![(dance, true)]).unwrap();
+        let _ = frames(&frame);
+        let started = animations_in(&dancer_feed);
+        assert_eq!(started.len(), 1);
+        let set = &started[0].1;
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[1].animation, dance);
+        assert_eq!(set[1].object_id, Uuid::nil());
+        assert_eq!(animations_in(&watcher_feed), started);
+        frame.agent_animation(dancer, vec![(dance, false)]).unwrap();
+        frame.agent_animation(dancer, Vec::new()).unwrap();
+        let _ = frames(&frame);
+        let default = vec![set[0]];
+        let stopped = vec![(dancer, default.clone()), (dancer, default)];
+        assert_eq!(animations_in(&dancer_feed), stopped);
+        assert_eq!(animations_in(&watcher_feed), stopped);
+
+        frame.set_child(dancer, true).unwrap();
+        frame.agent_animation(dancer, vec![(dance, true)]).unwrap();
+        let _ = frames(&frame);
+        frame.set_child(dancer, false).unwrap();
+        frame.agent_animation(dancer, Vec::new()).unwrap();
+        let _ = frames(&frame);
+        // The refused start left the set as it was.
+        assert_eq!(animations_in(&watcher_feed), [(dancer, vec![set[0]])]);
+    }
+
     /// The checked `enableflyslow` reaches every avatar: one already there
     /// and one that arrives later.
     #[test]
@@ -3891,5 +4694,219 @@ mod tests {
         assert_eq!(stopped.target_velocity, [0.0, 0.0, 0.0]);
         assert!(stopped.always_run);
         assert_eq!(read(&frame, agent).velocity, [0.0, 0.0, 0.0]);
+    }
+
+    fn armed_gate(position: [f32; 3], draw: f32, view: f32) -> ChildGate {
+        ChildGate {
+            armed: true,
+            update_position: position,
+            check_position: position,
+            last_draw: draw,
+            last_view: view,
+            last_ms: 0,
+            ..ChildGate::default()
+        }
+    }
+
+    fn sample_at(now_ms: i64, position: [f32; 3], draw: f32, view: f32, god: bool) -> ChildSample {
+        ChildSample {
+            now_ms,
+            child: false,
+            position,
+            draw,
+            view,
+            god,
+        }
+    }
+
+    #[test]
+    fn child_gate_follows_the_pin8_child_half() {
+        let here = [128.0, 128.0, 25.0];
+        let mut gate = ChildGate::default();
+        let sample = sample_at(5_000, here, 255.0, 255.0, false);
+        assert_eq!(due(&gate, &sample), ChildDue::None);
+        gate = armed_gate(here, 255.0, 255.0);
+        gate.busy = true;
+        assert_eq!(due(&gate, &sample), ChildDue::None);
+        gate.busy = false;
+        let mut hidden = sample_at(5_000, here, 255.0, 0.0, false);
+        assert_eq!(due(&gate, &hidden), ChildDue::None);
+        hidden.view = 255.0;
+        hidden.child = true;
+        assert_eq!(due(&gate, &hidden), ChildDue::None);
+        // Arrival stores now+10s. EnvironmentTickCountSubtract wraps that
+        // future value, so a 16 m move still sends AgentPosition. A stamp
+        // in the past holds until 2000 ms have passed.
+        gate.last_ms = 12_000;
+        gate.known_other = true;
+        let early = sample_at(5_000, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &early), ChildDue::Position);
+        gate.known_other = false;
+        assert_eq!(due(&gate, &early), ChildDue::None);
+        gate.last_ms = 4_000;
+        gate.known_other = true;
+        let held = sample_at(5_999, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &held), ChildDue::None);
+        gate.known_other = false;
+        // Equality does not trip either distance. A 16 m move is the position
+        // arm only, and only once a neighbour is known.
+        gate.last_ms = 0;
+        let exact = sample_at(
+            5_000,
+            [128.0 + 32.0, 128.0, 25.0],
+            255.0,
+            255.0 + 32.0,
+            false,
+        );
+        assert_eq!(due(&gate, &exact), ChildDue::None);
+        let sixteen = sample_at(5_000, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &sixteen), ChildDue::None);
+        gate.known_other = true;
+        assert_eq!(due(&gate, &sixteen), ChildDue::Position);
+        gate.known_other = false;
+        let enable = sample_at(5_000, [128.0 + 33.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &enable), ChildDue::Enable);
+        let view = sample_at(5_000, here, 255.0, 255.0 + 32.1, false);
+        assert_eq!(due(&gate, &view), ChildDue::Enable);
+        gate.known_other = true;
+        let draw = sample_at(5_000, here, 255.0 + 32.1, 255.0, false);
+        assert_eq!(due(&gate, &draw), ChildDue::Position);
+        let god = sample_at(5_000, here, 255.0, 255.0, true);
+        assert_eq!(due(&gate, &god), ChildDue::Position);
+        let lifted = sample_at(5_000, [128.0, 128.0, 25.0 + 11.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &lifted), ChildDue::Position);
+        gate.known_other = false;
+        assert_eq!(due(&gate, &draw), ChildDue::None);
+        assert_eq!(due(&gate, &god), ChildDue::None);
+        assert_eq!(due(&gate, &lifted), ChildDue::None);
+    }
+
+    fn wait_enable(rx: &mut tokio::sync::mpsc::Receiver<ChildNotice>, agent: Uuid) -> ChildNotice {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(notice) = rx.try_recv()
+                && notice.agent == agent
+                && notice.pass == ChildPass::Enable
+            {
+                return notice;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SendInitialData did not arm an enable"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A login and a hop return each arm one enable, on the `SendInitialData`
+    /// frame. `CompleteMovement` and the arrival sample do not arm one.
+    #[test]
+    fn send_initial_data_arms_one_enable_per_arrival() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        frame.watch_children(tx);
+        let agent = Uuid::from_u128(81);
+        let (_, _, seeds) = attach(&frame, agent);
+        seeds.store(true, Ordering::Release);
+        login(&frame, agent, pose_at([16.0, 128.0, 30.0]));
+        let _ = frame
+            .arrive(agent, pose_at([16.0, 128.0, 30.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            rx.try_recv().is_err(),
+            "arrival armed before SendInitialData"
+        );
+        frame.handshake_reply(agent).unwrap();
+        let first = wait_enable(&mut rx, agent);
+        assert!(!first.settle);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "a login armed a second enable");
+
+        frame.set_child(agent, true).unwrap();
+        let _ = complete(&frame, agent, standing_return([20.0, 128.0, 25.0]));
+        let _ = frame
+            .arrive(agent, pose_at([20.0, 128.0, 25.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            rx.try_recv().is_err(),
+            "a hop return armed before SendInitialData"
+        );
+        frame.handshake_reply(agent).unwrap();
+        let second = wait_enable(&mut rx, agent);
+        assert_eq!(second.pass, ChildPass::Enable);
+        assert!(!second.settle);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "a hop return armed twice");
+    }
+
+    #[test]
+    fn arrival_offers_enable_without_blocking_when_the_channel_is_full() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(ChildNotice {
+            agent: Uuid::nil(),
+            pass: ChildPass::Enable,
+            position: [0.0, 0.0, 0.0],
+            velocity: [0.0, 0.0, 0.0],
+            camera: [0.0, 0.0, 0.0],
+            draw_distance: 0.0,
+            height: 1.9,
+            god: false,
+            settle: false,
+            epoch: 0,
+        })
+        .unwrap();
+        frame.watch_children(tx);
+        let agent = Uuid::from_u128(79);
+        let (_, _, seeds) = attach(&frame, agent);
+        seeds.store(true, Ordering::Release);
+        let started = std::time::Instant::now();
+        let stored = frame
+            .arrive(agent, pose_at([20.0, 30.0, 40.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(stored.position, [20.0, 30.0, 40.0]);
+        frame.handshake_reply(agent).unwrap();
+        // SendInitialData is several frames after the reply. Leave the filler
+        // in the queue until that offer is refused, or the retry succeeds
+        // into the slot the filler occupied and nothing is reported.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ferroan_diag::metrics().contains("region.child-notices") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a full child-notice queue was not reported"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let filler = rx.try_recv().unwrap();
+        assert!(filler.agent.is_nil());
+        let notice = loop {
+            if let Ok(notice) = rx.try_recv()
+                && notice.agent == agent
+            {
+                break notice;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "arrival enable was not retried"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(notice.pass, ChildPass::Enable);
+        assert!(!notice.settle);
+        // The scene keeps stepping while the channel is full, so this notice
+        // carries the pose at the retry. The arrival answer above is the login
+        // position. Nothing walks, so the horizontal position stays.
+        assert_eq!(notice.position[0], 20.0);
+        assert_eq!(notice.position[1], 30.0);
+        assert!(notice.position[2].is_finite());
     }
 }

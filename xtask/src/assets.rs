@@ -148,6 +148,11 @@ impl Owned {
         self.child.id()
     }
 
+    /// The process that serves, which the memory sampler reads.
+    pub(crate) fn listen_pid(&self) -> u32 {
+        self.listen_pid
+    }
+
     pub(crate) fn detach(mut self) {
         self.stop_on_drop = false;
     }

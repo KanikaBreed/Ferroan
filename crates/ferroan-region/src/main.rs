@@ -245,9 +245,31 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.bind_circuit(circuit.clone());
+    // Child HTTP runs on this task. The scene thread only try_sends a notice.
+    // Abort the task on the way out: it holds the frame, and the frame holds
+    // the notice sender, so the task would not otherwise see the channel close.
+    let mut child_drive = None;
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
+        let (minimum, maximum) = config.region_view.limits();
+        frame.set_view_limits(minimum, maximum);
+        match ferroan_region::simulation_client::SimulationClient::new() {
+            Ok(client) => {
+                let (tx, rx) = mpsc::channel(ferroan_scene::CHILD_NOTICE_QUEUE);
+                frame.watch_children(tx);
+                child_drive = Some(tokio::spawn(ferroan_region::child_drive::run(
+                    rx,
+                    simulation.clone(),
+                    config.clone(),
+                    Arc::clone(frame),
+                    client,
+                )));
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: child neighbours will not be posted: {error}");
+            }
+        }
         let caps_out = caps.clone();
         let installed = frame.set_parcel_sender(Arc::new(move |agent, element| {
             if let Err(error) = caps_out.enqueue_raw_for(agent, element, "parcel-properties") {
@@ -344,6 +366,12 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     };
     let grid = GridClient::new(&config);
     if let Err(error) = grid.register(&config).await {
+        if let Some(task) = child_drive.as_mut() {
+            task.abort();
+            let _ = task.await;
+            simulation.abort_every_admission().await;
+            ferroan_region::child_drive::close_staged_after_stop(&simulation).await;
+        }
         let _ = stop_http.send(());
         http.abort();
         let _ = http.await;
@@ -407,6 +435,14 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
             tracing::error!("ferroan-region: logout cleanup failed: {error}");
             outcome = Err(error);
         }
+    }
+    if let Some(task) = child_drive.as_mut() {
+        task.abort();
+        let _ = task.await;
+        // Spawned admissions outlive the drive task. Abort them so a guard
+        // that logout already won stages its close, then take every close.
+        simulation.abort_every_admission().await;
+        ferroan_region::child_drive::close_staged_after_stop(&simulation).await;
     }
     // PresenceDetector.RemoveRegion. A failure is logged and shutdown continues.
     notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;
@@ -827,6 +863,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         }),
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+        SceneCall::AgentAnimation(changes) => queued(frame.agent_animation(agent, changes)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
         SceneCall::ParcelRequest(query) => answered(
             frame.parcel_request(
@@ -1270,6 +1307,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
     // The sends do not hold this cleanup. Abort and await this circuit's
     // admission tasks before this take: a cancelled admission stages its
     // close when the guard drops, and an earlier take leaves it in the book.
+    hop.abort_admissions(agent.expect.agent_id).await;
     hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without
@@ -1362,6 +1400,19 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
                         avatar_wire(agent, 0, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Animations { agent, animations } => {
+                    let set: Vec<ferroan_client::Anim> = animations
+                        .iter()
+                        .map(|anim| ferroan_client::Anim {
+                            animation: anim.animation,
+                            object_id: anim.object_id,
+                            sequence: anim.sequence,
+                        })
+                        .collect();
+                    out.push(ferroan_client::AvatarPacket::Animation(
+                        ferroan_client::avatar_animation(self.viewer, agent, &set),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -3667,7 +3718,73 @@ mod tests {
 
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
-    /// its appearance, and the kill.
+    /// its appearance, its animations as another viewer gets them, and the
+    /// kill.
+    /// `SendAnimations` picks the layout by the viewer the feed belongs to:
+    /// the agent's own viewer gets an animation that names another object
+    /// first, with that object, and any other viewer gets the set in order
+    /// with no objects. No set the frame makes today names another object,
+    /// so the set is queued on the feed directly.
+    #[test]
+    fn the_scene_feed_gives_only_the_agents_own_viewer_the_object_layout() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(95);
+        let other = Uuid::from_u128(96);
+        let object = Uuid::from_u128(97);
+        let stand = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
+            sequence: 1,
+            object_id: agent,
+        };
+        let held = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0xa11),
+            sequence: 9,
+            object_id: object,
+        };
+        let packets_for = |viewer: Uuid| {
+            let feed = frame.new_feed();
+            feed.send_avatar_packet(ferroan_scene::AvatarPacket::Animations {
+                agent,
+                animations: vec![stand, held],
+            });
+            let scene_feed = SceneFeed {
+                viewer,
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+                feed,
+                region_handle: 77,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 1);
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[0] else {
+                panic!("an AvatarAnimation");
+            };
+            assert_eq!(animation.sender.id, agent);
+            let list: Vec<(Uuid, i32)> = animation
+                .animation_list
+                .iter()
+                .map(|block| (block.anim_id, block.anim_sequence_id))
+                .collect();
+            let sources: Vec<Uuid> = animation
+                .animation_source_list
+                .iter()
+                .map(|block| block.object_id)
+                .collect();
+            (list, sources)
+        };
+        assert_eq!(
+            packets_for(agent),
+            (
+                vec![(held.animation, 9), (stand.animation, 1)],
+                vec![object]
+            )
+        );
+        assert_eq!(
+            packets_for(other),
+            (vec![(stand.animation, 1), (held.animation, 9)], Vec::new())
+        );
+    }
+
     #[test]
     fn the_scene_feed_writes_another_avatars_packets() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3723,14 +3840,14 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
-                viewer: agent,
+                viewer: watcher,
                 object_animations: Arc::default(),
                 supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
             };
             let packets = scene_feed.take_avatar_packets(usize::MAX);
-            assert_eq!(packets.len(), 3);
+            assert_eq!(packets.len(), 4);
             let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
                 panic!("the full update comes first");
             };
@@ -3749,7 +3866,18 @@ mod tests {
             };
             assert_eq!(appearance.sender.id, agent);
             assert_eq!(appearance.visual_param.len(), 2);
-            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[2] else {
+                panic!("the animations follow");
+            };
+            assert_eq!(animation.sender.id, agent);
+            assert_eq!(animation.animation_list.len(), 1);
+            assert_eq!(
+                animation.animation_list[0].anim_id,
+                Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f)
+            );
+            assert_eq!(animation.animation_list[0].anim_sequence_id, 1);
+            assert!(animation.animation_source_list.is_empty());
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[3] else {
                 panic!("the kill comes last");
             };
             assert_eq!(kill.object_data[0].id, local_id);

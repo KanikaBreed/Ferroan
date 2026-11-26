@@ -97,6 +97,17 @@ impl VisibleNeighbour {
             && intersects(center[1], self.region.loc_y, self.size[1])
     }
 
+    /// A neighbour the frame driver can admit without a grid range query.
+    #[cfg(test)]
+    pub(crate) fn at(region: RegionEnd, size: [u32; 2], host: &str, port: u16) -> Self {
+        Self {
+            region,
+            size,
+            host: host.to_owned(),
+            port,
+        }
+    }
+
     /// Resolve only when opening a new circuit. Retained children need no
     /// new viewer endpoint for a position PUT.
     pub async fn viewer_endpoint(&self) -> Option<SocketAddr> {

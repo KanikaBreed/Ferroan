@@ -33,10 +33,12 @@
 
 //! SQLite land rows and the immutable region parcel map, in four-metre cells.
 
+pub mod oar;
 mod overlay;
 mod properties;
 pub(crate) mod vector_text;
 
+pub use oar::{OarParcel, OarParcelError, ParcelLoad, ParcelOptions, load_parcels};
 pub use overlay::OverlayPacket;
 pub(crate) use properties::prim_counts;
 pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts, PropertiesRequest};
