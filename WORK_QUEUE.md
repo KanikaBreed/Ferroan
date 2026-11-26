@@ -222,7 +222,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26a | P1.3a: GridUser stores on SQLite, MySQL and PostgreSQL, fixtures and cross-read | DONE (#159) |
 | Q26b | P1.3b: GridUser service and `POST /griduser`, cache, console commands, oracle fixtures | DONE (#172) |
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
-| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | READY after Q26b |
+| Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
@@ -541,7 +541,7 @@ Proposed split, each with its own acceptance:
 
 Validation of this split: `cargo xtask check` passed locally. The probes used Pin8 directly. Rust/C# cross-reads remain acceptance work for parts 2 and 3.
 
-The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
+The manager approved Q26c1 to Q26c3 on 25 November 2026, as proposed above. Q26c2 and Q26c3 implement the same seven-operation `PresenceStore` trait as Null. Q26d uses it to call the configured provider. D84 stays proposed until Q26c2 and Q26c3 are reviewed.
 
 Q25 (21 November 2026, `feat/p1-2-auth`): [PR #160](https://github.com/KanikaBreed/Ferroan/pull/160). `ferroan-robust` serves `POST /auth` and `POST /authorization`. The stored password is `MD5(MD5(password) + ":" + salt)`. `live compare auth` matches the HTTP records and a cross-read. Login stays on `PasswordAuthenticationService` and opens the same `auth.db`: `LLLoginService` loads authentication with `(config, userAccountService)`, and `AuthenticationServicesConnector` has no such constructor. An invalid web login key is a failure and the password is then tried (TB41, D33). Authorization checks the module and opens no database (TB42, D34). [CI](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812393) on `e9f7aa0`: Linux 11m13s, Windows 4m4s, macOS 4m3s. [Live](https://github.com/KanikaBreed/Ferroan/actions/runs/44963812271): scope 1m7s, scenarios 11m9s, ferrobot 10m40s, images 5m43s, services 22m18s, gate 1m3s. `login: pass`. `auth: match (16 http records); cross-read ok`.
 

@@ -1,0 +1,831 @@
+{
+  "revision": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "steps": [
+    {
+      "instance": 0,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000001",
+      "result": null
+    },
+    {
+      "instance": 1,
+      "op": "report",
+      "input": {
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005"
+      },
+      "result": false
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "SessionID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000001"
+      },
+      "result": false
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000001",
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 0,
+      "op": "report",
+      "input": {
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "00000000-0000-0000-0000-000000000000"
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "held",
+      "input": null,
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "00000000-0000-0000-0000-000000000000",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 0,
+      "op": "verify",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "secure": "aaaaaaaa-aaaa-4000-8000-000000000006"
+      },
+      "result": false
+    },
+    {
+      "instance": 1,
+      "op": "verify",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000007",
+        "secure": "aaaaaaaa-aaaa-4000-8000-000000000006"
+      },
+      "result": false
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "RegionID",
+        "value": "00000000-0000-0000-0000-000000000000"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "AAAAAAAA-AAAA-4000-8000-000000000004"
+      },
+      "result": []
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "SessionID",
+        "value": " AAAAAAAA-AAAA-4000-8000-000000000001 "
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "SessionID",
+        "value": "aaaaaaaaaaaa40008000000000000001"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "SessionID",
+        "value": "{aaaaaaaa-aaaa-4000-8000-000000000001}"
+      },
+      "result": []
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "RegionID",
+        "value": "bad-region"
+      },
+      "result": []
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "SecureSessionID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000006"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "Tag",
+        "value": "blue"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+          "region": "00000000-0000-0000-0000-000000000000",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "tag",
+        "value": "blue"
+      },
+      "result": []
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "absent",
+        "value": ""
+      },
+      "result": []
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "hypergrid@example.invalid",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "red",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "held",
+      "input": null,
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "00000000-0000-0000-0000-000000000000",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 0,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000001",
+      "result": {
+        "user": "hypergrid@example.invalid",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "red",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "RegionID",
+        "value": "bad-region"
+      },
+      "result": false
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "SessionID",
+        "value": "bad-session"
+      },
+      "result": false
+    },
+    {
+      "instance": 1,
+      "op": "delete",
+      "input": {
+        "field": "Tag",
+        "value": "red"
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000003",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000003",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "blue",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "SessionID",
+        "value": "AAAAAAAA-AAAA-4000-8000-000000000003"
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000003",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "report",
+      "input": {
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "00000000-0000-0000-0000-000000000000"
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "logout",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000005",
+      "result": null
+    },
+    {
+      "instance": 1,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000003",
+      "result": null
+    },
+    {
+      "instance": 1,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000002",
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "00000000-0000-0000-0000-000000000000",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "blue",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "RegionID",
+        "value": "00000000-0000-0000-0000-000000000000"
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000002",
+      "result": null
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "same",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "same",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "delete",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "Tag",
+        "value": "same"
+      },
+      "result": []
+    },
+    {
+      "instance": 0,
+      "op": "delete",
+      "input": {
+        "field": "Tag",
+        "value": "same"
+      },
+      "result": false
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000001",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "drop",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "keep",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000003",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "drop",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "delete",
+      "input": {
+        "field": "Tag",
+        "value": "drop"
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000008",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "new",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "store",
+      "input": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000009",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "new",
+          "tag": "lower"
+        }
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "keep",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000009",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "new",
+            "tag": "lower"
+          }
+        },
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000008",
+          "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "new",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000002",
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-000000000005",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "keep",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 1,
+      "op": "report",
+      "input": {
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-00000000000a"
+      },
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "held",
+      "input": null,
+      "result": {
+        "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+        "region": "aaaaaaaa-aaaa-4000-8000-00000000000a",
+        "data": {
+          "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+          "Tag": "keep",
+          "tag": "lower"
+        }
+      }
+    },
+    {
+      "instance": 1,
+      "op": "restore",
+      "input": null,
+      "result": true
+    },
+    {
+      "instance": 0,
+      "op": "report",
+      "input": {
+        "session": "aaaaaaaa-aaaa-4000-8000-000000000009",
+        "region": "00000000-0000-0000-0000-000000000000"
+      },
+      "result": true
+    },
+    {
+      "instance": 1,
+      "op": "logout",
+      "input": "00000000-0000-0000-0000-000000000000",
+      "result": null
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "RegionID",
+        "value": "aaaaaaaa-aaaa-4000-8000-00000000000a"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-00000000000a",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "keep",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 0,
+      "op": "get",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000009",
+      "result": null
+    },
+    {
+      "instance": 0,
+      "op": "logout",
+      "input": "aaaaaaaa-aaaa-4000-8000-000000000005",
+      "result": null
+    },
+    {
+      "instance": 1,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": [
+        {
+          "user": "aaaaaaaa-aaaa-4000-8000-000000000004",
+          "session": "aaaaaaaa-aaaa-4000-8000-000000000002",
+          "region": "aaaaaaaa-aaaa-4000-8000-00000000000a",
+          "data": {
+            "SecureSessionID": "aaaaaaaa-aaaa-4000-8000-000000000006",
+            "Tag": "keep",
+            "tag": "lower"
+          }
+        }
+      ]
+    },
+    {
+      "instance": 1,
+      "op": "logout",
+      "input": "aaaaaaaa-aaaa-4000-8000-00000000000a",
+      "result": null
+    },
+    {
+      "instance": 0,
+      "op": "find",
+      "input": {
+        "field": "UserID",
+        "value": "aaaaaaaa-aaaa-4000-8000-000000000004"
+      },
+      "result": []
+    }
+  ]
+}
