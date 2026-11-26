@@ -27,6 +27,19 @@ fn snapshot(a: &AvatarAppearance) -> Value {
         "visual":a.visual_params.iter().map(|b| format!("{b:02x}")).collect::<String>() })
 }
 
+fn assert_observation(actual: Option<&AvatarAppearance>, expected: &Value, name: &Value) {
+    let mut expected = expected.clone();
+    if !expected.is_null() {
+        // Pin8's JSON decimals describe Singles. Compare at the source precision.
+        expected["height"] = json!(expected["height"].as_f64().unwrap() as f32);
+    }
+    assert_eq!(
+        actual.map(snapshot).unwrap_or(Value::Null),
+        expected,
+        "{name}"
+    );
+}
+
 #[test]
 fn stored_rows_decode_like_the_pin8_appearance_reader() {
     let observations = observations();
@@ -38,17 +51,7 @@ fn stored_rows_decode_like_the_pin8_appearance_reader() {
         }
         .to_appearance()
         .unwrap();
-        let mut expected = case["appearance"].clone();
-        if !expected.is_null() {
-            // Pin8's JSON decimals describe Singles. Compare at the source precision.
-            expected["height"] = json!(expected["height"].as_f64().unwrap() as f32);
-        }
-        assert_eq!(
-            result.as_ref().map(snapshot).unwrap_or(Value::Null),
-            expected,
-            "{}",
-            case["name"]
-        );
+        assert_observation(result.as_ref(), &case["appearance"], &case["name"]);
     }
 }
 
@@ -125,9 +128,10 @@ async fn constructed_appearances_write_the_pin8_rows() {
                 .collect();
             assert_eq!(Value::Object(fields), case["fields"], "{}", case["name"]);
         }
-        assert_eq!(
-            service.get_appearance(id).await.unwrap(),
-            saved.to_appearance().unwrap()
+        assert_observation(
+            service.get_appearance(id).await.unwrap().as_ref(),
+            &case["decoded"],
+            &case["name"],
         );
     }
     drop(service);

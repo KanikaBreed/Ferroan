@@ -45,6 +45,19 @@ static class AppearanceCases
             ("Wearable 4", Pair(3)), ("ShirtItem", Id(2).ToString()), ("ShirtAsset", Id(20).ToString()),
             ("Wearable 4:-1", Pair(4)), ("Wearable 4:11", Pair(11)), ("Wearable 4:12", Pair(12)),
             ("Wearable 4:13", Pair(13)), ("Wearable 15:2", Pair(15)), ("Wearable 16:0", Pair(16)));
+        Read("legacy and indexed zero tie", "en-US", ("Wearable 4", Pair(1)),
+            ("Wearable 4:0", Pair(2)), ("Wearable 3:0", Pair(3)));
+        // Different spellings of an index are distinct stored fields with equal sort keys.
+        foreach (int count in new[] { 16, 17, 48 })
+        {
+            var rows = Enumerable.Range(0, count).Select(i =>
+            {
+                int type = 4 + (i % 12);
+                string index = (type % 2).ToString("D" + (1 + i / 12));
+                return ($"Wearable {type}:{index}", Pair(i + 1));
+            }).ToArray();
+            Read($"tied layers across {count} rows", "en-US", rows);
+        }
         Read("attachments and parameters", "en-US", ("_ap_5", $"{Id(1)},bad,{Id(2)},{Id(3)},{Id(1)}"),
             ("_ap_8", $"{Id(2)},{Id(8)}"), ("_ap_bad", Id(9).ToString()), ("VisualParams", "-1,0,256, 19"),
             ("Serial", " -25 "));
@@ -70,7 +83,8 @@ static class AppearanceCases
         void Write(string name, AvatarAppearance a)
         {
             var data = new AvatarData(a);
-            writes.Add(new { name, appearance = Snapshot(a), type = data.AvatarType, fields = data.Data });
+            writes.Add(new { name, appearance = Snapshot(a), type = data.AvatarType, fields = data.Data,
+                decoded = Snapshot(data.ToAvatarAppearance()) });
         }
         Write("constructor", new AvatarAppearance());
         var constructed = new AvatarAppearance { Serial = 23, VisualParams = [255,0,127,9] };

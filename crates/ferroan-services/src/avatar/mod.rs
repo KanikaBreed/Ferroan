@@ -39,6 +39,7 @@
 //! SQLite, MySQL and PostgreSQL.
 
 mod appearance;
+mod appearance_sort;
 #[cfg(test)]
 mod appearance_tests;
 mod http;

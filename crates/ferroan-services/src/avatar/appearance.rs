@@ -227,7 +227,7 @@ impl AvatarData {
                 attachments.read(point, value);
             }
         }
-        layers.sort_by_key(|(ty, index, _)| (*ty, *index));
+        super::appearance_sort::sort(&mut layers);
         for (ty, _, item) in layers {
             if ty >= appearance.wearables.len() {
                 appearance.wearables.resize_with(ty + 1, Default::default);

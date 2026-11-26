@@ -109,6 +109,8 @@ QR11's local chat follows `Source/OpenSim.Region.CoreModules/Avatar/Chat/ChatMod
 
 Q65b's full world-prim encoder follows Tranquillity `Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs` (`CreatePrimUpdateBlock`) and `LLUDPZeroEncoder.cs`, `SceneObjectPart.cs`, `SceneObjectPartInventory.cs` and `SceneObjectGroup.Inventory.cs` under `Source/OpenSim.Region.Framework/Scenes`, and `Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Its short text fields follow libopenmetaverse `OpenMetaverse.Types/OSUTF8.cs` and `UtilsConversions.cs` at `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`.
 
+Q27b2 ports the comparison-based introsort in `ArraySortHelper<T>` from .NET 10.0.14 to `crates/ferroan-services/src/avatar/appearance_sort.rs` to preserve Pin8's wearable layer order when keys compare equal. The Rust file retains the MIT notice, copyright (c) .NET Foundation and Contributors. [Runtime source at the revision used by the oracle](https://github.com/dotnet/dotnet/blob/0427b9abbead3fa64c6655eb4290c537397131fa/src/runtime/src/libraries/System.Private.CoreLib/src/System/Collections/Generic/ArraySortHelper.cs).
+
 ## Names
 
 OpenSimulator, Tranquillity, Aurora Viewer, Second Life, SLua and Linden Lab names identify sources and compatibility targets. Ferroan is independent and does not claim their endorsement. Second Life is a trademark of Linden Research, Inc.
