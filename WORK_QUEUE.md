@@ -175,7 +175,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | READY after Q60b |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
-| Q63 | P2.7b: `GenerateClientFlags` | READY after Q62 and Q60a |
+| Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
