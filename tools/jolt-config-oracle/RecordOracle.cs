@@ -111,6 +111,8 @@ static class RecordOracle
         {
             WriteTree(scratch, revision, reference);
             CompareTrees(scratch, directory);
+            RequireRejected(scratch, directory, ScenarioName + "/clock.txt", ScenarioName + "/negative-clock.txt");
+            RequireRejected(scratch, directory, ScenarioName + "/events.txt", ScenarioName + "/negative-collider.txt");
         }
         finally
         {
@@ -118,6 +120,31 @@ static class RecordOracle
                 Directory.Delete(scratch, true);
         }
         Console.WriteLine("verify: " + ScenarioName + " matches Harness.Run");
+    }
+
+    static void RequireRejected(string scratch, string directory, string channel, string negative)
+    {
+        string channelPath = Path.Combine(scratch, channel);
+        string original = File.ReadAllText(channelPath);
+        File.WriteAllText(channelPath, File.ReadAllText(Path.Combine(scratch, negative)));
+        try
+        {
+            try
+            {
+                CompareTrees(scratch, directory);
+            }
+            catch (InvalidOperationException rejected)
+            {
+                if (rejected.Message.Contains(channel, StringComparison.Ordinal))
+                    return;
+                throw;
+            }
+            throw new InvalidOperationException(negative + " was accepted as " + channel);
+        }
+        finally
+        {
+            File.WriteAllText(channelPath, original);
+        }
     }
 
     static void WriteTree(string directory, string revision, string reference)

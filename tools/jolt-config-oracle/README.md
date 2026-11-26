@@ -74,7 +74,8 @@ commit, the heartbeat, the step count, the config, the warm-up count, the
 body ids, the clock and the effective materials. Asset bytes, the cold
 sculpt-cache result, the first heartbeat and a hash of each channel are in
 the same provenance. A wrong-clock file and a wrong-collider file change
-one captured number each. The baseline name is `pin8-linux-x86_64`. An
+one captured number each. Verify writes each file over its channel and
+requires the tree compare to reject it. The baseline name is `pin8-linux-x86_64`. An
 unknown native prints `SKIPPED` and exits 3, and that result does not pass.
 The command clears `JOLT_HARNESS_PHYSICS_RATE` before it builds the harness
 options. It does not patch the pin and it does not start a region.
