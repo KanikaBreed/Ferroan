@@ -23,3 +23,4 @@ mod tests;
 pub use authorize::router as authorization_router;
 pub use http::AuthHttp;
 pub use open::{AuthError, open_authorization};
+pub(crate) use open::{config_bool_either, refuse_transport};

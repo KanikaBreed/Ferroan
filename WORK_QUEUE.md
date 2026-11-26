@@ -178,7 +178,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
-| Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | READY after Q60b |
+| Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
@@ -246,7 +246,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q27b | P1.4b: avatar service and `POST /avatar`, the codec and the preserve-and-replace rules | BLOCKED (split into Q27b1–Q27b2) |
 | Q27b1 | P1.4b1: avatar service and the five `POST /avatar` forms against Pin8 | DONE (this PR) |
 | Q27b2 | P1.4b2: typed appearance codec, both directions against Pin8 | DONE (this PR) |
-| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | READY after Q27b2 |
+| Q27c | P1.4c: the baked-texture cache, `GET` and `POST /bakes/<id>` | DONE (this PR) |
 | Q27d | P1.4d: the viewer bake read, `GET /texture/<agent>/<channel>/<uuid>` | READY after Q27c |
 | Q27e | P1.4e: `cargo xtask live compare avatar` and `--rust avatar` | READY after Q27d |
 | Q28 | P1.5: inventory and the library | READY after Q27 (issue #68) |

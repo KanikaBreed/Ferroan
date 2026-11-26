@@ -227,7 +227,41 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// The two test accounts receive their own unredacted ParcelData bodies on separate circuits.
+/// Observe control and limited Land on two fresh circuits, including the late initial-data gate.
+pub async fn parcel_timing(harness: &Harness) -> Result<String, String> {
+    let http = login::http_client().map_err(|e| e.to_string())?;
+    for (account, rate) in [(&harness.owner, 512_000.0), (&harness.chat, 8_000.0)] {
+        let (mut session, _) =
+            enter_with_throttle(&http, harness, account, "last", ArrivalThrottle::Land(rate))
+                .await?;
+        let result = async {
+            if session.region_id() != Some(harness.region_id) {
+                return Err("parcel timing viewer arrived on another region".into());
+            }
+            let observation = Duration::from_secs(2);
+            session
+                .drive(observation)
+                .await
+                .map_err(|e| e.to_string())?;
+            if rate == 8_000.0 {
+                session.set_land_rate(Some(512_000.0));
+                session
+                    .send_throttles(None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            receive_overlay(&mut session, 4).await?;
+            // Continue acknowledging through the delayed initial-data gate and its Land drain.
+            session.drive(observation).await.map_err(|e| e.to_string())
+        }
+        .await;
+        let logout = leave(harness, &mut session, account).await;
+        result.and(logout)?;
+    }
+    Ok("parcel-timing: captured two fresh circuits through logout".into())
+}
+
+/// Receive each test account's unredacted ParcelData bodies on a separate circuit.
 pub async fn parcel_overlays(harness: &Harness, count: usize) -> Result<[Vec<u8>; 2], String> {
     if !matches!(count, 4 | 16) {
         return Err("parcel capture expects four or sixteen packets".into());
@@ -1796,15 +1830,21 @@ async fn enter(
     account: &Account,
     start: &str,
 ) -> Result<(Session, LoginResponse), String> {
-    enter_with_task(http, harness, account, start, None).await
+    enter_with_throttle(http, harness, account, start, ArrivalThrottle::Default).await
 }
 
-async fn enter_with_task(
+enum ArrivalThrottle {
+    Default,
+    Task(f32),
+    Land(f32),
+}
+
+async fn enter_with_throttle(
     http: &reqwest::Client,
     harness: &Harness,
     account: &Account,
     start: &str,
-    task_bps: Option<f32>,
+    throttle: ArrivalThrottle,
 ) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
@@ -1835,8 +1875,10 @@ async fn enter_with_task(
     )
     .await
     .map_err(|error| error.to_string())?;
-    if let Some(rate) = task_bps {
-        session.capture_prim_arrival(rate);
+    match throttle {
+        ArrivalThrottle::Default => {}
+        ArrivalThrottle::Task(rate) => session.capture_prim_arrival(rate),
+        ArrivalThrottle::Land(rate) => session.set_land_rate(Some(rate)),
     }
     session
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
