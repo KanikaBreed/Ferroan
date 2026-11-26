@@ -42,6 +42,7 @@ pub(crate) use properties::prim_counts;
 pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts, PropertiesRequest};
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ferroan_db::{Backend, Pool};
@@ -189,14 +190,37 @@ struct StoredParcel {
     bitmap: Vec<u8>,
 }
 
+/// `PermissionsModule.IsAdministrator`, supplied by the region. The default
+/// answers false. The region installs `StaffGate`'s god rule.
+pub type Administrator = Arc<dyn Fn(Uuid) -> bool + Send + Sync>;
+
+struct EstateBan {
+    /// `EstateSettings.EstateOwner`. Absent from the row keeps the INI owner.
+    owner: Uuid,
+    /// `EstateSettings.l_EstateManagers`.
+    managers: Vec<Uuid>,
+    /// `EstateSettings.TaxFree`. Region access control is the only check then.
+    tax_free: bool,
+    administrator: Administrator,
+}
+
+impl EstateBan {
+    fn fresh(owner: Uuid) -> Self {
+        Self {
+            owner,
+            managers: Vec::new(),
+            tax_free: false,
+            administrator: Arc::new(|_| false),
+        }
+    }
+}
+
 pub struct ParcelMap {
     width: usize,
     cells: Vec<u32>,
     parcels: Vec<Parcel>,
-    /// `EstateSettings` owner. `IsEstateManagerOrOwner` exempts this agent.
-    estate_owner: Uuid,
-    /// `EstateSettings.TaxFree`. Region access control is the only check then.
-    tax_free: bool,
+    /// Shared so a later estate read updates every holder of this map.
+    ban: Arc<Mutex<EstateBan>>,
 }
 
 impl ParcelMap {
@@ -241,9 +265,54 @@ impl ParcelMap {
             width,
             cells: vec![0; count],
             parcels: Vec::new(),
-            estate_owner: Uuid::nil(),
-            tax_free: false,
+            ban: Arc::new(Mutex::new(EstateBan::fresh(Uuid::nil()))),
         })
+    }
+
+    /// The stored estate row. `owner` of `None` keeps the owner already stored,
+    /// which is `[Estates] DefaultEstateOwnerUUID` until this runs.
+    pub fn set_estate(&self, owner: Option<Uuid>, managers: Vec<Uuid>, tax_free: bool) {
+        let mut ban = self.ban.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(owner) = owner {
+            ban.owner = owner;
+        }
+        ban.managers = managers;
+        ban.tax_free = tax_free;
+    }
+
+    /// `IsAdministrator`. The region passes the permissions god rule.
+    pub fn set_administrator(&self, administrator: Administrator) {
+        self.ban
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .administrator = administrator;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tax_free(&self, tax_free: bool) {
+        self.ban
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .tax_free = tax_free;
+    }
+
+    /// `IsBannedFromLand`'s exemptions (`LandObject.cs` 873–885): `TaxFree`,
+    /// `IsAdministrator`, `IsEstateManagerOrOwner`, then the parcel owner.
+    pub(crate) fn exempts(&self, agent: Uuid, parcel_owner: Uuid) -> bool {
+        let (tax_free, owner, managers, administrator) = {
+            let ban = self.ban.lock().unwrap_or_else(|poison| poison.into_inner());
+            (
+                ban.tax_free,
+                ban.owner,
+                ban.managers.clone(),
+                Arc::clone(&ban.administrator),
+            )
+        };
+        tax_free
+            || administrator(agent)
+            || agent == owner
+            || managers.contains(&agent)
+            || agent == parcel_owner
     }
 
     fn insert(&mut self, StoredParcel { mut data, bitmap }: StoredParcel) {
@@ -343,7 +412,7 @@ pub async fn open_parcels_at(
     now: i32,
 ) -> Result<ParcelMap, ParcelError> {
     let mut map = ParcelMap::empty(size)?;
-    map.estate_owner = estate;
+    map.set_estate(Some(estate), Vec::new(), false);
     if let Some(connection) = connection
         && ferroan_db::sqlite_filename(connection)?
             .try_exists()

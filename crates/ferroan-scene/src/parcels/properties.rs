@@ -476,20 +476,23 @@ impl ParcelMap {
         ids
     }
 
-    /// `LandObject.IsBannedFromLand`. Administrators and estate managers are
-    /// not on this map. A ban entry matches `AccessList.Ban` exactly.
+    /// `LandObject.IsBannedFromLand` (`LandObject.cs` 873–902).
+    ///
+    /// Exemptions are `TaxFree`, the installed administrator rule, the estate
+    /// owner, every estate manager and the parcel owner. The first `Ban`
+    /// entry for the agent decides expiry. A later entry is not read.
     fn is_banned(&self, parcel: &Parcel, agent: Uuid, now: i32) -> bool {
-        if self.tax_free || agent == self.estate_owner || agent == parcel.owner {
+        if self.exempts(agent, parcel.owner) {
             return false;
         }
         if parcel.flags & USE_BAN_LIST == 0 {
             return false;
         }
-        parcel.access.iter().any(|entry| {
-            entry.agent == agent
-                && entry.flags == ACCESS_BAN
-                && (entry.expires == 0 || entry.expires > now)
-        })
+        parcel
+            .access
+            .iter()
+            .find(|entry| entry.agent == agent && entry.flags == ACCESS_BAN)
+            .is_some_and(|entry| entry.expires == 0 || entry.expires > now)
     }
 }
 
@@ -1488,10 +1491,10 @@ mod tests {
         assert_eq!(both, vec!["West".to_string(), "East".to_string()]);
         let estate = names(&map.properties_request(ESTATE, span, 1_700_000_000, &mut last));
         assert_eq!(estate, vec!["West".to_string(), "East".to_string()]);
-        map.tax_free = true;
+        map.set_tax_free(true);
         let free = names(&map.properties_request(banned, span, 1_700_000_000, &mut last));
         assert_eq!(free, vec!["West".to_string(), "East".to_string()]);
-        map.tax_free = false;
+        map.set_tax_free(false);
         map.parcels[0].access[0].expires = 1_700_000_000;
         let expired = names(&map.properties_request(banned, span, 1_700_000_000, &mut last));
         assert_eq!(expired, vec!["West".to_string(), "East".to_string()]);
@@ -1513,6 +1516,93 @@ mod tests {
         };
         let one = names(&map.properties_request(banned, cell, 1_700_000_000, &mut last));
         assert_eq!(one, vec!["West".to_string()]);
+    }
+
+    /// The estate row's owner and a manager stay in a span when West bans them.
+    /// The INI owner that `open_parcels` stored first does not. An administrator
+    /// uses the installed god rule and stays as well.
+    #[test]
+    fn a_stored_owner_and_a_banned_manager_stay_in_the_span() {
+        let mut map = two_parcels(256);
+        let stored = uuid::uuid!("00000000-0000-0000-0000-0000000000aa");
+        let manager = uuid::uuid!("00000000-0000-0000-0000-0000000000bb");
+        let ini = ESTATE;
+        map.set_estate(Some(stored), vec![manager], false);
+        for agent in [stored, manager, ini] {
+            map.parcels[0].access.push(super::super::LandAccess {
+                agent,
+                flags: ACCESS_BAN,
+                expires: 0,
+            });
+        }
+        let mut last = std::collections::HashMap::new();
+        let span = PropertiesRequest {
+            west: 0.0,
+            south: 0.0,
+            east: 256.0,
+            north: 4.0,
+            sequence_id: 8,
+            snap_selection: false,
+        };
+        assert_eq!(
+            names(&map.properties_request(stored, span, 0, &mut last)),
+            vec!["West".to_string(), "East".to_string()]
+        );
+        assert_eq!(
+            names(&map.properties_request(manager, span, 0, &mut last)),
+            vec!["West".to_string(), "East".to_string()]
+        );
+        assert_eq!(
+            names(&map.properties_request(ini, span, 0, &mut last)),
+            vec!["East".to_string()]
+        );
+        let god = uuid::uuid!("00000000-0000-0000-0000-0000000000cc");
+        map.parcels[0].access.push(super::super::LandAccess {
+            agent: god,
+            flags: ACCESS_BAN,
+            expires: 0,
+        });
+        map.set_administrator(std::sync::Arc::new(move |agent| agent == god));
+        assert_eq!(
+            names(&map.properties_request(god, span, 0, &mut last)),
+            vec!["West".to_string(), "East".to_string()]
+        );
+    }
+
+    /// `IsBannedFromLand_inner` returns on the first Ban entry for the agent.
+    #[test]
+    fn the_first_ban_entry_decides_whether_it_has_expired() {
+        let mut map = two_parcels(256);
+        let agent = uuid::uuid!("00000000-0000-0000-0000-000000000012");
+        map.parcels[0].access.push(super::super::LandAccess {
+            agent,
+            flags: ACCESS_BAN,
+            expires: 10,
+        });
+        map.parcels[0].access.push(super::super::LandAccess {
+            agent,
+            flags: ACCESS_BAN,
+            expires: 0,
+        });
+        let mut last = std::collections::HashMap::new();
+        let span = PropertiesRequest {
+            west: 0.0,
+            south: 0.0,
+            east: 256.0,
+            north: 4.0,
+            sequence_id: 4,
+            snap_selection: false,
+        };
+        assert_eq!(
+            names(&map.properties_request(agent, span, 11, &mut last)),
+            vec!["West".to_string(), "East".to_string()]
+        );
+        map.parcels[0].access[0].expires = 0;
+        map.parcels[0].access[1].expires = 10;
+        assert_eq!(
+            names(&map.properties_request(agent, span, 11, &mut last)),
+            vec!["East".to_string()]
+        );
     }
 
     #[test]
@@ -1606,7 +1696,7 @@ mod tests {
             data: east,
             bitmap: right,
         });
-        map.estate_owner = ESTATE;
+        map.set_estate(Some(ESTATE), Vec::new(), false);
         map.update_geometry(None);
         map
     }

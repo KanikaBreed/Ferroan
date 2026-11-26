@@ -208,6 +208,16 @@ impl StaffGate {
         cache.entries.get(&agent).map(|(level, _)| *level)
     }
 
+    /// `PermissionsModule.IsAdministrator` (`PermissionsModule.cs` 617–631).
+    /// Nil is never an administrator. A grid god uses the cached account
+    /// level and does not open an account lookup from this call.
+    pub fn is_administrator(&self, agent: Uuid) -> bool {
+        if agent.is_nil() {
+            return false;
+        }
+        self.is_god(agent, None)
+    }
+
     /// `IsGod` or `IsEstateManager`. Either one skips the root-agent count.
     pub fn bypasses(&self, agent: Uuid, level: Option<i32>) -> bool {
         if self.permissions == StaffPermissions::NoModule {
@@ -305,6 +315,22 @@ mod tests {
             slots,
             "log.redact-secrets does not cover {roots} roots with one overlapping login"
         );
+    }
+
+    #[test]
+    fn an_administrator_is_the_god_rule_and_nil_is_not() {
+        let gate = sample(true, false, false, false);
+        let god = Uuid::from_u128(4);
+        gate.note_level(god, GOD_USER_LEVEL);
+        assert!(gate.is_administrator(god));
+        assert!(!gate.is_administrator(Uuid::nil()));
+        assert!(!gate.is_administrator(Uuid::from_u128(9)));
+        let owner_gate = sample(false, true, false, false);
+        assert!(owner_gate.is_administrator(Uuid::from_u128(1)));
+        assert!(!owner_gate.is_administrator(Uuid::from_u128(2)));
+        let manager_gate = sample(false, false, true, false);
+        assert!(manager_gate.is_administrator(Uuid::from_u128(2)));
+        assert!(!manager_gate.is_administrator(Uuid::from_u128(4)));
     }
 
     #[test]

@@ -281,6 +281,13 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         }
     }
     if let Some(frame) = &terrain {
+        if let Some(map) = frame.parcels() {
+            if let Some(access) = stored_estate.as_ref() {
+                map.set_estate(access.owner, access.managers.clone(), access.tax_free);
+            }
+            let staff = simulation.staff_gate();
+            map.set_administrator(Arc::new(move |agent| staff.is_administrator(agent)));
+        }
         let installed = parcel_region(&config, region_settings.as_deref(), stored_estate.as_ref());
         match frame.set_parcel_region(installed) {
             Ok(pending) => {
