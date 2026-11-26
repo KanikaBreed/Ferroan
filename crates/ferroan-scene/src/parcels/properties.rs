@@ -352,10 +352,7 @@ impl ParcelMap {
         if self.parcels.is_empty() {
             return Vec::new();
         }
-        let Some(bounds) = rounded_bounds(request) else {
-            return Vec::new();
-        };
-        let [west, south, east, north] = bounds;
+        let [west, south, east, north] = rounded_bounds(request);
         let [size_x, size_y] = region_metres(self.cell_size().0, self.cell_size().1);
         if west < 0 || south < 0 || east < 0 || north < 0 {
             return Vec::new();
@@ -496,25 +493,19 @@ impl ParcelMap {
     }
 }
 
-/// `MathF.Round` is midpoint-to-even. A non-finite bound is not a selection.
-fn rounded_bounds(request: PropertiesRequest) -> Option<[i32; 4]> {
-    Some([
-        round_half_to_even(request.west)?,
-        round_half_to_even(request.south)?,
-        round_half_to_even(request.east)?,
-        round_half_to_even(request.north)?,
-    ])
+/// `MathF.Round` is midpoint-to-even, then the saturating `(int)` cast.
+/// NaN becomes 0 and an infinity becomes an `i32` limit, as .NET 10 does.
+fn rounded_bounds(request: PropertiesRequest) -> [i32; 4] {
+    [
+        round_half_to_even(request.west),
+        round_half_to_even(request.south),
+        round_half_to_even(request.east),
+        round_half_to_even(request.north),
+    ]
 }
 
-fn round_half_to_even(value: f32) -> Option<i32> {
-    if !value.is_finite() {
-        return None;
-    }
-    let rounded = value.round_ties_even();
-    if rounded < i32::MIN as f32 || rounded > i32::MAX as f32 {
-        return None;
-    }
-    Some(rounded as i32)
+fn round_half_to_even(value: f32) -> i32 {
+    value.round_ties_even() as i32
 }
 
 fn reply_cap(metres_x: i32, metres_y: i32) -> usize {
@@ -1444,15 +1435,39 @@ mod tests {
 
     #[test]
     fn half_metres_round_to_even() {
-        assert_eq!(round_half_to_even(0.5), Some(0));
-        assert_eq!(round_half_to_even(1.5), Some(2));
-        assert_eq!(round_half_to_even(2.5), Some(2));
-        assert_eq!(round_half_to_even(4.5), Some(4));
-        assert_eq!(round_half_to_even(-0.5), Some(0));
-        assert_eq!(round_half_to_even(-1.5), Some(-2));
-        assert_eq!(round_half_to_even(5.0), Some(5));
-        assert_eq!(round_half_to_even(f32::NAN), None);
-        assert_ne!(round_half_to_even(0.5), Some(1));
+        assert_eq!(round_half_to_even(0.5), 0);
+        assert_eq!(round_half_to_even(1.5), 2);
+        assert_eq!(round_half_to_even(2.5), 2);
+        assert_eq!(round_half_to_even(4.5), 4);
+        assert_eq!(round_half_to_even(-0.5), 0);
+        assert_eq!(round_half_to_even(-1.5), -2);
+        assert_eq!(round_half_to_even(5.0), 5);
+        assert_eq!(round_half_to_even(f32::NAN), 0);
+        assert_eq!(round_half_to_even(f32::INFINITY), i32::MAX);
+        assert_eq!(round_half_to_even(f32::NEG_INFINITY), i32::MIN);
+        assert_eq!(round_half_to_even(3.0e9), i32::MAX);
+        assert_ne!(round_half_to_even(0.5), 1);
+    }
+
+    /// NaN rounds to 0, so the request is the parcel at the origin.
+    #[test]
+    fn a_non_finite_bound_selects_the_origin_parcel() {
+        let map = two_parcels(256);
+        let mut last = std::collections::HashMap::new();
+        let got = names(&map.properties_request(
+            ESTATE,
+            PropertiesRequest {
+                west: f32::NAN,
+                south: f32::NAN,
+                east: f32::NAN,
+                north: f32::NAN,
+                sequence_id: 1,
+                snap_selection: false,
+            },
+            0,
+            &mut last,
+        ));
+        assert_eq!(got, vec!["West".to_string()]);
     }
 
     #[test]
