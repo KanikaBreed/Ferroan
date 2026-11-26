@@ -509,13 +509,23 @@ fn parse_uuid(text: &str) -> Uuid {
     Uuid::nil()
 }
 
-/// `UInt64.TryParse` with `NumberStyles.Integer`: surrounding spaces, no sign.
+/// `UInt64.TryParse` with `NumberStyles.Integer`: surrounding spaces, a leading
+/// `+`, and a leading `-` only when the value is zero.
 fn parse_powers(text: &str) -> Option<u64> {
     let trimmed = text.trim_matches(|c: char| matches!(c, '\t'..='\r' | ' '));
-    if trimmed.is_empty() || trimmed.starts_with('+') || trimmed.starts_with('-') {
+    let (negative, digits) = match trimmed.as_bytes().first().copied() {
+        Some(b'+') => (false, &trimmed[1..]),
+        Some(b'-') => (true, &trimmed[1..]),
+        _ => (false, trimmed),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    trimmed.parse().ok()
+    let value = digits.parse().ok()?;
+    if negative && value != 0 {
+        return None;
+    }
+    Some(value)
 }
 
 fn same_principal(stored: &str, agent: &str) -> bool {
@@ -812,8 +822,12 @@ mod tests {
     fn power_text_follows_uint64_try_parse() {
         assert_eq!(parse_powers(" 8 "), Some(8));
         assert_eq!(parse_powers("8\t"), Some(8));
-        assert_eq!(parse_powers("+8"), None);
+        assert_eq!(parse_powers("+8"), Some(8));
+        assert_eq!(parse_powers(" +8"), Some(8));
+        assert_eq!(parse_powers("-0"), Some(0));
+        assert_eq!(parse_powers("-00"), Some(0));
         assert_eq!(parse_powers("-1"), None);
+        assert_eq!(parse_powers("+ 8"), None);
         assert_eq!(parse_powers("nope"), None);
         assert_eq!(parse_powers(""), None);
     }
