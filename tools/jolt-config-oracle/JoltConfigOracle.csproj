@@ -25,6 +25,11 @@
   </Target>
 
   <ItemGroup>
+    <!-- The harness recorder is a second project in this directory. It must not enter the no-native build. -->
+    <Compile Remove="RecordOracle.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="nini-core" Version="0.9.2.16" />
     <!-- Calls the pinned module. FromConfig does not load joltc. Do not copy JoltConfig.cs. -->
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/OpenSim.Region.PhysicsModules.Jolt.csproj">
