@@ -217,6 +217,71 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// The two test accounts receive their own unredacted ParcelData bodies on separate circuits.
+pub async fn parcel_overlays(harness: &Harness, count: usize) -> Result<[Vec<u8>; 2], String> {
+    if !matches!(count, 4 | 16) {
+        return Err("parcel capture expects four or sixteen packets".into());
+    }
+    let http = login::http_client().map_err(|e| e.to_string())?;
+    let mut captures = [Vec::new(), Vec::new()];
+    for (out, account) in captures.iter_mut().zip([&harness.owner, &harness.chat]) {
+        let (mut session, login) = enter(&http, harness, account, "last").await?;
+        let result = if session.region_id() == Some(harness.region_id)
+            && login.agent_id == account.principal_id
+        {
+            receive_overlay(&mut session, count).await
+        } else {
+            Err("parcel capture arrived on the wrong region or account".into())
+        };
+        let logout = leave(harness, &mut session, account).await;
+        *out = result?;
+        logout?;
+    }
+    Ok(captures)
+}
+
+async fn receive_overlay(session: &mut Session, count: usize) -> Result<Vec<u8>, String> {
+    use ferroan_protocol::{Writer, msgs::ParcelOverlay};
+    let mut bodies = vec![None; count];
+    let mut received = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        session.drive(STEP).await.map_err(|e| e.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id != ParcelOverlay::ID {
+                continue;
+            }
+            let msg = packet
+                .decode::<ParcelOverlay>()
+                .map_err(|e| e.to_string())?;
+            let seq = msg.parcel_data.sequence_id;
+            let mut check = Writer::new();
+            msg.encode_body(&mut check);
+            if check.buf != packet.body || msg.parcel_data.data.len() != 1024 {
+                return Err(format!("ParcelOverlay {seq}: invalid captured body"));
+            }
+            let slot = usize::try_from(seq)
+                .ok()
+                .and_then(|i| bodies.get_mut(i))
+                .ok_or_else(|| format!("out-of-range ParcelOverlay sequence {seq}"))?;
+            if let Some(original) = slot {
+                if original != &packet.body {
+                    return Err(format!("conflicting ParcelOverlay {seq}"));
+                }
+            } else {
+                *slot = Some(packet.body);
+                received += 1;
+            }
+        }
+        if received == count {
+            return Ok(bodies.into_iter().flatten().flatten().collect());
+        }
+    }
+    Err(format!(
+        "viewer received {received} of {count} ParcelOverlay packets"
+    ))
+}
+
 /// Wait for the full set of fixture parts, including the linked child.
 async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
     let mut ids = std::collections::BTreeSet::new();

@@ -30,6 +30,7 @@
 //!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
+//! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
@@ -139,6 +140,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask presence cross postgres
        cargo xtask presence generate
        cargo xtask presence verify
        cargo xtask asset generate [directory]
@@ -175,6 +177,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live down
        cargo xtask live run object-cross grid --physics basicphysics
        cargo xtask live object-cross-fixtures <capture-dir>
+       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
        cargo xtask live run prim-arrival grid --physics basicphysics
@@ -270,6 +273,7 @@ fn main() -> ExitCode {
         ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
