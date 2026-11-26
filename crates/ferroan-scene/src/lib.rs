@@ -92,7 +92,7 @@ pub mod prioritizer;
 mod settings;
 mod store;
 mod stored_scene;
-pub use stored_scene::PrimScaleLimits;
+pub use stored_scene::{PhysicsScaleLimits, PrimScaleLimits};
 pub mod terse;
 #[cfg(test)]
 mod test_store;
