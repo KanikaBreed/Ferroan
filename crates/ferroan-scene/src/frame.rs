@@ -1270,12 +1270,30 @@ fn answer(
             owner,
             reply,
         } => {
+            // CloseAgent on a different session, or a root becoming this
+            // child, kills the old avatar on every other client. The viewer
+            // entry stays so the new attach keeps the local id. A same
+            // generation re-seat of a view child does not kill.
+            let replacing = scene
+                .presences
+                .get(&agent)
+                .is_some_and(|existing| !existing.body.is_child() || existing.owner != owner);
+            if replacing
+                && let Some(local_id) = scene.viewers.get(&agent).map(|viewer| viewer.local_id)
+            {
+                scene.board.remove(local_id);
+                for (other, _) in scene.viewer_order() {
+                    if other != agent && scene.is_open(&other) {
+                        scene.send(&other, AvatarPacket::Kill(vec![local_id]));
+                    }
+                }
+            }
             let mut avatar = Avatar::new(agent, pose, fly_slow);
             avatar.body.set_child(true);
             avatar.body.set_actor(false);
             avatar.owner = owner;
             let stored = avatar.pose;
-            presences.insert(agent, avatar);
+            scene.presences.insert(agent, avatar);
             let _ = reply.send(stored);
         }
         Request::MakeChild { agent, reply } => {
@@ -3901,6 +3919,75 @@ mod tests {
         assert_eq!(avatar.pose.position, start);
         assert!(avatar.body.child_agent());
         assert!(!avatar.body.has_actor());
+    }
+
+    /// Replacing a live root kills it on the other viewer and keeps the
+    /// viewer entry. Seating the same view child again does not kill.
+    #[test]
+    fn a_view_child_replacing_a_root_kills_it_on_the_other_viewer() {
+        let mut scene = bare_scene();
+        let leaving = Uuid::from_u128(4);
+        let staying = Uuid::from_u128(5);
+        let old_owner = Uuid::from_u128(1);
+        let new_owner = Uuid::from_u128(2);
+        arrive_in(&mut scene, leaving, [200.0, 128.0, 25.0]);
+        arrive_in(&mut scene, staying, [16.0, 128.0, 25.0]);
+        scene.presences.get_mut(&leaving).unwrap().owner = old_owner;
+        let (leaving_feed, _) = open_viewer_flags(&mut scene, leaving, true, 1 << 7);
+        let (staying_feed, _) = open_viewer_flags(&mut scene, staying, true, 1 << 7);
+        let leaving_id = scene.viewers.get(&leaving).unwrap().local_id;
+        let _ = leaving_feed.take_avatar_packets(usize::MAX);
+        let _ = staying_feed.take_avatar_packets(usize::MAX);
+        let (reply, answer_rx) = oneshot::channel();
+        assert!(answer(
+            Request::ViewChild {
+                agent: leaving,
+                pose: pose_at([-56.0, 128.0, 6.916]),
+                owner: new_owner,
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+            no_physics(),
+        ));
+        assert_eq!(
+            answer_rx.blocking_recv().unwrap().position,
+            [-56.0, 128.0, 6.916]
+        );
+        assert_eq!(packet_kinds(&staying_feed), [('K', u128::from(leaving_id))]);
+        assert!(packet_kinds(&leaving_feed).is_empty());
+        assert_eq!(scene.viewers.get(&leaving).unwrap().local_id, leaving_id);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Remove {
+                agent: leaving,
+                owner: Some(old_owner),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+            no_physics(),
+        ));
+        let _ = staying_feed.take_avatar_packets(usize::MAX);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::ViewChild {
+                agent: leaving,
+                pose: pose_at([-56.0, 128.0, 6.916]),
+                owner: new_owner,
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+            no_physics(),
+        ));
+        assert!(packet_kinds(&staying_feed).is_empty());
     }
 
     fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {
