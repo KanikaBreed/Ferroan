@@ -191,6 +191,25 @@ pub fn avatar_service(writing: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+pub fn avatar_appearance(writing: bool) -> ExitCode {
+    let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
+    let action = if writing { "generate" } else { "verify" };
+    let status = crate::dotnet_ci::command("dotnet")
+        .arg(dll)
+        .args(["appearance", action, &pin])
+        .arg(crate::repo_root().join("fixtures/avatar/appearance.json"))
+        .status();
+    if matches!(status, Ok(status) if status.success()) {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("avatar: appearance oracle failed: {status:?}");
+        ExitCode::FAILURE
+    }
+}
+
 fn build_plugin_oracle(target: &PluginCross) -> Result<(PathBuf, String), ExitCode> {
     let root = crate::repo_root();
     let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
