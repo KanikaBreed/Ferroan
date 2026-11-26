@@ -294,7 +294,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
 | Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q193, Q157, Q122, Q123, Q115 and Q156 |
-| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 and Q105 |
+| Q109 | P3.13a: Capsule, marker and intent | READY |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
 | Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
 | Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
@@ -359,7 +359,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
 | Q158 | P3.56: Ordinary-prim crossing failure and out of bounds | READY after Q100a |
 | Q204 | P3.84: Motor-stop on a vehicle | READY after Q158 and Q161 |
-| Q159 | P3.19: Vehicle parameter store | READY after Q107 |
+| Q159 | P3.19: Vehicle parameter store | READY |
 | Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q159 |
 | Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120, Q177 and Q118 |
 | Q162 | P3.20c: Angular motor and banking | READY after Q161 |
