@@ -310,7 +310,7 @@ P3.0 is three independently accepted deliverables. The first two are available o
 
    Fixture provenance is part of every recording. The harness can load a decoded sculpt from cache (`Meshmerizer.cs` 659–684), can change materials, and can simulate before setup. `BaselineCheck` ignores wall-clock columns and compares summary cells (165–195). That does not establish equality of per-heartbeat packets or of every provider call. Record the original asset bytes, the cold-cache result, the first captured heartbeat, the config and the effective settings, the fixture record count and a hash per channel. Keep a wrong-clock negative and a wrong-collider negative.
 
-3. **Matched-native gate (P3.0), deferred.** Keep Q102, Q103, Q104 and full Q100 blocked. Keep exact integrated traces, and P3.28, pending. Resume them only after the maintainer approves the upgrade, the C# binding and native are identified and exercised on the agreed platforms, and the pin, the baselines and the decision are recorded. Do not switch Rust to 5.4. Do not mark a stock 5.4 run against deterministic 5.6 as exact. The current C# package and allocator differ from the planned pairing (`Jolt.Backend.csproj` 33–38, `JoltPhysicsBackend.cs` 533–545, 916–929 and 1018–1022). This gate is the project decision in section 5, item 1. It is not a conclusion about 5.6 drawn from the Pin8 sources.
+3. **Matched-native gate (P3.0), resumed.** The maintainer reversed the deferral on 26 November 2026: Q102 (the C# move) is READY, then Q103, Q104 and full Q100 in order. Until they land, the rules below still apply. Keep exact integrated traces, and P3.28, pending. Resume them only after the maintainer approves the upgrade, the C# binding and native are identified and exercised on the agreed platforms, and the pin, the baselines and the decision are recorded. Do not switch Rust to 5.4. Do not mark a stock 5.4 run against deterministic 5.6 as exact. The current C# package and allocator differ from the planned pairing (`Jolt.Backend.csproj` 33–38, `JoltPhysicsBackend.cs` 533–545, 916–929 and 1018–1022). This gate is the project decision in section 5, item 1. It is not a conclusion about 5.6 drawn from the Pin8 sources.
 
 ### What is proved without a native
 
@@ -385,7 +385,7 @@ The Jolt region module is not one notice. Inspect the header of each file the ro
 
 ## 4. Queue items
 
-The maintainer deferred the C# module move on 26 November 2026. The review of this plan is applied on that decision. What proceeds is every row whose close is a Pin8 compile, a stock recording, or the section 3 envelope on Rust's approved 5.6 build. What stays blocked is the upgrade, the pin change, its decision, the full oracle and the final same-native gate: **P3.0c**, **P3.0d**, **P3.0e**, **P3.0** and **P3.28** (Q102, Q103, Q104, Q100, Q176).
+The maintainer deferred the C# module move on 26 November 2026, then reversed it the same day: the move (P3.0c, Q102) proceeds now, and the rows below that wait on it wait on Q102 and Q103 rather than on an unscheduled upgrade. The review of this plan is applied on that decision. What proceeds is every row whose close is a Pin8 compile, a stock recording, or the section 3 envelope on Rust's approved 5.6 build. What stays blocked is the upgrade, the pin change, its decision, the full oracle and the final same-native gate: **P3.0c**, **P3.0d**, **P3.0e**, **P3.0** and **P3.28** (Q102, Q103, Q104, Q100, Q176).
 
 Order for the rows that do not wait on another Phase 3 row:
 
