@@ -313,7 +313,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
 | Q100 | P3.0: Jolt oracle | READY |
 | Q100a | P3.0f: Engine-independent file oracle | DONE (this PR) |
-| Q177 | P3.57: Stock Pin8 integrated recordings | DONE (this PR) |
+| Q177 | P3.57: Stock Pin8 integrated recordings (since Pin9, Q103: recorded on the deterministic 5.6 native, not stock 5.4) | DONE (this PR) |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
 | Q102 | P3.0c: Move the C# Jolt module | DONE (dev-build `41f18f983b`, OpenSim-NGC #550) |
 | Q103 | P3.0d: Pin move | DONE (this PR) |
