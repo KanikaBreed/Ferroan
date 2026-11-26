@@ -694,14 +694,13 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, basic_physics: bool) -> Result<String, String> {
-    if scenario == "ferrobot" {
+    if ferroan_bot::register::get(scenario)
+        .is_some_and(|row| row.runner == ferroan_bot::register::Runner::Ferrobot)
+    {
         return run_ferrobot(basic_physics);
     }
-    if scenario != "uploads" && ferroan_bot::scenario::selection(scenario).is_none() {
-        return Err(format!(
-            "unknown scenario {scenario}; expected all, uploads or {}",
-            ferroan_bot::scenario::NAMES.join(", ")
-        ));
+    if !ferroan_bot::register::runs_standalone(scenario) {
+        return Err(ferroan_bot::register::standalone_unknown(scenario));
     }
     if let Some(pid) = standalone_is_up()? {
         return Err(format!(
