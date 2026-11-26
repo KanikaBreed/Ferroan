@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Calls pinned JoltScene.NoteDilationSample (JoltScene.cs 2928-2942) and records
-// the private dilation window. The scene is constructed and never initialised,
-// so JoltNative stays unloaded and Foundation.Init is not called.
+// the private dilation window. The same capture compiles JoltCharacter's capsule,
+// mass, latch, intent and marker descriptor before the final native proof. The
+// scene is constructed and never initialised, so JoltNative stays unloaded and
+// Foundation.Init is not called.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -56,24 +58,33 @@ static class FileOracle
         RequirePortableClock();
         Captured first = Capture();
         Captured second = Capture();
-        if (first.Calls != second.Calls || first.Result != second.Result || first.Native != second.Native)
+        if (first.Calls != second.Calls || first.Result != second.Result || first.Native != second.Native
+            || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
         RejectMachinePaths(first.Native, reference);
+        RejectMachinePaths(first.CharacterCalls, reference);
+        RejectMachinePaths(first.CharacterResult, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
         manifest.Append("revision ").Append(revision).Append('\n');
         manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n");
+        manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n");
         manifest.Append('\n');
         manifest.Append(CaseId).Append('\n');
+        manifest.Append("character\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
         File.WriteAllText(Path.Combine(caseDir, "calls.txt"), first.Calls);
         File.WriteAllText(Path.Combine(caseDir, "result.txt"), first.Result);
         File.WriteAllText(Path.Combine(caseDir, "native.txt"), first.Native);
+        string characterDir = Path.Combine(directory, "character");
+        Directory.CreateDirectory(characterDir);
+        File.WriteAllText(Path.Combine(characterDir, "calls.txt"), first.CharacterCalls);
+        File.WriteAllText(Path.Combine(characterDir, "result.txt"), first.CharacterResult);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
@@ -114,10 +125,11 @@ static class FileOracle
         AppendScene(result, "A", sceneA, method, sceneACalls);
         AppendScene(result, "B", sceneB, method, sceneBCalls);
         result.Append("property_matches_field true\n");
+        CharacterOracle.Texts character = CharacterOracle.Capture();
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString());
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result);
     }
 
     static void AppendCalls(StringBuilder calls, string scene, Call[] script)
@@ -361,5 +373,5 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult);
 }

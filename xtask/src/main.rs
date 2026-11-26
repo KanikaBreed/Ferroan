@@ -33,8 +33,8 @@
 //! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
 //! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
 //! and compare `fixtures/jolt-config`. `jolt file` and `jolt file-verify`
-//! run the pinned `JoltScene.NoteDilationSample` and compare
-//! `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
+//! run the pinned `JoltScene.NoteDilationSample` and `JoltCharacter`, and
+//! compare `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
 //! pinned harness in-process for the stock `drop` and compare
 //! `fixtures/jolt-record`. That command loads the stock native. None of
 //! them starts a region. `jolt generate` and `jolt verify` stay with the
