@@ -149,6 +149,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore generate
        cargo xtask regionstore prim-seed
        cargo xtask regionstore settings
+       cargo xtask regionstore parcels
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
@@ -274,6 +275,7 @@ fn main() -> ExitCode {
         ["avatar", "cross"] => asset_oracle::avatar_cross(),
         ["regionstore", "prim-seed"] => regionstore::prim_seed(),
         ["regionstore", "generate"] => regionstore::generate(),
+        ["regionstore", "parcels"] => regionstore::parcels(),
         ["regionstore", "settings"] => regionstore::settings(),
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),

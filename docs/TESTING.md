@@ -80,6 +80,10 @@ Release `ferroan-region`, idle `VmRSS` two seconds after initialization complete
 
 Release `open_objects` on stores that also have a shape and an item for every extra prim uses a `LIST SUBQUERY` for the item rows. The median of three runs was: one prim in the loaded region and 1,000 elsewhere, 3.9 ms (1 part, 1 item); 5,000 elsewhere, 11.1 ms; 40,000 elsewhere, 73.5 ms. The seeded region in those same stores loaded 7 parts and 4 items in 3.1 ms, 9.6 ms and 73.3 ms. Those times are not the idle RSS points above.
 
+## SQLite parcels
+
+`cargo xtask regionstore parcels` compares Pin8 and Rust on the same SQLite file, including access entries and the environment version. The checked-in seed and dump also run in the workspace tests. See the [parcel fixture](../fixtures/regionstore/README.md#sqlite-parcels).
+
 ## Region settings
 
 `cargo xtask regionstore settings` builds the same oracle and writes [fixtures/regionstore/settings.db](../fixtures/regionstore/settings.db) and [settings.json](../fixtures/regionstore/settings.json). The file is RegionStore 48. The dump is one region's settings and spawn points. Ordinary tests replay it and do not start the oracle. `cargo xtask regionstore verify` also reloads that file when it runs the `regionstore_` tests. The command does not start a server or the live harness. MySQL and PostgreSQL settings stay on the fresh handshake defaults. Scene tests copy SQLite fixtures into private directories. Store loaders await pool closure, and fixture teardown tolerates transient Windows file locks.
