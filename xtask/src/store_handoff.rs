@@ -100,7 +100,11 @@ fn roots(db: &Path, count: usize) -> Result<BTreeMap<Uuid, Uuid>, String> {
 
 struct Receipt {
     first_ms: u64,
-    copies: usize,
+    first_resent: bool,
+    first_seq: u32,
+    first_fresh_repeat_seq: Option<u32>,
+    fresh_repeats: usize,
+    resent_repeats: usize,
 }
 
 struct Viewer {
@@ -131,12 +135,25 @@ impl Viewer {
             throttle_ms.get_or_insert(record.time_ms);
         }
         let mut receipts = BTreeMap::new();
-        let parts = prim_capture::read_blocks(records, count, |id, at| {
-            let receipt = receipts.entry(id).or_insert(Receipt {
-                first_ms: at,
-                copies: 0,
-            });
-            receipt.copies += 1;
+        let parts = prim_capture::read_blocks(records, count, |id, at, packet| {
+            receipts
+                .entry(id)
+                .and_modify(|r: &mut Receipt| {
+                    if packet.resent() {
+                        r.resent_repeats += 1;
+                    } else {
+                        r.fresh_repeats += 1;
+                        r.first_fresh_repeat_seq.get_or_insert(packet.sequence);
+                    }
+                })
+                .or_insert(Receipt {
+                    first_ms: at,
+                    first_resent: packet.resent(),
+                    first_seq: packet.sequence,
+                    first_fresh_repeat_seq: None,
+                    fresh_repeats: 0,
+                    resent_repeats: 0,
+                });
         })?;
         if receipts.len() != count {
             return Err(format!(
@@ -159,19 +176,35 @@ impl Viewer {
         use std::fmt::Write;
         let mut first = u64::MAX;
         let mut last = 0;
-        let mut repeats = 0;
-        let mut rows = String::from("store_uuid\tfirst_ms\trepeats\n");
+        let mut fresh_repeats = 0;
+        let mut resent_repeats = 0;
+        let mut rows = String::from(
+            "store_uuid\tfirst_ms\tfirst_seq\tfirst_resent\tfresh_repeats\tresent_repeats\tfirst_fresh_repeat_seq\n",
+        );
         for (id, receipt) in &self.receipts {
             first = first.min(receipt.first_ms);
             last = last.max(receipt.first_ms);
-            repeats += receipt.copies - 1;
-            writeln!(rows, "{id}\t{}\t{}", receipt.first_ms, receipt.copies - 1)
-                .map_err(|e| e.to_string())?;
+            fresh_repeats += receipt.fresh_repeats;
+            resent_repeats += receipt.resent_repeats;
+            writeln!(
+                rows,
+                "{id}\t{}\t{}\t{}\t{}\t{}\t{}",
+                receipt.first_ms,
+                receipt.first_seq,
+                u8::from(receipt.first_resent),
+                receipt.fresh_repeats,
+                receipt.resent_repeats,
+                receipt
+                    .first_fresh_repeat_seq
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "-".into())
+            )
+            .map_err(|e| e.to_string())?;
         }
         fs::write(root.join(format!("prim-load-{name}.tsv")), rows).map_err(|e| e.to_string())?;
         let elapsed = last.checked_sub(first).ok_or("missing first delivery")?;
         Ok(format!(
-            "{name}: {} first deliveries, {repeats} repeats, {elapsed} ms first to last at {HANDOFF_TASK_BPS} bit/s",
+            "{name}: {} first deliveries, {fresh_repeats} fresh repeats, {resent_repeats} RESENT repeats, {elapsed} ms first to last at {HANDOFF_TASK_BPS} bit/s",
             self.receipts.len()
         ))
     }
@@ -386,8 +419,15 @@ mod tests {
         let records = ferroan_capture::read_capture(control).unwrap();
         let view = Viewer::read(&records, 8).unwrap();
         let receipt = &view.receipts[&Uuid::from_u128(1)];
-        assert_eq!((receipt.first_ms, receipt.copies), (426, 2));
-        assert_eq!(view.receipts[&Uuid::from_u128(2)].copies, 1);
+        assert_eq!(
+            (
+                receipt.first_ms,
+                receipt.fresh_repeats,
+                receipt.resent_repeats
+            ),
+            (426, 1, 0)
+        );
+        assert_eq!(view.receipts[&Uuid::from_u128(2)].fresh_repeats, 0);
         let dir = std::env::temp_dir().join(format!("prim-receipts-{}", Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let line = view.report("Pin8", &dir).unwrap();
@@ -395,14 +435,43 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
         assert_eq!(
             line,
-            "Pin8: 8 first deliveries, 7 repeats, 15 ms first to last at 512000 bit/s"
+            "Pin8: 8 first deliveries, 7 fresh repeats, 0 RESENT repeats, 15 ms first to last at 512000 bit/s"
         );
         assert_eq!(rows.lines().count(), 9);
+        assert!(
+            rows.lines()
+                .any(|line| line == "00000000-0000-0000-0000-000000000001\t426\t32\t0\t1\t0\t35")
+        );
         assert!(Viewer::read(&records, 7).is_err());
         assert!(Viewer::read(&records[1..], 8).is_err());
         let limited = include_bytes!("../../fixtures/prim-arrival/limited.cap");
         assert!(Viewer::read(&ferroan_capture::read_capture(limited).unwrap(), 8).is_err());
         assert!(ferroan_capture::read_capture_limited(control, records.len() - 1).is_err());
+    }
+
+    #[test]
+    fn prim_load_receipts_distinguish_resent_delivery_from_a_fresh_repeat() {
+        use ferroan_protocol::PacketFlags;
+
+        let control = include_bytes!("../../fixtures/prim-arrival/control.cap");
+        let mut records = ferroan_capture::read_capture(control).unwrap();
+        // Drop the original seq 32. Its retransmission is the first delivery
+        // of the linked box and child. Repeating that datagram is a RESENT
+        // repeat for both. The later fresh seq 35 repeats only the box.
+        let i = records
+            .iter()
+            .position(|r| r.kind == Kind::UdpOut && parse_packet(&r.bytes).unwrap().sequence == 32)
+            .unwrap();
+        records[i].bytes[0] |= PacketFlags::RESENT;
+        records.insert(i + 1, records[i].clone());
+        let view = Viewer::read(&records, 8).unwrap();
+        let root = &view.receipts[&Uuid::from_u128(1)];
+        assert!(root.first_resent);
+        assert_eq!((root.fresh_repeats, root.resent_repeats), (1, 1));
+        let child = &view.receipts[&Uuid::from_u128(2)];
+        assert!(child.first_resent);
+        assert_eq!((child.fresh_repeats, child.resent_repeats), (0, 1));
+        assert!(!view.receipts[&Uuid::from_u128(7)].first_resent);
     }
 
     #[test]

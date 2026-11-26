@@ -1034,9 +1034,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     };
     if matches!(scenario, "store-handoff" | "prim-load") {
         if docker {
-            return Err(
-                "store-handoff needs local region processes on the same SQLite file".into(),
-            );
+            return Err(format!(
+                "{scenario} needs local region processes on the same SQLite file"
+            ));
         }
         let report =
             store_handoff::run(home, &root, robust_public, &estate, &chat, &grid.passwords)?;
