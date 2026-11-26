@@ -24,7 +24,9 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Ported from Addons/OpenSim.Addons.Groups/{GroupsModule,GroupsExtendedData}.cs,
-// Remote/{GroupsServiceRemoteConnectorModule,GroupsServiceRemoteConnector,GroupsSecretKey}.cs
+// Remote/{GroupsServiceRemoteConnectorModule,GroupsServiceRemoteConnector,GroupsSecretKey}.cs,
+// Local/GroupsServiceLocalConnectorModule.cs, Hypergrid/GroupsServiceHGConnectorModule.cs,
+// Source/OpenSim.Region.OptionalModules/Avatar/XmlRpcGroups/{GroupsModule,XmlRpcGroupsServicesConnectorModule}.cs
 // and Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs (RefreshGroupMembership)
 // at Tranquillity c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors
@@ -55,13 +57,37 @@ struct Remote {
 impl GroupsClient {
     pub fn from_config(config: &Config) -> Result<Self, RegionConfigError> {
         if config.get("Modules", "Setup_GroupsModule") == Some("disabled")
-            || config.get("Modules", "Setup_GroupsServiceRemoteConnectorModule") == Some("disabled")
             || !boolean(config, "Groups", "Enabled")?
-            || config.get("Groups", "Module") != Some("Groups Module V2")
-            || config.get("Groups", "ServicesConnectorModule")
-                != Some("Groups Remote Service Connector")
         {
             return Ok(Self(None));
+        }
+        let module = config.get("Groups", "Module");
+        let connector = config.get("Groups", "ServicesConnectorModule");
+        let setup = match (module, connector) {
+            (Some("Groups Module V2"), Some("Groups Remote Service Connector")) => {
+                "Setup_GroupsServiceRemoteConnectorModule"
+            }
+            (Some("Groups Module V2"), Some("Groups Local Service Connector")) => {
+                "Setup_GroupsServiceLocalConnectorModule"
+            }
+            (Some("Groups Module V2"), Some("Groups HG Service Connector")) => {
+                "Setup_GroupsServiceHGConnectorModule"
+            }
+            // The legacy module defaults this key to its XML-RPC connector.
+            (Some("GroupsModule"), None | Some("XmlRpcGroupsServicesConnector")) => {
+                "Setup_XmlRpcGroupsServicesConnectorModule"
+            }
+            _ => return Ok(Self(None)),
+        };
+        if config.get("Modules", setup) == Some("disabled") {
+            return Ok(Self(None));
+        }
+        if connector != Some("Groups Remote Service Connector") {
+            return Err(value(
+                "Groups",
+                "ServicesConnectorModule",
+                "unsupported group membership source; supported pair: Groups Module V2 with Groups Remote Service Connector",
+            ));
         }
         let uri = config.get("Groups", "GroupsServerURI").unwrap_or_default();
         check_uri(uri).map_err(|why| value("Groups", "GroupsServerURI", why))?;
@@ -194,16 +220,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_enabled_remote_groups_modules_need_an_endpoint() {
-        assert!(GroupsClient::from_config(&groups()).is_err());
+    async fn disabled_groups_and_missing_connectors_supply_no_memberships() {
+        assert!(matches!(
+            GroupsClient::from_config(&groups()),
+            Err(RegionConfigError::Value {
+                key: "GroupsServerURI",
+                ..
+            })
+        ));
+        let without_connector =
+            Config::parse("[Groups]\nEnabled=true\nModule=Groups Module V2").unwrap();
+        assert!(
+            GroupsClient::from_config(&without_connector)
+                .unwrap()
+                .memberships(Uuid::nil())
+                .await
+                .unwrap()
+                .is_empty()
+        );
         for (section, key, val) in [
             ("Groups", "Enabled", "false"),
             ("Groups", "Module", "Default"),
-            (
-                "Groups",
-                "ServicesConnectorModule",
-                "Groups Local Service Connector",
-            ),
+            ("Groups", "ServicesConnectorModule", "unknown"),
+            ("Groups", "ServicesConnectorModule", ""),
             ("Modules", "Setup_GroupsModule", "disabled"),
             (
                 "Modules",
@@ -216,6 +255,87 @@ mod tests {
             let source = GroupsClient::from_config(&config).unwrap();
             assert!(source.memberships(Uuid::nil()).await.unwrap().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn enabled_unsupported_membership_sources_refuse_region_startup() {
+        for (module, connector, setup) in [
+            (
+                "Groups Module V2",
+                Some("Groups Local Service Connector"),
+                "Setup_GroupsServiceLocalConnectorModule",
+            ),
+            (
+                "Groups Module V2",
+                Some("Groups HG Service Connector"),
+                "Setup_GroupsServiceHGConnectorModule",
+            ),
+            (
+                "GroupsModule",
+                Some("XmlRpcGroupsServicesConnector"),
+                "Setup_XmlRpcGroupsServicesConnectorModule",
+            ),
+            (
+                "GroupsModule",
+                None,
+                "Setup_XmlRpcGroupsServicesConnectorModule",
+            ),
+        ] {
+            let mut config =
+                Config::parse("[Groups]\nEnabled=true\nGroupsServerURI=http://groups.invalid")
+                    .unwrap();
+            config.set("Groups", "Module", module);
+            if let Some(name) = connector {
+                config.set("Groups", "ServicesConnectorModule", name);
+            }
+            // Disabling the Remote connector must not hide the selected Local or HG service.
+            config.set(
+                "Modules",
+                "Setup_GroupsServiceRemoteConnectorModule",
+                "disabled",
+            );
+            assert!(
+                matches!(
+                    GroupsClient::from_config(&config),
+                    Err(RegionConfigError::Value {
+                        key: "ServicesConnectorModule",
+                        ..
+                    })
+                ),
+                "{module} {connector:?}"
+            );
+            config.set("Modules", setup, "disabled");
+            let source = GroupsClient::from_config(&config).unwrap();
+            assert!(source.memberships(Uuid::nil()).await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn membership_redirect_reports_the_original_status() {
+        use axum::{Router, response::Redirect, routing::post};
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = groups();
+        config.set(
+            "Groups",
+            "GroupsServerURI",
+            &format!("http://{}", socket.local_addr().unwrap()),
+        );
+        let app = Router::new().route(
+            "/groups",
+            post(|| async { Redirect::temporary("/elsewhere") }),
+        );
+        let task = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+        let result = GroupsClient::from_config(&config)
+            .unwrap()
+            .memberships(Uuid::nil())
+            .await;
+        task.abort();
+        assert!(matches!(
+            result,
+            Err(GridError::Http(ferroan_http::HttpError::Status {
+                status: 307
+            }))
+        ));
     }
 
     #[tokio::test]
