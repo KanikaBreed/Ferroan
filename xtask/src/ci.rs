@@ -117,15 +117,17 @@ fn write_docs_only(docs_only: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The required live check. `docs_only` is the string `true` or anything else.
-pub(crate) fn evaluate(
-    scope: &str,
-    docs_only: &str,
-    scenarios: &str,
-    ferrobot: &str,
-    services: &str,
-    images: &str,
-) -> Result<(), String> {
+const LIVE_JOBS: [&str; 6] = [
+    "SCENARIOS",
+    "FERROBOT",
+    "SERVICES_REGION",
+    "SERVICES_GRID",
+    "SERVICES_ASSETS",
+    "IMAGES",
+];
+
+/// Check each direct dependency of the required live gate.
+fn evaluate(scope: &str, docs_only: &str, jobs: &[(&str, String)]) -> Result<(), String> {
     if scope != "success" {
         return Err(format!("live scope result: {scope}"));
     }
@@ -134,12 +136,7 @@ pub(crate) fn evaluate(
     } else {
         "success"
     };
-    for (name, actual) in [
-        ("scenarios", scenarios),
-        ("ferrobot", ferrobot),
-        ("services", services),
-        ("images", images),
-    ] {
+    for (name, actual) in jobs {
         if actual != expected {
             return Err(format!("{name} result: {actual} (expected {expected})"));
         }
@@ -150,14 +147,11 @@ pub(crate) fn evaluate(
 pub(crate) fn gate() -> ExitCode {
     let read = |name: &str| env::var(name).map_err(|_| format!("{name} is not set"));
     let result = (|| {
-        evaluate(
-            &read("SCOPE")?,
-            &read("DOCS_ONLY")?,
-            &read("SCENARIOS")?,
-            &read("FERROBOT")?,
-            &read("SERVICES")?,
-            &read("IMAGES")?,
-        )
+        let mut jobs = Vec::with_capacity(LIVE_JOBS.len());
+        for name in LIVE_JOBS {
+            jobs.push((name, read(name)?));
+        }
+        evaluate(&read("SCOPE")?, &read("DOCS_ONLY")?, &jobs)
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -293,8 +287,8 @@ fn run_apt(args: &[&str], failure: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SqliteInstall, db_client_install, documentation_only, evaluate, paths_are_docs_only,
-        sqlite_install,
+        LIVE_JOBS, SqliteInstall, db_client_install, documentation_only, evaluate,
+        paths_are_docs_only, sqlite_install,
     };
 
     #[test]
@@ -325,49 +319,57 @@ mod tests {
 
     #[test]
     fn the_live_gate_fails_when_any_parallel_job_fails() {
-        assert!(
-            evaluate(
-                "success", "false", "success", "success", "success", "success"
-            )
-            .is_ok()
-        );
-        assert_eq!(
-            evaluate(
-                "success", "false", "failure", "success", "success", "success"
-            )
-            .unwrap_err(),
-            "scenarios result: failure (expected success)"
-        );
-        assert!(
-            evaluate(
-                "success",
-                "false",
-                "cancelled",
-                "success",
-                "success",
-                "success"
-            )
-            .is_err()
-        );
-        assert_eq!(
-            evaluate(
-                "failure", "false", "skipped", "skipped", "skipped", "skipped"
-            )
-            .unwrap_err(),
-            "live scope result: failure"
-        );
-        assert!(
-            evaluate(
-                "success", "true", "skipped", "skipped", "skipped", "skipped"
-            )
-            .is_ok()
-        );
-        assert!(
-            evaluate(
-                "success", "true", "success", "skipped", "skipped", "skipped"
-            )
-            .is_err()
-        );
+        let mut jobs = LIVE_JOBS.map(|name| (name, String::from("success")));
+        assert!(evaluate("success", "false", &jobs).is_ok());
+        for i in 0..jobs.len() {
+            for bad in ["failure", "cancelled", "skipped"] {
+                jobs[i].1 = bad.into();
+                assert!(
+                    evaluate("success", "false", &jobs).is_err(),
+                    "{} {bad}",
+                    jobs[i].0
+                );
+            }
+            jobs[i].1 = "success".into();
+        }
+        let mut skipped = LIVE_JOBS.map(|name| (name, String::from("skipped")));
+        assert!(evaluate("failure", "true", &skipped).is_err());
+        assert!(evaluate("success", "true", &skipped).is_ok());
+        skipped[0].1 = "success".into();
+        assert!(evaluate("success", "true", &skipped).is_err());
+    }
+
+    #[test]
+    fn the_required_gate_reads_each_result_and_the_services_blocks_are_disjoint() {
+        let workflow = include_str!("../../.github/workflows/live.yml");
+        let (_, gate) = workflow.split_once("\n  live:\n").unwrap();
+        let needs = gate
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("needs: [")?.strip_suffix(']'))
+            .unwrap();
+        let mut bases = std::collections::BTreeSet::new();
+        for var in LIVE_JOBS {
+            let job = var.to_ascii_lowercase();
+            assert!(needs.split(", ").any(|needed| needed == job));
+            assert!(gate.contains(&format!("{var}: ${{{{ needs.{job}.result }}}}")));
+            if job.starts_with("services_") {
+                let (_, rest) = workflow.split_once(&format!("\n  {job}:\n")).unwrap();
+                let body = rest.split_once("\n\n").unwrap().0;
+                assert!(body.contains("needs: scope"));
+                let base: u16 = body
+                    .lines()
+                    .find_map(|line| {
+                        line.trim()
+                            .strip_prefix("FERROAN_LIVE_PORT_BASE: ")?
+                            .trim_matches('"')
+                            .parse()
+                            .ok()
+                    })
+                    .unwrap();
+                assert!((1024..=32736).contains(&base) && base.is_multiple_of(crate::ports::SPAN));
+                assert!(bases.insert(base), "reused port base {base}");
+            }
+        }
     }
 
     #[test]
