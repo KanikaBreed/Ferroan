@@ -1669,6 +1669,7 @@ async fn a_new_use_circuit_code_reaches_a_waiter_while_the_old_login_is_pending(
     let (len, source) = session.try_recv_from(&mut buf).unwrap().unwrap();
     assert_eq!(source, from);
     assert_eq!(&buf[..len], &use_circuit(fresh));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
 }
 
 /// The new code can arrive before its serve is registered. It replaces the
@@ -1703,6 +1704,100 @@ async fn a_new_use_circuit_code_replaces_a_pending_burst_before_its_serve() {
     assert_eq!(source, from);
     assert_eq!(&buf[..len], &fresh_bytes);
     assert!(session.try_recv_from(&mut buf).unwrap().is_none());
+}
+
+/// Accept reserves the code before the lookups. The stored burst is still
+/// claimed after the 60 second cache, and an unreserved entry is not.
+#[tokio::test]
+async fn a_reserved_login_keeps_its_burst_past_the_pending_ttl() {
+    let server = CircuitServer::bind().await.unwrap();
+    let from = SocketAddr::from(([127, 0, 0, 1], 4610));
+    let expect = relogin(27, 270, 27);
+    let opened = use_circuit(expect);
+    let burst = movement(expect, 2, &[]);
+    let hold = server.reserve_login(
+        expect,
+        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(120)),
+    );
+    let shared = &server.inner.shared;
+    assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+    assert_eq!(route(shared, from, burst.clone()), None);
+
+    let other_from = SocketAddr::from(([127, 0, 0, 1], 4611));
+    let other = relogin(29, 290, 29);
+    assert_eq!(
+        route(shared, other_from, use_circuit(other)),
+        Some((other_from, 1))
+    );
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        let stale = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+        for login in &mut fan.pending {
+            login.seen = stale;
+        }
+    }
+
+    let session = server.open_session(expect);
+    assert!(shared.fan.lock().unwrap().bound.contains_key(&from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    let mut buf = [0u8; 2048];
+    let mut taken = Vec::new();
+    while let Some((len, source)) = session.try_recv_from(&mut buf).unwrap() {
+        assert_eq!(source, from);
+        taken.push(buf[..len].to_vec());
+    }
+    assert_eq!(taken, vec![opened, burst]);
+    drop(hold);
+
+    let late = relogin(28, 280, 28);
+    let late_from = SocketAddr::from(([127, 0, 0, 1], 4612));
+    let late_open = use_circuit(late);
+    let late_burst = movement(late, 2, &[]);
+    let late_hold = server.reserve_login(
+        late,
+        Some(
+            tokio::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+        ),
+    );
+    assert_eq!(
+        route(shared, late_from, late_open.clone()),
+        Some((late_from, 1))
+    );
+    assert_eq!(route(shared, late_from, late_burst.clone()), None);
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        fan.pending[0].seen = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    let late_session = server.open_session(late);
+    assert!(!shared.fan.lock().unwrap().bound.contains_key(&late_from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    assert!(late_session.try_recv_from(&mut buf).unwrap().is_none());
+    drop(late_hold);
+
+    let dropped = relogin(31, 310, 31);
+    let dropped_from = SocketAddr::from(([127, 0, 0, 1], 4613));
+    let dropped_hold = server.reserve_login(dropped, None);
+    assert_eq!(
+        route(shared, dropped_from, use_circuit(dropped)),
+        Some((dropped_from, 1))
+    );
+    {
+        let mut fan = shared.fan.lock().unwrap();
+        fan.pending[0].seen = tokio::time::Instant::now()
+            .checked_sub(PENDING_LOGIN_TTL + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    drop(dropped_hold);
+    let dropped_session = server.open_session(dropped);
+    assert!(!shared.fan.lock().unwrap().bound.contains_key(&dropped_from));
+    assert!(shared.fan.lock().unwrap().pending.is_empty());
+    assert!(dropped_session.try_recv_from(&mut buf).unwrap().is_none());
 }
 
 #[tokio::test]

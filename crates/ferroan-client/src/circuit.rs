@@ -1999,11 +1999,22 @@ struct UnboundServe {
     inbox: Arc<Inbox>,
 }
 
+/// A circuit code accepted before its lookups. The pending `UseCircuitCode`
+/// for this login stays past the 60 second cache until the login is served
+/// or `until`, when the connect wait has one.
+#[derive(Clone, Copy)]
+struct ReservedLogin {
+    id: u64,
+    expect: CircuitExpect,
+    until: Option<Instant>,
+}
+
 struct Fan {
     bound: HashMap<SocketAddr, u64>,
     senders: HashMap<u64, Arc<Inbox>>,
     unbound: VecDeque<UnboundServe>,
     pending: VecDeque<PendingLogin>,
+    reserved: Vec<ReservedLogin>,
 }
 
 struct SharedUdp {
@@ -2130,8 +2141,38 @@ fn login_matches(packet: &IncomingPacket, stored: &[u8]) -> bool {
         && next.circuit_code.session_id == first.circuit_code.session_id
 }
 
-fn expire_pending(pending: &mut VecDeque<PendingLogin>, now: Instant) {
-    pending.retain(|login| now.saturating_duration_since(login.seen) < PENDING_LOGIN_TTL);
+fn reservation_holds(item: &ReservedLogin, packet: &IncomingPacket, now: Instant) -> bool {
+    item.until.is_none_or(|until| now < until) && expect_matches(packet, &item.expect)
+}
+
+fn pending_is_reserved(login: &PendingLogin, reserved: &[ReservedLogin], now: Instant) -> bool {
+    let Some(bytes) = login.packets.front() else {
+        return false;
+    };
+    let Some(packet) = use_circuit(bytes) else {
+        return false;
+    };
+    reserved
+        .iter()
+        .any(|item| reservation_holds(item, &packet, now))
+}
+
+/// Drop pending logins older than 60 seconds. A code reserved at accept stays
+/// until that login is served or its connect deadline passes.
+fn expire_pending(fan: &mut Fan, now: Instant) {
+    let reserved = fan.reserved.clone();
+    fan.pending.retain(|login| {
+        now.saturating_duration_since(login.seen) < PENDING_LOGIN_TTL
+            || pending_is_reserved(login, &reserved, now)
+    });
+}
+
+fn release_reservation(fan: &mut Fan, expect: &CircuitExpect) {
+    fan.reserved.retain(|item| {
+        item.expect.agent_id != expect.agent_id
+            || item.expect.session_id != expect.session_id
+            || item.expect.circuit_code != expect.circuit_code
+    });
 }
 
 /// Route one datagram. Returns a source and sequence to ACK when the datagram
@@ -2142,8 +2183,10 @@ fn expire_pending(pending: &mut VecDeque<PendingLogin>, now: Instant) {
 /// While a login is waiting, later packets from that endpoint stay in its
 /// burst. A `UseCircuitCode` with the same code, agent and session is
 /// acknowledged and not queued again. Any other `UseCircuitCode` replaces the
-/// entry and drops the old burst. The entry expires after 60 seconds, and a
-/// serve that accepts a different code drops it as well.
+/// entry and drops the old burst. An unreserved entry expires after 60
+/// seconds. A code reserved at accept stays until that login is served or
+/// its login-connect deadline passes. A serve that accepts a different code
+/// drops the old burst as well.
 fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(SocketAddr, u32)> {
     let mut fan = shared
         .fan
@@ -2167,7 +2210,7 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
         return None;
     }
     let now = Instant::now();
-    expire_pending(&mut fan.pending, now);
+    expire_pending(&mut fan, now);
     if let Some(packet) = use_circuit(&bytes)
         && let Some(pos) = fan
             .unbound
@@ -2255,6 +2298,23 @@ async fn read_loop(shared: Arc<SharedUdp>) {
     }
 }
 
+/// One accepted login's circuit code. Dropping it allows the 60 second expiry.
+pub struct LoginReservation {
+    shared: Arc<SharedUdp>,
+    id: u64,
+}
+
+impl Drop for LoginReservation {
+    fn drop(&mut self) {
+        let mut fan = self
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.retain(|item| item.id != self.id);
+    }
+}
+
 /// One UDP listener with the region settings to announce.
 ///
 /// Several logins share the socket. Each serve receives only its own peer,
@@ -2287,6 +2347,7 @@ impl CircuitServer {
                         senders: HashMap::new(),
                         unbound: VecDeque::new(),
                         pending: VecDeque::new(),
+                        reserved: Vec::new(),
                     }),
                 }),
                 handshake: Mutex::new(HandshakeConfig::for_region(Uuid::nil())),
@@ -2434,6 +2495,26 @@ impl CircuitServer {
         Ok(self.inner.shared.socket.local_addr()?)
     }
 
+    /// Reserve `expect` when the login is accepted, before the group and
+    /// avatar lookups. A pending `UseCircuitCode` for that code is kept past
+    /// the 60 second cache until this login is served or `until`. `None`
+    /// means the login has no connect deadline. Drop the reservation when
+    /// the accepted login is discarded.
+    pub fn reserve_login(&self, expect: CircuitExpect, until: Option<Instant>) -> LoginReservation {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut fan = self
+            .inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.push(ReservedLogin { id, expect, until });
+        LoginReservation {
+            shared: Arc::clone(&self.inner.shared),
+            id,
+        }
+    }
+
     fn ensure_reader(&self) {
         let mut reader = self
             .inner
@@ -2458,7 +2539,7 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         fan.senders.insert(id, Arc::clone(&inbox));
-        expire_pending(&mut fan.pending, Instant::now());
+        expire_pending(&mut fan, Instant::now());
         if let Some(pos) = fan.pending.iter().position(|queued| {
             queued
                 .packets
@@ -2481,6 +2562,9 @@ impl CircuitServer {
                 inbox: Arc::clone(&inbox),
             });
         }
+        // The login is being served, so a later pending entry for this code
+        // keeps the ordinary 60 second expiry.
+        release_reservation(&mut fan, &expect);
         SessionSock {
             shared: Arc::clone(&self.inner.shared),
             id,

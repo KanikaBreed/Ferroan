@@ -225,6 +225,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    simulation.bind_circuit(circuit.clone());
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
@@ -1748,6 +1749,13 @@ mod tests {
             let (sender, agents) = mpsc::channel(1);
             let started = Arc::new(AtomicUsize::new(0));
             let state = SimulationState::new(&config, caps.clone(), sender.clone());
+            let circuit = CircuitServer::bind()
+                .await
+                .unwrap()
+                .with_timing(config.circuit_timing)
+                .unwrap()
+                .with_throttle(config.circuit_throttle);
+            state.bind_circuit(circuit.clone());
             let app = state.clone().router().merge(caps.router());
             let http = tokio::spawn(async move {
                 axum::serve(
@@ -1757,12 +1765,6 @@ mod tests {
                 .await
                 .unwrap()
             });
-            let circuit = CircuitServer::bind()
-                .await
-                .unwrap()
-                .with_timing(config.circuit_timing)
-                .unwrap()
-                .with_throttle(config.circuit_throttle);
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
             let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(state.clone()));

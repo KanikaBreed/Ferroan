@@ -82,7 +82,7 @@ use std::{
     io::Read,
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -103,7 +103,8 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{
-    CapsError, CapsRegistry, CircuitExpect, CircuitStop, ROOT_WAIT, ReturnPose, ReturnSlot,
+    CapsError, CapsRegistry, CircuitExpect, CircuitServer, CircuitStop, LoginReservation,
+    ROOT_WAIT, ReturnPose, ReturnSlot,
 };
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
@@ -253,6 +254,12 @@ pub struct SimulationState {
     objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
     /// The frame, when this process has one. Child hops skip its physics tick.
     scene: Option<Arc<ferroan_scene::TerrainFrame>>,
+    /// The UDP listener, once `serve` has bound it. Accept reserves the
+    /// circuit code there, before the group and avatar lookups.
+    circuit: Arc<OnceLock<CircuitServer>>,
+    /// `LoginConnectWaitSeconds`. A reserved pending login lasts until the
+    /// session opens or this long after accept. Zero means no connect deadline.
+    login_connect_wait: Duration,
     /// In-view child this root opened on a neighbour. Logout closes it.
     open_children: Arc<Mutex<HashMap<Uuid, RegionEnd>>>,
 }
@@ -323,6 +330,9 @@ pub struct AcceptedAgent {
     pub object_animations: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
+    /// Keeps this login's pending `UseCircuitCode` until the session opens
+    /// or the connect wait ends. Drop releases it.
+    _circuit_hold: Option<LoginReservation>,
     // Drop last, after the UDP serve, frame removal, service writes and generation lease.
     _logout_done: watch::Sender<()>,
 }
@@ -523,7 +533,15 @@ impl SimulationState {
             objects: Arc::new(Vec::new()),
             open_children: Arc::new(Mutex::new(HashMap::new())),
             scene: None,
+            circuit: Arc::new(OnceLock::new()),
+            login_connect_wait: config.login_connect_wait,
         }
+    }
+
+    /// Point admission at the listener that will serve the accepted login.
+    /// A second call keeps the first listener.
+    pub fn bind_circuit(&self, circuit: CircuitServer) {
+        let _ = self.circuit.set(circuit);
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -773,16 +791,29 @@ impl SimulationState {
         };
         let (seeds_sent, object_animations) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
+        let accepted_at = tokio::time::Instant::now();
+        let expect = CircuitExpect {
+            agent_id: fields.agent_id,
+            session_id: fields.session_id,
+            circuit_code: fields.circuit_code,
+            region_id: self.region_id,
+        };
+        // Before the group lookup, the avatar lookup and the frame attach.
+        // Those can outlast the 60 second pending cache. The hold keeps this
+        // code until the session opens or the connect wait ends.
+        let circuit_hold = self.circuit.get().map(|circuit| {
+            let until = if self.login_connect_wait.is_zero() {
+                None
+            } else {
+                Some(accepted_at + self.login_connect_wait)
+            };
+            circuit.reserve_login(expect, until)
+        });
         let accepted = AcceptedAgent {
             _logout_done: logout_done,
             predecessor,
-            accepted_at: tokio::time::Instant::now(),
-            expect: CircuitExpect {
-                agent_id: fields.agent_id,
-                session_id: fields.session_id,
-                circuit_code: fields.circuit_code,
-                region_id: self.region_id,
-            },
+            accepted_at,
+            expect,
             secure_session_id: fields.secure_session_id,
             caps_path: fields.caps_path,
             start_pos: fields.start_pos,
@@ -804,6 +835,7 @@ impl SimulationState {
             object_animations,
             cancelled,
             _lease: lease,
+            _circuit_hold: circuit_hold,
         };
         // A receiver dropped after reservation may drop this lease in send().
         // Release the admission lock first so that cleanup cannot deadlock.

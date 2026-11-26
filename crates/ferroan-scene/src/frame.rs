@@ -1944,9 +1944,13 @@ mod tests {
             }
             update_presences(&mut scene);
             assert_eq!(feed.take_land_pass(), flags == 0);
+            // A second reply must not re-arm the gate. One frame cannot
+            // reach SendInitialData; four frames can.
             apply(Inbound::HandshakeReply { agent }, &mut scene);
-            update_presences(&mut scene);
-            assert!(!feed.take_land_pass());
+            for _ in 0..4 {
+                update_presences(&mut scene);
+                assert!(!feed.take_land_pass());
+            }
         }
     }
 
