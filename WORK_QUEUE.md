@@ -192,7 +192,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
-| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | READY after Q65c3a |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |

@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 use ferroan_capture::{Kind, Record};
 use ferroan_protocol::msgs::{
     AgentHeightWidth, AgentMovementComplete, AgentThrottle, CoarseLocationUpdate,
-    CompleteAgentMovement, CompletePingCheck, ImageData, ImprovedTerseObjectUpdate, LayerData,
-    LogoutReply, LogoutRequest, ObjectUpdate, PacketAck, RegionHandshake, RegionHandshakeReply,
-    SimStats, SimulatorViewerTimeMessage, StartPingCheck, UseCircuitCode,
+    CompleteAgentMovement, CompletePingCheck, GenericStreamingMessage, ImageData,
+    ImprovedTerseObjectUpdate, LayerData, LogoutReply, LogoutRequest, ObjectUpdate, PacketAck,
+    RegionHandshake, RegionHandshakeReply, SimStats, SimulatorViewerTimeMessage, StartPingCheck,
+    UseCircuitCode,
 };
 use ferroan_protocol::{IncomingPacket, Msg, parse_packet};
 use uuid::Uuid;
@@ -79,6 +80,8 @@ struct ArrivalCapture {
     task_bps: f32,
     start: Instant,
     records: Vec<Record>,
+    materials: bool,
+    material_count: usize,
 }
 
 impl ArrivalCapture {
@@ -110,6 +113,7 @@ pub struct Session {
     land_rate: Option<f32>,
     movement_sent: bool,
     arrival_capture: Option<ArrivalCapture>,
+    extra_seed: Vec<String>,
     handshake_sent: bool,
     handshake_sequence: Option<u32>,
     generation: u64,
@@ -143,6 +147,7 @@ impl Session {
             land_rate: None,
             movement_sent: false,
             arrival_capture: None,
+            extra_seed: Vec::new(),
             handshake_sent: false,
             handshake_sequence: None,
             generation: 0,
@@ -233,11 +238,12 @@ impl Session {
     ) -> Result<(), SessionError> {
         let http = http.clone();
         let seed = seed.to_owned();
+        let extra_seed = self.extra_seed.clone();
         let mut seed_task = if seed.is_empty() {
             None
         } else {
             Some(tokio::spawn(async move {
-                caps::request_seed(&http, &seed).await
+                caps::request_seed_names(&http, &seed, &extra_seed).await
             }))
         };
         let mut seed_done = seed_task.is_none();
@@ -363,7 +369,28 @@ impl Session {
             task_bps,
             start: Instant::now(),
             records: Vec::new(),
+            materials: false,
+            material_count: 0,
         });
+    }
+
+    /// Also keep `GenericStreamingMessage` datagrams in the arrival capture.
+    pub(crate) fn record_material_messages(&mut self) {
+        if let Some(capture) = &mut self.arrival_capture {
+            capture.materials = true;
+        }
+    }
+
+    pub(crate) fn material_messages(&self) -> usize {
+        self.arrival_capture
+            .as_ref()
+            .map(|capture| capture.material_count)
+            .unwrap_or(0)
+    }
+
+    /// Ask the seed for one more name. An unregistered name still negotiates its flag.
+    pub(crate) fn request_seed_cap(&mut self, name: &str) {
+        self.extra_seed.push(name.to_owned());
     }
 
     pub(crate) fn take_arrival_records(&mut self) -> Option<Vec<Record>> {
@@ -416,10 +443,17 @@ impl Session {
         let Ok(packet) = parse_packet(bytes) else {
             return Ok(());
         };
-        if let Some(capture) = &mut self.arrival_capture
-            && (packet.id == ObjectUpdate::ID || packet.id == ImprovedTerseObjectUpdate::ID)
-        {
-            capture.record(Kind::UdpOut, bytes)?;
+        if let Some(capture) = &mut self.arrival_capture {
+            let material = capture.materials && packet.id == GenericStreamingMessage::ID;
+            if packet.id == ObjectUpdate::ID
+                || packet.id == ImprovedTerseObjectUpdate::ID
+                || material
+            {
+                capture.record(Kind::UdpOut, bytes)?;
+                if material {
+                    capture.material_count += 1;
+                }
+            }
         }
         if !self
             .circuit
