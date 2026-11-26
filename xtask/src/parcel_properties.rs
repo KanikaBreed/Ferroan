@@ -238,9 +238,10 @@ fn compare_captured(elements: &[Vec<u8>]) -> Result<String, String> {
 
 const CLAIM_OPEN: &[u8] = b"<key>ClaimDate</key><date>";
 const CLAIM_CLOSE: &[u8] = b"</date>";
-/// `CreateDefaultParcel` stamps `UnixTimeSinceEpoch`. The published arrival
-/// file froze the Q61a run's clock. A later run is the same element with its
-/// own load time.
+/// The auto-create branch of `EventManagerOnIncomingLandDataFromStorage`
+/// (`LandManagementModule.cs` 1945–1957) stamps `UnixTimeSinceEpoch` on
+/// Your Parcel. The published arrival file froze the Q61a run's clock. A
+/// later run is the same element with its own load time.
 const CLAIM_WINDOW_SECONDS: i64 = 15 * 60;
 
 /// The default parcel's `ClaimDate` is the load-time clock. Every other byte

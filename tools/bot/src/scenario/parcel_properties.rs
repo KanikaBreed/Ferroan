@@ -29,8 +29,10 @@ const CELL: [f32; 4] = [5.0, 1.0, 6.0, 2.0];
 const SPAN: [f32; 4] = [4.0, 0.0, 12.0, 4.0];
 const LAND_AT: Vec3 = Vec3::new(6.0, 2.0, 30.0);
 const CAPTURE_BUDGET: Duration = Duration::from_secs(90);
-/// `CreateDefaultParcel` flags on the remainder parcel. The arrival element
-/// sends this word. `KAAgSw==` is the same four bytes.
+/// Remainder-parcel flags. Your Parcel is the auto-create branch of
+/// `EventManagerOnIncomingLandDataFromStorage` (`LandManagementModule.cs`
+/// 1945–1957), which builds a `LandObject` and leaves these constructor
+/// flags. The arrival element sends this word. `KAAgSw==` is the same four bytes.
 const ARRIVAL_FLAGS: u32 = 1 | 2 | 8 | 64 | (1 << 13) | (1 << 27) | (1 << 29);
 
 struct ParcelNote {
