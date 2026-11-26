@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use crate::entity_queue::{FULL_UPDATE_WITH_ANIM, MATERIAL_OVR};
+use crate::entity_queue::{FULL_UPDATE, FULL_UPDATE_WITH_ANIM, MATERIAL_OVR};
 use crate::terse::ViewerUpdate;
 use crate::test_store::CopiedStore;
 use crate::{ObjectStoreKind, open_objects};
@@ -46,6 +46,14 @@ struct Delivery {
 }
 
 impl Delivery {
+    fn offsets_by_alias(&self) -> BTreeMap<Uuid, u32> {
+        let (&first, _) = self.local.first_key_value().unwrap();
+        self.local
+            .iter()
+            .map(|(&id, &alias)| (alias, id - first))
+            .collect()
+    }
+
     fn record(&mut self, alias: Uuid, id: u32, parent: u32) {
         assert_ne!(id, 0);
         assert!(self.local.insert(id, alias).is_none(), "local id reused");
@@ -180,6 +188,8 @@ fn two_arriving_feeds_match_the_pin8_part_and_parent_identities() {
     }
     assert_eq!(left_seen.parents, control.parents);
     assert_eq!(right_seen.parents, limited.parents);
+    assert_eq!(left_seen.offsets_by_alias(), control.offsets_by_alias());
+    assert_eq!(right_seen.offsets_by_alias(), limited.offsets_by_alias());
     assert_eq!(left_seen.local, right_seen.local);
     assert!(
         !left_seen.local.contains_key(&walker_id) && !left_seen.local.contains_key(&watcher_id)
@@ -214,7 +224,10 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
             }]),
         });
     }
-    // Root and both children request animations. Only the second child has a reflection probe.
+    // Only the first child has an animation collection. Even an empty
+    // collection survives SendUpdateToClient's null check.
+    group.parts[1].animations = Some(Vec::new());
+    // The root requests mesh animations. Only the second child has a reflection probe.
     group.parts[0].shape.extra_params = vec![1, 0x70, 0, 4, 0, 0, 0, 1, 0, 0, 0];
     group.parts[2].shape.extra_params = vec![1, 0x90, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let viewer = PriorityViewer {
@@ -250,6 +263,8 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
             assert!(ids.insert(block.id));
             if link == 1 {
                 root = block.id;
+            } else {
+                assert_eq!(block.id, root + (link as u32 - 1));
             }
             assert_eq!(
                 part.shape.scale,
@@ -261,9 +276,14 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
             );
             assert_eq!(block.scale.to_array(), part.shape.scale);
             assert_eq!(queued.priority, 4);
+            let full = if link == 2 {
+                FULL_UPDATE_WITH_ANIM
+            } else {
+                FULL_UPDATE
+            };
             assert_eq!(
                 queued.flags,
-                FULL_UPDATE_WITH_ANIM | if link == 3 { 0 } else { MATERIAL_OVR }
+                full | if link == 3 { 0 } else { MATERIAL_OVR }
             );
         }
         assert!(!feed.has_updates());
@@ -278,6 +298,107 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
                 panic!("missing distant prim")
             };
             assert_eq!(queued.priority, 7);
+        }
+    }
+}
+
+#[tokio::test]
+async fn stable_link_order_assigns_ids_and_queues_parts_without_reordering_the_store() {
+    let mut group = fixture_groups()
+        .await
+        .into_iter()
+        .find(|g| g.parts.len() == 2)
+        .unwrap();
+    let mut third = group.parts[1].clone();
+    third.uuid = Uuid::from_u128(3);
+    third.link_num = 3;
+    let mut fourth = group.parts[1].clone();
+    fourth.uuid = Uuid::from_u128(4);
+    group.parts.extend([third, fourth]);
+    let expected = [0, 1, 3, 2].map(|i| group.parts[i].uuid);
+    for root_link in [1, 7] {
+        group.parts[0].link_num = root_link;
+        let frame = TerrainFrame::with_objects(None, Arc::new(vec![group.clone()]), None).unwrap();
+        let stored = frame.stored_groups();
+        assert!(
+            stored[0]
+                .parts
+                .iter()
+                .map(|p| p.uuid)
+                .eq(group.parts.iter().map(|p| p.uuid))
+        );
+        let root_id = stored[0].parts[0].local_id;
+        let feed = frame.new_feed();
+        feed.offer_stored_parts(&PriorityViewer {
+            agent_id: Uuid::nil(),
+            position: Some(group.parts[0].group_position),
+            sitting_on: None,
+        });
+        for (offset, uuid) in expected.iter().enumerate() {
+            let Some(ViewerUpdate::Full { part, .. }) = feed.take_update() else {
+                panic!("missing linked part")
+            };
+            assert_eq!((part.uuid, part.local_id), (*uuid, root_id + offset as u32));
+        }
+        assert!(feed.take_update().is_none());
+    }
+}
+
+#[tokio::test]
+async fn priority_follows_the_stored_roots_physics_actor() {
+    let template = fixture_groups()
+        .await
+        .into_iter()
+        .find(|g| g.parts.len() == 2)
+        .unwrap();
+    let viewer = PriorityViewer {
+        agent_id: Uuid::nil(),
+        position: Some(template.parts[0].group_position),
+        sitting_on: None,
+    };
+    let mut groups = Vec::new();
+    for (i, (physical, path_curve, state, pcode)) in [
+        (true, 16, 0, 9),
+        (false, 16, 0, 9),
+        (true, 128, 0, 9),
+        (true, 16, 1, 9),
+        (true, 16, 1, 95),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut group = template.clone();
+        group.parts[0].uuid = Uuid::from_u128(2 * i as u128 + 1);
+        group.parts[1].uuid = Uuid::from_u128(2 * i as u128 + 2);
+        group.parts[0].flags = u32::from(physical);
+        group.parts[1].flags = u32::from(!physical);
+        group.parts[0].shape.path_curve = path_curve;
+        group.parts[0].shape.state = state;
+        group.parts[0].shape.pcode = pcode;
+        groups.push(group);
+    }
+    for collidable in [true, false] {
+        let frame = TerrainFrame::with_object_settings(
+            None,
+            None,
+            Arc::new(groups.clone()),
+            None,
+            collidable,
+        )
+        .unwrap();
+        let feed = frame.new_feed();
+        feed.offer_stored_parts(&viewer);
+        let mut priorities = BTreeMap::new();
+        while let Some(ViewerUpdate::Full { part, queued, .. }) = feed.take_update() {
+            priorities.insert(part.uuid, queued.priority);
+        }
+        assert_eq!(priorities.len(), 10);
+        for id in 1..=10 {
+            let physical = collidable && matches!(id, 1 | 2 | 9 | 10);
+            assert_eq!(
+                priorities[&Uuid::from_u128(id)],
+                if physical { 3 } else { 4 }
+            );
         }
     }
 }

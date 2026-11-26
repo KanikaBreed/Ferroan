@@ -324,7 +324,7 @@ impl TerrainFrame {
         map: Option<Heightmap>,
         parcels: Option<crate::parcels::ParcelMap>,
     ) -> Result<Self, TerrainError> {
-        Self::with_region_objects(map, parcels, Arc::default(), None)
+        Self::with_object_settings(map, parcels, Arc::default(), None, true)
     }
 
     /// Admit this region's restored groups before the first avatar can attach.
@@ -333,15 +333,16 @@ impl TerrainFrame {
         groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
     ) -> Result<Self, TerrainError> {
-        Self::with_region_objects(map, None, groups, limits)
+        Self::with_object_settings(map, None, groups, limits, true)
     }
 
-    /// Restore the region parcel map and linksets together at startup.
-    pub fn with_region_objects(
+    /// Use the region's configured scale limits and CollidablePrims setting.
+    pub fn with_object_settings(
         map: Option<Heightmap>,
         parcels: Option<crate::parcels::ParcelMap>,
         groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
+        collidable_prims: bool,
     ) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
@@ -351,7 +352,9 @@ impl TerrainFrame {
         let frame_wake = Arc::clone(&wake);
         let board = AvatarBoard::default();
         let local_ids = Arc::new(LocalIds::default());
-        let objects = Arc::new(StoredScene::admit(groups, limits, || local_ids.allocate()));
+        let objects = Arc::new(StoredScene::admit(groups, limits, collidable_prims, || {
+            local_ids.allocate()
+        }));
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),

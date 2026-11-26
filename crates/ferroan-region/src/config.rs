@@ -151,6 +151,8 @@ pub struct RegionConfig {
     pub initial_terrain: ferroan_scene::InitialTerrain,
     /// SceneGraph's optional clamp on the scale of restored world prims.
     pub prim_scale_limits: Option<ferroan_scene::PrimScaleLimits>,
+    /// Whether stored prims can acquire physics actors on admission.
+    pub collidable_prims: bool,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
     /// PostgreSQL providers are kept. A null provider leaves this empty.
@@ -416,6 +418,7 @@ impl RegionConfig {
                     .unwrap_or(ferroan_scene::DEFAULT_INITIAL_TERRAIN),
             ),
             prim_scale_limits: prim_scale_limits(server, regions, name)?,
+            collidable_prims: boolean_or(server, "Startup", "collidable_prim", true)?,
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -1044,12 +1047,19 @@ fn prim_scale_limits(
 }
 
 fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {
-    match config
-        .get(section, key)
-        .unwrap_or("false")
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    boolean_or(config, section, key, false)
+}
+
+fn boolean_or(
+    config: &Config,
+    section: &str,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, RegionConfigError> {
+    let Some(text) = config.get(section, key) else {
+        return Ok(default);
+    };
+    match text.to_ascii_lowercase().as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(value(section, key, "expected true or false")),
@@ -1216,6 +1226,23 @@ mod tests {
         assert!(prioritization_scheme_differs(
             angular.prioritization_scheme.as_deref()
         ));
+    }
+
+    #[test]
+    fn stored_prim_collisions_follow_startup_and_default_to_enabled() {
+        let mut server = server();
+        let regions = regions();
+        assert!(
+            RegionConfig::from_configs(&server, &regions)
+                .unwrap()
+                .collidable_prims
+        );
+        server.set("Startup", "collidable_prim", "false");
+        assert!(
+            !RegionConfig::from_configs(&server, &regions)
+                .unwrap()
+                .collidable_prims
+        );
     }
 
     #[test]

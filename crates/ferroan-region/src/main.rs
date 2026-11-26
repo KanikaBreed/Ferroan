@@ -447,8 +447,14 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         }
     };
     let objects = load_stored_objects(config).await?;
-    let frame = TerrainFrame::with_region_objects(map, parcels, objects, config.prim_scale_limits)
-        .map_err(|error| RunError::Terrain(error.to_string()))?;
+    let frame = TerrainFrame::with_object_settings(
+        map,
+        parcels,
+        objects,
+        config.prim_scale_limits,
+        config.collidable_prims,
+    )
+    .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 

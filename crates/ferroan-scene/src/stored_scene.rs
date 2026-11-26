@@ -48,7 +48,8 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 // Ported from SceneGraph.AddSceneObject, SceneObjectGroup.AttachToScene and
-// SendFullAnimUpdateToClient at Tranquillity c401bceecd1684832ae8ba86a31b5ee01a4ded7b,
+// SendFullAnimUpdateToClient, and SceneObjectPart.ApplyPhysics and SendUpdateToClient
+// at Tranquillity c401bceecd1684832ae8ba86a31b5ee01a4ded7b,
 // and Utils.Clamp at libopenmetaverse a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
 
 //! Restored world objects share one set of local IDs and cache revisions across viewers.
@@ -58,7 +59,10 @@ use std::sync::Arc;
 
 use crate::entity_queue::{FULL_UPDATE, FULL_UPDATE_WITH_ANIM, MATERIAL_OVR};
 use crate::prim_update::{LinksetUpdateFlags, PrimUpdateError, StoredPrimUpdate};
-use crate::{ObjectGroup, ObjectPart};
+use crate::{ObjectGroup, ObjectPart, PriorityEntity};
+
+const PHYSICS: u32 = 1; // PrimFlags.Physics
+const FLEXIBLE: u8 = 0x80; // Extrusion.Flexible
 
 /// Effective nonphysical scale limits when ClampPrimSize is enabled.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -84,31 +88,49 @@ struct PreparedPart {
     group: usize,
     part: usize,
     flags: u32,
+    physical_root: bool,
     update: Result<StoredPrimUpdate, PrimUpdateError>,
 }
 
 #[derive(Default)]
 pub(crate) struct StoredScene {
     pub(crate) groups: Arc<Vec<ObjectGroup>>,
-    parts: HashMap<u32, PreparedPart>,
+    // Allocation and initial viewer delivery both use this stable link order.
+    parts: Vec<PreparedPart>,
+    by_local_id: HashMap<u32, usize>,
 }
 
 impl StoredScene {
     pub(crate) fn admit(
         mut groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
+        collidable_prims: bool,
         mut allocate: impl FnMut() -> u32,
     ) -> Self {
-        let mut parts = HashMap::new();
+        let mut parts = Vec::new();
+        let mut by_local_id = HashMap::new();
+        let mut link_order = Vec::new();
         for (group_index, group) in Arc::make_mut(&mut groups).iter_mut().enumerate() {
             let Some((root, children)) = group.parts.split_first() else {
                 continue;
             };
             let permissions = LinksetUpdateFlags::from_parts(root, children);
+            // IsAttachmentCheckFull recognizes a stored primitive with a nonzero
+            // attachment state. Vegetation uses State to identify its species.
+            let attachment = root.shape.pcode == 9 && root.shape.state != 0;
+            let physical_root = collidable_prims
+                && root.flags & PHYSICS != 0
+                && root.shape.path_curve != FLEXIBLE
+                && !attachment;
             let root_id = allocate();
             let mut full = FULL_UPDATE;
-            // The store has already restored PartsInLinkOrder, root first.
-            for (index, part) in group.parts.iter_mut().enumerate() {
+            // PartsInLinkOrder keeps the root first and breaks ties by storage
+            // order. The store-facing group retains its original array.
+            link_order.clear();
+            link_order.extend(0..group.parts.len());
+            link_order.sort_by_key(|&index| (index != 0, group.parts[index].link_num));
+            for &index in &link_order {
+                let part = &mut group.parts[index];
                 if let Some(limits) = limits {
                     limits.apply(&mut part.shape.scale);
                 }
@@ -130,33 +152,48 @@ impl StoredScene {
                     .as_ref()
                     .and_then(|m| m.overrides.as_ref())
                     .is_some_and(|entries| !entries.is_empty());
-                let flags = if overrides && !probe {
-                    full | MATERIAL_OVR
-                } else {
+                let update_flags = if part.animations.is_some() {
                     full
+                } else {
+                    FULL_UPDATE
+                };
+                let flags = if overrides && !probe {
+                    update_flags | MATERIAL_OVR
+                } else {
+                    update_flags
                 };
                 let update =
                     StoredPrimUpdate::from_store(part, &permissions, part.local_id, root_id);
-                parts.insert(
-                    part.local_id,
-                    PreparedPart {
-                        group: group_index,
-                        part: index,
-                        flags,
-                        update,
-                    },
-                );
+                by_local_id.insert(part.local_id, parts.len());
+                parts.push(PreparedPart {
+                    group: group_index,
+                    part: index,
+                    flags,
+                    physical_root,
+                    update,
+                });
             }
         }
-        Self { groups, parts }
+        Self {
+            groups,
+            parts,
+            by_local_id,
+        }
     }
 
-    pub(crate) fn initial_parts(&self) -> impl Iterator<Item = (&ObjectPart, &ObjectPart, u32)> {
-        self.groups.iter().flat_map(move |group| {
-            group.parts.iter().map(move |part| {
-                // Each nonempty group begins with its root.
-                (&group.parts[0], part, self.parts[&part.local_id].flags)
-            })
+    pub(crate) fn initial_parts(&self) -> impl Iterator<Item = (PriorityEntity, u32, u32)> {
+        self.parts.iter().map(|prepared| {
+            let group = &self.groups[prepared.group];
+            let root = &group.parts[0];
+            let part = &group.parts[prepared.part];
+            let entity = PriorityEntity::Prim {
+                id: part.uuid,
+                linkset: root.uuid,
+                position: root.group_position,
+                attachment: false,
+                physical: prepared.physical_root,
+            };
+            (entity, part.local_id, prepared.flags)
         })
     }
 
@@ -164,7 +201,7 @@ impl StoredScene {
         &self,
         id: u32,
     ) -> Option<(&ObjectPart, Result<&StoredPrimUpdate, &PrimUpdateError>)> {
-        let entry = self.parts.get(&id)?;
+        let entry = &self.parts[*self.by_local_id.get(&id)?];
         Some((
             &self.groups[entry.group].parts[entry.part],
             entry.update.as_ref(),

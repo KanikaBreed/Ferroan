@@ -81,7 +81,7 @@ use crate::avatars::{AvatarPacket, AvatarPackets};
 use crate::entity_queue::{EntityUpdateQueue, QueuedUpdate, TERSE_UPDATE};
 
 use crate::prim_update::{PrimUpdateError, StoredPrimUpdate};
-use crate::prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
+use crate::prioritizer::{PriorityViewer, best_avatar_responsiveness};
 use crate::stored_scene::StoredScene;
 
 /// One entry from the viewer's mixed Task queue, resolved at dequeue.
@@ -463,18 +463,9 @@ impl ViewerFeed {
 
     pub(crate) fn offer_stored_parts(&self, viewer: &PriorityViewer) {
         let mut queued = false;
-        for (root, part, flags) in self.objects.initial_parts() {
-            let priority = best_avatar_responsiveness(
-                viewer,
-                &PriorityEntity::Prim {
-                    id: part.uuid,
-                    linkset: root.uuid,
-                    position: root.group_position,
-                    attachment: false,
-                    physical: false, // Stored world prims have no physics actor yet.
-                },
-            );
-            queued |= self.queue().enqueue(priority, part.local_id, flags);
+        for (entity, local_id, flags) in self.objects.initial_parts() {
+            let priority = best_avatar_responsiveness(viewer, &entity);
+            queued |= self.queue().enqueue(priority, local_id, flags);
         }
         if queued {
             self.wake.notify_one();
