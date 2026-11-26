@@ -2788,9 +2788,9 @@ mod tests {
     use super::*;
 
     /// A stand-in server whose stop finds its upstream gone, as the C#
-    /// neighbour's late CloseAgent does. The classification is the proxy's;
-    /// the stand-in does not open a socket, so a listener that has already
-    /// closed cannot fail the test.
+    /// neighbour's late CloseAgent does. On drop it calls `upstream_was_gone`,
+    /// which shares `note_upstream_gone` with `forward`. The stand-in does not
+    /// stop the proxy and does not open a socket.
     #[cfg(target_os = "linux")]
     struct LateCaller(ferroan_capture::ProxyStatus);
 
@@ -2803,28 +2803,43 @@ mod tests {
 
     /// Four proxies on closed upstreams, in `run_linux` order: Robust private,
     /// Robust public, home, neighbour. Literal indexes, so a swapped constant
-    /// shows.
+    /// shows. Each closed port stays reserved until the caller drops the
+    /// returned sockets, after `finish`.
     #[cfg(target_os = "linux")]
-    fn grid_proxies(name: &str) -> (crate::live_proxy::Proxies, Vec<PathBuf>) {
-        let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> =
-            ["private", "public", "home", "neighbour"]
-                .iter()
-                .map(|which| {
-                    let closed = std::net::TcpListener::bind("127.0.0.1:0")
-                        .unwrap()
-                        .local_addr()
-                        .unwrap();
-                    let path = crate::repo_root().join(".scratch").join(format!(
-                        "stop-order-{name}-{which}-{}.cap",
-                        uuid::Uuid::new_v4()
-                    ));
-                    ("127.0.0.1:0".parse().unwrap(), closed, path)
-                })
-                .collect();
-        let (_addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
+    fn grid_proxies(
+        name: &str,
+    ) -> (
+        crate::live_proxy::Proxies,
+        Vec<PathBuf>,
+        Vec<crate::live_proxy::ClosedUpstream>,
+    ) {
+        let names = ["private", "public", "home", "neighbour"];
+        let closed: Vec<_> = names
+            .iter()
+            .map(|_| crate::live_proxy::ClosedUpstream::reserve())
+            .collect();
+        let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> = names
+            .iter()
+            .zip(closed.iter())
+            .map(|(which, upstream)| {
+                let path = crate::repo_root().join(".scratch").join(format!(
+                    "stop-order-{name}-{which}-{}.cap",
+                    uuid::Uuid::new_v4()
+                ));
+                ("127.0.0.1:0".parse().unwrap(), upstream.address(), path)
+            })
+            .collect();
+        let (addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
+        for address in &addresses {
+            assert!(
+                closed.iter().all(|upstream| upstream.address() != *address),
+                "a proxy listened on a closed upstream port"
+            );
+        }
         (
             proxies,
             binds.into_iter().map(|(_, _, path)| path).collect(),
+            closed,
         )
     }
 
@@ -2833,7 +2848,7 @@ mod tests {
     fn each_server_is_marked_just_before_it_stops() {
         // Each server's stop finds its own upstream gone: all three are marked.
         // Literal indexes, so a swapped constant shows.
-        let (proxies, paths) = grid_proxies("own");
+        let (proxies, paths, closed) = grid_proxies("own");
         let mut home = Some(LateCaller(proxies.status(2).unwrap()));
         let mut neighbour = Some(LateCaller(proxies.status(3).unwrap()));
         let mut robust = Some(LateCaller(proxies.status(0).unwrap()));
@@ -2844,12 +2859,19 @@ mod tests {
             assert_eq!(status.refused_after_stop(), 1, "proxy {index}");
             assert_eq!(status.failures(), 0, "proxy {index}");
         }
+        // Robust's public proxy is marked with the private one. A late refusal
+        // there counts; dropping it from STOP_ORDER leaves the mark unset.
+        let robust_public = proxies.status(1).unwrap();
+        robust_public.upstream_was_gone();
+        assert_eq!(robust_public.refused_after_stop(), 1, "proxy 1");
+        assert_eq!(robust_public.failures(), 0, "proxy 1");
         proxies.finish().unwrap();
+        drop(closed);
         for path in paths {
             let _ = fs::remove_file(path);
         }
         // Home's stop finds the neighbour gone while that neighbour is meant to be up.
-        let (proxies, paths) = grid_proxies("early");
+        let (proxies, paths, closed) = grid_proxies("early");
         let mut home = Some(LateCaller(proxies.status(3).unwrap()));
         let mut neighbour: Option<LateCaller> = None;
         let mut robust: Option<LateCaller> = None;
@@ -2858,6 +2880,7 @@ mod tests {
         assert_eq!(neighbour_status.failures(), 1);
         assert_eq!(neighbour_status.refused_after_stop(), 0);
         let error = proxies.finish().unwrap_err();
+        drop(closed);
         assert!(error.contains("recorded 1 failure(s)"), "{error}");
         for path in paths {
             let _ = fs::remove_file(path);

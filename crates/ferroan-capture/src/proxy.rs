@@ -98,8 +98,9 @@ impl ProxyStatus {
     /// The upstream was gone before any response byte.
     ///
     /// Call this when the request is already in hand. A stop flagged by then
-    /// counts a late refusal and is not a failure. A forwarded exchange uses
-    /// the same helper with the flag it read when its request arrived.
+    /// counts a late refusal and is not a failure. This and `forward` share
+    /// `note_upstream_gone`: `forward` passes the flag it read when the request
+    /// arrived, and this reads the flag now. The stand-in does not stop the proxy.
     pub fn upstream_was_gone(&self) {
         let stopping = self.0.upstream_stopping.load(Ordering::Acquire);
         if !self.note_upstream_gone(stopping) {
@@ -1192,17 +1193,21 @@ mod tests {
         }
     }
 
-    async fn closed_port() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        address
+    /// A bound socket that never listens. A connect is refused, and the port
+    /// stays reserved until the socket is dropped. Dropping it before the
+    /// proxy binds is what let that bind take the closed port.
+    fn closed_port() -> (tokio::net::TcpSocket, SocketAddr) {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        (socket, address)
     }
 
     #[tokio::test]
     async fn a_refused_upstream_that_is_meant_to_be_up_fails_the_proxy() {
-        let (address, status, task, path) =
-            tracked_proxy(closed_port().await, Duration::from_secs(1)).await;
+        let (reserved, upstream) = closed_port();
+        let (address, status, task, path) = tracked_proxy(upstream, Duration::from_secs(1)).await;
+        assert_ne!(address, upstream);
         assert!(request(address).await.is_empty());
         assert_eq!(
             timeout(IO_WAIT, task)
@@ -1220,6 +1225,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].kind, Kind::HttpRequest);
         std::fs::remove_file(path).unwrap();
+        drop(reserved);
     }
 
     #[tokio::test]

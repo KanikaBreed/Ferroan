@@ -110,6 +110,35 @@ impl Proxies {
     }
 }
 
+/// A localhost TCP port held until this value is dropped.
+///
+/// The socket is bound and never listens, so a connect is refused. The port
+/// stays reserved: a later bind of port 0 cannot be given it. Dropping the
+/// socket first is what let one proxy's listen port become another's closed
+/// upstream.
+#[cfg(test)]
+pub(crate) struct ClosedUpstream {
+    _socket: tokio::net::TcpSocket,
+    address: SocketAddr,
+}
+
+#[cfg(test)]
+impl ClosedUpstream {
+    pub(crate) fn reserve() -> Self {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        Self {
+            _socket: socket,
+            address,
+        }
+    }
+
+    pub(crate) fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,16 +155,30 @@ mod tests {
             })
             .collect();
         // Two upstreams with nothing listening: one the harness is stopping,
-        // one that is meant to be up.
-        let closed = || {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap()
-        };
+        // one that is meant to be up. Hold each port until after finish, or a
+        // proxy's bind of port 0 can be given it.
+        let stopped = ClosedUpstream::reserve();
+        let up = ClosedUpstream::reserve();
+        let refused = std::net::TcpStream::connect(stopped.address()).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::ConnectionRefused);
         let (addresses, proxies) = Proxies::start(&[
-            ("127.0.0.1:0".parse().unwrap(), closed(), paths[0].clone()),
-            ("127.0.0.1:0".parse().unwrap(), closed(), paths[1].clone()),
+            (
+                "127.0.0.1:0".parse().unwrap(),
+                stopped.address(),
+                paths[0].clone(),
+            ),
+            (
+                "127.0.0.1:0".parse().unwrap(),
+                up.address(),
+                paths[1].clone(),
+            ),
         ])
         .unwrap();
+        assert!(
+            addresses
+                .iter()
+                .all(|address| { *address != stopped.address() && *address != up.address() })
+        );
         proxies.upstream_stopping(0);
         for address in &addresses {
             let mut client = std::net::TcpStream::connect(address).unwrap();
@@ -151,6 +194,8 @@ mod tests {
         }
         // Only the refusal while the upstream was meant to be up counts.
         let error = proxies.finish().unwrap_err();
+        drop(stopped);
+        drop(up);
         assert!(error.contains("recorded 1 failure(s)"), "{error}");
         for path in paths {
             let records = ferroan_capture::read_capture(&std::fs::read(&path).unwrap()).unwrap();
