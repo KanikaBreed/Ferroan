@@ -31,6 +31,7 @@ const XML_READ_DUMP: &str = "fixtures/regionstore/objects-xml-read.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
+const SCALE_FIXTURE: &str = "fixtures/prim-scale/pin8-scales.txt";
 struct RegionstoreRun {
     mysql_name: String,
     mysql_port: u16,
@@ -109,6 +110,51 @@ pub fn prim_seed() -> ExitCode {
 
 pub fn verify() -> ExitCode {
     dispatch(false)
+}
+
+/// Write `fixtures/prim-scale/pin8-scales.txt`, or check it against a fresh run.
+pub fn scales(writing: bool) -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let text = match oracle_stdout(&dll, &["scales", &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let path = root.join(SCALE_FIXTURE);
+    if writing {
+        if let Err(error) = fs::write(&path, &text) {
+            eprintln!("{LABEL}: could not write {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("{LABEL}: wrote {SCALE_FIXTURE}");
+        return ExitCode::SUCCESS;
+    }
+    let committed = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("{LABEL}: could not read {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if committed != text.as_bytes() {
+        eprintln!("{LABEL}: {SCALE_FIXTURE} differs from the pin");
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: {SCALE_FIXTURE} matches the pin");
+    ExitCode::SUCCESS
 }
 
 /// Regenerate the SQLite parcel load from the same schema and seed as the Rust test.
