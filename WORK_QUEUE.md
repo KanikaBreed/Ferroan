@@ -239,7 +239,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
-| Q220 | P2.0e4.6a: OAR parcels in memory | READY |
+| Q220 | P2.0e4.6a: OAR parcels in memory | DONE (this PR) |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |
 | Q222 | P2.0e4.7: OAR region, environment and estate settings | READY after Q225, Q226 and Q227 |
 | Q223 | P2.0e4.8: OAR assets | READY after Q218 |

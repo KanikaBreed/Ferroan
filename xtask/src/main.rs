@@ -211,6 +211,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask access generate|verify
        cargo xtask permissions generate|verify
        cargo xtask oar-owners generate|verify
+       cargo xtask oar-parcels generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -268,6 +269,8 @@ fn main() -> ExitCode {
         ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["oar-owners", "generate"] => access_oracle::run("oar-owners", "OarOwnersOracle", true),
         ["oar-owners", "verify"] => access_oracle::run("oar-owners", "OarOwnersOracle", false),
+        ["oar-parcels", "generate"] => access_oracle::run("oar-parcels", "OarParcelsOracle", true),
+        ["oar-parcels", "verify"] => access_oracle::run("oar-parcels", "OarParcelsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
