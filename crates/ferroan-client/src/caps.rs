@@ -966,6 +966,32 @@ mod tests {
         ));
     }
 
+    /// `enqueue_raw_for` forwards its caller into the limit readout. The
+    /// high-water latch is shared, so a climb that loses the slot tries again.
+    #[test]
+    fn parcel_properties_caller_reaches_the_limit_readout() {
+        let element = b"<map />";
+        let mut readout = String::new();
+        for _ in 0..8 {
+            ferroan_diag::observe(ferroan_diag::EVENT_QUEUE, 256, 0, "parcel-properties");
+            let registry = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+            let agent = Uuid::from_u128(1);
+            registry
+                .register_agent(&format!("/CAPS/{agent}0000/"), agent)
+                .unwrap();
+            for _ in 0..205 {
+                registry
+                    .enqueue_raw_for(agent, element, "parcel-properties")
+                    .unwrap();
+            }
+            readout = ferroan_diag::render();
+            if readout.contains("route=parcel-properties") {
+                return;
+            }
+        }
+        panic!("limit readout did not record route=parcel-properties\n{readout}");
+    }
+
     #[test]
     fn seed_capability_lookup_uses_osd_as_string_and_ignores_unknown_types() {
         assert!(wants_event_queue(&[Llsd::Uri("EventQueueGet".into())]).unwrap());
@@ -1380,6 +1406,23 @@ mod tests {
         let http = ferroan_bot::login::http_client().unwrap();
         let response = http.get(server.seed_url()).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 404);
+    }
+
+    /// `CapsServer::enqueue_raw` keeps the caller and the next poll returns
+    /// the element.
+    #[tokio::test]
+    async fn enqueue_raw_returns_the_element_on_the_next_poll() {
+        let server = CapsServer::bind().await.unwrap();
+        let element = b"<map><key>Name</key><string>West</string></map>";
+        server.enqueue_raw(element, "parcel-properties").unwrap();
+        let (status, body, _) =
+            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
+        assert_eq!(status, 200);
+        assert!(
+            body.windows(element.len()).any(|window| window == element),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]
