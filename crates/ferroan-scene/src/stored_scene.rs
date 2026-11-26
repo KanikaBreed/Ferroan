@@ -47,9 +47,10 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Ported from SceneGraph.AddSceneObject, SceneObjectGroup.AttachToScene and
-// SendFullAnimUpdateToClient, and SceneObjectPart.ApplyPhysics, AddToPhysics,
-// ClampScale and SendUpdateToClient at Tranquillity
+// Ported from SceneGraph.AddSceneObject, SceneObjectGroup.AttachToScene,
+// SendFullAnimUpdateToClient and DeleteGroupFromScene, Scene.Inventory.cs
+// DeRezObjects, and SceneObjectPart.ApplyPhysics, AddToPhysics, ClampScale
+// and SendUpdateToClient at Tranquillity
 // c401bceecd1684832ae8ba86a31b5ee01a4ded7b, and Utils.Clamp at libopenmetaverse
 // a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b.
 
@@ -161,8 +162,22 @@ pub(crate) struct PartFacts {
     /// Owner of the root. `CanDeleteObject` matches the agent against that owner.
     pub owner_id: Uuid,
     pub is_root: bool,
-    /// `IsAttachmentCheckFull`: primitive code 9 and a nonzero attachment state.
+    /// `SceneObjectGroup.IsAttachment` (`m_isAttachment`). The setter is the
+    /// only writer, and a group restored from the store never calls it.
     pub attachment: bool,
+}
+
+/// One live part and the rest of its linkset, owned so the frame can drop the borrow.
+pub(crate) struct LiveLinkset {
+    pub part: ObjectPart,
+    pub root: ObjectPart,
+    pub children: Vec<ObjectPart>,
+}
+
+/// A hidden part of a removed group, for the deleted-update kill conversion.
+pub(crate) struct RemovedPart {
+    pub root_local_id: u32,
+    pub is_root: bool,
 }
 
 #[derive(Default)]
@@ -328,7 +343,40 @@ impl StoredScene {
             root_local_id: root.local_id,
             owner_id: root.owner_id,
             is_root: entry.part == 0,
-            attachment: root.shape.pcode == 9 && root.shape.state != 0,
+            attachment: false,
+        })
+    }
+
+    /// The addressed part, with the root first in `parts`. A removed id is absent.
+    pub(crate) fn live_linkset(&self, local_id: u32) -> Option<LiveLinkset> {
+        if self.hidden(local_id) {
+            return None;
+        }
+        let index = *self.by_local_id.get(&local_id)?;
+        let entry = self.parts.get(index)?;
+        let group = &self.groups[entry.group];
+        let root = group.parts.first()?.clone();
+        let part = group.parts.get(entry.part)?.clone();
+        let children = group.parts.iter().skip(1).cloned().collect();
+        Some(LiveLinkset {
+            part,
+            root,
+            children,
+        })
+    }
+
+    /// A queued update whose part was hidden with its group. `ProcessEntityUpdates`
+    /// turns the root's update into one kill and drops a child.
+    pub(crate) fn removed_part(&self, local_id: u32) -> Option<RemovedPart> {
+        if !self.hidden(local_id) {
+            return None;
+        }
+        let index = *self.by_local_id.get(&local_id)?;
+        let entry = self.parts.get(index)?;
+        let root = self.groups[entry.group].parts.first()?;
+        Some(RemovedPart {
+            root_local_id: root.local_id,
+            is_root: entry.part == 0,
         })
     }
 

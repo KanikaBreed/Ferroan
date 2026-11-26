@@ -496,17 +496,10 @@ fn powers_of(held: &[Uuid], roles: &HashMap<Uuid, Option<u64>>, owner: Uuid) -> 
     powers
 }
 
-/// OpenMetaverse `UUID.TryParse`: dashed or compact hex, with ASCII space
-/// padding. A failure is nil, which drops that membership when no group row
-/// has that id. A tab, braces and `urn:uuid:` fail.
+/// OpenMetaverse `UUID.TryParse`. A failure is nil, which drops that
+/// membership when no group row has that id.
 fn parse_uuid(text: &str) -> Uuid {
-    let text = text.trim_matches(' ');
-    if matches!(text.len(), 32 | 36)
-        && let Ok(id) = Uuid::parse_str(text)
-    {
-        return id;
-    }
-    Uuid::nil()
+    ferroan_scene::omv_uuid(text)
 }
 
 /// `UInt64.TryParse` with `NumberStyles.Integer`: surrounding spaces, a leading

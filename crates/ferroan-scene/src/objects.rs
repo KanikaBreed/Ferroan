@@ -1066,6 +1066,18 @@ fn parse_uuid(text: &str) -> Option<Uuid> {
     Uuid::parse_str(text.trim()).ok()
 }
 
+/// OpenMetaverse `UUID.TryParse`: dashed or compact hex, with ASCII space
+/// padding. A tab, braces and `urn:uuid:` fail, and the result is nil.
+pub fn omv_uuid(text: &str) -> Uuid {
+    let text = text.trim_matches(' ');
+    if matches!(text.len(), 32 | 36)
+        && let Ok(id) = Uuid::parse_str(text)
+    {
+        return id;
+    }
+    Uuid::nil()
+}
+
 fn required_f32(row: &SqliteRow, name: &str) -> Result<f32, ()> {
     let value = optional_f64(row, name).ok_or(())?;
     if !value.is_finite() {

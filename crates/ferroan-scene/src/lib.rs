@@ -113,7 +113,7 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    HopReturn, Leaving, LocalTeleport, MovedAway, ParcelSender, Pending, Presence,
+    DeleteRights, HopReturn, Leaving, LocalTeleport, MovedAway, ParcelSender, Pending, Presence,
     TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
@@ -121,7 +121,7 @@ pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
-    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
+    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, omv_uuid, open_objects,
 };
 pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,

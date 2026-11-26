@@ -1,4 +1,60 @@
-// Copyright (c) 2026 Ferroan contributors
+// Copyright (c) Contributors, http://opensimulator.org/
+// See CONTRIBUTORS.TXT for a full list of copyright holders.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of the OpenSimulator Project nor the
+//       names of its contributors may be used to endorse or promote products
+//       derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Copyright (c) 2006-2016, openmetaverse.co
+// All rights reserved.
+//
+// - Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+// - Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+// - Neither the name of the openmetaverse.co nor the names
+//   of its contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+// Ported to Rust for Ferroan from
+//   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
+//     (CreateObjectPropertiesBlock, CreateObjectPropertiesFamilyBlock,
+//      ProcessEntityPropertyRequests)
+//   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+//   osUTF8 and Utils.StringToBytesNoTerm
+//   OpenSim-NGC/libopenmetaverse @ a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
+// Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Object property blocks and the per-viewer property queue.
@@ -9,7 +65,8 @@
 //! String limits follow `osUTF8` (`SceneObjectPart.cs` 693–716, 1151–1201)
 //! and `Utils.StringToBytesNoTerm` at libopenmetaverse `a3596616`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
 
 use ferroan_diag::{Action, Hit, Kind, OBJECT_UPDATE_FIELD, hit};
 use ferroan_protocol::msgs::ObjectPropertiesFamily;
@@ -18,6 +75,7 @@ use ferroan_protocol::msgs::object_properties_family::ObjectData as FamilyBlock;
 use ferroan_protocol::{Msg, Writer};
 use uuid::Uuid;
 
+use crate::entity_queue::{merge_flags, normalize_new};
 use crate::objects::ObjectPart;
 use crate::xml::format_f32;
 
@@ -66,7 +124,8 @@ impl PropertyQueue {
     fn enqueue(&mut self, local_id: u32, flag: u8, request_flags: u32) {
         if let Some(slot) = self.slots.get_mut(&local_id) {
             slot.flags |= flag;
-            slot.request_flags |= request_flags;
+            // `EntityUpdate.UpdateFromNew` on the property queue's flag word.
+            slot.request_flags = merge_flags(slot.request_flags, request_flags);
             return;
         }
         self.slots.insert(
@@ -74,7 +133,8 @@ impl PropertyQueue {
             PropertySlot {
                 local_id,
                 flags: flag,
-                request_flags,
+                // `EntityUpdate.Update` on the first insert.
+                request_flags: normalize_new(request_flags),
             },
         );
         self.order.push_back(local_id);
@@ -101,15 +161,9 @@ pub(crate) fn limited_text(field: &'static str, text: &str, max: usize) -> Vec<u
     let len = if let Some(nul) = prefix.iter().position(|byte| *byte == 0) {
         nul
     } else if text.len() > max {
-        hit(&Hit {
-            id: OBJECT_UPDATE_FIELD,
-            kind: Kind::Hard,
-            configured: max as u64,
-            observed: text.len() as u64,
-            action: Action::Truncate,
-            route: field,
-            agent_id: None,
-        });
+        // C# cuts once, when the value is stored. A later encode of the same
+        // field and text does not report the cut again.
+        report_cut(field, text, max);
         text.floor_char_boundary(max)
     } else {
         text.len()
@@ -121,11 +175,30 @@ pub(crate) fn limited_text(field: &'static str, text: &str, max: usize) -> Vec<u
     bytes
 }
 
+/// One `object.update-field` hit per distinct field and stored text.
+fn report_cut(field: &'static str, text: &str, max: usize) {
+    static SEEN: OnceLock<Mutex<HashSet<(&'static str, String)>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut seen = seen.lock().unwrap_or_else(|poison| poison.into_inner());
+    if !seen.insert((field, text.to_owned())) {
+        return;
+    }
+    hit(&Hit {
+        id: OBJECT_UPDATE_FIELD,
+        kind: Kind::Hard,
+        configured: max as u64,
+        observed: text.len() as u64,
+        action: Action::Truncate,
+        route: field,
+        agent_id: None,
+    });
+}
+
 /// `CreatorIdentification`: the text before `;`, or `UUID.Zero` when that
-/// text does not parse.
+/// text does not parse. The parser is OpenMetaverse `UUID.TryParse`.
 pub(crate) fn creator_uuid(value: &str) -> Uuid {
     let head = value.split(';').next().unwrap_or("");
-    Uuid::parse_str(head).unwrap_or_else(|_| Uuid::nil())
+    crate::omv_uuid(head)
 }
 
 /// Store loads leave the serial unset. The object XML writer then spells 0
@@ -299,7 +372,7 @@ fn real(out: &mut Vec<u8>, name: &str, value: f32) {
     push(out, "</real>");
 }
 
-/// `float.ToString(InvariantCulture)`. Non-finite values use Encode2's words.
+/// `float.ToString(InvariantCulture)`. `NaN` and `Infinity` are that spelling.
 fn spell_real(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
@@ -332,8 +405,94 @@ mod tests {
     fn a_creator_suffix_is_dropped_and_a_bad_token_is_zero() {
         let id = Uuid::from_u128(9);
         assert_eq!(creator_uuid(&format!("{id};https://grid.example/")), id);
+        assert_eq!(creator_uuid(&format!("  {id}  ")), id);
+        assert_eq!(creator_uuid(&id.simple().to_string()), id);
+        assert!(creator_uuid(&format!("{{{id}}}")).is_nil());
         assert!(creator_uuid("").is_nil());
         assert!(creator_uuid("not-a-uuid").is_nil());
+    }
+
+    #[test]
+    fn request_flags_follow_update_and_a_family_select_merge() {
+        use crate::entity_queue::{CANCEL_KILL, FULL_UPDATE_WITH_ANIM, UPDATE_PROBE};
+
+        let mut queue = PropertyQueue::default();
+        queue.enqueue_family(1, CANCEL_KILL | 0x4);
+        assert_eq!(queue.pop().unwrap().request_flags, FULL_UPDATE_WITH_ANIM);
+        queue.enqueue_family(2, CANCEL_KILL | UPDATE_PROBE);
+        assert_eq!(queue.pop().unwrap().request_flags, UPDATE_PROBE);
+        queue.enqueue_family(3, 0x15);
+        queue.enqueue_object(3);
+        queue.enqueue_family(3, CANCEL_KILL);
+        let slot = queue.pop().unwrap();
+        assert_eq!(slot.local_id, 3);
+        assert_eq!(slot.flags, FAMILY | OBJECT);
+        assert_eq!(slot.request_flags, FULL_UPDATE_WITH_ANIM);
+    }
+
+    #[test]
+    fn a_child_keeps_its_own_identity_and_the_root_masks() {
+        use ferroan_protocol::Reader;
+        use ferroan_protocol::msgs::object_properties::ObjectData;
+
+        let mut root = crate::xml::blank_part();
+        root.uuid = Uuid::from_u128(1);
+        root.owner_id = Uuid::from_u128(2);
+        root.last_owner_id = Uuid::from_u128(3);
+        root.base_mask = 0x11;
+        root.owner_mask = 0x22;
+        root.group_mask = 0x33;
+        root.everyone_mask = 0x44;
+        root.next_owner_mask = 0x55;
+        root.sale_type = 3;
+        root.sale_price = 9;
+        root.name = "RootName".into();
+        root.touch_name = "root-touch".into();
+        root.sit_name = "root-sit".into();
+
+        let mut child = root.clone();
+        child.uuid = Uuid::from_u128(4);
+        child.last_owner_id = Uuid::from_u128(5);
+        child.base_mask = 0x99;
+        child.owner_mask = 0x88;
+        child.group_mask = 0x77;
+        child.everyone_mask = 0x66;
+        child.next_owner_mask = 0x55aa;
+        child.sale_type = 1;
+        child.sale_price = 100;
+        child.name = "ChildName".into();
+        child.description = "ChildDesc".into();
+        child.touch_name = "child-touch".into();
+        child.sit_name = "child-sit".into();
+        child.items.push(crate::xml::blank_item(1));
+
+        let bytes = object_block(&child, &root);
+        assert!(bytes.windows(10).any(|window| window == b"ChildName\0"));
+        assert!(bytes.windows(12).any(|window| window == b"child-touch\0"));
+        assert!(bytes.windows(10).any(|window| window == b"child-sit\0"));
+        assert!(!bytes.windows(8).any(|window| window == b"RootName"));
+        let mut reader = Reader::new(&bytes);
+        let block = ObjectData::decode(&mut reader).unwrap();
+        assert_eq!(block.object_id, child.uuid);
+        assert_eq!(block.last_owner_id, child.last_owner_id);
+        assert_eq!(block.base_mask, root.base_mask);
+        assert_eq!(block.owner_mask, root.owner_mask);
+        assert_eq!(block.group_mask, root.group_mask);
+        assert_eq!(block.everyone_mask, root.everyone_mask);
+        assert_eq!(block.next_owner_mask, root.next_owner_mask);
+        assert_eq!(block.sale_type, root.sale_type);
+        assert_eq!(block.sale_price, root.sale_price);
+        assert_eq!(block.inventory_serial, 1);
+        assert_ne!(block.last_owner_id, child.owner_id);
+
+        let payload = family_payload(&child, &root, 0x15);
+        let (_, len) = ferroan_protocol::MsgId::decode(&payload).unwrap();
+        let family =
+            ferroan_protocol::msgs::ObjectPropertiesFamily::decode(&payload[len..]).unwrap();
+        assert_eq!(family.object_data.request_flags, 0x15);
+        assert_eq!(family.object_data.object_id, child.uuid);
+        assert_eq!(family.object_data.base_mask, root.base_mask);
+        assert_eq!(family.object_data.sale_price, root.sale_price);
     }
 
     #[test]
@@ -377,5 +536,105 @@ mod tests {
             "<key>Friction</key><real>{}</real>",
             format_f32(0.6)
         )));
+    }
+
+    #[tokio::test]
+    async fn stored_parts_match_every_byte_of_the_pin8_object_properties() {
+        use std::collections::BTreeMap;
+
+        use crate::test_store::CopiedStore;
+        use crate::{ObjectStoreKind, open_objects};
+
+        let copy = CopiedStore::new("prim-updates/scene.db");
+        let region = Uuid::from_u128(0x6d1a7f4e_0c3b_4f53_9a1e_5f0e3c2a9b01);
+        let groups = open_objects(&copy.connection(), region, ObjectStoreKind::Sqlite)
+            .await
+            .unwrap();
+        let map_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/prim-updates/map.json");
+        let map: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(map_path).unwrap()).unwrap();
+        let mut uuid_of = BTreeMap::new();
+        let owner_store: Uuid = map["owner"]["store_uuid"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let owner_capture: Uuid = map["owner"]["capture_uuid"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        uuid_of.insert(owner_store, owner_capture);
+        for entry in map["parts"].as_array().unwrap() {
+            let store: Uuid = entry["store_uuid"].as_str().unwrap().parse().unwrap();
+            let capture: Uuid = entry["capture_uuid"].as_str().unwrap().parse().unwrap();
+            uuid_of.insert(store, capture);
+        }
+        let alias = |id: Uuid| uuid_of.get(&id).copied().unwrap_or(id);
+        let alias_creator = |value: &str| {
+            let (head, rest) = value.split_once(';').unwrap_or((value, ""));
+            let id = crate::omv_uuid(head);
+            match uuid_of.get(&id) {
+                Some(capture) if rest.is_empty() => capture.to_string(),
+                Some(capture) => format!("{capture};{rest}"),
+                None => value.to_owned(),
+            }
+        };
+        let mut aliased = Vec::new();
+        for group in &groups {
+            let root_id = group.parts[0].uuid;
+            for part in &group.parts {
+                let mut part = part.clone();
+                let mut root = group
+                    .parts
+                    .iter()
+                    .find(|candidate| candidate.uuid == root_id)
+                    .unwrap()
+                    .clone();
+                for item in [&mut part, &mut root] {
+                    item.uuid = alias(item.uuid);
+                    item.local_id = u32::try_from(item.uuid.as_u128()).unwrap();
+                    item.owner_id = alias(item.owner_id);
+                    item.group_id = alias(item.group_id);
+                    item.last_owner_id = alias(item.last_owner_id);
+                    item.creator_id = alias_creator(&item.creator_id);
+                }
+                aliased.push((part.uuid, part, root));
+            }
+        }
+        aliased.sort_by_key(|(id, _, _)| *id);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/object-properties");
+        let roots: Vec<_> = aliased
+            .iter()
+            .filter(|(_, part, root)| part.uuid == root.uuid)
+            .collect();
+        assert_eq!(roots.len(), 7);
+        for (index, (_, part, root)) in roots.iter().enumerate() {
+            let payload = family_payload(part, root, 0);
+            let (_, len) = ferroan_protocol::MsgId::decode(&payload).unwrap();
+            let expected = std::fs::read(dir.join(format!("family-{}.bin", index + 1))).unwrap();
+            assert_eq!(&payload[len..], expected.as_slice(), "family {}", index + 1);
+        }
+        let mut object = vec![u8::try_from(aliased.len()).unwrap()];
+        let mut physics = Vec::new();
+        for (_, part, root) in &aliased {
+            object.extend(object_block(part, root));
+            physics.push(physics_of(part));
+        }
+        assert_eq!(
+            object,
+            std::fs::read(dir.join("object-1.bin")).unwrap(),
+            "object properties"
+        );
+        assert_eq!(
+            physics_event(&physics),
+            std::fs::read(dir.join("physics-1.xml")).unwrap(),
+            "physics event"
+        );
+        let kill = std::fs::read(dir.join("kill-1.bin")).unwrap();
+        assert_eq!(kill, std::fs::read(dir.join("kill-2.bin")).unwrap());
+        assert_eq!(kill, vec![1, 1, 0, 0, 0]);
     }
 }

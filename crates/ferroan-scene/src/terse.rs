@@ -72,7 +72,7 @@
 //! The block is built then, from the live values on the [`AvatarBoard`], as
 //! C# reads the presence when it writes the packet.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -106,6 +106,9 @@ pub enum ViewerUpdate<'a> {
 }
 
 /// Ordinary queue for the delayed kill `SendEntityUpdate` enqueues after `SendKillObject`.
+/// Pin8 picks that queue from the prioritizer's distance (`LLClientView.cs` 4917,
+/// `Prioritizer.cs` 85–118). This priority is fixed at 2, so only the order among
+/// other queued updates differs.
 const DELAYED_KILL_PRIORITY: u8 = 2;
 
 /// `ScenePresence.cs` lines 4056–4060.
@@ -427,6 +430,8 @@ pub struct ViewerFeed {
     wake: Arc<Notify>,
     /// `SendInitialData` with zero teleport flags. The circuit takes it once.
     land_pass: AtomicBool,
+    /// `m_killRecord` for the update pass `begin_update_pass` opened.
+    pass_kills: Mutex<HashSet<u32>>,
 }
 
 impl ViewerFeed {
@@ -443,7 +448,24 @@ impl ViewerFeed {
             board,
             wake: Arc::new(Notify::new()),
             land_pass: AtomicBool::new(false),
+            pass_kills: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Start of `ProcessEntityUpdates`. The kill record is empty for this pass.
+    pub fn begin_update_pass(&self) {
+        self.pass_kills().clear();
+    }
+
+    fn pass_kills(&self) -> MutexGuard<'_, HashSet<u32>> {
+        self.pass_kills
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Record `local_id` in this pass's kill set. False when it was already there.
+    fn note_pass_kill(&self, local_id: u32) -> bool {
+        self.pass_kills().insert(local_id)
     }
 
     /// `ScenePresence.SendInitialData` asked for terrain and the overlay again.
@@ -593,7 +615,11 @@ impl ViewerFeed {
                 queue.remove(&[local_id]);
                 drop(queue);
                 self.drop_properties(&[local_id]);
-                return Some(ViewerUpdate::Kill { local_id });
+                if self.note_pass_kill(local_id) {
+                    return Some(ViewerUpdate::Kill { local_id });
+                }
+                queue = self.queue();
+                continue;
             }
             if let Some((part, update)) = self.objects.get(queued.local_id) {
                 let animations = if supports_object_animations
@@ -609,6 +635,19 @@ impl ViewerFeed {
                     animations,
                     update,
                 });
+            }
+            // `ProcessEntityUpdates`: a queued update for a deleted group's root
+            // becomes one root kill when this pass has not already recorded it.
+            // A child update is dropped (`part == grp.RootPart`, LLClientView.cs
+            // 5075–5087).
+            if let Some(removed) = self.objects.removed_part(queued.local_id) {
+                if removed.is_root && self.note_pass_kill(removed.root_local_id) {
+                    let local_id = removed.root_local_id;
+                    drop(queue);
+                    self.drop_properties(&[local_id]);
+                    return Some(ViewerUpdate::Kill { local_id });
+                }
+                continue;
             }
             if let Some(avatar) = self.board.get(queued.local_id) {
                 return Some(ViewerUpdate::Terse(avatar_block(&avatar)));
@@ -983,5 +1022,65 @@ mod tests {
         feed.offer_terse(1, 3);
         board.remove(3);
         assert!(feed.take_terse(0).is_empty());
+    }
+
+    /// `ProcessEntityUpdates` 5075–5087. The delayed kill records the root. A root
+    /// full update in that same pass adds nothing. The next pass turns one root
+    /// update into one kill. A child update adds none.
+    #[test]
+    fn a_deleted_root_update_is_one_kill_and_a_child_update_is_dropped() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use crate::entity_queue::FULL_UPDATE;
+        use crate::xml::blank_part;
+        use crate::{ObjectGroup, PhysicsScaleLimits};
+        use uuid::Uuid;
+
+        let mut root = blank_part();
+        root.uuid = Uuid::from_u128(1);
+        let mut child = blank_part();
+        child.uuid = Uuid::from_u128(2);
+        child.link_num = 2;
+        let group = ObjectGroup {
+            from_item_id: Uuid::nil(),
+            rez_parameter: None,
+            parts: vec![root, child],
+        };
+        let next = AtomicU32::new(10);
+        let scene = Arc::new(StoredScene::admit(
+            Arc::new(vec![group]),
+            None,
+            PhysicsScaleLimits::default(),
+            false,
+            || next.fetch_add(1, Ordering::Relaxed),
+        ));
+        let ids: Vec<u32> = scene.initial_parts().map(|(_, id, _)| id).collect();
+        let root_id = ids[0];
+        let child_id = ids[1];
+        assert!(scene.remove_group(root_id));
+        let feed = ViewerFeed::with_objects(AvatarBoard::default(), scene);
+        feed.queue().enqueue(8, child_id, FULL_UPDATE);
+        feed.kill_object(root_id);
+        let immediate = feed.take_avatar_packets(4);
+        assert!(immediate.iter().any(|packet| {
+            matches!(packet, AvatarPacket::Kill(ids) if ids.as_slice() == [root_id])
+        }));
+
+        feed.begin_update_pass();
+        assert!(matches!(
+            feed.take_update(),
+            Some(ViewerUpdate::Kill { local_id }) if local_id == root_id
+        ));
+        feed.queue().enqueue(8, root_id, FULL_UPDATE);
+        assert!(feed.take_update().is_none());
+
+        feed.queue().enqueue(8, root_id, FULL_UPDATE);
+        feed.begin_update_pass();
+        assert!(matches!(
+            feed.take_update(),
+            Some(ViewerUpdate::Kill { local_id }) if local_id == root_id
+        ));
+        feed.queue().enqueue(8, child_id, FULL_UPDATE);
+        assert!(feed.take_update().is_none());
     }
 }

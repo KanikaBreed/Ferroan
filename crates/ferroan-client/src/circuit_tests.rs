@@ -667,6 +667,7 @@ async fn local_teleport_stays_behind_the_frames_preteleport_terse() {
             hover: 0.0,
         }),
         teleport_flags: 1 << 7,
+        rights: ferroan_scene::DeleteRights::default(),
     };
     let local_id = frame
         .attach(expect.agent_id, link)

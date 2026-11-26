@@ -4452,6 +4452,7 @@ mod tests {
                     hover: 0.0,
                 }),
                 teleport_flags: 1 << 7,
+                rights: ferroan_scene::DeleteRights::default(),
             };
             let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
             let pose = ferroan_scene::Presence {

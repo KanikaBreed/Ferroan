@@ -598,7 +598,7 @@ impl Default for EntityUpdateQueue {
     }
 }
 
-fn normalize_new(flags: u32) -> u32 {
+pub(crate) fn normalize_new(flags: u32) -> u32 {
     if flags & CANCEL_KILL != 0 {
         if flags & UPDATE_PROBE != 0 {
             UPDATE_PROBE
@@ -610,7 +610,7 @@ fn normalize_new(flags: u32) -> u32 {
     }
 }
 
-fn merge_flags(mut existing: u32, new_flags: u32) -> u32 {
+pub(crate) fn merge_flags(mut existing: u32, new_flags: u32) -> u32 {
     if new_flags & UPDATE_PROBE != 0 {
         existing &= !UPDATE_PROBE;
     }

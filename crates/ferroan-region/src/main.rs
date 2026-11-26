@@ -44,7 +44,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -935,8 +935,8 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
     let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id);
     let mut root_arrived = false;
     let already_stopped = *stop.borrow_and_update();
-    let (position, land, members) = if already_stopped {
-        (agent.start_pos, Vec::new(), BTreeSet::new())
+    let (position, land, members, group_powers) = if already_stopped {
+        (agent.start_pos, Vec::new(), BTreeSet::new(), HashMap::new())
     } else {
         // RefreshGroupMembership runs in the ScenePresence constructor, before
         // the viewer connects. A transport error leaves the map empty: the
@@ -946,14 +946,15 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             terrain_login(frame, agent.start_pos),
             config.groups.memberships(agent.expect.agent_id),
         );
-        let members = match memberships {
-            Ok(rows) => rows.into_keys().collect(),
+        let group_powers = match memberships {
+            Ok(rows) => rows.into_iter().collect(),
             Err(error) => {
                 tracing::error!("ferroan-region: group membership lookup failed: {error}");
-                BTreeSet::new()
+                HashMap::new()
             }
         };
-        (position, land, members)
+        let members = group_powers.keys().copied().collect();
+        (position, land, members, group_powers)
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
@@ -998,6 +999,10 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                     height: avatar.height,
                     hover: avatar.hover,
                 }),
+                rights: ferroan_scene::DeleteRights {
+                    groups: group_powers.clone(),
+                    ..ferroan_scene::DeleteRights::default()
+                },
             };
             let attached = match frame.attach(expect.agent_id, link) {
                 Ok(pending) => pending.wait().await.ok(),
@@ -1297,6 +1302,8 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         let supports_animations = self
             .object_animations
             .load(std::sync::atomic::Ordering::Acquire);
+        // One `ProcessEntityUpdates` pass. `m_killRecord` starts empty.
+        self.feed.begin_update_pass();
         while batch.has_room() {
             match self.feed.take_update_for_viewer(supports_animations) {
                 Some(ViewerUpdate::Terse(block)) => batch.push_terse(block),
@@ -3557,6 +3564,7 @@ mod tests {
                         hover: 0.0,
                     }),
                     teleport_flags: 1 << 7,
+                    rights: ferroan_scene::DeleteRights::default(),
                 },
             )
             .unwrap()
@@ -3637,6 +3645,7 @@ mod tests {
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
             teleport_flags: 1 << 7,
+            rights: ferroan_scene::DeleteRights::default(),
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
@@ -3645,6 +3654,7 @@ mod tests {
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
             teleport_flags: 1 << 7,
+            rights: ferroan_scene::DeleteRights::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -3780,6 +3790,7 @@ mod tests {
                         hover: 0.0,
                     }),
                     teleport_flags: 1 << 7,
+                    rights: ferroan_scene::DeleteRights::default(),
                 },
             )
             .unwrap()

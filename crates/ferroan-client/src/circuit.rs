@@ -98,7 +98,7 @@ use ferroan_protocol::reliability::{
     MAX_UNACKED, RecentSequences, ReliableWindow, SequenceCounter,
 };
 use ferroan_protocol::{IncomingPacket, Msg, Writer};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -120,6 +120,41 @@ const MAX_PENDING_ACKS: usize = 4096;
 const ACK_STALL: usize = 50;
 /// `DeRezAction.Delete`.
 const DEREZ_DELETE: u8 = 6;
+
+/// One `HandlerDeRezObject` transaction still waiting for its packets.
+struct DeRezCollect {
+    seen: HashSet<u8>,
+    ids: Vec<u32>,
+}
+
+/// `HandlerDeRezObject` (`LLClientView.cs` 9218–9276). `PacketCount` of 1 or 0
+/// acts at once. A larger count collects by `TransactionID`, ignores a repeated
+/// `PacketNumber`, and returns the ids only when the current packet's count
+/// has all arrived.
+fn collect_derez(
+    pending: &mut HashMap<Uuid, DeRezCollect>,
+    transaction: Uuid,
+    count: u8,
+    number: u8,
+    ids: Vec<u32>,
+) -> Option<Vec<u32>> {
+    if count <= 1 {
+        return Some(ids);
+    }
+    let entry = pending.entry(transaction).or_insert_with(|| DeRezCollect {
+        seen: HashSet::new(),
+        ids: Vec::new(),
+    });
+    if !entry.seen.insert(number) {
+        return None;
+    }
+    entry.ids.extend(ids);
+    if entry.seen.len() >= usize::from(count) {
+        pending.remove(&transaction).map(|done| done.ids)
+    } else {
+        None
+    }
+}
 const ACKS_PER_PACKET: usize = 255;
 /// Maximum unsent TeleportLocal replies per circuit, independent of Land and other Task traffic.
 const MAX_PENDING_TELEPORTS: usize = 256;
@@ -619,6 +654,8 @@ struct State {
     handshake_reply: Option<Uuid>,
     /// `UUIDNameRequest` answers. Absent when the region has no name lookup.
     names: Option<CircuitNames>,
+    /// `HandlerDeRezObject`'s multi-packet collection, keyed by TransactionID.
+    derez: HashMap<Uuid, DeRezCollect>,
 }
 impl State {
     #[cfg(test)]
@@ -721,6 +758,7 @@ impl State {
             queue_empty_at: now,
             handshake_reply: None,
             names: None,
+            derez: HashMap::new(),
         })
     }
 
@@ -1443,7 +1481,15 @@ impl State {
                     .iter()
                     .map(|block| block.object_local_id)
                     .collect();
-                self.post_scene(expect.agent_id, SceneCall::DeRezDelete(ids));
+                if let Some(ids) = collect_derez(
+                    &mut self.derez,
+                    request.agent_block.transaction_id,
+                    request.agent_block.packet_count,
+                    request.agent_block.packet_number,
+                    ids,
+                ) {
+                    self.post_scene(expect.agent_id, SceneCall::DeRezDelete(ids));
+                }
             }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
@@ -3159,6 +3205,30 @@ mod timing_tests;
 #[cfg(test)]
 #[path = "circuit_tests.rs"]
 mod regression_tests;
+
+#[cfg(test)]
+mod derez_collect_tests {
+    use super::collect_derez;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    #[test]
+    fn a_split_delete_waits_until_every_packet_and_ignores_a_repeat() {
+        let transaction = Uuid::from_u128(7);
+        let mut pending = HashMap::new();
+        assert!(collect_derez(&mut pending, transaction, 3, 0, vec![1]).is_none());
+        assert!(collect_derez(&mut pending, transaction, 3, 0, vec![9]).is_none());
+        assert_eq!(pending[&transaction].ids, vec![1]);
+        // The completing packet's count is the one that finishes the set.
+        let ids = collect_derez(&mut pending, transaction, 2, 1, vec![2, 3]).unwrap();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert!(pending.is_empty());
+        assert_eq!(
+            collect_derez(&mut pending, transaction, 1, 0, vec![4]).unwrap(),
+            vec![4]
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

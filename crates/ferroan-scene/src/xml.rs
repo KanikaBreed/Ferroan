@@ -114,7 +114,7 @@ mod coalesced;
 pub use coalesced::{from_coalesced_xml, from_coalesced_xml_data, to_coalesced_xml};
 
 #[cfg(test)]
-pub(crate) use xml_read::blank_part;
+pub(crate) use xml_read::{blank_item, blank_part};
 pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.
@@ -736,10 +736,7 @@ fn part_creator(identification: &str) -> (Uuid, Option<String>) {
         return (Uuid::nil(), None);
     }
     let mut parts = identification.split(';');
-    let id = parts
-        .next()
-        .and_then(|text| Uuid::parse_str(text).ok())
-        .unwrap_or(Uuid::nil());
+    let id = parts.next().map(crate::omv_uuid).unwrap_or(Uuid::nil());
     let Some(home) = parts.next() else {
         return (id, None);
     };
