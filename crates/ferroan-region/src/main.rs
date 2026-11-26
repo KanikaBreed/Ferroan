@@ -226,9 +226,31 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
     simulation.bind_circuit(circuit.clone());
+    // Child HTTP runs on this task. The scene thread only try_sends a notice.
+    // Abort the task on the way out: it holds the frame, and the frame holds
+    // the notice sender, so the task would not otherwise see the channel close.
+    let mut child_drive = None;
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
+        let (minimum, maximum) = config.region_view.limits();
+        frame.set_view_limits(minimum, maximum);
+        match ferroan_region::simulation_client::SimulationClient::new() {
+            Ok(client) => {
+                let (tx, rx) = mpsc::channel(64);
+                frame.watch_children(tx);
+                child_drive = Some(tokio::spawn(ferroan_region::child_drive::run(
+                    rx,
+                    simulation.clone(),
+                    config.clone(),
+                    Arc::clone(frame),
+                    client,
+                )));
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: child neighbours will not be posted: {error}");
+            }
+        }
     }
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
@@ -281,6 +303,10 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     };
     let grid = GridClient::new(&config);
     if let Err(error) = grid.register(&config).await {
+        if let Some(task) = child_drive.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
         let _ = stop_http.send(());
         http.abort();
         let _ = http.await;
@@ -344,6 +370,10 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
             tracing::error!("ferroan-region: logout cleanup failed: {error}");
             outcome = Err(error);
         }
+    }
+    if let Some(task) = child_drive.as_mut() {
+        task.abort();
+        let _ = task.await;
     }
     // PresenceDetector.RemoveRegion. A failure is logged and shutdown continues.
     notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;

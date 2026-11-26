@@ -111,6 +111,11 @@ impl RegionViewDistances {
     pub fn for_draw_distance(&self, draw_distance: f32) -> f32 {
         (draw_distance + 64.).clamp(self.minimum, self.maximum)
     }
+
+    /// `MinRegionViewDistance` and `MaxRegionViewDistance` after the ini clamp.
+    pub fn limits(&self) -> (f32, f32) {
+        (self.minimum, self.maximum)
+    }
 }
 
 /// Resolved public settings. Deliberately no Debug: region_secret is private.

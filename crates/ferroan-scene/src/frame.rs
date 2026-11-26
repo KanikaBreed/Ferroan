@@ -25,6 +25,11 @@
 //! The frame and circuit share avatar local IDs as in
 //! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
 //! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
+//!
+//! Child neighbours are decided here and carried out elsewhere. Arrival and
+//! the child half of `CheckForSignificantMovement` only `try_send` a
+//! [`ChildNotice`]. The 16 m significant-movement trigger is not this path.
+//! HTTP stays off this thread.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -109,6 +114,145 @@ pub struct Presence {
     pub velocity: [f32; 3],
     pub control_flags: u32,
     pub draw_distance: f32,
+}
+
+/// `ScenePresence.CHILDUPDATES_TIME` at Pin8 `c401bceecd` (line 194).
+const CHILD_UPDATES_MS: i64 = 2_000;
+/// Arrival stores `EnvironmentTickCount() + 10000` (lines 2577 and 4400).
+const CHILD_ARRIVAL_STAMP_MS: i64 = 10_000;
+/// `Util.EnvironmentTickCountMask + 1` (`Util.cs` 3610 and 3623). A negative
+/// tick difference is this wrap, not a hold.
+const CHILD_TICK_MODULUS: i64 = 0x4000_0000;
+/// `CHILDAGENTSCHECK_MOVEMENT`, the square of 32 m (line 193).
+const CHILD_CHECK_DISTANCE_SQ: f32 = 1024.0;
+/// `CHILDUPDATES_MOVEMENT`, the square of 10 m (line 192).
+const CHILD_UPDATE_DISTANCE_SQ: f32 = 100.0;
+/// View and draw changes use a strict 32 m threshold (lines 4757 and 4790).
+const CHILD_RANGE_CHANGE: f32 = 32.0;
+/// `AvatarAppearance` height when the viewer has not stored one.
+const CHILD_DEFAULT_HEIGHT: f32 = 1.9;
+/// Shipped `MinRegionViewDistance` / `MaxRegionViewDistance` until the
+/// region installs its own limits.
+const CHILD_VIEW_MIN: f32 = 96.0;
+const CHILD_VIEW_MAX: f32 = 255.0;
+
+/// Which neighbour pass the region task should run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildPass {
+    /// `EnableChildAgents`: diff the visible set.
+    Enable,
+    /// `SendOutChildAgentUpdates`: `AgentPosition` for children already open.
+    Position,
+}
+
+/// One child pass. The scene thread builds it and does not wait for HTTP.
+#[derive(Clone, Debug)]
+pub struct ChildNotice {
+    pub agent: Uuid,
+    pub pass: ChildPass,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub camera: [f32; 3],
+    pub draw_distance: f32,
+    pub height: f32,
+    pub god: bool,
+    /// When set, the region answers with [`TerrainFrame::settle_child`].
+    /// An arrival sample does not settle, so it cannot clear a later pass.
+    pub settle: bool,
+    /// The pass this notice belongs to. A settle for another pass is ignored,
+    /// which keeps the arrival stamp if an older pass finishes afterwards.
+    pub epoch: u64,
+}
+
+/// What the child half of `CheckForSignificantMovement` would do now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildDue {
+    None,
+    Enable,
+    Position,
+}
+
+/// Positions and ranges a settle can restore when the pass did not commit.
+#[derive(Clone, Copy, Debug)]
+struct ChildSnap {
+    update_position: [f32; 3],
+    check_position: [f32; 3],
+    draw: f32,
+    view: f32,
+    god: bool,
+}
+
+/// The sample `due` compares with the gate. God is false on the frame;
+/// the comparison still sees a change when a test supplies one.
+struct ChildSample {
+    now_ms: i64,
+    child: bool,
+    position: [f32; 3],
+    draw: f32,
+    view: f32,
+    god: bool,
+}
+
+#[derive(Debug)]
+struct ChildGate {
+    last_ms: i64,
+    update_position: [f32; 3],
+    check_position: [f32; 3],
+    last_draw: f32,
+    last_view: f32,
+    last_god: bool,
+    busy: bool,
+    armed: bool,
+    known_other: bool,
+    arrival_pending: bool,
+    epoch: u64,
+    inflight: u64,
+    saved: Option<ChildSnap>,
+}
+
+impl Default for ChildGate {
+    fn default() -> Self {
+        Self {
+            last_ms: 0,
+            update_position: [0.0, 0.0, 0.0],
+            check_position: [0.0, 0.0, 0.0],
+            last_draw: 0.0,
+            last_view: 0.0,
+            last_god: false,
+            busy: false,
+            armed: false,
+            known_other: false,
+            arrival_pending: false,
+            epoch: 0,
+            inflight: 0,
+            saved: None,
+        }
+    }
+}
+
+/// The region task's sender and the view-distance clamp, shared with the
+/// scene thread. The scene thread only `try_lock`s the sender.
+struct ChildWatch {
+    sender: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<ChildNotice>>>,
+    view_min: AtomicU32,
+    view_max: AtomicU32,
+}
+
+impl ChildWatch {
+    fn new() -> Self {
+        Self {
+            sender: std::sync::Mutex::new(None),
+            view_min: AtomicU32::new(CHILD_VIEW_MIN.to_bits()),
+            view_max: AtomicU32::new(CHILD_VIEW_MAX.to_bits()),
+        }
+    }
+
+    fn limits(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.view_min.load(Ordering::Relaxed)),
+            f32::from_bits(self.view_max.load(Ordering::Relaxed)),
+        )
+    }
 }
 
 /// Where the departing avatar is, for a source hop: `ScenePresence.Flying`
@@ -249,6 +393,17 @@ enum Request {
         agent: Uuid,
         reply: oneshot::Sender<Option<Departure>>,
     },
+    /// The region finished one settle-bearing child pass.
+    ChildSettled {
+        agent: Uuid,
+        epoch: u64,
+        committed: bool,
+    },
+    /// The last enable saw at least one neighbour other than this region.
+    ChildKnown {
+        agent: Uuid,
+        others: bool,
+    },
     Wake,
     Stop,
 }
@@ -277,6 +432,7 @@ enum Inbound {
 struct Avatar {
     pose: Presence,
     body: Body,
+    gate: ChildGate,
 }
 
 /// An attached viewer, the terse state of its avatar, and its minimap state.
@@ -294,6 +450,7 @@ struct Scene {
     viewers: HashMap<Uuid, Viewer>,
     board: AvatarBoard,
     local_ids: Arc<LocalIds>,
+    watch: Arc<ChildWatch>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -309,6 +466,7 @@ pub struct TerrainFrame {
     objects: Arc<StoredScene>,
     local_ids: Arc<LocalIds>,
     board: AvatarBoard,
+    watch: Arc<ChildWatch>,
 }
 
 impl TerrainFrame {
@@ -377,11 +535,13 @@ impl TerrainFrame {
             collidable_prims,
             || local_ids.allocate(),
         ));
+        let watch = Arc::new(ChildWatch::new());
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),
             board: board.clone(),
             local_ids: Arc::clone(&local_ids),
+            watch: Arc::clone(&watch),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -400,7 +560,44 @@ impl TerrainFrame {
             objects,
             local_ids,
             board,
+            watch,
         })
+    }
+
+    /// Where child notices go. The scene thread never waits on this sender.
+    pub fn watch_children(&self, tx: tokio::sync::mpsc::Sender<ChildNotice>) {
+        let mut slot = self
+            .watch
+            .sender
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *slot = Some(tx);
+    }
+
+    /// The region's `MinRegionViewDistance` and `MaxRegionViewDistance`.
+    pub fn set_view_limits(&self, min: f32, max: f32) {
+        self.watch.view_min.store(min.to_bits(), Ordering::Relaxed);
+        self.watch.view_max.store(max.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The child pass finished. A pass that did not commit restores the
+    /// ranges it had snapshotted. An arrival sample does not call this.
+    pub fn settle_child(
+        &self,
+        agent: Uuid,
+        epoch: u64,
+        committed: bool,
+    ) -> Result<(), TerrainError> {
+        self.request(Request::ChildSettled {
+            agent,
+            epoch,
+            committed,
+        })
+    }
+
+    /// `KnownRegionHandles` had a neighbour other than this region.
+    pub fn note_child_neighbours(&self, agent: Uuid, others: bool) -> Result<(), TerrainError> {
+        self.request(Request::ChildKnown { agent, others })
     }
 
     pub fn parcels(&self) -> Option<&crate::parcels::ParcelMap> {
@@ -695,158 +892,183 @@ fn answer(
     layers: &[TerrainLayer],
     frames: u64,
 ) -> bool {
-    let presences = &mut scene.presences;
-    match request {
-        Request::Height { x, y, reply } => {
-            let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
-            let _ = reply.send(height);
-        }
-        Request::Layers { reply } => {
-            let _ = reply.send(layers.to_vec());
-        }
-        Request::Read { agent, reply } => {
-            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
-        }
-        Request::Motion { agent, reply } => {
-            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
-        }
-        Request::Frames { reply } => {
-            let _ = reply.send(frames);
-        }
-        Request::Remove { agent, reply } => {
-            let root = presences
-                .get(&agent)
-                .is_some_and(|avatar| !avatar.body.is_child());
-            if let Some(viewer) = scene.viewers.remove(&agent) {
-                scene.board.remove(viewer.local_id);
-                // `RemoveClient` kills a root on every client.
-                if root {
-                    scene.kill_everywhere(viewer.local_id);
-                }
+    let mut arm_child = None;
+    let running = {
+        let presences = &mut scene.presences;
+        match request {
+            Request::Height { x, y, reply } => {
+                let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
+                let _ = reply.send(height);
             }
-            let presences = &mut scene.presences;
-            let leaving = presences.remove(&agent).map(|avatar| Leaving {
-                position: avatar.pose.position,
-                look_at: look_at(avatar.body.camera_at_axis()),
-            });
-            let _ = reply.send(leaving);
-        }
-        Request::Attach { agent, link, reply } => {
-            let local_id = match scene.viewers.get(&agent) {
-                Some(viewer) => viewer.local_id,
-                None => scene.local_ids.allocate(),
-            };
-            scene.viewers.insert(
+            Request::Layers { reply } => {
+                let _ = reply.send(layers.to_vec());
+            }
+            Request::Read { agent, reply } => {
+                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
+            }
+            Request::Motion { agent, reply } => {
+                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
+            }
+            Request::Frames { reply } => {
+                let _ = reply.send(frames);
+            }
+            Request::Remove { agent, reply } => {
+                let root = presences
+                    .get(&agent)
+                    .is_some_and(|avatar| !avatar.body.is_child());
+                if let Some(viewer) = scene.viewers.remove(&agent) {
+                    scene.board.remove(viewer.local_id);
+                    // `RemoveClient` kills a root on every client.
+                    if root {
+                        scene.kill_everywhere(viewer.local_id);
+                    }
+                }
+                let presences = &mut scene.presences;
+                let leaving = presences.remove(&agent).map(|avatar| Leaving {
+                    position: avatar.pose.position,
+                    look_at: look_at(avatar.body.camera_at_axis()),
+                });
+                let _ = reply.send(leaving);
+            }
+            Request::Attach { agent, link, reply } => {
+                let local_id = match scene.viewers.get(&agent) {
+                    Some(viewer) => viewer.local_id,
+                    None => scene.local_ids.allocate(),
+                };
+                scene.viewers.insert(
+                    agent,
+                    Viewer {
+                        local_id,
+                        link,
+                        initial: InitialData::default(),
+                        last: LastSent::default(),
+                        coarse: CoarseState::default(),
+                    },
+                );
+                let _ = reply.send(local_id);
+            }
+            Request::Pose { agent, pose, reply } => {
+                let mut avatar = Avatar::new(pose);
+                // Chat can read this pose immediately. The actor waits until
+                // the arrival packet samples it, or a tick would change the
+                // position that packet and GridUser still report.
+                avatar.body.set_actor(false);
+                let pose = avatar.pose;
+                presences.insert(agent, avatar);
+                let _ = reply.send(pose);
+            }
+            Request::Arrive {
                 agent,
-                Viewer {
-                    local_id,
-                    link,
-                    initial: InitialData::default(),
-                    last: LastSent::default(),
-                    coarse: CoarseState::default(),
-                },
-            );
-            let _ = reply.send(local_id);
-        }
-        Request::Pose { agent, pose, reply } => {
-            let mut avatar = Avatar::new(pose);
-            // Chat can read this pose immediately. The actor waits until
-            // the arrival packet samples it, or a tick would change the
-            // position that packet and GridUser still report.
-            avatar.body.set_actor(false);
-            let pose = avatar.pose;
-            presences.insert(agent, avatar);
-            let _ = reply.send(pose);
-        }
-        Request::Arrive {
-            agent,
-            pose,
-            look_at,
-            reply,
-        } => {
-            let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
-            arrive_at_rest(avatar);
-            // `CompleteMovement` turns a non-crossing arrival to the look it
-            // sends in `AgentMovementComplete` (`RotateToLookAt`).
-            avatar
-                .body
-                .turn_to(look_rotation(look_at), &mut avatar.pose);
-            let pose = avatar.pose;
-            scene.announce(agent);
-            let _ = reply.send(pose);
-        }
-        Request::MovedAway { agent, away, reply } => {
-            scene.moved_away(agent, &away);
-            let _ = reply.send(());
-        }
-        Request::Places { agents, reply } => {
-            let mut found = HashMap::new();
-            for agent in agents {
-                if let Some(avatar) = presences.get(&agent) {
-                    found.insert(agent, avatar.pose.position);
-                }
-            }
-            let _ = reply.send(found);
-        }
-        Request::Teleport {
-            agent,
-            request,
-            reply,
-        } => {
-            let position = place_teleport(map, &request);
-            let look_at = flatten_look(request.look_at);
-            let avatar = presences
-                .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(position)));
-            let mut flags = request.flags;
-            if avatar.body.flying() {
-                flags |= TELEPORT_IS_FLYING;
-            }
-            avatar.pose.position = position;
-            avatar
-                .body
-                .turn_to(look_rotation(look_at), &mut avatar.pose);
-            avatar.pose.velocity = [0.0, 0.0, 0.0];
-            avatar.body.halt_command();
-            // C# sends a terse update here without the thresholds
-            // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
-            // frame's test, so a landing under 0.05 m away sends nothing.
-            let _ = reply.send(TeleportStored {
-                pose: avatar.pose,
+                pose,
                 look_at,
-                flags,
-            });
-        }
-        Request::Complete { agent, hop, reply } => {
-            let avatar = presences
-                .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(hop.position)));
-            avatar.pose.position = hop.position;
-            avatar.body.apply_return(&hop.data, &mut avatar.pose);
-            // CompleteMovement's RotateToLookAt replaces the copied body rotation.
-            avatar
-                .body
-                .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
-            hold_for_arrival(avatar);
-            let _ = reply.send(avatar.pose);
-        }
-        Request::Departure { agent, reply } => {
-            let departure = presences.get(&agent).map(|avatar| {
-                let view = avatar.body.view();
-                Departure {
-                    always_run: view.always_run,
-                    flying: avatar.body.flying(),
-                    camera_center: view.camera_center,
-                    head_rotation: view.head_rotation,
-                    body_rotation: view.body_rotation,
+                reply,
+            } => {
+                let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
+                arrive_at_rest(avatar);
+                // `CompleteMovement` turns a non-crossing arrival to the look it
+                // sends in `AgentMovementComplete` (`RotateToLookAt`).
+                avatar
+                    .body
+                    .turn_to(look_rotation(look_at), &mut avatar.pose);
+                let pose = avatar.pose;
+                scene.announce(agent);
+                // CompleteMovement's child pass (ScenePresence.cs 4395–4407).
+                arm_child = Some(agent);
+                let _ = reply.send(pose);
+            }
+            Request::MovedAway { agent, away, reply } => {
+                scene.moved_away(agent, &away);
+                let _ = reply.send(());
+            }
+            Request::Places { agents, reply } => {
+                let mut found = HashMap::new();
+                for agent in agents {
+                    if let Some(avatar) = presences.get(&agent) {
+                        found.insert(agent, avatar.pose.position);
+                    }
                 }
-            });
-            let _ = reply.send(departure);
+                let _ = reply.send(found);
+            }
+            Request::Teleport {
+                agent,
+                request,
+                reply,
+            } => {
+                let position = place_teleport(map, &request);
+                let look_at = flatten_look(request.look_at);
+                let avatar = presences
+                    .entry(agent)
+                    .or_insert_with(|| Avatar::new(fresh(position)));
+                let mut flags = request.flags;
+                if avatar.body.flying() {
+                    flags |= TELEPORT_IS_FLYING;
+                }
+                avatar.pose.position = position;
+                avatar
+                    .body
+                    .turn_to(look_rotation(look_at), &mut avatar.pose);
+                avatar.pose.velocity = [0.0, 0.0, 0.0];
+                avatar.body.halt_command();
+                // C# sends a terse update here without the thresholds
+                // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
+                // frame's test, so a landing under 0.05 m away sends nothing.
+                let _ = reply.send(TeleportStored {
+                    pose: avatar.pose,
+                    look_at,
+                    flags,
+                });
+            }
+            Request::Complete { agent, hop, reply } => {
+                let avatar = presences
+                    .entry(agent)
+                    .or_insert_with(|| Avatar::new(fresh(hop.position)));
+                avatar.pose.position = hop.position;
+                avatar.body.apply_return(&hop.data, &mut avatar.pose);
+                // CompleteMovement's RotateToLookAt replaces the copied body rotation.
+                avatar
+                    .body
+                    .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
+                hold_for_arrival(avatar);
+                // The cross arrival's child pass (ScenePresence.cs 2573–2584).
+                arm_child = Some(agent);
+                let _ = reply.send(avatar.pose);
+            }
+            Request::ChildSettled {
+                agent,
+                epoch,
+                committed,
+            } => {
+                if let Some(avatar) = presences.get_mut(&agent) {
+                    settle_gate(&mut avatar.gate, epoch, committed, scene_now_ms());
+                }
+            }
+            Request::ChildKnown { agent, others } => {
+                if let Some(avatar) = presences.get_mut(&agent) {
+                    avatar.gate.known_other = others;
+                }
+            }
+            Request::Departure { agent, reply } => {
+                let departure = presences.get(&agent).map(|avatar| {
+                    let view = avatar.body.view();
+                    Departure {
+                        always_run: view.always_run,
+                        flying: avatar.body.flying(),
+                        camera_center: view.camera_center,
+                        head_rotation: view.head_rotation,
+                        body_rotation: view.body_rotation,
+                    }
+                });
+                let _ = reply.send(departure);
+            }
+            Request::Wake => {}
+            Request::Stop => return false,
         }
-        Request::Wake => {}
-        Request::Stop => return false,
+        true
+    };
+    if let Some(agent) = arm_child {
+        schedule_arrival(scene, agent, scene_now_ms());
     }
-    true
+    running
 }
 
 impl Avatar {
@@ -854,6 +1076,7 @@ impl Avatar {
         Self {
             body: Body::new(&pose),
             pose,
+            gate: ChildGate::default(),
         }
     }
 }
@@ -943,6 +1166,282 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
     [0.0, 0.0, sine, half.cos()]
 }
 
+fn scene_now_ms() -> i64 {
+    i64::try_from(clock_ms(Instant::now())).unwrap_or(i64::MAX)
+}
+
+/// `ScenePresence.RegionViewDistance`: draw + 64, clamped to the region limits.
+/// A zero result is the child half's early return.
+fn region_view(draw: f32, min: f32, max: f32) -> f32 {
+    let (low, high) = if min <= max { (min, max) } else { (max, min) };
+    if !low.is_finite() || !high.is_finite() {
+        return 0.0;
+    }
+    (draw + 64.0).clamp(low, high)
+}
+
+fn length_sq(left: [f32; 3], right: [f32; 3]) -> f32 {
+    let dx = left[0] - right[0];
+    let dy = left[1] - right[1];
+    let dz = left[2] - right[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+/// `Util.EnvironmentTickCountSubtract` (`Util.cs` 3620). TickCount is masked
+/// to 30 bits. A negative difference adds the modulus, so arrival's
+/// `now + 10000` looks older than the 2 s gate and does not hold it.
+fn child_elapsed_ms(now_ms: i64, last_ms: i64) -> i64 {
+    let diff = now_ms.wrapping_sub(last_ms);
+    if diff >= 0 {
+        diff
+    } else {
+        diff.saturating_add(CHILD_TICK_MODULUS)
+    }
+}
+
+/// The child half of `CheckForSignificantMovement` (lines 4750–4828).
+/// The 16 m trigger is not here: a move whose square is 256 enables nothing
+/// and, once a neighbour is known, sends `AgentPosition`.
+fn due(gate: &ChildGate, sample: &ChildSample) -> ChildDue {
+    if sample.child || !gate.armed || gate.busy || sample.view == 0.0 {
+        return ChildDue::None;
+    }
+    if child_elapsed_ms(sample.now_ms, gate.last_ms) < CHILD_UPDATES_MS {
+        return ChildDue::None;
+    }
+    let view_changed = (sample.view - gate.last_view).abs() > CHILD_RANGE_CHANGE;
+    let dx = sample.position[0] - gate.check_position[0];
+    let dy = sample.position[1] - gate.check_position[1];
+    if view_changed || dx * dx + dy * dy > CHILD_CHECK_DISTANCE_SQ {
+        return ChildDue::Enable;
+    }
+    if !gate.known_other {
+        return ChildDue::None;
+    }
+    let draw_changed = (sample.draw - gate.last_draw).abs() > CHILD_RANGE_CHANGE;
+    let moved = length_sq(sample.position, gate.update_position) > CHILD_UPDATE_DISTANCE_SQ;
+    if sample.god != gate.last_god || draw_changed || moved {
+        ChildDue::Position
+    } else {
+        ChildDue::None
+    }
+}
+
+fn child_notice(
+    presences: &HashMap<Uuid, Avatar>,
+    viewers: &HashMap<Uuid, Viewer>,
+    agent: Uuid,
+    pass: ChildPass,
+    settle: bool,
+    epoch: u64,
+) -> Option<ChildNotice> {
+    let avatar = presences.get(&agent)?;
+    let height = viewers
+        .get(&agent)
+        .map(|viewer| viewer.link.look.height)
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(CHILD_DEFAULT_HEIGHT);
+    Some(ChildNotice {
+        agent,
+        pass,
+        position: avatar.pose.position,
+        velocity: avatar.pose.velocity,
+        camera: avatar.body.view().camera_center,
+        draw_distance: avatar.pose.draw_distance,
+        height,
+        god: false,
+        settle,
+        epoch,
+    })
+}
+
+fn offer_child(watch: &ChildWatch, notice: ChildNotice) -> bool {
+    let slot = match watch.sender.try_lock() {
+        Ok(slot) => slot,
+        Err(std::sync::TryLockError::Poisoned(poison)) => poison.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    let Some(sender) = slot.as_ref() else {
+        return false;
+    };
+    sender.try_send(notice).is_ok()
+}
+
+fn snap_of(gate: &ChildGate) -> ChildSnap {
+    ChildSnap {
+        update_position: gate.update_position,
+        check_position: gate.check_position,
+        draw: gate.last_draw,
+        view: gate.last_view,
+        god: gate.last_god,
+    }
+}
+
+fn restore_snap(gate: &mut ChildGate, saved: ChildSnap) {
+    gate.update_position = saved.update_position;
+    gate.check_position = saved.check_position;
+    gate.last_draw = saved.draw;
+    gate.last_view = saved.view;
+    gate.last_god = saved.god;
+}
+
+fn stamp_arrival(gate: &mut ChildGate, pose: &Presence, view: f32, now_ms: i64) {
+    gate.last_ms = now_ms.saturating_add(CHILD_ARRIVAL_STAMP_MS);
+    gate.update_position = pose.position;
+    gate.check_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_view = view;
+    gate.last_god = false;
+    gate.busy = false;
+    gate.armed = true;
+    gate.arrival_pending = false;
+    gate.saved = None;
+    // Drop any pass that has not settled yet. Its later settle must not
+    // replace this stamp.
+    gate.epoch = gate.epoch.wrapping_add(1);
+    gate.inflight = 0;
+}
+
+fn advance_enable(gate: &mut ChildGate, pose: &Presence, view: f32, epoch: u64) {
+    gate.saved = Some(snap_of(gate));
+    gate.check_position = pose.position;
+    gate.update_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_view = view;
+    gate.last_god = false;
+    gate.busy = true;
+    gate.epoch = epoch;
+    gate.inflight = epoch;
+}
+
+fn advance_position(gate: &mut ChildGate, pose: &Presence, epoch: u64) {
+    gate.saved = Some(snap_of(gate));
+    gate.update_position = pose.position;
+    gate.last_draw = pose.draw_distance;
+    gate.last_god = false;
+    gate.busy = true;
+    gate.epoch = epoch;
+    gate.inflight = epoch;
+}
+
+fn rollback_gate(gate: &mut ChildGate) {
+    gate.busy = false;
+    gate.inflight = 0;
+    if let Some(saved) = gate.saved.take() {
+        restore_snap(gate, saved);
+    }
+}
+
+fn settle_gate(gate: &mut ChildGate, epoch: u64, committed: bool, now_ms: i64) {
+    if epoch == 0 || gate.inflight != epoch {
+        return;
+    }
+    gate.busy = false;
+    gate.inflight = 0;
+    gate.last_ms = now_ms;
+    if committed {
+        gate.saved = None;
+    } else if let Some(saved) = gate.saved.take() {
+        restore_snap(gate, saved);
+    }
+}
+
+/// Arrival's `EnableChildAgents`. A full channel leaves the pass pending
+/// and does not stamp the arrival time.
+fn schedule_arrival(scene: &mut Scene, agent: Uuid, now_ms: i64) {
+    let away = scene
+        .presences
+        .get(&agent)
+        .is_none_or(|avatar| avatar.body.child_agent());
+    if away {
+        return;
+    }
+    let (min, max) = scene.watch.limits();
+    let Some(notice) = child_notice(
+        &scene.presences,
+        &scene.viewers,
+        agent,
+        ChildPass::Enable,
+        false,
+        0,
+    ) else {
+        return;
+    };
+    if offer_child(&scene.watch, notice) {
+        if let Some(avatar) = scene.presences.get_mut(&agent) {
+            let view = region_view(avatar.pose.draw_distance, min, max);
+            stamp_arrival(&mut avatar.gate, &avatar.pose, view, now_ms);
+        }
+    } else if let Some(avatar) = scene.presences.get_mut(&agent) {
+        avatar.gate.arrival_pending = true;
+    }
+}
+
+fn consider_children(scene: &mut Scene, now_ms: i64) {
+    let agents: Vec<Uuid> = scene.presences.keys().copied().collect();
+    for agent in agents {
+        consider_child(scene, agent, now_ms);
+    }
+}
+
+fn consider_child(scene: &mut Scene, agent: Uuid, now_ms: i64) {
+    let away = scene
+        .presences
+        .get(&agent)
+        .is_none_or(|avatar| avatar.body.child_agent());
+    if away {
+        if let Some(avatar) = scene.presences.get_mut(&agent) {
+            avatar.gate.arrival_pending = false;
+        }
+        return;
+    }
+    if scene
+        .presences
+        .get(&agent)
+        .is_some_and(|avatar| avatar.gate.arrival_pending)
+    {
+        schedule_arrival(scene, agent, now_ms);
+        return;
+    }
+    let (min, max) = scene.watch.limits();
+    let Some(avatar) = scene.presences.get(&agent) else {
+        return;
+    };
+    let view = region_view(avatar.pose.draw_distance, min, max);
+    let sample = ChildSample {
+        now_ms,
+        child: false,
+        position: avatar.pose.position,
+        draw: avatar.pose.draw_distance,
+        view,
+        god: false,
+    };
+    let decision = due(&avatar.gate, &sample);
+    let pass = match decision {
+        ChildDue::None => return,
+        ChildDue::Enable => ChildPass::Enable,
+        ChildDue::Position => ChildPass::Position,
+    };
+    let epoch = avatar.gate.epoch.wrapping_add(1);
+    let Some(notice) = child_notice(&scene.presences, &scene.viewers, agent, pass, true, epoch)
+    else {
+        return;
+    };
+    let Some(avatar) = scene.presences.get_mut(&agent) else {
+        return;
+    };
+    match decision {
+        ChildDue::Enable => advance_enable(&mut avatar.gate, &avatar.pose, view, epoch),
+        ChildDue::Position => advance_position(&mut avatar.gate, &avatar.pose, epoch),
+        ChildDue::None => return,
+    }
+    if !offer_child(&scene.watch, notice)
+        && let Some(avatar) = scene.presences.get_mut(&agent)
+    {
+        rollback_gate(&mut avatar.gate);
+    }
+}
+
 fn run(
     map: Option<Heightmap>,
     mut scene: Scene,
@@ -983,6 +1482,7 @@ fn run(
 /// the frame, and send the minimap dots on every 50th. Returns the count.
 fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     step_avatars(&mut scene.presences, map);
+    consider_children(scene, scene_now_ms());
     update_presences(scene);
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
@@ -1902,6 +2402,7 @@ mod tests {
             viewers: HashMap::new(),
             board: AvatarBoard::default(),
             local_ids: Arc::default(),
+            watch: Arc::new(ChildWatch::new()),
         }
     }
 
@@ -2675,5 +3176,140 @@ mod tests {
         assert_eq!(stopped.target_velocity, [0.0, 0.0, 0.0]);
         assert!(stopped.always_run);
         assert_eq!(read(&frame, agent).velocity, [0.0, 0.0, 0.0]);
+    }
+
+    fn armed_gate(position: [f32; 3], draw: f32, view: f32) -> ChildGate {
+        ChildGate {
+            armed: true,
+            update_position: position,
+            check_position: position,
+            last_draw: draw,
+            last_view: view,
+            last_ms: 0,
+            ..ChildGate::default()
+        }
+    }
+
+    fn sample_at(now_ms: i64, position: [f32; 3], draw: f32, view: f32, god: bool) -> ChildSample {
+        ChildSample {
+            now_ms,
+            child: false,
+            position,
+            draw,
+            view,
+            god,
+        }
+    }
+
+    #[test]
+    fn child_gate_follows_the_pin8_child_half() {
+        let here = [128.0, 128.0, 25.0];
+        let mut gate = ChildGate::default();
+        let sample = sample_at(5_000, here, 255.0, 255.0, false);
+        assert_eq!(due(&gate, &sample), ChildDue::None);
+        gate = armed_gate(here, 255.0, 255.0);
+        gate.busy = true;
+        assert_eq!(due(&gate, &sample), ChildDue::None);
+        gate.busy = false;
+        let mut hidden = sample_at(5_000, here, 255.0, 0.0, false);
+        assert_eq!(due(&gate, &hidden), ChildDue::None);
+        hidden.view = 255.0;
+        hidden.child = true;
+        assert_eq!(due(&gate, &hidden), ChildDue::None);
+        // Arrival stores now+10s. EnvironmentTickCountSubtract wraps that
+        // future value, so a 16 m move still sends AgentPosition. A stamp
+        // in the past holds until 2000 ms have passed.
+        gate.last_ms = 12_000;
+        gate.known_other = true;
+        let early = sample_at(5_000, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &early), ChildDue::Position);
+        gate.known_other = false;
+        assert_eq!(due(&gate, &early), ChildDue::None);
+        gate.last_ms = 4_000;
+        gate.known_other = true;
+        let held = sample_at(5_999, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &held), ChildDue::None);
+        gate.known_other = false;
+        // Equality does not trip either distance. A 16 m move is the position
+        // arm only, and only once a neighbour is known.
+        gate.last_ms = 0;
+        let exact = sample_at(
+            5_000,
+            [128.0 + 32.0, 128.0, 25.0],
+            255.0,
+            255.0 + 32.0,
+            false,
+        );
+        assert_eq!(due(&gate, &exact), ChildDue::None);
+        let sixteen = sample_at(5_000, [128.0 + 16.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &sixteen), ChildDue::None);
+        gate.known_other = true;
+        assert_eq!(due(&gate, &sixteen), ChildDue::Position);
+        gate.known_other = false;
+        let enable = sample_at(5_000, [128.0 + 33.0, 128.0, 25.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &enable), ChildDue::Enable);
+        let view = sample_at(5_000, here, 255.0, 255.0 + 32.1, false);
+        assert_eq!(due(&gate, &view), ChildDue::Enable);
+        gate.known_other = true;
+        let draw = sample_at(5_000, here, 255.0 + 32.1, 255.0, false);
+        assert_eq!(due(&gate, &draw), ChildDue::Position);
+        let god = sample_at(5_000, here, 255.0, 255.0, true);
+        assert_eq!(due(&gate, &god), ChildDue::Position);
+        let lifted = sample_at(5_000, [128.0, 128.0, 25.0 + 11.0], 255.0, 255.0, false);
+        assert_eq!(due(&gate, &lifted), ChildDue::Position);
+        gate.known_other = false;
+        assert_eq!(due(&gate, &draw), ChildDue::None);
+        assert_eq!(due(&gate, &god), ChildDue::None);
+        assert_eq!(due(&gate, &lifted), ChildDue::None);
+    }
+
+    #[test]
+    fn arrival_offers_enable_without_blocking_when_the_channel_is_full() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(ChildNotice {
+            agent: Uuid::nil(),
+            pass: ChildPass::Enable,
+            position: [0.0, 0.0, 0.0],
+            velocity: [0.0, 0.0, 0.0],
+            camera: [0.0, 0.0, 0.0],
+            draw_distance: 0.0,
+            height: 1.9,
+            god: false,
+            settle: false,
+            epoch: 0,
+        })
+        .unwrap();
+        frame.watch_children(tx);
+        let agent = Uuid::from_u128(79);
+        let started = std::time::Instant::now();
+        let stored = frame
+            .arrive(agent, pose_at([20.0, 30.0, 40.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(stored.position, [20.0, 30.0, 40.0]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let notice = loop {
+            if let Ok(notice) = rx.try_recv()
+                && notice.agent == agent
+            {
+                break notice;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "arrival enable was not retried"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(notice.pass, ChildPass::Enable);
+        assert!(!notice.settle);
+        // The scene keeps stepping while the channel is full, so this notice
+        // carries the pose at the retry. The arrival answer above is the login
+        // position. Nothing walks, so the horizontal position stays.
+        assert_eq!(notice.position[0], 20.0);
+        assert_eq!(notice.position[1], 30.0);
+        assert!(notice.position[2].is_finite());
     }
 }

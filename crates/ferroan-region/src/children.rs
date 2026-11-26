@@ -920,6 +920,80 @@ impl ChildBook {
         }
         known
     }
+
+    /// Current-generation destinations. `open` is the phase the position
+    /// update may use. A pending claim is included so a later pass can tell
+    /// it from a neighbour that was never claimed.
+    pub fn tracked(&self, agent: Uuid) -> Vec<TrackedChild> {
+        let books = self.lock();
+        let Some(book) = books.agents.get(&agent) else {
+            return Vec::new();
+        };
+        let Some(generation) = book.generations.get(&book.current) else {
+            return Vec::new();
+        };
+        generation
+            .by_region
+            .values()
+            .map(|destination| TrackedChild {
+                end: destination.end.clone(),
+                promoted: destination.promoted,
+                open: destination.phase == Phase::Open,
+            })
+            .collect()
+    }
+
+    /// The neighbour left the root's view. An open child closes once, with
+    /// the session that claimed it. A pending admission closes when its POST
+    /// succeeds and is not closed twice. A promoted destination is the remote
+    /// root and stays.
+    pub fn leave_view(&self, agent: Uuid, region: Uuid) -> Admission {
+        let mut books = self.lock();
+        let Some(generation) = books.agents.get(&agent).map(|book| book.current) else {
+            return Admission::Quiet;
+        };
+        let Some((promoted, phase, end)) = books
+            .agents
+            .get(&agent)
+            .and_then(|book| book.generations.get(&generation))
+            .and_then(|generation_book| generation_book.by_region.get(&region))
+            .map(|destination| {
+                (
+                    destination.promoted,
+                    destination.phase,
+                    destination.end.clone(),
+                )
+            })
+        else {
+            return Admission::Quiet;
+        };
+        if promoted {
+            return Admission::Quiet;
+        }
+        match phase {
+            Phase::Open => {
+                let close = close_for(&books, agent, generation, end);
+                remove_destination(&mut books, agent, generation, region);
+                close
+            }
+            Phase::Pending | Phase::CloseWhenAccepted => {
+                if let Some(destination) = generation_mut(&mut books, agent, generation)
+                    .and_then(|generation_book| generation_book.by_region.get_mut(&region))
+                {
+                    destination.phase = Phase::CloseWhenAccepted;
+                }
+                Admission::Quiet
+            }
+        }
+    }
+}
+
+/// One destination of the current generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedChild {
+    pub end: RegionEnd,
+    pub promoted: bool,
+    pub open: bool,
 }
 
 /// The claiming generation no longer holds the destination because a
@@ -2101,6 +2175,49 @@ mod tests {
             stop: CreateStop::Answered,
         };
         assert_eq!(PostReport::from_create(&accepted), PostReport::Accepted);
+    }
+
+    #[test]
+    fn leave_view_closes_an_open_child_and_holds_a_pending_one() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(1)) else {
+            panic!("open claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, Uuid::from_u128(1)),
+            Admission::Announce { .. }
+        ));
+        let Claim::New { .. } = book.claim(agent, generation, end(2)) else {
+            panic!("pending claim");
+        };
+        book.promote(agent, &end(3), "seed");
+        assert_eq!(
+            book.leave_view(agent, Uuid::from_u128(1)),
+            Admission::Close {
+                end: end(1),
+                session: session(),
+            }
+        );
+        assert!(book.seed(agent, Uuid::from_u128(1)).is_none());
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(2)), Admission::Quiet);
+        assert_eq!(
+            book.accepted(agent, generation, Uuid::from_u128(2)),
+            Admission::Close {
+                end: end(2),
+                session: session(),
+            }
+        );
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(3)), Admission::Quiet);
+        assert_eq!(
+            book.seed(agent, Uuid::from_u128(3)).as_deref(),
+            Some("seed")
+        );
+        let tracked = book.tracked(agent);
+        assert_eq!(tracked.len(), 1);
+        assert!(tracked[0].promoted);
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(9)), Admission::Quiet);
     }
 
     fn dummy_view(agent: Uuid) -> NeighbourView {

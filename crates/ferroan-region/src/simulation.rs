@@ -91,7 +91,9 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
-use crate::simulation_client::{Appearance, RegionEnd, TransferAnimations, appearance_from_json};
+use crate::simulation_client::{
+    Appearance, ChildIdentity, RegionEnd, TransferAnimations, appearance_from_json,
+};
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -262,6 +264,10 @@ pub struct SimulationState {
     login_connect_wait: Duration,
     /// Child destinations and seeds for each root circuit generation.
     children: Arc<crate::children::ChildBook>,
+    /// Root identities the child driver copies onto neighbour circuits.
+    /// A child acceptance does not replace one. The matching generation's
+    /// lease removes it.
+    roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
 }
 
 struct ActiveSession {
@@ -473,6 +479,7 @@ struct SessionLease {
     departed: Arc<AtomicBool>,
     rooted_when_replaced: Arc<AtomicBool>,
     children: Arc<crate::children::ChildBook>,
+    roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
 }
 
 impl Drop for SessionLease {
@@ -494,6 +501,17 @@ impl Drop for SessionLease {
                 session.slot.close();
             }
             publish_agents(&sessions, &self.meters);
+        }
+        drop(sessions);
+        let mut roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if roots
+            .get(&self.agent_id)
+            .is_some_and(|identity| identity.generation == self.generation)
+        {
+            roots.remove(&self.agent_id);
         }
     }
 }
@@ -533,6 +551,7 @@ impl SimulationState {
             releases: Arc::new(Mutex::new(HashMap::new())),
             objects: Arc::new(Vec::new()),
             children: Arc::new(crate::children::ChildBook::new()),
+            roots: Arc::new(Mutex::new(HashMap::new())),
             scene: None,
             circuit: Arc::new(OnceLock::new()),
             login_connect_wait: config.login_connect_wait,
@@ -543,6 +562,55 @@ impl SimulationState {
     /// A second call keeps the first listener.
     pub fn bind_circuit(&self, circuit: CircuitServer) {
         let _ = self.circuit.set(circuit);
+    }
+
+    /// Capabilities for the root whose child events this process queues.
+    pub fn caps(&self) -> CapsRegistry {
+        self.caps.clone()
+    }
+
+    /// The child book admission and the frame driver share.
+    pub(crate) fn child_book(&self) -> Arc<crate::children::ChildBook> {
+        Arc::clone(&self.children)
+    }
+
+    /// The root identity stored at acceptance, if this generation is still it.
+    pub fn child_identity(&self, agent: Uuid) -> Option<ChildIdentity> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&agent)
+            .cloned()
+    }
+
+    fn remember_root(&self, generation: Uuid, fields: &AgentFields) {
+        let height = fields
+            .appearance
+            .as_ref()
+            .map(|appearance| appearance.height)
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(1.9);
+        let identity = ChildIdentity {
+            agent_id: fields.agent_id,
+            session_id: fields.session_id,
+            secure_session_id: fields.secure_session_id,
+            service_session_id: fields.service_session_id.clone(),
+            circuit_code: fields.circuit_code,
+            first_name: fields.first_name.clone(),
+            last_name: fields.last_name.clone(),
+            client_ip: fields.client_ip.clone(),
+            viewer: fields.viewer.clone(),
+            channel: fields.channel.clone(),
+            mac: fields.mac.clone(),
+            id0: fields.id0.clone(),
+            service_urls: fields.service_urls.clone(),
+            generation,
+            height,
+        };
+        self.roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(fields.agent_id, identity);
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -779,6 +847,9 @@ impl SimulationState {
             },
         );
         publish_agents(&sessions, &self.meters);
+        if !fields.child {
+            self.remember_root(generation, &fields);
+        }
         let lease = SessionLease {
             secrets,
             sessions: self.sessions.clone(),
@@ -791,6 +862,7 @@ impl SimulationState {
             departed,
             rooted_when_replaced,
             children: Arc::clone(&self.children),
+            roots: Arc::clone(&self.roots),
         };
         let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
