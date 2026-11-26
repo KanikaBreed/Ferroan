@@ -1413,6 +1413,58 @@ mod tests {
         assert_eq!(animator.sequence.next(), 503);
     }
 
+    /// `region.agent-animations`: 254 others fit, and the 255th add is
+    /// dropped with the set unchanged.
+    #[test]
+    fn an_add_past_the_animation_bound_is_dropped() {
+        let mut set = AnimationSet::default();
+        for n in 0..MAX_OTHER_ANIMATIONS {
+            assert!(set.add(Uuid::from_u128(1_000 + n as u128), 2, Uuid::nil()));
+        }
+        assert_eq!(set.others().len(), 254);
+        let past = Uuid::from_u128(9_999);
+        assert!(!set.add(past, 2, Uuid::nil()));
+        assert!(!set.has(past));
+        assert_eq!(set.others().len(), 254);
+        // The default can still change.
+        assert!(set.set_default(walk_id(), 3, AGENT));
+    }
+
+    /// A returning `UpdateAgent` with 300 others keeps the first 254. The
+    /// sequence seed reads only the kept ones, and the defaults and the
+    /// motion state still apply.
+    #[test]
+    fn copy_from_keeps_at_most_the_animation_bound() {
+        let mut animator = Animator::new(AGENT);
+        animator.sequence = Sequence(10);
+        let animations: Vec<Anim> = (0..300)
+            .map(|n| Anim {
+                animation: Uuid::from_u128(1_000 + n as u128),
+                // Only a dropped entry carries a high number.
+                sequence: if n < 254 { 20 + n } else { 900_000 },
+                object_id: Uuid::nil(),
+            })
+            .collect();
+        let default = Anim {
+            animation: walk_id(),
+            sequence: 15,
+            object_id: Uuid::nil(),
+        };
+        animator.copy_from(&AnimationTransfer {
+            animations: animations.clone(),
+            default_animation: Some(default),
+            animation_state: Some(default),
+            motion_state: MOTION_FLYING,
+        });
+        let set = animator.animations();
+        assert_eq!(set.others(), &animations[..254]);
+        assert_eq!(set.default_animation(), default);
+        assert_eq!(set.implicit_default(), default);
+        assert_eq!(animator.state(), MOTION_FLYING);
+        // The highest kept number is 273: `++nanim` makes 274, the next 275.
+        assert_eq!(animator.sequence.next(), 275);
+    }
+
     #[test]
     fn the_set_adds_removes_and_lists_as_csharp_does() {
         let mut set = AnimationSet::default();

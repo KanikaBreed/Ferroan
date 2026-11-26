@@ -159,8 +159,8 @@ pub struct RegionConfig {
     /// Zero retains the C# legacy behavior of waiting until region shutdown.
     pub login_connect_wait: std::time::Duration,
     /// `[Startup] enableflyslow`: flying with a direction plays `FLYSLOW`.
-    /// Read here so a value other than true or false stops startup; the
-    /// frame reads the same key from the ini `with_object_settings` gets.
+    /// A value other than true or false stops startup. The region passes
+    /// this to the frame (`TerrainFrame::set_fly_slow`) before logins.
     pub fly_slow: bool,
     /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
     pub channel_version: String,

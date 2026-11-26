@@ -194,7 +194,9 @@ fn unpack_anim(value: &Value) -> Option<Anim> {
 
 /// `AgentData.Unpack`'s animator fields: the animations that are maps (D77), each
 /// default when it is a map, and `motion_state` cast to a byte. The region
-/// frame applies them (`CopyFrom`) when the child becomes root.
+/// frame applies them (`CopyFrom`) when the child becomes root. Only the first
+/// `MAX_OTHER_ANIMATIONS` maps are carried: the frame's set keeps no more
+/// (`region.agent-animations`, reported there).
 pub(crate) fn agent_animations(data: &Map<String, Value>) -> AgentAnimations {
     AgentAnimations {
         animations: data
@@ -203,6 +205,7 @@ pub(crate) fn agent_animations(data: &Map<String, Value>) -> AgentAnimations {
             .into_iter()
             .flatten()
             .filter_map(unpack_anim)
+            .take(ferroan_scene::MAX_OTHER_ANIMATIONS)
             .collect(),
         default_animation: data.get("default_animation").and_then(unpack_anim),
         animation_state: data.get("animation_state").and_then(unpack_anim),
@@ -1538,6 +1541,23 @@ mod tests {
         ] {
             assert!(ordinary.get(key).is_none(), "{key}");
         }
+    }
+
+    /// The carried list stops at the frame's bound; a non-map entry does
+    /// not count towards it.
+    #[test]
+    fn agent_data_carries_at_most_the_animation_bound() {
+        let mut animations = vec![json!("not a map")];
+        animations.extend(
+            (0..300u128).map(
+                |n| json!({"animation": Uuid::from_u128(1_000 + n).to_string(), "seq_num": 1}),
+            ),
+        );
+        let data = json!({ "animations": animations });
+        let read = agent_animations(data.as_object().unwrap());
+        assert_eq!(read.animations.len(), ferroan_scene::MAX_OTHER_ANIMATIONS);
+        assert_eq!(read.animations[0].animation, Uuid::from_u128(1_000));
+        assert_eq!(read.animations[253].animation, Uuid::from_u128(1_253));
     }
 
     #[test]

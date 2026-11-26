@@ -522,6 +522,12 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         config.server.clone(),
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;
+    frame
+        .set_fly_slow(config.fly_slow)
+        .map_err(|error| RunError::Terrain(error.to_string()))?
+        .wait()
+        .await
+        .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 

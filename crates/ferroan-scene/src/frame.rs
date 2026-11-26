@@ -288,6 +288,11 @@ enum Request {
     },
     /// `RegionSettings.ObjectBonus`, `RegionInfo.ObjectCapacity`, the region
     /// flags and `EstateSettings.TaxFree` for every later element.
+    /// `[Startup] enableflyslow`, checked by the region's config.
+    FlySlow {
+        fly_slow: bool,
+        reply: oneshot::Sender<()>,
+    },
     ParcelRegion {
         region: crate::parcels::ParcelRegion,
         reply: oneshot::Sender<()>,
@@ -463,7 +468,7 @@ impl TerrainFrame {
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
-            fly_slow: fly_slow(&config),
+            fly_slow: false,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -495,6 +500,16 @@ impl TerrainFrame {
     pub fn set_parcel_sender(&self, send: ParcelSender) -> Result<Pending<()>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::ParcelOut { send, reply })?;
+        Ok(answer)
+    }
+
+    /// `Scene.m_useFlySlow`: `startupConfig.GetBoolean("enableflyslow", false)`
+    /// (`Scene.cs` line 1002), as `RegionConfig` checked it. Flying with a
+    /// direction then plays `FLYSLOW` in place of `FLY`. The region calls this
+    /// once at startup, before logins; it is false until then.
+    pub fn set_fly_slow(&self, fly_slow: bool) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::FlySlow { fly_slow, reply })?;
         Ok(answer)
     }
 
@@ -1013,6 +1028,13 @@ fn answer(
             scene.parcel_region = region;
             let _ = reply.send(());
         }
+        Request::FlySlow { fly_slow, reply } => {
+            scene.fly_slow = fly_slow;
+            for avatar in scene.presences.values_mut() {
+                avatar.body.set_fly_slow(fly_slow);
+            }
+            let _ = reply.send(());
+        }
         Request::ParcelProperties {
             agent,
             query,
@@ -1128,16 +1150,6 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
 
 /// `[Startup] physics = Jolt` and no `[Jolt]` keys. Callers that have the
 /// region's ini pass that to [`TerrainFrame::with_object_settings`] instead.
-/// `Scene.m_useFlySlow`: `startupConfig.GetBoolean("enableflyslow", false)`
-/// (`Scene.cs` line 1002). Flying with a direction then plays `FLYSLOW` in
-/// place of `FLY`. `RegionConfig` refuses a value other than true or false
-/// before the frame starts, so anything else reads as the default here.
-fn fly_slow(config: &Config) -> bool {
-    config
-        .get("Startup", "enableflyslow")
-        .is_some_and(|text| text.eq_ignore_ascii_case("true"))
-}
-
 fn default_jolt_config() -> Result<Config, TerrainError> {
     Config::parse("[Startup]\nphysics = Jolt\n").map_err(|_| TerrainError::Thread)
 }
@@ -3689,12 +3701,42 @@ mod tests {
         assert_eq!(default(&frame), STAND);
     }
 
+    /// The checked `enableflyslow` reaches every avatar: one already there
+    /// and one that arrives later.
     #[test]
-    fn enableflyslow_is_read_from_startup() {
-        let read = |text: &str| fly_slow(&Config::parse(text).unwrap());
-        assert!(!read("[Startup]\nphysics = Jolt\n"));
-        assert!(!read("[Startup]\nenableflyslow = false\n"));
-        assert!(read("[Startup]\nenableflyslow = True\n"));
+    fn the_region_fly_slow_setting_reaches_the_avatars() {
+        use crate::animation::default_animation;
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let fly = |agent: Uuid| {
+            reuse(&frame, agent);
+            frame
+                .agent_update(
+                    agent,
+                    walking_update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS),
+                )
+                .unwrap();
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+                .default_animation
+                .unwrap()
+                .animation
+        };
+        let before = Uuid::from_u128(25);
+        login(&frame, before, pose_at([128.0, 128.0, 40.0]));
+        assert_eq!(fly(before), default_animation("FLY").unwrap());
+        let early = Uuid::from_u128(26);
+        login(&frame, early, pose_at([128.0, 128.0, 40.0]));
+        frame.set_fly_slow(true).unwrap().blocking_wait().unwrap();
+        let later = Uuid::from_u128(27);
+        login(&frame, later, pose_at([128.0, 128.0, 40.0]));
+        let slow = default_animation("FLYSLOW").unwrap();
+        assert_eq!(fly(early), slow);
+        assert_eq!(fly(later), slow);
     }
 
     #[test]
