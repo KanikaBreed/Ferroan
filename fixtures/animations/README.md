@@ -12,7 +12,7 @@ The harness owner logs in and walks; the second account (`Chat Bot`) watches (`t
 
 Every packet is reliable and not zero-coded, with no extra header and no `AnimationSourceList` or `PhysicalAvatarEventList` entries: each animation names the agent or nothing, so `SendAnimations` gives the owner's own viewer no objects either. The capture also holds the watcher's own `STAND` 1 packets, which the compare does not read.
 
-`cargo xtask live run animations grid --region ferroan` compares the Ferroan run with this file (`xtask/src/animations_capture.rs`): both captures must re-encode as they are, then the owner's packs, each run of equal packs folded with its length, must match byte for byte, headers included, once every sequence number but 1 is written relative to the run's smallest (C# starts them from a clock, `NextAnimationSequenceNumber`). `the_csharp_capture_has_the_five_steps_to_both_viewers` checks the file itself.
+`cargo xtask live run animations grid --region ferroan` compares the Ferroan run with this file (`xtask/src/animations_capture.rs`): both captures must re-encode as they are, then the owner's packs, each run of equal packs folded with its length, must match byte for byte, the body byte for byte and, of the header, the first byte and the extra-header length (the packet sequence number and acks are each circuit's own), once every animation sequence number but 1 is moved by one offset for the whole capture, its smallest number other than 1 (C# starts them from a clock, `NextAnimationSequenceNumber`). `the_csharp_capture_has_the_five_steps_to_both_viewers` checks the file itself.
 
 To record it again, under the live lock with a free port base:
 

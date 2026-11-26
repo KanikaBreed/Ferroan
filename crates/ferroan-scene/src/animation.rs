@@ -604,8 +604,10 @@ impl Animator {
     /// once (`avnChangeAnim(UUID.Zero, false, true)`), whether or not the set
     /// changed. A start adds the animation with the next sequence number and
     /// no object; the number is taken even when the set already plays it or
-    /// is full. A stop removes it, and stopping the default plays `STAND`
-    /// with sequence 1. A nil id changes nothing. The caller refuses a child.
+    /// is full. A stop removes it. Stopping the default resets it
+    /// (`ResetDefaultAnimation`): another default becomes `STAND` with
+    /// sequence 1, and a `STAND` default stays as it is, sequence and all.
+    /// A nil id changes nothing. The caller refuses a child.
     pub fn viewer_change(&mut self, changes: &[(Uuid, bool)]) {
         for &(animation, start) in changes {
             if animation.is_nil() {
@@ -1574,6 +1576,17 @@ mod tests {
         animator.viewer_change(&[]);
         assert!(animator.take_pack_due());
         assert_eq!(animator.sequence.next(), 105);
+
+        // Stopping a `STAND` default keeps its sequence: the viewer is not
+        // told to restart it.
+        let mut animator = Animator::new(AGENT);
+        animator.sequence = Sequence(200);
+        animator.update(&ground(CONTROL_AT_POS, 1_000));
+        animator.update(&ground(0, 1_100));
+        let stand = animator.animations().default_animation();
+        assert_eq!((stand.animation, stand.sequence), (STAND, 202));
+        animator.viewer_change(&[(STAND, false)]);
+        assert_eq!(animator.animations().default_animation(), stand);
     }
 
     /// A full set drops the start but still takes its number.

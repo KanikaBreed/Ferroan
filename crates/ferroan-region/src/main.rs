@@ -3683,6 +3683,71 @@ mod tests {
     /// another avatar's full update with its local id, name and live values,
     /// its appearance, its animations as another viewer gets them, and the
     /// kill.
+    /// `SendAnimations` picks the layout by the viewer the feed belongs to:
+    /// the agent's own viewer gets an animation that names another object
+    /// first, with that object, and any other viewer gets the set in order
+    /// with no objects. No set the frame makes today names another object,
+    /// so the set is queued on the feed directly.
+    #[test]
+    fn the_scene_feed_gives_only_the_agents_own_viewer_the_object_layout() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(95);
+        let other = Uuid::from_u128(96);
+        let object = Uuid::from_u128(97);
+        let stand = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f),
+            sequence: 1,
+            object_id: agent,
+        };
+        let held = ferroan_scene::Anim {
+            animation: Uuid::from_u128(0xa11),
+            sequence: 9,
+            object_id: object,
+        };
+        let packets_for = |viewer: Uuid| {
+            let feed = frame.new_feed();
+            feed.send_avatar_packet(ferroan_scene::AvatarPacket::Animations {
+                agent,
+                animations: vec![stand, held],
+            });
+            let scene_feed = SceneFeed {
+                viewer,
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+                feed,
+                region_handle: 77,
+            };
+            let packets = scene_feed.take_avatar_packets(usize::MAX);
+            assert_eq!(packets.len(), 1);
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[0] else {
+                panic!("an AvatarAnimation");
+            };
+            assert_eq!(animation.sender.id, agent);
+            let list: Vec<(Uuid, i32)> = animation
+                .animation_list
+                .iter()
+                .map(|block| (block.anim_id, block.anim_sequence_id))
+                .collect();
+            let sources: Vec<Uuid> = animation
+                .animation_source_list
+                .iter()
+                .map(|block| block.object_id)
+                .collect();
+            (list, sources)
+        };
+        assert_eq!(
+            packets_for(agent),
+            (
+                vec![(held.animation, 9), (stand.animation, 1)],
+                vec![object]
+            )
+        );
+        assert_eq!(
+            packets_for(other),
+            (vec![(stand.animation, 1), (held.animation, 9)], Vec::new())
+        );
+    }
+
     #[test]
     fn the_scene_feed_writes_another_avatars_packets() {
         let frame = TerrainFrame::start_without_map().unwrap();

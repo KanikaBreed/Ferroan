@@ -2260,7 +2260,8 @@ mod tests {
     }
 
     /// `CompleteMovement` sends the newcomer's full update, then its
-    /// appearance, to the viewer already there. The newcomer learns of the
+    /// appearance and its animations, to each viewer already there, a
+    /// child's included. The newcomer learns of the
     /// other root at its `SendInitialData`: the reply, the seeds, four frames.
     #[test]
     fn an_arrival_is_announced_and_the_newcomer_hears_of_the_others() {
@@ -2273,6 +2274,15 @@ mod tests {
         // Its own full update and appearance are the circuit's; its
         // animations follow them (`SendAnimPackToAgent`).
         assert_eq!(packet_kinds(&first_feed), [('M', 60)]);
+        // A viewer whose avatar is away here (a child) hears of arrivals
+        // too: `CompleteMovement` loops over every presence.
+        let child = Uuid::from_u128(59);
+        let (_, child_feed, _) = attach(&frame, child);
+        login(&frame, child, pose_at([130.0, 128.0, 25.0]));
+        reuse(&frame, child);
+        frame.set_child(child, true).unwrap();
+        let _ = first_feed.take_avatar_packets(usize::MAX);
+        let _ = child_feed.take_avatar_packets(usize::MAX);
         let (_, second_feed, second_seeds) = attach(&frame, second);
         login(&frame, second, pose_at([120.0, 128.0, 25.0]));
         // The newcomer turns to the arrival look before it is announced.
@@ -2283,6 +2293,7 @@ mod tests {
             .blocking_wait()
             .unwrap();
         assert_eq!(arrived.rotation, look_rotation(look));
+        assert_eq!(packet_kinds(&child_feed), [('F', 61), ('A', 61), ('M', 61)]);
         let announced = first_feed.take_avatar_packets(usize::MAX);
         assert_eq!(announced.len(), 3);
         let AvatarPacket::Full(full) = &announced[0] else {
@@ -2350,6 +2361,7 @@ mod tests {
         wait_frames(&frame, 3);
         assert!(packet_kinds(&second_feed).is_empty());
         assert!(packet_kinds(&first_feed).is_empty());
+        assert!(packet_kinds(&child_feed).is_empty());
     }
 
     /// `SendOtherAgentsAvatarFullToMe` names root agents only.

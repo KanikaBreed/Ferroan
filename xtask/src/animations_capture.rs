@@ -10,10 +10,14 @@
 //! nothing, so the walker's own viewer gets no objects either
 //! (`LLClientView.SendAnimations`). The packs are taken in capture order,
 //! each run of equal packs folded with its length (one per viewer), and the
-//! two lists must match byte for byte, header flags included. C# starts the
-//! sequence numbers from a clock (`NextAnimationSequenceNumber`), so every
-//! number but the new set's 1 is written relative to the run's smallest
-//! before the bytes are compared. `Sender.ID` is not redacted.
+//! two lists must match: the body byte for byte, and of the header the
+//! first byte (flags) and the extra-header length. The packet sequence
+//! number and appended acks are each circuit's own and are not compared.
+//! C# starts the animation sequence numbers from a clock
+//! (`NextAnimationSequenceNumber`), so every number but a new set's 1 is
+//! moved by one offset for the whole capture, its smallest number other
+//! than 1, before the bytes are compared. That keeps every equality and
+//! step a viewer reads. `Sender.ID` is not redacted.
 
 use std::path::Path;
 
@@ -132,7 +136,7 @@ pub(super) fn compare_animations(directory: &Path) -> Result<String, String> {
     }
     let total: usize = ferroan.iter().map(|run| run.count).sum();
     Ok(format!(
-        "animation bytes: {total} AvatarAnimation for the walker (STAND 1, WALK, STAND, the started animation and its stop, each run {:?} long) match the C# capture byte for byte, headers included, with each sequence number but 1 taken relative to the run's smallest (C# starts them from a clock)",
+        "animation bytes: {total} AvatarAnimation for the walker (STAND 1, WALK, STAND, the started animation and its stop, each run {:?} long) match the C# capture: bodies byte for byte, and the first header byte and extra-header length, with each animation sequence number but 1 moved by one offset for the whole capture (C# starts them from a clock)",
         ferroan.iter().map(|run| run.count).collect::<Vec<_>>()
     ))
 }
