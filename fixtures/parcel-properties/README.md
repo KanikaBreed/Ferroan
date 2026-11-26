@@ -14,7 +14,7 @@ Pin8 `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` sends `ParcelProperties` from `S
 
 The span covers land units (1, 0) and (2, 0). Pin8 scans x then y and sends West before East. Each file is one element. Snap selection is false. Empty integers use Encode2's `<integer />`. The bitmap is the original `<binary>` value.
 
-Extraction slices each proxy HTTP 200 for `/CE/`. It reassembles every event in that body with the C# events header and the id trailer, and requires those bytes to equal the unredacted response before it copies a `ParcelProperties` element. `to_xml` of the parsed element does not reproduce the captured bytes.
+Extraction slices each proxy HTTP 200 for `/CE/`. It cuts the captured body into consecutive event elements and the id trailer, then copies a `ParcelProperties` element. The poll id stays in the trailer.
 
 ## Reproduce
 

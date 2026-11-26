@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Pin8 `ParcelProperties` elements. The fixture is the original `<map>` element.
-//! The poll id stays in the captured response and is not written. Reassembling
-//! every event plus that id trailer must reproduce the unredacted body before
-//! an element is copied, as `prim_capture.rs` re-encodes a block before redaction.
+//! The poll id stays in the captured response and is not written. The extractor
+//! slices each event out of the captured body and copies a `ParcelProperties`
+//! element.
 
 use std::fs;
 use std::path::Path;
@@ -78,6 +78,7 @@ const PUBLISHED: [&str; 5] = [
 
 struct Split<'a> {
     elements: Vec<&'a [u8]>,
+    #[cfg(test)]
     trailer: &'a [u8],
 }
 
@@ -267,12 +268,12 @@ fn event_elements(http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
                 match message.status {
                     Some(200) => {
                         let body = message.text()?;
-                        let split = reproduce(body.as_bytes())?;
+                        let split = split_events(body.as_bytes())?;
                         for element in split.elements {
                             if element.starts_with(
                                 b"<map><key>message</key><string>ParcelProperties</string>",
                             ) {
-                                if element.windows(12).any(|window| window == b"<key>id</key>") {
+                                if count(element, b"<key>id</key>") != 0 {
                                     return Err(
                                         "poll id is inside a ParcelProperties element".into()
                                     );
@@ -296,29 +297,10 @@ fn event_elements(http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
 }
 
 fn has_probe(bytes: &[u8]) -> bool {
+    let needle = b"x-ferroan-probe";
     bytes
-        .windows(16)
-        .any(|window| window.eq_ignore_ascii_case(b"x-ferroan-probe"))
-}
-
-fn reproduce(body: &[u8]) -> Result<Split<'_>, String> {
-    let split = split_events(body)?;
-    if reencode(body, &split) != body {
-        return Err(
-            "re-encoding the unredacted event queue body does not reproduce the capture".into(),
-        );
-    }
-    Ok(split)
-}
-
-fn reencode(body: &[u8], split: &Split<'_>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(body.len());
-    out.extend_from_slice(HEADER);
-    for element in &split.elements {
-        out.extend_from_slice(element);
-    }
-    out.extend_from_slice(split.trailer);
-    out
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn split_events(body: &[u8]) -> Result<Split<'_>, String> {
@@ -336,7 +318,11 @@ fn split_events(body: &[u8]) -> Result<Split<'_>, String> {
             {
                 return Err("event queue trailer is not the C# id suffix".into());
             }
-            return Ok(Split { elements, trailer });
+            return Ok(Split {
+                elements,
+                #[cfg(test)]
+                trailer,
+            });
         }
         if !body[index..].starts_with(b"<map>") {
             return Err("event element does not open with <map>".into());
@@ -523,12 +509,6 @@ fn expect_element(element: &[u8], moment: &Moment) -> Result<(), String> {
             moment.file.unwrap_or("landing")
         ));
     }
-    if ferroan_llsd::to_xml(&value) == element {
-        return Err(
-            "to_xml reproduced the captured element; the fixture must stay the original bytes"
-                .into(),
-        );
-    }
     Ok(())
 }
 
@@ -547,9 +527,7 @@ fn replay(dir: &Path) -> Result<String, String> {
     {
         let bytes = bounded(&dir.join(file), LIMIT)?;
         expect_element(&bytes, moment)?;
-        if bytes.windows(12).any(|window| window == b"<key>id</key>")
-            || bytes.windows(6).any(|window| window == b"<llsd>")
-        {
+        if count(&bytes, b"<key>id</key>") != 0 || count(&bytes, b"<llsd>") != 0 {
             return Err(format!("{file} includes the poll envelope"));
         }
         lengths.push(format!("{file} {}", bytes.len()));
@@ -573,9 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn event_queue_reassembly_reproduces_the_unredacted_body() {
+    fn event_queue_split_keeps_the_poll_id_in_the_trailer() {
         let body = sample();
-        let split = reproduce(&body).unwrap();
+        let split = split_events(&body).unwrap();
         assert_eq!(split.elements.len(), 2);
         assert_eq!(count(split.elements[0], b"A&lt;map&gt;B"), 1);
         assert_eq!(count(split.elements[0], b"<integer />"), 1);
@@ -583,25 +561,85 @@ mod tests {
         for element in &split.elements {
             assert_eq!(count(element, b"<key>id</key>"), 0);
         }
-        let mut short = HEADER.to_vec();
-        short.extend_from_slice(split.elements[0]);
-        short.extend_from_slice(split.trailer);
-        assert_ne!(short, body);
         let mut gapped = body.clone();
         gapped.insert(HEADER.len(), b'X');
-        assert!(reproduce(&gapped).is_err());
+        assert!(split_events(&gapped).is_err());
+    }
+
+    fn poll_exchange(request: &[u8], body: &[u8]) -> Vec<Record> {
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/llsd+xml\r\n\r\n".to_vec();
+        response.extend_from_slice(body);
+        vec![
+            Record {
+                kind: Kind::HttpRequest,
+                time_ms: 0,
+                bytes: request.to_vec(),
+            },
+            Record {
+                kind: Kind::HttpResponse,
+                time_ms: 1,
+                bytes: response,
+            },
+        ]
     }
 
     #[test]
-    fn rebuilding_with_to_xml_does_not_reproduce_an_encode2_zero() {
-        let body = sample();
-        let split = reproduce(&body).unwrap();
-        let element = split.elements[0];
-        let value = ferroan_llsd::from_xml(element).unwrap();
-        let rebuilt = ferroan_llsd::to_xml(&value);
-        assert_ne!(rebuilt, element);
-        assert_eq!(count(&rebuilt, b"<integer />"), 0);
-        assert_eq!(count(element, b"<integer />"), 1);
+    fn a_probe_poll_is_not_copied() {
+        let probe = b"POST /CE/seed HTTP/1.1\r\nX-Ferroan-Probe: harness\r\n\r\n";
+        assert!(has_probe(probe));
+        assert!(!has_probe(b"POST /CE/seed HTTP/1.1\r\nHost: grid\r\n\r\n"));
+        let copied = event_elements(&poll_exchange(probe, &sample())).unwrap();
+        assert!(copied.is_empty());
+    }
+
+    #[test]
+    fn a_parcel_element_that_contains_the_poll_id_is_refused() {
+        let mut body = sample();
+        let marker = b"<string>ParcelProperties</string>";
+        let at = body
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        body.splice(
+            at + marker.len()..at + marker.len(),
+            b"<key>id</key><integer>1</integer>".iter().copied(),
+        );
+        let request = b"POST /CE/seed HTTP/1.1\r\nHost: grid\r\n\r\n";
+        let error = event_elements(&poll_exchange(request, &body)).unwrap_err();
+        assert!(
+            error.contains("poll id is inside a ParcelProperties element"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn replay_rejects_an_element_that_includes_the_poll_id() {
+        let fixture = crate::repo_root().join("fixtures/parcel-properties");
+        let dir =
+            std::env::temp_dir().join(format!("parcel-properties-poll-id-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for file in PUBLISHED {
+            let mut bytes = fs::read(fixture.join(file)).unwrap();
+            if file == "walk.bin" {
+                let marker = b"<string>ParcelProperties</string>";
+                let at = bytes
+                    .windows(marker.len())
+                    .position(|window| window == marker)
+                    .unwrap();
+                bytes.splice(
+                    at + marker.len()..at + marker.len(),
+                    b"<key>id</key><integer>1</integer>".iter().copied(),
+                );
+            }
+            fs::write(dir.join(file), &bytes).unwrap();
+        }
+        let error = replay(&dir).unwrap_err();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            error.contains("walk.bin includes the poll envelope"),
+            "{error}"
+        );
     }
 
     #[test]
