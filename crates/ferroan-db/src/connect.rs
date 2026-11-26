@@ -501,8 +501,8 @@ enum ServerZone {
     Found(String),
     /// Role, database, command line and configuration file named no zone.
     Absent,
-    /// No role or database zone, and this login cannot read the command line
-    /// or `pg_file_settings` (D104).
+    /// No role or database zone could be read, and this login cannot read
+    /// the command line or `pg_file_settings` either (D104).
     Unreadable,
 }
 
@@ -557,25 +557,27 @@ fn server_zone_from_probes(
 
 /// Highest precedence first: this database and role, this role, this
 /// database, then a setting for every database and role. Within one row the
-/// last `timezone` assignment wins.
+/// last `timezone` assignment wins. The role oid keeps the session name
+/// exactly, and an unknown name is NULL rather than an error. The database
+/// oid is this backend's `datid`, so the read does not use `pg_database`.
 const ROLE_DATABASE_ZONE: &str = "\
 SELECT source_rank, setting FROM ( \
   SELECT 1 AS source_rank, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-    AND setting.setrole = session_user::regrole \
+  WHERE setting.setdatabase = (SELECT datid FROM pg_stat_get_activity(pg_backend_pid())) \
+    AND setting.setrole = to_regrole(quote_ident(session_user)) \
   UNION ALL \
   SELECT 2, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = 0 \
-    AND setting.setrole = session_user::regrole \
+    AND setting.setrole = to_regrole(quote_ident(session_user)) \
   UNION ALL \
   SELECT 3, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+  WHERE setting.setdatabase = (SELECT datid FROM pg_stat_get_activity(pg_backend_pid())) \
     AND setting.setrole = 0 \
   UNION ALL \
   SELECT 4, entry.setting, entry.ord \
@@ -586,8 +588,7 @@ SELECT source_rank, setting FROM ( \
 ORDER BY source_rank, ord";
 
 const ROLE_SETTINGS_PRIVILEGE: &str = "\
-SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT') \
-AND has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')";
+SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')";
 
 async fn role_database_timezone(
     conn: &mut sqlx::postgres::PgConnection,
@@ -1290,9 +1291,12 @@ mod tests {
     fn role_catalog_is_checked_before_the_read() {
         assert!(ROLE_SETTINGS_PRIVILEGE.contains("has_table_privilege"));
         assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_db_role_setting"));
-        assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_database"));
-        assert!(ROLE_DATABASE_ZONE.contains("session_user::regrole"));
+        assert!(!ROLE_SETTINGS_PRIVILEGE.contains("pg_database"));
+        assert!(ROLE_DATABASE_ZONE.contains("to_regrole(quote_ident(session_user))"));
+        assert!(ROLE_DATABASE_ZONE.contains("pg_stat_get_activity(pg_backend_pid())"));
+        assert!(!ROLE_DATABASE_ZONE.contains("session_user::regrole"));
         assert!(!ROLE_DATABASE_ZONE.contains("pg_roles"));
+        assert!(!ROLE_DATABASE_ZONE.contains("pg_database"));
         assert!(FILE_SETTINGS_PRIVILEGE.contains("has_function_privilege"));
         assert!(FILE_SETTINGS_PRIVILEGE.contains("pg_show_all_file_settings()"));
     }

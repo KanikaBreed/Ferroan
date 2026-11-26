@@ -28,6 +28,16 @@ struct ZoneEnv {
 
 #[tokio::test]
 async fn session_zone_csharp_reads_ferroan_rows() {
+    if std::env::var("FERROAN_ZONE_ROLE_ONLY").is_ok() {
+        let ado = required("FERROAN_ZONE_ROLE_ADO");
+        let name = required("FERROAN_ZONE_ROLE_NAME");
+        let offset = required("FERROAN_ZONE_ROLE_OFFSET")
+            .parse()
+            .unwrap_or_else(|_| panic!("FERROAN_ZONE_ROLE_OFFSET is not an integer"));
+        assert_postgres_zone(&ado, &name, offset).await;
+        println!("session zone: role {name} kept its zone");
+        return;
+    }
     if std::env::var("FERROAN_ZONE_CATALOG_ONLY").is_ok() {
         let ado = required("FERROAN_ZONE_CATALOG_ADO");
         assert_postgres_zone(&ado, "UTC", 0).await;
