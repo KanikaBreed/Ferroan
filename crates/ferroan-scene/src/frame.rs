@@ -22,7 +22,9 @@
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
 //! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
-//! The frame and circuit share avatar local IDs as in
+//! A root arrival, a zero-flag initial-data gate and a walk onto another
+//! parcel each queue one `ParcelProperties` element. The box was stored when
+//! the land was loaded. The frame and circuit share avatar local IDs as in
 //! `Source/OpenSim.Region.Framework/Scenes/{SceneBase,ScenePresence}.cs`
 //! at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
 
@@ -61,6 +63,10 @@ const EMERGENCY: [f32; 3] = [128.0, 128.0, 128.0];
 const REGION_SIZE: [u32; 2] = [256, 256];
 /// `TeleportFlags.IsFlying`.
 pub const TELEPORT_IS_FLYING: u32 = 1 << 13;
+
+/// Queues one `ParcelProperties` element for an agent. The region passes
+/// `parcel-properties`, which is the name a limit readout shows.
+pub type ParcelSender = Arc<dyn Fn(Uuid, &[u8]) + Send + Sync>;
 
 /// A same-region teleport the circuit already accepted. The frame applies the
 /// landing (`TeleportAgentWithinRegion`) and stores the pose. The circuit
@@ -249,6 +255,11 @@ enum Request {
         agent: Uuid,
         reply: oneshot::Sender<Option<Departure>>,
     },
+    /// Install the sink that queues `ParcelProperties`.
+    ParcelOut {
+        send: ParcelSender,
+        reply: oneshot::Sender<()>,
+    },
     Wake,
     Stop,
 }
@@ -277,6 +288,8 @@ enum Inbound {
 struct Avatar {
     pose: Presence,
     body: Body,
+    /// `ScenePresence.currentParcelUUID`. Absent until a parcel is sent.
+    parcel: Option<Uuid>,
 }
 
 /// An attached viewer, the terse state of its avatar, and its minimap state.
@@ -294,6 +307,8 @@ struct Scene {
     viewers: HashMap<Uuid, Viewer>,
     board: AvatarBoard,
     local_ids: Arc<LocalIds>,
+    parcels: Option<Arc<crate::parcels::ParcelMap>>,
+    parcel_out: Option<ParcelSender>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -304,7 +319,7 @@ pub struct TerrainFrame {
     /// send another wake until the frame clears it.
     wake: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-    parcels: Option<crate::parcels::ParcelMap>,
+    parcels: Option<Arc<crate::parcels::ParcelMap>>,
     has_map: bool,
     objects: Arc<StoredScene>,
     local_ids: Arc<LocalIds>,
@@ -356,12 +371,17 @@ impl TerrainFrame {
     /// Use the region's configured scale limits and CollidablePrims setting.
     pub fn with_object_settings(
         map: Option<Heightmap>,
-        parcels: Option<crate::parcels::ParcelMap>,
+        mut parcels: Option<crate::parcels::ParcelMap>,
         groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
         physics: PhysicsScaleLimits,
         collidable_prims: bool,
     ) -> Result<Self, TerrainError> {
+        // `ForceUpdateLandInfo` stores the bounding box before the first encode.
+        if let Some(parcels) = parcels.as_mut() {
+            parcels.update_geometry(map.as_ref());
+        }
+        let parcels = parcels.map(Arc::new);
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
         let (inbound, inbound_rx) = mpsc::sync_channel(SCENE_INBOUND);
@@ -382,6 +402,8 @@ impl TerrainFrame {
             viewers: HashMap::new(),
             board: board.clone(),
             local_ids: Arc::clone(&local_ids),
+            parcels: parcels.clone(),
+            parcel_out: None,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -404,7 +426,16 @@ impl TerrainFrame {
     }
 
     pub fn parcels(&self) -> Option<&crate::parcels::ParcelMap> {
-        self.parcels.as_ref()
+        self.parcels.as_deref()
+    }
+
+    /// Install the sink `SendLandUpdateToClient` writes through. The region
+    /// points it at one agent's event queue before logins are enabled. A
+    /// missing sink still records which parcel the avatar is on.
+    pub fn set_parcel_sender(&self, send: ParcelSender) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::ParcelOut { send, reply })?;
+        Ok(answer)
     }
 
     /// Draw from the frame's single region-wide counter (`SceneBase.AllocateLocalId`).
@@ -773,6 +804,9 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             let pose = avatar.pose;
             scene.announce(agent);
+            // `sendClientInitialLandInfo` queues the element before the overlay.
+            // The circuit enqueues the overlay only after this reply.
+            scene.send_parcel_at(agent);
             let _ = reply.send(pose);
         }
         Request::MovedAway { agent, away, reply } => {
@@ -843,6 +877,10 @@ fn answer(
             });
             let _ = reply.send(departure);
         }
+        Request::ParcelOut { send, reply } => {
+            scene.parcel_out = Some(send);
+            let _ = reply.send(());
+        }
         Request::Wake => {}
         Request::Stop => return false,
     }
@@ -854,6 +892,7 @@ impl Avatar {
         Self {
             body: Body::new(&pose),
             pose,
+            parcel: None,
         }
     }
 }
@@ -983,6 +1022,9 @@ fn run(
 /// the frame, and send the minimap dots on every 50th. Returns the count.
 fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     step_avatars(&mut scene.presences, map);
+    // `EventManagerOnClientMovement` after the avatar has moved. A teleport
+    // only stores the new position; this is the send on the next tick.
+    note_parcel_crossings(scene);
     update_presences(scene);
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
@@ -1135,6 +1177,45 @@ impl Scene {
         }
     }
 
+    /// `SendLandUpdateToClient`: one sequence-0 element for the parcel under
+    /// the avatar. A child, or no parcel, sends nothing and leaves the stored
+    /// id alone. Arrival and the initial-data gate both call this.
+    fn send_parcel_at(&mut self, agent: Uuid) {
+        let position = {
+            let Some(avatar) = self.presences.get(&agent) else {
+                return;
+            };
+            if avatar.body.is_child() {
+                return;
+            }
+            avatar.pose.position
+        };
+        let Some(parcels) = self.parcels.clone() else {
+            return;
+        };
+        let Some((id, local_id)) = parcels
+            .at_metres(position[0], position[1])
+            .map(|parcel| (parcel.id, parcel.local_id))
+        else {
+            return;
+        };
+        if let Some(avatar) = self.presences.get_mut(&agent) {
+            avatar.parcel = Some(id);
+        }
+        let Some(element) =
+            parcels.parcel_properties(local_id, &crate::parcels::ParcelPropertiesSend::notify())
+        else {
+            return;
+        };
+        self.emit_parcel(agent, &element);
+    }
+
+    fn emit_parcel(&self, agent: Uuid, element: &[u8]) {
+        if let Some(send) = &self.parcel_out {
+            send(agent, element);
+        }
+    }
+
     /// `CompleteMovement`: the avatar's full update to every other viewer
     /// (`SendInitialAvatarDataToAllAgents`), then its appearance to each
     /// (`SendAppearanceToAgentNF`). Its own viewer gets both from its
@@ -1165,13 +1246,19 @@ impl Scene {
 
     /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
     /// then its appearance, to this viewer.
-    fn send_initial_data(&self, agent: Uuid) {
+    fn send_initial_data(&mut self, agent: Uuid) {
         // ScenePresence.cs 4337 logs before the teleport-flag check.
         tracing::info!("SendInitialData for \"{agent}\"");
-        // ScenePresence.cs 4338: flags of zero request terrain and the overlay again.
-        if let Some(viewer) = self.viewers.get(&agent)
-            && viewer.link.teleport_flags == 0
-        {
+        // ScenePresence.cs 4338: flags of zero request terrain, one parcel element
+        // and the overlay again. A child still gets the overlay.
+        let again = self
+            .viewers
+            .get(&agent)
+            .is_some_and(|viewer| viewer.link.teleport_flags == 0);
+        if again && self.is_root(&agent) {
+            self.send_parcel_at(agent);
+        }
+        if again && let Some(viewer) = self.viewers.get(&agent) {
             viewer.link.feed.request_land_pass();
         }
         for (other, _) in self.viewer_order() {
@@ -1275,6 +1362,38 @@ impl Scene {
 /// Login Z from `MakeRootAgent` once the frame has reported the ground height.
 pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
+}
+
+/// `EventManagerOnClientMovement` for a root whose parcel `GlobalID` changed.
+/// The same id, a child, or no parcel sends nothing. Ban lines stay out.
+fn note_parcel_crossings(scene: &mut Scene) {
+    let Some(parcels) = scene.parcels.clone() else {
+        return;
+    };
+    let mut crossed = Vec::new();
+    for (agent, avatar) in &scene.presences {
+        if avatar.body.is_child() {
+            continue;
+        }
+        let Some(parcel) = parcels.at_metres(avatar.pose.position[0], avatar.pose.position[1])
+        else {
+            continue;
+        };
+        if avatar.parcel == Some(parcel.id) {
+            continue;
+        }
+        crossed.push((*agent, parcel.id, parcel.local_id));
+    }
+    for (agent, id, local_id) in crossed {
+        if let Some(avatar) = scene.presences.get_mut(&agent) {
+            avatar.parcel = Some(id);
+        }
+        if let Some(element) =
+            parcels.parcel_properties(local_id, &crate::parcels::ParcelPropertiesSend::notify())
+        {
+            scene.emit_parcel(agent, &element);
+        }
+    }
 }
 
 fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) {
@@ -1902,6 +2021,8 @@ mod tests {
             viewers: HashMap::new(),
             board: AvatarBoard::default(),
             local_ids: Arc::default(),
+            parcels: None,
+            parcel_out: None,
         }
     }
 
@@ -1971,6 +2092,189 @@ mod tests {
                 assert!(!feed.take_land_pass());
             }
         }
+    }
+
+    /// Arrival, the zero-flag gate and a GlobalID change each queue one element.
+    /// Heights are the samples stored at land load, so the bytes match the
+    /// Q61a files. A held login, a same-parcel move, the teleport itself and a
+    /// child send nothing.
+    #[tokio::test]
+    async fn parcel_properties_follow_arrival_the_gate_and_a_walk() {
+        let parcels = loaded_region_parcels().await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/parcel-properties");
+        let arrival = std::fs::read(root.join("arrival.bin")).unwrap();
+        let walk = std::fs::read(root.join("walk.bin")).unwrap();
+
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = Uuid::from_u128(1);
+        let _ = open_viewer_flags(&mut scene, agent, true, 1 << 7);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Pose {
+                agent,
+                pose: pose_at([128.0, 128.0, 25.0]),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        note_parcel_crossings(&mut scene);
+        assert!(sent.lock().unwrap().is_empty());
+        arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            std::slice::from_ref(&arrival)
+        );
+
+        scene.presences.get_mut(&agent).unwrap().pose.position = [120.0, 128.0, 25.0];
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Teleport {
+                agent,
+                request: LocalTeleport {
+                    position: [6.0, 2.0, 30.0],
+                    look_at: [1.0, 0.0, 0.0],
+                    half_height: 1.0,
+                    default_landing: [128.0, 128.0, 23.0],
+                    size_x: 256.0,
+                    size_y: 256.0,
+                    flags: 0,
+                },
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        note_parcel_crossings(&mut scene);
+        {
+            let queued = sent.lock().unwrap();
+            assert_eq!(queued.len(), 2);
+            assert!(
+                queued[1]
+                    .windows(b"<key>Name</key><string>West</string>".len())
+                    .any(|window| window == b"<key>Name</key><string>West</string>")
+            );
+            assert!(
+                queued[1]
+                    .windows(b"<key>SequenceID</key><integer />".len())
+                    .any(|window| window == b"<key>SequenceID</key><integer />")
+            );
+        }
+
+        scene.presences.get_mut(&agent).unwrap().pose.position = [10.0, 2.0, 30.0];
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().last().unwrap(), &walk);
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().len(), 3);
+
+        scene
+            .presences
+            .get_mut(&agent)
+            .unwrap()
+            .body
+            .set_child(true);
+        scene.presences.get_mut(&agent).unwrap().pose.position = [128.0, 128.0, 25.0];
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().len(), 3);
+
+        let mut gated = scene_with(&parcels);
+        let gated_sent = record_parcels(&mut gated);
+        let root_agent = Uuid::from_u128(2);
+        let (feed, _) = open_viewer_flags(&mut gated, root_agent, true, 0);
+        arrive_in(&mut gated, root_agent, [128.0, 128.0, 25.0]);
+        arm_initial(&mut gated, root_agent);
+        {
+            let queued = gated_sent.lock().unwrap();
+            assert_eq!(queued.len(), 2);
+            assert_eq!(queued[0], arrival);
+            assert_eq!(queued[1], arrival);
+        }
+        assert!(feed.take_land_pass());
+
+        let mut login = scene_with(&parcels);
+        let login_sent = record_parcels(&mut login);
+        let login_agent = Uuid::from_u128(3);
+        let (feed, _) = open_viewer_flags(&mut login, login_agent, true, 1 << 7);
+        arrive_in(&mut login, login_agent, [128.0, 128.0, 25.0]);
+        arm_initial(&mut login, login_agent);
+        assert_eq!(login_sent.lock().unwrap().as_slice(), &[arrival]);
+        assert!(!feed.take_land_pass());
+    }
+
+    fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
+        let mut scene = bare_scene();
+        scene.parcels = Some(Arc::clone(parcels));
+        scene
+    }
+
+    fn record_parcels(scene: &mut Scene) -> Arc<std::sync::Mutex<Vec<Vec<u8>>>> {
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&sent);
+        scene.parcel_out = Some(Arc::new(move |_agent, element| {
+            record.lock().unwrap().push(element.to_vec());
+        }));
+        sent
+    }
+
+    fn arm_initial(scene: &mut Scene, agent: Uuid) {
+        scene
+            .viewers
+            .get(&agent)
+            .unwrap()
+            .link
+            .seeds_sent
+            .store(true, Ordering::Release);
+        apply(Inbound::HandshakeReply { agent }, scene);
+        for _ in 0..4 {
+            update_presences(scene);
+        }
+    }
+
+    async fn loaded_region_parcels() -> Arc<crate::parcels::ParcelMap> {
+        let copy = crate::test_store::CopiedStore::new("regionstore/objects.db");
+        let pool = ferroan_db::Pool::open(
+            ferroan_db::Backend::Sqlite,
+            &copy.connection(),
+            &["RegionStore"],
+        )
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../../fixtures/regionstore/parcels.sql"))
+            .execute(pool.sqlite().unwrap())
+            .await
+            .unwrap();
+        pool.close().await;
+        let region = uuid::uuid!("11111111-1111-1111-1111-111111111111");
+        let estate = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
+        let mut map = crate::parcels::open_parcels_at(
+            Some(&copy.connection()),
+            region,
+            [256, 256],
+            estate,
+            1_795_674_348,
+        )
+        .await
+        .unwrap();
+        let height = crate::InitialTerrain::PinheadIsland
+            .generate(256, 256)
+            .unwrap();
+        map.update_geometry(Some(&height));
+        assert_eq!(map.at_metres(128.0, 128.0).unwrap().name, "Your Parcel");
+        assert_eq!(map.at_metres(120.0, 128.0).unwrap().name, "Your Parcel");
+        assert_eq!(map.at_metres(6.0, 2.0).unwrap().name, "West");
+        // East is the 4 m cell at x = 8..12. Metre 12 is the next cell.
+        assert_eq!(map.at_metres(10.0, 2.0).unwrap().name, "East");
+        Arc::new(map)
     }
 
     fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {

@@ -94,8 +94,9 @@ pub struct PrimCounts {
 /// What `LandObject.SendLandProperties` passes in besides the parcel map.
 ///
 /// `region_flags` is `EstateManagementModule.GetRegionFlags`. That method does
-/// not set the four deny bits this element reads (TB152, D108).
-pub struct ParcelPropertiesSend<'a> {
+/// not set the four deny bits this element reads (TB152, D108). The bounding
+/// box is the one stored at land load, not a sample taken while encoding.
+pub struct ParcelPropertiesSend {
     pub sequence_id: i32,
     pub snap_selection: bool,
     pub request_result: i32,
@@ -109,24 +110,48 @@ pub struct ParcelPropertiesSend<'a> {
     pub prims: PrimCounts,
     /// `ScenePresence.EnvironmentVersion`.
     pub agent_environment_version: i32,
-    /// Direct cell samples, the way `Heightmap[x, y]` feeds the bounding box.
-    /// Absent terrain uses height 0.
-    pub heightmap: Option<&'a Heightmap>,
+}
+
+impl ParcelPropertiesSend {
+    /// Sequence 0 for one parcel, with the region values the Q61a arrival and
+    /// walk elements were captured with.
+    pub fn notify() -> Self {
+        Self {
+            sequence_id: 0,
+            snap_selection: false,
+            request_result: 0,
+            region_flags: 0,
+            tax_free: false,
+            object_capacity: 15_000,
+            object_bonus: 1.0,
+            prims: PrimCounts::default(),
+            agent_environment_version: 0,
+        }
+    }
 }
 
 impl ParcelMap {
+    /// `LandObject.UpdateGeometryValues`, from `ForceUpdateLandInfo` when the
+    /// parcel is loaded. Later encodes read the stored box.
+    pub fn update_geometry(&mut self, heightmap: Option<&Heightmap>) {
+        let (cells_x, cells_y) = self.cell_size();
+        for index in 0..self.parcels.len() {
+            let local_id = self.parcels[index].local_id;
+            let (min, max) = aabb(&self.cells, cells_x, cells_y, local_id, heightmap);
+            self.parcels[index].aabb_min = min;
+            self.parcels[index].aabb_max = max;
+        }
+    }
+
     /// One `ParcelProperties` element, the bytes `EndEventToBytes` returns.
-    pub fn parcel_properties(
-        &self,
-        local_id: i32,
-        send: &ParcelPropertiesSend<'_>,
-    ) -> Option<Vec<u8>> {
+    pub fn parcel_properties(&self, local_id: i32, send: &ParcelPropertiesSend) -> Option<Vec<u8>> {
         let parcel = self
             .parcels
             .iter()
             .find(|parcel| parcel.local_id == local_id)?;
         let (width, height) = self.cell_size();
-        let (min, max) = aabb(self, local_id, width, height, send.heightmap);
+        let min = parcel.aabb_min;
+        let max = parcel.aabb_max;
         let bitmap = land_bitmap(&self.cells, width, local_id as u32);
         let region = region_metres(width, height);
         let max_prims = if parcel.area > 0 {
@@ -196,13 +221,13 @@ fn region_metres(cells_x: usize, cells_y: usize) -> [i32; 2] {
     ]
 }
 
-fn flag(send: &ParcelPropertiesSend<'_>, bit: u32) -> bool {
+fn flag(send: &ParcelPropertiesSend, bit: u32) -> bool {
     (send.region_flags & bit) != 0
 }
 
 fn encode(
     parcel: &Parcel,
-    send: &ParcelPropertiesSend<'_>,
+    send: &ParcelPropertiesSend,
     min: [f32; 3],
     max: [f32; 3],
     bitmap: &[u8],
@@ -307,10 +332,10 @@ fn encode(
 }
 
 fn aabb(
-    map: &ParcelMap,
-    local_id: i32,
+    cells: &[u32],
     cells_x: usize,
     cells_y: usize,
+    local_id: i32,
     heightmap: Option<&Heightmap>,
 ) -> ([f32; 3], [f32; 3]) {
     let mut min_x = i32::MAX;
@@ -320,7 +345,7 @@ fn aabb(
     let id = local_id as u32;
     for y in 0..cells_y {
         for x in 0..cells_x {
-            if map.cells[y * cells_x + x] != id {
+            if cells[y * cells_x + x] != id {
                 continue;
             }
             let x = x as i32;
@@ -650,6 +675,7 @@ mod tests {
         heights[15 * 32 + 11] = 40.5;
         heights[11 * 32 + 15] = 7.0;
         let heightmap = super::Heightmap::from_cells(32, 32, heights);
+        map.update_geometry(Some(&heightmap));
         let local_id = map.parcels()[0].local_id;
         let send = ParcelPropertiesSend {
             sequence_id: 0,
@@ -661,9 +687,13 @@ mod tests {
             object_bonus: 1.0,
             prims: PrimCounts::default(),
             agent_environment_version: 0,
-            heightmap: Some(&heightmap),
         };
-        let xml = String::from_utf8(map.parcel_properties(local_id, &send).unwrap()).unwrap();
+        let bytes = map.parcel_properties(local_id, &send).unwrap();
+        // A heightmap that arrives after the load is not sampled again.
+        let later = super::Heightmap::from_cells(32, 32, vec![3.0; 32 * 32]);
+        assert_eq!(later.width(), 32);
+        assert_eq!(bytes, map.parcel_properties(local_id, &send).unwrap());
+        let xml = String::from_utf8(bytes).unwrap();
         assert!(
             xml.contains(
                 "<key>AABBMin</key><array><real>4</real><real>0</real><real>12.5</real></array>"
@@ -684,9 +714,10 @@ mod tests {
     async fn parcel_element_bytes_grow_with_the_region() {
         let cases = [(2048u32, 46_750usize), (2560, 71_326), (4096, 177_823)];
         for (edge, expected) in cases {
-            let map = open_parcels_at(None, REGION, [edge, edge], ESTATE, CLAIM)
+            let mut map = open_parcels_at(None, REGION, [edge, edge], ESTATE, CLAIM)
                 .await
                 .unwrap();
+            map.update_geometry(None);
             let local_id = map.parcels()[0].local_id;
             let send = ParcelPropertiesSend {
                 sequence_id: 0,
@@ -698,7 +729,6 @@ mod tests {
                 object_bonus: 1.0,
                 prims: PrimCounts::default(),
                 agent_environment_version: 0,
-                heightmap: None,
             };
             let bytes = map.parcel_properties(local_id, &send).unwrap();
             assert_eq!(bytes.len(), expected, "{edge} m");
@@ -720,10 +750,11 @@ mod tests {
             .await
             .unwrap();
         pool.close().await;
-        let map = open_parcels_at(Some(&copy.connection()), REGION, [256, 256], ESTATE, CLAIM)
+        let mut map = open_parcels_at(Some(&copy.connection()), REGION, [256, 256], ESTATE, CLAIM)
             .await
             .unwrap();
         let height = InitialTerrain::PinheadIsland.generate(256, 256).unwrap();
+        map.update_geometry(Some(&height));
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/parcel-properties");
         let moments = [
@@ -751,7 +782,6 @@ mod tests {
                 object_bonus: 1.0,
                 prims: PrimCounts::default(),
                 agent_environment_version: 0,
-                heightmap: Some(&height),
             };
             let got = map.parcel_properties(local_id, &send).unwrap();
             let expected = std::fs::read(root.join(file)).unwrap();

@@ -204,6 +204,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run parcel-timing grid --region ferroan
        cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-properties grid --physics basicphysics
+       cargo xtask live run parcel-properties grid --region ferroan
        cargo xtask live parcel-properties-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
        cargo xtask live run prim-load grid --physics basicphysics

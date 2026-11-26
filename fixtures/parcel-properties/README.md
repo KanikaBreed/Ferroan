@@ -26,3 +26,7 @@ parcel properties: arrival.bin 3738, request-cell.bin 4096, request-span-west.bi
 ```
 
 To re-extract from the same raw run, use `cargo xtask live parcel-properties-fixtures <grid-run-directory>`. To install a new recording, copy its five files here and refresh the digest in `pin8_parcel_properties_replay_the_captured_elements` using that test's file order. Run `cargo test -p xtask parcel_properties`.
+
+## Ferroan compare
+
+`cargo xtask live run parcel-properties grid --region ferroan` runs under the shared live lock with a free port base and `UseSharedCompilation=false`. The bot reads the arrival element's parcel flags, teleports to West and walks east. It does not send `ParcelPropertiesRequest`. The compare checks the arrival element and the East walk element against `arrival.bin` and `walk.bin` and does not publish new files. `CreateDefaultParcel` sets `ClaimDate` to the unix time of that call, so the arrival compare accepts that date within 15 minutes of the compare and requires every other byte to match. `walk.bin` matches exactly. The West landing stays unpublished. Heights in those elements are the bounding box stored when the land was loaded.

@@ -229,6 +229,24 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
+        let caps_out = caps.clone();
+        let installed = frame.set_parcel_sender(Arc::new(move |agent, element| {
+            if let Err(error) = caps_out.enqueue_raw_for(agent, element, "parcel-properties") {
+                tracing::warn!(
+                    "ferroan-region: parcel properties were not queued for {agent}: {error}"
+                );
+            }
+        }));
+        match installed {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+            }
+        }
     }
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {

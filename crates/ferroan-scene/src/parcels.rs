@@ -117,6 +117,12 @@ pub struct Parcel {
     pub group_av_sounds: bool,
     pub location: [f32; 3],
     pub look_at: [f32; 3],
+    /// Bounding box from `LandObject.UpdateGeometryValues`, stored when the
+    /// land is loaded. A later encode reads these samples.
+    #[cfg_attr(test, serde(default))]
+    pub aabb_min: [f32; 3],
+    #[cfg_attr(test, serde(default))]
+    pub aabb_max: [f32; 3],
     pub auth_buyer: Uuid,
     pub other_clean_time: i32,
     #[cfg_attr(test, serde(skip))]
@@ -167,6 +173,8 @@ impl Parcel {
             obscure_music: false,
             location: [0.0; 3],
             look_at: [0.0; 3],
+            aabb_min: [0.0; 3],
+            aabb_max: [0.0; 3],
             auth_buyer: Uuid::nil(),
             other_clean_time: 0,
             environment: None,
@@ -744,6 +752,8 @@ fn build_land_data(row: &SqliteRow) -> Result<Parcel, ParcelError> {
         group_av_sounds: boolean(row, "GroupAVSounds")?,
         location,
         look_at,
+        aabb_min: [0.0; 3],
+        aabb_max: [0.0; 3],
         auth_buyer: Uuid::parse_str(required::<&str>(row, "AuthbuyerID")?.trim())
             .unwrap_or_default(),
         other_clean_time: integer(row, "OtherCleanTime")?,
