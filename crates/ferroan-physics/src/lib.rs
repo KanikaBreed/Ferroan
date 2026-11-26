@@ -29,3 +29,5 @@ pub use substep::{MAX_STEPS_PER_FRAME, RateError, SubstepAccumulator};
 
 #[cfg(test)]
 mod jolt_config_oracle;
+#[cfg(test)]
+mod jolt_file_oracle;

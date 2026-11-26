@@ -6,7 +6,7 @@
     <Nullable>disable</Nullable>
     <RootNamespace>Ferroan.JoltConfigOracle</RootNamespace>
     <AssemblyName>JoltConfigOracle</AssemblyName>
-    <Description>JoltConfig.FromConfig results from the pinned Jolt module. No native load.</Description>
+    <Description>Pinned Jolt module results for the config and file fixtures. No native load.</Description>
     <AnalysisLevel>none</AnalysisLevel>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

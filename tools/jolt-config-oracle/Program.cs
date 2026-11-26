@@ -22,10 +22,12 @@ static class Program
     {
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
-        if (args.Length != 6 || (args[0] != "generate" && args[0] != "verify")
-            || args[2] != "--revision" || args[4] != "--reference")
+        if (args.Length != 6
+            || args[2] != "--revision" || args[4] != "--reference"
+            || (args[0] != "generate" && args[0] != "verify"
+                && args[0] != "file-generate" && args[0] != "file-verify"))
         {
-            Console.Error.WriteLine("usage: JoltConfigOracle generate|verify <directory> --revision <40 hex> --reference <path>");
+            Console.Error.WriteLine("usage: JoltConfigOracle generate|verify|file-generate|file-verify <directory> --revision <40 hex> --reference <path>");
             return 2;
         }
         string directory = Path.GetFullPath(args[1]);
@@ -40,8 +42,12 @@ static class Program
         {
             if (args[0] == "generate")
                 Generate(directory, revision, reference);
-            else
+            else if (args[0] == "verify")
                 Verify(directory, revision, reference);
+            else if (args[0] == "file-generate")
+                FileOracle.Generate(directory, revision, reference);
+            else
+                FileOracle.Verify(directory, revision, reference);
         }
         catch (Exception exception)
         {

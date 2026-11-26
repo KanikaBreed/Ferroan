@@ -1,0 +1,18 @@
+format 1
+observed after_type_init
+JoltNative.s_loaded null
+JoltNative.s_handle 0
+JoltPhysicsBackend.s_foundationRefCount 0
+joltc_mapped false
+observed after_construct
+JoltNative.s_loaded null
+JoltNative.s_handle 0
+JoltPhysicsBackend.s_foundationRefCount 0
+joltc_mapped false
+observed after_calls
+JoltNative.s_loaded null
+JoltNative.s_handle 0
+JoltPhysicsBackend.s_foundationRefCount 0
+joltc_mapped false
+witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init
+witness joltc is not mapped, so Foundation.Init did not call JPH_Init
