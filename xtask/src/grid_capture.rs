@@ -1601,7 +1601,7 @@ fn validate_json(name: &str, body: &Value, response: &Value) -> Result<(), Strin
     Ok(())
 }
 
-fn paired(records: &[Record], index: usize) -> Result<Message, String> {
+pub(super) fn paired(records: &[Record], index: usize) -> Result<Message, String> {
     let mut outstanding = 0usize;
     for record in &records[..index] {
         match record.kind {
@@ -1627,10 +1627,10 @@ fn paired(records: &[Record], index: usize) -> Result<Message, String> {
     Message::parse(&response.bytes)
 }
 
-struct Message {
-    method: String,
-    path: String,
-    status: Option<u16>,
+pub(super) struct Message {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) status: Option<u16>,
     content_type: String,
     encoding: String,
     x_encoding: String,
@@ -1639,7 +1639,7 @@ struct Message {
 }
 
 impl Message {
-    fn parse(bytes: &[u8]) -> Result<Self, String> {
+    pub(super) fn parse(bytes: &[u8]) -> Result<Self, String> {
         let split = bytes
             .windows(4)
             .position(|part| part == b"\r\n\r\n")
@@ -1697,7 +1697,7 @@ impl Message {
         Ok(message)
     }
 
-    fn text(&self) -> Result<String, String> {
+    pub(super) fn text(&self) -> Result<String, String> {
         if self.body.len() as u64 > MAX_BODY {
             return Err("encoded control-plane body exceeds size limit".to_string());
         }

@@ -182,6 +182,16 @@ pub async fn poll_event_queue(
     url: &str,
     ack: Option<i32>,
 ) -> Result<EqBatch, EqPollError> {
+    let bytes = poll_event_queue_body(http, url, ack).await?;
+    parse_event_queue(&bytes).map_err(EqPollError::Fatal)
+}
+
+/// Retain the response bytes when a viewer needs to identify its poll in a proxy capture.
+pub(crate) async fn poll_event_queue_body(
+    http: &reqwest::Client,
+    url: &str,
+    ack: Option<i32>,
+) -> Result<Vec<u8>, EqPollError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| EqPollError::Fatal("event queue url is not http".to_string()))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -242,7 +252,7 @@ pub async fn poll_event_queue(
     if !(200..300).contains(&status) {
         return Err(EqPollError::Fatal(format!("event queue status {status}")));
     }
-    parse_event_queue(&bytes).map_err(EqPollError::Fatal)
+    Ok(bytes)
 }
 
 /// Parse an event-queue body. The shape is `EventQueueGetModule.GetEvents`.
