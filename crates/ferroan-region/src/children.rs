@@ -38,10 +38,12 @@
 //! The seed is stored before the admission POST, as `EnableChildAgents` does.
 //! A second claim for that destination does not start another POST. Refusal
 //! drops the claim and produces no viewer events. Logout during the POST
-//! closes an accepted child once and does not announce it (D106). A completion
-//! for an older generation does not announce on the replacement, and it does
-//! not close a destination that generation promoted to the remote root.
-//! An in-view hop reads the same seed.
+//! closes an accepted child once and does not announce it (D106). A timeout
+//! or a transport failure after logout closes once too. A completion after
+//! the hop promoted the destination still announces once. The same session
+//! carries that neighbour into the next generation as an open child, so
+//! logout closes it. A different session closes the old root's open children
+//! with the old session id. An in-view hop reads the same seed.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -65,7 +67,8 @@ pub enum Claim {
     Existing { seed: String },
     /// This generation already holds [`CHILD_DESTINATIONS`]. Nothing was stored.
     Bound,
-    /// This generation is not a root circuit. Nothing was stored.
+    /// No generation owns this agent, this generation is not current, or it
+    /// has logged out. Nothing was stored.
     Unavailable,
 }
 
@@ -76,7 +79,8 @@ pub enum Admission {
     Announce { seed: String, end: RegionEnd },
     /// One `CloseAgent`. Do not announce.
     Close { end: RegionEnd },
-    /// Refusal, a stale generation, or a destination the hop already owns.
+    /// Refusal, a stale generation, a destination another generation owns,
+    /// or a completion that must not be sent again.
     Quiet,
 }
 
@@ -95,6 +99,14 @@ struct Destination {
     phase: Phase,
     /// The in-view hop made this neighbour the remote root.
     promoted: bool,
+    /// The viewer was told once. A second completion stays quiet.
+    announced: bool,
+}
+
+#[derive(Clone, Debug)]
+struct StagedClose {
+    session: Uuid,
+    end: RegionEnd,
 }
 
 #[derive(Debug, Default)]
@@ -106,7 +118,10 @@ struct Generation {
 #[derive(Debug, Default)]
 struct AgentBook {
     current: Uuid,
+    session: Uuid,
     generations: HashMap<Uuid, Generation>,
+    /// Open children a later login must close with the session that opened them.
+    staged: Vec<StagedClose>,
 }
 
 #[derive(Debug, Default)]
@@ -132,23 +147,39 @@ impl ChildBook {
     }
 
     /// The root circuit generation that now owns this agent's children.
-    /// Open children of the previous generation move with it, so a later
-    /// logout still closes them. A pending admission stays with its owner.
-    pub fn attach(&self, agent: Uuid, generation: Uuid) {
+    /// Open children move only with the session that opened them, including a
+    /// neighbour the hop promoted: it comes back as an ordinary open child, so
+    /// logout still closes it. A different session closes those open children
+    /// with the old session id and starts empty. A pending admission stays
+    /// with the generation that claimed it. A promoted neighbour is not closed
+    /// for a different session: that region is the remote root.
+    pub fn attach(&self, agent: Uuid, generation: Uuid, session: Uuid) {
         let mut books = self.lock();
         let book = books.agents.entry(agent).or_default();
         let previous = book.current;
+        let previous_session = book.session;
+        let same_session = previous_session.is_nil() || previous_session == session;
         if previous != generation && !previous.is_nil() {
             let mut moved = Vec::new();
+            let mut close = Vec::new();
             let empty = if let Some(older) = book.generations.get_mut(&previous) {
                 older.by_region.retain(|region, destination| {
-                    if destination.phase == Phase::Open && !destination.promoted {
-                        moved.push((*region, destination.clone()));
-                        false
-                    } else {
-                        true
+                    if destination.phase != Phase::Open {
+                        return true;
                     }
+                    if same_session {
+                        let mut carried = destination.clone();
+                        carried.promoted = false;
+                        carried.phase = Phase::Open;
+                        moved.push((*region, carried));
+                    } else if !destination.promoted {
+                        close.push(destination.end.clone());
+                    }
+                    false
                 });
+                if !same_session {
+                    older.logged_out = true;
+                }
                 older.by_region.is_empty()
             } else {
                 false
@@ -156,16 +187,38 @@ impl ChildBook {
             if empty {
                 book.generations.remove(&previous);
             }
-            let generation_book = book.generations.entry(generation).or_default();
-            for (region, destination) in moved {
-                generation_book
-                    .by_region
-                    .entry(region)
-                    .or_insert(destination);
+            if same_session {
+                let generation_book = book.generations.entry(generation).or_default();
+                for (region, destination) in moved {
+                    generation_book
+                        .by_region
+                        .entry(region)
+                        .or_insert(destination);
+                }
+            } else {
+                for end in close {
+                    book.staged.push(StagedClose {
+                        session: previous_session,
+                        end,
+                    });
+                }
             }
         }
         book.current = generation;
+        book.session = session;
         book.generations.entry(generation).or_default();
+    }
+
+    /// Closes owed to a session a later login replaced. One take sends them.
+    pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return Vec::new();
+        };
+        book.staged
+            .drain(..)
+            .map(|close| (close.session, close.end))
+            .collect()
     }
 
     /// Claim `end` for one admission. The seed is stored before the POST.
@@ -180,6 +233,9 @@ impl ChildBook {
         let Some(generation_book) = book.generations.get_mut(&generation) else {
             return Claim::Unavailable;
         };
+        if generation_book.logged_out {
+            return Claim::Unavailable;
+        }
         if let Some(destination) = generation_book.by_region.get(&end.region_id) {
             return Claim::Existing {
                 seed: destination.seed.clone(),
@@ -187,13 +243,7 @@ impl ChildBook {
         }
         let count = generation_book.by_region.len();
         if count >= CHILD_DESTINATIONS {
-            ferroan_diag::refuse(
-                ferroan_diag::REGION_CHILD_DESTINATIONS,
-                ferroan_diag::Kind::Hard,
-                CHILD_DESTINATIONS as u64,
-                count.saturating_add(1) as u64,
-                "child-admission",
-            );
+            report_destination_bound(count);
             return Claim::Bound;
         }
         let seed = Uuid::new_v4().to_string();
@@ -204,6 +254,7 @@ impl ChildBook {
                 seed: seed.clone(),
                 phase: Phase::Pending,
                 promoted: false,
+                announced: false,
             },
         );
         Claim::New { seed }
@@ -244,7 +295,7 @@ impl ChildBook {
             .unwrap_or_default();
         let promoted_elsewhere = promoted_on_another(&books, agent, generation, region);
         let current_owns = current != generation && generation_owns(&books, agent, current, region);
-        let Some((promoted, phase, logged_out, seed, end)) = books
+        let Some((promoted, phase, logged_out, announced, seed, end)) = books
             .agents
             .get(&agent)
             .and_then(|book| book.generations.get(&generation))
@@ -254,6 +305,7 @@ impl ChildBook {
                         destination.promoted,
                         destination.phase,
                         generation_book.logged_out,
+                        destination.announced,
                         destination.seed.clone(),
                         destination.end.clone(),
                     )
@@ -262,9 +314,28 @@ impl ChildBook {
         else {
             return Admission::Quiet;
         };
-        if promoted || promoted_elsewhere || current_owns {
+        if promoted_elsewhere || (current_owns && !promoted) {
             if !promoted {
                 remove_destination(&mut books, agent, generation, region);
+            }
+            return Admission::Quiet;
+        }
+        // The hop already owns this neighbour. Tell the viewer once. Logout
+        // still does not close it until the generation is root again. Logout
+        // that already won closes and does not announce (D106).
+        if promoted {
+            if logged_out || phase == Phase::CloseWhenAccepted {
+                remove_destination(&mut books, agent, generation, region);
+                return Admission::Close { end };
+            }
+            if !announced {
+                if let Some(destination) = generation_mut(&mut books, agent, generation)
+                    .and_then(|generation_book| generation_book.by_region.get_mut(&region))
+                {
+                    destination.announced = true;
+                    destination.phase = Phase::Open;
+                }
+                return Admission::Announce { seed, end };
             }
             return Admission::Quiet;
         }
@@ -283,11 +354,56 @@ impl ChildBook {
                     .and_then(|generation_book| generation_book.by_region.get_mut(&region))
                 {
                     destination.phase = Phase::Open;
+                    destination.announced = true;
                 }
                 Admission::Announce { seed, end }
             }
             Phase::Open => Admission::Quiet,
         }
+    }
+
+    /// The POST failed after the seed was stored. Not a refusal.
+    /// Logout already won: close once, including a timeout or a transport
+    /// failure (D106). Still logged in: keep an open child and do not
+    /// announce, so a later logout closes it. The hop's remote root stays.
+    pub fn failed(&self, agent: Uuid, generation: Uuid, region: Uuid) -> Admission {
+        let mut books = self.lock();
+        let current = books
+            .agents
+            .get(&agent)
+            .map(|book| book.current)
+            .unwrap_or_default();
+        let Some((promoted, phase, logged_out, end)) = books
+            .agents
+            .get(&agent)
+            .and_then(|book| book.generations.get(&generation))
+            .and_then(|generation_book| {
+                generation_book.by_region.get(&region).map(|destination| {
+                    (
+                        destination.promoted,
+                        destination.phase,
+                        generation_book.logged_out,
+                        destination.end.clone(),
+                    )
+                })
+            })
+        else {
+            return Admission::Quiet;
+        };
+        let stale = generation != current || logged_out || phase == Phase::CloseWhenAccepted;
+        if promoted && !stale {
+            return Admission::Quiet;
+        }
+        if stale {
+            remove_destination(&mut books, agent, generation, region);
+            return Admission::Close { end };
+        }
+        if let Some(destination) = generation_mut(&mut books, agent, generation)
+            .and_then(|generation_book| generation_book.by_region.get_mut(&region))
+        {
+            destination.phase = Phase::Open;
+        }
+        Admission::Quiet
     }
 
     /// Logout of the current generation. Open children are returned for one
@@ -365,8 +481,8 @@ impl ChildBook {
         Some(destination.seed.clone())
     }
 
-    /// The hop reached this neighbour. Later admission completions must not
-    /// announce it or close it.
+    /// The hop reached this neighbour. Logout does not close it while it is
+    /// the remote root. A later admission completion announces once.
     pub fn promote(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
         let mut books = self.lock();
         let Some(book) = books.agents.get_mut(&agent) else {
@@ -386,6 +502,7 @@ impl ChildBook {
             return;
         }
         if generation_book.by_region.len() >= CHILD_DESTINATIONS {
+            report_destination_bound(generation_book.by_region.len());
             return;
         }
         generation_book.by_region.insert(
@@ -395,42 +512,25 @@ impl ChildBook {
                 seed: seed.to_owned(),
                 phase: Phase::Open,
                 promoted: true,
+                announced: false,
             },
         );
     }
 
-    /// Remember a neighbour the root already has open. A later note updates it.
-    pub fn note_open(&self, agent: Uuid, end: RegionEnd) {
+    /// This generation is the root again. The neighbour the hop promoted is an
+    /// ordinary open child, so logout closes it.
+    pub fn release_promoted(&self, agent: Uuid) {
         let mut books = self.lock();
-        let book = books.agents.entry(agent).or_default();
-        if book.current.is_nil() || !book.generations.contains_key(&book.current) {
-            let generation = Uuid::new_v4();
-            book.current = generation;
-            book.generations.insert(generation, Generation::default());
-        }
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
         let generation = book.current;
         let Some(generation_book) = book.generations.get_mut(&generation) else {
             return;
         };
-        if let Some(destination) = generation_book.by_region.get_mut(&end.region_id) {
-            destination.end = end;
-            if destination.phase == Phase::Pending {
-                destination.phase = Phase::Open;
-            }
-            return;
+        for destination in generation_book.by_region.values_mut() {
+            destination.promoted = false;
         }
-        if generation_book.by_region.len() >= CHILD_DESTINATIONS {
-            return;
-        }
-        generation_book.by_region.insert(
-            end.region_id,
-            Destination {
-                end,
-                seed: Uuid::new_v4().to_string(),
-                phase: Phase::Open,
-                promoted: false,
-            },
-        );
     }
 
     /// Roots whose current generation already knows `region`. The avatar that
@@ -455,6 +555,16 @@ impl ChildBook {
         }
         known
     }
+}
+
+fn report_destination_bound(count: usize) {
+    ferroan_diag::refuse(
+        ferroan_diag::REGION_CHILD_DESTINATIONS,
+        ferroan_diag::Kind::Hard,
+        CHILD_DESTINATIONS as u64,
+        count.saturating_add(1) as u64,
+        "child-admission",
+    );
 }
 
 fn generation_mut(books: &mut Books, agent: Uuid, generation: Uuid) -> Option<&mut Generation> {
@@ -594,9 +704,13 @@ mod tests {
         }
     }
 
+    fn session() -> Uuid {
+        Uuid::from_u128(2)
+    }
+
     fn book_for(agent: Uuid, generation: Uuid) -> ChildBook {
         let book = ChildBook::new();
-        book.attach(agent, generation);
+        book.attach(agent, generation, session());
         book
     }
 
@@ -717,7 +831,7 @@ mod tests {
         let Claim::New { seed } = book.claim(agent, older, region.clone()) else {
             panic!("claim");
         };
-        book.attach(agent, replacement);
+        book.attach(agent, replacement, session());
         book.promote(agent, &region, &seed);
         let admission = book.accepted(agent, older, region.region_id);
         assert_eq!(admission, Admission::Quiet);
@@ -734,7 +848,7 @@ mod tests {
         let Claim::New { .. } = book.claim(agent, older, end(6)) else {
             panic!("claim");
         };
-        book.attach(agent, replacement);
+        book.attach(agent, replacement, session());
         let admission = book.accepted(agent, older, Uuid::from_u128(6));
         assert!(matches!(admission, Admission::Close { .. }));
         assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
@@ -760,6 +874,14 @@ mod tests {
             Claim::Bound
         );
         assert_eq!(refuse_hits(), before + 1);
+        book.promote(agent, &end(1), "seed");
+        assert_eq!(refuse_hits(), before + 1);
+        book.promote(agent, &end((CHILD_DESTINATIONS + 2) as u128), "seed");
+        assert_eq!(refuse_hits(), before + 2);
+        assert!(
+            book.seed(agent, Uuid::from_u128((CHILD_DESTINATIONS + 2) as u128))
+                .is_none()
+        );
     }
 
     #[test]
@@ -780,10 +902,159 @@ mod tests {
             book.seed(agent, region.region_id).as_deref(),
             Some(seed.as_str())
         );
+        let admission = book.accepted(agent, generation, region.region_id);
+        let Admission::Announce {
+            seed: announced, ..
+        } = &admission
+        else {
+            panic!("a completion after the hop should announce once");
+        };
+        assert_eq!(announced, &seed);
         assert_eq!(
             book.accepted(agent, generation, region.region_id),
             Admission::Quiet
         );
+    }
+
+    #[test]
+    fn a_completion_after_promote_announces_once_and_logout_spares_the_remote_root() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let region = end(6);
+        let Claim::New { seed } = book.claim(agent, generation, region.clone()) else {
+            panic!("claim");
+        };
+        book.promote(agent, &region, &seed);
+        let admission = book.accepted(agent, generation, region.region_id);
+        assert!(matches!(admission, Admission::Announce { .. }));
+        assert!(!admission_events(&admission, &dummy_view(agent)).is_empty());
+        assert_eq!(
+            book.accepted(agent, generation, region.region_id),
+            Admission::Quiet
+        );
+        assert!(book.begin_logout(agent).is_empty());
+    }
+
+    #[test]
+    fn a_same_session_carries_a_promoted_neighbour_as_an_open_child() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let replacement = Uuid::from_u128(9);
+        let book = book_for(agent, older);
+        let region = end(6);
+        let Claim::New { seed } = book.claim(agent, older, region.clone()) else {
+            panic!("claim");
+        };
+        book.promote(agent, &region, &seed);
+        book.attach(agent, replacement, session());
+        let close = book.begin_logout(agent);
+        assert_eq!(
+            close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
+            vec![region.region_id]
+        );
+    }
+
+    #[test]
+    fn releasing_the_promoted_neighbour_lets_logout_close_it() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let region = end(6);
+        book.promote(agent, &region, "seed");
+        assert!(book.begin_logout(agent).is_empty());
+        let book = book_for(agent, generation);
+        book.promote(agent, &region, "seed");
+        book.release_promoted(agent);
+        let close = book.begin_logout(agent);
+        assert_eq!(
+            close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
+            vec![region.region_id]
+        );
+    }
+
+    #[test]
+    fn claim_after_logout_stores_nothing() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        book.begin_logout(agent);
+        assert_eq!(book.claim(agent, generation, end(5)), Claim::Unavailable);
+        assert!(book.seed(agent, Uuid::from_u128(5)).is_none());
+    }
+
+    #[test]
+    fn a_failed_post_after_logout_closes_once() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        book.begin_logout(agent);
+        let admission = book.failed(agent, generation, Uuid::from_u128(5));
+        assert!(matches!(admission, Admission::Close { .. }));
+        assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
+        assert_eq!(
+            book.failed(agent, generation, Uuid::from_u128(5)),
+            Admission::Quiet
+        );
+    }
+
+    #[test]
+    fn a_failed_post_before_logout_stays_open_without_announcing() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        let admission = book.failed(agent, generation, Uuid::from_u128(5));
+        assert_eq!(admission, Admission::Quiet);
+        assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
+        let close = book.begin_logout(agent);
+        assert_eq!(
+            close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
+            vec![Uuid::from_u128(5)]
+        );
+    }
+
+    #[test]
+    fn a_different_session_closes_open_children_with_the_old_session() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let replacement = Uuid::from_u128(9);
+        let book = book_for(agent, older);
+        let region = end(1);
+        let Claim::New { .. } = book.claim(agent, older, region.clone()) else {
+            panic!("claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, older, region.region_id),
+            Admission::Announce { .. }
+        ));
+        book.attach(agent, replacement, Uuid::from_u128(70));
+        assert!(book.seed(agent, region.region_id).is_none());
+        assert!(book.begin_logout(agent).is_empty());
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, region.region_id);
+        assert!(book.take_staged_closes(agent).is_empty());
+    }
+
+    #[test]
+    fn a_different_session_does_not_close_the_remote_root() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let replacement = Uuid::from_u128(9);
+        let book = book_for(agent, older);
+        let region = end(6);
+        book.promote(agent, &region, "seed");
+        book.attach(agent, replacement, Uuid::from_u128(70));
+        assert!(book.take_staged_closes(agent).is_empty());
+        assert!(book.begin_logout(agent).is_empty());
+        assert!(book.seed(agent, region.region_id).is_none());
     }
 
     #[test]
@@ -802,7 +1073,7 @@ mod tests {
         let Claim::New { .. } = book.claim(agent, older, end(2)) else {
             panic!("pending claim");
         };
-        book.attach(agent, replacement);
+        book.attach(agent, replacement, session());
         assert!(book.seed(agent, Uuid::from_u128(1)).is_some());
         assert!(book.seed(agent, Uuid::from_u128(2)).is_none());
         let close = book.begin_logout(agent);

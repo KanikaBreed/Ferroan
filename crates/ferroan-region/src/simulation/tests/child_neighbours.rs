@@ -345,18 +345,40 @@ async fn each_visible_child_gets_a_fresh_seed_and_the_original_travel_session() 
         .accept(AgentFields::parse(&incoming, fixture_uuid(1), home.region_id).unwrap())
         .unwrap();
     let root = arrivals.recv().await.unwrap();
-    let circuit =
-        |path: &str| root.visible_child_circuit(&home, &dest, [13., 48., 75.], 128., 2.3, path);
-    let first_path = Uuid::new_v4().to_string();
-    let first = circuit(&first_path);
-    assert_eq!(first.caps_path, first_path);
-    assert_ne!(
-        first.caps_path,
-        circuit(&Uuid::new_v4().to_string()).caps_path
-    );
-    assert_eq!(first.start_pos, [269., -464., 75.]);
-    assert_eq!(first.service_session_id, travel);
-    assert_eq!(first.appearance.unwrap().height, 2.3);
+    let agent = root.expect.agent_id;
+    let generation = state.root_generation(agent).unwrap();
+    let far = RegionEnd {
+        region_id: fixture_uuid(9),
+        ..dest
+    };
+    let near = RegionEnd {
+        region_id: fixture_uuid(10),
+        loc_x: 512,
+        loc_y: 1024,
+        name: "Near".into(),
+        ..home.clone()
+    };
+    let crate::children::Claim::New { seed: far_seed } =
+        state.claim_child(agent, generation, far.clone())
+    else {
+        panic!("the far destination was not claimed");
+    };
+    let crate::children::Claim::New { seed: near_seed } =
+        state.claim_child(agent, generation, near.clone())
+    else {
+        panic!("the near destination was not claimed");
+    };
+    assert_ne!(far_seed, near_seed);
+    let far_child = root.visible_child_circuit(&home, &far, [13., 48., 75.], 128., 2.3, &far_seed);
+    let near_child =
+        root.visible_child_circuit(&home, &near, [13., 48., 75.], 128., 2.3, &near_seed);
+    assert_eq!(far_child.caps_path, far_seed);
+    assert_eq!(near_child.caps_path, near_seed);
+    assert_ne!(far_child.caps_path, near_child.caps_path);
+    assert_eq!(far_child.start_pos, [269., -464., 75.]);
+    assert_eq!(far_child.service_session_id, travel);
+    assert_eq!(near_child.service_session_id, travel);
+    assert_eq!(far_child.appearance.unwrap().height, 2.3);
 }
 
 #[tokio::test]

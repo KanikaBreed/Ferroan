@@ -276,6 +276,15 @@ impl HopPresence {
         }
     }
 
+    fn take_staged(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
+        match self {
+            Self::Idle => Vec::new(),
+            Self::Live(state) => state.take_staged_closes(agent),
+            #[cfg(test)]
+            Self::Seeded(_) | Self::Watch(_) => Vec::new(),
+        }
+    }
+
     fn take_children(&self, agent: Uuid) -> Vec<RegionEnd> {
         match self {
             Self::Idle => Vec::new(),
@@ -402,6 +411,21 @@ impl HopEnv {
                 scope: config.scope_id,
             },
             presence,
+        }
+    }
+
+    /// Close children a replaced root left behind. The auth token is the session
+    /// that opened them. One take, so the old circuit and the new login cannot
+    /// both send the same close.
+    pub async fn close_staged(&self, agent: Uuid) {
+        let staged = self.presence.take_staged(agent);
+        let Some(client) = &self.client else {
+            return;
+        };
+        for (session, end) in staged {
+            if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+                tracing::debug!("replaced root child close: {error}");
+            }
         }
     }
 
@@ -640,8 +664,9 @@ async fn perform(work: HopWork<'_>) {
         .moved_away(session.agent_id, !outside, &destination.end)
         .await;
     if !outside {
-        // The hop owns this destination. Logout does not close the remote root,
-        // and a late admission completion must not announce or close it.
+        // The hop owns this destination until this generation is root again.
+        // Logout does not close the remote root. A late admission still
+        // announces once.
         presence.note_child(session.agent_id, &destination.end, &caps_path);
     }
     if outside {
@@ -1621,7 +1646,7 @@ mod tests {
         let book = Arc::new(crate::children::ChildBook::new());
         let agent = Uuid::from_u128(1);
         let generation = Uuid::from_u128(11);
-        book.attach(agent, generation);
+        book.attach(agent, generation, Uuid::from_u128(2));
         let claimed = book.claim(
             agent,
             generation,
