@@ -38,16 +38,24 @@
 //! `TerrainData` then skips a write when the cell already compares equal, so
 //! the initial +0 stays +0 when the file says -0. A file shorter than that
 //! square fails. A square trimmed above 4096 reports `terrain.edge`. Pin8
-//! allocates that square. The section reader is `LoadFile` with offsets.
+//! allocates that square. The trimmed square is not cropped to the region
+//! corner ([`crate::merge`]). The section reader is `LoadFile` with offsets.
 //! `fileHeight` is unused. A changed sample whose taint word lies outside the
 //! array `TerrainData` allocated fails, as `TerrainTaintsArray.Set` throws.
-//! No load path calls this decoder yet.
+//! The console merge reads a map this decoder already returned. The archive
+//! walk does not call it yet.
 
 use crate::error::TerrainError;
 use crate::height::{Heightmap, MAX_EDGE};
 
 /// `Constants.RegionSize`.
 const REGION: i32 = 256;
+
+/// `.r32` and `.f32` are the same RAW32 loader (`TerrainModule.cs` 735–736).
+/// `EndsWith` is ordinal, so the suffix case matches.
+pub fn is_raw32_name(filename: &str) -> bool {
+    filename.ends_with(".r32") || filename.ends_with(".f32")
+}
 
 /// Decode one RAW32 blob the way `RAW32.LoadStream` fills a `TerrainChannel`.
 pub fn load_raw32(bytes: &[u8]) -> Result<Heightmap, TerrainError> {

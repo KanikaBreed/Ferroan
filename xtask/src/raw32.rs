@@ -21,9 +21,22 @@ const FIXTURE: &str = "fixtures/oar-raw32";
 const FRESH: &str = ".scratch/raw32-oracle/fresh";
 
 const FILES: &[&str] = &[
+    "bounding.r32",
+    "clip.r32",
+    "displacement.r32",
+    "f32.oar",
+    "f32.r32",
+    "initial.r32",
     "loaded.r32",
+    "mask-member.r32",
+    "mask.oar",
+    "mask.r32",
     "member.r32",
     "region.oar",
+    "rotation-neg90.r32",
+    "rotation270.r32",
+    "rotation45.r32",
+    "rotation90.r32",
     "section-in.r32",
     "section-out.r32",
     "short.r32",
@@ -34,6 +47,8 @@ const FILES: &[&str] = &[
     "tiny-out.r32",
     "trim-in.r32",
     "trim-out.r32",
+    "wide.oar",
+    "wide.r32",
     "word-in.r32",
     "word-out.r32",
 ];

@@ -85,6 +85,7 @@ mod estate;
 mod frame;
 mod height;
 mod initial;
+mod merge;
 mod motion;
 pub mod oar_owners;
 pub mod object_permissions;
@@ -123,6 +124,7 @@ pub use frame::{
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
+pub use merge::{MERGE_MASK, clip_bounding_size, merge_with_bounding};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
@@ -133,7 +135,7 @@ pub use payloads::{
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
 pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
-pub use raw32::load_raw32;
+pub use raw32::{is_raw32_name, load_raw32};
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;

@@ -233,6 +233,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
 | Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
 | Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
+| Q216a | P2.0e4.3a: MergeWithBounding on the console path | DONE (this PR) |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |

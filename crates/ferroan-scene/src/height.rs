@@ -116,6 +116,21 @@ impl Heightmap {
         &self.cells
     }
 
+    /// `TerrainData`'s setter. `MergeWithBounding` writes that field, so a
+    /// non-finite sum is stored. IEEE-equal cells, including −0 and +0, stay.
+    pub(crate) fn assign_cell(&mut self, x: i32, y: i32, value: f32) {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return;
+        }
+        let index = (y as usize) * (self.width as usize) + (x as usize);
+        let Some(cell) = self.cells.get_mut(index) else {
+            return;
+        };
+        if *cell != value {
+            *cell = value;
+        }
+    }
+
     /// `TerrainData.CreateFromDatabaseBlobFactory` for revisions 22 and 23.
     ///
     /// `width` and `height` are the region size. A blob that names a smaller
