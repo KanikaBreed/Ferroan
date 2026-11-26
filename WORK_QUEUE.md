@@ -217,7 +217,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | READY after Q79a |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
-| Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | READY after Q79b |
+| Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | DONE (this PR) |
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | READY after Q79c1 |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2 |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |

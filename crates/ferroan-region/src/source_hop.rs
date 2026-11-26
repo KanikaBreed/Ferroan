@@ -39,8 +39,9 @@
 //!
 //! `QueryAccess`, then `TeleportStart`, then `CreateAgent` with `child` true,
 //! then an event-queue `TeleportFinish`. The root is demoted before
-//! `UpdateAgent`. An in-view neighbour keeps that child: the caps seed and the
-//! circuit stay, and the hop does not release or close the agent. A destination
+//! `UpdateAgent`. An in-view neighbour keeps that child: the hop reuses the
+//! caps seed already stored for that destination, and the circuit stays. The
+//! hop does not release or close the agent. A destination
 //! outside that view, or one whose grid Y is 0, waits for the destination's
 //! release DELETE and then closes the circuit without a kick. The grid is asked
 //! when the local directory has no handle.
@@ -125,6 +126,9 @@ pub enum HopPresence {
     Idle,
     /// The region's sessions, caps and release table.
     Live(Box<SimulationState>),
+    /// A child book with no region session. The hop reads its seeds.
+    #[cfg(test)]
+    Seeded(Arc<crate::children::ChildBook>),
     #[cfg(test)]
     Watch(Arc<PresenceWatch>),
 }
@@ -224,6 +228,8 @@ impl HopPresence {
     fn restore(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.restore_root(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.restored.store(true, Ordering::Release),
@@ -235,6 +241,8 @@ impl HopPresence {
     async fn moved_away(&self, agent: Uuid, near: bool, end: &RegionEnd) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.moved_away(agent, near, end).await,
             #[cfg(test)]
             Self::Watch(watch) => {
@@ -246,27 +254,44 @@ impl HopPresence {
         }
     }
 
-    fn note_child(&self, agent: Uuid, end: &RegionEnd) {
+    fn child_seed(&self, agent: Uuid, region: Uuid) -> Option<String> {
+        match self {
+            Self::Idle => None,
+            Self::Live(state) => state.child_seed(agent, region),
+            #[cfg(test)]
+            Self::Seeded(book) => book.seed(agent, region),
+            #[cfg(test)]
+            Self::Watch(_) => None,
+        }
+    }
+
+    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
         match self {
             Self::Idle => {}
-            Self::Live(state) => state.note_open_child(agent, end.clone()),
+            Self::Live(state) => state.promote_child(agent, end, seed),
+            #[cfg(test)]
+            Self::Seeded(book) => book.promote(agent, end, seed),
             #[cfg(test)]
             Self::Watch(_) => {}
         }
     }
 
-    fn take_child(&self, agent: Uuid) -> Option<RegionEnd> {
+    fn take_children(&self, agent: Uuid) -> Vec<RegionEnd> {
         match self {
-            Self::Idle => None,
-            Self::Live(state) => state.take_open_child(agent),
+            Self::Idle => Vec::new(),
+            Self::Live(state) => state.take_open_children(agent),
             #[cfg(test)]
-            Self::Watch(_) => None,
+            Self::Seeded(book) => book.begin_logout(agent),
+            #[cfg(test)]
+            Self::Watch(_) => Vec::new(),
         }
     }
 
     fn arm(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.arm_release(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.armed.store(true, Ordering::Release),
@@ -276,6 +301,8 @@ impl HopPresence {
     fn disarm(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.disarm_release(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.armed.store(false, Ordering::Release),
@@ -285,6 +312,8 @@ impl HopPresence {
     async fn wait_release(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.wait_release(agent).await,
             #[cfg(test)]
             Self::Watch(watch) => {
@@ -300,6 +329,8 @@ impl HopPresence {
     fn close_local(&self, agent: Uuid) {
         match self {
             Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) => {}
             Self::Live(state) => state.close_departed(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
@@ -374,17 +405,18 @@ impl HopEnv {
         }
     }
 
-    /// Close the in-view neighbour child this root opened. One attempt.
+    /// Close the in-view neighbour children this root opened. One attempt each.
     /// The error text can carry a URL, so it stays at debug and is not shown.
     pub async fn close_open_child(&self, agent: Uuid, session: Uuid) {
-        let Some(end) = self.presence.take_child(agent) else {
-            return;
-        };
+        let ends = self.presence.take_children(agent);
         let Some(client) = &self.client else {
             return;
         };
-        if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
-            tracing::debug!("logout child close: {error}");
+        let auth = session.to_string();
+        for end in ends {
+            if let Err(error) = client.close_agent(&end, agent, &auth).await {
+                tracing::debug!("logout child close: {error}");
+            }
         }
     }
 
@@ -523,9 +555,17 @@ async fn perform(work: HopWork<'_>) {
         outbound: outcome.outbound_version,
         wearables_count: outcome.wearables_count,
     };
-    // No child seed is stored yet, so the destination circuit gets a new path.
-    // The viewer seed uses that same path.
-    let caps_path = Uuid::new_v4().to_string();
+    // An in-view destination reuses the seed stored before its admission POST.
+    // Outside the view, the destination circuit gets a new path. The viewer
+    // seed uses that same path.
+    let outside = needs_closing(session, &destination);
+    let caps_path = if outside {
+        Uuid::new_v4().to_string()
+    } else {
+        presence
+            .child_seed(session.agent_id, destination.end.region_id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    };
     let mut circuit = child_circuit(session, request, &caps_path, position);
     tracing::debug!("source hop: create");
     let created = match client
@@ -567,7 +607,6 @@ async fn perform(work: HopWork<'_>) {
             .await;
         return;
     }
-    let outside = needs_closing(session, &destination);
     let callback = if outside {
         presence.arm(session.agent_id);
         Some(release_uri(session))
@@ -601,8 +640,9 @@ async fn perform(work: HopWork<'_>) {
         .moved_away(session.agent_id, !outside, &destination.end)
         .await;
     if !outside {
-        // Logout closes this child. An outside-view hop does not leave one.
-        presence.note_child(session.agent_id, &destination.end);
+        // The hop owns this destination. Logout does not close the remote root,
+        // and a late admission completion must not announce or close it.
+        presence.note_child(session.agent_id, &destination.end, &caps_path);
     }
     if outside {
         presence.wait_release(session.agent_id).await;
@@ -1571,6 +1611,68 @@ mod tests {
         assert_eq!(body.get("SimPort").as_i32(), 9100);
         assert!(body.get("SeedCapability").as_str().contains("/CAPS/"));
         assert!(body.get("SeedCapability").as_str().ends_with("0000/"));
+    }
+
+    #[tokio::test]
+    async fn an_in_view_hop_reuses_the_admission_seed() {
+        let (listener, addr) = listen().await;
+        let caps = Arc::new(Mutex::new(CapsServer::bind().await.unwrap()));
+        let events = caps.lock().unwrap().event_queue_url().to_owned();
+        let book = Arc::new(crate::children::ChildBook::new());
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        book.attach(agent, generation);
+        let claimed = book.claim(
+            agent,
+            generation,
+            RegionEnd {
+                server_uri: format!("http://{addr}/"),
+                region_id: Uuid::from_u128(7),
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 256,
+            },
+        );
+        let crate::children::Claim::New { seed } = claimed else {
+            panic!("admission did not own the destination");
+        };
+        let mut opened = open_at(
+            listed(addr),
+            client(),
+            Some(listener),
+            vec![
+                (200, QUERY_OK.to_string()),
+                (200, CREATE_OK.to_string()),
+                (200, "true".to_string()),
+            ],
+            false,
+            enqueue_caps(&caps),
+            HopChoice {
+                presence: HopPresence::Seeded(Arc::clone(&book)),
+                handle: HANDLE,
+                grid: None,
+            },
+        )
+        .await;
+        opened.events = events;
+        opened.caps = caps;
+        let hits = finish_script(&mut opened).await;
+        assert_eq!(hits.len(), 3);
+        let create: Value = serde_json::from_slice(&plain(&hits[1])).unwrap();
+        assert_eq!(create["child"], true);
+        assert_eq!(create["teleport_flags"], "16");
+        assert_eq!(create["caps_path"], seed);
+        let event = poll_finish(&opened).await;
+        let info = event.get("events").at(0);
+        assert_eq!(info.get("message").as_str(), "TeleportFinish");
+        assert_eq!(
+            info.get("body")
+                .get("Info")
+                .at(0)
+                .get("SeedCapability")
+                .as_str(),
+            ferroan_client::caps_seed(&format!("http://{addr}/"), &seed)
+        );
     }
 
     #[test]

@@ -72,6 +72,7 @@ pub const REGION_PENDING_UPLOADS: &str = "region.pending-uploads";
 pub const REGION_AGENT_UPLOADS: &str = "region.agent-uploads";
 pub const REGION_CAP_BODY_BYTES: &str = "region.cap-body-bytes";
 pub const REGION_AGENT_CAPS: &str = "region.agent-caps";
+pub const REGION_CHILD_DESTINATIONS: &str = "region.child-destinations";
 pub const PROBE_SERVICE_ATTEMPT: &str = "probe.service-attempt";
 pub const REGION_PARCELS: &str = "region.parcels";
 pub const REGION_PARCEL_ACCESS: &str = "region.parcel-access";
