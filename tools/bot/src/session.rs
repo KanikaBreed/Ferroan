@@ -47,6 +47,8 @@ pub struct Agent {
 /// `REGION_HANDSHAKE_SUPPORTS_SELF_APPEARANCE | SEND_ALL_CACHEABLE | CACHE_EMPTY`.
 /// The bot keeps no object cache, so the region sends every cacheable object.
 const HANDSHAKE_FLAGS: u32 = 0x4 | 0x1 | 0x2;
+/// `GenericStreamingMessage` method for a glTF material override.
+const MATERIAL_OVERRIDE_METHOD: u16 = 16757;
 const WINDOW_HEIGHT: u16 = 1080;
 const WINDOW_WIDTH: u16 = 1920;
 const PING_EVERY: Duration = Duration::from_secs(5);
@@ -444,13 +446,18 @@ impl Session {
             return Ok(());
         };
         if let Some(capture) = &mut self.arrival_capture {
-            let material = capture.materials && packet.id == GenericStreamingMessage::ID;
+            let streaming = capture.materials && packet.id == GenericStreamingMessage::ID;
             if packet.id == ObjectUpdate::ID
                 || packet.id == ImprovedTerseObjectUpdate::ID
-                || material
+                || streaming
             {
                 capture.record(Kind::UdpOut, bytes)?;
-                if material {
+                if streaming
+                    && !packet.resent()
+                    && packet
+                        .decode::<GenericStreamingMessage>()
+                        .is_ok_and(|message| message.method_data.method == MATERIAL_OVERRIDE_METHOD)
+                {
                     capture.material_count += 1;
                 }
             }
@@ -760,6 +767,45 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].bytes, first);
         assert_eq!(records[1].bytes, resend);
+    }
+
+    #[tokio::test]
+    async fn material_count_ignores_a_resend_and_any_other_method() {
+        use ferroan_protocol::msgs::generic_streaming_message::{DataBlock, MethodData};
+
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = sim.local_addr().unwrap();
+        let mut session = Session::connect(peer, agent()).await.unwrap();
+        session.capture_prim_arrival(8000.0);
+        session.record_material_messages();
+        let override_message = GenericStreamingMessage {
+            method_data: MethodData {
+                method: MATERIAL_OVERRIDE_METHOD,
+            },
+            data_block: DataBlock {
+                data: b"{'id':i1}".to_vec(),
+            },
+        };
+        let other = GenericStreamingMessage {
+            method_data: MethodData { method: 1 },
+            data_block: DataBlock {
+                data: b"no".to_vec(),
+            },
+        };
+        let mut fresh = Vec::new();
+        build_packet(&override_message, 7, true, false, &[], &mut fresh);
+        let mut again = Vec::new();
+        build_packet(&override_message, 8, true, false, &[], &mut again);
+        let mut resend = fresh.clone();
+        resend[0] |= ferroan_protocol::PacketFlags::RESENT;
+        let mut wrong = Vec::new();
+        build_packet(&other, 9, true, false, &[], &mut wrong);
+        session.receive_datagram(&fresh, peer).await.unwrap();
+        session.receive_datagram(&resend, peer).await.unwrap();
+        session.receive_datagram(&wrong, peer).await.unwrap();
+        assert_eq!(session.material_messages(), 1);
+        session.receive_datagram(&again, peer).await.unwrap();
+        assert_eq!(session.material_messages(), 2);
     }
 
     async fn handshaken_session() -> (Session, UdpSocket, u32) {

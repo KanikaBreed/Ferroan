@@ -199,11 +199,12 @@ fn alias_material(
     Ok(encoded(packet, &message))
 }
 
-fn material_set(records: &[Record]) -> Result<BTreeSet<Vec<u8>>> {
-    let mut set = BTreeSet::new();
+/// Non-resend method 16757 payloads, in arrival order. A resend is not another send.
+fn material_datagrams(records: &[Record]) -> Result<Vec<Vec<u8>>> {
+    let mut payloads = Vec::new();
     for record in records {
         let packet = parse_packet(&record.bytes)?;
-        if packet.id != GenericStreamingMessage::ID {
+        if packet.id != GenericStreamingMessage::ID || packet.resent() {
             continue;
         }
         if !packet.reliable() || packet.flags & PacketFlags::ZEROCODED != 0 {
@@ -213,9 +214,9 @@ fn material_set(records: &[Record]) -> Result<BTreeSet<Vec<u8>>> {
         if message.method_data.method != 16757 {
             return Err("published material method was not 16757".into());
         }
-        set.insert(message.data_block.data);
+        payloads.push(message.data_block.data);
     }
-    Ok(set)
+    Ok(payloads)
 }
 
 fn require_region_copy(server: &[Record], viewers: &[Vec<Record>; 2]) -> Result<()> {
@@ -300,18 +301,32 @@ pub(super) fn extract(run: &Path, home_log: &Path, ferroan: bool) -> Result<Stri
 }
 
 fn compare(reference: &[Vec<Record>; 2], live: &[Vec<Record>; 2]) -> Result<String> {
-    let pin = material_set(&reference[0])?;
-    let got = material_set(&live[0])?;
-    if pin.is_empty() || got != pin {
-        return Err("control material notation differs from the Pin8 capture".into());
+    let pin = material_datagrams(&reference[0])?;
+    let got = material_datagrams(&live[0])?;
+    let pin_set: BTreeSet<&[u8]> = pin.iter().map(Vec::as_slice).collect();
+    let got_set: BTreeSet<&[u8]> = got.iter().map(Vec::as_slice).collect();
+    if pin.is_empty() || got.len() != pin.len() || got_set != pin_set {
+        return Err(format!(
+            "control material notation differs from the Pin8 capture (Ferroan {}, Pin8 {})",
+            got.len(),
+            pin.len()
+        )
+        .into());
     }
-    if !material_set(&reference[1])?.is_empty() || !material_set(&live[1])?.is_empty() {
-        return Err("the viewer that did not request PBR received a material override".into());
+    let limited_pin = material_datagrams(&reference[1])?;
+    let limited_got = material_datagrams(&live[1])?;
+    if !limited_pin.is_empty() || !limited_got.is_empty() {
+        return Err(format!(
+            "the viewer that did not request PBR received a material override (Ferroan {}, Pin8 {})",
+            limited_got.len(),
+            limited_pin.len()
+        )
+        .into());
     }
+    let count = got.len();
     Ok(format!(
-        "material-override: {} reliable unencoded method 16757 payload{} matched the PBR viewer",
-        pin.len(),
-        if pin.len() == 1 { "" } else { "s" }
+        "material-override: Ferroan sent {count} reliable unencoded method 16757 datagram{} to the PBR viewer",
+        if count == 1 { "" } else { "s" }
     ))
 }
 
@@ -364,12 +379,47 @@ mod tests {
     #[test]
     fn the_pin8_fixture_is_one_reliable_override_for_the_pbr_viewer() {
         let control = read_fixture("control.cap").unwrap();
-        let notes = material_set(&control).unwrap();
+        let notes = material_datagrams(&control).unwrap();
         assert_eq!(
-            notes.into_iter().collect::<Vec<_>>(),
+            notes,
             vec![b"{'id':i1,'te':[i0,i2],'od':[{'bc':[r1,r0,r0,r1]},{'ds':1}]}".to_vec()]
         );
+        let packet = parse_packet(&control[0].bytes).unwrap();
+        assert!(packet.reliable());
+        assert!(!packet.resent());
+        assert_eq!(packet.flags & PacketFlags::ZEROCODED, 0);
+        assert_eq!(
+            packet
+                .decode::<GenericStreamingMessage>()
+                .unwrap()
+                .method_data
+                .method,
+            16757
+        );
         let limited = read_fixture("limited.cap").unwrap();
-        assert!(material_set(&limited).unwrap().is_empty());
+        assert!(material_datagrams(&limited).unwrap().is_empty());
+        let message = compare(&[control.clone(), limited.clone()], &[control, limited]).unwrap();
+        assert!(message.contains("Ferroan sent 1 "));
+    }
+
+    #[test]
+    fn a_second_fresh_override_fails_and_a_resend_does_not_count() {
+        let control = read_fixture("control.cap").unwrap();
+        let limited = read_fixture("limited.cap").unwrap();
+        let reference = [control.clone(), limited.clone()];
+        let mut doubled = control.clone();
+        doubled.push(control[0].clone());
+        let err = compare(&reference, &[doubled, limited.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Ferroan 2"));
+        assert!(err.contains("Pin8 1"));
+
+        let mut resent = control[0].clone();
+        resent.bytes[0] |= PacketFlags::RESENT;
+        let mut with_resend = control.clone();
+        with_resend.push(resent);
+        let message = compare(&reference, &[with_resend, limited]).unwrap();
+        assert!(message.contains("Ferroan sent 1 "));
     }
 }
