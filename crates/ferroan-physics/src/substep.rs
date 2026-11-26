@@ -168,6 +168,7 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     fn fixture() -> Value {
         let path =
@@ -406,8 +407,30 @@ mod tests {
         }
     }
 
+    /// The diagnostics ring keeps the first hit of a limit id for a minute.
+    /// Record the 45 Hz case before any other step-cap report.
+    fn reported_step_cap() -> String {
+        static GUARD: Mutex<Option<String>> = Mutex::new(None);
+        let mut slot = GUARD.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(text) = slot.clone() {
+            return text;
+        }
+        let mut acc = SubstepAccumulator::new(45.0).unwrap();
+        assert_eq!(acc.advance(1.0), MAX_STEPS_PER_FRAME);
+        let text = ferroan_diag::render();
+        *slot = Some(text.clone());
+        text
+    }
+
     #[test]
     fn a_step_past_the_cap_is_dropped_and_reported() {
+        let report = reported_step_cap();
+        assert!(
+            report.contains(
+                "limit physics.steps-per-frame hard drop configured=16 observed=45 route=physics"
+            ),
+            "{report}"
+        );
         let mut acc = SubstepAccumulator::new(45.0).unwrap();
         assert_eq!(acc.advance(1.0), MAX_STEPS_PER_FRAME);
         assert_eq!(acc.capped_frames(), 1);
@@ -423,7 +446,17 @@ mod tests {
     }
 
     #[test]
+    fn steps_observed_keeps_the_count_and_maps_infinity_to_u64_max() {
+        assert_eq!(steps_observed(17.0), 17);
+        assert_eq!(steps_observed(45.0), 45);
+        assert_eq!(steps_observed(4_294_967_296.0), 4_294_967_296);
+        assert_eq!(steps_observed(f64::INFINITY), u64::MAX);
+        assert_eq!(steps_observed(f64::NAN), u64::MAX);
+    }
+
+    #[test]
     fn outside_numbers_stay_inside_the_step_cap() {
+        reported_step_cap();
         for rate in f32_samples() {
             let finite_positive = rate.is_finite() && rate > 0.0;
             let built = SubstepAccumulator::new(rate);
