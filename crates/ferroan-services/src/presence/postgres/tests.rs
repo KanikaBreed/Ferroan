@@ -149,12 +149,9 @@ async fn cross_realm(db: &Pool, dll: &std::ffi::OsStr, custom: bool) {
             .unwrap()
     );
 
-    let before = db_clock(pool).await;
     oracle("report", "");
     let reported = store.get(first).await.unwrap().unwrap();
-    let reported_time = timestamp(pool, &realm, first).await.unwrap();
-    assert!((before..=db_clock(pool).await).contains(&reported_time));
-    let exact = reported_time;
+    let exact = timestamp(pool, &realm, first).await.unwrap();
     assert_eq!(reported.region_id(), away);
     assert_eq!(reported.data["LastSeen"], exact);
 
@@ -206,10 +203,10 @@ async fn cross_realm(db: &Pool, dll: &std::ffi::OsStr, custom: bool) {
             .unwrap();
     }
     println!(
-        "presence postgres: {mode} realm: both directions match; TB105: Pin8 InvalidCastException, Ferroan restores SQL NULL and the reported microseconds (proposed D84)"
+        "presence postgres: {mode} realm: both directions match; TB105: Pin8 throws InvalidCastException for both fetched rows, Ferroan restores SQL NULL and the reported microseconds (D84)"
     );
     println!(
-        "TB114: Pin8 InvalidCastException on LastSeen get/delete, Ferroan matches by typed timestamp (proposed D89)"
+        "TB114: Pin8 InvalidCastException on LastSeen get/delete, Ferroan matches by typed timestamp (D89)"
     );
 }
 

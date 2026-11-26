@@ -2,9 +2,9 @@
 
 ## PostgreSQL
 
-Run `cargo xtask presence cross postgres` under the shared live lock with a free port base and `UseSharedCompilation=false`. Set `FERROAN_PRESENCE_ADO_POSTGRES` in the environment to a disposable PostgreSQL database. Both providers use that connection and repeat the sequence in a separately named realm with the same indexes and defaults. The Pin8 plugin runs its migrations, so the test account needs permission to create the schema.
+Run `cargo xtask presence cross postgres` under the shared live lock with a free port base and `UseSharedCompilation=false`. Set `FERROAN_PRESENCE_ADO_POSTGRES` in the environment to a disposable PostgreSQL database, for example `Host=127.0.0.1;Port=5432;Database=presence_test;Username=presence_test`. If authentication requires a password, append the `Password` field to the environment value. Omit `Pooling` and `Maximum Pool Size` because ferroan-db refuses both keys. Both providers use that connection and repeat the sequence in a separately named realm with the same indexes and defaults. The Pin8 plugin runs its migrations, so the test account needs permission to create the schema.
 
-C# and Rust insert, update and read one another's sessions. The plugin checks retained and restored values, and a native read checks SQL NULL and every fractional digit of the reported timestamp. The cross-read also records the Pin8 re-store exception (TB105) and its timestamp selector exceptions (TB114).
+C# and Rust insert, update and read one another's sessions. The plugin checks retained and restored values, and a native read checks SQL NULL and every fractional digit of the reported timestamp. The cross-read also records the Pin8 re-store exception for fetched NULL and reported timestamps (TB105) and its timestamp selector exceptions (TB114).
 
 ## Null
 

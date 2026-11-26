@@ -69,7 +69,9 @@ static class PostgresCross
                 initial.Data["SecureSessionID"] = secure.ToString();
                 Check(store.Store(initial) && store.Store(Row(second, home)), "fresh sessions");
                 Check(store.Store(Row(first, staging)), "partial store");
-                Check(store.Get(first).Data["LastSeen"] == "", "fresh timestamp");
+                var fresh = store.Get(first);
+                Check(fresh.Data["LastSeen"] == "", "fresh timestamp");
+                Check(RefusesTime(() => store.Store(fresh)), "TB105 fetched NULL re-store");
                 Check(store.VerifyAgent(user, secure), "partial store kept secure session");
                 Check(store.Get("SecureSessionID", "invalid").Any(x => x.SessionID == second), "invalid UUID selects zero");
                 Check(RefusesTime(() => store.Get("LastSeen", "")) &&
@@ -81,10 +83,23 @@ static class PostgresCross
                     rust.Data["LastSeen"] == "" && store.VerifyAgent(user, thirdSecure), "Rust insert");
                 Check(store.Get("UserID", user.ToString()).Length == 3, "three sessions");
                 Check(!store.ReportAgent(first, UUID.Zero) && !store.ReportAgent(Id(10), home), "refused reports");
-                Check(store.ReportAgent(first, away), "report");
+                // LastSeen has no zone. Take both window bounds in the reporting
+                // provider's session zone, even when the Rust reader uses UTC.
+                using (var conn = new NpgsqlConnection(connection))
+                {
+                    conn.Open();
+                    using var clock = new NpgsqlCommand("SELECT localtimestamp", conn);
+                    var before = (DateTime)clock.ExecuteScalar();
+                    Check(store.ReportAgent(first, away), "report");
+                    using var window = new NpgsqlCommand(
+                        $"SELECT \"LastSeen\" BETWEEN @before AND localtimestamp FROM {realm} WHERE \"SessionID\" = @id", conn);
+                    window.Parameters.AddWithValue("before", NpgsqlTypes.NpgsqlDbType.Timestamp, before);
+                    window.Parameters.AddWithValue("id", first.Guid);
+                    Check(window.ExecuteScalar() is true, "report in server time window");
+                }
                 var reported = store.Get(first);
                 Check(reported.RegionID == away && reported.Data["LastSeen"] != "", "report stamped row");
-                Check(RefusesTime(() => store.Store(reported)), "TB105 fetched row re-store");
+                Check(RefusesTime(() => store.Store(reported)), "TB105 fetched reported timestamp re-store");
                 reported.Data.Remove("LastSeen");
                 Check(store.Store(reported), "same row without LastSeen");
                 break;
