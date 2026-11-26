@@ -95,6 +95,8 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 
 ## Presence rows
 
+`presence::PgPresenceData` opens `Presence` by default. Pass `[PresenceService] Realm` to `new` for a different PostgreSQL v4 table. PostgreSQL folds the validated identifier to lowercase as in Pin8. A store with an existing session ID updates the supplied fields. A new session defaults to a zero secure session ID and SQL NULL for LastSeen. The row exposes SQL NULL as an empty string. For a non-null timestamp, Ferroan's `Data["LastSeen"]` holds PostgreSQL ISO text with microsecond precision. Pin8 under Robust gives en-US text without fractional seconds. Q26d must accept the provider's representation and LoginAgent must store a fresh row without LastSeen. Ferroan preserves the fetched value on re-store (TB105, D84). A successful region report stamps the database clock in the session zone.
+
 The service can use `dyn PresenceStore` for all seven asynchronous operations. A store returns `Ok(false)` when it writes nothing. Bound and database errors have distinct variants. After a successful region report the service can call `set_region_id` on its cached row, including a detached row fetched from SQL.
 
 `presence::PresenceData` holds the user ID as text, session and region UUIDs, and the provider's named data fields. Each `NullPresenceData::default()` uses the same process-wide session map. A report updates a held row; storing a replacement by session ID leaves earlier references pointing to the old row. Field lookups and deletes compare user IDs and additional fields exactly. The Null provider accepts a report to the zero region and returns false from agent verification. The [Presence fixture](../../fixtures/presence/README.md) records the Pin8 calls.
