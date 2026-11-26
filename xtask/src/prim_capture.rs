@@ -14,13 +14,22 @@ use ferroan_protocol::msgs::{
     ObjectUpdate,
     object_update::{ObjectData, RegionData},
 };
-use ferroan_protocol::{Msg, PacketFlags, Reader, Writer, parse_packet};
+use ferroan_protocol::{IncomingPacket, Msg, PacketFlags, Reader, Writer, parse_packet};
 use ferroan_scene::{ObjectStoreKind, open_objects};
 use serde_json::json;
 use uuid::Uuid;
 
-fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
-    let mut parts = BTreeMap::new();
+pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
+    read_blocks(records, PRIM_CAPTURE_COUNT, |_, _, _| {})
+}
+
+/// The receipt callback sees each non-avatar block, including retransmissions.
+pub(super) fn read_blocks(
+    records: &[Record],
+    max: usize,
+    mut receipt: impl FnMut(Uuid, u64, &IncomingPacket),
+) -> Result<BTreeMap<Uuid, ObjectData>, String> {
+    let mut parts = BTreeMap::<Uuid, ObjectData>::new();
     for record in records.iter().filter(|r| r.kind == Kind::UdpOut) {
         let packet = parse_packet(&record.bytes).map_err(|e| e.to_string())?;
         if packet.id != ObjectUpdate::ID {
@@ -45,15 +54,19 @@ fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, Str
             }
             let id = block.full_id;
             if let Some(previous) = parts.get(&id) {
-                if previous != &block {
+                // A repeat must preserve every field byte, including the sign of zero.
+                let mut first = Writer::new();
+                previous.encode(&mut first);
+                if first.buf != writer.buf {
                     return Err(format!("different initial blocks for {id}"));
                 }
             } else {
-                if parts.len() == PRIM_CAPTURE_COUNT {
+                if parts.len() == max {
                     return Err("capture contains unexpected prims".into());
                 }
                 parts.insert(id, block);
             }
+            receipt(id, record.time_ms, &packet);
         }
         if reader.remaining() != 0 {
             return Err("trailing ObjectUpdate bytes".into());
@@ -83,7 +96,7 @@ async fn stored_roots(db: &Path) -> Result<BTreeMap<Uuid, Uuid>, String> {
     Ok(roots)
 }
 
-fn validate_ids(
+pub(super) fn validate_ids(
     parts: &BTreeMap<Uuid, ObjectData>,
     roots: &BTreeMap<Uuid, Uuid>,
 ) -> Result<(), String> {
@@ -123,9 +136,16 @@ pub(super) fn extract(run: &Path) -> Result<String, String> {
             roots.len()
         ));
     }
-    validate_ids(&parts, &roots)?;
-    let dir = run.join("prim-updates");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    write_fixture(&run.join("prim-updates"), parts, &roots)
+}
+
+pub(super) fn write_fixture(
+    dir: &Path,
+    parts: BTreeMap<Uuid, ObjectData>,
+    roots: &BTreeMap<Uuid, Uuid>,
+) -> Result<String, String> {
+    validate_ids(&parts, roots)?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let aliases: BTreeMap<_, _> = parts
         .keys()
         .enumerate()

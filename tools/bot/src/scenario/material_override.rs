@@ -6,7 +6,8 @@
 //! Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs, needMaterials.
 
 use super::{
-    ArrivalThrottle, Harness, ObserverSession, PRIM_CAPTURE_COUNT, enter_prepared, leave, world,
+    ArrivalThrottle, Harness, ObserverSession, PRIM_CAPTURE_COUNT, PrimTrace, enter_prepared,
+    leave, world,
 };
 use std::time::{Duration, Instant};
 
@@ -104,7 +105,7 @@ pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<Str
         harness,
         &harness.owner,
         "last",
-        ArrivalThrottle::Task(NORMAL_TASK_BPS),
+        ArrivalThrottle::Task(PrimTrace::Arrival(NORMAL_TASK_BPS)),
         |session| {
             session.record_material_messages();
             session.request_seed_cap(PBR_CAP);
@@ -119,7 +120,7 @@ pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<Str
             harness,
             &harness.chat,
             "last",
-            ArrivalThrottle::Task(NORMAL_TASK_BPS),
+            ArrivalThrottle::Task(PrimTrace::Arrival(NORMAL_TASK_BPS)),
             |session| session.record_material_messages(),
         ))
         .await;

@@ -22,16 +22,20 @@ The test agent/region and generated session UUIDs use the same placeholders as
 
 The online probe queries Robust before logging out and while continuing to
 drive the bot's circuit. It requires the current user/session, Presence RegionID,
-GridUser Online/LastRegionID, and an exact parsed `f32` LastPosition match with
-the received arrival. No tolerance is used. The C# form's `25.960001` therefore
-corresponds to the captured arrival's widened value `25.96000099182129`.
+GridUser Online/LastRegionID, and exact horizontal coordinates on the received
+arrival. On Pin8 the physics actor is already active when ActivityDetector
+samples the position. A physics tick before the viewer packet can change Z,
+including an upward ground correction.
+The C# login check allows less than one metre of vertical motion and compares
+all three stored coordinates exactly with the current circuit's captured
+`setposition` form once the proxy has drained. In the committed fixture both samples
+correspond to the C# form's `25.960001` (widened to `25.96000099182129`).
 Stored LookAt remains zero; the viewer arrival's fallback direction is distinct.
 The fixture extractor verifies the pinned C# channel marker and matching
 position/handle/look in the UDP capture. It rejects ambiguous HTTP pairings.
 
-Rust runs the same online assertion and compares the captured C# region,
-handle, XY and look values. Terrain-adjusted Z remains P2.0e: each service's
-stored Z must exactly match its own actual arrival, but Rust Z is not claimed
-equal to C# terrain height. The fixture form tests separately use the captured
-position to prove exact C# serialization. No passwords, live session identities
+Rust checks the same online state and compares the captured C# region,
+handle, XY and look values. Terrain-adjusted Z remains P2.0e. The Rust region's
+stored Z must exactly match its own arrival. The fixture form tests use the
+captured position to prove exact C# serialization. No passwords, live session identities
 or raw captures are committed. Firestorm remains pending.

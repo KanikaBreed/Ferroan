@@ -271,7 +271,7 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: ferroan
           MYSQL_USER: ferroan
-          MYSQL_PASSWORD: ferroan
+          MYSQL_PASSWORD: &services_mysql_password ferroan
           MYSQL_DATABASE: ferroan_assets
         ports:
           - 3306:3306
@@ -284,7 +284,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: ferroan
-          POSTGRES_PASSWORD: ferroan
+          POSTGRES_PASSWORD: &services_pg_password ferroan
           POSTGRES_DB: ferroan_assets
         ports:
           - 5432:5432
@@ -319,6 +319,18 @@ jobs:
           cargo xtask ci ensure-db-clients
           mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uferroan -pferroan --ssl-mode=DISABLED ferroan_assets < fixtures/db/mysql/schema.sql
           PGPASSWORD=ferroan psql -h 127.0.0.1 -p 5432 -U ferroan -d ferroan_assets -v ON_ERROR_STOP=1 -f fixtures/db/postgres/schema.sql
+      - name: Compare Presence HTTP against Pin8 on Null and PostgreSQL
+        env:
+          PGPASSWORD: *services_pg_password
+          PRESENCE_MYSQL_PASSWORD: *services_mysql_password
+          UseSharedCompilation: "false"
+        run: |
+          set -euo pipefail
+          createdb -h 127.0.0.1 -U ferroan ferroan_presence_ci
+          export FERROAN_PRESENCE_ADO_POSTGRES="Host=127.0.0.1;Database=ferroan_presence_ci;Username=ferroan;Password=$PGPASSWORD"
+          export FERROAN_PRESENCE_ADO_MYSQL="Server=127.0.0.1;Database=ferroan_assets;Uid=ferroan;Password=$PRESENCE_MYSQL_PASSWORD;SslMode=None"
+          cargo xtask presence service-verify
+          cargo test -p ferroan-services --test presence_service
       - name: Compare XAsset on MySQL
         if: success()
         run: cargo xtask live assets --backend xasset --db mysql

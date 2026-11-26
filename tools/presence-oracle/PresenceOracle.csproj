@@ -19,5 +19,9 @@
   <ItemGroup>
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.PGSQL/OpenSim.Data.PGSQL.csproj" />
     <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.Null/OpenSim.Data.Null.csproj" />
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Data.MySQL/OpenSim.Data.MySQL.csproj" />
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Services.PresenceService/OpenSim.Services.PresenceService.csproj" />
+    <ProjectReference Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Base/OpenSim.Server.Base.csproj" />
+    <Compile Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Server.Handlers/Presence/PresenceServerPostHandler.cs" Link="PresenceServerPostHandler.cs" />
   </ItemGroup>
 </Project>

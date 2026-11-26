@@ -479,7 +479,12 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
     }
     if (matches!(
         *scenario,
-        "prim-capture" | "object-cross" | "child-view" | "parcel-timing"
+        "prim-capture"
+            | "object-cross"
+            | "child-view"
+            | "store-handoff"
+            | "parcel-timing"
+            | "prim-load"
     ) || (matches!(*scenario, "prim-arrival" | "material-override") && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
@@ -769,6 +774,8 @@ mod tests {
             "material-override",
             "object-cross",
             "child-view",
+            "store-handoff",
+            "prim-load",
             "parcel-timing",
         ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
