@@ -167,9 +167,13 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         return prim_arrival::run(&http, harness).await;
     }
     if matches!(name, "prim-capture" | "store-handoff") {
-        let task = (name == "store-handoff").then_some(512_000.0);
+        let throttle = if name == "store-handoff" {
+            ArrivalThrottle::Task(512_000.0)
+        } else {
+            ArrivalThrottle::Default
+        };
         let (mut session, _) =
-            enter_with_task(&http, harness, &harness.owner, "last", task).await?;
+            enter_with_throttle(&http, harness, &harness.owner, "last", throttle).await?;
         let result = wait_for_stored_prims(&mut session).await;
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
