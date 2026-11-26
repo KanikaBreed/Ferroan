@@ -227,8 +227,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
 | Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split proposed into Q80a–Q80b) |
-| Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split into Q80a–Q80b) |
+| Q80a | P2.11b1: keep the C# neighbour's child a child presence | READY after Q79c2b |
+| Q80b | P2.11b2: apply `AgentPosition` and prove the mirror of child-view live | READY after Q80a |
+| Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80b |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
@@ -420,7 +422,7 @@ Q18 BLOCKED (22 November 2026, `docs/q18-blocked`): the row is more than about a
 
 Q18 split (manager, 22 November 2026): the block in #164 is right, and its three parts are taken as Q18a to Q18c. Q18a is fixtures only, no Ferroan transfer code. If Q18b or Q18c is still more than about a day, block it again with a split. P2.0i stays TODO until all three are DONE. Q19 follows Q18c.
 
-Proposed split, for the manager to queue. P2.0i stays the parent row until all three are done.
+Split approved by the manager on 26 November 2026, for the manager to queue. P2.0i stays the parent row until all three are done.
 
 (1) Fixtures from two C# regions at `1d7abb8337`, both directions, using the existing neighbour scenario. Save `QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent` and `CloseAgent`, and the viewer sequence the bot already accepts: `TeleportStart`, the event-queue `TeleportFinish` (sim version 13, the caps seed, the destination endpoint), `AgentMovementComplete`, and the source circuit kept as a child. A compare checks those fields. No Ferroan behaviour change.
 
