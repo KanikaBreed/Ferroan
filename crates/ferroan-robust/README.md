@@ -1,6 +1,6 @@
 # ferroan-robust
 
-The grid-services process. This build serves the asset, user-account, user-alias and avatar routes whose ini sections are present. An ini with only `[AssetService]` still serves assets.
+The grid-services process. This build serves the asset, user-account, user-alias, avatar and Presence routes whose ini sections are present. An ini with only `[AssetService]` still serves assets.
 
 The baked-texture cache uses `[BakedTextureService] LocalServiceModule = OpenSim.Server.Handlers.dll:XBakes` and requires `BaseDirectory`. In an ini with a connector list, enable `OpenSim.Server.Handlers.dll:XBakesConnector` on the process's `[Network] port`. In a section-only ini, the service section enables it. Regions set `[XBakes] URL` to the service URL. The authenticated remote console advertises `delete bakes <ID>` while the cache is enabled.
 

@@ -29,8 +29,8 @@ use axum::Router;
 use ferroan_config::GridLoad;
 use ferroan_services::bakes::Bakes;
 use ferroan_services::{
-    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, authorization_router,
-    listen_address, network_port, open_authorization,
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, PresenceHttp,
+    authorization_router, listen_address, network_port, open_authorization,
 };
 
 mod status;
@@ -81,9 +81,10 @@ fn run() -> Result<(), String> {
         let avatars = config.section_names().any(|name| name == "AvatarService");
         let bakes = Bakes::configured(config, port).map_err(|e| e.to_string())?;
         let griduser = config.section_names().any(|name| name == "GridUserService");
-        if !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars && bakes.is_none() {
+        let presence = config.section_names().any(|name| name == "PresenceService");
+        if !presence && !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars && bakes.is_none() {
             return Err(
-                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService, BakedTextureService or GridUserService section"
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService, BakedTextureService, PresenceService or GridUserService section"
                     .to_string(),
             );
         }
@@ -137,6 +138,12 @@ fn run() -> Result<(), String> {
             log_guard.register_console_command(&["delete", "bakes"], Bakes::DELETE_HELP,
                 move |args| cache.delete(args).to_owned());
             tracing::info!("ferroan-robust: baked-texture cache on {listen}:{port}");
+        }
+        if presence {
+            let http = PresenceHttp::open(config).await.map_err(|error| error.to_string())?;
+            pools = pools.presence(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: presence service on {listen}:{port}");
         }
         if griduser {
             let http = GridUserHttp::open(config)
