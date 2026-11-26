@@ -167,6 +167,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q84 | P2.3d: `UUIDNameRequest` answered with `UUIDNameReply`, so Ferrobot's `nearby` no longer waits about 10 s for names | DONE (this PR) |
 | Q49 | P2.3b1: the animation state machine | DONE (this PR) |
 | Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | READY after Q49 |
+| Q379 | P2.3e: hide avatars by parcel (`ParcelHideThisAvatar`, `SeeAVs`) | READY after Q50 |
+| Q380 | P2.3f: retry refused inbound posts in order (`AgentAnimation`) | READY after Q50 |
 | Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
@@ -228,10 +230,12 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q214 | P2.0e4.1: OAR control file and region path | READY |
+| Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
 | Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
+| Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
 | Q220 | P2.0e4.6a: OAR parcels in memory | READY |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |
