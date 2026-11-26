@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
     return 2;
 }
 
@@ -62,8 +62,8 @@ try
         case "load" when args.Length == 4:
             Load(args[1], args[2], args[3]);
             return 0;
-        case "prim-seed" when args.Length == 4:
-            SeedPrimUpdates(args[1], new UUID(args[2]), new UUID(args[3]));
+        case "prim-seed" or "prim-load-seed" when args.Length == 4:
+            SeedPrimUpdates(args[1], new UUID(args[2]), new UUID(args[3]), args[0] == "prim-load-seed");
             return 0;
         case "bulk" when args.Length == 4:
             Bulk(args[1], args[2], args[3]);
@@ -119,7 +119,7 @@ try
             SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
             return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid>");
             return 2;
     }
 }
@@ -163,7 +163,7 @@ static void Bulk(string path, string region, string countText)
 
 // Exercise SQLiteSimulationData.StoreObject at Pin8 c401bceecd. Only synthetic
 // objects enter this database. The live C# region opens a disposable copy.
-static void SeedPrimUpdates(string path, UUID region, UUID owner)
+static void SeedPrimUpdates(string path, UUID region, UUID owner, bool loadScene)
 {
     if (File.Exists(path))
         throw new IOException("prim-seed needs a fresh database");
@@ -275,6 +275,30 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         store.StoreObject(new SceneObjectGroup(emitter), region);
         store.StoreObject(new SceneObjectGroup(speaker), region);
         store.StoreObject(new SceneObjectGroup(animated), region);
+        if (loadScene)
+        {
+            // 8 capture parts plus 246 linked pairs. StoreObject persists both
+            // prim and shape rows; every local ID is allocated on scene load.
+            for (int n = 9; n <= 500; n += 2)
+            {
+                int pair = (n - 9) / 2;
+                var pos = new Vector3(112 + 2 * (pair % 16), 112 + 2 * (pair / 16), 40 + pair % 5);
+                var shape = pair % 2 == 0 ? PrimitiveBaseShape.CreateBox() : PrimitiveBaseShape.CreateSphere();
+                shape.Textures = new Primitive.TextureEntry(Id(1000 + n));
+                shape.SetScale(0.5f + (pair % 4) * 0.125f);
+                var parent = Part(n, "load root", shape, pos, Vector3.Zero);
+                if (pair % 2 == 1)
+                    parent.RotationOffset = new Quaternion(0, 0, 1, 0);
+                var pairGroup = new SceneObjectGroup(parent);
+                var cylinder = PrimitiveBaseShape.CreateCylinder();
+                cylinder.SetScale(0.25f + (pair % 3) * 0.125f);
+                cylinder.Textures = new Primitive.TextureEntry(Id(1001 + n));
+                var linked = Part(n + 1, "load child", cylinder, pos, new Vector3(0.75f, (pair % 3) * 0.25f, 0.5f));
+                linked.RotationOffset = new Quaternion(1, 0, 0, 0);
+                pairGroup.AddPart(linked);
+                store.StoreObject(pairGroup, region);
+            }
+        }
     }
     finally
     {

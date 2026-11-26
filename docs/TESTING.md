@@ -90,6 +90,8 @@ Q65a uses a separate SQLite scene persisted by Pin8. `cargo xtask live run prim-
 
 Q65d1 uses `cargo xtask live run store-handoff grid --physics basicphysics` to compare all eight viewer full blocks from the same edited SQLite file. The [persisted linkset fixture](../fixtures/store-handoff/README.md) records the box and its mesh child. `cargo test -p xtask store_handoff` checks the local-ID mapping and rejects a missing child, wrong parent, changed texture or stale root scale.
 
+`cargo xtask live run prim-load grid --physics basicphysics` repeats that handoff with 500 parts. Each distinct store UUID must reach each viewer. Repeated full blocks must agree with the first copy. The harness measures the time from the first distinct part to the last distinct part and checks the refusal and drop counters across the Ferroan login. The [load receipts](../fixtures/prim-load/README.md) record one run at 512,000 bit/s. The offline receipt test replays the Pin8 arrival capture, including repeats and a different Task rate.
+
 The [Q79a child-view fixture](../fixtures/child-view/README.md) follows a viewer that stays rooted at home while receiving the neighbour's resident avatar and stored prim on a separate circuit. Its replay correlates the home movement and logout with the neighbour's child admission, position update and close.
 
 Q65c1 reopens the same scene for two viewers with `cargo xtask live run prim-arrival grid --physics basicphysics`. The [two circuit captures](../fixtures/prim-arrival/README.md) preserve first and repeat deliveries, linkset IDs, packet boundaries and avatar terse updates while the second viewer varies only Task. `cargo test -p xtask grid::prim_arrival` replays both circuits offline.

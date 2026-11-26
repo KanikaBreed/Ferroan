@@ -6,7 +6,9 @@
 //! SceneObjectGroup.ProcessBackup and SQLiteSimulationData.StoreObject.
 
 use super::{Proc, RegionStart, RegionStore, login_capture, prim_capture};
-use ferroan_bot::scenario::PRIM_CAPTURE_COUNT;
+use ferroan_bot::scenario::{HANDOFF_TASK_BPS, PRIM_CAPTURE_COUNT, PRIM_LOAD_COUNT};
+use ferroan_capture::{Kind, Record};
+use ferroan_protocol::{Msg, msgs::AgentThrottle, parse_packet};
 use ferroan_protocol::{Writer, msgs::object_update::ObjectData};
 use std::collections::BTreeMap;
 use std::fs;
@@ -71,11 +73,11 @@ fn edited(db: &Path) -> Result<bool, String> {
     }
 }
 
-fn roots(db: &Path) -> Result<BTreeMap<Uuid, Uuid>, String> {
+fn roots(db: &Path, count: usize) -> Result<BTreeMap<Uuid, Uuid>, String> {
     let sql = format!(
         "SELECT substr(UUID,1,37),substr(SceneGroupID,1,37) FROM prims WHERE RegionUUID='{}' LIMIT {};",
         super::live::REGION_UUID,
-        PRIM_CAPTURE_COUNT + 1
+        count + 1
     );
     let mut roots = BTreeMap::new();
     for line in query(db, &sql)?.lines() {
@@ -90,18 +92,143 @@ fn roots(db: &Path) -> Result<BTreeMap<Uuid, Uuid>, String> {
             return Err("duplicate stored UUID".into());
         }
     }
-    if roots.len() != PRIM_CAPTURE_COUNT
-        || !roots.iter().any(|(id, root)| id != root && *root == BOX)
-    {
+    if roots.len() != count || !roots.iter().any(|(id, root)| id != root && *root == BOX) {
         return Err("handoff scene is missing its linked box or stored parts".into());
     }
     Ok(roots)
 }
 
-fn viewer(log: &Path) -> Result<Blocks, String> {
-    let bytes = login_capture::bounded(&log.with_extension("viewer.cap"), 2 * 1024 * 1024)?;
-    let records = ferroan_capture::read_capture(&bytes).map_err(|e| e.to_string())?;
-    prim_capture::captured_blocks(&records)
+struct Receipt {
+    first_ms: u64,
+    copies: usize,
+}
+
+struct Viewer {
+    parts: Blocks,
+    receipts: BTreeMap<Uuid, Receipt>,
+}
+
+impl Viewer {
+    fn read(records: &[Record], count: usize) -> Result<Self, String> {
+        if records.len() > ferroan_bot::session::LOAD_RECEIPT_LIMIT
+            || records.windows(2).any(|p| p[1].time_ms < p[0].time_ms)
+        {
+            return Err("invalid viewer receipt window".into());
+        }
+        // Read the request that actually left this circuit. A different Task
+        // rate anywhere in the window would make the timings incomparable.
+        let mut throttle_ms = None;
+        for record in records.iter().filter(|r| r.kind == Kind::UdpIn) {
+            let packet = parse_packet(&record.bytes).map_err(|e| e.to_string())?;
+            let request = packet
+                .decode::<AgentThrottle>()
+                .map_err(|e| e.to_string())?;
+            if packet.id != AgentThrottle::ID
+                || request.throttle.throttles.get(16..20) != Some(&HANDOFF_TASK_BPS.to_le_bytes())
+            {
+                return Err("unexpected viewer Task rate".into());
+            }
+            throttle_ms.get_or_insert(record.time_ms);
+        }
+        let mut receipts = BTreeMap::new();
+        let parts = prim_capture::read_blocks(records, count, |id, at| {
+            let receipt = receipts.entry(id).or_insert(Receipt {
+                first_ms: at,
+                copies: 0,
+            });
+            receipt.copies += 1;
+        })?;
+        if receipts.len() != count {
+            return Err(format!(
+                "expected {count} viewer receipts, found {}",
+                receipts.len()
+            ));
+        }
+        let first = receipts
+            .values()
+            .map(|r| r.first_ms)
+            .min()
+            .ok_or("no prim receipts")?;
+        if throttle_ms.is_none_or(|at| at > first) {
+            return Err("missing Task request before the first prim".into());
+        }
+        Ok(Self { parts, receipts })
+    }
+
+    fn report(&self, name: &str, root: &Path) -> Result<String, String> {
+        use std::fmt::Write;
+        let mut first = u64::MAX;
+        let mut last = 0;
+        let mut repeats = 0;
+        let mut rows = String::from("store_uuid\tfirst_ms\trepeats\n");
+        for (id, receipt) in &self.receipts {
+            first = first.min(receipt.first_ms);
+            last = last.max(receipt.first_ms);
+            repeats += receipt.copies - 1;
+            writeln!(rows, "{id}\t{}\t{}", receipt.first_ms, receipt.copies - 1)
+                .map_err(|e| e.to_string())?;
+        }
+        fs::write(root.join(format!("prim-load-{name}.tsv")), rows).map_err(|e| e.to_string())?;
+        let elapsed = last.checked_sub(first).ok_or("missing first delivery")?;
+        Ok(format!(
+            "{name}: {} first deliveries, {repeats} repeats, {elapsed} ms first to last at {HANDOFF_TASK_BPS} bit/s",
+            self.receipts.len()
+        ))
+    }
+}
+
+fn viewer(log: &Path, count: usize) -> Result<Viewer, String> {
+    let bytes = login_capture::bounded(&log.with_extension("viewer.cap"), 9 * 1024 * 1024)?;
+    let records =
+        ferroan_capture::read_capture_limited(&bytes, ferroan_bot::session::LOAD_RECEIPT_LIMIT)
+            .map_err(|e| e.to_string())?;
+    Viewer::read(&records, count)
+}
+
+fn loss_counts(text: &str) -> Result<[u64; 2], String> {
+    if !text
+        .lines()
+        .any(|line| line == "# TYPE ferroan_limit_hits_total counter")
+    {
+        return Err("missing limit counters".into());
+    }
+    // An untouched action has no sample. The family declaration above
+    // distinguishes that case from a scrape of the wrong endpoint.
+    let mut counts = [None; 2];
+    for row in text.lines().filter_map(|line| {
+        line.strip_prefix(r#"ferroan_limit_hits_total{limit="region.entity-updates",action=""#)
+    }) {
+        let (action, value) = row
+            .split_once("\"} ")
+            .ok_or("malformed entity queue counter")?;
+        let slot = match action {
+            "refuse" => &mut counts[0],
+            "drop" => &mut counts[1],
+            _ => continue,
+        };
+        let value = value.parse().map_err(|_| "invalid entity queue counter")?;
+        if slot.replace(value).is_some() {
+            return Err("duplicate entity queue counter".into());
+        }
+    }
+    Ok(counts.map(Option::unwrap_or_default))
+}
+
+fn verify_losses(before: [u64; 2], after: [u64; 2]) -> Result<(), String> {
+    if before != after {
+        return Err(format!(
+            "entity queue loss counters changed: {before:?} -> {after:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn losses(port: u16) -> Result<[u64; 2], String> {
+    let (status, body) = super::http_get_url(&format!("http://127.0.0.1:{port}"), "/metrics")?;
+    if status != 200 {
+        return Err(format!("region metrics returned {status}"));
+    }
+    loss_counts(&body)
 }
 
 fn compare(
@@ -150,6 +277,13 @@ pub(super) fn run(
     chat: &str,
     passwords: &[String],
 ) -> Result<String, String> {
+    let load = spec.store == RegionStore::LoadFixture;
+    let (scenario, count) = if load {
+        ("prim-load", PRIM_LOAD_COUNT)
+    } else {
+        ("store-handoff", PRIM_CAPTURE_COUNT)
+    };
+    let metrics = spec.metrics_port.take();
     let home = root.join("home");
     let db = home.join("OpenSim.db");
     let start = |spec: &RegionStart| {
@@ -189,12 +323,12 @@ pub(super) fn run(
     }
     shutdown(editor)?;
     check_store()?;
-    let parents = roots(&db)?;
+    let parents = roots(&db, count)?;
     let login = format!("http://{}:{robust_public}/", super::ROBUST_BIND);
     let private = format!("http://{}:{}", super::ADVERTISED, spec.private_proxy);
     let observe = |proc: &Proc, ferroan| {
         super::run_bot(
-            "store-handoff",
+            scenario,
             &login,
             estate,
             chat,
@@ -203,7 +337,7 @@ pub(super) fn run(
             (&private, root, ferroan),
             None,
         )?;
-        viewer(&proc.log)
+        viewer(&proc.log, count)
     };
     // Copy(false) in ProcessBackup assigns new cache CRCs. Observe the
     // committed CRCs on a cold C# load before handing the file to Ferroan.
@@ -217,14 +351,27 @@ pub(super) fn run(
     spec.basic_physics = false;
     spec.login_only = true;
     spec.capture = Some(root.join("capture-ferroan.cap"));
+    spec.metrics_port = metrics;
     let rust = start(&spec)?;
+    let before = metrics.map(losses).transpose()?;
     let actual = observe(&rust, true)?;
     check_store()?;
-    compare(&reference, &actual, &parents)?;
-    prim_capture::write_fixture(&root.join("store-handoff"), reference, &parents)?;
+    compare(&reference.parts, &actual.parts, &parents)?;
+    if load {
+        let after = losses(metrics.ok_or("prim-load requires region metrics")?)?;
+        verify_losses(before.ok_or("missing pre-login loss counters")?, after)?;
+        return Ok(format!(
+            "prim-load: {count} mapped viewer full blocks match on the same committed SQLite store\n{}\n{}\nregion.entity-updates: 0 new refusals, 0 new drops (before and after: {}, {})",
+            reference.report("Pin8", root)?,
+            actual.report("Ferroan", root)?,
+            after[0],
+            after[1]
+        ));
+    }
+    prim_capture::write_fixture(&root.join("store-handoff"), reference.parts, &parents)?;
     Ok(format!(
         "store-handoff: C# committed box scale {x}, {y}, {z}; C# home exited; same SQLite file\nstore-handoff: {} viewer full blocks match with mapped local and parent IDs",
-        actual.len()
+        actual.parts.len()
     ))
 }
 
@@ -232,6 +379,47 @@ pub(super) fn run(
 mod tests {
     use super::*;
     use ferroan_protocol::Reader;
+
+    #[test]
+    fn first_receipt_times_and_repeats_match_the_pin8_control_circuit() {
+        let control = include_bytes!("../../fixtures/prim-arrival/control.cap");
+        let records = ferroan_capture::read_capture(control).unwrap();
+        let view = Viewer::read(&records, 8).unwrap();
+        let receipt = &view.receipts[&Uuid::from_u128(1)];
+        assert_eq!((receipt.first_ms, receipt.copies), (426, 2));
+        assert_eq!(view.receipts[&Uuid::from_u128(2)].copies, 1);
+        let dir = std::env::temp_dir().join(format!("prim-receipts-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let line = view.report("Pin8", &dir).unwrap();
+        let rows = fs::read_to_string(dir.join("prim-load-Pin8.tsv")).unwrap();
+        let _ = fs::remove_dir_all(dir);
+        assert_eq!(
+            line,
+            "Pin8: 8 first deliveries, 7 repeats, 15 ms first to last at 512000 bit/s"
+        );
+        assert_eq!(rows.lines().count(), 9);
+        assert!(Viewer::read(&records, 7).is_err());
+        assert!(Viewer::read(&records[1..], 8).is_err());
+        let limited = include_bytes!("../../fixtures/prim-arrival/limited.cap");
+        assert!(Viewer::read(&ferroan_capture::read_capture(limited).unwrap(), 8).is_err());
+        assert!(ferroan_capture::read_capture_limited(control, records.len() - 1).is_err());
+    }
+
+    #[test]
+    fn metrics_require_the_limit_family_and_detect_either_kind_of_queue_loss() {
+        let family = "# TYPE ferroan_limit_hits_total counter\n";
+        assert!(loss_counts("ferroan_region_registered 1").is_err());
+        assert_eq!(loss_counts(family).unwrap(), [0, 0]);
+        let sample = format!(
+            "{family}ferroan_limit_hits_total{{limit=\"region.entity-updates\",action=\"refuse\"}} 4\nferroan_limit_hits_total{{limit=\"region.entity-updates\",action=\"drop\"}} 7\n"
+        );
+        let before = loss_counts(&sample).unwrap();
+        assert_eq!(before, [4, 7]);
+        assert!(verify_losses(before, before).is_ok());
+        assert!(verify_losses(before, [5, 7]).is_err());
+        assert!(verify_losses(before, [4, 8]).is_err());
+        assert!(verify_losses(before, [0, 0]).is_err());
+    }
 
     // The checked-in blocks are the raw C# block fields with Q65a's aliases.
     fn captured_linkset() -> (Blocks, BTreeMap<Uuid, Uuid>) {

@@ -20,6 +20,15 @@ use serde_json::json;
 use uuid::Uuid;
 
 pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, ObjectData>, String> {
+    read_blocks(records, PRIM_CAPTURE_COUNT, |_, _| {})
+}
+
+/// The receipt callback sees each non-avatar block, including retransmissions.
+pub(super) fn read_blocks(
+    records: &[Record],
+    max: usize,
+    mut receipt: impl FnMut(Uuid, u64),
+) -> Result<BTreeMap<Uuid, ObjectData>, String> {
     let mut parts = BTreeMap::<Uuid, ObjectData>::new();
     for record in records.iter().filter(|r| r.kind == Kind::UdpOut) {
         let packet = parse_packet(&record.bytes).map_err(|e| e.to_string())?;
@@ -52,11 +61,12 @@ pub(super) fn captured_blocks(records: &[Record]) -> Result<BTreeMap<Uuid, Objec
                     return Err(format!("different initial blocks for {id}"));
                 }
             } else {
-                if parts.len() == PRIM_CAPTURE_COUNT {
+                if parts.len() == max {
                     return Err("capture contains unexpected prims".into());
                 }
                 parts.insert(id, block);
             }
+            receipt(id, record.time_ms);
         }
         if reader.remaining() != 0 {
             return Err("trailing ObjectUpdate bytes".into());

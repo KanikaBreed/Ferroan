@@ -815,7 +815,9 @@ The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 no
 
 Q65c3b's material-override send is independent of both items.
 
-**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child. Q65d2 owns the 500-part load.
+**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child.
+
+**Q65d2 — DONE (this PR)** on `feat/q65d2-prim-load`. Both viewers received all 500 parts at 512,000 bit/s. The [receipts](fixtures/prim-load/README.md) record first deliveries and repeats. The mapped block bytes matched and the Ferroan entity queue recorded no new refusals or drops.
 
 ### Q76 object-crossing fixture scope
 
