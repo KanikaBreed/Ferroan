@@ -501,7 +501,8 @@ enum ServerZone {
     Found(String),
     /// Role, database, command line and configuration file named no zone.
     Absent,
-    /// No role or database zone, and this login cannot read `pg_file_settings` (D104).
+    /// No role or database zone, and this login cannot read the command line
+    /// or `pg_file_settings` (D104).
     Unreadable,
 }
 
@@ -514,30 +515,38 @@ async fn server_timezone(
     if let Some(zone) = role_database_timezone(conn).await? {
         return Ok(ServerZone::Found(zone));
     }
-    let command_line = command_line_timezone(conn).await?;
-    let (file_readable, file_zone) = if command_line.is_some() {
+    let (opts_readable, command_line) = command_line_timezone(conn).await?;
+    // Skip the file when the command line already named a zone, and when
+    // `postmaster.opts` was unreadable. `applied` stays true when the command
+    // line overrides the file, so the file cannot be trusted alone.
+    let (file_readable, file_zone) = if command_line.is_some() || !opts_readable {
         (false, None)
     } else {
         configured_timezone(conn).await?
     };
     Ok(server_zone_from_probes(
         command_line,
+        opts_readable,
         file_readable,
         file_zone,
     ))
 }
 
-/// `Absent` only when `pg_file_settings` itself was readable and named no zone.
-/// A readable `postmaster.opts` that names no zone does not decide that.
+/// A file zone, or `Absent`, only when both `postmaster.opts` and
+/// `pg_file_settings` were readable. The file names a zone for `Found` and
+/// names none for `Absent`. A readable `postmaster.opts` that names no zone
+/// does not by itself decide `Absent`. An unread command line does not yield
+/// to the file.
 fn server_zone_from_probes(
     command_line: Option<String>,
+    opts_readable: bool,
     file_readable: bool,
     file_zone: Option<String>,
 ) -> ServerZone {
     if let Some(zone) = command_line {
         return ServerZone::Found(zone);
     }
-    if !file_readable {
+    if !opts_readable || !file_readable {
         return ServerZone::Unreadable;
     }
     match file_zone {
@@ -555,13 +564,13 @@ SELECT source_rank, setting FROM ( \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+    AND setting.setrole = session_user::regrole \
   UNION ALL \
   SELECT 2, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = 0 \
-    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+    AND setting.setrole = session_user::regrole \
   UNION ALL \
   SELECT 3, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
@@ -576,8 +585,9 @@ SELECT source_rank, setting FROM ( \
 ) AS levels \
 ORDER BY source_rank, ord";
 
-const ROLE_SETTINGS_PRIVILEGE: &str =
-    "SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')";
+const ROLE_SETTINGS_PRIVILEGE: &str = "\
+SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT') \
+AND has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')";
 
 async fn role_database_timezone(
     conn: &mut sqlx::postgres::PgConnection,
@@ -639,20 +649,26 @@ const READ_FILE_PRIVILEGE: &str =
 
 const POSTMASTER_OPTS: &str = "SELECT pg_read_file('postmaster.opts')";
 
-const FILE_SETTINGS_PRIVILEGE: &str =
-    "SELECT has_table_privilege(session_user, 'pg_file_settings', 'SELECT')";
+const FILE_SETTINGS_PRIVILEGE: &str = "\
+SELECT has_table_privilege(session_user, 'pg_file_settings', 'SELECT') \
+AND has_function_privilege(session_user, 'pg_show_all_file_settings()', 'EXECUTE')";
 
 const FILE_TIMEZONE: &str = "\
 SELECT setting FROM pg_file_settings \
 WHERE lower(name) = 'timezone' AND applied AND (error IS NULL OR error = '') \
 ORDER BY seqno DESC LIMIT 1";
 
+/// `(readable, zone)`. A denied read is not a command line that named no
+/// zone: only a readable `postmaster.opts` may yield to `pg_file_settings`.
 async fn command_line_timezone(
     conn: &mut sqlx::postgres::PgConnection,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<(bool, Option<String>), sqlx::Error> {
     match probe_text(conn, READ_FILE_PRIVILEGE, POSTMASTER_OPTS).await? {
-        Probe::Denied => Ok(None),
-        Probe::Value(text) => Ok(text.as_deref().and_then(timezone_from_postmaster_opts)),
+        Probe::Denied => Ok((false, None)),
+        Probe::Value(text) => Ok((
+            true,
+            text.as_deref().and_then(timezone_from_postmaster_opts),
+        )),
     }
 }
 
@@ -1239,21 +1255,33 @@ mod tests {
     }
 
     #[test]
-    fn absent_requires_a_readable_file_settings_probe() {
+    fn absent_requires_readable_command_line_and_file() {
         assert_eq!(
-            server_zone_from_probes(None, false, None),
+            server_zone_from_probes(None, false, false, None),
             ServerZone::Unreadable
         );
         assert_eq!(
-            server_zone_from_probes(None, true, None),
+            server_zone_from_probes(None, false, true, Some("Europe/Berlin".to_string())),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, false, true, None),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, false, None),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, true, None),
             ServerZone::Absent
         );
         assert_eq!(
-            server_zone_from_probes(None, true, Some("America/New_York".to_string())),
+            server_zone_from_probes(None, true, true, Some("America/New_York".to_string())),
             ServerZone::Found("America/New_York".to_string())
         );
         assert_eq!(
-            server_zone_from_probes(Some("America/New_York".to_string()), false, None),
+            server_zone_from_probes(Some("America/New_York".to_string()), true, false, None),
             ServerZone::Found("America/New_York".to_string())
         );
     }
@@ -1262,7 +1290,11 @@ mod tests {
     fn role_catalog_is_checked_before_the_read() {
         assert!(ROLE_SETTINGS_PRIVILEGE.contains("has_table_privilege"));
         assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_db_role_setting"));
-        assert!(ROLE_DATABASE_ZONE.contains("session_user"));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_database"));
+        assert!(ROLE_DATABASE_ZONE.contains("session_user::regrole"));
+        assert!(!ROLE_DATABASE_ZONE.contains("pg_roles"));
+        assert!(FILE_SETTINGS_PRIVILEGE.contains("has_function_privilege"));
+        assert!(FILE_SETTINGS_PRIVILEGE.contains("pg_show_all_file_settings()"));
     }
 
     #[test]

@@ -137,6 +137,21 @@ pub fn run() -> ExitCode {
     ) {
         return ExitCode::FAILURE;
     }
+    let new_york_ado = postgres_connection(Some("America/New_York"));
+    if !cargo_zone(
+        "postgres PGTZ=NotAZone",
+        &zone_dll,
+        "postgres",
+        &new_york_ado,
+        &postgres_zone,
+        "America/New_York",
+        &[
+            ("PGTZ", "NotAZone"),
+            ("FERROAN_ZONE_BAD_ADO", postgres_ado.as_str()),
+        ],
+    ) {
+        return ExitCode::FAILURE;
+    }
     if !cargo_zone(
         "postgres Timezone=Europe/Berlin",
         &zone_dll,
