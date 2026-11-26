@@ -51,6 +51,8 @@ The grid harness captures riderless object crossings on two separate C# simulato
 
 The region configuration supplies a read-only Groups V2 remote connector for parcel decisions. One lookup returns the viewer's complete group IDs and their unsigned power masks, including memberships with zero powers. Overlay delivery consumes it in Q60c3.
 
+The parcel arrival harness correlates the region's Land datagrams with its initial-data log and seed exchange on each circuit. The [Pin8 recording](fixtures/parcel-timing/README.md) supplies the timing reference for Q60c3.
+
 ## Planned
 
 ### Programs

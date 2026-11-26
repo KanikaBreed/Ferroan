@@ -4,7 +4,10 @@
 //! Observe each viewer receiving the stored parts on Pin8 c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 //! Source/OpenSim.Region.ClientStack.LindenUDP/LLUDPClient.cs, SetThrottles.
 
-use super::{Harness, ObserverSession, PRIM_CAPTURE_COUNT, enter_with_task, leave, world};
+use super::{
+    ArrivalThrottle, Harness, ObserverSession, PRIM_CAPTURE_COUNT, enter_with_throttle, leave,
+    world,
+};
 use ferroan_protocol::msgs::ObjectUpdate;
 use ferroan_protocol::{IncomingPacket, Msg};
 use std::collections::BTreeSet;
@@ -129,17 +132,23 @@ fn save_captures(
 }
 
 pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
-    let (session, _) =
-        enter_with_task(http, harness, &harness.owner, "last", Some(NORMAL_TASK_BPS)).await?;
+    let (session, _) = enter_with_throttle(
+        http,
+        harness,
+        &harness.owner,
+        "last",
+        ArrivalThrottle::Task(NORMAL_TASK_BPS),
+    )
+    .await?;
     let mut control = ObserverSession::new(session, harness.chat.principal_id);
     control.seen.prim_arrival = Some(ObservedPrims::default());
     let (login, observations) = control
-        .during(enter_with_task(
+        .during(enter_with_throttle(
             http,
             harness,
             &harness.chat,
             "last",
-            Some(8000.0),
+            ArrivalThrottle::Task(8000.0),
         ))
         .await;
     let result = match login {

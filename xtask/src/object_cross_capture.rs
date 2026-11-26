@@ -102,7 +102,10 @@ fn project<M: Msg>(packet: &IncomingPacket, msg: &M) -> Vec<u8> {
     bytes
 }
 
-fn decode_original<M: Msg>(packet: &IncomingPacket, bytes: &[u8]) -> Result<M, String> {
+pub(in crate::grid) fn decode_original<M: Msg>(
+    packet: &IncomingPacket,
+    bytes: &[u8],
+) -> Result<M, String> {
     let decoded = packet.decode::<M>().map_err(|e| e.to_string())?;
     if project(packet, &decoded) != bytes {
         return Err(format!(
