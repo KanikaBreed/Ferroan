@@ -452,6 +452,7 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         parcels,
         objects,
         config.prim_scale_limits,
+        config.physics_scale_limits,
         config.collidable_prims,
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;
@@ -873,6 +874,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                     updates: Arc::new(SceneFeed {
                         viewer: expect.agent_id,
                         object_animations: Arc::clone(&agent.object_animations),
+                        supports_pbr: Arc::clone(&agent.supports_pbr),
                         feed,
                         region_handle: arrival.region_handle,
                     }),
@@ -1123,6 +1125,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
 /// One viewer's frame feed, as the circuit drains it.
 struct SceneFeed {
     object_animations: Arc<std::sync::atomic::AtomicBool>,
+    supports_pbr: Arc<std::sync::atomic::AtomicBool>,
     viewer: Uuid,
     feed: Arc<ferroan_scene::terse::ViewerFeed>,
     region_handle: u64,
@@ -1144,8 +1147,16 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 Some(ViewerUpdate::Full {
                     update: Ok(update),
                     animations,
-                    ..
-                }) => batch.push_full(&update.block_for(self.viewer), animations.map(<[_]>::len)),
+                    part,
+                    queued,
+                }) => {
+                    batch.push_full(&update.block_for(self.viewer), animations.map(<[_]>::len));
+                    if self.supports_pbr.load(std::sync::atomic::Ordering::Acquire)
+                        && queued.flags & ferroan_scene::MATERIAL_OVR != 0
+                    {
+                        push_part_material(batch, part);
+                    }
+                }
                 // Oversize fields were reported at admission. Continue with the next part.
                 Some(ViewerUpdate::Full { update: Err(_), .. }) => continue,
                 None => break,
@@ -1194,6 +1205,28 @@ impl ferroan_client::EntityUpdates for SceneFeed {
             }
         }
         out
+    }
+}
+
+/// `needMaterials` after the full block. A dropped full datagram was already dequeued.
+fn push_part_material(batch: &mut ferroan_client::TaskBatch, part: &ferroan_scene::ObjectPart) {
+    let Some(materials) = part.shape.materials.as_ref() else {
+        return;
+    };
+    let faces: Vec<ferroan_client::Face<'_>> = materials
+        .overrides
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|entry| ferroan_client::Face {
+            te_index: entry.te_index,
+            data: entry.data.as_str(),
+        })
+        .collect();
+    if let Some(body) =
+        ferroan_client::material_packet(part.local_id, part.shape.pcode, Some(&faces))
+    {
+        batch.push_material(body);
     }
 }
 
@@ -3374,8 +3407,10 @@ mod tests {
             viewer,
             region_handle: 7,
             object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
         };
-        let (full, _) = ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
+        let ferroan_client::TaskPackets { full, .. } =
+            ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
         assert_eq!(full.len(), 1);
         let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
         wire.extend_from_slice(&full[0]);
@@ -3445,6 +3480,7 @@ mod tests {
             let scene_feed = SceneFeed {
                 viewer: agent,
                 object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
             };
@@ -3473,5 +3509,179 @@ mod tests {
             };
             assert_eq!(kill.object_data[0].id, local_id);
         });
+    }
+
+    fn override_list(faces: &[(u8, &str)]) -> ferroan_scene::RenderMaterials {
+        ferroan_scene::RenderMaterials {
+            overrides: Some(
+                faces
+                    .iter()
+                    .map(|(te_index, data)| ferroan_scene::MaterialOverride {
+                        te_index: *te_index,
+                        data: (*data).to_owned(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn material_scene() -> (ferroan_scene::ObjectGroup, Uuid, Uuid, Uuid) {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/regionstore/objects-xml.json"
+        ))
+        .unwrap();
+        let mut group =
+            ferroan_scene::from_xml2(fixture["groups"][1]["xml2"].as_str().unwrap()).unwrap();
+        group.parts.truncate(1);
+        group.parts[0].shape.pcode = 9;
+        group.parts[0].shape.extra_params = vec![0];
+        group.parts[0].animations = None;
+        group.parts[0].shape.materials = Some(override_list(&[
+            (0, "{'bc':[r1,r0,r0,r1]}"),
+            (2, "{'ds':1}"),
+        ]));
+        let root = group.parts[0].uuid;
+        let mut tree = group.parts[0].clone();
+        tree.uuid = Uuid::from_u128(0x6500_0000_0000_4000_8000_0000_0000_0003);
+        tree.link_num = 2;
+        tree.shape.pcode = 255;
+        tree.shape.materials = Some(override_list(&[(0, "{'tree':1}")]));
+        let tree_id = tree.uuid;
+        let mut probe = group.parts[0].clone();
+        probe.uuid = Uuid::from_u128(0x6500_0000_0000_4000_8000_0000_0000_0006);
+        probe.link_num = 3;
+        probe.shape.pcode = 9;
+        probe.shape.extra_params = vec![1, 0x90, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        probe.shape.materials = Some(override_list(&[(0, "{'probe':1}")]));
+        let probe_id = probe.uuid;
+        group.parts.push(tree);
+        group.parts.push(probe);
+        (group, root, tree_id, probe_id)
+    }
+
+    async fn delivered(
+        group: ferroan_scene::ObjectGroup,
+        pbr: bool,
+    ) -> (Vec<(Uuid, u8, u32)>, Vec<String>) {
+        use ferroan_protocol::msgs::{GenericStreamingMessage, ObjectUpdate};
+
+        let frame = TerrainFrame::with_objects(None, Arc::new(vec![group]), None).unwrap();
+        let viewer = Uuid::from_u128(91);
+        let feed = frame.new_feed();
+        frame
+            .attach(
+                viewer,
+                ferroan_scene::ViewerLink {
+                    feed: Arc::clone(&feed),
+                    seeds_sent: Arc::new(true.into()),
+                    circuit_open: Arc::new(true.into()),
+                    look: Arc::new(ferroan_scene::AvatarLook {
+                        first_name: "Test".into(),
+                        last_name: "User".into(),
+                        title: String::new(),
+                        texture: Vec::new(),
+                        visual_params: Vec::new(),
+                        height: 1.8,
+                        hover: 0.0,
+                    }),
+                },
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let pose = ferroan_scene::Presence {
+            position: [128.0, 128.0, 25.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        };
+        frame
+            .post_login(viewer, pose)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame
+            .arrive(viewer, pose, [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        frame.handshake_reply(viewer).unwrap();
+        let wake = feed.wake();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !feed.has_updates() {
+                wake.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        frame.frames().unwrap().wait().await.unwrap();
+        let scene_feed = SceneFeed {
+            feed,
+            viewer,
+            region_handle: 7,
+            object_animations: Arc::default(),
+            supports_pbr: Arc::new(pbr.into()),
+        };
+        let ferroan_client::TaskPackets {
+            full, materials, ..
+        } = ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
+        let mut parts = Vec::new();
+        for body in full {
+            let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
+            wire.extend(body);
+            let packet = ferroan_protocol::parse_packet(&wire)
+                .unwrap()
+                .decode::<ObjectUpdate>()
+                .unwrap();
+            for block in packet.object_data {
+                if block.p_code != 47 {
+                    parts.push((block.full_id, block.p_code, block.id));
+                }
+            }
+        }
+        let mut notes = Vec::new();
+        for body in materials {
+            assert_eq!(body[0], 31);
+            let message = GenericStreamingMessage::decode(&body[1..]).unwrap();
+            assert_eq!(message.method_data.method, 16757);
+            notes.push(String::from_utf8(message.data_block.data).unwrap());
+        }
+        (parts, notes)
+    }
+
+    #[tokio::test]
+    async fn a_pbr_viewer_gets_material_overrides_for_an_ordinary_part_only() {
+        let (group, root, tree, probe) = material_scene();
+        let (parts, notes) = delivered(group, true).await;
+        let local = parts.iter().find(|part| part.0 == root).unwrap().2;
+        assert!(parts.iter().any(|part| part.0 == tree && part.1 == 255));
+        assert!(parts.iter().any(|part| part.0 == probe && part.1 == 9));
+        assert_eq!(
+            notes,
+            vec![format!(
+                "{{'id':i{local},'te':[i0,i2],'od':[{{'bc':[r1,r0,r0,r1]}},{{'ds':1}}]}}"
+            )]
+        );
+
+        let (mut group, root, _, _) = material_scene();
+        group.parts.truncate(1);
+        group.parts[0].shape.materials = Some(ferroan_scene::RenderMaterials {
+            overrides: Some(vec![ferroan_scene::MaterialOverride {
+                te_index: 0,
+                data: "a".repeat(5000),
+            }]),
+        });
+        let (parts, notes) = delivered(group, true).await;
+        assert!(parts.iter().any(|part| part.0 == root));
+        assert!(notes.is_empty());
+
+        let (group, root, _, _) = material_scene();
+        let (parts, notes) = delivered(group, false).await;
+        assert!(parts.iter().any(|part| part.0 == root));
+        assert!(notes.is_empty());
     }
 }

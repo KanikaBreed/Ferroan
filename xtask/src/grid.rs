@@ -80,6 +80,8 @@ mod child_capture;
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[path = "material_override.rs"]
+mod material_override;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
@@ -737,11 +739,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 | "neighbour"
                 | "walk"
                 | "prim-arrival"
+                | "material-override"
                 | "report"
         )
     {
         return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival and report scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override and report scenarios"
                 .to_string(),
         );
     }
@@ -764,12 +767,13 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "store-handoff"
             | "prim-capture"
             | "prim-arrival"
+            | "material-override"
             | "report"
     ) && ParcelSeed::scenario(scenario).is_none()
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1031,11 +1035,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             RegionStore::LoadFixture
         } else if scenario == "store-handoff" {
             RegionStore::EditPrimFixture
-        } else if matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross") {
+        } else if matches!(
+            scenario,
+            "prim-capture" | "prim-arrival" | "object-cross" | "material-override"
+        ) {
             RegionStore::PrimFixture
         } else {
             RegionStore::Standard
         },
+        patch_materials: scenario == "material-override",
         basic_physics: spec.basic_physics && !ferroan,
     };
     if matches!(scenario, "store-handoff" | "prim-load") {
@@ -1091,6 +1099,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 "object-cross" => RegionStore::EmptyPrimCapture,
                 _ => RegionStore::Standard,
             },
+            patch_materials: false,
             parcel_seed: None,
             basic_physics: spec.basic_physics,
         },
@@ -1305,6 +1314,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else if scenario == "prim-arrival" {
         let fixture =
             prim_arrival::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if scenario == "material-override" {
+        let fixture =
+            material_override::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "report" {
         // The capture still has to pass check, redact and replay. Its packet
@@ -2101,6 +2114,7 @@ struct RegionStart {
     basic_physics: bool,
     store: RegionStore,
     parcel_seed: Option<ParcelSeed>,
+    patch_materials: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -2158,6 +2172,9 @@ fn start_region(
             seed.install(cwd)?;
         } else if spec.ferroan {
             install_seeded_region_store(cwd)?;
+        }
+        if spec.patch_materials {
+            material_override::install_store(&cwd.join("OpenSim.db"))?;
         }
     }
     let mut rewrites = Vec::new();
@@ -2801,76 +2818,85 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    /// A stand-in server whose stop sends one request through a proxy, as the
-    /// C# neighbour's late CloseAgent does.
+    /// A stand-in server whose stop finds its upstream gone, as the C#
+    /// neighbour's late CloseAgent does. On drop it calls `upstream_was_gone`,
+    /// which shares `note_upstream_gone` with `forward`. The stand-in does not
+    /// stop the proxy and does not open a socket.
     #[cfg(target_os = "linux")]
-    struct LateCaller(SocketAddr);
+    struct LateCaller(ferroan_capture::ProxyStatus);
 
     #[cfg(target_os = "linux")]
     impl Drop for LateCaller {
         fn drop(&mut self) {
-            use std::io::{Read, Write};
-            let mut client = TcpStream::connect(self.0).unwrap();
-            client
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            client
-                .write_all(b"DELETE /agent/x/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                .unwrap();
-            let mut response = Vec::new();
-            let _ = client.read_to_end(&mut response);
-            assert!(response.is_empty());
+            self.0.upstream_was_gone();
         }
     }
 
     /// Four proxies on closed upstreams, in `run_linux` order: Robust private,
     /// Robust public, home, neighbour. Literal indexes, so a swapped constant
-    /// shows.
+    /// shows. Listeners are bound first. Each closed port is a bind of port 0
+    /// that is dropped, and it is none of those listen ports. Nothing after
+    /// that binds port 0.
     #[cfg(target_os = "linux")]
-    fn grid_proxies(name: &str) -> (Vec<SocketAddr>, crate::live_proxy::Proxies, Vec<PathBuf>) {
-        let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> =
-            ["private", "public", "home", "neighbour"]
-                .iter()
-                .map(|which| {
-                    let closed = std::net::TcpListener::bind("127.0.0.1:0")
-                        .unwrap()
-                        .local_addr()
-                        .unwrap();
-                    let path = crate::repo_root().join(".scratch").join(format!(
-                        "stop-order-{name}-{which}-{}.cap",
-                        uuid::Uuid::new_v4()
-                    ));
-                    ("127.0.0.1:0".parse().unwrap(), closed, path)
-                })
-                .collect();
-        let (addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
-        (
-            addresses,
-            proxies,
-            binds.into_iter().map(|(_, _, path)| path).collect(),
-        )
+    fn grid_proxies(name: &str) -> (crate::live_proxy::Proxies, Vec<PathBuf>) {
+        let names = ["private", "public", "home", "neighbour"];
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|which| {
+                crate::repo_root().join(".scratch").join(format!(
+                    "stop-order-{name}-{which}-{}.cap",
+                    uuid::Uuid::new_v4()
+                ))
+            })
+            .collect();
+        let (listeners, closed) = crate::live_proxy::listeners_and_closed(names.len());
+        let upstreams: Vec<SocketAddr> = closed.iter().map(|upstream| upstream.address()).collect();
+        let (addresses, proxies) =
+            crate::live_proxy::Proxies::start_bound(listeners, &upstreams, &paths).unwrap();
+        for address in &addresses {
+            assert!(
+                closed.iter().all(|upstream| upstream.address() != *address),
+                "a proxy listened on a closed upstream port"
+            );
+        }
+        (proxies, paths)
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn each_server_is_marked_just_before_it_stops() {
-        // Each server's stop sends through its own proxy: all are marked.
-        let (addresses, proxies, paths) = grid_proxies("own");
-        let mut home = Some(LateCaller(addresses[2]));
-        let mut neighbour = Some(LateCaller(addresses[3]));
-        let mut robust = Some(LateCaller(addresses[0]));
+        // Each server's stop finds its own upstream gone: all three are marked.
+        // Literal indexes, so a swapped constant shows.
+        let (proxies, paths) = grid_proxies("own");
+        let mut home = Some(LateCaller(proxies.status(2).unwrap()));
+        let mut neighbour = Some(LateCaller(proxies.status(3).unwrap()));
+        let mut robust = Some(LateCaller(proxies.status(0).unwrap()));
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
         assert!(home.is_none() && neighbour.is_none() && robust.is_none());
+        for index in [2, 3, 0] {
+            let status = proxies.status(index).unwrap();
+            assert_eq!(status.refused_after_stop(), 1, "proxy {index}");
+            assert_eq!(status.failures(), 0, "proxy {index}");
+        }
+        // Robust's public proxy is marked with the private one. A late refusal
+        // there counts; dropping it from STOP_ORDER leaves the mark unset.
+        let robust_public = proxies.status(1).unwrap();
+        robust_public.upstream_was_gone();
+        assert_eq!(robust_public.refused_after_stop(), 1, "proxy 1");
+        assert_eq!(robust_public.failures(), 0, "proxy 1");
         proxies.finish().unwrap();
         for path in paths {
             let _ = fs::remove_file(path);
         }
-        // Home's stop calls the neighbour, which is still meant to be up.
-        let (addresses, proxies, paths) = grid_proxies("early");
-        let mut home = Some(LateCaller(addresses[3]));
+        // Home's stop finds the neighbour gone while that neighbour is meant to be up.
+        let (proxies, paths) = grid_proxies("early");
+        let mut home = Some(LateCaller(proxies.status(3).unwrap()));
         let mut neighbour: Option<LateCaller> = None;
         let mut robust: Option<LateCaller> = None;
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
+        let neighbour_status = proxies.status(3).unwrap();
+        assert_eq!(neighbour_status.failures(), 1);
+        assert_eq!(neighbour_status.refused_after_stop(), 0);
         let error = proxies.finish().unwrap_err();
         assert!(error.contains("recorded 1 failure(s)"), "{error}");
         for path in paths {

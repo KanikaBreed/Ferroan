@@ -5,6 +5,7 @@
 //! region. The caller starts and stops the region and supplies the accounts.
 
 pub mod child_view;
+mod material_override;
 #[path = "object_cross.rs"]
 mod object_cross;
 mod observer;
@@ -170,6 +171,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "prim-arrival" {
         return prim_arrival::run(&http, harness).await;
     }
+    if name == "material-override" {
+        return material_override::run(&http, harness).await;
+    }
     if matches!(name, "prim-capture" | "store-handoff" | "prim-load") {
         let (count, throttle) = match name {
             "prim-load" => (PRIM_LOAD_COUNT, ArrivalThrottle::Task(PrimTrace::Load)),
@@ -203,7 +207,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all, object-cross, prim-load, store-handoff, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {name}; expected all, object-cross, prim-load, store-handoff, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };
@@ -1858,6 +1862,17 @@ async fn enter_with_throttle(
     start: &str,
     throttle: ArrivalThrottle,
 ) -> Result<(Session, LoginResponse), String> {
+    enter_prepared(http, harness, account, start, throttle, |_| {}).await
+}
+
+async fn enter_prepared(
+    http: &reqwest::Client,
+    harness: &Harness,
+    account: &Account,
+    start: &str,
+    throttle: ArrivalThrottle,
+    prepare: impl FnOnce(&mut Session),
+) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
     }
@@ -1892,6 +1907,7 @@ async fn enter_with_throttle(
         ArrivalThrottle::Task(trace) => session.capture_prim_arrival(trace),
         ArrivalThrottle::Land(rate) => session.set_land_rate(Some(rate)),
     }
+    prepare(&mut session);
     session
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
         .await

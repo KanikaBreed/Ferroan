@@ -95,6 +95,28 @@ impl ProxyStatus {
         self.0.refused_after_stop.load(Ordering::Acquire)
     }
 
+    /// The upstream was gone before any response byte.
+    ///
+    /// Call this when the request is already in hand. A stop flagged by then
+    /// counts a late refusal and is not a failure. This and `forward` share
+    /// `note_upstream_gone`: `forward` passes the flag it read when the request
+    /// arrived, and this reads the flag now. The stand-in does not stop the proxy.
+    pub fn upstream_was_gone(&self) {
+        let stopping = self.0.upstream_stopping.load(Ordering::Acquire);
+        if !self.note_upstream_gone(stopping) {
+            self.failed();
+        }
+    }
+
+    /// Count a late refusal when `stopping` was set as the request arrived.
+    /// Returns whether that refusal is expected.
+    fn note_upstream_gone(&self, stopping: bool) -> bool {
+        if stopping {
+            self.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
+        }
+        stopping
+    }
+
     pub fn ensure_success(&self) -> io::Result<()> {
         let failures = self.failures();
         if failures == 0 {
@@ -480,14 +502,13 @@ async fn forward(
     }])?;
     let response = match exchange(&mut client, upstream, &forwarded, reply_timeout).await {
         Ok(Reply::Response(response)) => response,
-        Ok(Reply::Gone(_)) if upstream_stopping => {
-            // The upstream was shut down on purpose before this request came.
-            // Keep the request as evidence; the client sees a closed socket.
-            status.0.refused_after_stop.fetch_add(1, Ordering::AcqRel);
-            capture.flushed().await?;
-            return Ok(());
-        }
         Ok(Reply::Gone(error)) => {
+            if status.note_upstream_gone(upstream_stopping) {
+                // The upstream was shut down on purpose before this request came.
+                // Keep the request as evidence; the client sees a closed socket.
+                capture.flushed().await?;
+                return Ok(());
+            }
             // The upstream is meant to be up: a failed exchange.
             let _ = capture.flushed().await;
             return Err(error);
@@ -949,6 +970,27 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    fn track(
+        listener: TcpListener,
+        upstream: SocketAddr,
+        wait: Duration,
+    ) -> (
+        SocketAddr,
+        ProxyStatus,
+        tokio::task::JoinHandle<io::Result<()>>,
+        std::path::PathBuf,
+    ) {
+        let address = listener.local_addr().unwrap();
+        let (_, path) = capture_file();
+        let status = ProxyStatus::default();
+        let child_status = status.clone();
+        let child_path = path.clone();
+        let task = tokio::spawn(async move {
+            serve_on_with_status(listener, upstream, &child_path, wait, child_status).await
+        });
+        (address, status, task, path)
+    }
+
     async fn tracked_proxy(
         upstream: SocketAddr,
         wait: Duration,
@@ -959,15 +1001,7 @@ mod tests {
         std::path::PathBuf,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (_, path) = capture_file();
-        let status = ProxyStatus::default();
-        let child_status = status.clone();
-        let child_path = path.clone();
-        let task = tokio::spawn(async move {
-            serve_on_with_status(listener, upstream, &child_path, wait, child_status).await
-        });
-        (address, status, task, path)
+        track(listener, upstream, wait)
     }
 
     async fn request(address: SocketAddr) -> Vec<u8> {
@@ -1172,17 +1206,32 @@ mod tests {
         }
     }
 
-    async fn closed_port() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        address
+    /// A port with nothing bound. `excluded` are listeners already bound.
+    /// Bind port 0 and drop it; the result is none of them. A connect is
+    /// refused on Linux, macOS and Windows. Do not bind port 0 after this:
+    /// that bind can be given the port (the #297 race). A socket held and
+    /// never listened on is not a closed port, because macOS does not refuse
+    /// that connect.
+    fn closed_port(excluded: &[SocketAddr]) -> SocketAddr {
+        for _ in 0..32 {
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let address = socket.local_addr().unwrap();
+            drop(socket);
+            if !excluded.contains(&address) {
+                return address;
+            }
+        }
+        panic!("closed port collided with a proxy listener");
     }
 
     #[tokio::test]
     async fn a_refused_upstream_that_is_meant_to_be_up_fails_the_proxy() {
-        let (address, status, task, path) =
-            tracked_proxy(closed_port().await, Duration::from_secs(1)).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let upstream = closed_port(&[listen]);
+        let (address, status, task, path) = track(listener, upstream, Duration::from_secs(1));
+        assert_ne!(address, upstream);
         assert!(request(address).await.is_empty());
         assert_eq!(
             timeout(IO_WAIT, task)

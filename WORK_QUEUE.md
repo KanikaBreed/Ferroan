@@ -120,8 +120,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
-| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
-| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | READY |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
+| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -200,7 +200,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
-| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
@@ -223,8 +223,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79b | P2.11a2: discover visible neighbours and send child requests | DONE (this PR) |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
 | Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | READY after Q79b |
-| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | READY after Q79c1 |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2 |
+| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
+| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
+| Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2b |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
@@ -913,6 +915,21 @@ The region connector currently looks up a region by position and sends the telep
 Together these steps satisfy P2.11a. Q80 retains inbound child handling, and walking across the border remains deferred under D38.
 
 The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 now waits for Q79c.
+
+### Q79c2 review and proposed split
+
+**BLOCKED (26 November 2026, `docs/q79c2-blocked`).** More than about a day. No child-frame code is in this change. Pin8 is `c401bceecd`. Q79c1 is unmerged at `5e8db3f` on `feat/q79c1-child-owner`. `origin/main` has no `P2.11a3b` row. The child book, `claim_child` and the five review fixes live on that branch. Both halves below merge `5e8db3f` until it squash-merges, and on a `Cargo.lock` conflict take `main`'s lock and add only what the change needs.
+
+The five fixes and the frame loop are separate designs. `claim_child` is called from tests only. A `Claim::New` stays pending until `accepted`, `failed` or `refuse`. Nothing finishes it when the task is cancelled, so the next claim is `Existing` and the POST never runs again. `SimulationClient::execute` turns a reqwest timeout into `Attempt::Failed("Service request failed: connection failed")`. `ClientError` has no timeout variant, and no caller reaches `ChildBook::failed`, so the timeout-after-logout close in D106 cannot happen. `Admission::Close` carries the region end and no session id. Pin8's `CloseChildAgents` (`ScenePresence.cs` 5060–5071) sends `CloseAgent` with `SessionID`. `InformClientOfNeighbourAsync` sleeps 500 ms after a successful `CreateAgent` and before `EnableSimulator` (`EntityTransferModule.cs` 2780). No Ferroan path sleeps there.
+
+A far hop sends an empty `children_seeds` on the destination circuit and on `AgentData` (`source_hop.rs` 844 and 949 at `5e8db3f`; the review's 812 and 917 are that same pair before the later edits). `close_local` then `close_departed`, and `SessionLease`'s drop, call `end_generation`. That drops `Phase::Open` children and keeps only a pending admission. Its comment says logout already closed the open ones. A far hop does not call `begin_logout`. Pin8 closes first: `GetChildAgentsToClose`, then `CloseChildAgents` at `EntityTransferModule.cs` 1280 (V1) and 1474 (V2, when `localclose`), and `closeAllChildAgents` on the logout path. `NeedsClosing` then closes the local root (1292–1304 and 1479–1489).
+
+The frame half is its own boundary. `CheckForSignificantMovement` (`ScenePresence.cs` 4726–4833) runs on the scene heartbeat. The 16 m `SIGNIFICANT_MOVEMENT` (191, 4731) fires `TriggerSignificantClientMovement` and does not enable children. The child half (4750–4828) waits `CHILDUPDATES_TIME` (2000 ms). A region-view change above 32 m, or a horizontal move whose square exceeds `CHILDAGENTSCHECK_MOVEMENT` (1024, 32 m), calls `EnableChildAgents`. Otherwise a god-level change, a draw-distance change above 32 m, or a move whose square exceeds `CHILDUPDATES_MOVEMENT` (100, 10 m) sends `AgentPosition` to children already known. Arrival calls `EnableChildAgents` from the cross path (2573–2575) and from `CompleteMovement` (4395–4398). Ferroan's frame thread does not call the region, and `serve_agent` does not read the pose again after arrival. The region task has to diff `VisibleNeighbours`, post `CreateAgent`, wait 500 ms, enqueue the two events, put position updates, and close neighbours that leave. The live proof is `child-view grid` with Ferroan as home and the C# neighbour, against the Q79a capture. That loop, plus the contract above, plus that live run, is more than about a day.
+
+1. **Q79c2a — finish every claim, and close children on a far hop** (after Q79c1, about one day). No frame scheduling and no live grid. Every `Claim::New` is finished exactly once by `accepted`, `failed` or `refuse`. Cancelling the admission task finishes it too, so the entry cannot leak. A timeout and a transport failure call `failed`, including after logout (D106). `Admission::Close` carries the session id `CloseAgent` sends. The acceptance path waits 500 ms before the viewer events, as line 2780 does. A far hop closes the children `GetChildAgentsToClose` would close, with that session, before `end_generation` drops them. The promoted destination stays the remote root. Correct the `end_generation` comment. Unit tests cover one finish, a dropped task, a timeout after logout, the session on `Close`, the 500 ms wait, and the far-hop close list.
+2. **Q79c2b — drive the neighbour set from the frame** (after Q79c2a, about one day). On the arrival sites (2575 and 4398) and on the child half of `CheckForSignificantMovement` (4750–4828), diff the visible neighbours. New neighbours go through Q79c2a's admission task. Neighbours that leave get `CloseAgent` with the session from `Admission::Close`. Neighbours that stay get `AgentPosition` on the 2 s gate and the 10 m / 32 m draw-distance test. God level stays the value Ferroan already stores. Prove it with `cargo xtask live run child-view grid --physics basicphysics` and Ferroan as home, under the shared live lock with a free port base and `UseSharedCompilation=false`. Compare the child POST, the movement PUT, the event order and the close with the Q79a capture, and require the home viewer to see the neighbour's resident and stored prim on the child circuit.
+
+Q80 should wait for Q79c2b. This note leaves Q80's row as it is. No new decision or Tranquillity bug number is used.
 
 ### Q65d store swap and viewer load
 

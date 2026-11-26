@@ -2110,13 +2110,16 @@ async fn login_arrival_reads_the_pose_back_from_the_scene() {
 struct BlockFeed {
     full: Mutex<Option<ferroan_protocol::msgs::object_update::ObjectData>>,
     blocks: Mutex<Vec<[u8; crate::AVATAR_TERSE_LEN]>>,
+    materials: Mutex<Vec<Vec<u8>>>,
     budgets: Mutex<Vec<i32>>,
     packets: Mutex<Vec<crate::AvatarPacket>>,
 }
 
 impl crate::EntityUpdates for BlockFeed {
     fn has_updates(&self) -> bool {
-        !self.blocks.lock().unwrap().is_empty() || self.full.lock().unwrap().is_some()
+        !self.blocks.lock().unwrap().is_empty()
+            || self.full.lock().unwrap().is_some()
+            || !self.materials.lock().unwrap().is_empty()
     }
 
     fn take_updates(&self, batch: &mut crate::TaskBatch) {
@@ -2129,6 +2132,9 @@ impl crate::EntityUpdates for BlockFeed {
             && let Some(full) = self.full.lock().unwrap().take()
         {
             batch.push_full(&full, None);
+            for body in self.materials.lock().unwrap().drain(..) {
+                batch.push_material(body);
+            }
         }
     }
 
@@ -2137,6 +2143,112 @@ impl crate::EntityUpdates for BlockFeed {
         let count = max.min(packets.len());
         packets.drain(..count).collect()
     }
+}
+
+/// The material body is the Pin8 datagram after its 6-byte header.
+fn captured_material_payload() -> Vec<u8> {
+    let bytes = include_bytes!("../../../fixtures/material-overrides/control.cap");
+    let records = ferroan_capture::read_capture(bytes).unwrap();
+    assert_eq!(records.len(), 1);
+    let datagram = &records[0].bytes;
+    let packet = parse_packet(datagram).unwrap();
+    assert!(packet.reliable());
+    assert!(!packet.resent());
+    assert_eq!(packet.flags & ferroan_protocol::PacketFlags::ZEROCODED, 0);
+    assert!(packet.acks.is_empty());
+    datagram[ferroan_protocol::packet::HEADER_SIZE..].to_vec()
+}
+
+fn pin8_material_faces() -> [crate::Face<'static>; 2] {
+    [
+        crate::Face {
+            te_index: 0,
+            data: "{'bc':[r1,r0,r0,r1]}",
+        },
+        crate::Face {
+            te_index: 2,
+            data: "{'ds':1}",
+        },
+    ]
+}
+
+#[test]
+fn the_encoder_matches_the_pin8_material_body() {
+    let faces = pin8_material_faces();
+    assert_eq!(
+        crate::material_packet(1, 9, Some(&faces)).unwrap(),
+        captured_material_payload()
+    );
+}
+
+/// A full update, a terse block and the captured material body stay queued,
+/// reliable, in that order. The material body is plain. Flipping its reliable
+/// flag or its coding changes this result.
+#[tokio::test]
+async fn a_queued_material_payload_is_reliable_plain_and_follows_full_and_terse() {
+    use ferroan_protocol::msgs::{
+        GenericStreamingMessage, ImprovedTerseObjectUpdate, ObjectUpdate,
+    };
+
+    let faces = pin8_material_faces();
+    let captured = crate::material_packet(1, 9, Some(&faces)).unwrap();
+    assert_eq!(captured, captured_material_payload());
+    let source = Arc::new(BlockFeed::default());
+    *source.full.lock().unwrap() = Some(ferroan_protocol::msgs::object_update::ObjectData {
+        id: 1,
+        ..Default::default()
+    });
+    let mut block = [0u8; crate::AVATAR_TERSE_LEN];
+    block[0..4].copy_from_slice(&1u32.to_le_bytes());
+    source.blocks.lock().unwrap().push(block);
+    source.materials.lock().unwrap().push(captured.clone());
+    let arrival = ArrivalConfig {
+        updates: Some(crate::EntityFeed {
+            updates: source,
+            wake: Arc::new(Notify::new()),
+        }),
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(captured_config(), arrival);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    let now = state.throttle_clock.now_secs();
+    assert!(state.throttle.try_spend(TASK, 10_000_000, now));
+    state.maintain(&io).await.unwrap();
+    let ids: Vec<_> = state
+        .pending_task
+        .iter()
+        .map(|payload| ferroan_protocol::MsgId::decode(&payload.bytes).unwrap().0)
+        .collect();
+    let material = ids
+        .iter()
+        .rposition(|id| *id == GenericStreamingMessage::ID)
+        .unwrap();
+    let terse = ids
+        .iter()
+        .rposition(|id| *id == ImprovedTerseObjectUpdate::ID)
+        .unwrap();
+    assert_eq!(material, ids.len() - 1);
+    assert!(terse < material);
+    assert!(!ids[..terse].is_empty());
+    assert!(ids[..terse].iter().all(|id| *id == ObjectUpdate::ID));
+    assert!(
+        ids[terse..material]
+            .iter()
+            .all(|id| *id == ImprovedTerseObjectUpdate::ID)
+    );
+    for (index, payload) in state.pending_task.iter().enumerate() {
+        assert!(payload.reliable);
+        let coding = if index < terse {
+            Coding::Preencoded
+        } else if index < material {
+            Coding::Zero
+        } else {
+            Coding::Plain
+        };
+        assert!(payload.coding == coding);
+    }
+    assert_eq!(state.pending_task.back().unwrap().bytes, captured);
 }
 
 /// A circuit whose reliable window is full takes no avatar packets: they stay
