@@ -2515,6 +2515,17 @@ impl CircuitServer {
         }
     }
 
+    /// Logins reserved at accept and not yet released by the serve.
+    pub fn reserved_logins(&self) -> usize {
+        self.inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .reserved
+            .len()
+    }
+
     fn ensure_reader(&self) {
         let mut reader = self
             .inner

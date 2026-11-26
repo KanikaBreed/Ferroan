@@ -2589,6 +2589,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accept_reserves_the_login_until_the_accepted_agent_is_dropped() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state =
+            SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
+        let circuit = CircuitServer::bind().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 0);
+        state.bind_circuit(circuit.clone());
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 1);
+        drop(accepted);
+        assert_eq!(circuit.reserved_logins(), 0);
+    }
+
+    #[tokio::test]
     async fn a_demoted_root_keeps_caps_and_frees_a_root_slot() {
         let caps = CapsRegistry::new("http://127.0.0.1:9").unwrap();
         let (sender, mut receiver) = mpsc::channel(4);

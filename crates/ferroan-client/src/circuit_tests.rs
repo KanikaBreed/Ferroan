@@ -1740,6 +1740,8 @@ async fn a_reserved_login_keeps_its_burst_past_the_pending_ttl() {
     }
 
     let session = server.open_session(expect);
+    // The hold is still alive. The serve itself releases the reservation.
+    assert_eq!(server.reserved_logins(), 0);
     assert!(shared.fan.lock().unwrap().bound.contains_key(&from));
     assert!(shared.fan.lock().unwrap().pending.is_empty());
     let mut buf = [0u8; 2048];
