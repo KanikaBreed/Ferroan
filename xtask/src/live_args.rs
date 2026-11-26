@@ -124,6 +124,7 @@ enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fixture {
+    ObjectCross,
     Caps,
     Login,
     RootArrival,
@@ -152,12 +153,18 @@ pub(crate) fn dispatch(args: &[&str]) -> Outcome {
             return Outcome::Exit(ExitCode::from(2));
         }
     };
-    if let Err(text) = crate::ports::install(base) {
-        eprintln!("live: {text}");
-        return Outcome::Exit(ExitCode::from(2));
-    }
     match parse(&args) {
-        Ok(command) => Outcome::Exit(execute(command)),
+        Ok(command) => {
+            let persistent = matches!(
+                command,
+                Command::Up { .. } | Command::RunningAssets { .. } | Command::Down
+            );
+            if let Err(text) = crate::ports::install(base, persistent) {
+                eprintln!("live: {text}");
+                return Outcome::Exit(ExitCode::from(2));
+            }
+            Outcome::Exit(execute(command))
+        }
         Err(ParseFail::Usage) => Outcome::Usage,
         Err(ParseFail::Message(text)) => {
             eprintln!("live: {text}");
@@ -293,6 +300,7 @@ fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCo
 fn fixture(kind: Fixture, path: &str) -> ExitCode {
     let path = std::path::Path::new(path);
     match kind {
+        Fixture::ObjectCross => grid::object_cross_fixtures(path),
         Fixture::Caps => live::finish(crate::caps_fixtures::generate(path)),
         Fixture::Login => grid::login_fixtures(path),
         Fixture::RootArrival => grid::root_arrival_fixtures(path),
@@ -461,10 +469,12 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
-    if *scenario == "prim-capture" && (!grid || flags.region_ferroan || !flags.basic_physics) {
-        return Err(ParseFail::Message(
-            "use live run prim-capture grid --physics basicphysics for the Pin8 capture".into(),
-        ));
+    if matches!(*scenario, "prim-capture" | "object-cross")
+        && (!grid || flags.region_ferroan || !flags.basic_physics)
+    {
+        return Err(ParseFail::Message(format!(
+            "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
+        )));
     }
     Ok(Command::Run(RunSpec {
         scenario: (*scenario).to_string(),
@@ -595,6 +605,7 @@ fn database(value: &str) -> Result<Database, ParseFail> {
 
 fn fixture_kind(name: &str) -> Option<Fixture> {
     Some(match name {
+        "object-cross-fixtures" => Fixture::ObjectCross,
         "caps-fixtures" => Fixture::Caps,
         "login-fixtures" => Fixture::Login,
         "root-arrival-fixtures" => Fixture::RootArrival,
@@ -740,22 +751,24 @@ mod tests {
 
     #[test]
     fn prim_capture_requires_the_csharp_grid_and_basicphysics() {
-        assert!(parse(&["run", "prim-capture", "grid"]).is_err());
-        assert!(parse(&["run", "prim-capture", "grid", "--physics", "ubode"]).is_err());
-        assert!(parse(&["run", "prim-capture", "--physics", "basicphysics"]).is_err());
-        assert!(
-            parse(&[
-                "run",
-                "prim-capture",
-                "grid",
-                "--region",
-                "ferroan",
-                "--physics",
-                "basicphysics"
-            ])
-            .is_err()
-        );
-        assert!(run(&["run", "prim-capture", "grid", "--physics", "basicphysics"]).basic_physics);
+        for scenario in ["prim-capture", "object-cross"] {
+            assert!(parse(&["run", scenario, "grid"]).is_err());
+            assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
+            assert!(parse(&["run", scenario, "--physics", "basicphysics"]).is_err());
+            assert!(
+                parse(&[
+                    "run",
+                    scenario,
+                    "grid",
+                    "--region",
+                    "ferroan",
+                    "--physics",
+                    "basicphysics"
+                ])
+                .is_err()
+            );
+            assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
+        }
     }
 
     #[test]

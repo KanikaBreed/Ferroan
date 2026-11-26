@@ -34,6 +34,9 @@ listeners rather than capture proxies, defaults to loopback, and retains the
 same process identity records for `live down` and interrupted-launch recovery.
 The CI smoke check starts this command, uses its printed login URL for two
 strict bot sessions, and verifies process and listener cleanup after shutdown.
+It runs in the grid services job. Region traffic and asset backends run on two
+other hosted runners, each with its own port block and scratch tree. The
+[required live check](docs/LIVE.md#what-ci-runs) depends on all three.
 
 Limit hits and handled errors go through one helper in `ferroan-diag`. Each report names a stable id, whether the bound is soft or hard, the configured and observed values, and the action taken. The counter uses that id directly. Soft queues warn once at 80 percent. The first hit in a minute is logged on `ferroan::limit`; later hits in that minute are counted and then summarised. `ferroan_limit_hits_total` is appended to the region and Robust metrics pages. A 1000-line ring, `diag dump`, `GET /diag` and `cargo xtask live diag` show the recent warnings, and a panic hook writes that snapshot before exit. The ids and the pin comparison are in [docs/LIMITS.md](docs/LIMITS.md).
 
@@ -41,6 +44,8 @@ XAsset metadata ids can share one immutable data row. MySQL checks its content
 hash before the write transaction, then commits the metadata if another store
 has already inserted the same hash. This also works under MariaDB snapshot
 isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
+
+The grid harness captures riderless object crossings on two separate C# simulators. Each viewer edits the linkset from its own circuit. The [object-crossing fixtures](fixtures/object-cross/README.md) correlate the local IDs in the outbound XML with the viewer packets on the sending region.
 
 `ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The member reader follows `TryFromXml` and restores positions from the parts. Rez must also parse the wrapper sizes and offsets and refuse invalid values, as `GetObjectsToRez` does (3185–3208). The member reader alone cannot place these groups for rez. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
 

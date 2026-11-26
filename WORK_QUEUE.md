@@ -80,7 +80,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
-| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | READY |
+| Q10aj | P0.10n15: `live services` runs as parallel jobs, each under its own port base, so the live gate waits about 10 minutes, not 25 to 30 | DONE (this PR) |
 | Q10ak | P0.10n16: self-hosted live jobs run on a runner pool label inside a CI container image, and `cargo xtask runner doctor` checks a new runner | READY |
 | QR1 | R1: `/auth` and `/griduser` refuse `X-SecondLife-Shard` as C# does | DONE (#199) |
 | QR2 | R2: XAssets never lose an asset to a rolled-back write or a concurrent store | DONE (#206) |
@@ -195,7 +195,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
 | Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
-| Q76 | P2.10a: object-crossing fixtures from two C# regions | READY after Q18a |
+| Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | READY after Q18c and Q46b |
@@ -747,6 +747,10 @@ The store swap and the 500-prim acceptance remain in Q65d. The proposed parts co
 
 The manager approved Q65c1 to Q65c3 on 25 November 2026, as proposed above.
 
+
+### Q76 object-crossing fixture scope
+
+The manager approved the riderless scope on 25 November 2026. At Pin8 `c401bceecd`, `SceneObjectGroup.cs` 1185 and 1265–1272 take a linkset without riders from the grid lookup directly to transfer. `SimulationServiceConnector.cs` 487–516 posts the linkset and includes `state` only for a nonempty script snapshot. Q76 records these messages and both viewer circuits in each direction. A seated avatar's access check uses its own UUID (`EntityTransferModule.cs` 1764–1777) and belongs to a later item.
 
 ## Found while working
 
