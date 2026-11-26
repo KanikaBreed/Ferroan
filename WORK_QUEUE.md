@@ -127,6 +127,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
 | QR47 | R47: an in-transit root is neither demoted nor closed on any create | READY after Q80a |
+| QR48 | R48: a different-session create over an existing child keeps that child | READY after Q80a |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |

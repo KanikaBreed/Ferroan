@@ -1272,21 +1272,22 @@ fn answer(
             owner,
             reply,
         } => {
-            // CloseAgent on a different session, or a root becoming this
-            // child, kills the old avatar on every other client. The viewer
-            // entry stays so the new attach keeps the local id. A same
-            // generation re-seat of a view child does not kill.
-            let replacing = scene
-                .presences
-                .get(&agent)
-                .is_some_and(|existing| !existing.body.is_child() || existing.owner != owner);
-            if replacing
+            // `RemoveClient` kills only a root (`Scene.cs` 3983–3993).
+            // Replacing another generation's child drops the board entry
+            // and does not send `KillObject`. The viewer entry stays so
+            // the new attach keeps the local id. A same generation re-seat
+            // of a view child does not kill.
+            let existing = scene.presences.get(&agent);
+            let kill_root = existing.is_some_and(|existing| !existing.body.is_child());
+            if existing.is_some()
                 && let Some(local_id) = scene.viewers.get(&agent).map(|viewer| viewer.local_id)
             {
                 scene.board.remove(local_id);
-                for (other, _) in scene.viewer_order() {
-                    if other != agent && scene.is_open(&other) {
-                        scene.send(&other, AvatarPacket::Kill(vec![local_id]));
+                if kill_root {
+                    for (other, _) in scene.viewer_order() {
+                        if other != agent && scene.is_open(&other) {
+                            scene.send(&other, AvatarPacket::Kill(vec![local_id]));
+                        }
                     }
                 }
             }
@@ -4007,6 +4008,61 @@ mod tests {
             no_physics(),
         ));
         assert!(packet_kinds(&staying_feed).is_empty());
+    }
+
+    /// Replacing a child the other viewer never saw does not send KillObject.
+    /// Pin8 kills only a root.
+    #[test]
+    fn a_view_child_replacing_a_child_sends_no_kill() {
+        let mut scene = bare_scene();
+        let staying = Uuid::from_u128(5);
+        let child = Uuid::from_u128(6);
+        arrive_in(&mut scene, staying, [16.0, 128.0, 25.0]);
+        let (staying_feed, _) = open_viewer_flags(&mut scene, staying, true, 1 << 7);
+        let _ = staying_feed.take_avatar_packets(usize::MAX);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::ViewChild {
+                agent: child,
+                pose: pose_at([-56.0, 128.0, 6.916]),
+                owner: Uuid::from_u128(1),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        let (_child_feed, _) = open_viewer_flags(&mut scene, child, true, 0);
+        for _ in 0..4 {
+            update_presences(&mut scene);
+            step_avatars(&mut scene.presences, None);
+        }
+        assert!(
+            packet_kinds(&staying_feed)
+                .iter()
+                .all(|(kind, _)| *kind != 'K')
+        );
+        let _ = staying_feed.take_avatar_packets(usize::MAX);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::ViewChild {
+                agent: child,
+                pose: pose_at([-40.0, 128.0, 6.916]),
+                owner: Uuid::from_u128(2),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        assert!(
+            packet_kinds(&staying_feed)
+                .iter()
+                .all(|(kind, _)| *kind != 'K'),
+            "the other viewer was sent KillObject for a child it never saw"
+        );
     }
 
     fn arrive_in(scene: &mut Scene, agent: Uuid, position: [f32; 3]) {
