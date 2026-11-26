@@ -416,8 +416,6 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
             .await
             .unwrap();
     }
-    let mysql = pool.mysql().cloned();
-    let pg = pool.postgres().cloned();
     let store = AuthStore::new(pool, "auth").unwrap();
     let row = webkey_row();
     assert!(store.store(&row).await.unwrap());
@@ -433,13 +431,18 @@ async fn round_trip_sqlx(url: &str, postgres: bool) {
             .await
             .unwrap()
     );
+    // The web-key-only service reads the key once before consuming it. Use
+    // its own pool so the race helper controls the order of its database calls.
+    let race_pool = ferroan_db::Pool::connect_sqlx_url(url).await.unwrap();
+    let webkeys = |pool| AuthService::new(AuthStore::new(pool, "auth").unwrap(), AuthKind::Webkey);
+    if postgres {
+        let connections = race_pool.postgres().unwrap().clone();
+        reset_racing_a_consume(&connections, &webkeys(race_pool)).await;
+    } else {
+        let connections = race_pool.mysql().unwrap().clone();
+        reset_racing_a_consume(&connections, &webkeys(race_pool)).await;
+    }
     let service = AuthService::new(store, AuthKind::WebkeyOrPassword);
-    if let Some(pool) = mysql {
-        reset_racing_a_consume(&pool, &service).await;
-    }
-    if let Some(pool) = pg {
-        reset_racing_a_consume(&pool, &service).await;
-    }
     let id = principal();
     assert!(service.set_password(id, "harness-secret").await.unwrap());
     let row = service.get(id).await.unwrap().unwrap();
