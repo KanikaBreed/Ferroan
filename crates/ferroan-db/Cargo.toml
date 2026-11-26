@@ -11,6 +11,7 @@ publish.workspace = true
 ferroan-diag = { path = "../ferroan-diag" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "mysql", "postgres"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

@@ -19,6 +19,8 @@ mod store;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zone;
 
 pub use authorize::router as authorization_router;
 pub use http::AuthHttp;

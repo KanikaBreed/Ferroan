@@ -33,6 +33,8 @@
 //! provider's calls and results in `fixtures/presence/null.json`.
 //! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
 //! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
+//! `session-zone` checks MySQL and PostgreSQL session zones against Pin8 on
+//! throwaway servers.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
@@ -114,6 +116,7 @@ mod ports;
 mod region_report;
 mod regionstore;
 mod schema;
+mod session_zone;
 mod signal;
 mod trailing_fixtures;
 mod twice;
@@ -151,6 +154,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask presence verify
        cargo xtask presence cross mysql
        cargo xtask presence cross postgres
+       cargo xtask session-zone
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -296,6 +300,7 @@ fn main() -> ExitCode {
         ["presence", "service-generate"] => asset_oracle::presence_service(true),
         ["presence", "service-verify"] => asset_oracle::presence_service(false),
         ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
+        ["session-zone"] => session_zone::run(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
