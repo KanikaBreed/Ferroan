@@ -206,10 +206,9 @@ fn enable(
             .collect::<Vec<_>>(),
     );
     if simulation.admission_full(notice.agent) {
-        // No task owns these yet, so serve end can still send them.
-        for (end, session) in closes {
-            book.stage_ready_close(notice.agent, session, end);
-        }
+        // Pin8 has no admission cap and would send each close now. These
+        // closes are not claims, so a task the cap does not track sends them.
+        spawn_detached_closes(Arc::clone(&book), client.clone(), notice.agent, closes);
         finish(frame, notice, true);
         return;
     }
@@ -436,6 +435,26 @@ async fn close_child(client: &SimulationClient, end: &RegionEnd, agent: Uuid, se
     if let Err(error) = client.close_agent(end, agent, &session.to_string()).await {
         tracing::debug!("child close was not sent: {error}");
     }
+}
+
+/// Closes the cap refused to admit. The task is not tracked, so a full
+/// admission list does not hold the DELETEs until serve end. A far hop still
+/// skips them while they are in flight.
+fn spawn_detached_closes(
+    book: Arc<crate::children::ChildBook>,
+    client: SimulationClient,
+    agent: Uuid,
+    closes: Vec<(RegionEnd, Uuid)>,
+) {
+    if closes.is_empty() {
+        return;
+    }
+    for (end, session) in &closes {
+        book.stage_decided_close(agent, *session, end.clone());
+    }
+    tokio::spawn(async move {
+        send_decided_closes(book, &client, agent, closes).await;
+    });
 }
 
 /// Closes staged before this task started. A far hop's take leaves an
@@ -1724,13 +1743,12 @@ mod tests {
         neighbour_server.abort();
     }
 
-    /// Eight admission tasks already running. The next enable stages the
-    /// close it decided and does not claim the new neighbour.
+    /// Eight admission tasks already running. The next enable sends the close
+    /// it decided and does not claim the new neighbour.
     #[tokio::test]
-    async fn an_enable_past_the_admission_cap_stages_the_close_and_does_not_claim() {
+    async fn an_enable_past_the_admission_cap_sends_the_close_and_does_not_claim() {
         let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
         let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
-        let session = Uuid::parse_str(args["session_id"].as_str().unwrap()).unwrap();
         let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
         let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let home_base = format!("http://{}", home_listener.local_addr().unwrap());
@@ -1813,15 +1831,23 @@ mod tests {
             &[neighbour_at(&neighbour_uri, 32, port, [256, 256])],
         )
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let method = tokio::time::timeout(std::time::Duration::from_secs(2), recorded_rx.recv())
+            .await
+            .expect("the capped close was not sent")
+            .unwrap();
+        assert_eq!(method, "DELETE");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while state.child_book().staged_outstanding(agent) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the capped close stayed staged");
+        assert!(state.take_staged_closes(agent).is_empty());
         assert!(
             recorded_rx.try_recv().is_err(),
-            "a full admission list still sent child HTTP"
+            "a full admission list still posted a child"
         );
-        let staged = state.take_staged_closes(agent);
-        assert_eq!(staged.len(), 1);
-        assert_eq!(staged[0].0, session);
-        assert_eq!(staged[0].1.region_id, first);
         assert!(state.child_book().seed(agent, second).is_none());
         state.abort_admissions(agent).await;
         drop(accepted_rx);

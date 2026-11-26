@@ -642,7 +642,7 @@ impl SimulationState {
 
     /// Admission tasks one agent may have in flight. A create can hang for
     /// 30 s, so several enables overlap. Past this, another enable is refused
-    /// and does not claim.
+    /// and does not claim. Closes already decided are still sent.
     pub const CHILD_ADMISSION_TASKS: usize = 8;
 
     /// Drop finished handles. True when another admission would pass

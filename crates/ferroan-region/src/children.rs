@@ -168,11 +168,7 @@ fn take_ready(staged: &mut Vec<StagedClose>) -> Vec<(Uuid, RegionEnd)> {
     ready
 }
 
-fn find_staged(
-    book: &mut AgentBook,
-    session: Uuid,
-    region: Uuid,
-) -> Option<&mut StagedClose> {
+fn find_staged(book: &mut AgentBook, session: Uuid, region: Uuid) -> Option<&mut StagedClose> {
     book.staged
         .iter_mut()
         .find(|close| close.session == session && close.end.region_id == region)
@@ -476,17 +472,6 @@ impl ChildBook {
         if let Some(close) = find_staged(book, session, end.region_id) {
             close.in_flight = false;
         }
-    }
-
-    /// A decided close no admission task is sending. Serve end may take it.
-    pub fn stage_ready_close(&self, agent: Uuid, session: Uuid, end: RegionEnd) {
-        let mut books = self.lock();
-        books
-            .agents
-            .entry(agent)
-            .or_default()
-            .staged
-            .push(parked_close(session, end));
     }
 
     /// Closes still recorded, including one a task is sending.
