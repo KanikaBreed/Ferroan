@@ -1,0 +1,853 @@
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The physics thread and its request queue.
+//!
+//! Pin8 takes `_simLock` for the whole step and for every query
+//! (`JoltPhysicsBackend.cs` 4583–4597). A query issued during the step waits
+//! for it. Ferroan does not put Jolt calls on the frame thread ([D6]). The
+//! frame posts one heartbeat and reads the pose only after that reply.
+//! [`Physics::sample`] is the `TryGetBodyState` read (`JoltPhysicsBackend.cs`
+//! 2972–2994, called from `JoltPrim.cs` 932 and `JoltScene.CarryRidersOfChild`
+//! 3505): a sample posted during the step waits until the step finishes and
+//! returns the post-step state. Cached pose reads, the `JoltPrim.Position`
+//! equivalent (`JoltPrim.cs` 1046–1048), must never go through `sample`. They
+//! return the last drained pose and do not wait. Shutdown answers every
+//! request already queued and does not join the thread.
+//!
+//! The depth is [`REQUEST_QUEUE`], the same 256 as `region.scene-inbound`.
+//! A caller past that bound is refused and does not wait. Script rays, the
+//! arrival ray, and body create and remove are requests on this queue. The
+//! frame's heartbeat is not. It has a one-deep path the thread serves first,
+//! so rays waiting on the queue cannot refuse it, as Pin8's `Simulate` always
+//! runs. The stock stepped frame that reads a box pose is P3.64. Avatars stay
+//! on the stand-in until P3.76.
+
+use std::cell::Cell;
+use std::error::Error;
+use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use ferroan_config::Config;
+use ferroan_diag::{Kind, PHYSICS_REQUEST_QUEUE, refuse};
+
+use crate::jolt_config::{self, JoltLoad};
+use crate::native::{NativeError, PhysicsSystem};
+use crate::substep::SubstepAccumulator;
+
+/// Waiting requests on the physics thread. Same depth as `region.scene-inbound`.
+pub const REQUEST_QUEUE: usize = 256;
+
+std::thread_local! {
+    static OWNER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The calling thread is the one started by [`Physics::start`].
+pub(crate) fn on_physics_thread() -> bool {
+    OWNER.with(|flag| flag.get())
+}
+
+fn enter_owner() {
+    OWNER.with(|flag| flag.set(true));
+}
+
+/// The physics thread did not start.
+#[derive(Debug)]
+pub struct SpawnError;
+
+impl fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("physics thread did not start")
+    }
+}
+
+impl Error for SpawnError {}
+
+/// The caller was not given a physics answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// [`REQUEST_QUEUE`] requests were already waiting. The caller did not wait.
+    Full,
+    /// The thread is gone. The caller did not stay blocked.
+    Stopped,
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Full => "physics request queue is full",
+            Self::Stopped => "physics thread has stopped",
+        })
+    }
+}
+
+impl Error for Refusal {}
+
+/// One heartbeat the physics thread has finished.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Step {
+    /// Physics steps this heartbeat. From [`SubstepAccumulator`] when the
+    /// effective rate is above zero, otherwise one step, as `Simulate` does
+    /// when `_substeps` is null (`JoltScene.cs` 2795–2833).
+    pub count: i32,
+    /// Steps taken since the thread started.
+    pub total_steps: i64,
+    /// The rate [`JoltLoad::effective_step_rate`] stored at start.
+    pub effective_rate: f32,
+    /// The heartbeat passed to [`jolt_config::load`]. Not `[Startup] FrameTime`.
+    pub heartbeat_seconds: f32,
+}
+
+/// The pose after the latest heartbeat reply. Empty of bodies until P3.64.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pose {
+    /// A heartbeat has been answered.
+    pub ready: bool,
+    /// [`Step::count`] of that heartbeat. Zero when none has finished.
+    pub last_count: i32,
+    /// [`Step::total_steps`] after that heartbeat.
+    pub total_steps: i64,
+}
+
+/// A ray answered on the physics thread.
+///
+/// Pin8 `RayCast` returns no hit when `_system` is null
+/// (`JoltPhysicsBackend.cs` 4604–4605). This thread has no system until a later
+/// row creates bodies, so both rays miss.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RayReply {
+    pub hit: bool,
+}
+
+/// A body create or remove answered on the physics thread.
+///
+/// No backend exists on this row, so nothing is created or removed. P3.5 owns
+/// the body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyReply {
+    pub changed: bool,
+}
+
+enum Job {
+    Heartbeat {
+        frame_seconds: f64,
+        hold: Option<Hold>,
+        reply: Sender<Result<Step, Refusal>>,
+    },
+    Sample {
+        reply: Sender<Result<Pose, Refusal>>,
+    },
+    ScriptRay {
+        reply: Sender<Result<RayReply, Refusal>>,
+    },
+    ArrivalRay {
+        reply: Sender<Result<RayReply, Refusal>>,
+    },
+    CreateBody {
+        reply: Sender<Result<BodyReply, Refusal>>,
+    },
+    RemoveBody {
+        reply: Sender<Result<BodyReply, Refusal>>,
+    },
+    Native {
+        reply: Sender<Result<(), NativeError>>,
+    },
+}
+
+/// Test gate. The step signals `entered`, then waits until `release` or until
+/// shutdown has sent `saw_stop` and received `proceed`.
+struct Hold {
+    entered: Sender<()>,
+    release: Receiver<()>,
+    saw_stop: Sender<()>,
+    proceed: Receiver<()>,
+}
+
+#[cfg(test)]
+struct Gates {
+    entered: Receiver<()>,
+    release: Sender<()>,
+    saw_stop: Receiver<()>,
+    proceed: Sender<()>,
+}
+
+#[cfg(test)]
+fn hold_pair() -> (Hold, Gates) {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (saw_tx, saw_rx) = mpsc::channel();
+    let (proceed_tx, proceed_rx) = mpsc::channel();
+    (
+        Hold {
+            entered: entered_tx,
+            release: release_rx,
+            saw_stop: saw_tx,
+            proceed: proceed_rx,
+        },
+        Gates {
+            entered: entered_rx,
+            release: release_tx,
+            saw_stop: saw_rx,
+            proceed: proceed_tx,
+        },
+    )
+}
+
+#[derive(Clone)]
+struct Share {
+    requests: SyncSender<Job>,
+    /// One heartbeat waiting. The thread takes this before [`REQUEST_QUEUE`].
+    heartbeats: SyncSender<Job>,
+    wake: SyncSender<()>,
+    stopping: Arc<AtomicBool>,
+    heartbeat_seconds: f32,
+    effective_rate: f32,
+}
+
+struct Engine {
+    accumulator: Option<SubstepAccumulator>,
+    total_steps: i64,
+    last_count: i32,
+    ready: bool,
+    effective_rate: f32,
+    heartbeat_seconds: f32,
+    stopping: Arc<AtomicBool>,
+}
+
+/// One region's physics thread.
+///
+/// Drop sets shutdown and detaches the thread. It does not join.
+pub struct Physics {
+    share: Share,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Physics {
+    /// Starts the thread for the frame. The ini is `[Startup] physics = Jolt`
+    /// and the heartbeat is the frame's own period, not a `FrameTime` key.
+    pub fn for_frame(heartbeat_seconds: f32) -> Result<Self, SpawnError> {
+        let config = Config::parse("[Startup]\nphysics = Jolt\n").map_err(|_| SpawnError)?;
+        Self::start(&config, heartbeat_seconds)
+    }
+
+    /// Starts the thread. `heartbeat_seconds` is passed to [`jolt_config::load`]
+    /// and is not read from `[Startup] FrameTime`.
+    pub fn start(config: &Config, heartbeat_seconds: f32) -> Result<Self, SpawnError> {
+        let loaded = jolt_config::load(config, heartbeat_seconds);
+        let (requests_tx, requests_rx) = mpsc::sync_channel(REQUEST_QUEUE);
+        let (heartbeats_tx, heartbeats_rx) = mpsc::sync_channel(1);
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let share = Share {
+            requests: requests_tx,
+            heartbeats: heartbeats_tx,
+            wake: wake_tx,
+            stopping: Arc::clone(&stopping),
+            heartbeat_seconds: loaded.heartbeat_seconds,
+            effective_rate: loaded.effective_step_rate,
+        };
+        let engine = Engine::from_load(&loaded, stopping);
+        let thread = std::thread::Builder::new()
+            .name("ferroan-physics".to_owned())
+            .spawn(move || run(engine, heartbeats_rx, requests_rx, wake_rx))
+            .map_err(|_| SpawnError)?;
+        Ok(Self {
+            share,
+            thread: Some(thread),
+        })
+    }
+
+    /// The heartbeat passed to [`jolt_config::load`].
+    pub fn heartbeat_seconds(&self) -> f32 {
+        self.share.heartbeat_seconds
+    }
+
+    /// [`JoltLoad::effective_step_rate`] for that heartbeat.
+    pub fn effective_rate(&self) -> f32 {
+        self.share.effective_rate
+    }
+
+    /// What the frame does on one tick: post the heartbeat on the path the
+    /// thread serves first, and take the pose from that reply. The heartbeat
+    /// does not use [`REQUEST_QUEUE`]. The sample is not sent first.
+    pub fn frame_tick(&self, frame_seconds: f64) -> Result<Pose, Refusal> {
+        let step = self.heartbeat(frame_seconds)?;
+        Ok(Pose {
+            ready: true,
+            last_count: step.count,
+            total_steps: step.total_steps,
+        })
+    }
+
+    /// Post one heartbeat and wait for its step count.
+    pub fn heartbeat(&self, frame_seconds: f64) -> Result<Step, Refusal> {
+        self.share.heartbeat(frame_seconds, None)
+    }
+
+    /// Read the post-step pose.
+    ///
+    /// A sample posted while a step is running waits until that step finishes,
+    /// as `TryGetBodyState` does under `_simLock`. Cached pose reads, the
+    /// `JoltPrim.Position` equivalent, must not call this.
+    pub fn sample(&self) -> Result<Pose, Refusal> {
+        self.share.sample()
+    }
+
+    /// A script ray. Misses until a later row has a system.
+    pub fn script_ray(&self) -> Result<RayReply, Refusal> {
+        self.share.ray(true)
+    }
+
+    /// The arrival ray. Misses until a later row has a system.
+    pub fn arrival_ray(&self) -> Result<RayReply, Refusal> {
+        self.share.ray(false)
+    }
+
+    /// Body create. Nothing is created on this row.
+    pub fn create_body(&self) -> Result<BodyReply, Refusal> {
+        self.share.body(true)
+    }
+
+    /// Body remove. Nothing is removed on this row.
+    pub fn remove_body(&self) -> Result<BodyReply, Refusal> {
+        self.share.body(false)
+    }
+
+    /// Create one [`PhysicsSystem`] on this thread and drop it there.
+    pub fn create_and_drop_system(&self) -> Result<(), NativeError> {
+        self.share.create_and_drop_system()
+    }
+}
+
+impl Drop for Physics {
+    fn drop(&mut self) {
+        self.share.stopping.store(true, Ordering::Release);
+        self.share.poke();
+        // Detach. Callers wait on a reply channel, not on this join.
+        drop(self.thread.take());
+    }
+}
+
+impl Engine {
+    fn from_load(loaded: &JoltLoad, stopping: Arc<AtomicBool>) -> Self {
+        Self {
+            accumulator: SubstepAccumulator::new(loaded.effective_step_rate).ok(),
+            total_steps: 0,
+            last_count: 0,
+            ready: false,
+            effective_rate: loaded.effective_step_rate,
+            heartbeat_seconds: loaded.heartbeat_seconds,
+            stopping,
+        }
+    }
+
+    fn pose(&self) -> Pose {
+        Pose {
+            ready: self.ready,
+            last_count: self.last_count,
+            total_steps: self.total_steps,
+        }
+    }
+
+    fn take_steps(&mut self, frame_seconds: f64) -> Step {
+        let count = if let Some(accumulator) = self.accumulator.as_mut() {
+            accumulator.advance(frame_seconds)
+        } else {
+            // `_substeps` is null: one backend step for the heartbeat.
+            1
+        };
+        self.total_steps += i64::from(count);
+        self.last_count = count;
+        self.ready = true;
+        Step {
+            count,
+            total_steps: self.total_steps,
+            effective_rate: self.effective_rate,
+            heartbeat_seconds: self.heartbeat_seconds,
+        }
+    }
+}
+
+impl Share {
+    fn heartbeat(&self, frame_seconds: f64, hold: Option<Hold>) -> Result<Step, Refusal> {
+        let (tx, rx) = mpsc::channel();
+        self.post_heartbeat(Job::Heartbeat {
+            frame_seconds,
+            hold,
+            reply: tx,
+        })?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(Refusal::Stopped),
+        }
+    }
+
+    /// The one-deep heartbeat path. A second heartbeat waits until the thread
+    /// takes the one already waiting. It is not [`Refusal::Full`].
+    fn post_heartbeat(&self, job: Job) -> Result<(), Refusal> {
+        match self.heartbeats.send(job) {
+            Ok(()) => {
+                self.poke();
+                Ok(())
+            }
+            Err(_) => Err(Refusal::Stopped),
+        }
+    }
+
+    fn poke(&self) {
+        let _ = self.wake.try_send(());
+    }
+
+    fn sample(&self) -> Result<Pose, Refusal> {
+        self.call(|reply| Job::Sample { reply })
+    }
+
+    fn ray(&self, script: bool) -> Result<RayReply, Refusal> {
+        if script {
+            self.call(|reply| Job::ScriptRay { reply })
+        } else {
+            self.call(|reply| Job::ArrivalRay { reply })
+        }
+    }
+
+    fn body(&self, create: bool) -> Result<BodyReply, Refusal> {
+        if create {
+            self.call(|reply| Job::CreateBody { reply })
+        } else {
+            self.call(|reply| Job::RemoveBody { reply })
+        }
+    }
+
+    fn create_and_drop_system(&self) -> Result<(), NativeError> {
+        let (tx, rx) = mpsc::channel();
+        if let Err(refusal) = self.try_post(Job::Native { reply: tx }) {
+            return Err(NativeError::Refused(refusal));
+        }
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(NativeError::Refused(Refusal::Stopped)),
+        }
+    }
+
+    #[cfg(test)]
+    fn enqueue_ray(&self) -> Result<Receiver<Result<RayReply, Refusal>>, Refusal> {
+        let (tx, rx) = mpsc::channel();
+        self.try_post(Job::ScriptRay { reply: tx })?;
+        Ok(rx)
+    }
+
+    fn call<T>(
+        &self,
+        job_for: impl FnOnce(Sender<Result<T, Refusal>>) -> Job,
+    ) -> Result<T, Refusal> {
+        let (tx, rx) = mpsc::channel();
+        self.try_post(job_for(tx))?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(Refusal::Stopped),
+        }
+    }
+
+    fn try_post(&self, job: Job) -> Result<(), Refusal> {
+        match self.requests.try_send(job) {
+            Ok(()) => {
+                self.poke();
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                refuse(
+                    PHYSICS_REQUEST_QUEUE,
+                    Kind::Hard,
+                    REQUEST_QUEUE as u64,
+                    REQUEST_QUEUE as u64 + 1,
+                    "physics",
+                );
+                Err(Refusal::Full)
+            }
+            Err(TrySendError::Disconnected(_)) => Err(Refusal::Stopped),
+        }
+    }
+}
+
+fn run(mut engine: Engine, heartbeats: Receiver<Job>, requests: Receiver<Job>, wake: Receiver<()>) {
+    enter_owner();
+    loop {
+        if engine.stopping.load(Ordering::Acquire) {
+            drain(&mut engine, &heartbeats, &requests);
+            break;
+        }
+        if let Some(job) = next_job(&heartbeats, &requests) {
+            dispatch(&mut engine, job);
+            continue;
+        }
+        if wake.recv().is_err() {
+            drain(&mut engine, &heartbeats, &requests);
+            break;
+        }
+    }
+}
+
+/// A waiting heartbeat, or else one request. Heartbeats are not behind the
+/// request queue.
+fn next_job(heartbeats: &Receiver<Job>, requests: &Receiver<Job>) -> Option<Job> {
+    if let Ok(job) = heartbeats.try_recv() {
+        return Some(job);
+    }
+    requests.try_recv().ok()
+}
+
+fn drain(engine: &mut Engine, heartbeats: &Receiver<Job>, requests: &Receiver<Job>) {
+    while let Some(job) = next_job(heartbeats, requests) {
+        dispatch(engine, job);
+    }
+}
+
+fn dispatch(engine: &mut Engine, job: Job) {
+    match job {
+        Job::Heartbeat {
+            frame_seconds,
+            hold,
+            reply,
+        } => {
+            if let Some(hold) = hold {
+                pause(&hold, &engine.stopping);
+            }
+            let step = engine.take_steps(frame_seconds);
+            let _ = reply.send(Ok(step));
+        }
+        Job::Sample { reply } => {
+            // The step that was running has already finished: this thread
+            // dispatches one job at a time, and a sample waits behind it.
+            let _ = reply.send(Ok(engine.pose()));
+        }
+        Job::ScriptRay { reply } | Job::ArrivalRay { reply } => {
+            debug_assert!(on_physics_thread());
+            let _ = reply.send(Ok(RayReply { hit: false }));
+        }
+        Job::CreateBody { reply } | Job::RemoveBody { reply } => {
+            debug_assert!(on_physics_thread());
+            let _ = reply.send(Ok(BodyReply { changed: false }));
+        }
+        Job::Native { reply } => {
+            let result = PhysicsSystem::new().map(drop);
+            let _ = reply.send(result);
+        }
+    }
+}
+
+fn pause(hold: &Hold, stopping: &AtomicBool) {
+    let _ = hold.entered.send(());
+    loop {
+        if hold.release.try_recv().is_ok() {
+            return;
+        }
+        if stopping.load(Ordering::Acquire) {
+            let _ = hold.saw_stop.send(());
+            let _ = hold.proceed.recv();
+            return;
+        }
+        std::thread::park_timeout(Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::TryRecvError;
+    use std::thread;
+    use std::time::Instant;
+
+    fn fixture() -> serde_json::Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/jolt/substeps.json");
+        let text = std::fs::read_to_string(&path).expect("substeps fixture");
+        serde_json::from_str(&text).expect("substeps json")
+    }
+
+    fn hex_u64(text: &str) -> u64 {
+        u64::from_str_radix(text, 16).expect("hex")
+    }
+
+    fn hex_u32(text: &str) -> u32 {
+        u32::from_str_radix(text, 16).expect("hex")
+    }
+
+    #[test]
+    fn the_frame_tick_reads_the_pose_after_the_heartbeat() {
+        let doc = fixture();
+        let sequence = doc.get("sequence").expect("sequence");
+        let heartbeat = f64::from_bits(hex_u64(
+            sequence
+                .get("heartbeat_f64_bits")
+                .and_then(|value| value.as_str())
+                .expect("bits"),
+        ));
+        let rate = f32::from_bits(hex_u32(
+            sequence
+                .get("rate_hz_bits")
+                .and_then(|value| value.as_str())
+                .expect("rate"),
+        ));
+        assert_eq!(rate.to_bits(), 0x4234_0000);
+        assert_eq!(0.0909f32.to_bits(), 0x3dba_29c7);
+        assert_eq!(heartbeat.to_bits(), f64::from(0.0909f32).to_bits());
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        assert_eq!(physics.heartbeat_seconds().to_bits(), 0.0909f32.to_bits());
+        assert_eq!(physics.effective_rate().to_bits(), rate.to_bits());
+        let before = physics.sample().expect("sample before");
+        assert!(!before.ready);
+        let counts = sequence
+            .get("counts")
+            .and_then(|value| value.as_array())
+            .expect("counts");
+        assert_eq!(counts.len(), 1000);
+        let fours = counts
+            .iter()
+            .filter(|count| count.as_i64() == Some(4))
+            .count();
+        let fives = counts
+            .iter()
+            .filter(|count| count.as_i64() == Some(5))
+            .count();
+        assert_eq!(fours, 910);
+        assert_eq!(fives, 90);
+        let mut total = 0i64;
+        for count in counts {
+            let expected = i32::try_from(count.as_i64().expect("count")).expect("i32");
+            let pose = physics.frame_tick(heartbeat).expect("tick");
+            total += i64::from(expected);
+            assert!(pose.ready);
+            assert_eq!(pose.last_count, expected);
+            assert_eq!(pose.total_steps, total);
+        }
+        assert_eq!(total, 4090);
+    }
+
+    #[test]
+    fn the_reader_uses_the_heartbeat_it_was_given() {
+        let text = "[Startup]\nphysics = Jolt\nFrameTime = 0.0909\n[Jolt]\nPhysicsStepRate = 45\n";
+        let config = Config::parse(text).expect("ini");
+        let slow = Physics::start(&config, 0.01).expect("slow");
+        assert_eq!(slow.heartbeat_seconds().to_bits(), 0.01f32.to_bits());
+        assert_eq!(slow.effective_rate(), 0.0);
+        let step = slow.heartbeat(f64::from(0.01f32)).expect("one step");
+        assert_eq!(step.count, 1);
+        assert_eq!(step.heartbeat_seconds.to_bits(), 0.01f32.to_bits());
+        let region = Physics::start(&config, 0.0909).expect("region");
+        assert_eq!(region.effective_rate().to_bits(), 45.0f32.to_bits());
+        let step = region.heartbeat(f64::from(0.0909f32)).expect("four");
+        assert_eq!(step.count, 4);
+    }
+
+    #[test]
+    fn a_sample_during_the_step_waits_for_the_post_step_pose() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let sampler = physics.share.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let helper = thread::spawn(move || {
+            let _ = done_tx.send(sampler.sample());
+        });
+        assert!(
+            matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "sample returned while the step was still held"
+        );
+        gates.release.send(()).expect("release");
+        let pose = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sample finished")
+            .expect("pose");
+        assert!(pose.ready);
+        assert_eq!(pose.last_count, 4);
+        assert_eq!(pose.total_steps, 4);
+        helper.join().expect("helper");
+        let step = worker.join().expect("worker").expect("step");
+        assert_eq!(step.count, 4);
+    }
+
+    #[test]
+    fn the_257th_caller_is_refused_and_does_not_wait() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::with_capacity(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        let started = Instant::now();
+        let extra = physics.share.enqueue_ray();
+        let elapsed = started.elapsed();
+        assert_eq!(extra.err(), Some(Refusal::Full));
+        assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
+        assert!(ferroan_diag::metrics().contains("physics.request-queue"));
+        gates.release.send(()).expect("release");
+        worker.join().expect("worker").expect("step");
+        for rx in waiting {
+            let reply = rx.recv_timeout(Duration::from_secs(2)).expect("ray");
+            assert_eq!(reply, Ok(RayReply { hit: false }));
+        }
+    }
+
+    #[test]
+    fn the_heartbeat_is_served_before_a_full_request_queue() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::with_capacity(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        assert_eq!(physics.share.enqueue_ray().err(), Some(Refusal::Full));
+        let second = physics.share.clone();
+        let (hold_next, next) = hold_pair();
+        let worker_next =
+            thread::spawn(move || second.heartbeat(f64::from(0.0909f32), Some(hold_next)));
+        assert!(
+            matches!(
+                next.entered.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "second heartbeat ran before the held step finished"
+        );
+        gates.release.send(()).expect("release");
+        next.entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("heartbeat served before the queued rays");
+        assert!(matches!(waiting[0].try_recv(), Err(TryRecvError::Empty)));
+        next.release.send(()).expect("release next");
+        let first = worker.join().expect("worker").expect("step");
+        let followed = worker_next.join().expect("next").expect("step");
+        assert_eq!(first.count, 4);
+        assert_eq!(followed.count, 4);
+        assert_eq!(followed.total_steps, 8);
+        for rx in waiting {
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("ray")
+                .expect("ok");
+        }
+    }
+
+    #[test]
+    fn shutdown_answers_queued_callers_and_does_not_join() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::new();
+        for _ in 0..4 {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        let late = physics.share.clone();
+        drop(physics);
+        gates
+            .saw_stop
+            .recv_timeout(Duration::from_secs(2))
+            .expect("saw stop");
+        assert!(matches!(waiting[0].try_recv(), Err(TryRecvError::Empty)));
+        gates.proceed.send(()).expect("proceed");
+        let step = worker.join().expect("worker").expect("step");
+        assert_eq!(step.count, 4);
+        for rx in waiting {
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(2)).expect("queued"),
+                Ok(RayReply { hit: false })
+            );
+        }
+        // A caller that arrives once the thread has left must be refused
+        // without waiting. A post that races the receiver's drop is answered
+        // or disconnected, and the next post is the refusal.
+        let started = Instant::now();
+        let mut answer = late.enqueue_ray();
+        while let Ok(rx) = answer {
+            let _ = rx.recv_timeout(Duration::from_secs(2));
+            answer = late.enqueue_ray();
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "caller still waiting"
+            );
+        }
+        let refused_at = Instant::now();
+        assert_eq!(answer.err(), Some(Refusal::Stopped));
+        assert!(
+            refused_at.saturating_duration_since(started) < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_refused_system_create_carries_the_refusal() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::with_capacity(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        let refused = physics.create_and_drop_system().expect_err("full");
+        assert_eq!(refused, NativeError::Refused(Refusal::Full));
+        assert_ne!(refused, NativeError::OffThread);
+        gates.release.send(()).expect("release");
+        worker.join().expect("worker").expect("step");
+        for rx in waiting {
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("ray")
+                .expect("ok");
+        }
+        let late = physics.share.clone();
+        drop(physics);
+        let started = Instant::now();
+        loop {
+            match late.create_and_drop_system() {
+                Err(NativeError::Refused(Refusal::Stopped)) => break,
+                Ok(()) | Err(NativeError::Refused(Refusal::Full)) => {}
+                Err(error) => panic!("system create returned {error}"),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "create still waiting"
+            );
+        }
+    }
+
+    #[test]
+    fn rays_and_body_requests_are_answered_on_the_thread() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        assert_eq!(physics.script_ray(), Ok(RayReply { hit: false }));
+        assert_eq!(physics.arrival_ray(), Ok(RayReply { hit: false }));
+        assert_eq!(physics.create_body(), Ok(BodyReply { changed: false }));
+        assert_eq!(physics.remove_body(), Ok(BodyReply { changed: false }));
+    }
+}

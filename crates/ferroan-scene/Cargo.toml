@@ -9,9 +9,11 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+ferroan-config = { path = "../ferroan-config" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-diag = { path = "../ferroan-diag" }
 ferroan-llsd = { path = "../ferroan-llsd" }
+ferroan-physics = { path = "../ferroan-physics" }
 ferroan-protocol = { path = "../ferroan-protocol" }
 ferroan-types = { path = "../ferroan-types" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
