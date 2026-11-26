@@ -15,8 +15,8 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
 use crate::backend::Backend;
 use crate::connect::{
-    mysql_options, mysql_target, postgres_options, postgres_target, scrub_driver_message,
-    sqlite_options, sqlite_target,
+    apply_postgres_timezone, mysql_options, mysql_target, mysql_url_options, postgres_options,
+    postgres_target, postgres_url_options, scrub_driver_message, sqlite_options, sqlite_target,
 };
 use crate::error::DbError;
 use crate::expected::expected_version;
@@ -139,11 +139,7 @@ impl Pool {
             Backend::Postgres => {
                 let (target, password) = postgres_target(connection_string)?;
                 let options = postgres_options(&target, &password);
-                let pool = PgPoolOptions::new()
-                    .max_connections(MAX_POOL_CONNECTIONS)
-                    .min_connections(0)
-                    .acquire_timeout(ACQUIRE_TIMEOUT)
-                    .connect_with(options)
+                let pool = connect_postgres(options, target.timezone)
                     .await
                     .map_err(|error| connect_error(backend, &error))?;
                 Inner::Postgres(pool)
@@ -185,19 +181,18 @@ impl Pool {
                 Inner::Sqlite(pool)
             }
             Backend::Mysql => {
+                let options = mysql_url_options(url)?;
                 let pool = MySqlPoolOptions::new()
                     .max_connections(MAX_POOL_CONNECTIONS)
                     .acquire_timeout(ACQUIRE_TIMEOUT)
-                    .connect(url)
+                    .connect_with(options)
                     .await
                     .map_err(|error| connect_error(backend, &error))?;
                 Inner::Mysql(pool)
             }
             Backend::Postgres => {
-                let pool = PgPoolOptions::new()
-                    .max_connections(MAX_POOL_CONNECTIONS)
-                    .acquire_timeout(ACQUIRE_TIMEOUT)
-                    .connect(url)
+                let options = postgres_url_options(url)?;
+                let pool = connect_postgres(options, None)
                     .await
                     .map_err(|error| connect_error(backend, &error))?;
                 Inner::Postgres(pool)
@@ -330,6 +325,31 @@ fn sqlite_data_source(path: &Path) -> Result<String, DbError> {
         ));
     }
     Ok(format!("Data Source={text};Version=3"))
+}
+
+async fn connect_postgres(
+    options: sqlx::postgres::PgConnectOptions,
+    timezone: Option<String>,
+) -> Result<PgPool, sqlx::Error> {
+    // sqlx retries an `after_connect` error until the acquire timeout, so an
+    // invalid Timezone= would surface as a pool timeout. Check it once first.
+    if let Some(zone) = timezone.clone() {
+        use sqlx::Connection;
+        let mut conn = sqlx::postgres::PgConnection::connect_with(&options).await?;
+        let applied = apply_postgres_timezone(&mut conn, Some(zone)).await;
+        let _ = conn.close().await;
+        applied?;
+    }
+    PgPoolOptions::new()
+        .max_connections(MAX_POOL_CONNECTIONS)
+        .min_connections(0)
+        .acquire_timeout(ACQUIRE_TIMEOUT)
+        .after_connect(move |conn, _meta| {
+            let timezone = timezone.clone();
+            Box::pin(async move { apply_postgres_timezone(conn, timezone).await })
+        })
+        .connect_with(options)
+        .await
 }
 
 fn connect_error(backend: Backend, error: &sqlx::Error) -> DbError {

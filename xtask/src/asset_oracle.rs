@@ -569,6 +569,7 @@ pub(crate) fn dotnet(
         .arg(format!("-p:ArtifactsPath={}", artifacts.display()))
         .arg("-p:GeneratePackageOnBuild=false")
         .arg("-p:ContinuousIntegrationBuild=true")
+        .arg("-p:UseSharedCompilation=false")
         .arg(crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF);
     if no_build {
         command.arg("--no-build");

@@ -52,6 +52,8 @@ The live workflow runs `cargo xtask http auth-verify` in its "Verify the oracles
 
 `cargo xtask presence cross postgres` runs the Pin8 PostgreSQL migration and cross-reads the same v4 table in both directions. It compares partial stores, verification, reports, region logout and field operations. The plugin and a native timestamp read check D84's re-store down to the microsecond. The report names TB105 and TB114. With `FERROAN_POSTGRES_URL` set, the workspace tests also exercise the 1024-row lookup boundary and removal of a 1025-session region. [Connection settings](../tools/presence-oracle/README.md)
 
+`cargo xtask session-zone` starts a disposable MySQL 8.4 server at `-05:00` and a disposable PostgreSQL 16 server at `America/New_York`, then removes both. Pin8 reads a password token and a Presence `LastSeen` that Ferroan stored, and Ferroan reads the token and `LastSeen` Pin8 stored. A second PostgreSQL pass sets `Timezone=Europe/Berlin`. An unprivileged login stays on UTC unless that key is set (D104). [Connection settings](../tools/zone-oracle/README.md)
+
 ## Null Presence store
 
 `cargo xtask presence generate` records the Pin8 Null provider's calls and results. `cargo xtask presence verify` repeats them with two provider instances in one process. The live workflow runs `cargo xtask presence verify`. The Rust test `two_null_providers_match_the_pin8_sequence` replays the committed operations and compares every result, including row order and held references. [Fixture and commands](../fixtures/presence/README.md).

@@ -8,6 +8,11 @@
 //! 10.0.3. Those are the packages `OpenSim.Data.MySQL` and `OpenSim.Data.PGSQL`
 //! reference at the pinned revision.
 //!
+//! MySqlConnector leaves the session time zone alone. Npgsql sends `Timezone=`
+//! when the string sets it, and otherwise leaves the server's zone. sqlx does
+//! neither on its own: MySQL defaults to `+00:00`, and PostgreSQL's startup
+//! packet forces `TimeZone=UTC`. The pool corrects both after parsing.
+//!
 //! The pool never grows past [`MAX_POOL_CONNECTIONS`]. A `Maximum Pool Size`
 //! key in the string is rejected so a config file cannot lift that bound.
 //! SQLite files are opened only when they already exist: Ferroan does not
@@ -64,6 +69,8 @@ pub(crate) struct PostgresTarget {
     pub(crate) username: String,
     pub(crate) database: String,
     pub(crate) ssl: PostgresSsl,
+    /// Npgsql `Timezone=`. Absent means the server zone, when it can be read.
+    pub(crate) timezone: Option<String>,
 }
 
 /// SSL modes Ferroan maps onto Npgsql's `SslMode`.
@@ -201,6 +208,8 @@ pub(crate) fn mysql_options(target: &MysqlTarget, password: &str) -> MySqlConnec
             MysqlSsl::VerifyCa => MySqlSslMode::VerifyCa,
             MysqlSsl::VerifyIdentity => MySqlSslMode::VerifyIdentity,
         })
+        // sqlx's default sends time_zone='+00:00'. MySqlConnector 2.6.2 does not.
+        .timezone(None::<String>)
 }
 
 pub(crate) fn postgres_target(
@@ -213,6 +222,7 @@ pub(crate) fn postgres_target(
     let mut password = String::new();
     let mut database = None;
     let mut ssl = PostgresSsl::Prefer;
+    let mut timezone = None;
     for (key, value) in &pairs {
         match key.as_str() {
             "datasource" | "server" | "host" => host = Some(value.clone()),
@@ -221,6 +231,7 @@ pub(crate) fn postgres_target(
             "userid" | "username" | "uid" | "user" => username = Some(value.clone()),
             "password" | "pwd" => password = value.clone(),
             "sslmode" => ssl = parse_postgres_ssl(value)?,
+            "timezone" => timezone = Some(require_timezone(value)?),
             "timeout" | "commandtimeout" | "searchpath" => {}
             "maximumpoolsize" | "pooling" => {
                 return Err(DbError::Input(format!(
@@ -243,9 +254,202 @@ pub(crate) fn postgres_target(
             username: require_field(username, "PostgreSQL user")?,
             database: require_field(database, "PostgreSQL database")?,
             ssl,
+            timezone,
         },
         password,
     ))
+}
+
+/// A sqlx MySQL URL. An explicit `timezone` query is kept. Otherwise the
+/// session uses the server zone, as `mysql_options` does for ADO strings.
+pub(crate) fn mysql_url_options(url: &str) -> Result<MySqlConnectOptions, DbError> {
+    let options = url
+        .parse::<MySqlConnectOptions>()
+        .map_err(|error| DbError::Input(scrub_driver_message(&error.to_string())))?;
+    if url_sets_timezone(url) {
+        Ok(options)
+    } else {
+        Ok(options.timezone(None::<String>))
+    }
+}
+
+/// A sqlx PostgreSQL URL. The session zone is applied after connect.
+pub(crate) fn postgres_url_options(url: &str) -> Result<PgConnectOptions, DbError> {
+    url.parse::<PgConnectOptions>()
+        .map_err(|error| DbError::Input(scrub_driver_message(&error.to_string())))
+}
+
+fn url_sets_timezone(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(pair);
+        matches!(
+            key.trim().to_ascii_lowercase().as_str(),
+            "timezone" | "time_zone" | "time-zone"
+        )
+    })
+}
+
+fn require_timezone(value: &str) -> Result<String, DbError> {
+    if acceptable_timezone(value) {
+        Ok(value.to_string())
+    } else {
+        Err(DbError::Input(
+            "PostgreSQL Timezone is empty or has an unsupported character".to_string(),
+        ))
+    }
+}
+
+fn acceptable_timezone(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b'_' | b'+' | b'-' | b':')
+        })
+}
+
+/// The last `timezone` or `TimeZone` assignment in PostgreSQL's `postmaster.opts`.
+///
+/// The file is one shell-quoted command line. A value that is not a time-zone
+/// name is ignored so the caller can try the configuration file next.
+pub(crate) fn timezone_from_postmaster_opts(text: &str) -> Option<String> {
+    let tokens = shell_tokens(text)?;
+    let mut found = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index].as_str();
+        if let Some(value) = assignment_after(token, "-c") {
+            found = accepted_zone(value);
+        } else if let Some(value) = assignment_after(token, "--") {
+            found = accepted_zone(value);
+        } else if token == "-c"
+            && let Some(next) = tokens.get(index + 1)
+            && let Some(value) = zone_assignment(next)
+        {
+            found = accepted_zone(value);
+        }
+        index += 1;
+    }
+    found
+}
+
+/// `timezone=America/New_York` after a `-c` or `--` prefix on the same token.
+fn assignment_after<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = token.strip_prefix(prefix)?;
+    zone_assignment(rest)
+}
+
+fn zone_assignment(token: &str) -> Option<&str> {
+    let (key, value) = token.split_once('=')?;
+    if key.eq_ignore_ascii_case("timezone") {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn accepted_zone(value: &str) -> Option<String> {
+    let value = value.trim();
+    if acceptable_timezone(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+/// Split a `postmaster.opts` line. An unclosed quote means the line is not usable.
+fn shell_tokens(text: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    let mut in_token = false;
+    let mut quote = None;
+    while let Some(ch) = chars.next() {
+        if let Some(opened) = quote {
+            if ch == opened {
+                quote = None;
+            } else if ch == '\\' {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_token = true;
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if in_token {
+                tokens.push(std::mem::take(&mut current));
+                in_token = false;
+            }
+            continue;
+        }
+        in_token = true;
+        current.push(ch);
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if in_token {
+        tokens.push(current);
+    }
+    Some(tokens)
+}
+
+/// Set the PostgreSQL session zone. sqlx has already forced `TimeZone=UTC`
+/// in the startup packet, and `RESET` keeps that value, so the server default
+/// is read from the postmaster command line or the configuration file.
+///
+/// A login that cannot read either leaves the UTC session in place (D104).
+/// `explicit` is Npgsql's `Timezone=` and is sent as a bound parameter.
+pub(crate) async fn apply_postgres_timezone(
+    conn: &mut sqlx::postgres::PgConnection,
+    explicit: Option<String>,
+) -> Result<(), sqlx::Error> {
+    let zone = match explicit {
+        Some(zone) => zone,
+        None => match server_timezone(conn).await {
+            Some(zone) => zone,
+            None => return Ok(()),
+        },
+    };
+    sqlx::query("SELECT set_config('TimeZone', $1, false)")
+        .bind(zone)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+async fn server_timezone(conn: &mut sqlx::postgres::PgConnection) -> Option<String> {
+    if let Some(text) = optional_text(conn, "SELECT pg_read_file('postmaster.opts')").await
+        && let Some(zone) = timezone_from_postmaster_opts(&text)
+    {
+        return Some(zone);
+    }
+    optional_text(
+        conn,
+        "SELECT setting FROM pg_file_settings \
+         WHERE lower(name) = 'timezone' AND applied AND (error IS NULL OR error = '') \
+         ORDER BY seqno DESC LIMIT 1",
+    )
+    .await
+    .map(|zone| zone.trim().to_string())
+    .filter(|zone| acceptable_timezone(zone))
+}
+
+async fn optional_text(conn: &mut sqlx::postgres::PgConnection, sql: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>(sql)
+        .fetch_one(&mut *conn)
+        .await
+        .ok()
 }
 
 pub(crate) fn postgres_options(target: &PostgresTarget, password: &str) -> PgConnectOptions {
@@ -596,6 +800,46 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("secret"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");
+    }
+
+    #[test]
+    fn postgres_timezone_is_kept_and_not_rewritten() {
+        let (target, _) = postgres_target(
+            "Server=localhost;Database=db;User Id=u;Password=p;Timezone=America/New_York",
+        )
+        .unwrap();
+        assert_eq!(target.timezone.as_deref(), Some("America/New_York"));
+        let error = postgres_target("Server=localhost;Database=db;User Id=u;Password=p;Timezone=")
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("Timezone"), "{text}");
+        let odd = postgres_target(
+            "Server=localhost;Database=db;User Id=u;Password=p;Timezone=America/New York",
+        )
+        .unwrap_err();
+        assert!(!odd.to_string().contains("New York"));
+        let mysql = mysql_target("Server=localhost;Database=db;User ID=u;Password=p;Timezone=UTC")
+            .unwrap_err();
+        assert!(mysql.to_string().contains("unsupported MySQL"));
+    }
+
+    #[test]
+    fn postmaster_opts_timezone_is_the_last_assignment() {
+        let line = "/usr/lib/postgresql/16/bin/postgres \"-c\" \"timezone=UTC\" \"-c\" \"timezone=America/New_York\"\n";
+        assert_eq!(
+            timezone_from_postmaster_opts(line).as_deref(),
+            Some("America/New_York")
+        );
+        assert_eq!(
+            timezone_from_postmaster_opts("postgres -ctimezone=Europe/Berlin").as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            timezone_from_postmaster_opts("postgres --timezone=+01:00").as_deref(),
+            Some("+01:00")
+        );
+        assert!(timezone_from_postmaster_opts("postgres -c listen_addresses=*").is_none());
+        assert!(timezone_from_postmaster_opts("postgres \"-c").is_none());
     }
 
     #[test]
