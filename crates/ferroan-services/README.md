@@ -91,6 +91,8 @@ These are the C# consumers at pin `40432e0`. The harness grid loads only the Rob
 | Profiles (P1.11) | `[UserProfilesService] LocalServiceModule` loads the service, which then loads `UserAccountService`. | The account key is the accounts row above. The harness does not load profiles. |
 | Estates and experiences (P1.12) | Off in the shipped GridServer config. Experience's own section loads `UserAccountService` when the service is on. | `EstateServerURI` and `ExperienceServerURI`. |
 
+A password reset creates a missing principal with account type `UserAccount` and the zero web key. For an existing principal, resetting the password preserves the current account type and any concurrent consumption of the web key (D79).
+
 ## Presence rows
 
 `presence::PgPresenceData` opens `Presence` by default. Pass `[PresenceService] Realm` to `new` for a different PostgreSQL v4 table. PostgreSQL folds the validated identifier to lowercase as in Pin8. A store with an existing session ID updates the supplied fields. A new session defaults to a zero secure session ID and SQL NULL for LastSeen. The row exposes SQL NULL as an empty string. For a non-null timestamp, Ferroan's `Data["LastSeen"]` holds PostgreSQL ISO text with microsecond precision. Pin8 under Robust gives en-US text without fractional seconds. Q26d must accept the provider's representation and LoginAgent must store a fresh row without LastSeen. Ferroan preserves the fetched value on re-store (TB105, D84). A successful region report stamps the database clock in the session zone.

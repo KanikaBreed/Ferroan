@@ -61,6 +61,7 @@ static class AuthCases
         public string AccountType = "initial";
         public bool StoreResult = true;
         public int ClearAttempts;
+        public AuthenticationData LastWrite;
         public AuthenticationData Get(UUID id) => new() { PrincipalID = id, Data = new()
         {
             ["webLoginKey"] = Key.ToString(), ["accountType"] = AccountType,
@@ -69,7 +70,7 @@ static class AuthCases
         public bool Store(AuthenticationData data)
         {
             if (Equals(data.Data["webLoginKey"], UUID.Zero.ToString())) ClearAttempts++;
-            if (StoreResult) AccountType = (string)data.Data["accountType"];
+            if (StoreResult) { AccountType = (string)data.Data["accountType"]; LastWrite = data; }
             return StoreResult;
         }
         public bool SetToken(UUID id, string token, int lifetime) => true;
@@ -124,7 +125,13 @@ static class AuthCases
         string body = plain.Post(requestForm);
         store.StoreResult = false;
         bool issued = service.Authenticate(id, store.Key.ToString(), 30).Length > 0;
-        var result = new { revision, xml, list = new { request = requestForm, body, account_type = store.AccountType },
+        MemoryStore resetStore = new();
+        bool reset = Webkey.WithStore(resetStore).SetPassword(id, "fixture");
+        var write = resetStore.LastWrite.Data;
+        var reset_fields = new { stored = reset, writes_previous_key = Equals(write["webLoginKey"], resetStore.Key.ToString()),
+            account_type = write["accountType"], salt_length = ((string)write["passwordSalt"]).Length,
+            hash_length = ((string)write["passwordHash"]).Length };
+        var result = new { revision, xml, reset_fields, list = new { request = requestForm, body, account_type = store.AccountType },
             clear_refused = new { clear_attempts = store.ClearAttempts, token_issued = issued } };
         string json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true, NewLine = "\n" }) + "\n";
         string path = Path.Combine(directory, "cases.json");

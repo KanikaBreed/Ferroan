@@ -94,6 +94,7 @@ pub(crate) fn require_known_services(services: &[String]) -> Result<(), String> 
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
+    GroupMemberships,
     Build,
     Up {
         ferroan_assets: bool,
@@ -206,6 +207,7 @@ fn split_port_base<'a>(args: &[&'a str]) -> Result<(Option<u16>, Vec<&'a str>), 
 fn execute(command: Command) -> ExitCode {
     match command {
         Command::Build => live::build(),
+        Command::GroupMemberships => live::finish(crate::group_memberships::run()),
         Command::Up { ferroan_assets } => live::up(ferroan_assets),
         Command::UpGrid { bind } => {
             let Some(bind) = bind else {
@@ -314,6 +316,7 @@ fn fixture(kind: Fixture, path: &str) -> ExitCode {
 fn parse(args: &[&str]) -> Result<Command, ParseFail> {
     match args {
         ["build"] => Ok(Command::Build),
+        ["group-memberships"] => Ok(Command::GroupMemberships),
         ["up"] => Ok(Command::Up {
             ferroan_assets: false,
         }),
@@ -469,8 +472,10 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
-    if matches!(*scenario, "prim-capture" | "prim-arrival" | "object-cross")
-        && (!grid || flags.region_ferroan || !flags.basic_physics)
+    if matches!(
+        *scenario,
+        "prim-capture" | "prim-arrival" | "object-cross" | "child-view"
+    ) && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
             "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
@@ -751,7 +756,7 @@ mod tests {
 
     #[test]
     fn prim_capture_requires_the_csharp_grid_and_basicphysics() {
-        for scenario in ["prim-capture", "prim-arrival", "object-cross"] {
+        for scenario in ["prim-capture", "prim-arrival", "object-cross", "child-view"] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
             assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
             assert!(parse(&["run", scenario, "--physics", "basicphysics"]).is_err());

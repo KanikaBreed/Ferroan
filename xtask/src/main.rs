@@ -93,6 +93,7 @@ mod fsasset_live;
 mod grid;
 mod grid_smoke;
 mod grid_state;
+mod group_memberships;
 mod http_oracle;
 mod inventory_probe;
 mod limit_ids;
@@ -174,6 +175,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live record-twice
        cargo xtask live up [--assets ferroan]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
+       cargo xtask live group-memberships
        cargo xtask live persistent-grid-check
        cargo xtask live diag [url...]
        cargo xtask live down
@@ -181,6 +183,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live object-cross-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
+       cargo xtask live run child-view grid --physics basicphysics
        cargo xtask live run prim-arrival grid --physics basicphysics
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan

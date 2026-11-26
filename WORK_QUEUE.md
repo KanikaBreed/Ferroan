@@ -116,7 +116,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
 | QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
-| QR36 | R36: a concurrent password reset never writes back a consumed web key | READY after QR13 |
+| QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -177,7 +177,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
-| Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | READY |
+| Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | READY after Q60b |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
@@ -209,7 +209,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
 | Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
 | Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (split into Q79a–Q79c) |
-| Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | READY |
+| Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | READY after Q79a |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | READY after Q79b |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c |
