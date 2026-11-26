@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys`, Jolt, joltc and `joltc_ext` notices. The vendored-fork fallback is beside [D8](../DECISIONS.md).
+`ferroan-physics` holds the substep accumulator (P3.0b), the `[Jolt]` reader (P3.2c) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys`, Jolt, joltc and `joltc_ext` notices. The vendored-fork fallback is beside [D8](../DECISIONS.md).
 
 What touches motion today:
 
@@ -379,7 +379,7 @@ The first slice, in this order. Engine-independent rows come first. Then the Tra
 
 P3.1b records the joltc and `joltc_ext` notices and the vendored-fork fallback beside D8. Linux, Windows and macOS link on P3.1. P3.1b does not block P3.2a.
 
-[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.2c `READY` (Q107). P3.0, P3.0c, P3.0d and P3.0e (Q100, Q102 to Q104) are blocked until the deferred C# Jolt module upgrade. P3.0b (Q101), P3.1 (Q105) and P3.1b (Q106) are done. P3.29 is split: P3.29a (Q108a), the step cap, is done, and P3.29b (Q108b) waits for the rows that create the body, position, ray, hull and cook calls. The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
+[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.0, P3.0c, P3.0d and P3.0e (Q100, Q102 to Q104) blocked until the deferred C# Jolt module upgrade. P3.0b (Q101), P3.1 (Q105), P3.1b (Q106) and P3.2c (Q107) are done. P3.29 is split: P3.29a (Q108a), the step cap, is done, and P3.29b (Q108b) waits for the rows that create the body, position, ray, hull and cook calls. The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
 
 Every Jolt-backed row below is an exact trace against the deterministic C# build, and it also depends on P3.0d and P3.1 even when the depends cell names only the physics row it builds on. Geometry rows (P3.4, P3.7a, P3.7b, P3.10a) and P3.20a stay on the ulp or exact rules in section 3.
 
