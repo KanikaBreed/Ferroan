@@ -6,7 +6,8 @@
 //! `check` verifies that every Markdown link to a local file resolves and that
 //! every limit id is listed in `docs/LIMITS.md` and named from a call site,
 //! then runs formatting, clippy (warnings denied) and the workspace tests.
-//! With `--docs-only` it stops after the Markdown and limit-id checks.
+//! With `--docs-only` it stops after the Markdown, limit-id, login-gate and
+//! personal-path checks.
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
 //! `verify`. The Linux live workflow runs `verify` against pinned references.
@@ -107,6 +108,7 @@ mod login_gate;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
+mod personal_paths;
 mod pin3_oracle;
 mod ports;
 mod region_report;
@@ -341,7 +343,11 @@ fn main() -> ExitCode {
 
 fn check(docs_only: bool) -> ExitCode {
     let root = repo_root();
-    if !check_markdown(&root) || !limit_ids::check(&root) || !login_gate::check(&root) {
+    if !check_markdown(&root)
+        || !limit_ids::check(&root)
+        || !login_gate::check(&root)
+        || !personal_paths::check(&root)
+    {
         return ExitCode::FAILURE;
     }
     if docs_only {
