@@ -2272,6 +2272,48 @@ mod tests {
         assert!(line.contains("no UDP TeleportFinish"), "{line}");
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn neighbour_round_trip_supports_the_q18a_standing_avatar_at_landing() {
+        let fixture = crate::repo_root().join("fixtures/neighbour-teleport/proxy-neighbour.cap");
+        let create = records(&fixture)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == Kind::HttpRequest)
+            .map(|r| Message::parse(&r.bytes).unwrap())
+            .find(|r| r.method == "POST" && r.path.starts_with("/agent/"))
+            .unwrap();
+        let body = json_body(&create, "neighbour").unwrap();
+        assert_eq!(body["start_pos"], LANDING_POS);
+        let half_height = body["packed_appearance"]["height"].as_f64().unwrap() as f32 / 2.0;
+
+        let dir = std::env::temp_dir().join(format!("neighbour-landing-{}", uuid::Uuid::new_v4()));
+        super::super::prepare_neighbour_landing("child-view", &dir)
+            .await
+            .unwrap();
+        assert!(!dir.exists());
+        super::super::prepare_neighbour_landing("neighbour", &dir)
+            .await
+            .unwrap();
+        let map = ferroan_scene::open_terrain(
+            &format!("Data Source={}", dir.join("OpenSim.db").display()),
+            super::super::NEIGHBOUR_UUID.parse().unwrap(),
+            256,
+            256,
+            ferroan_scene::ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = fs::remove_dir_all(dir);
+        let [x, y, z] = LANDING;
+        let clearance = z - half_height - map.height_at(x, y);
+        assert!(
+            (0.01..0.1).contains(&clearance),
+            "foot clearance at the Q18a landing: {clearance} m"
+        );
+    }
+
     #[test]
     fn landing_allows_a_short_fall_on_csharp_regions_only() {
         let look = LANDING_LOOK;

@@ -1020,6 +1020,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         &grid.passwords,
         docker,
     )?);
+    require_started(&grid.proxies, "proxies")?
+        .block_on(prepare_neighbour_landing(scenario, &root.join("neighbour")))?;
     println!("live: grid region {NEIGHBOUR_NAME} on {NEIGHBOUR_BIND}:{neighbour_port}");
     grid.neighbour = Some(start_region(
         &root.join("neighbour"),
@@ -2317,6 +2319,41 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+/// Q18a checks a standing avatar on both departures. The C# neighbour's
+/// default island peaks at 25 m, below the 30 m landing: ubODE can put the
+/// avatar into FALLDOWN before the return PUT (Pin8 ScenePresenceAnimator).
+#[cfg(target_os = "linux")]
+async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), String> {
+    use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+
+    if scenario != "neighbour" {
+        return Ok(());
+    }
+    fs::create_dir_all(cwd).map_err(|e| e.to_string())?;
+    let db = cwd.join("OpenSim.db");
+    fs::copy(
+        crate::repo_root().join("fixtures/db/sqlite/RegionStore.db"),
+        &db,
+    )
+    .map_err(|e| format!("copy neighbour store: {e}"))?;
+
+    // TerrainData.FromCompressedTerrainSerializationV2D at Pin8 reads
+    // revision 22 as two little-endian dimensions followed by float heights.
+    // At 29 m the captured 1.9 m avatar's feet have just 5 cm to settle.
+    let mut heights = 256_i32.to_le_bytes().repeat(2);
+    heights.extend_from_slice(&29_f32.to_le_bytes().repeat(256 * 256));
+    let mut conn = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(db))
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO terrain (RegionUUID, Revision, Heightfield) VALUES (?, 22, ?)")
+        .bind(NEIGHBOUR_UUID)
+        .bind(heights)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("seed neighbour landing terrain: {e}"))?;
+    conn.close().await.map_err(|e| e.to_string())
 }
 
 /// Copy the committed region-store fixture into this run's directory. The
