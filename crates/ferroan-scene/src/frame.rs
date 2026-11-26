@@ -1923,6 +1923,7 @@ mod tests {
 
     /// Handshake, seeds, then four frames. The fourth runs `SendInitialData`.
     /// Zero teleport flags request another land pass. ViaLogin does not.
+    /// A second reply after that frame does not request another pass.
     #[test]
     fn send_initial_data_requests_land_only_when_teleport_flags_are_zero() {
         for flags in [0, 1 << 7] {
@@ -1943,6 +1944,9 @@ mod tests {
             }
             update_presences(&mut scene);
             assert_eq!(feed.take_land_pass(), flags == 0);
+            apply(Inbound::HandshakeReply { agent }, &mut scene);
+            update_presences(&mut scene);
+            assert!(!feed.take_land_pass());
         }
     }
 

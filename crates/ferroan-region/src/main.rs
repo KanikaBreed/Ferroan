@@ -526,20 +526,21 @@ async fn terrain_login(
     (position, land)
 }
 
-/// Overlay chunks for a root at `position`. A root with no parcel under them
-/// gets none: `sendClientInitialLandInfo` returns before the overlay, after
-/// terrain was already queued. Group cells use key presence only.
+/// Overlay chunks for an arrival at `position`. A root with no parcel under
+/// them gets none: `sendClientInitialLandInfo` returns before the overlay,
+/// after terrain was already queued. A child skips that lookup and still
+/// receives the overlay. Group cells use key presence only.
 fn overlay_chunks(
     parcels: Option<&ferroan_scene::parcels::ParcelMap>,
     agent: Uuid,
     position: [f32; 3],
+    child: bool,
     members: &BTreeSet<Uuid>,
 ) -> Vec<ferroan_client::ParcelOverlayChunk> {
     let Some(map) = parcels else {
         return Vec::new();
     };
-    // Served logins are roots. A child skips the parcel lookup in Pin8.
-    map.arrival_overlay(agent, position, false, |group| members.contains(&group))
+    map.arrival_overlay(agent, position, child, |group| members.contains(&group))
         .into_iter()
         .map(|packet| ferroan_client::ParcelOverlayChunk {
             sequence_id: packet.sequence_id,
@@ -890,6 +891,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             terrain.as_deref().and_then(TerrainFrame::parcels),
             expect.agent_id,
             position,
+            agent.return_slot.is_child(),
             &members,
         );
         // The owner and the frame use the same region id space, even if attach fails.
