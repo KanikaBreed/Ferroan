@@ -18,6 +18,8 @@
 //!
 //! Each tick posts one physics heartbeat and reads the pose only after that
 //! reply. The pose is not written onto avatars. The stand-in still steps them.
+//! A cached position read must not call `Physics::sample`: that call waits
+//! for the step, as `TryGetBodyState` does.
 //!
 //! After each tick the frame runs `ScenePresence.Update`'s terse test on every
 //! attached viewer's avatar ([`crate::terse`]) and offers a due update to

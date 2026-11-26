@@ -6,9 +6,14 @@
 //! Pin8 takes `_simLock` for the whole step and for every query
 //! (`JoltPhysicsBackend.cs` 4583–4597). A query issued during the step waits
 //! for it. Ferroan does not put Jolt calls on the frame thread ([D6]). The
-//! frame posts one heartbeat and reads the pose only after that reply. A pose
-//! sample while the step runs is refused and does not wait. Shutdown answers
-//! every request already queued and does not join the thread.
+//! frame posts one heartbeat and reads the pose only after that reply.
+//! [`Physics::sample`] is the `TryGetBodyState` read (`JoltPhysicsBackend.cs`
+//! 2972–2994, called from `JoltPrim.cs` 932 and `JoltScene.CarryRidersOfChild`
+//! 3505): a sample posted during the step waits until the step finishes and
+//! returns the post-step state. Cached pose reads, the `JoltPrim.Position`
+//! equivalent (`JoltPrim.cs` 1046–1048), must never go through `sample`. They
+//! return the last drained pose and do not wait. Shutdown answers every
+//! request already queued and does not join the thread.
 //!
 //! The depth is [`REQUEST_QUEUE`], the same 256 as `region.scene-inbound`.
 //! A caller past that bound is refused and does not wait. Script rays, the
@@ -65,8 +70,6 @@ impl Error for SpawnError {}
 pub enum Refusal {
     /// [`REQUEST_QUEUE`] requests were already waiting. The caller did not wait.
     Full,
-    /// A pose sample arrived while a heartbeat step was running.
-    MidStep,
     /// The thread is gone. The caller did not stay blocked.
     Stopped,
 }
@@ -75,7 +78,6 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Full => "physics request queue is full",
-            Self::MidStep => "physics pose was sampled during a step",
             Self::Stopped => "physics thread has stopped",
         })
     }
@@ -196,7 +198,6 @@ fn hold_pair() -> (Hold, Gates) {
 #[derive(Clone)]
 struct Share {
     tx: SyncSender<Job>,
-    stepping: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     heartbeat_seconds: f32,
     effective_rate: f32,
@@ -209,7 +210,6 @@ struct Engine {
     ready: bool,
     effective_rate: f32,
     heartbeat_seconds: f32,
-    stepping: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -234,16 +234,14 @@ impl Physics {
     pub fn start(config: &Config, heartbeat_seconds: f32) -> Result<Self, SpawnError> {
         let loaded = jolt_config::load(config, heartbeat_seconds);
         let (tx, rx) = mpsc::sync_channel(REQUEST_QUEUE);
-        let stepping = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let share = Share {
             tx,
-            stepping: Arc::clone(&stepping),
             stopping: Arc::clone(&stopping),
             heartbeat_seconds: loaded.heartbeat_seconds,
             effective_rate: loaded.effective_step_rate,
         };
-        let engine = Engine::from_load(&loaded, stepping, stopping);
+        let engine = Engine::from_load(&loaded, stopping);
         let thread = std::thread::Builder::new()
             .name("ferroan-physics".to_owned())
             .spawn(move || run(engine, rx))
@@ -276,8 +274,11 @@ impl Physics {
         self.share.heartbeat(frame_seconds, None)
     }
 
-    /// Read the pose. A sample during a step returns [`Refusal::MidStep`]
-    /// without waiting and without taking a queue slot.
+    /// Read the post-step pose.
+    ///
+    /// A sample posted while a step is running waits until that step finishes,
+    /// as `TryGetBodyState` does under `_simLock`. Cached pose reads, the
+    /// `JoltPrim.Position` equivalent, must not call this.
     pub fn sample(&self) -> Result<Pose, Refusal> {
         self.share.sample()
     }
@@ -317,7 +318,7 @@ impl Drop for Physics {
 }
 
 impl Engine {
-    fn from_load(loaded: &JoltLoad, stepping: Arc<AtomicBool>, stopping: Arc<AtomicBool>) -> Self {
+    fn from_load(loaded: &JoltLoad, stopping: Arc<AtomicBool>) -> Self {
         Self {
             accumulator: SubstepAccumulator::new(loaded.effective_step_rate).ok(),
             total_steps: 0,
@@ -325,7 +326,6 @@ impl Engine {
             ready: false,
             effective_rate: loaded.effective_step_rate,
             heartbeat_seconds: loaded.heartbeat_seconds,
-            stepping,
             stopping,
         }
     }
@@ -367,9 +367,6 @@ impl Share {
     }
 
     fn sample(&self) -> Result<Pose, Refusal> {
-        if self.stepping.load(Ordering::Acquire) {
-            return Err(Refusal::MidStep);
-        }
         self.call(|reply| Job::Sample { reply })
     }
 
@@ -460,21 +457,16 @@ fn dispatch(engine: &mut Engine, job: Job) {
             hold,
             reply,
         } => {
-            engine.stepping.store(true, Ordering::Release);
             if let Some(hold) = hold {
                 pause(&hold, &engine.stopping);
             }
             let step = engine.take_steps(frame_seconds);
-            engine.stepping.store(false, Ordering::Release);
             let _ = reply.send(Ok(step));
         }
         Job::Sample { reply } => {
-            let answer = if engine.stepping.load(Ordering::Acquire) {
-                Err(Refusal::MidStep)
-            } else {
-                Ok(engine.pose())
-            };
-            let _ = reply.send(answer);
+            // The step that was running has already finished: this thread
+            // dispatches one job at a time, and a sample waits behind it.
+            let _ = reply.send(Ok(engine.pose()));
         }
         Job::ScriptRay { reply } | Job::ArrivalRay { reply } => {
             debug_assert!(on_physics_thread());
@@ -596,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_during_the_step_is_refused_without_waiting() {
+    fn a_sample_during_the_step_waits_for_the_post_step_pose() {
         let physics = Physics::for_frame(0.0909).expect("thread");
         let share = physics.share.clone();
         let (hold, gates) = hold_pair();
@@ -605,17 +597,29 @@ mod tests {
             .entered
             .recv_timeout(Duration::from_secs(2))
             .expect("entered");
-        let started = Instant::now();
-        let sample = physics.sample();
-        let elapsed = started.elapsed();
-        assert_eq!(sample, Err(Refusal::MidStep));
-        assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
+        let sampler = physics.share.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let helper = thread::spawn(move || {
+            let _ = done_tx.send(sampler.sample());
+        });
+        assert!(
+            matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "sample returned while the step was still held"
+        );
         gates.release.send(()).expect("release");
-        let step = worker.join().expect("worker").expect("step");
-        assert_eq!(step.count, 4);
-        let pose = physics.sample().expect("after");
+        let pose = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("sample finished")
+            .expect("pose");
         assert!(pose.ready);
         assert_eq!(pose.last_count, 4);
+        assert_eq!(pose.total_steps, 4);
+        helper.join().expect("helper");
+        let step = worker.join().expect("worker").expect("step");
+        assert_eq!(step.count, 4);
     }
 
     #[test]
@@ -718,7 +722,9 @@ mod tests {
         gates.release.send(()).expect("release");
         worker.join().expect("worker").expect("step");
         for rx in waiting {
-            rx.recv_timeout(Duration::from_secs(2)).expect("ray").expect("ok");
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("ray")
+                .expect("ok");
         }
         let late = physics.share.clone();
         drop(physics);
