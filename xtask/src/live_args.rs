@@ -124,6 +124,7 @@ enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fixture {
+    ParcelTiming,
     ObjectCross,
     Caps,
     Login,
@@ -300,6 +301,7 @@ fn compare_service(service: &str, db: Database, backend: AssetBackend) -> ExitCo
 fn fixture(kind: Fixture, path: &str) -> ExitCode {
     let path = std::path::Path::new(path);
     match kind {
+        Fixture::ParcelTiming => grid::parcel_timing_fixtures(path),
         Fixture::ObjectCross => grid::object_cross_fixtures(path),
         Fixture::Caps => live::finish(crate::caps_fixtures::generate(path)),
         Fixture::Login => grid::login_fixtures(path),
@@ -469,8 +471,10 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
-    if matches!(*scenario, "prim-capture" | "prim-arrival" | "object-cross")
-        && (!grid || flags.region_ferroan || !flags.basic_physics)
+    if matches!(
+        *scenario,
+        "prim-capture" | "prim-arrival" | "object-cross" | "parcel-timing"
+    ) && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
             "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
@@ -605,6 +609,7 @@ fn database(value: &str) -> Result<Database, ParseFail> {
 
 fn fixture_kind(name: &str) -> Option<Fixture> {
     Some(match name {
+        "parcel-timing-fixtures" => Fixture::ParcelTiming,
         "object-cross-fixtures" => Fixture::ObjectCross,
         "caps-fixtures" => Fixture::Caps,
         "login-fixtures" => Fixture::Login,
@@ -751,7 +756,12 @@ mod tests {
 
     #[test]
     fn prim_capture_requires_the_csharp_grid_and_basicphysics() {
-        for scenario in ["prim-capture", "prim-arrival", "object-cross"] {
+        for scenario in [
+            "prim-capture",
+            "prim-arrival",
+            "object-cross",
+            "parcel-timing",
+        ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
             assert!(parse(&["run", scenario, "grid", "--physics", "ubode"]).is_err());
             assert!(parse(&["run", scenario, "--physics", "basicphysics"]).is_err());

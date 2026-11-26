@@ -100,6 +100,8 @@ Release `open_objects` on stores that also have a shape and an item for every ex
 
 `cargo xtask regionstore parcels` compares Pin8 and Rust on the same SQLite file, including access entries and the environment version. The checked-in seed and dump also run in the workspace tests. See the [parcel fixture](../fixtures/regionstore/README.md#sqlite-parcels).
 
+`cargo test -p xtask parcel_timing` checks the [Pin8 Land timing recording](../fixtures/parcel-timing/README.md) against the parcel bodies for both viewers. Reproduce it with `cargo xtask live run parcel-timing grid --physics basicphysics`.
+
 `cargo test -p ferroan-scene parcels::overlay` compares two viewers' parcel sequences and payloads with [Pin8 captures](../fixtures/parcel-overlay/README.md) on four SQLite scenes, including the 512-byte legacy bitmap in a wider region. A separate test checks zero padding on the last partial packet.
 
 ## Region settings

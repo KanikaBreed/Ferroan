@@ -1,0 +1,180 @@
+[
+  {
+    "ms": 0,
+    "name": "UseCircuitCode",
+    "seq": 1,
+    "flags": 64
+  },
+  {
+    "ms": 0,
+    "name": "CompleteAgentMovement",
+    "seq": 2,
+    "flags": 64
+  },
+  {
+    "ms": 0,
+    "name": "AgentThrottle",
+    "seq": 3,
+    "flags": 64,
+    "rates": [
+      614400.0,
+      8000.0,
+      81920.0,
+      81920.0,
+      2099200.0,
+      2099200.0,
+      757760.0
+    ]
+  },
+  {
+    "ms": 1,
+    "name": "SeedRequest"
+  },
+  {
+    "ms": 1,
+    "name": "SeedResponse"
+  },
+  {
+    "ms": 17,
+    "name": "RegionHandshake",
+    "seq": 1,
+    "flags": 192
+  },
+  {
+    "ms": 17,
+    "name": "AgentMovementComplete",
+    "seq": 2,
+    "flags": 64
+  },
+  {
+    "ms": 17,
+    "name": "RegionHandshakeReply",
+    "seq": 5,
+    "flags": 192
+  },
+  {
+    "ms": 26,
+    "name": "ParcelOverlay",
+    "seq": 3,
+    "flags": 192,
+    "parcel_sequence": 0
+  },
+  {
+    "ms": 298,
+    "name": "SendInitialData"
+  },
+  {
+    "ms": 1201,
+    "name": "ParcelOverlay",
+    "seq": 12,
+    "flags": 192,
+    "parcel_sequence": 1
+  },
+  {
+    "ms": 2019,
+    "name": "AgentThrottle",
+    "seq": 16,
+    "flags": 64,
+    "rates": [
+      614400.0,
+      512000.0,
+      81920.0,
+      81920.0,
+      2099200.0,
+      2099200.0,
+      757760.0
+    ]
+  },
+  {
+    "ms": 2031,
+    "name": "ParcelOverlay",
+    "seq": 14,
+    "flags": 192,
+    "parcel_sequence": 2
+  },
+  {
+    "ms": 2046,
+    "name": "ParcelOverlay",
+    "seq": 15,
+    "flags": 192,
+    "parcel_sequence": 3
+  },
+  {
+    "ms": 2076,
+    "name": "LayerData",
+    "seq": 16,
+    "flags": 64
+  },
+  {
+    "ms": 2091,
+    "name": "LayerData",
+    "seq": 17,
+    "flags": 64
+  },
+  {
+    "ms": 2106,
+    "name": "LayerData",
+    "seq": 18,
+    "flags": 64
+  },
+  {
+    "ms": 2122,
+    "name": "LayerData",
+    "seq": 19,
+    "flags": 64
+  },
+  {
+    "ms": 2152,
+    "name": "LayerData",
+    "seq": 20,
+    "flags": 64
+  },
+  {
+    "ms": 2167,
+    "name": "LayerData",
+    "seq": 21,
+    "flags": 64
+  },
+  {
+    "ms": 2182,
+    "name": "LayerData",
+    "seq": 22,
+    "flags": 64
+  },
+  {
+    "ms": 2197,
+    "name": "LayerData",
+    "seq": 23,
+    "flags": 64
+  },
+  {
+    "ms": 2227,
+    "name": "LayerData",
+    "seq": 24,
+    "flags": 64
+  },
+  {
+    "ms": 2243,
+    "name": "LayerData",
+    "seq": 25,
+    "flags": 64
+  },
+  {
+    "ms": 2258,
+    "name": "LayerData",
+    "seq": 26,
+    "flags": 64
+  },
+  {
+    "ms": 5730,
+    "name": "LogoutRequest",
+    "seq": 32,
+    "flags": 64
+  },
+  {
+    "ms": 5730,
+    "name": "LogoutReply",
+    "seq": 33,
+    "flags": 192
+  }
+]

@@ -107,6 +107,7 @@ pub struct Session {
     agent: Agent,
     caps: HashMap<String, String>,
     ucc_seq: u32,
+    land_rate: Option<f32>,
     movement_sent: bool,
     arrival_capture: Option<ArrivalCapture>,
     handshake_sent: bool,
@@ -139,6 +140,7 @@ impl Session {
             agent,
             caps: HashMap::new(),
             ucc_seq,
+            land_rate: None,
             movement_sent: false,
             arrival_capture: None,
             handshake_sent: false,
@@ -346,6 +348,10 @@ impl Session {
         Ok(())
     }
 
+    pub(crate) fn set_land_rate(&mut self, rate: Option<f32>) {
+        self.land_rate = rate;
+    }
+
     pub(crate) fn capture_prim_arrival(&mut self, task_bps: f32) {
         self.arrival_capture = Some(ArrivalCapture {
             task_bps,
@@ -367,6 +373,9 @@ impl Session {
         throttle.agent_data.session_id = self.agent.session_id;
         throttle.agent_data.circuit_code = self.agent.circuit_code;
         throttle.throttle.throttles = throttle::initial_throttle_bytes();
+        if let Some(rate) = self.land_rate {
+            throttle.throttle.throttles[4..8].copy_from_slice(&rate.to_le_bytes());
+        }
         if let Some(rate) = task_bps {
             throttle.throttle.throttles[16..20].copy_from_slice(&rate.to_le_bytes());
         }

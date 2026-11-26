@@ -49,6 +49,8 @@ The grid harness captures riderless object crossings on two separate C# simulato
 
 `ferroan-scene` writes coalesced inventory assets as ordered original-format linksets. The wrapper records the combined world bounds and each root's offset from the minimum. The member reader follows `TryFromXml` and restores positions from the parts. Rez must also parse the wrapper sizes and offsets and refuse invalid values, as `GetObjectsToRez` does (3185–3208). The member reader alone cannot place these groups for rez. Crossings carry the source inventory item UUID separately in `ExtraFromItemID`.
 
+The parcel arrival harness correlates the region's Land datagrams with its initial-data log and seed exchange on each circuit. The [Pin8 recording](fixtures/parcel-timing/README.md) supplies the timing reference for Q60c3.
+
 ## Planned
 
 ### Programs
