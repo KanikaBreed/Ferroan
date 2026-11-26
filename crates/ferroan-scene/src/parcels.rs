@@ -34,9 +34,11 @@
 //! SQLite land rows and the immutable region parcel map, in four-metre cells.
 
 mod overlay;
+mod properties;
 mod vector_text;
 
 pub use overlay::OverlayPacket;
+pub use properties::{ParcelPropertiesSend, PrimCounts};
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -303,11 +305,27 @@ fn bitmap_cells(
 
 /// Load just this SQLite region. A missing file or absent store has no parcels.
 /// The generated default exists only in memory (the database write is P2.9a).
+/// Its claim time is the unix seconds of this call.
 pub async fn open_parcels(
     connection: Option<&str>,
     region: Uuid,
     size: [u32; 2],
     estate: Uuid,
+) -> Result<ParcelMap, ParcelError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i32;
+    open_parcels_at(connection, region, size, estate, now).await
+}
+
+/// [`open_parcels`] with the default parcel's claim time supplied by the caller.
+pub async fn open_parcels_at(
+    connection: Option<&str>,
+    region: Uuid,
+    size: [u32; 2],
+    estate: Uuid,
+    now: i32,
 ) -> Result<ParcelMap, ParcelError> {
     let mut map = ParcelMap::empty(size)?;
     if let Some(connection) = connection
@@ -325,10 +343,6 @@ pub async fn open_parcels(
         pool.close().await;
         result?;
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i32;
     map.fill_unclaimed(estate, now);
     Ok(map)
 }

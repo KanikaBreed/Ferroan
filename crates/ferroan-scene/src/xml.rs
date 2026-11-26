@@ -103,7 +103,8 @@ use crate::payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, MediaFace, ObjectAnimation, PhysicsInertia,
     RenderMaterials, Vehicle,
 };
-use xml_float::{format_f32, format_f64};
+pub(crate) use xml_float::format_f32;
+use xml_float::format_f64;
 
 #[path = "xml_read.rs"]
 mod xml_read;
