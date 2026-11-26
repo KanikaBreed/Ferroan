@@ -158,6 +158,10 @@ pub struct RegionConfig {
     /// Deadline for ViaLogin circuits which have not opened a viewer connection.
     /// Zero retains the C# legacy behavior of waiting until region shutdown.
     pub login_connect_wait: std::time::Duration,
+    /// `[Startup] enableflyslow`: flying with a direction plays `FLYSLOW`.
+    /// A value other than true or false stops startup. The region passes
+    /// this to the frame (`TerrainFrame::set_fly_slow`) before logins.
+    pub fly_slow: bool,
     /// Server identity sent in AgentMovementComplete, like Scene.GetSimulatorVersion.
     pub channel_version: String,
     pub region_secret: Uuid,
@@ -442,6 +446,7 @@ impl RegionConfig {
             circuit_timing: circuit_timing(server)?,
             circuit_throttle: circuit_throttle(server)?,
             login_connect_wait: login_connect_wait(server)?,
+            fly_slow: boolean(server, "Startup", "enableflyslow")?,
             channel_version: concat!("Ferroan ", env!("CARGO_PKG_VERSION")).to_owned(),
             region_secret: Uuid::new_v4(),
             inventory_server_uri,
@@ -1258,6 +1263,17 @@ mod tests {
 
     fn regions() -> Config {
         Config::parse("[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\nLocation=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\nExternalHostName=127.0.0.1\n").unwrap()
+    }
+
+    #[test]
+    fn enableflyslow_is_read_from_startup_and_false_by_default() {
+        let mut server = server();
+        let read = |server: &Config| RegionConfig::from_configs(server, &regions());
+        assert!(!read(&server).unwrap().fly_slow);
+        server.set("Startup", "enableflyslow", "True");
+        assert!(read(&server).unwrap().fly_slow);
+        server.set("Startup", "enableflyslow", "maybe");
+        assert!(read(&server).is_err());
     }
 
     #[test]

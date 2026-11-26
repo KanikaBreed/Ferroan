@@ -27,6 +27,11 @@
 //! `SendInitialData` and departures also queue the other avatars' full
 //! updates, appearances and kills on the feeds ([`crate::avatars`]). Every
 //! 50th frame each open viewer gets the minimap dots ([`crate::coarse`]).
+//! Each frame ends with `RegionHeartbeatEnd`: every root's animator updates
+//! on every second one ([`crate::animation`]). A departure carries the live
+//! animator for `CopyTo`, a hop completion applies the sender's (`CopyFrom`),
+//! and a hop away that arrived resets it (`MakeChildAgent`).
+//!
 //! The circuit queues one `ParcelProperties` element after
 //! `AgentMovementComplete`. A zero-flag initial-data gate and a walk onto
 //! another parcel each queue one as well. The box was stored when the land
@@ -47,6 +52,7 @@ use ferroan_physics::{Physics, Pose};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::animation::AnimationTransfer;
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
 use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
@@ -100,7 +106,7 @@ pub struct TeleportStored {
 }
 
 /// The returning `UpdateAgent` for a hop completion.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HopReturn {
     pub position: [f32; 3],
     pub look_at: [f32; 3],
@@ -128,10 +134,12 @@ pub struct Presence {
 /// Where the departing avatar is, for a source hop: `ScenePresence.Flying`
 /// and the camera center and rotations `CopyTo` sends (the body rotation
 /// after `IsUsableRotation`, the camera from updates the filter kept).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Departure {
     pub always_run: bool,
     pub flying: bool,
+    /// `CopyTo`'s animations, default, implicit default and motion state.
+    pub animations: AnimationTransfer,
     pub camera_center: [f32; 3],
     pub head_rotation: [f32; 4],
     pub body_rotation: [f32; 4],
@@ -280,6 +288,11 @@ enum Request {
     },
     /// `RegionSettings.ObjectBonus`, `RegionInfo.ObjectCapacity`, the region
     /// flags and `EstateSettings.TaxFree` for every later element.
+    /// `[Startup] enableflyslow`, checked by the region's config.
+    FlySlow {
+        fly_slow: bool,
+        reply: oneshot::Sender<()>,
+    },
     ParcelRegion {
         region: crate::parcels::ParcelRegion,
         reply: oneshot::Sender<()>,
@@ -349,6 +362,8 @@ struct Scene {
     admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
     /// `LandObject.m_lastSeqId` for each local id, shared by every client.
     parcel_seq: HashMap<i32, i32>,
+    /// `Scene.m_useFlySlow`, `[Startup] enableflyslow`.
+    fly_slow: bool,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -453,6 +468,7 @@ impl TerrainFrame {
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            fly_slow: false,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -484,6 +500,16 @@ impl TerrainFrame {
     pub fn set_parcel_sender(&self, send: ParcelSender) -> Result<Pending<()>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::ParcelOut { send, reply })?;
+        Ok(answer)
+    }
+
+    /// `Scene.m_useFlySlow`: `startupConfig.GetBoolean("enableflyslow", false)`
+    /// (`Scene.cs` line 1002), as `RegionConfig` checked it. Flying with a
+    /// direction then plays `FLYSLOW` in place of `FLY`. The region calls this
+    /// once at startup, before logins; it is false until then.
+    pub fn set_fly_slow(&self, fly_slow: bool) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::FlySlow { fly_slow, reply })?;
         Ok(answer)
     }
 
@@ -820,6 +846,7 @@ fn answer(
     frames: u64,
     physics_pose: Pose,
 ) -> bool {
+    let fly_slow = scene.fly_slow;
     #[cfg(not(test))]
     let _ = physics_pose;
     let presences = &mut scene.presences;
@@ -880,7 +907,7 @@ fn answer(
             let _ = reply.send(local_id);
         }
         Request::Pose { agent, pose, reply } => {
-            let mut avatar = Avatar::new(pose);
+            let mut avatar = Avatar::new(agent, pose, fly_slow);
             // Chat can read this pose immediately. The actor waits until
             // the arrival packet samples it, or a tick would change the
             // position that packet and GridUser still report.
@@ -895,7 +922,9 @@ fn answer(
             look_at,
             reply,
         } => {
-            let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
+            let avatar = presences
+                .entry(agent)
+                .or_insert_with(|| Avatar::new(agent, pose, fly_slow));
             arrive_at_rest(avatar);
             // `CompleteMovement` turns a non-crossing arrival to the look it
             // sends in `AgentMovementComplete` (`RotateToLookAt`).
@@ -914,6 +943,10 @@ fn answer(
             let _ = reply.send(());
         }
         Request::MovedAway { agent, away, reply } => {
+            // `MakeChildAgent` resets the animations.
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.reset_animations();
+            }
             scene.moved_away(agent, &away);
             let _ = reply.send(());
         }
@@ -935,10 +968,14 @@ fn answer(
             let look_at = flatten_look(request.look_at);
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(position), fly_slow));
             let mut flags = request.flags;
             if avatar.body.flying() {
                 flags |= TELEPORT_IS_FLYING;
+            }
+            // `TeleportWithMomentum` stands a sitter up first (`StandUp(false)`).
+            if avatar.body.is_sitting() {
+                avatar.body.stand_up();
             }
             avatar.pose.position = position;
             avatar
@@ -946,6 +983,7 @@ fn answer(
                 .turn_to(look_rotation(look_at), &mut avatar.pose);
             avatar.pose.velocity = [0.0, 0.0, 0.0];
             avatar.body.halt_command();
+            avatar.body.clear_contact();
             // C# sends a terse update here without the thresholds
             // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
             // frame's test, so a landing under 0.05 m away sends nothing.
@@ -958,7 +996,7 @@ fn answer(
         Request::Complete { agent, hop, reply } => {
             let avatar = presences
                 .entry(agent)
-                .or_insert_with(|| Avatar::new(fresh(hop.position)));
+                .or_insert_with(|| Avatar::new(agent, fresh(hop.position), fly_slow));
             avatar.pose.position = hop.position;
             avatar.body.apply_return(&hop.data, &mut avatar.pose);
             // CompleteMovement's RotateToLookAt replaces the copied body rotation.
@@ -974,6 +1012,7 @@ fn answer(
                 Departure {
                     always_run: view.always_run,
                     flying: avatar.body.flying(),
+                    animations: avatar.body.animator().transfer(),
                     camera_center: view.camera_center,
                     head_rotation: view.head_rotation,
                     body_rotation: view.body_rotation,
@@ -987,6 +1026,13 @@ fn answer(
         }
         Request::ParcelRegion { region, reply } => {
             scene.parcel_region = region;
+            let _ = reply.send(());
+        }
+        Request::FlySlow { fly_slow, reply } => {
+            scene.fly_slow = fly_slow;
+            for avatar in scene.presences.values_mut() {
+                avatar.body.set_fly_slow(fly_slow);
+            }
             let _ = reply.send(());
         }
         Request::ParcelProperties {
@@ -1004,9 +1050,12 @@ fn answer(
 }
 
 impl Avatar {
-    fn new(pose: Presence) -> Self {
+    fn new(agent: Uuid, pose: Presence, fly_slow: bool) -> Self {
+        let mut body = Body::new(&pose);
+        body.set_agent(agent);
+        body.set_fly_slow(fly_slow);
         Self {
-            body: Body::new(&pose),
+            body,
             pose,
             parcel: None,
             last_move: pose.position,
@@ -1021,7 +1070,7 @@ fn arrive_at_rest(avatar: &mut Avatar) {
     avatar.pose.velocity = [0.0, 0.0, 0.0];
     avatar.body.halt_command();
     avatar.body.set_child(false);
-    avatar.body.set_actor(true);
+    avatar.body.new_actor();
 }
 
 /// A hop completion: root and at rest, as `arrive_at_rest`, but the actor
@@ -1175,6 +1224,7 @@ fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     // only stores the new position; this is the send on the next tick.
     note_parcel_crossings(scene);
     update_presences(scene);
+    heartbeat_end(&mut scene.presences);
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
     if frames.is_multiple_of(COARSE_EVERY_FRAMES) {
@@ -1551,6 +1601,19 @@ pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
 }
 
+/// `RegionHeartbeatEnd` for every root: the animator updates on every second
+/// one. C# subscribes a presence in `CompleteMovement` and drops it in
+/// `MakeChildAgent`; here a child, and a pose the arrival has not sampled, is
+/// skipped.
+fn heartbeat_end(presences: &mut HashMap<Uuid, Avatar>) {
+    let now = clock_ms(Instant::now());
+    for avatar in presences.values_mut() {
+        if !avatar.body.is_child() {
+            avatar.body.heartbeat(now);
+        }
+    }
+}
+
 /// `ScenePresence.MOVEMENT`: more than half a metre, as a squared length.
 const MOVEMENT_SQ: f32 = 0.25;
 
@@ -1831,6 +1894,7 @@ mod tests {
                 head_rotation: [0.0, 0.0, 0.0, 1.0],
                 control_flags: 0,
                 always_run: false,
+                animations: crate::animation::AnimationTransfer::default(),
             },
         }
     }
@@ -2330,6 +2394,7 @@ mod tests {
             groups: Arc::default(),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            fly_slow: false,
         }
     }
 
@@ -3393,6 +3458,90 @@ mod tests {
         assert_eq!(departure.head_rotation, [0.0, 0.0, 0.6, 0.8]);
     }
 
+    /// `CopyTo` reads the live animator: the heartbeat walks an arrival
+    /// whose actor touched the ground after its first forward update.
+    /// `MakeChildAgent` resets the set, and a return's `CopyFrom` replaces it.
+    #[test]
+    fn the_departure_carries_the_live_animator_and_a_return_copies_it() {
+        use crate::animation::{
+            Anim, AnimationTransfer, MOTION_FLYING, MOTION_ON_SURFACE, STAND, default_animation,
+        };
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(23);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        let depart = |frame: &TerrainFrame| {
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+        };
+        let standing = depart(&frame);
+        assert_eq!(standing.default_animation.unwrap().animation, STAND);
+        assert_eq!(standing.default_animation.unwrap().sequence, 1);
+        assert_eq!(standing.motion_state, MOTION_ON_SURFACE);
+
+        frame
+            .agent_update(agent, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 4);
+        let walking = depart(&frame);
+        let walk = walking.default_animation.unwrap();
+        assert_eq!(walk.animation, default_animation("WALK").unwrap());
+        assert_eq!(walk.object_id, agent);
+        assert_eq!(walking.animation_state, Some(walk));
+        assert!(walking.animations.is_empty());
+        assert_eq!(walking.motion_state, MOTION_ON_SURFACE);
+
+        frame.set_child(agent, true).unwrap();
+        frame
+            .moved_away(
+                agent,
+                MovedAway {
+                    near: true,
+                    known_by: Vec::new(),
+                },
+            )
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        let reset = depart(&frame);
+        assert_eq!(reset.default_animation.unwrap().animation, STAND);
+        assert_eq!(reset.default_animation.unwrap().sequence, 1);
+
+        let fly = default_animation("FLY").unwrap();
+        let extra = Anim {
+            animation: Uuid::from_u128(500),
+            sequence: 41,
+            object_id: Uuid::from_u128(501),
+        };
+        let mut back = standing_return([128.0, 128.0, 40.0]);
+        back.data.animations = AnimationTransfer {
+            animations: vec![extra],
+            default_animation: Some(Anim {
+                animation: fly,
+                sequence: 40,
+                object_id: Uuid::from_u128(502),
+            }),
+            animation_state: None,
+            motion_state: MOTION_FLYING,
+        };
+        complete(&frame, agent, back);
+        let copied = depart(&frame);
+        let expected = Anim {
+            animation: fly,
+            sequence: 40,
+            object_id: Uuid::nil(),
+        };
+        assert_eq!(copied.default_animation, Some(expected));
+        assert_eq!(copied.animation_state, Some(expected));
+        assert_eq!(copied.animations, [extra]);
+        assert_eq!(copied.motion_state, MOTION_FLYING);
+    }
+
     #[test]
     fn a_landing_is_the_position_chat_reads() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3515,6 +3664,81 @@ mod tests {
         assert!(!flying(&frame, Uuid::from_u128(99)));
     }
 
+    /// `TeleportWithMomentum` stands a ground sitter up (`StandUp(false)`,
+    /// `ScenePresence.cs` lines 1867–1868) before it moves the avatar, so the
+    /// arrival plays `STAND`, not the ground sit.
+    #[test]
+    fn a_local_teleport_stands_a_ground_sitter_up() {
+        use crate::animation::{STAND, default_animation};
+        use crate::motion::CONTROL_SIT_ON_GROUND;
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(24);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        frame
+            .agent_update(agent, walking_update(1_000, 1, CONTROL_SIT_ON_GROUND))
+            .unwrap();
+        let default = |frame: &TerrainFrame| {
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+                .default_animation
+                .unwrap()
+                .animation
+        };
+        assert!(motion(&frame, agent).sit_ground);
+        assert_eq!(
+            default(&frame),
+            default_animation("SIT_GROUND_CONSTRAINED").unwrap()
+        );
+        let moved = teleport(&frame, agent, local([40.0, 40.0, 40.0], [1.0, 0.0, 0.0]));
+        assert_eq!(moved.flags, 16);
+        assert!(!motion(&frame, agent).sit_ground);
+        assert_eq!(default(&frame), STAND);
+    }
+
+    /// The checked `enableflyslow` reaches every avatar: one already there
+    /// and one that arrives later.
+    #[test]
+    fn the_region_fly_slow_setting_reaches_the_avatars() {
+        use crate::animation::default_animation;
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let fly = |agent: Uuid| {
+            reuse(&frame, agent);
+            frame
+                .agent_update(
+                    agent,
+                    walking_update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS),
+                )
+                .unwrap();
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+                .default_animation
+                .unwrap()
+                .animation
+        };
+        let before = Uuid::from_u128(25);
+        login(&frame, before, pose_at([128.0, 128.0, 40.0]));
+        assert_eq!(fly(before), default_animation("FLY").unwrap());
+        let early = Uuid::from_u128(26);
+        login(&frame, early, pose_at([128.0, 128.0, 40.0]));
+        frame.set_fly_slow(true).unwrap().blocking_wait().unwrap();
+        let later = Uuid::from_u128(27);
+        login(&frame, later, pose_at([128.0, 128.0, 40.0]));
+        let slow = default_animation("FLYSLOW").unwrap();
+        assert_eq!(fly(early), slow);
+        assert_eq!(fly(later), slow);
+    }
+
     #[test]
     fn a_hop_completion_takes_the_returning_agent_data() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3541,6 +3765,7 @@ mod tests {
                     head_rotation: [0.0, 0.0, 0.25, 0.75],
                     control_flags: CONTROL_FLY,
                     always_run: false,
+                    animations: crate::animation::AnimationTransfer::default(),
                 },
             },
         );

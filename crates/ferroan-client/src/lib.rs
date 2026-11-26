@@ -8,6 +8,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod agent_animations;
 mod appearance;
 mod arrival;
 mod caps;
@@ -27,6 +28,7 @@ mod source_hop;
 mod teleport;
 mod throttle;
 
+pub use agent_animations::{AgentAnimations, Anim};
 pub use appearance::{
     AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
 };

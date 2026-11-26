@@ -91,7 +91,7 @@ use std::{
 use crate::config::RegionConfig;
 use crate::control_plane::ControlPlaneAccess;
 use crate::grid::PresenceClient;
-use crate::simulation_client::{Appearance, RegionEnd, TransferAnimations, appearance_from_json};
+use crate::simulation_client::{Appearance, RegionEnd, agent_animations, appearance_from_json};
 use crate::staff::{ROOT_BYPASS_LIMIT, StaffGate};
 use crate::status::RegionMeters;
 use axum::{
@@ -280,7 +280,6 @@ struct ActiveSession {
     logout_done: watch::Receiver<()>,
     /// Shared with the circuit that can promote this child.
     slot: ReturnSlot,
-    animations: Arc<Mutex<TransferAnimations>>,
 }
 
 impl ActiveSession {
@@ -320,7 +319,6 @@ pub struct AcceptedAgent {
     pub channel: String,
     pub mac: String,
     pub id0: String,
-    pub animations: Arc<Mutex<TransferAnimations>>,
     pub service_urls: Vec<(String, String)>,
     pub appearance: Option<Appearance>,
     /// Same gate the session stores. The circuit waits on it for a return.
@@ -766,7 +764,6 @@ impl SimulationState {
             .replace(logout_wait.clone());
         let slot = ReturnSlot::new(fields.child);
         let child = Arc::new(Mutex::new(child));
-        let animations = Arc::new(Mutex::new(TransferAnimations::default()));
         let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
             fields.agent_id,
@@ -780,7 +777,6 @@ impl SimulationState {
                 cancel: Some(cancel),
                 logout_done: logout_wait,
                 slot: slot.clone(),
-                animations: Arc::clone(&animations),
             },
         );
         publish_agents(&sessions, &self.meters);
@@ -835,7 +831,6 @@ impl SimulationState {
             channel: fields.channel,
             mac: fields.mac,
             id0: fields.id0,
-            animations,
             service_urls: fields.service_urls,
             appearance: fields.appearance,
             return_slot: slot,
@@ -1397,7 +1392,7 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
     let Some(session) = json_uuid(args.get("session_uuid")) else {
         return false;
     };
-    let ChildGate::Child(slot, animations) = child_gate(state, agent, session) else {
+    let ChildGate::Child(slot) = child_gate(state, agent, session) else {
         return false;
     };
     let Some(position) = json_vec3(args.get("position")) else {
@@ -1410,29 +1405,24 @@ async fn apply_agent_data(state: &SimulationState, agent: Uuid, args: &Map<Strin
         .get("cb_uri")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    // `AgentData.Unpack` then `CopyFrom`: the frame stores these when the
+    // `AgentData.Unpack`. The frame applies these (`CopyFrom`) when the
     // child becomes root.
-    {
-        let mut animations = animations
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if !slot.store_update(
-            ReturnPose {
-                position,
-                look_at,
-                origin,
-                velocity,
-                far: json_real(args.get("far")),
-                body_rotation: json_quat(args.get("body_rotation")),
-                head_rotation: json_quat(args.get("head_rotation")),
-                control_flags: json_u32_text(args.get("control_flags")),
-                always_run: json_bool(args.get("always_run")),
-            },
-            callback,
-        ) {
-            return false;
-        }
-        animations.copy_from(args);
+    if !slot.store_update(
+        ReturnPose {
+            position,
+            look_at,
+            origin,
+            velocity,
+            far: json_real(args.get("far")),
+            body_rotation: json_quat(args.get("body_rotation")),
+            head_rotation: json_quat(args.get("head_rotation")),
+            control_flags: json_u32_text(args.get("control_flags")),
+            always_run: json_bool(args.get("always_run")),
+            animations: agent_animations(args),
+        },
+        callback,
+    ) {
+        return false;
     }
     if args.get("wait_for_root").and_then(Value::as_bool) == Some(true) {
         slot.wait_root(ROOT_WAIT).await
@@ -1450,7 +1440,7 @@ fn apply_agent_position(state: &SimulationState, agent: Uuid, args: &Map<String,
     };
     match child_gate(state, agent, session) {
         ChildGate::Root => true,
-        ChildGate::Child(slot, _) => {
+        ChildGate::Child(slot) => {
             let Some(position) = json_vec3(args.get("position")) else {
                 return false;
             };
@@ -1464,7 +1454,7 @@ enum ChildGate {
     Missing,
     Mismatch,
     Root,
-    Child(ReturnSlot, Arc<Mutex<TransferAnimations>>),
+    Child(ReturnSlot),
 }
 
 fn child_gate(state: &SimulationState, agent: Uuid, session: Uuid) -> ChildGate {
@@ -1481,7 +1471,7 @@ fn child_gate(state: &SimulationState, agent: Uuid, session: Uuid) -> ChildGate 
     if !row.is_child() {
         return ChildGate::Root;
     }
-    ChildGate::Child(row.slot.clone(), Arc::clone(&row.animations))
+    ChildGate::Child(row.slot.clone())
 }
 
 fn json_uuid(value: Option<&Value>) -> Option<Uuid> {
@@ -3833,13 +3823,13 @@ mod tests {
         assert_eq!(stored.head_rotation, [0.0, 0.0, 0.5, 0.866_025_4]);
         assert_eq!(stored.control_flags, 8192);
         assert!(stored.always_run);
-        {
-            let animations = accepted.animations.lock().unwrap();
-            assert_eq!(animations.default_animation.animation, agent);
-            assert_eq!(animations.animation_state.sequence, 9);
-            assert_eq!(animations.extra[0].object_id, session);
-            assert_eq!(animations.motion_state, 2);
-        }
+        // The animator fields ride with the pose to the frame's `CopyFrom`.
+        let animations = &stored.animations;
+        assert_eq!(animations.default_animation.unwrap().animation, agent);
+        assert_eq!(animations.default_animation.unwrap().sequence, 8);
+        assert_eq!(animations.animation_state.unwrap().sequence, 9);
+        assert_eq!(animations.animations[0].object_id, session);
+        assert_eq!(animations.motion_state, 2);
         accepted.mark_root();
         let flag = tokio::time::timeout(Duration::from_secs(2), waiting)
             .await
