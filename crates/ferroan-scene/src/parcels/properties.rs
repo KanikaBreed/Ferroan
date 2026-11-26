@@ -953,10 +953,6 @@ mod tests {
             agent_environment_version: 0,
         };
         let bytes = map.parcel_properties(local_id, &send).unwrap();
-        // A heightmap that arrives after the load is not sampled again.
-        let later = super::Heightmap::from_cells(32, 32, vec![3.0; 32 * 32]);
-        assert_eq!(later.width(), 32);
-        assert_eq!(bytes, map.parcel_properties(local_id, &send).unwrap());
         let xml = String::from_utf8(bytes).unwrap();
         assert!(
             xml.contains(

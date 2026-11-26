@@ -2405,6 +2405,74 @@ mod tests {
         );
     }
 
+    /// A return-slot child at the zero-flag gate gets the land pass and no
+    /// element. Either the child check on the send or the root check on the
+    /// gate is enough to keep the element out.
+    #[tokio::test]
+    async fn a_child_at_the_gate_gets_a_land_pass_and_no_element() {
+        let parcels = loaded_region_parcels().await;
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = Uuid::from_u128(12);
+        let (feed, _) = open_viewer_flags(&mut scene, agent, true, 0);
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Pose {
+                agent,
+                pose: pose_at([6.0, 2.0, 30.0]),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        scene.presences.get_mut(&agent).unwrap().body.set_child(true);
+        arm_initial(&mut scene, agent);
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(feed.take_land_pass());
+    }
+
+    /// The constructor samples the heightmap it is given. A flat map sampled
+    /// afterwards is a different box, and the frame keeps the first one.
+    #[tokio::test]
+    async fn with_object_settings_stores_the_load_time_box() {
+        let height = crate::InitialTerrain::PinheadIsland
+            .generate(256, 256)
+            .unwrap();
+        let raw = region_parcel_map().await;
+        let mut expected = region_parcel_map().await;
+        expected.update_geometry(Some(&height));
+        let mut later = region_parcel_map().await;
+        let flat = crate::Heightmap::from_cells(256, 256, vec![3.0; 256 * 256]);
+        later.update_geometry(Some(&flat));
+        let frame = TerrainFrame::with_object_settings(
+            Some(height),
+            Some(raw),
+            Arc::default(),
+            None,
+            crate::PhysicsScaleLimits::default(),
+            true,
+        )
+        .unwrap();
+        let stored = frame.parcels().unwrap();
+        assert_eq!(stored.parcels().len(), expected.parcels().len());
+        let mut differed = false;
+        for ((got, want), flat_parcel) in stored
+            .parcels()
+            .iter()
+            .zip(expected.parcels())
+            .zip(later.parcels())
+        {
+            assert_eq!(got.aabb_min, want.aabb_min, "{}", got.name);
+            assert_eq!(got.aabb_max, want.aabb_max, "{}", got.name);
+            if got.aabb_min != flat_parcel.aabb_min || got.aabb_max != flat_parcel.aabb_max {
+                differed = true;
+            }
+        }
+        assert!(differed);
+    }
+
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
         let mut scene = bare_scene();
         scene.parcels = Some(Arc::clone(parcels));
@@ -2434,7 +2502,7 @@ mod tests {
         }
     }
 
-    async fn loaded_region_parcels() -> Arc<crate::parcels::ParcelMap> {
+    async fn region_parcel_map() -> crate::parcels::ParcelMap {
         let copy = crate::test_store::CopiedStore::new("regionstore/objects.db");
         let pool = ferroan_db::Pool::open(
             ferroan_db::Backend::Sqlite,
@@ -2450,7 +2518,7 @@ mod tests {
         pool.close().await;
         let region = uuid::uuid!("11111111-1111-1111-1111-111111111111");
         let estate = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
-        let mut map = crate::parcels::open_parcels_at(
+        crate::parcels::open_parcels_at(
             Some(&copy.connection()),
             region,
             [256, 256],
@@ -2458,7 +2526,11 @@ mod tests {
             1_795_674_348,
         )
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    async fn loaded_region_parcels() -> Arc<crate::parcels::ParcelMap> {
+        let mut map = region_parcel_map().await;
         let height = crate::InitialTerrain::PinheadIsland
             .generate(256, 256)
             .unwrap();
