@@ -179,10 +179,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
-| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | DONE (split into Q60a–Q60c, all done) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
-| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | DONE (split into Q60c1–Q60c3, all done) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | DONE (this PR) |
@@ -193,16 +193,16 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
-| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | DONE (split into Q65a–Q65d, all done) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
-| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | DONE (split into Q65c1–Q65c3, all done) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
-| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | DONE (split into Q65c3a–Q65c3b, all done) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | DONE (split into Q65d1–Q65d2, all done) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
