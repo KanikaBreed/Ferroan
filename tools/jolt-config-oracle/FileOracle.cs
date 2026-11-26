@@ -38,9 +38,16 @@ static class FileOracle
         if (Directory.Exists(scratch))
             Directory.Delete(scratch, true);
         Directory.CreateDirectory(scratch);
-        WriteTree(scratch, revision, reference);
-        CompareTrees(scratch, directory);
-        Directory.Delete(scratch, true);
+        try
+        {
+            WriteTree(scratch, revision, reference);
+            CompareTrees(scratch, directory);
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+                Directory.Delete(scratch, true);
+        }
         Console.WriteLine("file-verify: " + CaseId + " matches NoteDilationSample");
     }
 
@@ -75,7 +82,7 @@ static class FileOracle
         MethodInfo method = SampleMethod();
         var native = new StringBuilder();
         native.Append(FormatLine).Append('\n');
-        native.Append(NativeProof("after_type_init"));
+        native.Append(NativeProof("before_construct"));
         var sceneA = new JoltScene();
         var sceneB = new JoltScene();
         native.Append(NativeProof("after_construct"));

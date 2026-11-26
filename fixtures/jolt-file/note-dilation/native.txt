@@ -1,5 +1,5 @@
 format 1
-observed after_type_init
+observed before_construct
 JoltNative.s_loaded null
 JoltNative.s_handle 0
 JoltPhysicsBackend.s_foundationRefCount 0

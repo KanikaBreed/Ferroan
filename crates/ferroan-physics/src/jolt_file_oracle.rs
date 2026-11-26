@@ -1,21 +1,34 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Replays `fixtures/jolt-file`, the pinned `JoltScene.NoteDilationSample`
-//! record. The dilation bits for a full window stay in that file. This test
-//! checks the private fields, the ring indices, the exact ratios and the
-//! native-unloaded proof. It does not recompute the ratio.
+//! Checks the structure of `fixtures/jolt-file`, the pinned
+//! `JoltScene.NoteDilationSample` record. The Rust test checks the fixture's
+//! structure; the dilation window port that replays it is P3.3b. All twelve
+//! scene A dilation values are pinned here, so a hand edit of the fixture
+//! fails ordinary CI. This test does not recompute the ratio.
 
 use std::path::PathBuf;
 
 const WINDOW: u32 = 11;
 
+/// Scene A samples 0 through 11. Samples 0, 1, 3 and 7 are 1, 0.75, 0.625 and 0.5625.
+const SCENE_A_DILATION: [&str; 12] = [
+    "3F800000", "3F400000", "3F2AAAAB", "3F200000", "3F19999A", "3F155555", "3F124925", "3F100000",
+    "3F0E38E4", "3F0CCCCD", "3F0BA2E9", "3EF45D17",
+];
+
 #[test]
-fn note_dilation_sample_replays_the_committed_file() {
+fn note_dilation_fixture_keeps_the_pinned_structure() {
     assert_eq!(1f32.to_bits(), 0x3F80_0000);
     assert_eq!(0.5f32.to_bits(), 0x3F00_0000);
     assert_eq!(0.25f32.to_bits(), 0x3E80_0000);
     assert_eq!(0.75f32.to_bits(), 0x3F40_0000);
+    assert_eq!(0.625f32.to_bits(), 0x3F20_0000);
+    assert_eq!(0.5625f32.to_bits(), 0x3F10_0000);
+    assert_eq!(SCENE_A_DILATION[0], format!("{:08X}", 1f32.to_bits()));
+    assert_eq!(SCENE_A_DILATION[1], format!("{:08X}", 0.75f32.to_bits()));
+    assert_eq!(SCENE_A_DILATION[3], format!("{:08X}", 0.625f32.to_bits()));
+    assert_eq!(SCENE_A_DILATION[7], format!("{:08X}", 0.5625f32.to_bits()));
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/jolt-file");
     let manifest = std::fs::read_to_string(root.join("manifest.txt")).expect("manifest");
@@ -57,7 +70,7 @@ fn expected_calls() -> String {
 
 fn expected_native() -> String {
     let mut text = String::from("format 1\n");
-    for when in ["after_type_init", "after_construct", "after_calls"] {
+    for when in ["before_construct", "after_construct", "after_calls"] {
         text.push_str("observed ");
         text.push_str(when);
         text.push('\n');
@@ -99,14 +112,6 @@ fn assert_result(text: &str) {
         .collect();
     assert_scene(&scenes[0].1, &scene_a, "frequency");
     assert_scene(&scenes[1].1, &["3F800000"], "1");
-
-    let full = &scenes[0].1[11];
-    let wrapped = &scenes[0].1[12];
-    assert_ne!(full.dilation, format!("{:08X}", 1f32.to_bits()));
-    assert_ne!(wrapped.dilation, format!("{:08X}", 1f32.to_bits()));
-    assert_ne!(full.dilation, wrapped.dilation);
-    assert_eq!(full.dilation.len(), 8);
-    assert_eq!(wrapped.dilation.len(), 8);
 }
 
 fn assert_scene(samples: &[Sample], steps: &[&str], gap: &str) {
@@ -120,10 +125,10 @@ fn assert_scene(samples: &[Sample], steps: &[&str], gap: &str) {
         assert_eq!(sample.gap.as_deref(), Some(gap));
         assert_eq!(sample.count, calls.min(WINDOW));
         assert_eq!(sample.next, calls % WINDOW);
-        if call == 0 {
+        if gap == "frequency" {
+            assert_eq!(sample.dilation, SCENE_A_DILATION[call]);
+        } else if call == 0 {
             assert_eq!(sample.dilation, format!("{:08X}", 1f32.to_bits()));
-        } else if call == 1 && gap == "frequency" {
-            assert_eq!(sample.dilation, format!("{:08X}", 0.75f32.to_bits()));
         }
         assert_eq!(sample.steps.len(), WINDOW as usize);
         assert_eq!(sample.gaps.len(), WINDOW as usize);

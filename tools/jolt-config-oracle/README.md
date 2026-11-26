@@ -33,11 +33,13 @@ the dilation stays 1. Gap ticks of one frequency are exactly one second. A
 one-tick gap is written as `frequency_divisor` because that quotient follows
 the machine clock; the producer checks the stored double against
 `1/Stopwatch.Frequency` and records the dilation float from `_timeDilation`.
-Exact stored ratios in the fixture are 1 and 0.75. The full-window ratios are
-the method's own floats. Ordinary tests replay the committed file.
+Exact stored ratios are 1, 0.75, 0.625 at sample 3 and 0.5625 at sample 7.
+The Rust test checks the fixture's structure and pins all twelve scene A
+dilation values. The dilation window port that replays it is P3.3b.
 
-No native code is started. The fixture records the same proof before the
-scene is constructed and after the calls: `JoltNative.s_loaded` is null,
+No native code is started. The fixture records the same proof at
+`before_construct`, after construction and after the calls:
+`JoltNative.s_loaded` is null,
 `JoltNative.s_handle` is zero, `JoltPhysicsBackend.s_foundationRefCount` is
 zero, and `joltc` is not mapped into the process. `EnsureLoaded` is the
 loader's only write of those `JoltNative` fields. `Foundation.Init` runs only

@@ -76,9 +76,16 @@ static class Program
         if (Directory.Exists(scratch))
             Directory.Delete(scratch, true);
         Directory.CreateDirectory(scratch);
-        WriteTree(scratch, revision, reference);
-        CompareTrees(scratch, directory);
-        Directory.Delete(scratch, true);
+        try
+        {
+            WriteTree(scratch, revision, reference);
+            CompareTrees(scratch, directory);
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+                Directory.Delete(scratch, true);
+        }
         Console.WriteLine("verify: " + Cases().Length + " jolt config cases match FromConfig");
     }
 
