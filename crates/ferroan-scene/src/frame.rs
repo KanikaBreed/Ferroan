@@ -44,10 +44,11 @@ use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Body, Motion, MotionUpdate, ReturnData, clock_ms};
 use crate::prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
+use crate::stored_scene::StoredScene;
 use crate::terse::{
     AvatarBoard, AvatarTerse, InitialData, InitialStep, LastSent, UNIT_W, ViewerFeed, look_at,
 };
-use crate::walk;
+use crate::{ObjectGroup, PrimScaleLimits, walk};
 
 /// `Constants.MinSimulationHeight`.
 const MIN_HEIGHT: f32 = -100.0;
@@ -302,6 +303,7 @@ pub struct TerrainFrame {
     thread: Option<JoinHandle<()>>,
     parcels: Option<crate::parcels::ParcelMap>,
     has_map: bool,
+    objects: Arc<StoredScene>,
     local_ids: Arc<LocalIds>,
     board: AvatarBoard,
 }
@@ -322,6 +324,26 @@ impl TerrainFrame {
         map: Option<Heightmap>,
         parcels: Option<crate::parcels::ParcelMap>,
     ) -> Result<Self, TerrainError> {
+        Self::with_object_settings(map, parcels, Arc::default(), None, true)
+    }
+
+    /// Admit this region's restored groups before the first avatar can attach.
+    pub fn with_objects(
+        map: Option<Heightmap>,
+        groups: Arc<Vec<ObjectGroup>>,
+        limits: Option<PrimScaleLimits>,
+    ) -> Result<Self, TerrainError> {
+        Self::with_object_settings(map, None, groups, limits, true)
+    }
+
+    /// Use the region's configured scale limits and CollidablePrims setting.
+    pub fn with_object_settings(
+        map: Option<Heightmap>,
+        parcels: Option<crate::parcels::ParcelMap>,
+        groups: Arc<Vec<ObjectGroup>>,
+        limits: Option<PrimScaleLimits>,
+        collidable_prims: bool,
+    ) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
         let (inbound, inbound_rx) = mpsc::sync_channel(SCENE_INBOUND);
@@ -330,6 +352,9 @@ impl TerrainFrame {
         let frame_wake = Arc::clone(&wake);
         let board = AvatarBoard::default();
         let local_ids = Arc::new(LocalIds::default());
+        let objects = Arc::new(StoredScene::admit(groups, limits, collidable_prims, || {
+            local_ids.allocate()
+        }));
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),
@@ -350,6 +375,7 @@ impl TerrainFrame {
             thread: Some(thread),
             has_map,
             parcels,
+            objects,
             local_ids,
             board,
         })
@@ -364,9 +390,17 @@ impl TerrainFrame {
         self.local_ids.allocate()
     }
 
+    /// The admitted groups retained by the simulation service.
+    pub fn stored_groups(&self) -> Arc<Vec<ObjectGroup>> {
+        Arc::clone(&self.objects.groups)
+    }
+
     /// A feed for one viewer, reading this frame's board.
     pub fn new_feed(&self) -> Arc<ViewerFeed> {
-        Arc::new(ViewerFeed::new(self.board.clone()))
+        Arc::new(ViewerFeed::with_objects(
+            self.board.clone(),
+            Arc::clone(&self.objects),
+        ))
     }
 
     /// Attach one viewer before its login pose. The answer is the avatar's
@@ -1121,6 +1155,14 @@ impl Scene {
             self.send(&agent, AvatarPacket::Full(full));
             self.send(&agent, AvatarPacket::Appearance { agent: other, look });
         }
+        if let (Some(viewer), Some(avatar)) = (self.viewers.get(&agent), self.presences.get(&agent))
+        {
+            viewer.link.feed.offer_stored_parts(&PriorityViewer {
+                agent_id: agent,
+                position: Some(avatar.pose.position),
+                sitting_on: None,
+            });
+        }
     }
 
     /// `SendCoarseLocations`: the root avatars in scene order, the same list
@@ -1227,6 +1269,7 @@ fn step_avatars(presences: &mut HashMap<Uuid, Avatar>, map: Option<&Heightmap>) 
 
 #[cfg(test)]
 mod tests {
+    mod stored_arrival;
     use std::time::Duration;
 
     use super::*;
