@@ -276,7 +276,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` holds the substep accumulator (P3.0b) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys`, Jolt, joltc and `joltc_ext` notices. The vendored-fork fallback is beside [D8](../DECISIONS.md).
+`ferroan-physics` holds the substep accumulator (P3.0b), the `[Jolt]` reader (P3.2c) and, since P3.1, the Jolt bind. A heartbeat past 16 steps reports `physics.steps-per-frame`. The crate root denies unsafe. The `native` module is where this crate allows it, and `ferroan-scripting` may once that crate exists. The workspace forbids unsafe code everywhere else. Only `ferroan-physics` depends on `oxijolt-sys`. [NOTICE.md](../../NOTICE.md) has the `oxijolt-sys`, Jolt, joltc and `joltc_ext` notices. The vendored-fork fallback is beside [D8](../DECISIONS.md).
 
 What touches motion today:
 
@@ -392,7 +392,7 @@ Order for the rows that do not wait on another Phase 3 row:
 2. **P3.2c**, **P3.11a**, **P3.19** and **P3.27** compile Pin8 with no native. **P3.1** binds `oxijolt-sys` and is done: Linux, Windows and macOS link that mode. **P3.1b** records the joltc and `joltc_ext` notices and the vendored-fork fallback, and is done. It does not block the linux bind, and it does not block a later native row. **P3.29a**, the step cap, is done. **P3.29b** waits on the rows that own the remaining bounds.
 3. Integrated rows then follow the depends column. Each one closes on the exact observations it names and, where it integrates, on one channel of the published envelope. The matched-native trace in the same cell waits and is not required to close the row. A split keeps the original id as its first part and adds a new id. It does not block the original id. Each split part is about a day.
 
-[WORK_QUEUE.md](../../WORK_QUEUE.md) is the status. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done. A row that proceeds does not depend on P3.0, P3.0c, P3.0d, P3.0e, P3.28 or P3.29. Q105, Q106 and Q108a are done. Q108 is blocked because it is split into Q108a and Q108b. Q108b waits on the owning rows, including the hull and vertex cap on P3.73. Q177 is taken with Q100a.
+[WORK_QUEUE.md](../../WORK_QUEUE.md) is the status. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done. A row that proceeds does not depend on P3.0, P3.0c, P3.0d, P3.0e, P3.28 or P3.29. P3.0b (Q101), P3.1 (Q105), P3.1b (Q106), P3.2c (Q107) and P3.29a (Q108a) are done. Q108 is blocked because it is split into Q108a and Q108b. Q108b waits on the owning rows, including the hull and vertex cap on P3.73. Q177 is taken with Q100a.
 
 The matched-native harness, when the upgrade lands, builds `[Startup] physics = Jolt`, `[Startup] meshing = Meshmerizer`, the shipped `[Jolt]` defaults, heartbeat 0.0909, gravity −9.80665, and `PhysicsStepRate` 45 because the wrapper passes it. `VehicleClock` is injected and `DeterministicMode` is true. The native is the joltc P3.0c builds. Stock recordings taken before that upgrade say which heartbeat, which materials and which warm-up they actually used (section 3). They are not that gate.
 

@@ -501,7 +501,8 @@ enum ServerZone {
     Found(String),
     /// Role, database, command line and configuration file named no zone.
     Absent,
-    /// No role or database zone, and this login cannot read `pg_file_settings` (D104).
+    /// No role or database zone could be read, and this login cannot read
+    /// the command line or `pg_file_settings` either (D104).
     Unreadable,
 }
 
@@ -514,30 +515,38 @@ async fn server_timezone(
     if let Some(zone) = role_database_timezone(conn).await? {
         return Ok(ServerZone::Found(zone));
     }
-    let command_line = command_line_timezone(conn).await?;
-    let (file_readable, file_zone) = if command_line.is_some() {
+    let (opts_readable, command_line) = command_line_timezone(conn).await?;
+    // Skip the file when the command line already named a zone, and when
+    // `postmaster.opts` was unreadable. `applied` stays true when the command
+    // line overrides the file, so the file cannot be trusted alone.
+    let (file_readable, file_zone) = if command_line.is_some() || !opts_readable {
         (false, None)
     } else {
         configured_timezone(conn).await?
     };
     Ok(server_zone_from_probes(
         command_line,
+        opts_readable,
         file_readable,
         file_zone,
     ))
 }
 
-/// `Absent` only when `pg_file_settings` itself was readable and named no zone.
-/// A readable `postmaster.opts` that names no zone does not decide that.
+/// A file zone, or `Absent`, only when both `postmaster.opts` and
+/// `pg_file_settings` were readable. The file names a zone for `Found` and
+/// names none for `Absent`. A readable `postmaster.opts` that names no zone
+/// does not by itself decide `Absent`. An unread command line does not yield
+/// to the file.
 fn server_zone_from_probes(
     command_line: Option<String>,
+    opts_readable: bool,
     file_readable: bool,
     file_zone: Option<String>,
 ) -> ServerZone {
     if let Some(zone) = command_line {
         return ServerZone::Found(zone);
     }
-    if !file_readable {
+    if !opts_readable || !file_readable {
         return ServerZone::Unreadable;
     }
     match file_zone {
@@ -548,25 +557,33 @@ fn server_zone_from_probes(
 
 /// Highest precedence first: this database and role, this role, this
 /// database, then a setting for every database and role. Within one row the
-/// last `timezone` assignment wins.
-const ROLE_DATABASE_ZONE: &str = "\
-SELECT source_rank, setting FROM ( \
+/// last `timezone` assignment wins. The role oid keeps the session name
+/// exactly, and an unknown name is NULL rather than an error.
+///
+/// `{database_oid}` is this backend's `datid` when `pg_stat_get_activity` is
+/// executable, and otherwise the `pg_database` row for `current_database()`.
+/// The two reads stay separate statements. PostgreSQL checks function and
+/// table privileges while it plans a statement, before any branch runs, so a
+/// `CASE` would still raise 42501 for the source this login cannot use.
+fn role_database_zone_sql(database_oid: &str) -> String {
+    format!(
+        "SELECT source_rank, setting FROM ( \
   SELECT 1 AS source_rank, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+  WHERE setting.setdatabase = ({database_oid}) \
+    AND setting.setrole = to_regrole(quote_ident(session_user)) \
   UNION ALL \
   SELECT 2, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = 0 \
-    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+    AND setting.setrole = to_regrole(quote_ident(session_user)) \
   UNION ALL \
   SELECT 3, entry.setting, entry.ord \
   FROM pg_db_role_setting AS setting, \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
-  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+  WHERE setting.setdatabase = ({database_oid}) \
     AND setting.setrole = 0 \
   UNION ALL \
   SELECT 4, entry.setting, entry.ord \
@@ -574,26 +591,43 @@ SELECT source_rank, setting FROM ( \
        LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
   WHERE setting.setdatabase = 0 AND setting.setrole = 0 \
 ) AS levels \
-ORDER BY source_rank, ord";
+ORDER BY source_rank, ord"
+    )
+}
 
-const ROLE_SETTINGS_PRIVILEGE: &str =
-    "SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')";
+const DATABASE_OID_FROM_ACTIVITY: &str = "SELECT datid FROM pg_stat_get_activity(pg_backend_pid())";
+
+const DATABASE_OID_FROM_CATALOG: &str =
+    "SELECT oid FROM pg_database WHERE datname = current_database()";
+
+/// `pg_db_role_setting` readable and `to_regrole(text)` executable, then
+/// `pg_stat_get_activity(integer)` executable, then `pg_database` readable.
+const ROLE_SETTINGS_PRIVILEGE: &str = "\
+SELECT has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT') \
+       AND has_function_privilege(session_user, 'pg_catalog.to_regrole(text)', 'EXECUTE'), \
+       has_function_privilege(session_user, 'pg_catalog.pg_stat_get_activity(integer)', 'EXECUTE'), \
+       has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')";
 
 async fn role_database_timezone(
     conn: &mut sqlx::postgres::PgConnection,
 ) -> Result<Option<String>, sqlx::Error> {
-    // Ask before reading. A refused SELECT is written to the server log and
-    // sqlx retries it until the acquire timeout. No privilege falls through.
-    let allowed: bool = sqlx::query_scalar(ROLE_SETTINGS_PRIVILEGE)
-        .fetch_one(&mut *conn)
-        .await?;
-    if !allowed {
+    // Ask before reading. A refused SELECT or EXECUTE is written to the
+    // server log and sqlx retries it until the acquire timeout. No usable
+    // source falls through without running the denied statement.
+    let (settings, activity, database): (bool, bool, bool) =
+        sqlx::query_as(ROLE_SETTINGS_PRIVILEGE)
+            .fetch_one(&mut *conn)
+            .await?;
+    if !settings || (!activity && !database) {
         return Ok(None);
     }
-    let rows: Vec<(i32, String)> = match sqlx::query_as(ROLE_DATABASE_ZONE)
-        .fetch_all(&mut *conn)
-        .await
-    {
+    let database_oid = if activity {
+        DATABASE_OID_FROM_ACTIVITY
+    } else {
+        DATABASE_OID_FROM_CATALOG
+    };
+    let sql = role_database_zone_sql(database_oid);
+    let rows: Vec<(i32, String)> = match sqlx::query_as(&sql).fetch_all(&mut *conn).await {
         Ok(rows) => rows,
         Err(error) if insufficient_privilege(&error) => return Ok(None),
         Err(error) => return Err(error),
@@ -639,20 +673,26 @@ const READ_FILE_PRIVILEGE: &str =
 
 const POSTMASTER_OPTS: &str = "SELECT pg_read_file('postmaster.opts')";
 
-const FILE_SETTINGS_PRIVILEGE: &str =
-    "SELECT has_table_privilege(session_user, 'pg_file_settings', 'SELECT')";
+const FILE_SETTINGS_PRIVILEGE: &str = "\
+SELECT has_table_privilege(session_user, 'pg_file_settings', 'SELECT') \
+AND has_function_privilege(session_user, 'pg_show_all_file_settings()', 'EXECUTE')";
 
 const FILE_TIMEZONE: &str = "\
 SELECT setting FROM pg_file_settings \
 WHERE lower(name) = 'timezone' AND applied AND (error IS NULL OR error = '') \
 ORDER BY seqno DESC LIMIT 1";
 
+/// `(readable, zone)`. A denied read is not a command line that named no
+/// zone: only a readable `postmaster.opts` may yield to `pg_file_settings`.
 async fn command_line_timezone(
     conn: &mut sqlx::postgres::PgConnection,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<(bool, Option<String>), sqlx::Error> {
     match probe_text(conn, READ_FILE_PRIVILEGE, POSTMASTER_OPTS).await? {
-        Probe::Denied => Ok(None),
-        Probe::Value(text) => Ok(text.as_deref().and_then(timezone_from_postmaster_opts)),
+        Probe::Denied => Ok((false, None)),
+        Probe::Value(text) => Ok((
+            true,
+            text.as_deref().and_then(timezone_from_postmaster_opts),
+        )),
     }
 }
 
@@ -1239,30 +1279,67 @@ mod tests {
     }
 
     #[test]
-    fn absent_requires_a_readable_file_settings_probe() {
+    fn absent_requires_readable_command_line_and_file() {
         assert_eq!(
-            server_zone_from_probes(None, false, None),
+            server_zone_from_probes(None, false, false, None),
             ServerZone::Unreadable
         );
         assert_eq!(
-            server_zone_from_probes(None, true, None),
+            server_zone_from_probes(None, false, true, Some("Europe/Berlin".to_string())),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, false, true, None),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, false, None),
+            ServerZone::Unreadable
+        );
+        assert_eq!(
+            server_zone_from_probes(None, true, true, None),
             ServerZone::Absent
         );
         assert_eq!(
-            server_zone_from_probes(None, true, Some("America/New_York".to_string())),
+            server_zone_from_probes(None, true, true, Some("America/New_York".to_string())),
             ServerZone::Found("America/New_York".to_string())
         );
         assert_eq!(
-            server_zone_from_probes(Some("America/New_York".to_string()), false, None),
+            server_zone_from_probes(Some("America/New_York".to_string()), true, false, None),
             ServerZone::Found("America/New_York".to_string())
         );
     }
 
     #[test]
     fn role_catalog_is_checked_before_the_read() {
-        assert!(ROLE_SETTINGS_PRIVILEGE.contains("has_table_privilege"));
-        assert!(ROLE_SETTINGS_PRIVILEGE.contains("pg_catalog.pg_db_role_setting"));
-        assert!(ROLE_DATABASE_ZONE.contains("session_user"));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_table_privilege(session_user, 'pg_catalog.pg_db_role_setting', 'SELECT')"
+        ));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_function_privilege(session_user, 'pg_catalog.to_regrole(text)', 'EXECUTE')"
+        ));
+        assert!(ROLE_SETTINGS_PRIVILEGE.contains(
+            "has_function_privilege(session_user, 'pg_catalog.pg_stat_get_activity(integer)', 'EXECUTE')"
+        ));
+        assert!(
+            ROLE_SETTINGS_PRIVILEGE
+                .contains("has_table_privilege(session_user, 'pg_catalog.pg_database', 'SELECT')")
+        );
+        let activity = role_database_zone_sql(DATABASE_OID_FROM_ACTIVITY);
+        let catalog = role_database_zone_sql(DATABASE_OID_FROM_CATALOG);
+        assert_ne!(activity, catalog);
+        for sql in [&activity, &catalog] {
+            assert!(sql.contains("to_regrole(quote_ident(session_user))"));
+            assert!(!sql.contains("session_user::regrole"));
+            assert!(!sql.contains("pg_roles"));
+            assert!(!sql.contains("CASE"));
+        }
+        assert!(activity.contains("pg_stat_get_activity(pg_backend_pid())"));
+        assert!(!activity.contains("pg_database"));
+        assert!(catalog.contains("SELECT oid FROM pg_database WHERE datname = current_database()"));
+        assert!(!catalog.contains("pg_stat_get_activity"));
+        assert!(FILE_SETTINGS_PRIVILEGE.contains("has_function_privilege"));
+        assert!(FILE_SETTINGS_PRIVILEGE.contains("pg_show_all_file_settings()"));
     }
 
     #[test]
