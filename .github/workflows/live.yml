@@ -140,7 +140,7 @@ jobs:
           cargo xtask live run ferrobot
           cargo xtask live run ferrobot grid
           cargo xtask live run ferrobot grid --region ferroan
-      - name: Measure idle region memory by region count and object store
+      - name: Compare C# and Ferroan region memory with bots, objects and four C# regions
         run: cargo xtask live memory
       - name: Upload live logs and diagnostic dumps
         if: always()

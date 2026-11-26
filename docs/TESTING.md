@@ -191,7 +191,7 @@ P0.10a is `ferroan-bot`: XML-RPC login, the circuit and the seed capability, che
 [`.github/workflows/live.yml`](../.github/workflows/live.yml) runs those steps in six parallel jobs. A final job named `live (ubuntu-latest)` fails unless every one succeeded, which is the required live check. The other required names stay `checks (ubuntu-latest)`, `checks (windows-latest)` and `checks (macos-latest)`. Each job runs its checks in this order:
 
 - scenarios: every oracle `verify`, `cargo xtask live build`, `cargo xtask live record-twice`, standalone and grid `live run all`, then `live run caps grid` and `live run caps grid --region ferroan`;
-- Ferrobot: `cargo xtask live build`, then `live run ferrobot`, `live run ferrobot grid`, and `live run ferrobot grid --region ferroan`. Standalone Ferrobot does not publish the region, so the job builds it before the three runs;
+- Ferrobot: `cargo xtask live build`, then `live run ferrobot`, `live run ferrobot grid`, and `live run ferrobot grid --region ferroan`. Standalone Ferrobot does not publish the region, so the job builds it before the three runs; then `live memory` compares the region processes' memory (see Memory below).
 - services (region), base 24832: login, two roots, uploads, chat, walk, avatars on C# and Ferroan, teleport, hop, neighbour round trip, then `live compare region`. Both report subprocesses use the assigned block in sequence;
 - services (grid), base 24864: limits, inventory and texture caps, grid assets with Rust and SQLite, logins with Rust accounts, assets plus accounts, and auth, then the account and auth comparisons. The persistent mixed-grid check precedes `live up --assets ferroan`, `live run assets --running` and the unconditional `live down`;
 - services (assets), base 24896: the stock asset comparison, both console checks, then schema loads and the XAsset and FSAssets comparisons on both MySQL 8.4 and PostgreSQL 16. Only this job starts the SQL containers. Each has a private `ferroan_assets` database. Each services job uses SQLite files and a `.scratch/` directory on its own hosted runner and uploads its logs and diagnostic dumps under a distinct artifact name;
@@ -218,6 +218,25 @@ LogoutReply and bounded GridUser/Presence cleanup between sessions. It then
 executes `live down` and verifies the recorded processes and their TCP/UDP
 listeners are gone. This runs in the live CI job; viewer rendering remains a
 maintainer check.
+
+## Memory
+
+Every grid run prints a `memory:` line for each server process it started, and `cargo xtask live memory` (in the Ferrobot CI job) compares the two region servers on the same scenes ([LIVE.md](LIVE.md#memory)). `memory::tests::the_sampler_reads_a_running_process` reads this test's own `/proc/<pid>/status` on Linux and prints `skipped: …` elsewhere; the other `memory` tests cover the status parser, the line, the peak, the point bound and the job summary.
+
+Local runs on 26 November 2026 at Pin8 (C# server GC, BasicPhysics; Ferroan has no physics or scripts yet), port base 29088, `VmRSS` in MiB, `peak` the largest `VmHWM`. `live memory`, run `29088-2506114`, release `ferroan-region`:
+
+| Process | Scene | Idle | With bots | After logout | Peak |
+| --- | --- | ---: | ---: | ---: | ---: |
+| C# region | empty, two `roots` bots | 231.9 | 232.1, 232.7 | 233.5 | 235.2 |
+| Ferroan region | empty, two `roots` bots | 19.0 | 20.0, 20.2 | 20.2 | 20.2 |
+| C# region | 500-part store, `prim-load` bot | 244.4 | 250.0, scene 253.6 | 256.3 | 264.6 |
+| Ferroan region | 500-part store, `prim-load` bot | 21.6 | 22.7, scene 22.8 | 22.8 | 22.8 |
+| C# region, 4 in one process | empty | 286.7 | | | 328.1 |
+| C# Robust | across those steps | 147.6 | | 150.7 at the end | 177.7 |
+
+Four C# regions in one process cost 18.2 MiB per extra region in that run. C#'s numbers move between runs: two earlier runs (`29088-2307579`, `29088-2364078`) had the empty C# region at 236.5 and 259.5 MiB idle and 19.9 and 8.6 MiB per extra region, while the Ferroan region stayed within 1.3 MiB. `live memory --bulk` (`29088-2364078`) put both servers at idle on QR22's single-prim stores: C# 242.4, 251.0, 284.6, 279.4 and 505.0 MiB at 500, 1,000, 5,000, 10,000 and 40,000 prims; Ferroan 21.7, 24.1, 35.8, 51.4 and 135.1 MiB. At 40,000 prims that is 6.2 KiB per prim on C# and 2.9 KiB on Ferroan over the empty region.
+
+Grid runs use the debug `ferroan-region` and `ferroan-robust`. `live run login grid` (`29088-2561761`): C# region 246.8 idle, 249.8 online, 247.6 after logout, peak 250.6; C# Robust 157.9, 161.8, 166.9. `live run login grid --region ferroan` (`29088-2584804`): Ferroan region 33.1 idle, 34.0 and 34.1 online, 34.1 after logout. `live run login grid --rust assets,accounts` (`29088-2597088`): `ferroan-robust` 21.3 idle, 21.4 online and after logout; C# Robust 149.5, 155.1, 164.3. Re-measure when physics and scripts land in Ferroan.
 
 ## Evidence by kind of change
 
