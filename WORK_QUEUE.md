@@ -120,8 +120,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
 | QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
-| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
-| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | READY |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
+| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -200,7 +200,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
-| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
@@ -273,6 +273,85 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
+| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
+| Q101 | P3.0b: `SubstepAccumulator` | READY |
+| Q102 | P3.0c: Move the C# Jolt module | READY |
+| Q103 | P3.0d: Pin move | READY after Q102 |
+| Q104 | P3.0e: Decision entry | READY after Q103 |
+| Q105 | P3.1: Bind `oxijolt-sys` | READY |
+| Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
+| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
+| Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
+| Q113 | P3.2d: Slope and hill | READY after Q112 |
+| Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
+| Q115 | P3.3: Physics thread and the request queue | READY after Q111 |
+| Q116 | P3.3b: Time dilation on terse updates | READY after Q111, Q115 and Q65c3b |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q111 |
+| Q118 | P3.5: Create-time body flags | READY after Q117 |
+| Q119 | P3.18a: Box contacts terrain and another box | READY after Q118 |
+| Q120 | P3.6: Buoyancy and gravity scale | READY after Q118 |
+| Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117, Q118, Q69 and Q70 |
+| Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
+| Q124 | P3.43: Grab | READY after Q118 |
+| Q125 | P3.44: Angular lock | READY after Q118 |
+| Q126 | P3.45: Impulse and push | READY after Q118 and Q101 |
+| Q127 | P3.46: Constant force and torque | READY after Q118 |
+| Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
+| Q129 | P3.48: Look-at | READY after Q118 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 and Q101 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 |
+| Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
+| Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
+| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
+| Q138 | P3.51: Physics shape type | READY after Q134, Q135 and Q69 |
+| Q139 | P3.10a: Sculpt vertices | READY after Q132 |
+| Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
+| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
+| Q144 | P3.18b: Linkset struck child | READY after Q142 and Q119 |
+| Q145 | P3.13b: Walk and run | READY after Q109, Q115 and Q112 |
+| Q146 | P3.13c: Fly | READY after Q145 |
+| Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
+| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147, Q130 and Q113 |
+| Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
+| Q150 | P3.14d: Avatar position set | READY after Q109, Q103 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109, Q103 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q119 |
+| Q153 | P3.15: Remove the walking stand-in | READY after Q145, Q118 and Q152 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109, Q118 and Q115 |
+| Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
+| Q156 | P3.17: Camera ray | READY after Q118 and Q115 |
+| Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
+| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 |
+| Q159 | P3.19: Vehicle parameter store | READY after Q118 and Q107 |
+| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q100 and Q159 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120 and Q115 |
+| Q162 | P3.20c: Angular motor and banking | READY after Q161 |
+| Q163 | P3.21a: Hover | READY after Q161 and Q114 |
+| Q164 | P3.21b: Vertical attraction | READY after Q162 |
+| Q165 | P3.22a: Car | READY after Q163 and Q162 |
+| Q166 | P3.22b: Sled | READY after Q165 and Q113 |
+| Q167 | P3.23a: Airplane | READY after Q164 |
+| Q168 | P3.23b: Mouselook | READY after Q167 |
+| Q169 | P3.23c: Balloon | READY after Q163 |
+| Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
+| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
+| Q172 | P3.24b: Saved `VehicleData` | READY after Q171 and Q142 |
+| Q173 | P3.25: Sit | READY after Q157 and Q147 |
+| Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
+| Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
+| Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
+
+Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 

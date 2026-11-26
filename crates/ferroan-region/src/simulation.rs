@@ -319,6 +319,7 @@ pub struct AcceptedAgent {
     /// Set when this agent's seed capability has been answered.
     pub seeds_sent: Arc<AtomicBool>,
     pub object_animations: Arc<AtomicBool>,
+    pub supports_pbr: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
     // Drop last, after the UDP serve, frame removal, service writes and generation lease.
@@ -771,7 +772,7 @@ impl SimulationState {
             rooted_when_replaced,
             children: Arc::clone(&self.children),
         };
-        let (seeds_sent, object_animations) =
+        let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
         let accepted = AcceptedAgent {
             _logout_done: logout_done,
@@ -801,6 +802,7 @@ impl SimulationState {
             return_slot: slot,
             seeds_sent,
             object_animations,
+            supports_pbr,
             cancelled,
             _lease: lease,
         };

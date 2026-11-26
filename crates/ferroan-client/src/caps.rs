@@ -29,7 +29,7 @@
 // and Source/OpenSim.Framework.Servers.HttpServer/{BaseHttpServer,PollServiceHttpRequest}.cs,
 // plus OSHttpServer/HttpResponse.cs there (default MIME and error connection close),
 // OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c.
-// ObjectAnimation seed negotiation follows BunchOfCaps.cs at
+// ObjectAnimation and PBR seed negotiation follow BunchOfCaps.cs at
 // KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -181,6 +181,7 @@ struct CapsState {
     /// `CapsFlags.SentSeeds`: set once a seed request has been answered.
     seeds_sent: Arc<AtomicBool>,
     object_animations: Arc<AtomicBool>,
+    supports_pbr: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -294,6 +295,7 @@ impl CapsRegistry {
                 granted,
                 seeds_sent: Arc::new(AtomicBool::new(false)),
                 object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
             },
             events_path,
         });
@@ -313,11 +315,14 @@ impl CapsRegistry {
     /// The flag a seed answer sets for this agent's registration
     /// (`CapsFlags.SentSeeds`). `None` when the agent has no seed here.
     pub fn seeds_sent(&self, agent_id: Uuid) -> Option<Arc<AtomicBool>> {
-        self.seed_flags(agent_id).map(|(sent, _)| sent)
+        self.seed_flags(agent_id).map(|(sent, _, _)| sent)
     }
 
-    /// Generation-specific SentSeeds and ObjectAnim flags for the region circuit.
-    pub fn seed_flags(&self, agent_id: Uuid) -> Option<(Arc<AtomicBool>, Arc<AtomicBool>)> {
+    /// Generation-specific SentSeeds, ObjectAnim and PBR flags for the region circuit.
+    pub fn seed_flags(
+        &self,
+        agent_id: Uuid,
+    ) -> Option<(Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>)> {
         self.active
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -327,6 +332,7 @@ impl CapsRegistry {
                 (
                     Arc::clone(&registered.state.seeds_sent),
                     Arc::clone(&registered.state.object_animations),
+                    Arc::clone(&registered.state.supports_pbr),
                 )
             })
     }
@@ -577,6 +583,7 @@ impl CapsServer {
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
             object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
         };
         let queue = state.queue.clone();
         let app = Router::new()
@@ -653,6 +660,11 @@ async fn seed(State(state): State<CapsState>, request: Request) -> Response {
         let text = name.to_osd_string();
         if text == "ObjectAnimation" {
             state.object_animations.store(true, Ordering::Release);
+        }
+        // VTPBR on a 256 m region and VETPBR also set TPBR. The second
+        // RegionHandshake that follows TPBR is not this send.
+        if matches!(text.as_str(), "VTPBR" | "VETPBR" | "ModifyMaterialParams") {
+            state.supports_pbr.store(true, Ordering::Release);
         }
         if text == "EventQueueGet" {
             continue;
@@ -829,6 +841,7 @@ mod tests {
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
             object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
         };
         // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
         let request = Request::builder()
@@ -883,6 +896,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pbr_seed_names_set_the_flag_before_the_seed_is_marked_sent() {
+        for name in ["VTPBR", "VETPBR", "ModifyMaterialParams"] {
+            let state = CapsState {
+                event_queue_url: "http://example.invalid/CE/test".into(),
+                queue: EventQueue::new(),
+                agent_id: Uuid::nil(),
+                granted: Vec::new(),
+                seeds_sent: Arc::new(AtomicBool::new(false)),
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+            };
+            let pbr = Arc::clone(&state.supports_pbr);
+            let sent = Arc::clone(&state.seeds_sent);
+            let request = Request::builder()
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/llsd+xml")
+                .body(axum::body::Body::from(name_list(["EventQueueGet", name])))
+                .unwrap();
+            let response = seed(State(state), request).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(pbr.load(Ordering::Acquire));
+            assert!(sent.load(Ordering::Acquire));
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let map = from_xml(&body).unwrap();
+            assert!(map.get(name).is_undef());
+        }
+        let state = CapsState {
+            event_queue_url: "http://example.invalid/CE/test".into(),
+            queue: EventQueue::new(),
+            agent_id: Uuid::nil(),
+            granted: Vec::new(),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
+        };
+        let pbr = Arc::clone(&state.supports_pbr);
+        let request = Request::builder()
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, "application/llsd+xml")
+            .body(axum::body::Body::from(name_list([
+                "EventQueueGet",
+                "GetTexture",
+            ])))
+            .unwrap();
+        let response = seed(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!pbr.load(Ordering::Acquire));
+    }
+
     fn name_list<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<u8> {
         let mut array = Llsd::new_array();
         for name in names {
@@ -932,7 +997,7 @@ mod tests {
             404
         );
         registry.register(&path).unwrap();
-        let (_, animations) = registry.seed_flags(Uuid::nil()).unwrap();
+        let (_, animations, _) = registry.seed_flags(Uuid::nil()).unwrap();
         assert!(!animations.load(Ordering::Acquire));
         assert!(matches!(registry.register(&path), Err(CapsError::Occupied)));
         let (status, bytes, _) = post(

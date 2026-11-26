@@ -3,12 +3,13 @@
 
 use super::*;
 use crate::entity_queue::{FULL_UPDATE, FULL_UPDATE_WITH_ANIM, MATERIAL_OVR};
+use crate::prim_update::{LinksetUpdateFlags, StoredPrimUpdate};
 use crate::terse::ViewerUpdate;
 use crate::test_store::CopiedStore;
-use crate::{ObjectStoreKind, open_objects};
+use crate::{ObjectGroup, ObjectStoreKind, PrimScaleLimits, open_objects};
 use ferroan_capture::{Kind, read_capture};
 use ferroan_db::{Backend, Pool};
-use ferroan_protocol::{Msg, msgs::ObjectUpdate, parse_packet};
+use ferroan_protocol::{Msg, Writer, msgs::ObjectUpdate, parse_packet};
 use std::collections::{BTreeMap, HashSet};
 
 const REGION: Uuid = Uuid::from_u128(0x6d1a7f4e_0c3b_4f53_9a1e_5f0e3c2a9b01);
@@ -273,7 +274,8 @@ async fn admission_clamps_each_part_and_offers_children_in_link_order() {
                 if limits.is_some() {
                     [0.001, 1.0, 32.0]
                 } else {
-                    [0.0, 1.0, 100.0]
+                    // ClampScale still applies the default nonphysical minimum.
+                    [0.001, 1.0, 100.0]
                 }
             );
             assert_eq!(block.scale.to_array(), part.shape.scale);
@@ -385,6 +387,7 @@ async fn priority_follows_the_stored_roots_physics_actor() {
             None,
             Arc::new(groups.clone()),
             None,
+            PhysicsScaleLimits::default(),
             collidable,
         )
         .unwrap();
@@ -403,4 +406,156 @@ async fn priority_follows_the_stored_roots_physics_actor() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn a_stored_zero_scale_is_sent_as_pin8_bytes() {
+    let template = fixture_groups()
+        .await
+        .into_iter()
+        .find(|group| group.parts[0].name == "box")
+        .unwrap()
+        .parts
+        .remove(0);
+    let rows = pin8_scale_rows();
+    assert!(rows.iter().any(|row| row.name == "zero-nonphys"));
+    let mut groups = Vec::new();
+    for row in &rows {
+        if groups
+            .last()
+            .is_some_and(|(name, _): &(_, Vec<_>)| name == &row.name)
+        {
+            groups.last_mut().unwrap().1.push(row);
+        } else {
+            groups.push((row.name.clone(), vec![row]));
+        }
+    }
+    for (name, rows) in groups {
+        let physics = rows[0].physics;
+        let clamp = rows[0].clamp.then_some(PrimScaleLimits {
+            min: physics.nonphys_min,
+            max: physics.nonphys_max,
+        });
+        let mut group = ObjectGroup {
+            from_item_id: Uuid::nil(),
+            rez_parameter: None,
+            parts: Vec::new(),
+        };
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.index, index, "{name}");
+            assert_eq!(row.physics, physics, "{name}");
+            assert_eq!(row.clamp, clamp.is_some(), "{name}");
+            assert_eq!(row.collidable, rows[0].collidable, "{name}");
+            let mut part = template.clone();
+            part.uuid = Uuid::from_u128((index + 1) as u128);
+            part.link_num = index as i32;
+            part.flags = row.flags;
+            part.volume_detect = row.volume;
+            part.physics_shape_type = row.shape;
+            part.shape.path_curve = row.path;
+            part.shape.state = row.state;
+            part.shape.pcode = row.pcode;
+            part.shape.scale = row.scale;
+            group.parts.push(part);
+        }
+        let frame = TerrainFrame::with_object_settings(
+            None,
+            None,
+            Arc::new(vec![group]),
+            clamp,
+            physics,
+            rows[0].collidable,
+        )
+        .unwrap();
+        let stored = frame.stored_groups();
+        let (root, children) = stored[0].parts.split_first().unwrap();
+        let linkset = LinksetUpdateFlags::from_parts(root, children);
+        for (row, part) in rows.iter().zip(&stored[0].parts) {
+            let mut stored_scale = [0; 12];
+            for (slot, axis) in stored_scale
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(part.shape.scale)
+            {
+                slot.copy_from_slice(&axis.to_le_bytes());
+            }
+            assert_eq!(stored_scale, row.out, "{name} part {}", row.index);
+            let block = StoredPrimUpdate::from_store(part, &linkset, part.local_id, root.local_id)
+                .unwrap()
+                .block_for(part.owner_id);
+            let mut writer = Writer::new();
+            block.encode(&mut writer);
+            assert_eq!(
+                &writer.buf[28..40],
+                &row.out[..],
+                "{name} part {} wire scale",
+                row.index
+            );
+        }
+    }
+}
+
+struct ScaleRow {
+    name: String,
+    index: usize,
+    flags: u32,
+    path: u8,
+    state: u8,
+    pcode: u8,
+    shape: u8,
+    volume: bool,
+    clamp: bool,
+    collidable: bool,
+    physics: PhysicsScaleLimits,
+    scale: [f32; 3],
+    out: [u8; 12],
+}
+
+fn pin8_scale_rows() -> Vec<ScaleRow> {
+    let text = include_str!("../../../../../fixtures/prim-scale/pin8-scales.txt");
+    text.lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ScaleRow::parse)
+        .collect()
+}
+
+impl ScaleRow {
+    fn parse(line: &str) -> Self {
+        let field: Vec<_> = line.split_whitespace().collect();
+        assert_eq!(field.len(), 18, "{line}");
+        let float = |index| hex_f32(field[index]);
+        Self {
+            name: field[0].to_owned(),
+            index: field[1].parse().unwrap(),
+            flags: field[2].parse().unwrap(),
+            path: field[3].parse().unwrap(),
+            state: field[4].parse().unwrap(),
+            pcode: field[5].parse().unwrap(),
+            shape: field[6].parse().unwrap(),
+            volume: field[7] == "1",
+            clamp: field[8] == "1",
+            collidable: field[9] == "1",
+            physics: PhysicsScaleLimits {
+                nonphys_min: float(10),
+                nonphys_max: float(11),
+                phys_min: float(12),
+                phys_max: float(13),
+            },
+            scale: [float(14), float(15), float(16)],
+            out: hex_bytes(field[17]).try_into().unwrap(),
+        }
+    }
+}
+
+fn hex_f32(text: &str) -> f32 {
+    let bytes: [u8; 4] = hex_bytes(text).try_into().unwrap();
+    f32::from_le_bytes(bytes)
+}
+
+fn hex_bytes(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap())
+        .collect()
 }

@@ -92,7 +92,7 @@ pub mod prioritizer;
 mod settings;
 mod store;
 mod stored_scene;
-pub use stored_scene::PrimScaleLimits;
+pub use stored_scene::{PhysicsScaleLimits, PrimScaleLimits};
 pub mod terse;
 #[cfg(test)]
 mod test_store;
@@ -106,8 +106,8 @@ pub use coarse::{COARSE_EVERY_FRAMES, CoarseLocations, MAX_COARSE_LOCATIONS};
 pub use compress::TerrainLayer;
 pub use entity_queue::{
     ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,
-    FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MAX_ENTITY_UPDATES, POSITION, QueuedUpdate, ROTATION,
-    SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
+    FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MATERIAL_OVR, MAX_ENTITY_UPDATES, POSITION,
+    QueuedUpdate, ROTATION, SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
 };
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};

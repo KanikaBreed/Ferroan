@@ -32,7 +32,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! ProcessEntityUpdates at Pin8, LLClientView.cs 4996–5431 and LLUDPZeroEncoder.cs.
-//! Dequeue estimates and the encoded packet split are independent.
+//! Dequeue estimates and the encoded packet split are independent. Material
+//! bodies ride along after the full and terse lists and do not spend the budget.
 
 use crate::AVATAR_TERSE_LEN;
 use ferroan_protocol::{
@@ -41,6 +42,13 @@ use ferroan_protocol::{
     packet::{HEADER_SIZE, MAX_DATAGRAM},
 };
 
+/// One callback's Task sends: full packets, terse blocks, then material bodies.
+pub struct TaskPackets {
+    pub full: Vec<Vec<u8>>,
+    pub terse: Vec<[u8; AVATAR_TERSE_LEN]>,
+    pub materials: Vec<Vec<u8>>,
+}
+
 /// One Task queue-empty callback, bounded by its byte estimate and reliable window.
 pub struct TaskBatch {
     budget: i32,
@@ -48,6 +56,7 @@ pub struct TaskBatch {
     region_handle: u64,
     full: Option<FullPackets>,
     terse: Vec<[u8; AVATAR_TERSE_LEN]>,
+    materials: Vec<Vec<u8>>,
 }
 
 impl TaskBatch {
@@ -57,7 +66,7 @@ impl TaskBatch {
         handle: u64,
         budget: i32,
         slots: usize,
-    ) -> (Vec<Vec<u8>>, Vec<[u8; AVATAR_TERSE_LEN]>) {
+    ) -> TaskPackets {
         let mut batch = Self::new(handle, budget, slots);
         feed.take_updates(&mut batch);
         batch.finish()
@@ -70,6 +79,7 @@ impl TaskBatch {
             region_handle: handle,
             full: None,
             terse: Vec::new(),
+            materials: Vec::new(),
         }
     }
 
@@ -104,11 +114,17 @@ impl TaskBatch {
             .push(&writer.buf);
     }
 
-    fn finish(self) -> (Vec<Vec<u8>>, Vec<[u8; AVATAR_TERSE_LEN]>) {
-        (
-            self.full.map(FullPackets::finish).unwrap_or_default(),
-            self.terse,
-        )
+    /// A material body is already encoded. It does not take a slot or estimated bytes.
+    pub fn push_material(&mut self, body: Vec<u8>) {
+        self.materials.push(body);
+    }
+
+    fn finish(self) -> TaskPackets {
+        TaskPackets {
+            full: self.full.map(FullPackets::finish).unwrap_or_default(),
+            terse: self.terse,
+            materials: self.materials,
+        }
     }
 
     #[cfg(test)]
@@ -343,7 +359,7 @@ mod tests {
         for part in parts {
             batch.push_full(&part, None);
         }
-        assert_eq!(batch.finish().0, expected);
+        assert_eq!(batch.finish().full, expected);
     }
 
     #[test]
@@ -367,7 +383,7 @@ mod tests {
             );
         }
         batch.push_terse([9; AVATAR_TERSE_LEN]);
-        let (full, terse) = batch.finish();
+        let TaskPackets { full, terse, .. } = batch.finish();
         let mut received = Vec::new();
         for body in full {
             let mut wire = vec![0xc0, 0, 0, 0, 1, 0];
@@ -408,7 +424,7 @@ mod tests {
                 for part in &update.object_data {
                     batch.push_full(part, None);
                 }
-                let (full, _) = batch.finish();
+                let TaskPackets { full, .. } = batch.finish();
                 let end = record.bytes.len()
                     - if packet.acks.is_empty() {
                         0
@@ -421,5 +437,30 @@ mod tests {
             }
             assert!(compared >= 2);
         }
+    }
+
+    #[test]
+    fn a_material_body_does_not_spend_the_budget_or_the_slot() {
+        let mut batch = TaskBatch::new(7, 100, 1);
+        batch.push_material(vec![31, 1]);
+        assert_eq!(batch.budget(), 100);
+        assert!(batch.has_room());
+        batch.push_full(
+            &ObjectData {
+                id: 2,
+                texture_entry: vec![1; MAX_DATAGRAM],
+                ..Default::default()
+            },
+            None,
+        );
+        batch.push_material(b"kept".to_vec());
+        let TaskPackets {
+            full,
+            terse,
+            materials,
+        } = batch.finish();
+        assert!(full.is_empty());
+        assert!(terse.is_empty());
+        assert_eq!(materials, vec![vec![31, 1], b"kept".to_vec()]);
     }
 }
