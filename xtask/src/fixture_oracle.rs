@@ -1,13 +1,15 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Build and run the throttle and Presence fixture oracles against the pinned Tranquillity checkout.
+//! Build and run a pinned C# fixture oracle against the Tranquillity checkout.
+//! The caller names the fixture path and the action.
 //! Build output goes under `.scratch/`, never into the checkout.
 
 use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
-pub(crate) fn run(suite: &str, project_file: &str, writing: bool) -> ExitCode {
+pub(crate) fn run(suite: &str, project_file: &str, fixture: &Path, action: &str) -> ExitCode {
     let root = crate::repo_root();
     let reference =
         match crate::http_oracle::reference_root().and_then(crate::oracle_reference::prepare) {
@@ -39,10 +41,9 @@ pub(crate) fn run(suite: &str, project_file: &str, writing: bool) -> ExitCode {
         eprintln!("{suite}: {error}");
         return ExitCode::FAILURE;
     }
-    let action = if writing { "generate" } else { "verify" };
     let args = vec![
         action.to_string(),
-        root.join("fixtures").join(suite).display().to_string(),
+        fixture.display().to_string(),
         "--revision".to_string(),
         revision.clone(),
     ];
