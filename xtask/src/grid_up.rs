@@ -201,6 +201,7 @@ fn up_linux(bind: Ipv4Addr) -> Result<String, String> {
                 store: super::RegionStore::Standard,
                 parcel_seed: None,
                 groups_uri: None,
+                patch_materials: false,
                 basic_physics: false,
             },
             &grid.passwords,

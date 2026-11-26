@@ -24,7 +24,9 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
 use ferroan_config::Config;
-use ferroan_services::{AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp};
+use ferroan_services::{
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, PresenceHttp,
+};
 
 const BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 
@@ -73,6 +75,7 @@ pub struct Pools {
     auth: Option<AuthHttp>,
     griduser: Option<GridUserHttp>,
     avatar: Option<AvatarHttp>,
+    presence: Option<PresenceHttp>,
 }
 
 impl Pools {
@@ -93,6 +96,11 @@ impl Pools {
 
     pub fn auth(mut self, http: AuthHttp) -> Self {
         self.auth = Some(http);
+        self
+    }
+
+    pub fn presence(mut self, http: PresenceHttp) -> Self {
+        self.presence = Some(http);
         self
     }
 
@@ -141,6 +149,13 @@ impl RobustMeters {
             (
                 "auth",
                 self.pools.auth.as_ref().map(AuthHttp::pool_occupancy),
+            ),
+            (
+                "presence",
+                self.pools
+                    .presence
+                    .as_ref()
+                    .map(PresenceHttp::pool_occupancy),
             ),
             (
                 "avatar",
@@ -483,6 +498,14 @@ fn prometheus(meters: &RobustMeters) -> String {
         (
             "alias",
             meters.pools.alias.as_ref().map(AliasHttp::pool_occupancy),
+        ),
+        (
+            "presence",
+            meters
+                .pools
+                .presence
+                .as_ref()
+                .map(PresenceHttp::pool_occupancy),
         ),
         (
             "avatar",

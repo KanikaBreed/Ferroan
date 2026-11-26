@@ -33,6 +33,13 @@
 
 //! Presence rows and the Null, MySQL and PostgreSQL providers.
 
+mod http;
+mod open;
+mod service;
+pub use http::PresenceHttp;
+pub use open::PresenceError;
+pub use service::{PresenceInfo, PresenceService};
+
 mod mysql;
 pub use mysql::MySqlPresenceData;
 

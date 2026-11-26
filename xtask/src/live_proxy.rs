@@ -81,6 +81,66 @@ impl Proxies {
         }
     }
 
+    /// The status `stop_in_order` marks for bind `index`.
+    #[cfg(test)]
+    pub(crate) fn status(&self, index: usize) -> Option<ProxyStatus> {
+        self.statuses.get(index).map(|(status, _)| status.clone())
+    }
+
+    /// Serve on listeners that are already bound, one closed upstream each.
+    ///
+    /// Does not bind port 0. [`listeners_and_closed`] has already chosen the
+    /// upstreams, and a new bind of port 0 could be given one of them.
+    #[cfg(test)]
+    pub(crate) fn start_bound(
+        listeners: Vec<std::net::TcpListener>,
+        upstreams: &[SocketAddr],
+        paths: &[PathBuf],
+    ) -> Result<(Vec<SocketAddr>, Self), String> {
+        if listeners.len() != upstreams.len() || listeners.len() != paths.len() {
+            return Err("proxy listeners, upstreams and paths differ in length".to_string());
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("could not start proxy runtime: {error}"))?;
+        let upstreams = upstreams.to_vec();
+        let paths = paths.to_vec();
+        let (addresses, statuses) = runtime.block_on(async move {
+            let mut addresses = Vec::new();
+            let mut statuses = Vec::new();
+            for ((listener, upstream), path) in listeners.into_iter().zip(upstreams).zip(paths) {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| format!("could not create proxy directory: {error}"))?;
+                }
+                listener
+                    .set_nonblocking(true)
+                    .map_err(|error| format!("could not set proxy nonblocking: {error}"))?;
+                let listener = tokio::net::TcpListener::from_std(listener)
+                    .map_err(|error| format!("could not use proxy listener: {error}"))?;
+                addresses.push(listener.local_addr().map_err(|error| error.to_string())?);
+                let status = ProxyStatus::default();
+                statuses.push((status.clone(), path.clone()));
+                tokio::spawn(async move {
+                    if let Err(error) = ferroan_capture::serve_on_with_status(
+                        listener,
+                        upstream,
+                        &path,
+                        DEFAULT_REPLY_TIMEOUT,
+                        status,
+                    )
+                    .await
+                    {
+                        eprintln!("live: proxy {} stopped: {error}", path.display());
+                    }
+                });
+            }
+            Ok::<_, String>((addresses, statuses))
+        })?;
+        Ok((addresses, Self { runtime, statuses }))
+    }
+
     pub(crate) fn finish(self) -> Result<(), String> {
         self.runtime.block_on(async {
             let mut failure = None;
@@ -104,6 +164,63 @@ impl Proxies {
     }
 }
 
+/// A localhost port with nothing bound.
+///
+/// Chosen after the proxy listeners. Binding port 0 and dropping the socket
+/// leaves a port a connect refuses on Linux, macOS and Windows. `taken` are
+/// the listen ports and any closed ports already chosen; the result is none
+/// of them. Nothing after this may bind port 0: that bind can be given the
+/// port, which is the #297 race. A socket that is held and never listens is
+/// not a closed port, because macOS does not refuse that connect.
+#[cfg(test)]
+pub(crate) struct ClosedUpstream {
+    address: SocketAddr,
+}
+
+#[cfg(test)]
+impl ClosedUpstream {
+    pub(crate) fn reserve(taken: &[SocketAddr]) -> Self {
+        for _ in 0..32 {
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let address = socket.local_addr().unwrap();
+            drop(socket);
+            if !taken.contains(&address) {
+                return Self { address };
+            }
+        }
+        panic!("closed upstream collided with a proxy listen port");
+    }
+
+    pub(crate) fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
+/// Bind `count` proxy listeners, then one closed upstream per listener.
+///
+/// Listeners stay bound. Each closed port is chosen only after that, so it
+/// is not a listen port, and the caller must not bind port 0 afterwards.
+#[cfg(test)]
+pub(crate) fn listeners_and_closed(
+    count: usize,
+) -> (Vec<std::net::TcpListener>, Vec<ClosedUpstream>) {
+    let listeners: Vec<_> = (0..count)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let mut taken: Vec<SocketAddr> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap())
+        .collect();
+    let mut closed = Vec::with_capacity(count);
+    for _ in 0..count {
+        let upstream = ClosedUpstream::reserve(&taken);
+        taken.push(upstream.address());
+        closed.push(upstream);
+    }
+    (listeners, closed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,16 +237,19 @@ mod tests {
             })
             .collect();
         // Two upstreams with nothing listening: one the harness is stopping,
-        // one that is meant to be up.
-        let closed = || {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap()
-        };
-        let (addresses, proxies) = Proxies::start(&[
-            ("127.0.0.1:0".parse().unwrap(), closed(), paths[0].clone()),
-            ("127.0.0.1:0".parse().unwrap(), closed(), paths[1].clone()),
-        ])
-        .unwrap();
+        // one that is meant to be up. Listeners are bound first. Each closed
+        // port is a bind of port 0 that is dropped, and it is not a listen port.
+        let (listeners, closed) = listeners_and_closed(2);
+        let stopped = closed[0].address();
+        let up = closed[1].address();
+        let refused = std::net::TcpStream::connect(stopped).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::ConnectionRefused);
+        let (addresses, proxies) = Proxies::start_bound(listeners, &[stopped, up], &paths).unwrap();
+        assert!(
+            addresses
+                .iter()
+                .all(|address| *address != stopped && *address != up)
+        );
         proxies.upstream_stopping(0);
         for address in &addresses {
             let mut client = std::net::TcpStream::connect(address).unwrap();

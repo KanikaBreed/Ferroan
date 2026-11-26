@@ -30,6 +30,7 @@ pub use alias::AliasHttp;
 pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};
 pub use avatar::AvatarHttp;
 pub use griduser::GridUserHttp;
+pub use presence::PresenceHttp;
 
 pub use asset::{
     Asset, AssetClock, AssetError, AssetHttp, AssetMetadata, AssetOptions, AssetStore, DeleteMode,

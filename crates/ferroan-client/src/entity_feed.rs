@@ -37,6 +37,8 @@
 //! One viewer's entity updates, as the circuit sees them. The region fills
 //! the feed. When Task asks for more, the circuit takes full prim updates and
 //! avatar terse blocks, charging their separate estimated list and block sizes.
+//! A negotiated material override follows those packets, unencoded, and is not
+//! charged against that estimate.
 //!
 //! C# asks when the task outbox holds fewer than five packets and the feed
 //! has updates, at most every 20 ms, with a budget of what the task bucket

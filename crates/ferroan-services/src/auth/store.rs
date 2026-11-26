@@ -40,9 +40,12 @@
 //! This store updates when the row is already present.
 //!
 //! Token times use the database clock on SQLite and MySQL, and the process
-//! clock on PostgreSQL, which is what each plugin binds. Expired tokens are
-//! deleted on the first token call and again after 30 seconds. The pin's
-//! `Environment.TickCount` is already past that gap at startup.
+//! clock on PostgreSQL, which is what each plugin binds. The PostgreSQL
+//! session zone follows Npgsql: `Timezone=` when the connection string sets
+//! it, otherwise `PGTZ`, otherwise the server zone when that value can be
+//! read (D104). Expired
+//! tokens are deleted on the first token call and again after 30 seconds. The
+//! pin's `Environment.TickCount` is already past that gap at startup.
 
 use std::time::{Duration, Instant};
 

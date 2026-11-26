@@ -474,7 +474,7 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
         return Ok(Command::RunningAssets { db: flags.db });
     }
-    if *scenario == "prim-arrival" && flags.region_ferroan && !grid {
+    if matches!(*scenario, "prim-arrival" | "material-override") && flags.region_ferroan && !grid {
         return Err(ParseFail::Usage);
     }
     // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
@@ -490,8 +490,9 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
         }
     } else if (matches!(
         *scenario,
-        "prim-capture" | "object-cross" | "child-view" | "store-handoff"
-    ) || (*scenario == "prim-arrival" && !flags.region_ferroan))
+        "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
+    ) || (matches!(*scenario, "prim-arrival" | "material-override")
+        && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
@@ -777,8 +778,11 @@ mod tests {
         for scenario in [
             "prim-capture",
             "prim-arrival",
+            "material-override",
             "object-cross",
             "child-view",
+            "store-handoff",
+            "prim-load",
             "parcel-timing",
         ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());
@@ -793,7 +797,10 @@ mod tests {
                 "--physics",
                 "basicphysics",
             ]);
-            assert_eq!(ferroan.is_ok(), scenario == "prim-arrival");
+            assert_eq!(
+                ferroan.is_ok(),
+                matches!(scenario, "prim-arrival" | "material-override")
+            );
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
         }
         let ferroan = run(&["run", "parcel-timing", "grid", "--region", "ferroan"]);

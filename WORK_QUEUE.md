@@ -115,14 +115,15 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR31 | R31: process-group signals never become `kill -1` (procps-ng `kill` on Ubuntu 24.04) | DONE (this PR) |
 | QR32 | R32: Q48 follow-ups: the Docker smoke companion logout (driven Ferrobot calls) and the frame tests that slept instead of counting frames | DONE (this PR) |
 | QR33 | R33: close scene store pools before fixture cleanup on Windows | DONE (this PR) |
-| QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | READY |
+| QR35 | R35: the database session time zone matches the C# server's: Presence `LastSeen` and PostgreSQL password-token expiry | DONE (this PR) |
 | QR36 | R36: a concurrent password reset never writes back a consumed web key | DONE (this PR) |
 | QR37 | R37: the live gate's workflow test checks its job list both ways; TESTING.md carries the hosted per-job times | READY after Q10aj |
-| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | READY |
+| QR38 | R38: no personal path in the repository (`console_client.rs` reference fallback) | DONE (this PR) |
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
-| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | READY after Q65b |
-| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | READY |
+| QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
+| QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
+| QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
@@ -185,7 +186,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | DONE (this PR) |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | READY after Q60c3 and Q46b |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
+| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | READY |
+| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
@@ -197,8 +201,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
-| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
+| Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
+| Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
@@ -218,8 +224,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79b | P2.11a2: discover visible neighbours and send child requests | DONE (this PR) |
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
 | Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | READY after Q79b |
-| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | READY after Q79c1 |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2 |
+| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
+| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
+| Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2b |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
@@ -245,7 +253,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
 | Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
-| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
+| Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | DONE (this PR) |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |
 | Q27 | P1.4: avatars and baked textures | SPLIT into Q27a to Q27e (#167) |
@@ -268,6 +276,85 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
+| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
+| Q101 | P3.0b: `SubstepAccumulator` | READY |
+| Q102 | P3.0c: Move the C# Jolt module | READY |
+| Q103 | P3.0d: Pin move | READY after Q102 |
+| Q104 | P3.0e: Decision entry | READY after Q103 |
+| Q105 | P3.1: Bind `oxijolt-sys` | READY |
+| Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
+| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
+| Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
+| Q113 | P3.2d: Slope and hill | READY after Q112 |
+| Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
+| Q115 | P3.3: Physics thread and the request queue | READY after Q111 |
+| Q116 | P3.3b: Time dilation on terse updates | READY after Q111, Q115 and Q65c3b |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q111 |
+| Q118 | P3.5: Create-time body flags | READY after Q117 |
+| Q119 | P3.18a: Box contacts terrain and another box | READY after Q118 |
+| Q120 | P3.6: Buoyancy and gravity scale | READY after Q118 |
+| Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117, Q118, Q69 and Q70 |
+| Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
+| Q124 | P3.43: Grab | READY after Q118 |
+| Q125 | P3.44: Angular lock | READY after Q118 |
+| Q126 | P3.45: Impulse and push | READY after Q118 and Q101 |
+| Q127 | P3.46: Constant force and torque | READY after Q118 |
+| Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
+| Q129 | P3.48: Look-at | READY after Q118 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 and Q101 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 |
+| Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
+| Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
+| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
+| Q138 | P3.51: Physics shape type | READY after Q134, Q135 and Q69 |
+| Q139 | P3.10a: Sculpt vertices | READY after Q132 |
+| Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
+| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
+| Q144 | P3.18b: Linkset struck child | READY after Q142 and Q119 |
+| Q145 | P3.13b: Walk and run | READY after Q109, Q115 and Q112 |
+| Q146 | P3.13c: Fly | READY after Q145 |
+| Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
+| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147, Q130 and Q113 |
+| Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
+| Q150 | P3.14d: Avatar position set | READY after Q109, Q103 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109, Q103 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q119 |
+| Q153 | P3.15: Remove the walking stand-in | READY after Q145, Q118 and Q152 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109, Q118 and Q115 |
+| Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
+| Q156 | P3.17: Camera ray | READY after Q118 and Q115 |
+| Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
+| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 |
+| Q159 | P3.19: Vehicle parameter store | READY after Q118 and Q107 |
+| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q100 and Q159 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120 and Q115 |
+| Q162 | P3.20c: Angular motor and banking | READY after Q161 |
+| Q163 | P3.21a: Hover | READY after Q161 and Q114 |
+| Q164 | P3.21b: Vertical attraction | READY after Q162 |
+| Q165 | P3.22a: Car | READY after Q163 and Q162 |
+| Q166 | P3.22b: Sled | READY after Q165 and Q113 |
+| Q167 | P3.23a: Airplane | READY after Q164 |
+| Q168 | P3.23b: Mouselook | READY after Q167 |
+| Q169 | P3.23c: Balloon | READY after Q163 |
+| Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
+| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
+| Q172 | P3.24b: Saved `VehicleData` | READY after Q171 and Q142 |
+| Q173 | P3.25: Sit | READY after Q157 and Q147 |
+| Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
+| Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
+| Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
+
+Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -763,6 +850,30 @@ The manager approved Q60a through Q60c. Their dependencies and acceptance checks
 
 The manager approved Q60c1 to Q60c3 on 25 November 2026, as proposed above. Q60c1 and Q60c2 are independent; Q61 now waits for Q60c3.
 
+### Q61 proposed split
+
+**BLOCKED, 25 November 2026** (`docs/q61-parcel-properties`). The row is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
+
+The evidence the row asks for is the event element `EndEventToBytes` returns, byte for byte, at three moments. That element is `OpenMetaverse.StructuredData.LLSDxmlEncode2` (libopenmetaverse `OpenMetaverse.StructuredData/LLSD/LLSDxmlEncode.cs`, 972 lines). `EventQueueGetModule.StartEvent` writes `<map><key>message</key>…<key>body</key><map>`, and `GetEvents` wraps the queued elements in `<llsd><map><key>events</key><array>`. The poll id is random, so the compared bytes are the `ParcelProperties` element. Ferroan's queue stores `ferroan_llsd::to_xml` with the `<llsd>` wrapper removed (`crates/ferroan-client/src/event_queue.rs`). Encode2 writes boolean `0`/`1`, `<integer />` for zero, `<uuid />`, `<string />` and `<binary />` for empty values, a uint as little-endian binary, a `Vector3` as an array of reals, and a date as an empty epoch, a date-only day, or `yyyy-MM-ddTHH:mm:ssZ` / `.ffZ`. `ParcelFlags` is a uint. A map passed through `to_xml` cannot match a capture.
+
+`LandObject.SendLandProperties` (`LandObject.cs` 490–525) passes prim capacities, the object bonus and `IEstateModule.GetRegionFlags`. `GetParcelMaxPrimCount` (437) and `GetSimulatorMaxPrimCount` (463) are area × object capacity × object bonus / region area + 0.5, clamped to the region capacity. Object counts come from `PrimCounts`. `LLClientView.SendLandProperties` (6757–6893) writes `ParcelData`, `MediaData`, `ParcelExtendedFlags`, `AgeVerificationBlock`, `ParcelEnvironmentBlock` and `RegionAllowAccessBlock`. `GetRegionFlags` (`EstateManagementModule.cs` 134–191) does not set the four deny bits that method reads (TB152, D108). `RegionAllowAccessOverride` is `!EstateSettings.TaxFree` (6888). Obscure media and music in `MediaData` are hardcoded false; `ParcelExtendedFlags.Flags` is 1 when `ObscureMedia` is set.
+
+The three sends:
+
+1. Arrival. `ScenePresence.CompleteMovement` (2475) calls `sendClientInitialLandInfo` after terrain when the avatar is not an NPC. `LandManagementModule.sendClientInitialLandInfo` (492–507) returns when the presence or the parcel is missing. A child skips properties and can still receive the overlay. Otherwise it sets `currentParcelUUID` and calls `SendLandUpdateToClient`, which is `SendLandProperties(0, false, 0)`, and then the overlay. The initial-data gate (4343) calls the same method with the overlay only when teleport flags are `<= 0`. A login sets `ViaLogin`, so that gate does not send a second body. Q60c3 already carries those flags for the overlay.
+2. Request. `LLClientView.HandleParcelPropertiesRequest` (10874) rounds West, South, East and North into `ClientOnParcelPropertiesRequest` (1594–1646). Empty land, a negative bound or a bound outside the region returns. A span of at most one land unit sends `LAND_RESULT_SINGLE` for that cell. A larger span scans every cell, skips a parcel the agent is banned from, and sends `LAND_RESULT_MULTIPLE` when more than one parcel remains. Every parcel in the reply uses the request's sequence id. Snap with sequence 0 resends `m_lastSeqId` (510–518).
+3. Walk. `EventManagerOnClientMovement` (536–553) runs for a root on movement. When the parcel under the avatar differs from `currentParcelUUID`, it triggers `EventManagerOnAvatarEnteringNewParcel` (449–466). That sends when `GlobalID` differs, then stores the new id. `SendLandUpdate` (510) returns for a child. `EnforceBans` (464) and `SendOutNearestBanLine` (469) are access collisions. `ScenePresence.ParcelCrossCheck` (7405) shows and hides avatars. Neither is this body.
+
+`UpdateLandProperties` (`LandManagementModule.cs` 1648, `LandObject.cs` 528) is the editor. It reads the unsigned power mask through `CanEditParcelProperties`. The send path does not. Q60c1's memberships are the ban test on a multi-cell request. The region guide's sentence that ParcelProperties reads the power mask is recorded in `docs/found/Q61.md`.
+
+Use the Q60b multi-parcel store. A lone stored parcel keeps its old bitmap, area and bounding box while the overlay covers the region (TB97, D80). Q60a asked the properties comparison to notice that. This capture should not be that store.
+
+Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until all three are `DONE`. The delivery part waits for Q60c3. The capture and the encoder do not.
+
+1. **Capture the Pin8 elements** (about a day). On the Q60b store, record the `ParcelProperties` element on arrival, on a one-cell `ParcelPropertiesRequest`, on a span that covers two parcels, and on a walk across a parcel border. Publish those original bytes. When the extractor rebuilds a body, assert first that re-encoding the unredacted original reproduces the captured bytes, as `xtask/src/prim_capture.rs` does, and take the body from the capture. Keep the poll id out of the fixture. No Ferroan sender.
+2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
+3. **Deliver and compare** (about a day, after 1, 2 and Q60c3). Send on arrival, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. Handle `ParcelPropertiesRequest` for one cell, for several parcels, for a banned parcel and for a bound the handler ignores. Send again when a walk changes the parcel `GlobalID`. The bot reads the parcel flags from the arrival element. Live-compare those moments with the capture. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them. Ban lines, ban enforcement and avatar hiding stay out.
+
 ### Q65 split
 
 **BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
@@ -806,6 +917,21 @@ Together these steps satisfy P2.11a. Q80 retains inbound child handling, and wal
 
 The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 now waits for Q79c.
 
+### Q79c2 review and proposed split
+
+**BLOCKED (26 November 2026, `docs/q79c2-blocked`).** More than about a day. No child-frame code is in this change. Pin8 is `c401bceecd`. Q79c1 is unmerged at `5e8db3f` on `feat/q79c1-child-owner`. `origin/main` has no `P2.11a3b` row. The child book, `claim_child` and the five review fixes live on that branch. Both halves below merge `5e8db3f` until it squash-merges, and on a `Cargo.lock` conflict take `main`'s lock and add only what the change needs.
+
+The five fixes and the frame loop are separate designs. `claim_child` is called from tests only. A `Claim::New` stays pending until `accepted`, `failed` or `refuse`. Nothing finishes it when the task is cancelled, so the next claim is `Existing` and the POST never runs again. `SimulationClient::execute` turns a reqwest timeout into `Attempt::Failed("Service request failed: connection failed")`. `ClientError` has no timeout variant, and no caller reaches `ChildBook::failed`, so the timeout-after-logout close in D106 cannot happen. `Admission::Close` carries the region end and no session id. Pin8's `CloseChildAgents` (`ScenePresence.cs` 5060–5071) sends `CloseAgent` with `SessionID`. `InformClientOfNeighbourAsync` sleeps 500 ms after a successful `CreateAgent` and before `EnableSimulator` (`EntityTransferModule.cs` 2780). No Ferroan path sleeps there.
+
+A far hop sends an empty `children_seeds` on the destination circuit and on `AgentData` (`source_hop.rs` 844 and 949 at `5e8db3f`; the review's 812 and 917 are that same pair before the later edits). `close_local` then `close_departed`, and `SessionLease`'s drop, call `end_generation`. That drops `Phase::Open` children and keeps only a pending admission. Its comment says logout already closed the open ones. A far hop does not call `begin_logout`. Pin8 closes first: `GetChildAgentsToClose`, then `CloseChildAgents` at `EntityTransferModule.cs` 1280 (V1) and 1474 (V2, when `localclose`), and `closeAllChildAgents` on the logout path. `NeedsClosing` then closes the local root (1292–1304 and 1479–1489).
+
+The frame half is its own boundary. `CheckForSignificantMovement` (`ScenePresence.cs` 4726–4833) runs on the scene heartbeat. The 16 m `SIGNIFICANT_MOVEMENT` (191, 4731) fires `TriggerSignificantClientMovement` and does not enable children. The child half (4750–4828) waits `CHILDUPDATES_TIME` (2000 ms). A region-view change above 32 m, or a horizontal move whose square exceeds `CHILDAGENTSCHECK_MOVEMENT` (1024, 32 m), calls `EnableChildAgents`. Otherwise a god-level change, a draw-distance change above 32 m, or a move whose square exceeds `CHILDUPDATES_MOVEMENT` (100, 10 m) sends `AgentPosition` to children already known. Arrival calls `EnableChildAgents` from the cross path (2573–2575) and from `CompleteMovement` (4395–4398). Ferroan's frame thread does not call the region, and `serve_agent` does not read the pose again after arrival. The region task has to diff `VisibleNeighbours`, post `CreateAgent`, wait 500 ms, enqueue the two events, put position updates, and close neighbours that leave. The live proof is `child-view grid` with Ferroan as home and the C# neighbour, against the Q79a capture. That loop, plus the contract above, plus that live run, is more than about a day.
+
+1. **Q79c2a — finish every claim, and close children on a far hop** (after Q79c1, about one day). No frame scheduling and no live grid. Every `Claim::New` is finished exactly once by `accepted`, `failed` or `refuse`. Cancelling the admission task finishes it too, so the entry cannot leak. A timeout and a transport failure call `failed`, including after logout (D106). `Admission::Close` carries the session id `CloseAgent` sends. The acceptance path waits 500 ms before the viewer events, as line 2780 does. A far hop closes the children `GetChildAgentsToClose` would close, with that session, before `end_generation` drops them. The promoted destination stays the remote root. Correct the `end_generation` comment. Unit tests cover one finish, a dropped task, a timeout after logout, the session on `Close`, the 500 ms wait, and the far-hop close list.
+2. **Q79c2b — drive the neighbour set from the frame** (after Q79c2a, about one day). On the arrival sites (2575 and 4398) and on the child half of `CheckForSignificantMovement` (4750–4828), diff the visible neighbours. New neighbours go through Q79c2a's admission task. Neighbours that leave get `CloseAgent` with the session from `Admission::Close`. Neighbours that stay get `AgentPosition` on the 2 s gate and the 10 m / 32 m draw-distance test. God level stays the value Ferroan already stores. Prove it with `cargo xtask live run child-view grid --physics basicphysics` and Ferroan as home, under the shared live lock with a free port base and `UseSharedCompilation=false`. Compare the child POST, the movement PUT, the event order and the close with the Q79a capture, and require the home viewer to see the neighbour's resident and stored prim on the child circuit.
+
+Q80 should wait for Q79c2b. This note leaves Q80's row as it is. No new decision or Tranquillity bug number is used.
+
 ### Q65d store swap and viewer load
 
 **BLOCKED** (`feat/q65d-store-swap`, after Q65c3a). Estimated 1½–2 working days. At Pin8 `c401bceecd`, a changed linkset reaches storage through `SceneObjectGroup.ProcessBackup` (3231–3252). SQLite's `StoreObject` (534–546) writes the parts and shapes, and `Scene.LoadPrimsFromStorage` (2457–2476) restores the region's groups. Two ordinary grid runs cannot establish a handoff: `run_linux` clears the run directory and `start_region` installs a fixture over the home database. The Q53c bulk seed inserts standalone rows into `prims` without writing `primshapes`. Q65c3a compares eight identities and their delivery timing, and its viewer trace is bounded at 256 datagrams. The existing metrics scrape checks for a marker rather than measuring queue drops during delivery.
@@ -815,7 +941,9 @@ The manager approved Q79a to Q79c on 25 November 2026, as proposed above. Q80 no
 
 Q65c3b's material-override send is independent of both items.
 
-**Q65d1 — DONE (this PR)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child. Q65d2 owns the 500-part load.
+**Q65d1 — DONE (#304)** on `feat/q65d1-store-handoff`. The live store handoff delivered eight matching full blocks, including the resized box and its linked child.
+
+**Q65d2 — DONE (this PR)** on `feat/q65d2-prim-load`. Both viewers received all 500 parts at 512,000 bit/s. The [receipts](fixtures/prim-load/README.md) record first deliveries and repeats. The mapped block bytes matched and the Ferroan entity queue recorded no new refusals or drops.
 
 ### Q76 object-crossing fixture scope
 

@@ -860,8 +860,8 @@ impl State {
 
     /// `BeginFireQueueEmpty` for the task category: when its outbox holds
     /// fewer than five packets and the feed has updates, at most every 20 ms,
-    /// take what the task bucket drips in 30 ms and queue full then terse
-    /// packets. True when packets were queued.
+    /// take what the task bucket drips in 30 ms and queue full, then terse,
+    /// then plain material packets. True when packets were queued.
     fn take_entity_updates(&mut self) -> Result<bool, CircuitError> {
         let Some(feed) = self.feed.as_ref() else {
             return Ok(false);
@@ -878,8 +878,11 @@ impl State {
         let budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
         let region_handle = self.arrival.region_handle;
         let room = MAX_UNACKED.saturating_sub(self.unacked.len() + self.pending_task.len());
-        let (full, blocks) =
-            crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
+        let crate::TaskPackets {
+            full,
+            terse: blocks,
+            materials,
+        } = crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
         let mut queued = !full.is_empty();
         for bytes in full {
             self.pending_task.push_back(Payload {
@@ -893,6 +896,15 @@ impl State {
             let mut payload = encode_payload(&packet)?;
             payload.coding = Coding::Zero;
             self.pending_task.push_back(payload);
+            queued = true;
+        }
+        for bytes in materials {
+            // `GenericStreamingMessageHeader` is reliable and not zero-coded.
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Plain,
+                reliable: true,
+            });
             queued = true;
         }
         Ok(queued)

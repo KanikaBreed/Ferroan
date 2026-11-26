@@ -784,15 +784,47 @@ mod tests {
         let error = ensure_udp_free(port).unwrap_err();
         assert!(error.contains("UDP"), "{error}");
         // With no base, a region slot skips that port and takes the next.
-        let free = os_port().unwrap();
-        let mut offered = [port, free].into_iter();
-        let chosen = ephemeral(&[], true, || Ok(offered.next().unwrap())).unwrap();
-        assert_eq!(chosen, free);
+        // Each later offer is held for TCP and UDP until this closure
+        // releases it. A dropped TCP bind from `os_port` is not held for
+        // UDP, so on Windows it can be taken or excluded before the check.
+        let mut skipped = vec![port];
+        let mut offered_taken = false;
+        let chosen = ephemeral(&[], true, || {
+            if !offered_taken {
+                offered_taken = true;
+                return Ok(port);
+            }
+            let (tcp, udp, free) = hold_tcp_and_udp(&skipped);
+            skipped.push(free);
+            drop(udp);
+            drop(tcp);
+            Ok(free)
+        })
+        .unwrap();
+        assert_ne!(chosen, port);
+        assert!(ensure_udp_free(chosen).is_ok(), "{chosen}");
         // A TCP-only slot keeps the first port.
-        let mut offered = [port, free].into_iter();
-        let chosen = ephemeral(&[], false, || Ok(offered.next().unwrap())).unwrap();
+        let chosen = ephemeral(&[], false, || Ok(port)).unwrap();
         assert_eq!(chosen, port);
         drop(socket);
+    }
+
+    /// A localhost port outside the ephemeral range, bound for TCP and UDP.
+    /// `bind(0)` will not hand this port out. The caller drops both sockets
+    /// when `ephemeral` is about to check it.
+    fn hold_tcp_and_udp(skip: &[u16]) -> (TcpListener, UdpSocket, u16) {
+        for port in 22_000u16..23_000 {
+            if skip.contains(&port) {
+                continue;
+            }
+            let Ok(tcp) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)) else {
+                continue;
+            };
+            if let Ok(udp) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) {
+                return (tcp, udp, port);
+            }
+        }
+        panic!("no localhost port could be held for both TCP and UDP");
     }
 
     #[test]

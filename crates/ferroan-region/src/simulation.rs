@@ -328,6 +328,7 @@ pub struct AcceptedAgent {
     /// Set when this agent's seed capability has been answered.
     pub seeds_sent: Arc<AtomicBool>,
     pub object_animations: Arc<AtomicBool>,
+    pub supports_pbr: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
     /// Keeps this login's pending `UseCircuitCode` until the session opens
@@ -789,7 +790,7 @@ impl SimulationState {
             rooted_when_replaced,
             open_children: self.open_children.clone(),
         };
-        let (seeds_sent, object_animations) =
+        let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
         let accepted_at = tokio::time::Instant::now();
         let expect = CircuitExpect {
@@ -833,6 +834,7 @@ impl SimulationState {
             return_slot: slot,
             seeds_sent,
             object_animations,
+            supports_pbr,
             cancelled,
             _lease: lease,
             _circuit_hold: circuit_hold,

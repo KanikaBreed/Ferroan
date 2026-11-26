@@ -80,11 +80,22 @@ pub async fn request_seed(
     http: &reqwest::Client,
     seed: &str,
 ) -> Result<HashMap<String, String>, CapsError> {
+    request_seed_names(http, seed, &[]).await
+}
+
+/// POST [`SEED_CAPS`] plus `extra` names. A name the region does not grant is omitted.
+pub async fn request_seed_names(
+    http: &reqwest::Client,
+    seed: &str,
+    extra: &[String],
+) -> Result<HashMap<String, String>, CapsError> {
     let url = reqwest::Url::parse(seed).map_err(|_| CapsError::Url)?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(CapsError::Url);
     }
-    let names = Llsd::Array(SEED_CAPS.iter().map(|name| Llsd::from(*name)).collect());
+    let mut requested: Vec<Llsd> = SEED_CAPS.iter().map(|name| Llsd::from(*name)).collect();
+    requested.extend(extra.iter().map(|name| Llsd::from(name.as_str())));
+    let names = Llsd::Array(requested);
     let body = to_xml(&names);
     let response = http
         .post(url)

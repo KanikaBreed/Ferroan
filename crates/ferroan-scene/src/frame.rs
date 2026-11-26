@@ -48,7 +48,7 @@ use crate::stored_scene::StoredScene;
 use crate::terse::{
     AvatarBoard, AvatarTerse, InitialData, InitialStep, LastSent, UNIT_W, ViewerFeed, look_at,
 };
-use crate::{ObjectGroup, PrimScaleLimits, walk};
+use crate::{ObjectGroup, PhysicsScaleLimits, PrimScaleLimits, walk};
 
 /// `Constants.MinSimulationHeight`.
 const MIN_HEIGHT: f32 = -100.0;
@@ -327,7 +327,14 @@ impl TerrainFrame {
         map: Option<Heightmap>,
         parcels: Option<crate::parcels::ParcelMap>,
     ) -> Result<Self, TerrainError> {
-        Self::with_object_settings(map, parcels, Arc::default(), None, true)
+        Self::with_object_settings(
+            map,
+            parcels,
+            Arc::default(),
+            None,
+            PhysicsScaleLimits::default(),
+            true,
+        )
     }
 
     /// Admit this region's restored groups before the first avatar can attach.
@@ -336,7 +343,14 @@ impl TerrainFrame {
         groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
     ) -> Result<Self, TerrainError> {
-        Self::with_object_settings(map, None, groups, limits, true)
+        Self::with_object_settings(
+            map,
+            None,
+            groups,
+            limits,
+            PhysicsScaleLimits::default(),
+            true,
+        )
     }
 
     /// Use the region's configured scale limits and CollidablePrims setting.
@@ -345,6 +359,7 @@ impl TerrainFrame {
         parcels: Option<crate::parcels::ParcelMap>,
         groups: Arc<Vec<ObjectGroup>>,
         limits: Option<PrimScaleLimits>,
+        physics: PhysicsScaleLimits,
         collidable_prims: bool,
     ) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
@@ -355,9 +370,13 @@ impl TerrainFrame {
         let frame_wake = Arc::clone(&wake);
         let board = AvatarBoard::default();
         let local_ids = Arc::new(LocalIds::default());
-        let objects = Arc::new(StoredScene::admit(groups, limits, collidable_prims, || {
-            local_ids.allocate()
-        }));
+        let objects = Arc::new(StoredScene::admit(
+            groups,
+            limits,
+            physics,
+            collidable_prims,
+            || local_ids.allocate(),
+        ));
         let scene = Scene {
             presences: HashMap::new(),
             viewers: HashMap::new(),

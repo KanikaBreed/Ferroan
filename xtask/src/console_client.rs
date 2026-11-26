@@ -4,7 +4,8 @@
 //! Build the pinned `OpenSim.ConsoleClient` and point it at a Ferroan console.
 //!
 //! The step is not part of `cargo xtask check`. It skips, with exit 0, where
-//! `dotnet` or the pin is absent. Credentials are synthetic and are not printed.
+//! `dotnet` is absent. A missing pin is an error that names `FERROAN_REF`.
+//! Credentials are synthetic and are not printed.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -31,9 +32,7 @@ pub fn run() -> ExitCode {
 }
 
 fn drive() -> Result<String, String> {
-    let Some(pin) = locate_pin() else {
-        return Ok("console-client: skipped (the Tranquillity pin is absent)".to_string());
-    };
+    let pin = locate_pin()?;
     let Some(dotnet) = which_dotnet() else {
         return Ok("console-client: skipped (dotnet is absent)".to_string());
     };
@@ -320,18 +319,52 @@ fn nuget_packages_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".nuget/packages"))
 }
 
-fn locate_pin() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(root) = std::env::var_os("FERROAN_REF") {
-        candidates.push(PathBuf::from(root).join("OpenSim-Tranquillity"));
+fn locate_pin() -> Result<PathBuf, String> {
+    let ferroan_ref = std::env::var_os("FERROAN_REF").map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    choose_pin(ferroan_ref.as_deref(), home.as_deref())
+}
+
+/// `FERROAN_REF/OpenSim-Tranquillity`, or `~/Git/reference/OpenSim-Tranquillity`
+/// when that variable is unset. docs/REFERENCES.md names the second location.
+fn choose_pin(ferroan_ref: Option<&Path>, home: Option<&Path>) -> Result<PathBuf, String> {
+    let mut tried = Vec::new();
+    if let Some(root) = ferroan_ref.filter(|path| !path.as_os_str().is_empty()) {
+        let path = root.join("OpenSim-Tranquillity");
+        if pin_present(&path) {
+            return Ok(path);
+        }
+        tried.push(path);
     }
-    candidates.push(PathBuf::from(
-        "/home/cinder/Git/reference/OpenSim-Tranquillity",
-    ));
-    candidates.into_iter().find(|path| {
-        path.join("Source/OpenSim.ConsoleClient/OpenSim.ConsoleClient.csproj")
-            .is_file()
-    })
+    if let Some(home) = home.filter(|path| !path.as_os_str().is_empty()) {
+        let path = home
+            .join("Git")
+            .join("reference")
+            .join("OpenSim-Tranquillity");
+        if pin_present(&path) {
+            return Ok(path);
+        }
+        tried.push(path);
+    }
+    let looked = if tried.is_empty() {
+        "nowhere, because FERROAN_REF and HOME / USERPROFILE are unset".to_string()
+    } else {
+        tried
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Err(format!(
+        "set FERROAN_REF to the parent of the OpenSim-Tranquillity checkout (docs/REFERENCES.md uses ~/Git/reference). Looked at {looked}"
+    ))
+}
+
+fn pin_present(path: &Path) -> bool {
+    path.join("Source/OpenSim.ConsoleClient/OpenSim.ConsoleClient.csproj")
+        .is_file()
 }
 
 fn which_dotnet() -> Option<PathBuf> {
@@ -350,4 +383,52 @@ fn scrub(text: &str) -> String {
     let cleaned = text.replace(PASS, "[redacted]");
     let head: String = cleaned.chars().take(800).collect();
     head.replace('\n', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempTree(PathBuf);
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn pin_tree() -> TempTree {
+        let root =
+            std::env::temp_dir().join(format!("ferroan-console-pin-{}", uuid::Uuid::new_v4()));
+        let project = root
+            .join("OpenSim-Tranquillity")
+            .join("Source")
+            .join("OpenSim.ConsoleClient");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("OpenSim.ConsoleClient.csproj"), b"<Project />").unwrap();
+        TempTree(root)
+    }
+
+    #[test]
+    fn the_pin_comes_from_ferroan_ref_or_the_documented_reference() {
+        let tree = pin_tree();
+        let found = choose_pin(Some(&tree.0), None).unwrap();
+        assert_eq!(found, tree.0.join("OpenSim-Tranquillity"));
+
+        let home =
+            std::env::temp_dir().join(format!("ferroan-console-home-{}", uuid::Uuid::new_v4()));
+        let documented = home.join("Git").join("reference");
+        fs::create_dir_all(&documented).unwrap();
+        let home_guard = TempTree(home.clone());
+        // Move the pin under the documented ~/Git/reference location.
+        let placed = documented.join("OpenSim-Tranquillity");
+        fs::rename(tree.0.join("OpenSim-Tranquillity"), &placed).unwrap();
+        let found = choose_pin(None, Some(&home)).unwrap();
+        assert_eq!(found, placed);
+        drop(home_guard);
+
+        let missing = choose_pin(None, None).unwrap_err();
+        assert!(missing.contains("FERROAN_REF"), "{missing}");
+        assert!(missing.contains("~/Git/reference"), "{missing}");
+    }
 }

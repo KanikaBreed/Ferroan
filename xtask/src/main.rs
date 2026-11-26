@@ -6,7 +6,8 @@
 //! `check` verifies that every Markdown link to a local file resolves and that
 //! every limit id is listed in `docs/LIMITS.md` and named from a call site,
 //! then runs formatting, clippy (warnings denied) and the workspace tests.
-//! With `--docs-only` it stops after the Markdown and limit-id checks.
+//! With `--docs-only` it stops after the Markdown, limit-id, login-gate and
+//! personal-path checks.
 //!
 //! `oracle` builds and runs the C# reference oracle: `build`, `generate` and
 //! `verify`. The Linux live workflow runs `verify` against pinned references.
@@ -32,14 +33,18 @@
 //! provider's calls and results in `fixtures/presence/null.json`.
 //! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
 //! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
+//! `session-zone` checks MySQL and PostgreSQL session zones against Pin8 on
+//! throwaway servers.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
 //! `regionstore read` reads that XML back through the pin and writes the fields.
-//! `regionstore verify` reloads the object fixture. `regionstore cross`
-//! reloads SQLite and throwaway MySQL and PostgreSQL containers, then removes
-//! the containers. None of them starts a server or the live harness.
+//! `regionstore verify` reloads the object fixture. `regionstore scales` writes
+//! the admitted-scale fixture, and `regionstore scales-verify` checks it.
+//! `regionstore cross` reloads SQLite and throwaway MySQL and PostgreSQL
+//! containers, then removes the containers. None of them starts a server or
+//! the live harness.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -105,11 +110,13 @@ mod login_gate;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
+mod personal_paths;
 mod pin3_oracle;
 mod ports;
 mod region_report;
 mod regionstore;
 mod schema;
+mod session_zone;
 mod signal;
 mod trailing_fixtures;
 mod twice;
@@ -142,10 +149,12 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
        cargo xtask presence cross mysql
        cargo xtask presence cross postgres
+       cargo xtask session-zone
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -166,6 +175,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask regionstore scales
+       cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
        cargo xtask pin3 generate|verify
@@ -186,11 +197,14 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run parcel-timing grid --region ferroan
        cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
+       cargo xtask live run prim-load grid --physics basicphysics
        cargo xtask live run store-handoff grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
        cargo xtask live run prim-arrival grid --region ferroan
        cargo xtask live run prim-arrival grid --physics basicphysics
+       cargo xtask live run material-override grid --physics basicphysics
+       cargo xtask live run material-override grid --region ferroan
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
@@ -284,7 +298,10 @@ fn main() -> ExitCode {
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "service-generate"] => asset_oracle::presence_service(true),
+        ["presence", "service-verify"] => asset_oracle::presence_service(false),
         ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
+        ["session-zone"] => session_zone::run(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),
@@ -311,6 +328,8 @@ fn main() -> ExitCode {
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["regionstore", "scales"] => regionstore::scales(true),
+        ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
         ["docker", "build"] => docker::build(),
@@ -330,7 +349,11 @@ fn main() -> ExitCode {
 
 fn check(docs_only: bool) -> ExitCode {
     let root = repo_root();
-    if !check_markdown(&root) || !limit_ids::check(&root) || !login_gate::check(&root) {
+    if !check_markdown(&root)
+        || !limit_ids::check(&root)
+        || !login_gate::check(&root)
+        || !personal_paths::check(&root)
+    {
         return ExitCode::FAILURE;
     }
     if docs_only {
