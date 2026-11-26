@@ -3,16 +3,48 @@
 `cargo xtask jolt config` writes `fixtures/jolt-config/`.
 `cargo xtask jolt config-verify` reads those files again and requires the same bytes.
 
-The tool calls `JoltConfig.FromConfig`, `EffectivePhysicsStepRate`,
-`EffectivePresets` and `JoltScene.TestCommandsEnabled` on the pinned Jolt
-module. It does not copy those sources, it does not load joltc, and it does
-not start a region. The project references the Jolt project so the call is
-the module's own reader. Build output goes under `.scratch/jolt-config-oracle/`.
-The pin is `FERROAN_REF` or `~/Git/reference`, and that checkout stays
-read-only. The project sets `UseSharedCompilation` to false. Temporary ini
-files for the synthetic cases go under `.scratch/tmp`.
+`cargo xtask jolt file` writes `fixtures/jolt-file/`.
+`cargo xtask jolt file-verify` reads those files again and requires the same bytes.
 
-Synthetic cases are ini text. The shipped case loads
+The config command calls `JoltConfig.FromConfig`, `EffectivePhysicsStepRate`,
+`EffectivePresets` and `JoltScene.TestCommandsEnabled` on the pinned Jolt
+module. The file command calls private `JoltScene.NoteDilationSample`
+(`JoltScene.cs` 2928-2942) by reflection on `new JoltScene()` and reads the
+private dilation fields back. It does not call `Initialise`. A later row adds
+its own fixture in this producer. The producer compiles the Jolt project, so
+the Pin8 files that project contains are the files those rows name.
+
+Neither command copies those sources, loads joltc, or starts a region. The
+project references the Jolt project so the call is the module's own method.
+Build output goes under `.scratch/jolt-config-oracle/`. The pin is
+`FERROAN_REF` or `~/Git/reference`, and that checkout stays read-only. The
+project sets `UseSharedCompilation` to false. Temporary ini files for the
+synthetic config cases go under `.scratch/tmp`.
+
+Synthetic config cases are ini text. The shipped case loads
 `RegionServerDefaults.ini` and `RegionServer.ini.example` from the pin with
 Nini, the same files the region loader reads. Ordinary tests compare the
 committed results. The shipped case runs when the pin is present.
+
+The file fixture is one ordered call list on two scenes. Scene A stores a 1
+second step, ten 0.5 second steps and a 0.25 second step that wraps the
+11-wide window. Scene B stores a 1 second step against one stopwatch tick, so
+the dilation stays 1. Gap ticks of one frequency are exactly one second. A
+one-tick gap is written as `frequency_divisor` because that quotient follows
+the machine clock; the producer checks the stored double against
+`1/Stopwatch.Frequency` and records the dilation float from `_timeDilation`.
+Exact stored ratios are 1, 0.75, 0.625 at sample 3 and 0.5625 at sample 7.
+The Rust test checks the fixture's structure and pins all twelve scene A
+dilation values. The dilation window port that replays it is P3.3b.
+
+No native code is started. The fixture records the same proof at
+`before_construct`, after construction and after the calls:
+`JoltNative.s_loaded` is null,
+`JoltNative.s_handle` is zero, `JoltPhysicsBackend.s_foundationRefCount` is
+zero, and `joltc` is not mapped into the process. `EnsureLoaded` is the
+loader's only write of those `JoltNative` fields. `Foundation.Init` runs only
+from `JoltPhysicsBackend.Initialize`, which increments the refcount in the
+same lock, and `Init` then calls `JPH_Init`. A zero refcount and an unmapped
+`joltc` mean that call did not happen. The project reference may load the
+managed assembly that references `JoltPhysics.Native`. Linking joltc is not
+the test. `cargo xtask jolt generate` and `jolt verify` stay on P3.0.
