@@ -356,6 +356,8 @@ pub fn bulk(db: &str, region: &str, count: &str) -> ExitCode {
 
 /// Bulk stores for the memory run, one per count, built by one oracle
 /// build. Each file is written through the pin's `SQLiteSimulationData`.
+/// `live memory` runs on Linux only.
+#[cfg(target_os = "linux")]
 pub(crate) fn bulk_stores(
     stores: &[(std::path::PathBuf, u32)],
     region: &str,
