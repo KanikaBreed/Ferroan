@@ -185,7 +185,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
+| Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | READY |
+| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
@@ -783,7 +786,7 @@ The three sends:
 
 Use the Q60b multi-parcel store. A lone stored parcel keeps its old bitmap, area and bounding box while the overlay covers the region (TB97, D80). Q60a asked the properties comparison to notice that. This capture should not be that store.
 
-Proposed split, for the manager to queue. Q61 stays blocked until these are queued. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until all three are `DONE`. The delivery part waits for Q60c3. The capture and the encoder do not.
+Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until all three are `DONE`. The delivery part waits for Q60c3. The capture and the encoder do not.
 
 1. **Capture the Pin8 elements** (about a day). On the Q60b store, record the `ParcelProperties` element on arrival, on a one-cell `ParcelPropertiesRequest`, on a span that covers two parcels, and on a walk across a parcel border. Publish those original bytes. When the extractor rebuilds a body, assert first that re-encoding the unredacted original reproduces the captured bytes, as `xtask/src/prim_capture.rs` does, and take the body from the capture. Keep the poll id out of the fixture. No Ferroan sender.
 2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
