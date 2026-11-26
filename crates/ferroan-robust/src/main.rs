@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The grid-services process. This build listens for the asset, user-account,
-//! user-alias, authentication, authorization and grid-user routes whose ini
-//! sections are present.
+//! user-alias, authentication, authorization, avatar and grid-user routes whose ini
+//! sections are present. It also serves the configured XBakes connector.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
@@ -27,9 +27,10 @@ use std::process::ExitCode;
 
 use axum::Router;
 use ferroan_config::GridLoad;
+use ferroan_services::bakes::Bakes;
 use ferroan_services::{
-    AccountHttp, AliasHttp, AssetHttp, AuthHttp, GridUserHttp, authorization_router,
-    listen_address, network_port, open_authorization,
+    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, PresenceHttp,
+    authorization_router, listen_address, network_port, open_authorization,
 };
 
 mod status;
@@ -77,10 +78,13 @@ fn run() -> Result<(), String> {
         let authorization = config
             .section_names()
             .any(|name| name == "AuthorizationService");
+        let avatars = config.section_names().any(|name| name == "AvatarService");
+        let bakes = Bakes::configured(config, port).map_err(|e| e.to_string())?;
         let griduser = config.section_names().any(|name| name == "GridUserService");
-        if !assets && !accounts && !aliases && !auth && !authorization && !griduser {
+        let presence = config.section_names().any(|name| name == "PresenceService");
+        if !presence && !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars && bakes.is_none() {
             return Err(
-                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService or GridUserService section"
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService, BakedTextureService, PresenceService or GridUserService section"
                     .to_string(),
             );
         }
@@ -122,6 +126,24 @@ fn run() -> Result<(), String> {
             open_authorization(config).map_err(|error| error.to_string())?;
             router = router.merge(authorization_router());
             tracing::info!("ferroan-robust: authorization service on {listen}:{port}");
+        }
+        if avatars {
+            let http = AvatarHttp::open(config).await.map_err(|error| error.to_string())?;
+            pools = pools.avatar(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: avatar service on {listen}:{port}");
+        }
+        if let Some(cache) = bakes {
+            router = router.merge(cache.clone().into_router());
+            log_guard.register_console_command(&["delete", "bakes"], Bakes::DELETE_HELP,
+                move |args| cache.delete(args).to_owned());
+            tracing::info!("ferroan-robust: baked-texture cache on {listen}:{port}");
+        }
+        if presence {
+            let http = PresenceHttp::open(config).await.map_err(|error| error.to_string())?;
+            pools = pools.presence(http.clone());
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: presence service on {listen}:{port}");
         }
         if griduser {
             let http = GridUserHttp::open(config)

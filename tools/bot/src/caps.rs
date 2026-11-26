@@ -80,11 +80,22 @@ pub async fn request_seed(
     http: &reqwest::Client,
     seed: &str,
 ) -> Result<HashMap<String, String>, CapsError> {
+    request_seed_names(http, seed, &[]).await
+}
+
+/// POST [`SEED_CAPS`] plus `extra` names. A name the region does not grant is omitted.
+pub async fn request_seed_names(
+    http: &reqwest::Client,
+    seed: &str,
+    extra: &[String],
+) -> Result<HashMap<String, String>, CapsError> {
     let url = reqwest::Url::parse(seed).map_err(|_| CapsError::Url)?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(CapsError::Url);
     }
-    let names = Llsd::Array(SEED_CAPS.iter().map(|name| Llsd::from(*name)).collect());
+    let mut requested: Vec<Llsd> = SEED_CAPS.iter().map(|name| Llsd::from(*name)).collect();
+    requested.extend(extra.iter().map(|name| Llsd::from(name.as_str())));
+    let names = Llsd::Array(requested);
     let body = to_xml(&names);
     let response = http
         .post(url)
@@ -182,6 +193,16 @@ pub async fn poll_event_queue(
     url: &str,
     ack: Option<i32>,
 ) -> Result<EqBatch, EqPollError> {
+    let bytes = poll_event_queue_body(http, url, ack).await?;
+    parse_event_queue(&bytes).map_err(EqPollError::Fatal)
+}
+
+/// Retain the response bytes when a viewer needs to identify its poll in a proxy capture.
+pub(crate) async fn poll_event_queue_body(
+    http: &reqwest::Client,
+    url: &str,
+    ack: Option<i32>,
+) -> Result<Vec<u8>, EqPollError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| EqPollError::Fatal("event queue url is not http".to_string()))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -242,7 +263,7 @@ pub async fn poll_event_queue(
     if !(200..300).contains(&status) {
         return Err(EqPollError::Fatal(format!("event queue status {status}")));
     }
-    parse_event_queue(&bytes).map_err(EqPollError::Fatal)
+    Ok(bytes)
 }
 
 /// Parse an event-queue body. The shape is `EventQueueGetModule.GetEvents`.

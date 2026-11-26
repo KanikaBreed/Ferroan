@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | scales <pin>");
     return 2;
 }
 
@@ -61,6 +61,9 @@ try
             return 0;
         case "load" when args.Length == 4:
             Load(args[1], args[2], args[3]);
+            return 0;
+        case "prim-seed" or "prim-load-seed" when args.Length == 4:
+            SeedPrimUpdates(args[1], new UUID(args[2]), new UUID(args[3]), args[0] == "prim-load-seed");
             return 0;
         case "bulk" when args.Length == 4:
             Bulk(args[1], args[2], args[3]);
@@ -77,6 +80,9 @@ try
         case "postgres-load" when args.Length == 4:
             LoadPostgres(args[1], args[2], args[3]);
             return 0;
+        case "parcels" when args.Length == 5:
+            LoadParcels(args[1], args[2], args[3], args[4]);
+            return 0;
         case "settings-seed" when args.Length == 2:
             SeedSettings(args[1]);
             return 0;
@@ -89,14 +95,34 @@ try
         case "read" when args.Length == 3:
             ReadXml(args[1], args[2]);
             return 0;
+        case "coalesced" when args.Length == 3:
+            CaptureCoalesced(args[1], args[2]);
+            return 0;
         case "probe" when args.Length == 3:
             ProbeXml(args[1], args[2]);
             return 0;
         case "terrain-load" when args.Length == 4:
             LoadTerrainRows(args[1], args[2], args[3]);
             return 0;
+        case "mysql-terrain-load" when args.Length == 4:
+            DumpTerrain(new MySQLSimulationData(), args[1], args[2], args[3],
+                table => RawTerrainRowDb(new MySqlConnection(args[1]), table, args[2], "?RegionUUID", "RegionUUID", "Revision", "Heightfield", new UUID(args[2]).ToString()));
+            return 0;
+        case "postgres-terrain-load" when args.Length == 4:
+            DumpTerrain(new PGSQLSimulationData(), args[1], args[2], args[3],
+                table => RawTerrainRowDb(new NpgsqlConnection(args[1]), table, args[2], ":RegionUUID", "\"RegionUUID\"", "\"Revision\"", "\"Heightfield\"", new Guid(args[2])));
+            return 0;
+        case "mysql-terrain-seed" when args.Length == 3:
+            SeedTerrain(new MySQLSimulationData(), args[1], args[2]);
+            return 0;
+        case "postgres-terrain-seed" when args.Length == 3:
+            SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
+            return 0;
+        case "scales" when args.Length == 2:
+            ScaleProbe.Run(args[1]);
+            return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | probe <probe-json> <pin> | terrain-load <db> <region-uuid> <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | scales <pin>");
             return 2;
     }
 }
@@ -136,6 +162,163 @@ static void Bulk(string path, string region, string countText)
         BasePrim(id, region, id, "prim").Insert(db, "prims");
     }
     tx.Commit();
+}
+
+// Exercise SQLiteSimulationData.StoreObject at Pin8 c401bceecd. Only synthetic
+// objects enter this database. The live C# region opens a disposable copy.
+static void SeedPrimUpdates(string path, UUID region, UUID owner, bool loadScene)
+{
+    if (File.Exists(path))
+        throw new IOException("prim-seed needs a fresh database");
+    UUID Id(int n) => new UUID($"65000000-0000-4000-8000-{n:x12}");
+    SceneObjectPart Part(int n, string name, PrimitiveBaseShape shape, Vector3 position, Vector3 offset)
+    {
+        return new SceneObjectPart(owner, shape, position, Quaternion.Identity, offset)
+        {
+            UUID = Id(n), Name = name, CreationDate = 1700000000, PseudoCRC = 6500 + n
+        };
+    }
+
+    Vector3 position = new Vector3(130, 128, 40);
+    PrimitiveBaseShape box = PrimitiveBaseShape.Default;
+    var textures = new Primitive.TextureEntry(Id(21));
+    textures.CreateFace(1).MaterialID = Id(22);
+    box.Textures = textures;
+    SceneObjectPart root = Part(1, "box", box, position, Vector3.Zero);
+    root.Text = "Pin8 box";
+    root.Color = 0xd04080ff;
+    root.MediaUrl = "https://example.invalid/prim";
+    root.Sound = Id(23);
+    root.SoundFlags = 1;
+    root.SoundGain = 0.25;
+    root.SoundRadius = 12;
+    root.ParticleSystem = new Primitive.ParticleSystem { BurstPartCount = 3, PartMaxAge = 2, Texture = Id(24) }.GetBytes();
+    root.TextureAnimation = new byte[] { 1, 0, 2, 2, 0, 0, 0, 0, 0, 0, 128, 64, 0, 0, 128, 63 };
+    SceneObjectGroup group = new SceneObjectGroup(root);
+
+    PrimitiveBaseShape mesh = PrimitiveBaseShape.CreateMesh(2, Id(25));
+    mesh.SetScale(0.75f);
+    mesh.ProfileBegin = mesh.ProfileHollow = 1;
+    mesh.PathScaleY = 100;
+    mesh.RenderMaterials = new Primitive.RenderMaterials {
+        entries = new[] { new Primitive.RenderMaterials.RenderMaterialEntry { te_index = 1, id = Id(26) } }
+    };
+    var child = Part(2, "mesh", mesh, position, new Vector3(1, 2, 0.5f));
+    child.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 0.5f);
+    group.AddPart(child);
+
+    PrimitiveBaseShape tree = PrimitiveBaseShape.Default;
+    tree.PCode = (byte)PCode.Tree;
+    tree.State = 4;
+    tree.SetScale(2);
+    var vegetation = new SceneObjectGroup(Part(3, "tree", tree, new Vector3(134, 128, 40), Vector3.Zero));
+    SceneObjectGroup RotatedVegetation(int n, PCode code)
+    {
+        var shape = PrimitiveBaseShape.Default;
+        shape.PCode = (byte)code;
+        shape.State = 3;
+        var part = Part(n, code.ToString(), shape, new Vector3(132 + n, 128, 40), Vector3.Zero);
+        part.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.75f);
+        return new SceneObjectGroup(part);
+    }
+    var effects = PrimitiveBaseShape.Default;
+    effects.PathTwist = -19;
+    effects.PathTwistBegin = 7;
+    effects.PathRadiusOffset = -11;
+    effects.PathTaperX = -13;
+    effects.PathTaperY = -17;
+    effects.PathSkew = -23;
+    effects.FlexiEntry = true;
+    effects.FlexiSoftness = 2;
+    effects.FlexiTension = 2.5f;
+    effects.FlexiDrag = 1.5f;
+    effects.FlexiGravity = -3;
+    effects.FlexiWind = 0.5f;
+    effects.FlexiForceX = 0.75f;
+    effects.LightEntry = true;
+    effects.LightColorR = 0.25f;
+    effects.LightColorG = 0.5f;
+    effects.LightColorB = 0.75f;
+    effects.LightIntensity = 0.6f;
+    effects.LightRadius = 8;
+    effects.LightFalloff = 0.5f;
+    effects.LightCutoff = 1.25f;
+    effects.ProjectionEntry = true;
+    effects.ProjectionTextureUUID = Id(27);
+    effects.ProjectionFOV = 1.5f;
+    effects.ProjectionFocus = -0.25f;
+    effects.ProjectionAmbiance = 0.5f;
+    effects.ReflectionProbe = new Primitive.ReflectionProbe { Ambiance = 0.75f, ClipDistance = 3.5f, Flags = 1 };
+    var emitter = Part(6, "particle emitter", effects, new Vector3(138, 128, 40), Vector3.Zero);
+    emitter.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -0.75f);
+    emitter.Material = (byte)OpenMetaverse.Material.Glass;
+    emitter.ClickAction = (byte)OpenMetaverse.ClickAction.Sit;
+    emitter.Text = "Lumière 雪";
+    emitter.Color = 0xff4080bb;
+    emitter.ParticleSystem = new Primitive.ParticleSystem { BurstPartCount = 5, PartMaxAge = 4, Texture = Id(28) }.GetBytes();
+    var speaker = Part(7, "looping sound", PrimitiveBaseShape.Default, new Vector3(139, 128, 40), Vector3.Zero);
+    speaker.Sound = Id(29);
+    speaker.SoundFlags = 1;
+    speaker.SoundGain = 0.375;
+
+    var animatedMesh = PrimitiveBaseShape.CreateMesh(1, Id(30));
+    animatedMesh.SetScale(0.5f);
+    animatedMesh.AnimeshEnabled = true;
+    var animated = Part(8, "extended mesh flags", animatedMesh, new Vector3(140, 128, 40), Vector3.Zero);
+
+    string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
+    var store = new SQLiteSimulationData();
+    try
+    {
+        store.Initialise(connection);
+        store.StoreObject(group, region);
+        store.StoreObject(vegetation, region);
+        store.StoreObject(RotatedVegetation(4, PCode.Grass), region);
+        store.StoreObject(RotatedVegetation(5, PCode.NewTree), region);
+        store.StoreObject(new SceneObjectGroup(emitter), region);
+        store.StoreObject(new SceneObjectGroup(speaker), region);
+        store.StoreObject(new SceneObjectGroup(animated), region);
+        if (loadScene)
+        {
+            // 8 capture parts plus 246 linked pairs. StoreObject persists both
+            // prim and shape rows; every local ID is allocated on scene load.
+            for (int n = 9; n <= 500; n += 2)
+            {
+                int pair = (n - 9) / 2;
+                var pos = new Vector3(112 + 2 * (pair % 16), 112 + 2 * (pair / 16), 40 + pair % 5);
+                var shape = pair % 2 == 0 ? PrimitiveBaseShape.CreateBox() : PrimitiveBaseShape.CreateSphere();
+                shape.Textures = new Primitive.TextureEntry(Id(1000 + n));
+                shape.SetScale(0.5f + (pair % 4) * 0.125f);
+                var parent = Part(n, "load root", shape, pos, Vector3.Zero);
+                if (pair % 2 == 1)
+                    parent.RotationOffset = new Quaternion(0, 0, 1, 0);
+                var pairGroup = new SceneObjectGroup(parent);
+                var cylinder = PrimitiveBaseShape.CreateCylinder();
+                cylinder.SetScale(0.25f + (pair % 3) * 0.125f);
+                cylinder.Textures = new Primitive.TextureEntry(Id(1001 + n));
+                var linked = Part(n + 1, "load child", cylinder, pos, new Vector3(0.75f, (pair % 3) * 0.25f, 0.5f));
+                linked.RotationOffset = new Quaternion(1, 0, 0, 0);
+                pairGroup.AddPart(linked);
+                store.StoreObject(pairGroup, region);
+            }
+        }
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    // Exercise the restore path before the Text and MediaUrl setters cut to
+    // 254 UTF-8 bytes and Scene.LoadPrimsFromStorage clears Scripted on the root.
+    using var db = new SQLiteConnection(connection);
+    db.Open();
+    using var update = db.CreateCommand();
+    update.CommandText = "UPDATE prims SET Text=@text, MediaURL=@url, ObjectFlags=ObjectFlags | @scripted WHERE UUID=@id";
+    update.Parameters.AddWithValue("@text", new string('é', 126) + "雪");
+    update.Parameters.AddWithValue("@url", "https://example.invalid/".PadRight(250, 'a') + "🌐雪");
+    update.Parameters.AddWithValue("@scripted", (int)PrimFlags.Scripted);
+    update.Parameters.AddWithValue("@id", speaker.UUID.ToString());
+    if (update.ExecuteNonQuery() != 1)
+        throw new InvalidDataException("missing sound prim in capture seed");
 }
 
 static void Seed(string path)
@@ -736,13 +919,25 @@ static byte[] MaterialBlob()
 static void LoadTerrainRows(string path, string regionText, string pin)
 {
     string full = Path.GetFullPath(path);
+    DumpTerrain(new SQLiteSimulationData(), "Data Source=" + full + ";Version=3;", regionText, pin,
+        table => RawTerrainRow(full, table, regionText));
+}
+
+// One backend's LoadTerrain and LoadBakedTerrain for a 256 m region, with the
+// stored row beside each map.
+static void DumpTerrain(
+    ISimulationDataStore store,
+    string connection,
+    string regionText,
+    string pin,
+    Func<string, (long revision, byte[] blob)?> raw)
+{
     UUID region = new UUID(regionText);
     TerrainData terrain;
     TerrainData baked;
-    SQLiteSimulationData store = new SQLiteSimulationData();
     try
     {
-        store.Initialise("Data Source=" + full + ";Version=3;");
+        store.Initialise(connection);
         terrain = store.LoadTerrain(region, 256, 256, (int)Constants.RegionHeight);
         baked = store.LoadBakedTerrain(region, 256, 256, (int)Constants.RegionHeight);
     }
@@ -755,11 +950,59 @@ static void LoadTerrainRows(string path, string regionText, string pin)
     {
         ["pin"] = pin,
         ["region"] = region.ToString(),
-        ["terrain"] = TerrainJson(terrain, RawTerrainRow(full, "terrain", regionText)),
-        ["bakedterrain"] = TerrainJson(baked, RawTerrainRow(full, "bakedterrain", regionText)),
+        ["terrain"] = TerrainJson(terrain, raw("terrain")),
+        ["bakedterrain"] = TerrainJson(baked, raw("bakedterrain")),
     };
     Console.Out.Write(dump.ToJsonString(new JsonSerializerOptions { WriteIndented = false }));
     Console.Out.WriteLine();
+}
+
+// The pin's own StoreTerrain and StoreBakedTerrain of a new pinhead-island,
+// as Scene.LoadWorldMap stores it. MySQL stores from a fire-and-forget
+// callback; FireAndForgetMethod.None runs it before this returns.
+static void SeedTerrain(ISimulationDataStore store, string connection, string regionText)
+{
+    Util.FireAndForgetMethod = FireAndForgetMethod.None;
+    UUID region = new UUID(regionText);
+    TerrainChannel channel = new TerrainChannel("pinhead-island", 256, 256, (int)Constants.RegionHeight);
+    try
+    {
+        store.Initialise(connection);
+        store.StoreTerrain(channel.GetTerrainData(), region);
+        store.StoreBakedTerrain(channel.GetTerrainData(), region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+}
+
+// The first stored row of `table` for the region, as the backend returns it.
+static (long revision, byte[] blob)? RawTerrainRowDb(
+    DbConnection db,
+    string table,
+    string regionText,
+    string parameter,
+    string regionColumn,
+    string revisionColumn,
+    string heightColumn,
+    object region)
+{
+    using (db)
+    {
+        db.Open();
+        using DbCommand cmd = db.CreateCommand();
+        cmd.CommandText = "select " + revisionColumn + ", " + heightColumn + " from " + table +
+            " where " + regionColumn + " = " + parameter;
+        DbParameter value = cmd.CreateParameter();
+        value.ParameterName = parameter.TrimStart('?', ':');
+        value.Value = region;
+        cmd.Parameters.Add(value);
+        using DbDataReader row = cmd.ExecuteReader();
+        if (!row.Read() || row.IsDBNull(1))
+            return null;
+        return (Convert.ToInt64(row[0]), (byte[])row[1]);
+    }
 }
 
 static (long revision, byte[] blob)? RawTerrainRow(string path, string table, string region)
@@ -901,6 +1144,89 @@ static void Serialize(string path, string regionText, string pin)
     JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
     Console.Out.Write(JsonSerializer.Serialize(root, options));
     Console.Out.Write('\n');
+}
+
+// Pin8 CoalescedSceneObjectsSerializer and SceneObjectGroup.Extra{To,From}XmlString.
+static void CaptureCoalesced(string dumpPath, string pin)
+{
+    var rows = JsonNode.Parse(File.ReadAllText(dumpPath))["groups"].AsArray();
+    var linked = System.Xml.Linq.XElement.Parse(rows[1]["original"].GetValue<string>());
+    var parts = linked.Descendants("SceneObjectPart").ToArray();
+    void SetVector(System.Xml.Linq.XElement part, string name, params string[] values)
+    {
+        foreach (var (axis, value) in part.Element(name).Elements().Zip(values))
+            axis.Value = value;
+    }
+    parts[0].Element("LocalId").Value = "73";
+    SetVector(parts[0], "GroupPosition", "-12.25", "2.75", "41.5");
+    SetVector(parts[0], "RotationOffset", "0", "0", "0.6", "0.8");
+    parts[1].Element("ParentID").Value = "73";
+    SetVector(parts[1], "OffsetPosition", "-3", "5", "9");
+    SetVector(parts[1], "RotationOffset", "0.6", "0", "0", "0.8");
+    SetVector(parts[1], "Scale", "1", "3", "8");
+    string[] inputs = [linked.ToString(System.Xml.Linq.SaveOptions.DisableFormatting), rows[0]["original"].GetValue<string>()];
+    var groups = inputs.Select(SceneObjectSerializer.FromOriginalXmlFormat).ToArray();
+    var bundle = new CoalescedSceneObjects(UUID.Zero, groups);
+    string xml = CoalescedSceneObjectsSerializer.ToXml(bundle);
+    string ReadBack(string source)
+    {
+        if (!CoalescedSceneObjectsSerializer.TryFromXml(source, out var read))
+            throw new InvalidOperationException("coalesced read failed");
+        return CoalescedSceneObjectsSerializer.ToXml(read);
+    }
+    var probe = groups[1];
+    string id = probe.UUID.ToString();
+    string tag = $"<ExtraFromItemID>{id}</ExtraFromItemID>";
+    string[] extras = ["", "<Other />", tag, $"around{tag}suffix", $"<ExtraFromItemID>{id}",
+        "<ExtraFromItemID>bad</ExtraFromItemID>", $"<ExtraFromItemID>{id.Replace("-", "")}</ExtraFromItemID>",
+        $"<ExtraFromItemID> {id} trailing</ExtraFromItemID>", $"<ExtraFromItemID>bad</ExtraFromItemID>{tag}"];
+    var extra = extras.Select(input =>
+    {
+        probe.FromItemID = probe.UUID;
+        probe.ExtraFromXmlString(input);
+        return new { input, id = probe.FromItemID.ToString(), xml = probe.ExtraToXmlString() };
+    }).ToArray();
+    string[] documents = ["<Other />", "<CoalescedObject />", "<CoalescedObject",
+        "<CoalescedObject /><Extra />", "<CoalescedObject xmlns='urn:fixture' />",
+        "<CoalescedObject><Unknown><SceneObjectGroup /></Unknown></CoalescedObject>"];
+    var reads = documents.Select(input =>
+    {
+        bool accepted = CoalescedSceneObjectsSerializer.TryFromXml(input, out var result);
+        return new { input, count = accepted ? result.Count : (int?)null };
+    }).ToArray();
+    // Preserve a valid member after a component that FromOriginalXmlFormat cannot read.
+    var changed = System.Xml.Linq.XElement.Parse(xml);
+    changed.SetAttributeValue("x", "invalid");
+    changed.Elements().First().SetAttributeValue("offsety", "99999");
+    string badMember = SceneObjectSerializer.ToOriginalXmlFormat(groups[1])
+        .Replace("<KeyframeMotion>", "<KeyframeMotion>!");
+    changed.AddFirst(new System.Xml.Linq.XElement("SceneObjectGroup", System.Xml.Linq.XElement.Parse(badMember)));
+    bool skipsBadMember = ReadBack(changed.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)) == ReadBack(xml);
+    const string noShape = "<CoalescedObject><SceneObjectGroup><RootPart><SceneObjectPart /></RootPart>"
+        + "<OtherParts /></SceneObjectGroup></CoalescedObject>";
+    if (!CoalescedSceneObjectsSerializer.TryFromXml(noShape, out var missingShape))
+        throw new InvalidOperationException("shape-less read refused");
+    string noShapeWriteError = null;
+    try { CoalescedSceneObjectsSerializer.ToXml(missingShape); }
+    catch (NullReferenceException error) { noShapeWriteError = error.GetType().Name; }
+    // ModifySerializedObject's asset-byte path. Exercise both UTF-8 replacement
+    // and SanitizeXml's namespace repair inside the first member's name.
+    byte[] damaged = System.Text.Encoding.UTF8.GetBytes(xml.Replace("<Name>link-restore<", "<Name>xmlns:xmlns:broken!name<"));
+    int marker = damaged.AsSpan().IndexOf("!name<"u8);
+    if (marker < 0) throw new InvalidOperationException("missing damaged-name marker");
+    damaged[marker] = 0xc3;
+    string decoded = OpenSim.Framework.Serialization.External.ExternalRepresentationUtils.SanitizeXml(Utils.BytesToString(damaged));
+    if (!CoalescedSceneObjectsSerializer.TryFromXml(decoded, out var repaired))
+        throw new InvalidOperationException("asset byte path refused the coalesced groups");
+    var repairedNames = repaired.Objects.Select(g => g.Name).ToArray();
+    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(xml);
+    Console.Out.Write(JsonSerializer.Serialize(new {
+        pin, inputs, xml, repairedNames, readBack = ReadBack(xml), reads, skipsBadMember, noShape, noShapeWriteError,
+        single = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero, groups[0])),
+        empty = CoalescedSceneObjectsSerializer.ToXml(new CoalescedSceneObjects(UUID.Zero)),
+        readBytes = CoalescedSceneObjectsSerializer.TryFromXmlData(bytes, out _),
+        readBytesWithNul = CoalescedSceneObjectsSerializer.TryFromXmlData([..bytes, 0], out _), extra
+    }, new JsonSerializerOptions { WriteIndented = true }));
 }
 
 static void ReadXml(string dumpPath, string pin)
@@ -1410,6 +1736,95 @@ static string[] SceneSavedPbr(RegionSettings source)
     }
     throw new InvalidOperationException("Scene did not save the empty PBR set");
 }
+
+// Load the same SQL seed as the Rust test through Pin8's SQLite provider.
+static void LoadParcels(string path, string seed, string region, string pin)
+{
+    string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
+    using (SQLiteConnection db = new(connection))
+    {
+        db.Open();
+        using SQLiteCommand command = db.CreateCommand();
+        command.CommandText = File.ReadAllText(seed);
+        command.ExecuteNonQuery();
+    }
+    SQLiteSimulationData store = new();
+    try
+    {
+        store.Initialise(connection);
+        var parcels = store.LoadLandObjects(new UUID(region));
+        var defaults = new LandData { GlobalID = UUID.Zero };
+        List<string> environments = new() {
+            "{}", "null", "unknown", "{\"env_version\":2.5}", "{\"env_version\":true}",
+            "{\"env_version\":\"-1.6\"}", "{\"env_version\":2147483649}",
+            """{"env_version":5,"day_cycle":{"frames":{"bad":7}}}""",
+            """{"env_version":5,"day_cycle":{"tracks":[[],[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","absorption_config":[{},7]}}}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","mie_config":[{},7]}},"tracks":[[{}],0,[],[],[],[7]]}}""",
+            """{"env_version":5,"day_cycle":{"frames":{"sky":{"type":"sky","rayleigh_config":[7]}}}}""",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>sky</key><map><key>type</key><string>sky</string><key>glow</key><string/></map></map></map></map></llsd>",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'tracks':[[i7]]}}",
+            "<? llsd/notation ?>{'env_version':i5,'day_cycle':{'frames':{'s':{'type':'sky','glow':'x'}}}}",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><string>x</string></map></map></map></map></llsd>",
+            "<llsd><map><key>env_version</key><integer>5</integer><key>day_cycle</key><map><key>frames</key><map><key>s</key><map><key>type</key><uri>sky</uri><key>glow</key><uri>x</uri></map></map></map></map></llsd>",
+            "<llsd><map><key>env_version</key><integer>42</integer></map></llsd>"
+        };
+        void VectorProbe(string type, string key, object value, bool haze = false)
+        {
+            Dictionary<string, object> frame = new() { ["type"] = type };
+            if (haze) frame["legacy_haze"] = new Dictionary<string, object> { [key] = value };
+            else frame[key] = value;
+            environments.Add(JsonSerializer.Serialize(new { env_version = 5, day_cycle = new { frames = new { probe = frame } } }));
+        }
+        foreach (string key in new[] { "glow", "cloud_color", "cloud_pos_density1", "cloud_pos_density2", "cloud_scroll_rate", "moon_rotation", "sun_rotation" })
+            VectorProbe("sky", key, "x");
+        foreach (string key in new[] { "ambient", "blue_density", "blue_horizon" })
+            VectorProbe("sky", key, "bad", haze: true);
+        foreach (string key in new[] { "normal_scale", "water_fog_color", "wave1_direction", "wave2_direction" })
+            VectorProbe("water", key, "bad");
+        foreach (string value in new[] { "<1,2,3>", "1,2,3 trailing", "", "1,2", "1,2,inf", "1,2,Infinity", "1,2,∞", "1,2,+NaN" })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "1,2", "prefix<1,2>tail", "1,2 extra" })
+            VectorProbe("water", "wave1_direction", value);
+        foreach (string value in new[] { "bad", "<1,2,3>", "1,2,3", "1,2,3,4", "<1,2,3,4>tail" })
+            VectorProbe("sky", "sun_rotation", value);
+        VectorProbe("sky", "moon_rotation", "1,2,3>");
+        foreach (string value in new[] { "1,2, 3", "1,2,3\0", "1,2, ∞", "1,2,\u00a0∞", "1,2,\u00a03", "11,2," })
+            VectorProbe("sky", "glow", value);
+        foreach (string value in new[] { "11,2,", "12," })
+            VectorProbe("sky", "cloud_scroll_rate", value);
+        VectorProbe("sky", "glow", new[] { 1, 2 });
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            pin, region, parcels = parcels.Select(ParcelFields), defaults = ParcelFields(defaults),
+            environments = environments.Select(text => new {
+                text, version = ViewerEnvironment.FromOSDString(text)?.version
+            })
+        }, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    finally { store.Dispose(); }
+}
+
+static object ParcelFields(LandData p) => new
+{
+    id = p.GlobalID.ToString(), local_id = p.LocalID,
+    bitmap = Convert.ToHexString(p.Bitmap).ToLowerInvariant(), name = p.Name,
+    description = p.Description, owner = p.OwnerID.ToString(), group_owned = p.IsGroupOwned,
+    area = p.Area, auction = p.AuctionID, category = (int)p.Category, claim_date = p.ClaimDate,
+    claim_price = p.ClaimPrice, group = p.GroupID.ToString(), sale_price = p.SalePrice,
+    status = (int)p.Status, flags = p.Flags, landing_type = p.LandingType,
+    media_auto_scale = p.MediaAutoScale, media_id = p.MediaID.ToString(),
+    media_url = p.MediaURL, music_url = p.MusicURL, pass_hours = p.PassHours,
+    pass_price = p.PassPrice, snapshot = p.SnapshotID.ToString(), dwell = p.Dwell,
+    media_type = p.MediaType, media_description = p.MediaDescription,
+    media_size = new[] {p.MediaWidth, p.MediaHeight}, media_loop = p.MediaLoop,
+    obscure_media = p.ObscureMedia, obscure_music = p.ObscureMusic, see_avs = p.SeeAVs,
+    any_av_sounds = p.AnyAVSounds, group_av_sounds = p.GroupAVSounds,
+    location = new[] {p.UserLocation.X, p.UserLocation.Y, p.UserLocation.Z},
+    look_at = new[] {p.UserLookAt.X, p.UserLookAt.Y, p.UserLookAt.Z},
+    auth_buyer = p.AuthBuyerID.ToString(), other_clean_time = p.OtherCleanTime,
+    environment_version = p.EnvironmentVersion,
+    access = p.ParcelAccessList.Select(e => new { agent = e.AgentID.ToString(), flags = (uint)e.Flags, expires = e.Expires })
+};
 
 static void LoadSettings(string path, string regionText, string pin)
 {

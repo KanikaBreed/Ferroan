@@ -53,6 +53,25 @@ const AVATAR_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_AVATAR_ADO",
 };
 
+const PRESENCE_CROSS: PluginCross = PluginCross {
+    label: "presence",
+    artifacts: ".scratch/presence-oracle/artifacts",
+    project: "tools/presence-oracle/PresenceOracle.csproj",
+    dll: "bin/PresenceOracle/release/PresenceOracle.dll",
+    oracle_env: "FERROAN_PRESENCE_ORACLE",
+    ado_prefix: "FERROAN_PRESENCE_ADO",
+};
+
+/// Both providers use the same disposable MySQL connection from the environment. The C# constructor runs the Presence migration.
+pub fn presence_mysql_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "mysql_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_CROSS",
+        false,
+    )
+}
+
 /// Rust writes rows and the pinned C# plugins read them, then the reverse,
 /// on SQLite, MySQL and PostgreSQL.
 ///
@@ -133,24 +152,125 @@ pub fn avatar_cross() -> ExitCode {
     )
 }
 
-fn run_plugin_cross(
+/// The pinned PostgreSQL provider migrates the database named in the environment.
+pub fn presence_postgres_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "postgres_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_PG_CROSS",
+        false,
+    )
+}
+
+/// Record or check the pinned loopback HTTP responses for the five avatar forms.
+pub fn avatar_service(writing: bool) -> ExitCode {
+    service_http(
+        &AVATAR_CROSS,
+        writing,
+        &[
+            ("service", "service.json", None),
+            (
+                "service-mysql",
+                "service-mysql.json",
+                Some("FERROAN_AVATAR_ADO_MYSQL"),
+            ),
+        ],
+    )
+}
+
+/// Record or verify the XBakes HTTP responses, directory contents and console output.
+pub fn avatar_bakes(writing: bool) -> ExitCode {
+    service_http(&AVATAR_CROSS, writing, &[("bakes", "bakes.json", None)])
+}
+
+pub fn presence_service(writing: bool) -> ExitCode {
+    service_http(
+        &PRESENCE_CROSS,
+        writing,
+        &[
+            ("service", "service.json", None),
+            (
+                "service-postgres",
+                "service-postgres.json",
+                Some("FERROAN_PRESENCE_ADO_POSTGRES"),
+            ),
+        ],
+    )
+}
+
+fn service_http(
     target: &PluginCross,
-    test_name: &str,
-    gate: &str,
-    databases: bool,
+    writing: bool,
+    modes: &[(&str, &str, Option<&str>)],
 ) -> ExitCode {
-    let root = crate::repo_root();
-    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
-        Ok(path) => path,
+    let (dll, pin) = match build_plugin_oracle(target) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
+    let port = match crate::ports::alloc(crate::ports::Slot::RobustPrivate) {
+        Ok(port) => port,
         Err(error) => {
             eprintln!("{}: {error}", target.label);
             return ExitCode::FAILURE;
         }
     };
-    if let Err(error) = pinned_and_checked(&root, &reference) {
-        eprintln!("{}: {error}", target.label);
-        return ExitCode::FAILURE;
+    let action = if writing { "generate" } else { "verify" };
+    let fixtures = crate::repo_root().join("fixtures").join(target.label);
+    for &(mode, file, variable) in modes {
+        if let Some(variable) = variable
+            && std::env::var_os(variable).is_none()
+        {
+            println!(
+                "{}: {mode} HTTP oracle skipped ({variable} unset)",
+                target.label
+            );
+            continue;
+        }
+        let status = crate::dotnet_ci::command("dotnet")
+            .arg(&dll)
+            .args([mode, action, &pin, &port.to_string()])
+            .arg(fixtures.join(file))
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            eprintln!("{}: {mode} HTTP oracle failed: {status:?}", target.label);
+            return ExitCode::FAILURE;
+        }
     }
+    ExitCode::SUCCESS
+}
+
+pub fn avatar_appearance(writing: bool) -> ExitCode {
+    let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
+    let action = if writing { "generate" } else { "verify" };
+    let status = crate::dotnet_ci::command("dotnet")
+        .arg(dll)
+        .args(["appearance", action, &pin])
+        .arg(crate::repo_root().join("fixtures/avatar/appearance.json"))
+        .status();
+    if matches!(status, Ok(status) if status.success()) {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("avatar: appearance oracle failed: {status:?}");
+        ExitCode::FAILURE
+    }
+}
+
+fn build_plugin_oracle(target: &PluginCross) -> Result<(PathBuf, String), ExitCode> {
+    let root = crate::repo_root();
+    let reference = match reference_root().and_then(crate::oracle_reference::prepare) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{}: {error}", target.label);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let revision = pinned_and_checked(&root, &reference).map_err(|error| {
+        eprintln!("{}: {error}", target.label);
+        ExitCode::FAILURE
+    })?;
     let artifacts = root.join(target.artifacts);
     if let Err(error) = fs::create_dir_all(&artifacts) {
         eprintln!(
@@ -158,7 +278,7 @@ fn run_plugin_cross(
             target.label,
             artifacts.display()
         );
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let project = root.join(target.project);
     if !dotnet(
@@ -171,16 +291,30 @@ fn run_plugin_cross(
         false,
         &[],
     ) {
-        return fail_if_dirty(target.label, &reference);
+        return Err(fail_if_dirty(target.label, &reference));
     }
     if !checkout_is_clean(target.label, &reference) {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let dll = artifacts.join(target.dll);
     if !dll.is_file() {
         eprintln!("{}: missing {}", target.label, dll.display());
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
+    Ok((dll, revision))
+}
+
+fn run_plugin_cross(
+    target: &PluginCross,
+    test_name: &str,
+    gate: &str,
+    databases: bool,
+) -> ExitCode {
+    let root = crate::repo_root();
+    let (dll, _) = match build_plugin_oracle(target) {
+        Ok(result) => result,
+        Err(code) => return code,
+    };
     let mut command = Command::new("cargo");
     command
         .current_dir(&root)
@@ -474,6 +608,7 @@ pub(crate) fn dotnet(
         .arg(format!("-p:ArtifactsPath={}", artifacts.display()))
         .arg("-p:GeneratePackageOnBuild=false")
         .arg("-p:ContinuousIntegrationBuild=true")
+        .arg("-p:UseSharedCompilation=false")
         .arg(crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF);
     if no_build {
         command.arg("--no-build");

@@ -331,13 +331,29 @@ pub fn escape(s: &str, out: &mut String) {
 
 /// Parse a complete XML document and return its root element.
 pub fn parse(src: &[u8]) -> Result<Element, XmlError> {
+    let mut p = document_start(src)?;
+    p.element(0)
+}
+
+/// Parse one document, rejecting trailing data or a second root.
+pub fn parse_document(src: &[u8]) -> Result<Element, XmlError> {
+    let mut p = document_start(src)?;
+    let root = p.element(0)?;
+    p.skip_misc()?;
+    if p.pos != src.len() {
+        return Err(p.err("trailing data"));
+    }
+    Ok(root)
+}
+
+fn document_start(src: &[u8]) -> Result<Parser<'_>, XmlError> {
     let mut p = Parser { src, pos: 0 };
     // Skip UTF-8 BOM
     if p.starts_with(&[0xEF, 0xBB, 0xBF]) {
         p.pos = 3;
     }
     p.skip_misc()?;
-    p.element(0)
+    Ok(p)
 }
 
 #[cfg(test)]

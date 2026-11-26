@@ -7,12 +7,16 @@
 
 pub mod avatar;
 pub mod caps_policy;
+pub mod children;
 pub mod config;
 pub mod control_plane;
 pub mod fetch_caps;
 pub mod grid;
+pub mod groups;
 pub mod inventory;
+pub mod land_properties;
 pub mod library;
+pub mod names;
 pub mod objects;
 pub mod remote_asset;
 pub mod settings;

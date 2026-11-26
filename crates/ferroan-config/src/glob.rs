@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn verbatim_drive_and_unc_split() {
         assert_eq!(
-            strip_verbatim(r"\\?\C:\Users\runneradmin\nested\*.ini"),
-            Some((r"\\?\C:\".to_string(), r"\Users\runneradmin\nested\*.ini"))
+            strip_verbatim(r"\\?\C:\Users\example\nested\*.ini"),
+            Some((r"\\?\C:\".to_string(), r"\Users\example\nested\*.ini"))
         );
         assert_eq!(
             strip_verbatim(r"\\?\UNC\server\share\dir\*.ini"),

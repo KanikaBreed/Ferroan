@@ -28,9 +28,9 @@ static class Program
     {
         if (args.Length != 4
             || args[2] != "--revision"
-            || (args[0] != "generate" && args[0] != "verify" && args[0] != "status-generate" && args[0] != "status-verify"))
+            || (args[0] != "generate" && args[0] != "verify" && args[0] != "status-generate" && args[0] != "status-verify" && args[0] != "auth-generate" && args[0] != "auth-verify"))
         {
-            Console.Error.WriteLine("usage: HttpOracle generate|verify|status-generate|status-verify <directory> --revision <40 hex>");
+            Console.Error.WriteLine("usage: HttpOracle generate|verify|status-generate|status-verify|auth-generate|auth-verify <directory> --revision <40 hex>");
             return 2;
         }
         string directory = Path.GetFullPath(args[1]);
@@ -42,6 +42,11 @@ static class Program
         }
         try
         {
+            if (args[0].StartsWith("auth-", StringComparison.Ordinal))
+            {
+                AuthCases.Run(directory, revision, args[0] == "auth-generate");
+                return 0;
+            }
             if (args[0].StartsWith("status-", StringComparison.Ordinal))
             {
                 StatusCases.Run(directory, revision, args[0] == "status-generate");

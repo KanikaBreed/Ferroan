@@ -75,10 +75,31 @@ use crate::memory;
 
 #[path = "avatars_capture.rs"]
 mod avatars_capture;
+#[path = "child_capture.rs"]
+mod child_capture;
 #[path = "grid_capture.rs"]
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[path = "material_override.rs"]
+mod material_override;
+#[cfg(target_os = "linux")]
+#[path = "parcel_capture.rs"]
+mod parcel_capture;
+#[path = "parcel_properties.rs"]
+mod parcel_properties;
+#[path = "parcel_timing.rs"]
+mod parcel_timing;
+#[path = "prim_arrival.rs"]
+mod prim_arrival;
+#[cfg(target_os = "linux")]
+use parcel_capture::Seed as ParcelSeed;
+
+#[path = "prim_capture.rs"]
+mod prim_capture;
+#[cfg(target_os = "linux")]
+#[path = "store_handoff.rs"]
+mod store_handoff;
 
 #[path = "grid_up.rs"]
 mod persistent;
@@ -87,15 +108,17 @@ mod persistent;
 #[path = "memory_run.rs"]
 mod memory_run;
 
-/// `cargo xtask live memory`: idle memory of the C# and Ferroan region
-/// processes, by region count and by seeded object store (P0.10n11).
-pub fn memory() -> std::process::ExitCode {
+/// `cargo xtask live memory [--bulk]`: memory of the C# and Ferroan region
+/// processes on the same scenes with bots logged in, and the C# cost per
+/// extra region (P0.10n11).
+pub fn memory(bulk: bool) -> std::process::ExitCode {
     #[cfg(target_os = "linux")]
     {
-        live::finish(memory_run::run())
+        live::finish(memory_run::run(bulk))
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = bulk;
         live::finish(Err("cargo xtask live runs on Linux".to_string()))
     }
 }
@@ -122,6 +145,18 @@ const PROMPT: &str = "GridServer>";
 
 pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
     live::finish(run_inner(spec))
+}
+
+pub fn parcel_timing_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(parcel_timing::extract(directory))
+}
+
+pub fn parcel_properties_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(parcel_properties::extract(directory, false))
+}
+
+pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(login_capture::object_cross::extract(directory))
 }
 
 pub fn login_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -151,6 +186,7 @@ fn run_inner(spec: &crate::live_args::RunSpec) -> Result<String, String> {
 /// One region process. `http_bind` is where it listens. Viewers and other
 /// regions use `advertised` and `http_port` (the proxy).
 struct RegionIni<'a> {
+    prim_capture: bool,
     name: &'a str,
     uuid: &'a str,
     x: u32,
@@ -221,6 +257,13 @@ fn region_server_ini(region: &RegionIni<'_>) -> Result<String, String> {
         ini.push_str(&format!(
             "\n[ClientStack.LindenUDP]\n    CaptureFile = \"{capture}\"\n"
         ));
+        if region.prim_capture {
+            ini.push_str("    SupportViewerObjectsCache = false\n");
+        }
+    } else if region.prim_capture {
+        // A stored scene without a capture (`live memory`): the bot still
+        // counts full updates, so the viewer cache stays off.
+        ini.push_str("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n");
     }
     Ok(ini)
 }
@@ -249,6 +292,8 @@ struct ServiceUris<'a> {
     asset: Option<&'a str>,
     account: Option<&'a str>,
     auth: Option<&'a str>,
+    /// `URI=file:` connection for Robust's groups service. Absent leaves groups off.
+    groups: Option<&'a str>,
 }
 
 fn robust_ini(
@@ -275,6 +320,21 @@ fn robust_ini(
     let accounts = sqlite(database);
     let asset_store = sqlite(&asset_db);
     let auth_store = sqlite(&auth_db);
+    let (groups_connector, groups_section) = if let Some(connection) = services.groups {
+        plain(connection, "groups database")?;
+        (
+            format!(
+                "    GroupsServiceConnector = \"{private_port}/OpenSim.Addons.Groups.dll:GroupsServiceRobustConnector\"\n"
+            ),
+            format!(
+                "[Groups]\n    \
+                 StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    \
+                 ConnectionString = \"{connection}\"\n\n"
+            ),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     let (asset_connector, asset_section) = if let Some(uri) = services.asset {
         service_uri(uri)?;
         (
@@ -408,7 +468,7 @@ fn robust_ini(
     MapAddServiceConnector = "{private_port}/OpenSim.Server.Handlers.dll:MapAddServiceConnector"
     MapGetServiceConnector = "{public_port}/OpenSim.Server.Handlers.dll:MapGetServiceConnector"
     MuteListConnector = "{private_port}/OpenSim.Server.Handlers.dll:MuteListServiceConnector"
-
+{groups_connector}
 [DatabaseService]
     StorageProvider = "OpenSim.Data.SQLite.dll"
     ConnectionString = "{accounts}"
@@ -463,7 +523,7 @@ fn robust_ini(
     AllowRemoteSetLoginLevel = "false"
     AllowLoginFallbackToAnyRegion = false
 
-[GridInfoService]
+{groups_section}[GridInfoService]
     login = http://{bind}:{public_port}/
     gridname = "Ferroan Test Grid"
     gridnick = "ferroan"
@@ -701,52 +761,19 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let rust_assets = spec.rust_assets();
     let rust_accounts = spec.rust_accounts();
     let rust_auth = spec.rust_auth();
-    if ferroan
-        && !matches!(
-            scenario,
-            "login"
-                | "caps"
-                | "ferrobot"
-                | "texture"
-                | "inventory"
-                | "assets"
-                | "limits"
-                | "roots"
-                | "chat"
-                | "teleport"
-                | "hop"
-                | "uploads"
-                | "avatars"
-                | "neighbour"
-                | "walk"
-                | "report"
-        )
-    {
-        return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk and report scenarios"
-                .to_string(),
-        );
+    let Some(row) = ferroan_bot::register::get(scenario) else {
+        if ferroan {
+            return Err(ferroan_bot::register::ferroan_denied());
+        }
+        return Err(ferroan_bot::register::grid_unknown(scenario));
+    };
+    if ferroan && matches!(row.ferroan, ferroan_bot::register::Ferroan::Deny) {
+        return Err(ferroan_bot::register::ferroan_denied());
     }
-    if scenario == "limits" && !ferroan {
-        return Err("the limits scenario runs on the Ferroan region".to_string());
-    }
-    if !matches!(
-        scenario,
-        "neighbour"
-            | "caps"
-            | "ferrobot"
-            | "limits"
-            | "roots"
-            | "hop"
-            | "uploads"
-            | "avatars"
-            | "report"
-    ) && ferroan_bot::scenario::selection(scenario).is_none()
+    if let Some(message) = row.ferroan.require_message()
+        && !ferroan
     {
-        return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour or {}",
-            ferroan_bot::scenario::NAMES.join(", ")
-        ));
+        return Err(message.to_string());
     }
     if let Some(pid) = live::standalone_is_up()? {
         return Err(format!(
@@ -760,14 +787,15 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         None
     };
-    let ferrobot_binary = if scenario == "ferrobot" {
+    let ferrobot_binary = if row.runner == ferroan_bot::register::Runner::Ferrobot {
         Some(crate::ferrobot_build::build()?)
     } else {
         None
     };
+    let needs_region_metrics = ferroan || row.metrics_always;
     let port_count = 6
         + usize::from(rust_assets || rust_accounts || rust_auth)
-        + usize::from(ferroan)
+        + usize::from(needs_region_metrics)
         + usize::from(rust_assets || rust_accounts || rust_auth);
     let ports = crate::ports::alloc_grid(port_count)?;
     let robust_public = ports[0];
@@ -778,9 +806,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let neighbour_port = ports[5];
     let rust_services = rust_assets || rust_accounts || rust_auth;
     let rust_port = rust_services.then(|| ports[6]);
-    let region_metrics = ferroan.then(|| ports[6 + usize::from(rust_services)]);
-    let robust_metrics =
-        rust_services.then(|| ports[6 + usize::from(rust_services) + usize::from(ferroan)]);
+    let region_metrics = needs_region_metrics.then(|| ports[6 + usize::from(rust_services)]);
+    let robust_metrics = rust_services
+        .then(|| ports[6 + usize::from(rust_services) + usize::from(needs_region_metrics)]);
     let root = grid_root();
     if root.exists() {
         fs::remove_dir_all(&root)
@@ -830,7 +858,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             captures.neighbour.clone(),
         ),
     ])?);
-    let udp_relay = if ferroan && scenario == "ferrobot" {
+    let udp_relay = if ferroan && row.relay {
         Some(
             require_started(&grid.proxies, "proxies")?
                 .block_on(ferrobot_capture::start_udp(
@@ -912,6 +940,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         (None, None, None)
     };
+    // Parcel timing, and any Ferroan parcel seed, reads memberships from Robust.
+    // Other C# parcel scenarios keep the local connector and their region groups.db.
+    let remote_groups = ferroan_bot::register::remote_groups(row, ferroan);
+    let groups_connection = if remote_groups {
+        let db = root.join("groups.db");
+        parcel_capture::seed_memberships(&db)?;
+        Some(format!("URI=file:{}", db.display()))
+    } else {
+        None
+    };
+    let groups_uri = remote_groups.then(|| format!("http://{ROBUST_BIND}:{robust_private}/"));
     println!(
         "live: grid Robust on {ROBUST_BIND}:{robust_public} (private {robust_private}), proxies {public_proxy}/{private_proxy}"
     );
@@ -924,6 +963,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             asset: asset_uri.as_deref(),
             account: account_uri.as_deref(),
             auth: auth_uri.as_deref(),
+            groups: groups_connection.as_deref(),
         },
         docker,
     )?);
@@ -970,58 +1010,76 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     live::copy_example(&publish, "GridCommon.ini")?;
     let source = live::source_dir();
     println!("live: grid region {HOME_NAME} on {HOME_BIND}:{home_port}");
+    let home = RegionStart {
+        ferroan,
+        login_only: ferroan || row.login_only,
+        name: HOME_NAME,
+        uuid: live::REGION_UUID,
+        x: HOME_X,
+        y: HOME_Y,
+        http_bind: HOME_BIND,
+        advertised: ADVERTISED,
+        udp_bind: if ferroan && row.relay {
+            HOME_BIND
+        } else {
+            ADVERTISED
+        },
+        http_port: home_port,
+        public_proxy,
+        private_proxy,
+        // With the Ferrobot relay the relay writes `capture-udp.cap`. Two
+        // writers on one path, each at its own offset, overwrote each
+        // other's records (the `live images` re-encode failures on
+        // AgentUpdate), so the region's own capture goes beside it.
+        capture: Some(root.join(if ferroan && row.relay {
+            "capture-udp-region.cap"
+        } else {
+            "capture-udp.cap"
+        })),
+        asset_uri: asset_uri.clone(),
+        account_uri: account_uri.clone(),
+        auth_uri: auth_uri.clone(),
+        metrics_port: region_metrics,
+        parcel_seed: ParcelSeed::scenario(scenario),
+        store: region_store(row.home_store),
+        patch_materials: row.patch_materials,
+        basic_physics: spec.basic_physics && !ferroan,
+        groups_uri: groups_uri.clone(),
+    };
+    if row.runner == ferroan_bot::register::Runner::Handoff {
+        if docker {
+            return Err(format!(
+                "{scenario} needs local region processes on the same SQLite file"
+            ));
+        }
+        let report =
+            store_handoff::run(home, &root, robust_public, &estate, &chat, &grid.passwords)?;
+        grid.stop()?;
+        return Ok(report);
+    }
     grid.home = Some(start_region(
         &root.join("home"),
         &publish,
         &source,
         &estate,
-        RegionStart {
-            ferroan,
-            login_only: ferroan || matches!(scenario, "login" | "caps" | "ferrobot"),
-            name: HOME_NAME,
-            uuid: live::REGION_UUID,
-            x: HOME_X,
-            y: HOME_Y,
-            http_bind: HOME_BIND,
-            advertised: ADVERTISED,
-            udp_bind: if ferroan && scenario == "ferrobot" {
-                HOME_BIND
-            } else {
-                ADVERTISED
-            },
-            http_port: home_port,
-            public_proxy,
-            private_proxy,
-            // With the Ferrobot relay the relay writes `capture-udp.cap`. Two
-            // writers on one path, each at its own offset, overwrote each
-            // other's records (the `live images` re-encode failures on
-            // AgentUpdate), so the region's own capture goes beside it.
-            capture: Some(root.join(if ferroan && scenario == "ferrobot" {
-                "capture-udp-region.cap"
-            } else {
-                "capture-udp.cap"
-            })),
-            asset_uri: asset_uri.clone(),
-            account_uri: account_uri.clone(),
-            auth_uri: auth_uri.clone(),
-            metrics_port: region_metrics,
-            basic_physics: spec.basic_physics && !ferroan,
-        },
+        &home,
         &grid.passwords,
         docker,
     )?);
+    require_started(&grid.proxies, "proxies")?
+        .block_on(prepare_neighbour_landing(scenario, &root.join("neighbour")))?;
     println!("live: grid region {NEIGHBOUR_NAME} on {NEIGHBOUR_BIND}:{neighbour_port}");
     grid.neighbour = Some(start_region(
         &root.join("neighbour"),
         &publish,
         &source,
         &estate,
-        RegionStart {
+        &RegionStart {
             ferroan: false,
-            login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
+            login_only: row.login_only,
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
-            x: NEIGHBOUR_X,
+            x: NEIGHBOUR_X + u32::from(ParcelSeed::scenario(scenario) == Some(ParcelSeed::Legacy)),
             y: NEIGHBOUR_Y,
             http_bind: NEIGHBOUR_BIND,
             advertised: ADVERTISED,
@@ -1036,6 +1094,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
+            store: region_store(row.neighbour_store),
+            patch_materials: false,
+            parcel_seed: None,
+            groups_uri: None,
             basic_physics: spec.basic_physics,
         },
         &grid.passwords,
@@ -1065,7 +1127,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         };
         // The relay carries Ferrobot's circuit only.
         let companion_udp =
-            (ferroan && scenario == "ferrobot").then(|| SocketAddr::from((HOME_BIND, home_port)));
+            (ferroan && row.relay).then(|| SocketAddr::from((HOME_BIND, home_port)));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -1073,13 +1135,14 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         runtime
             .block_on(crate::ferrobot::run_with(&harness, &config, companion_udp))
             .map(|lines| BotReport {
+                child: None,
                 lines,
                 // Read the complete proxy evidence after grid.stop drains it.
                 http: Vec::new(),
             })
-    } else if scenario == "limits" {
-        if !ferroan {
-            return Err("the limits scenario runs on the Ferroan region".to_string());
+    } else if row.runner == ferroan_bot::register::Runner::Limits {
+        if let Some(message) = row.ferroan.require_message().filter(|_| !ferroan) {
+            return Err(message.to_string());
         }
         let Some(metrics_port) = region_metrics else {
             return Err("the limits scenario needs the region metrics listener".to_string());
@@ -1098,6 +1161,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             &format!("http://{ADVERTISED}:{private_proxy}"),
         ))?;
         Ok(BotReport {
+            child: None,
             lines: line,
             http: Vec::new(),
         })
@@ -1119,7 +1183,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         status.as_ref().map(|(region, metrics)| (region.as_str(), metrics.as_str())),
         Some(meter.after_login()),
     ).and_then(|mut report| {
-        if scenario == "login" {
+        if row.login_probe {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
                 .map_err(|error| format!("could not start login probe runtime: {error}"))?;
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
@@ -1142,7 +1206,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture_missing_presence(SocketAddr::from((ROBUST_BIND, robust_private)), &root)?;
             report.lines.push('\n'); report.lines.push_str(&line);
         }
-        if ferroan && matches!(scenario, "texture" | "inventory" | "assets") {
+        if ferroan && row.inventory_probe {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -1245,7 +1309,34 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "report" {
+    let compare = row.compare;
+    if compare == ferroan_bot::register::Compare::Login && !ferroan {
+        login_probe::verify_csharp_login_position(&root)?;
+    }
+    if compare == ferroan_bot::register::Compare::ParcelTiming {
+        let timing = parcel_timing::extract(&root)?;
+        Ok(format!("{}\n{timing}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::ParcelProperties {
+        let properties = parcel_properties::extract(&root, ferroan)?;
+        Ok(format!("{}\n{properties}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::ObjectCross {
+        let capture = login_capture::object_cross::extract(&root)?;
+        Ok(format!("{}\n{capture}", report.lines))
+    } else if let Some(observation) = report.child {
+        let line = child_capture::finish(&root, &observation)?;
+        Ok(format!("{}\n{line}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::PrimCapture {
+        let fixture = prim_capture::extract(&root)?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::PrimArrival {
+        let fixture =
+            prim_arrival::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::MaterialOverride {
+        let fixture =
+            material_override::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::Report {
         // The capture still has to pass check, redact and replay. Its packet
         // counts are not report lines: the two regions do not send the same
         // number of datagrams, and the compare is the lines below.
@@ -1255,7 +1346,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             &[&estate, &chat],
         )?;
         Ok(report.lines)
-    } else if scenario == "ferrobot" {
+    } else if compare == ferroan_bot::register::Compare::Ferrobot {
         let http = ferrobot_capture::http_records(&[
             captures.robust_public.clone(),
             captures.home.clone(),
@@ -1263,12 +1354,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let capture =
             live::finish_capture(&root.join("capture-udp.cap"), &http, &[&estate, &chat])?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "limits" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Proxy {
         Ok(format!("{}\n{proxy_report}", report.lines))
-    } else if ferroan && (scenario == "roots" || scenario == "uploads") {
+    } else if ferroan && compare == ferroan_bot::register::Compare::TwoRoots {
         let comparison = login_capture::compare_two_roots(&root)?;
         Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "avatars" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Avatars {
         let roots = login_capture::compare_two_roots(&root)?;
         let comparison = avatars_capture::compare_avatars(&root)?;
         let capture = live::finish_capture(
@@ -1280,7 +1371,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{roots}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "chat" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Chat {
         let comparison = login_capture::compare_local_chat(&root)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
@@ -1291,9 +1382,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "hop" {
-        Ok(format!("{}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "teleport" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Teleport {
         let comparison = login_capture::compare_local_teleport(&root)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
@@ -1304,7 +1393,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "neighbour" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Neighbour {
         let comparison =
             login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::Ferroan)?;
         let capture = live::finish_capture(
@@ -1318,7 +1407,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         ))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
-        let arrival = if scenario == "login" {
+        let arrival = if compare == ferroan_bot::register::Compare::Login {
             login_capture::compare_root_arrival(&root)?
         } else {
             String::new()
@@ -1328,7 +1417,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{logout_region}\n{proxy_report}",
             report.lines
         ))
-    } else if scenario == "neighbour" {
+    } else if compare == ferroan_bot::register::Compare::Neighbour {
         let comparison =
             login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::CSharp)?;
         let capture = live::finish_capture(
@@ -1439,6 +1528,7 @@ struct ProxyPaths {
 
 #[cfg(target_os = "linux")]
 struct BotReport {
+    child: Option<ferroan_bot::scenario::child_view::Observation>,
     lines: String,
     http: Vec<ferroan_capture::Record>,
 }
@@ -1564,7 +1654,8 @@ fn scrape_running(
 
 #[cfg(target_os = "linux")]
 fn observe_smoke_logs(docker: bool, ferroan: bool, scenario: &str) -> Result<String, String> {
-    if !docker || !ferroan || scenario != "login" || crate::docker::smoke_otlp().is_none() {
+    let smoke = ferroan_bot::register::get(scenario).is_some_and(|row| row.smoke_logs);
+    if !docker || !ferroan || !smoke || crate::docker::smoke_otlp().is_none() {
         return Ok(String::new());
     }
     let logs = crate::docker::container_logs(crate::docker::NAME_HOME)?;
@@ -1619,7 +1710,7 @@ fn run_bot(
     let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
     harness.after_login = after_login;
-    if scenario == "roots" {
+    if ferroan_bot::register::get(scenario).is_some_and(|row| row.pass_metrics) {
         harness.metrics = status.map(|(_, metrics)| metrics.to_string());
     }
     harness.neighbour = Some(ferroan_bot::scenario::Neighbour {
@@ -1634,12 +1725,61 @@ fn run_bot(
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
     let (private_uri, directory, ferroan) = online;
+    if ferroan_bot::register::get(scenario)
+        .is_some_and(|row| row.bot == ferroan_bot::register::Bot::ChildView)
+    {
+        let evidence = runtime.block_on(async {
+            let observed =
+                ferroan_bot::scenario::child_view::run(&harness, HOME_NAME, NEIGHBOUR_NAME).await?;
+            login_probe::offline(private_uri).await?;
+            login_probe::offline_user(private_uri, live::CHAT_USER).await?;
+            Ok::<_, String>(observed)
+        })?;
+        return Ok(BotReport {
+            lines: format!(
+                "child view: home root walked and logged out; neighbour avatar {}, stored prim {}",
+                evidence.avatar.is_some(),
+                evidence.prim.is_some()
+            ),
+            http: Vec::new(),
+            child: Some(evidence),
+        });
+    }
     let harness_ref = &harness;
     let lines = runtime.block_on(login_probe::run_scenarios(
         scenario,
         private_uri,
         |selected| async move {
-            if scenario == "login" {
+            let selected_row = ferroan_bot::register::get(selected);
+            if selected_row.is_some_and(|row| row.bot == ferroan_bot::register::Bot::ParcelTiming) {
+                harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_timing(harness_ref))
+                    .await
+            } else if selected_row
+                .is_some_and(|row| row.bot == ferroan_bot::register::Bot::ParcelProperties)
+            {
+                harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_properties(harness_ref, true))
+                    .await
+            } else if let Some(seed) = ParcelSeed::scenario(selected) {
+                let captures = harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_overlays(
+                        harness_ref,
+                        seed.packets(),
+                    ))
+                    .await?;
+                for (viewer, bytes) in ["owner", "member"].into_iter().zip(captures) {
+                    fs::write(directory.join(format!("{selected}-{viewer}.bin")), bytes)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(format!(
+                    "{selected}: both viewers received {} ParcelOverlay packets",
+                    seed.packets()
+                ))
+            } else if ferroan_bot::register::get(scenario).is_some_and(|row| row.observe_login) {
                 ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| async move {
                     let mut line =
                         login_probe::online(private_uri, directory, ferroan, arrival).await?;
@@ -1656,6 +1796,7 @@ fn run_bot(
         },
     ))?;
     Ok(BotReport {
+        child: None,
         lines,
         http: harness.http_trace.records(),
     })
@@ -2011,6 +2152,29 @@ fn in_process_user_account(log: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn region_store(store: ferroan_bot::register::Store) -> RegionStore {
+    match store {
+        ferroan_bot::register::Store::Standard => RegionStore::Standard,
+        ferroan_bot::register::Store::EmptyPrim => RegionStore::EmptyPrimCapture,
+        ferroan_bot::register::Store::Prim => RegionStore::PrimFixture,
+        ferroan_bot::register::Store::EditPrim => RegionStore::EditPrimFixture,
+        ferroan_bot::register::Store::Load => RegionStore::LoadFixture,
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegionStore {
+    Standard,
+    // The object-cross destination accepts a transferred prim into an empty scene.
+    EmptyPrimCapture,
+    PrimFixture,
+    EditPrimFixture,
+    LoadFixture,
+    Existing,
+}
+
+#[cfg(target_os = "linux")]
 struct RegionStart {
     ferroan: bool,
     login_only: bool,
@@ -2030,6 +2194,11 @@ struct RegionStart {
     auth_uri: Option<String>,
     metrics_port: Option<u16>,
     basic_physics: bool,
+    store: RegionStore,
+    parcel_seed: Option<ParcelSeed>,
+    /// Groups Remote Service Connector target. Absent keeps the local connector.
+    groups_uri: Option<String>,
+    patch_materials: bool,
 }
 
 /// More than one ordinary grid region needs: the memory run's store, build
@@ -2062,7 +2231,7 @@ fn start_region(
     publish: &Path,
     source: &Path,
     password: &str,
-    spec: RegionStart,
+    spec: &RegionStart,
     passwords: &[String],
     docker: bool,
 ) -> Result<Proc, String> {
@@ -2082,7 +2251,7 @@ fn start_region_with(
     cwd: &Path,
     (publish, source): (&Path, &Path),
     password: &str,
-    spec: RegionStart,
+    spec: &RegionStart,
     passwords: &[String],
     docker: bool,
     extras: &RegionExtras<'_>,
@@ -2103,17 +2272,53 @@ fn start_region_with(
     if (!docker || !spec.ferroan) && !binary.is_file() {
         return Err("run cargo xtask live build first".to_string());
     }
-    prepare_region_cwd(cwd, publish, source)?;
-    if let Some(store) = extras.store {
-        fs::copy(store, cwd.join("OpenSim.db")).map_err(|error| {
-            format!(
-                "could not copy {} to {}: {error}",
-                store.display(),
-                cwd.display()
+    if spec.store == RegionStore::Existing {
+        if !cwd.join("OpenSim.db").is_file() {
+            return Err("missing handed-off region store".into());
+        }
+    } else {
+        prepare_region_cwd(cwd, publish, source)?;
+        if let Some(store) = extras.store {
+            fs::copy(store, cwd.join("OpenSim.db")).map_err(|error| {
+                format!(
+                    "could not copy {} to {}: {error}",
+                    store.display(),
+                    cwd.display()
+                )
+            })?;
+        } else if spec.store == RegionStore::LoadFixture {
+            crate::regionstore::seed_prim_load(&cwd.join("OpenSim.db"))?;
+        } else if matches!(
+            spec.store,
+            RegionStore::PrimFixture | RegionStore::EditPrimFixture
+        ) {
+            fs::copy(
+                crate::repo_root().join("fixtures/prim-updates/scene.db"),
+                cwd.join("OpenSim.db"),
             )
-        })?;
-    } else if spec.ferroan {
-        install_seeded_region_store(cwd)?;
+            .map_err(|error| format!("install prim capture store: {error}"))?;
+            if spec.uuid == NEIGHBOUR_UUID {
+                // Put the existing Q65a linkset within sight of the west border.
+                let sql = format!(
+                    "UPDATE prims SET RegionUUID='{NEIGHBOUR_UUID}', GroupPositionX=GroupPositionX-110"
+                );
+                let status = std::process::Command::new("sqlite3")
+                    .arg(cwd.join("OpenSim.db"))
+                    .arg(sql)
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                if !status.success() {
+                    return Err("could not place the capture prims on the neighbour".into());
+                }
+            }
+        } else if let Some(seed) = spec.parcel_seed {
+            seed.install(cwd)?;
+        } else if spec.ferroan {
+            install_seeded_region_store(cwd)?;
+        }
+        if spec.patch_materials {
+            material_override::install_store(&cwd.join("OpenSim.db"))?;
+        }
     }
     let mut rewrites = Vec::new();
     if let Some(uri) = &spec.asset_uri {
@@ -2147,6 +2352,7 @@ fn start_region_with(
         None => None,
     };
     let region = RegionIni {
+        prim_capture: spec.store != RegionStore::Standard,
         name: spec.name,
         uuid: spec.uuid,
         x: spec.x,
@@ -2182,11 +2388,23 @@ fn start_region_with(
             ));
         }
     }
+    if spec.parcel_seed.is_some() {
+        if let Some(uri) = &spec.groups_uri {
+            ini.push_str(&format!(
+                "\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Remote Service Connector\"\n    GroupsServerURI = \"{uri}\"\n"
+            ));
+        } else {
+            ini.push_str("\n[Groups]\n    Enabled = true\n    Module = \"Groups Module V2\"\n    ServicesConnectorModule = \"Groups Local Service Connector\"\n");
+        }
+    }
     live::write_secret(&config.join("RegionServer.ini"), &ini)?;
-    let mut regions_text = regions_ini(&region);
+    let mut definition = regions_ini(&region);
+    if spec.parcel_seed == Some(ParcelSeed::Legacy) {
+        definition.push_str("SizeX = 512\nSizeY = 512\n");
+    }
     for more in extras.more {
-        regions_text.push('\n');
-        regions_text.push_str(&regions_ini(&RegionIni {
+        definition.push('\n');
+        definition.push_str(&regions_ini(&RegionIni {
             name: &more.name,
             uuid: &more.uuid,
             x: more.x,
@@ -2195,9 +2413,13 @@ fn start_region_with(
             ..region
         }));
     }
-    fs::write(regions.join("Regions.ini"), regions_text)
+    fs::write(regions.join("Regions.ini"), definition)
         .map_err(|error| format!("could not write Regions.ini: {error}"))?;
-    let log = cwd.join("region.log");
+    let log = cwd.join(match (spec.store, spec.ferroan) {
+        (RegionStore::EditPrimFixture | RegionStore::LoadFixture, false) => "region-edit.log",
+        (RegionStore::Existing, false) => "region-reference.log",
+        _ => "region.log",
+    });
     let config_arg = config.to_str().ok_or("region config path is not utf-8")?;
     let mut proc = if docker {
         // region-start.sh cds to /app. The prepared working directory holds
@@ -2236,6 +2458,19 @@ fn start_region_with(
             redact: &secrets,
         })?;
         proc_from_attached(attached, &log)?
+    } else if !spec.ferroan
+        && matches!(
+            spec.store,
+            RegionStore::EditPrimFixture | RegionStore::LoadFixture | RegionStore::Existing
+        )
+    {
+        spawn_proc(
+            &binary,
+            &["--inidirectory", config_arg, "--console", "basic"],
+            cwd,
+            &log,
+            true,
+        )?
     } else {
         spawn_proc(
             &binary,
@@ -2373,6 +2608,46 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+/// Q18a checks a standing avatar on both departures. The C# neighbour's
+/// default island peaks at 25 m, below the 30 m landing: ubODE can put the
+/// avatar into FALLDOWN before the return PUT (Pin8 ScenePresenceAnimator).
+/// The seeded floor is the physics capsule, not the visual height: Pin8 adds
+/// 0.2 m to the box, so a 29 m seed intersects it and the contact push lifts
+/// the arrival through the landing.
+#[cfg(target_os = "linux")]
+async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), String> {
+    use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+
+    if !ferroan_bot::register::get(scenario).is_some_and(|row| row.neighbour_terrain) {
+        return Ok(());
+    }
+    fs::create_dir_all(cwd).map_err(|e| e.to_string())?;
+    let db = cwd.join("OpenSim.db");
+    fs::copy(
+        crate::repo_root().join("fixtures/db/sqlite/RegionStore.db"),
+        &db,
+    )
+    .map_err(|e| format!("copy neighbour store: {e}"))?;
+
+    // TerrainData.FromCompressedTerrainSerializationV2D at Pin8 reads
+    // revision 22 as two little-endian dimensions followed by float heights.
+    // The height is the capsule floor: visual height plus Pin8's 0.2 m box
+    // adjustment, then 5 cm of air under that capsule.
+    let floor = login_capture::neighbour_landing_floor(login_capture::NEIGHBOUR_AVATAR_HEIGHT);
+    let mut heights = 256_i32.to_le_bytes().repeat(2);
+    heights.extend_from_slice(&floor.to_le_bytes().repeat(256 * 256));
+    let mut conn = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(db))
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO terrain (RegionUUID, Revision, Heightfield) VALUES (?, 22, ?)")
+        .bind(NEIGHBOUR_UUID)
+        .bind(heights)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("seed neighbour landing terrain: {e}"))?;
+    conn.close().await.map_err(|e| e.to_string())
 }
 
 /// Copy the committed region-store fixture into this run's directory. The
@@ -2720,76 +2995,85 @@ fn request_count(path: &Path, passwords: &[String]) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    /// A stand-in server whose stop sends one request through a proxy, as the
-    /// C# neighbour's late CloseAgent does.
+    /// A stand-in server whose stop finds its upstream gone, as the C#
+    /// neighbour's late CloseAgent does. On drop it calls `upstream_was_gone`,
+    /// which shares `note_upstream_gone` with `forward`. The stand-in does not
+    /// stop the proxy and does not open a socket.
     #[cfg(target_os = "linux")]
-    struct LateCaller(SocketAddr);
+    struct LateCaller(ferroan_capture::ProxyStatus);
 
     #[cfg(target_os = "linux")]
     impl Drop for LateCaller {
         fn drop(&mut self) {
-            use std::io::{Read, Write};
-            let mut client = TcpStream::connect(self.0).unwrap();
-            client
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            client
-                .write_all(b"DELETE /agent/x/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                .unwrap();
-            let mut response = Vec::new();
-            let _ = client.read_to_end(&mut response);
-            assert!(response.is_empty());
+            self.0.upstream_was_gone();
         }
     }
 
     /// Four proxies on closed upstreams, in `run_linux` order: Robust private,
     /// Robust public, home, neighbour. Literal indexes, so a swapped constant
-    /// shows.
+    /// shows. Listeners are bound first. Each closed port is a bind of port 0
+    /// that is dropped, and it is none of those listen ports. Nothing after
+    /// that binds port 0.
     #[cfg(target_os = "linux")]
-    fn grid_proxies(name: &str) -> (Vec<SocketAddr>, crate::live_proxy::Proxies, Vec<PathBuf>) {
-        let binds: Vec<(SocketAddr, SocketAddr, PathBuf)> =
-            ["private", "public", "home", "neighbour"]
-                .iter()
-                .map(|which| {
-                    let closed = std::net::TcpListener::bind("127.0.0.1:0")
-                        .unwrap()
-                        .local_addr()
-                        .unwrap();
-                    let path = crate::repo_root().join(".scratch").join(format!(
-                        "stop-order-{name}-{which}-{}.cap",
-                        uuid::Uuid::new_v4()
-                    ));
-                    ("127.0.0.1:0".parse().unwrap(), closed, path)
-                })
-                .collect();
-        let (addresses, proxies) = crate::live_proxy::Proxies::start(&binds).unwrap();
-        (
-            addresses,
-            proxies,
-            binds.into_iter().map(|(_, _, path)| path).collect(),
-        )
+    fn grid_proxies(name: &str) -> (crate::live_proxy::Proxies, Vec<PathBuf>) {
+        let names = ["private", "public", "home", "neighbour"];
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|which| {
+                crate::repo_root().join(".scratch").join(format!(
+                    "stop-order-{name}-{which}-{}.cap",
+                    uuid::Uuid::new_v4()
+                ))
+            })
+            .collect();
+        let (listeners, closed) = crate::live_proxy::listeners_and_closed(names.len());
+        let upstreams: Vec<SocketAddr> = closed.iter().map(|upstream| upstream.address()).collect();
+        let (addresses, proxies) =
+            crate::live_proxy::Proxies::start_bound(listeners, &upstreams, &paths).unwrap();
+        for address in &addresses {
+            assert!(
+                closed.iter().all(|upstream| upstream.address() != *address),
+                "a proxy listened on a closed upstream port"
+            );
+        }
+        (proxies, paths)
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn each_server_is_marked_just_before_it_stops() {
-        // Each server's stop sends through its own proxy: all are marked.
-        let (addresses, proxies, paths) = grid_proxies("own");
-        let mut home = Some(LateCaller(addresses[2]));
-        let mut neighbour = Some(LateCaller(addresses[3]));
-        let mut robust = Some(LateCaller(addresses[0]));
+        // Each server's stop finds its own upstream gone: all three are marked.
+        // Literal indexes, so a swapped constant shows.
+        let (proxies, paths) = grid_proxies("own");
+        let mut home = Some(LateCaller(proxies.status(2).unwrap()));
+        let mut neighbour = Some(LateCaller(proxies.status(3).unwrap()));
+        let mut robust = Some(LateCaller(proxies.status(0).unwrap()));
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
         assert!(home.is_none() && neighbour.is_none() && robust.is_none());
+        for index in [2, 3, 0] {
+            let status = proxies.status(index).unwrap();
+            assert_eq!(status.refused_after_stop(), 1, "proxy {index}");
+            assert_eq!(status.failures(), 0, "proxy {index}");
+        }
+        // Robust's public proxy is marked with the private one. A late refusal
+        // there counts; dropping it from STOP_ORDER leaves the mark unset.
+        let robust_public = proxies.status(1).unwrap();
+        robust_public.upstream_was_gone();
+        assert_eq!(robust_public.refused_after_stop(), 1, "proxy 1");
+        assert_eq!(robust_public.failures(), 0, "proxy 1");
         proxies.finish().unwrap();
         for path in paths {
             let _ = fs::remove_file(path);
         }
-        // Home's stop calls the neighbour, which is still meant to be up.
-        let (addresses, proxies, paths) = grid_proxies("early");
-        let mut home = Some(LateCaller(addresses[3]));
+        // Home's stop finds the neighbour gone while that neighbour is meant to be up.
+        let (proxies, paths) = grid_proxies("early");
+        let mut home = Some(LateCaller(proxies.status(3).unwrap()));
         let mut neighbour: Option<LateCaller> = None;
         let mut robust: Option<LateCaller> = None;
         stop_in_order([&mut home, &mut neighbour, &mut robust], Some(&proxies));
+        let neighbour_status = proxies.status(3).unwrap();
+        assert_eq!(neighbour_status.failures(), 1);
+        assert_eq!(neighbour_status.refused_after_stop(), 0);
         let error = proxies.finish().unwrap_err();
         assert!(error.contains("recorded 1 failure(s)"), "{error}");
         for path in paths {
@@ -2914,6 +3198,7 @@ mod tests {
 
     fn sample_region<'a>(capture: Option<&'a str>) -> RegionIni<'a> {
         RegionIni {
+            prim_capture: false,
             name: HOME_NAME,
             uuid: live::REGION_UUID,
             x: HOME_X,
@@ -2929,6 +3214,24 @@ mod tests {
             capture,
             basic_physics: false,
         }
+    }
+
+    #[test]
+    fn prim_capture_disables_the_cache_in_the_capture_file_section() {
+        let mut region = sample_region(Some("capture-udp.cap"));
+        region.prim_capture = true;
+        let ini = region_server_ini(&region).unwrap();
+        assert_eq!(ini.matches("[ClientStack.LindenUDP]").count(), 1);
+        assert!(ini.contains("[ClientStack.LindenUDP]\n    CaptureFile = \"capture-udp.cap\"\n    SupportViewerObjectsCache = false"));
+    }
+
+    #[test]
+    fn a_stored_scene_without_a_capture_still_turns_the_viewer_cache_off() {
+        let mut region = sample_region(None);
+        region.prim_capture = true;
+        let ini = region_server_ini(&region).unwrap();
+        assert!(ini.ends_with("\n[ClientStack.LindenUDP]\n    SupportViewerObjectsCache = false\n"));
+        assert!(!region_server_ini(&sample_region(None)).unwrap().contains("ClientStack"));
     }
 
     #[test]
@@ -2990,6 +3293,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3019,6 +3323,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3057,6 +3362,7 @@ mod tests {
                 asset: Some("http://127.0.0.1:9"),
                 account: None,
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3078,6 +3384,7 @@ mod tests {
                     asset: Some("http://bad uri"),
                     account: None,
                     auth: None,
+                    groups: None,
                 },
             )
             .is_err()
@@ -3116,6 +3423,7 @@ mod tests {
                 asset: None,
                 account: Some("http://127.0.0.1:9"),
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3156,6 +3464,7 @@ mod tests {
                 asset: Some("http://127.0.0.1:9"),
                 account: Some("http://127.0.0.1:9"),
                 auth: None,
+                groups: None,
             },
         )
         .unwrap();
@@ -3178,6 +3487,7 @@ mod tests {
                 asset: None,
                 account: None,
                 auth: Some("http://127.0.0.1:9"),
+                groups: None,
             },
         )
         .unwrap();
@@ -3212,6 +3522,7 @@ mod tests {
                 asset: None,
                 account: Some("http://127.0.0.1:9"),
                 auth: Some("http://127.0.0.1:9"),
+                groups: None,
             },
         )
         .unwrap();
@@ -3250,6 +3561,7 @@ mod tests {
                     asset: None,
                     account: None,
                     auth: None,
+                    groups: None,
                 },
             )
             .unwrap();

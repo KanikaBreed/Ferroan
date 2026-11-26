@@ -25,7 +25,9 @@ pub use client::{
 pub use error::HttpError;
 pub use llsd_http::{LlsdBody, llsd_from_http_body, llsd_response, llsd_response_status};
 pub use nodelay::{accepted_nodelay, set_tcp_nodelay};
-pub use query::{build_query_string, parse_query_string, parse_query_string_limited};
+pub use query::{
+    build_query_string, parse_query_string, parse_query_string_limited, parse_query_with_list_limit,
+};
 pub use service::{BodyLimit, FormBody, XmlResponse, form_router, read_body, xml_response};
 pub use value::{Field, FieldMap};
 pub use xml::{build_xml_response, parse_xml_response, parse_xml_response_limited};
@@ -49,6 +51,9 @@ pub const MAX_QUERY_BYTES: usize = 1024 * 1024;
 
 /// Keys in one map, including list items added one at a time.
 pub const MAX_FIELDS: usize = 4096;
+
+/// Default page returned by BaseHttpServer.GetHTTP404 at Pin8.
+pub const HTTP_404: &str = "<HTML><HEAD><TITLE>404 Page not found</TITLE><BODY><BR /><H1>Ooops!</H1><P>The page you requested has been obsconded with by knomes. Find hippos quick!</P></BODY></HTML>";
 
 #[cfg(test)]
 mod tests {

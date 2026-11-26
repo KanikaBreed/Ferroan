@@ -1,0 +1,51 @@
+format 1
+scenario drop
+revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+baseline pin8-linux-x86_64
+heartbeat 1/11
+rate_hz 11
+physics_rate_hz 0
+substepping false
+step_source one_step
+warmup_steps 1
+subscribe_ms 100
+native_file libjoltc.so
+native_size 2046568
+native_sha256 5FC051708BDD05031A816796612A2F87E17ED32CC198F195A43B2305B3D990FD
+native_rid linux-x64
+package JoltPhysics.Native
+package_version 1.0.4
+harness_commit c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+first_heartbeat 0
+first_t 3FB745D1745D1746
+samples 31
+events 16
+phases 19
+provider_calls 6
+stock_providers 0
+seam_calls 6
+seam_forwarded 6
+dt_f64 3FB745D1745D1746
+simulate_dt_f32 3DBA2E8C
+effective_step_rate 00000000
+effective_warning none
+effective_note none
+body_local 1000
+body_handle 16777217
+material_pins false
+use_defaults false
+shipped_config true
+warm_up true
+simulator_prims true
+region_mesher true
+presets_before_setup empty_scene
+channel samples 64C836EC97A08D2C632533BCC555248D96B97B779A948B584371FA2F0EEA1201
+channel events 17DC6C2D8B14123D60449005509ABD401A23C8F40E8B58B91ECAE160A95EAF12
+channel providers FC0CFAC36FC17B9D5237DCF44A4962607F784B82A709DA87AA5EEAA564628814
+channel clock 3BC6474735F3F100CD03E34041C1B7519EEDCCD9EC619CECA45B78FB5309E281
+channel config 3473AB2E7D29486048AFC40A5334AAE78238F0D32E151B2BD627888A36C2BE13
+channel materials 874F04DFBDAD1E3306519DEF1436FE30E90991E17D569A1727BC510EE826E16E
+channel assets 911E617217C41A7E608E5283E3D275870606EE9FD2E21AFB77EA69CDACA1FF97
+channel cache 2396A3C506CC00C4A3F23629DE1D3A94FDE7053C4F0BE18EC8E0601F40AFC557
+negative clock
+negative collider

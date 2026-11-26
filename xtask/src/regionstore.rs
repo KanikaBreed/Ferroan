@@ -31,6 +31,7 @@ const XML_READ_DUMP: &str = "fixtures/regionstore/objects-xml-read.json";
 const MYSQL_DUMP: &str = "fixtures/regionstore/objects-mysql.json";
 const POSTGRES_DUMP: &str = "fixtures/regionstore/objects-postgres.json";
 const REGION: &str = "11111111-1111-1111-1111-111111111111";
+const SCALE_FIXTURE: &str = "fixtures/prim-scale/pin8-scales.txt";
 struct RegionstoreRun {
     mysql_name: String,
     mysql_port: u16,
@@ -57,8 +58,157 @@ pub fn generate() -> ExitCode {
     dispatch(true)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn seed_prim_load(db: &Path) -> Result<(), String> {
+    let dll = build_oracle().map_err(|_| "could not build the pinned region store oracle")?;
+    if oracle(
+        &dll,
+        &[
+            "prim-load-seed",
+            db.to_str().ok_or("invalid store path")?,
+            crate::live::REGION_UUID,
+            crate::live::ESTATE_OWNER,
+        ],
+    ) {
+        Ok(())
+    } else {
+        Err("could not persist the 500-part store".into())
+    }
+}
+
+/// Seed only the store. The C# grid opens a copy and records the wire fixture.
+pub fn prim_seed() -> ExitCode {
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let dir = crate::repo_root().join(".scratch/prim-seed");
+    let db = dir.join("scene.db");
+    if let Err(error) = fs::create_dir_all(&dir).and_then(|()| {
+        if db.exists() {
+            fs::remove_file(&db)?;
+        }
+        Ok(())
+    }) {
+        eprintln!("prim-seed: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !oracle(
+        &dll,
+        &[
+            "prim-seed",
+            &db.to_string_lossy(),
+            crate::live::REGION_UUID,
+            crate::live::ESTATE_OWNER,
+        ],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    println!("prim-seed: wrote {}", db.display());
+    ExitCode::SUCCESS
+}
+
 pub fn verify() -> ExitCode {
     dispatch(false)
+}
+
+/// Write `fixtures/prim-scale/pin8-scales.txt`, or check it against a fresh run.
+pub fn scales(writing: bool) -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| pinned_revision(&text))
+    {
+        Ok(pin) => pin,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let text = match oracle_stdout(&dll, &["scales", &pinned]) {
+        Some(text) => text,
+        None => return ExitCode::FAILURE,
+    };
+    let path = root.join(SCALE_FIXTURE);
+    if writing {
+        if let Err(error) = fs::write(&path, &text) {
+            eprintln!("{LABEL}: could not write {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("{LABEL}: wrote {SCALE_FIXTURE}");
+        return ExitCode::SUCCESS;
+    }
+    let committed = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("{LABEL}: could not read {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if committed != text.as_bytes() {
+        eprintln!("{LABEL}: {SCALE_FIXTURE} differs from the pin");
+        return ExitCode::FAILURE;
+    }
+    println!("{LABEL}: {SCALE_FIXTURE} matches the pin");
+    ExitCode::SUCCESS
+}
+
+/// Regenerate the SQLite parcel load from the same schema and seed as the Rust test.
+pub fn parcels() -> ExitCode {
+    let root = crate::repo_root();
+    let dll = match build_oracle() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let result = (|| -> Result<(), String> {
+        let pin = pinned_revision(
+            &fs::read_to_string(root.join("docs/REFERENCES.md")).map_err(|e| e.to_string())?,
+        )?;
+        let db = root.join(".scratch/regionstore-oracle/parcels.db");
+        fs::copy(root.join(FIXTURE), &db).map_err(|e| e.to_string())?;
+        let json = oracle_stdout(
+            &dll,
+            &[
+                "parcels",
+                &db.to_string_lossy(),
+                "fixtures/regionstore/parcels.sql",
+                REGION,
+                &pin,
+            ],
+        )
+        .ok_or("parcel oracle failed")?;
+        fs::write(root.join("fixtures/regionstore/parcels.json"), json)
+            .map_err(|e| e.to_string())?;
+        let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .current_dir(&root)
+            .env("FERROAN_PARCEL_ORACLE_DB", db)
+            .args([
+                "test",
+                "--locked",
+                "-p",
+                "ferroan-scene",
+                "--lib",
+                "regionstore_parcels_match_pin8_load_and_access_entries",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("SQLite parcel comparison exited with {status}"))
+        }
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{LABEL}: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Seed a SQLite region store and write the settings dump for one region.
@@ -149,6 +299,14 @@ pub fn serialize() -> ExitCode {
 /// from the objects it read. One group also carries an unknown part element
 /// and an unknown shape element; both are skipped.
 pub fn read() -> ExitCode {
+    xml_capture("read", XML_READ_DUMP)
+}
+
+pub fn coalesced() -> ExitCode {
+    xml_capture("coalesced", "fixtures/regionstore/coalesced.json")
+}
+
+fn xml_capture(command: &str, output: &str) -> ExitCode {
     let root = crate::repo_root();
     let dll = match build_oracle() {
         Ok(path) => path,
@@ -170,16 +328,16 @@ pub fn read() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let source_arg = source.display().to_string();
-    let json = match oracle_stdout(&dll, &["read", &source_arg, &pinned]) {
+    let json = match oracle_stdout(&dll, &[command, &source_arg, &pinned]) {
         Some(text) => text,
         None => return ExitCode::FAILURE,
     };
-    let dump = root.join(XML_READ_DUMP);
+    let dump = root.join(output);
     if let Err(error) = fs::write(&dump, json) {
         eprintln!("{LABEL}: could not write {}: {error}", dump.display());
         return ExitCode::FAILURE;
     }
-    println!("{LABEL}: wrote {XML_READ_DUMP}");
+    println!("{LABEL}: wrote {output}");
     ExitCode::SUCCESS
 }
 
@@ -312,6 +470,9 @@ fn start_mysql(ports: &RegionstoreRun) -> Result<MysqlContainer, String> {
         return Err(format!("docker run exited with {status}"));
     }
     let container = MysqlContainer { name: name.clone() };
+    // Over TCP: the image's first-start server answers on its socket only
+    // (`--skip-networking`) and then restarts, so a socket ping can pass
+    // before the published port accepts the seed.
     for _ in 0..60 {
         let ready = Command::new("docker")
             .args([
@@ -319,6 +480,8 @@ fn start_mysql(ports: &RegionstoreRun) -> Result<MysqlContainer, String> {
                 name,
                 "mysqladmin",
                 "ping",
+                "--protocol=TCP",
+                "-h127.0.0.1",
                 "-uroot",
                 "-pferroan",
                 "--silent",
@@ -440,20 +603,23 @@ fn postgres_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) ->
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: PostgreSQL oracle dump matches {POSTGRES_DUMP}");
-    if postgres_tests(root, &rust_url) {
+    if postgres_tests(root, dll, &rust_url, &csharp) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
 }
 
-fn postgres_tests(root: &Path, connection: &str) -> bool {
+/// `ado` is the C# connection string the terrain tests hand the oracle.
+fn postgres_tests(root: &Path, dll: &Path, connection: &str, ado: &str) -> bool {
     let mut command = Command::new("cargo");
     command
         .current_dir(root)
         .env("FERROAN_REGIONSTORE", "1")
+        .env("FERROAN_REGIONSTORE_ORACLE", dll)
         .env("FERROAN_REGIONSTORE_CROSS", "1")
         .env("FERROAN_REGIONSTORE_POSTGRES", connection)
+        .env("FERROAN_REGIONSTORE_POSTGRES_ADO", ado)
         .args([
             "test",
             "-p",
@@ -509,14 +675,15 @@ fn mysql_cross(root: &Path, dll: &Path, pin: &str, ports: &RegionstoreRun) -> Ex
         return ExitCode::FAILURE;
     }
     println!("{LABEL}: MySQL oracle dump matches {MYSQL_DUMP}");
-    if mysql_tests(root, dll, &rust_url) {
+    if mysql_tests(root, dll, &rust_url, &csharp) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
 }
 
-fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
+/// `ado` is the C# connection string the terrain tests hand the oracle.
+fn mysql_tests(root: &Path, dll: &Path, connection: &str, ado: &str) -> bool {
     let mut command = Command::new("cargo");
     command
         .current_dir(root)
@@ -524,6 +691,7 @@ fn mysql_tests(root: &Path, dll: &Path, connection: &str) -> bool {
         .env("FERROAN_REGIONSTORE_ORACLE", dll)
         .env("FERROAN_REGIONSTORE_CROSS", "1")
         .env("FERROAN_REGIONSTORE_MYSQL", connection)
+        .env("FERROAN_REGIONSTORE_MYSQL_ADO", ado)
         .args([
             "test",
             "-p",

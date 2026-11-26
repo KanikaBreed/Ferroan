@@ -93,21 +93,21 @@ pub fn from_original_xml(xml: &str) -> Option<ObjectGroup> {
 
 /// XML2 with the clock a missing item `CreationDate` uses.
 pub(crate) fn from_xml2_at(xml: &str, now: u32) -> Option<ObjectGroup> {
-    bounded(xml)?;
+    bounded(xml.len())?;
     let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
     read_xml2(&root, now)
 }
 
 /// Original XML with the clock a missing item `CreationDate` uses.
 pub(crate) fn from_original_xml_at(xml: &str, now: u32) -> Option<ObjectGroup> {
-    bounded(xml)?;
+    bounded(xml.len())?;
     let xml = sanitize_xml(xml);
     let root = ferroan_llsd::xml::parse(xml.as_bytes()).ok()?;
     read_original(&root, now)
 }
 
-fn bounded(xml: &str) -> Option<()> {
-    let bytes = u64::try_from(xml.len()).unwrap_or(u64::MAX);
+pub(super) fn bounded(len: usize) -> Option<()> {
+    let bytes = u64::try_from(len).unwrap_or(u64::MAX);
     if bytes > MAX_OBJECT_XML_BYTES {
         refuse(
             OBJECT_XML_BYTES,
@@ -121,7 +121,7 @@ fn bounded(xml: &str) -> Option<()> {
     Some(())
 }
 
-fn unix_now() -> u32 {
+pub(super) fn unix_now() -> u32 {
     u32::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -150,12 +150,13 @@ fn read_xml2(root: &Element, now: u32) -> Option<ObjectGroup> {
     let mut starts = Vec::new();
     gather(root, "StartStr", &mut starts);
     Some(ObjectGroup {
+        from_item_id: Uuid::nil(),
         rez_parameter: starts.first().map(|child| child.text()),
         parts,
     })
 }
 
-fn read_original(root: &Element, now: u32) -> Option<ObjectGroup> {
+pub(super) fn read_original(root: &Element, now: u32) -> Option<ObjectGroup> {
     if root.name != "SceneObjectGroup" {
         return None;
     }
@@ -192,6 +193,7 @@ fn read_original(root: &Element, now: u32) -> Option<ObjectGroup> {
         }
     }
     Some(ObjectGroup {
+        from_item_id: Uuid::nil(),
         rez_parameter: rez,
         parts,
     })
@@ -896,7 +898,7 @@ fn decode_b64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn sanitize_xml(xml: &str) -> String {
+pub(super) fn sanitize_xml(xml: &str) -> String {
     let Some(start) = xml.find("xmlns:xmlns:") else {
         return xml.to_owned();
     };
@@ -983,7 +985,7 @@ fn blank_item(now: u32) -> InventoryItem {
     }
 }
 
-fn blank_part() -> ObjectPart {
+pub(crate) fn blank_part() -> ObjectPart {
     ObjectPart {
         uuid: Uuid::nil(),
         link_num: 0,

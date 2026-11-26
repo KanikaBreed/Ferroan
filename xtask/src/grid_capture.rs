@@ -14,6 +14,9 @@ use ferroan_capture::{Kind, Record, read_complete_prefix};
 use ferroan_http::{Field, FieldMap, build_query_string, parse_query_string};
 use serde_json::{Map, Value, json};
 
+#[path = "object_cross_capture.rs"]
+pub(super) mod object_cross;
+
 const MAX_CAPTURE: u64 = 64 * 1024 * 1024;
 const MAX_BODY: u64 = 1024 * 1024;
 const AGENT: &str = "00000000-0000-4000-8000-000000000001";
@@ -191,10 +194,42 @@ pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> 
     service_exchanges_selected(directory, true)
 }
 
-pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
+/// The C# login scenario uses one fresh circuit and one GridUser report. Only
+/// its request is needed to verify what Robust stored, even if replies overlap.
+pub(super) fn verify_login_set_position(
+    records: &[Record],
+    stored: [f32; 3],
+) -> Result<(), String> {
+    let mut position = None;
+    for record in records.iter().filter(|r| r.kind == Kind::HttpRequest) {
+        let request = Message::parse(&record.bytes)?;
+        if request.probe || request.method != "POST" || request.path != "/griduser" {
+            continue;
+        }
+        let fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
+        if text_field(&fields, "METHOD")? != "setposition"
+            || text_field(&fields, "UserID")? != crate::live::ESTATE_OWNER
+            || text_field(&fields, "RegionID")? != crate::live::REGION_UUID
+        {
+            continue;
+        }
+        let sent = super::login_probe::vector(&text_field(&fields, "Position")?)
+            .ok_or("invalid C# login setposition coordinates")?;
+        if position.replace(sent).is_some() {
+            return Err("ambiguous C# login setposition reports".into());
+        }
+    }
+    let sent = position.ok_or("missing C# login setposition report")?;
+    if sent != stored {
+        return Err(format!(
+            "GridUser LastPosition {stored:?} differs from C# setposition {sent:?}"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn root_arrival_marker(directory: &Path, revision: &str) -> Result<Value, String> {
     use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
-    const CHANNEL: &[u8] =
-        b"OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)\0";
     for record in records(&directory.join("capture-udp.cap"))? {
         if record.kind != Kind::UdpOut {
             continue;
@@ -207,11 +242,10 @@ pub(super) fn root_arrival_marker(directory: &Path) -> Result<Value, String> {
         let arrival = packet
             .decode::<AgentMovementComplete>()
             .map_err(|_| "invalid captured root arrival")?;
-        if arrival.sim_data.channel_version != CHANNEL {
-            return Err("root-arrival capture lacks the pinned C# channel/version marker".into());
-        }
+        let channel =
+            crate::arrival_fixtures::pinned_channel(&arrival.sim_data.channel_version, revision)?;
         return Ok(
-            json!({"channel_version":String::from_utf8_lossy(CHANNEL).trim_end_matches('\0'), "arrival_position":arrival.data.position.to_array(), "arrival_look_at":arrival.data.look_at.to_array(), "arrival_handle":arrival.data.region_handle}),
+            json!({"channel_version":channel, "arrival_position":arrival.data.position.to_array(), "arrival_look_at":arrival.data.look_at.to_array(), "arrival_handle":arrival.data.region_handle}),
         );
     }
     Err("root-arrival capture has no outgoing arrival".into())
@@ -281,6 +315,7 @@ pub(super) fn compare_root_arrival(directory: &Path) -> Result<String, String> {
 }
 
 const HARNESS_CHAT: &str = "ferroan harness chat";
+const HARNESS_DEBUG: &str = "ferroan harness debug";
 struct HarnessSay {
     reliable: bool,
     zerocoded: bool,
@@ -294,7 +329,7 @@ struct HarnessSay {
     message: Vec<u8>,
 }
 
-fn harness_says(records: &[Record]) -> Result<Vec<HarnessSay>, String> {
+fn harness_says(records: &[Record], message: &str) -> Result<Vec<HarnessSay>, String> {
     use ferroan_protocol::{Msg, PacketFlags, field_str, msgs::ChatFromSimulator, parse_packet};
     let mut says = Vec::new();
     for record in records {
@@ -310,7 +345,7 @@ fn harness_says(records: &[Record]) -> Result<Vec<HarnessSay>, String> {
         let decoded = packet
             .decode::<ChatFromSimulator>()
             .map_err(|_| "captured ChatFromSimulator did not decode".to_string())?;
-        if field_str(&decoded.chat_data.message) != HARNESS_CHAT {
+        if field_str(&decoded.chat_data.message) != message {
             continue;
         }
         says.push(HarnessSay {
@@ -349,67 +384,76 @@ fn arrival_position(records: &[Record]) -> Result<[f32; 3], String> {
     Err("chat capture has no outgoing arrival".into())
 }
 
-/// Channel 0 say from the Ferroan region against the committed C# session.
-/// `fixtures/captures/session.cap` is a redacted `live run all`, so the name and
-/// owner id in that file are placeholders and the position is after the walk.
-/// The message bytes, source type, chat type, audible level and header flags
-/// are the comparison. The live name, both ids and this run's arrival X and Y
-/// are checked separately. Chat is read after later ticks, so Z is the arrival
-/// or the integer terrain cell under that arrival plus the avatar box.
+/// Both C# fixtures redact the name and owner. Check those on the live
+/// packets before comparing their wire fields. Positions belong to this run.
 pub(super) fn compare_local_chat(directory: &Path) -> Result<String, String> {
     let live = records(&directory.join("capture-udp.cap"))?;
-    let fixture = records(&crate::repo_root().join("fixtures/captures/session.cap"))?;
-    let csharp = harness_says(&fixture)?;
-    let ferroan = harness_says(&live)?;
-    let reference = csharp
-        .first()
-        .ok_or("C# session capture has no harness say")?;
-    if ferroan.len() < 2 {
-        return Err(format!(
-            "Ferroan capture has {} harness say(s); the speaker and the listener each need one",
-            ferroan.len()
-        ));
-    }
+    let captures = crate::repo_root().join("fixtures/captures");
+    let arrival = arrival_position(&live)?;
+    let cell = home_terrain_cell(directory, arrival)?;
     let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER)
         .map_err(|_| "estate owner is not a uuid".to_string())?;
-    for say in &ferroan {
-        if !say.reliable || say.zerocoded {
-            return Err("harness say is not reliable and unencoded".into());
+    let mut lines = Vec::new();
+    for (message, fixture, description) in [
+        (
+            HARNESS_CHAT,
+            "session.cap",
+            "says match the C# session capture",
+        ),
+        (
+            HARNESS_DEBUG,
+            "chat-debug.cap",
+            "debug lines match the Pin8 C# DEBUG_CHANNEL capture",
+        ),
+    ] {
+        let csharp = harness_says(&records(&captures.join(fixture))?, message)?;
+        let reference = csharp
+            .first()
+            .ok_or_else(|| format!("{fixture} has no {message}"))?;
+        // The raw C# owner was the harness speaker in both captures.
+        let recorded_owner = if reference.owner_id == uuid::Uuid::from_u128(1) {
+            owner
+        } else {
+            reference.owner_id
+        };
+        let ferroan = harness_says(&live, message)?;
+        if ferroan.len() < 2 {
+            return Err(format!(
+                "expected {message} for both viewers, captured {}",
+                ferroan.len()
+            ));
         }
-        if say.message != reference.message
-            || say.source_type != reference.source_type
-            || say.chat_type != reference.chat_type
-            || say.audible != reference.audible
-            || say.reliable != reference.reliable
-            || say.zerocoded != reference.zerocoded
-        {
-            return Err("harness say fields differ from the C# session capture".into());
+        for say in &ferroan {
+            if say.message != reference.message
+                || say.source_type != reference.source_type
+                || say.chat_type != reference.chat_type
+                || say.audible != reference.audible
+                || say.reliable != reference.reliable
+                || say.zerocoded != reference.zerocoded
+                || say.source_id != reference.source_id
+                || say.owner_id != recorded_owner
+            {
+                return Err(format!("{message} fields differ from {fixture}"));
+            }
+            if say.name != "Test User" || say.source_id != owner {
+                return Err(format!(
+                    "{message} name or source differs from the speaking harness account"
+                ));
+            }
+            if say.position != ferroan[0].position
+                || !say_keeps_arrival_xy(say.position, arrival, cell)
+            {
+                return Err(format!(
+                    "{message} position differs between packets or from this run's arrival or standing snap"
+                ));
+            }
         }
-        if say.name != "Test User" || say.source_id != owner || say.owner_id != owner {
-            return Err(
-                "harness say name, source or owner is not the speaking harness account".into(),
-            );
-        }
-        if say.source_id != reference.source_id {
-            return Err("harness say source id differs from the C# session capture".into());
-        }
+        lines.push(format!(
+            "chat bytes: {} ChatFromSimulator {description} (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z is that arrival or the terrain cell plus {}",
+            ferroan.len(), ferroan_scene::AVATAR_SIZE_Z
+        ));
     }
-    let arrival = arrival_position(&live)?;
-    let position = ferroan[0].position;
-    if ferroan.iter().any(|say| say.position != position) {
-        return Err("harness says do not share one position".into());
-    }
-    let cell = home_terrain_cell(directory, arrival)?;
-    if !say_keeps_arrival_xy(position, arrival, cell) {
-        return Err(
-            "harness say position differs from this run's arrival or the standing snap".into(),
-        );
-    }
-    Ok(format!(
-        "chat bytes: {} ChatFromSimulator says match the C# session capture (agent, fully audible, reliable, not zero-coded); name Test User; source and owner are the speaker; X and Y match this run's arrival; Z is that arrival or the terrain cell plus {}",
-        ferroan.len(),
-        ferroan_scene::AVATAR_SIZE_Z
-    ))
+    Ok(lines.join("\n"))
 }
 
 /// X and Y stay on the arrival. Z is that arrival, or the integer cell under
@@ -571,6 +615,36 @@ const LANDING_POS: &str = "<128, 128, 30>";
 const SERVICE_08: f64 = 0.8;
 const SERVICE_03: f64 = 0.3;
 
+/// Visual height of the captured neighbour avatar (`packed_appearance.height`).
+///
+/// Pin8 `AvatarAppearance.SetSize` (`AvatarAppearance.cs` 488–514 at
+/// `c401bceecd`) copies this into the physics box and then adds `AVBOXAJUST`
+/// (0.2, line 44) to Z only. `AddToPhysicalScene` passes that box to ubODE
+/// (`ScenePresence.cs` 5530–5542). `OdeCharacter` stores half of it as the
+/// capsule half-height and puts the capsule centre at the requested position
+/// (`ODECharacter.cs` 194–204). The feet-offset argument is not applied there,
+/// so a 1.9 m avatar extends about 1.05 m below the landing.
+pub(super) const NEIGHBOUR_AVATAR_HEIGHT: f32 = 1.9;
+
+/// `AvatarAppearance.AVBOXAJUST` at Pin8. Added to the physics box Z only.
+pub(super) const NEIGHBOUR_PHYSICS_BOX_ADJUST: f32 = 0.2;
+
+/// Air under the capsule when it is created, in metres.
+///
+/// The resting centre is this far below `LANDING`. A C# arrival may fall
+/// (`CSHARP_LANDING_FALL`) and may not rise, so the seed must not start the
+/// capsule inside the terrain: that contact push lifts Z through the landing.
+/// Five centimetres does not reach the FALLDOWN gate (faster than 3 m/s for
+/// longer than 800 ms) before the return transfer's standing-animation check.
+pub(super) const NEIGHBOUR_FOOT_CLEARANCE: f32 = 0.05;
+
+/// Flat terrain that leaves `NEIGHBOUR_FOOT_CLEARANCE` under the capsule of a
+/// `visual_height` avatar spawned at `LANDING`.
+pub(super) fn neighbour_landing_floor(visual_height: f32) -> f32 {
+    let half_box = (visual_height + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
+    LANDING[2] - half_box - NEIGHBOUR_FOOT_CLEARANCE
+}
+
 /// Which server runs a region whose captures a check reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RegionServer {
@@ -717,10 +791,19 @@ fn check_udp_side(directory: &Path, side: &NeighbourSide) -> Result<UdpCounts, S
     let mut movement = 0usize;
     // Each arrival's position and look, so a failed run names what it sent.
     let mut arrivals = Vec::new();
-    for record in &captured {
-        let Ok(packet) = parse_packet(&record.bytes) else {
-            continue;
-        };
+    for (index, record) in captured.iter().enumerate() {
+        if !matches!(record.kind, Kind::UdpIn | Kind::UdpOut) {
+            return Err(format!(
+                "{} UDP capture record {index} has kind {:?}",
+                side.label, record.kind
+            ));
+        }
+        let packet = parse_packet(&record.bytes).map_err(|error| {
+            format!(
+                "{} UDP record {index} ({:?}) does not parse: {error}",
+                side.label, record.kind
+            )
+        })?;
         if packet.resent() {
             continue;
         }
@@ -1412,7 +1495,7 @@ fn service_exchanges_selected(directory: &Path, root_arrival: bool) -> Result<Va
     Ok(Value::Object(output))
 }
 
-fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
@@ -1582,7 +1665,7 @@ fn validate_json(name: &str, body: &Value, response: &Value) -> Result<(), Strin
     Ok(())
 }
 
-fn paired(records: &[Record], index: usize) -> Result<Message, String> {
+pub(super) fn paired(records: &[Record], index: usize) -> Result<Message, String> {
     let mut outstanding = 0usize;
     for record in &records[..index] {
         match record.kind {
@@ -1608,10 +1691,10 @@ fn paired(records: &[Record], index: usize) -> Result<Message, String> {
     Message::parse(&response.bytes)
 }
 
-struct Message {
-    method: String,
-    path: String,
-    status: Option<u16>,
+pub(super) struct Message {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) status: Option<u16>,
     content_type: String,
     encoding: String,
     x_encoding: String,
@@ -1620,7 +1703,7 @@ struct Message {
 }
 
 impl Message {
-    fn parse(bytes: &[u8]) -> Result<Self, String> {
+    pub(super) fn parse(bytes: &[u8]) -> Result<Self, String> {
         let split = bytes
             .windows(4)
             .position(|part| part == b"\r\n\r\n")
@@ -1678,7 +1761,7 @@ impl Message {
         Ok(message)
     }
 
-    fn text(&self) -> Result<String, String> {
+    pub(super) fn text(&self) -> Result<String, String> {
         if self.body.len() as u64 > MAX_BODY {
             return Err("encoded control-plane body exceeds size limit".to_string());
         }
@@ -1843,6 +1926,42 @@ mod tests {
     }
 
     #[test]
+    fn griduser_must_store_the_exact_csharp_login_report() {
+        let fixture: Value =
+            serde_json::from_slice(include_bytes!("../../fixtures/root-arrival/exchanges.json"))
+                .unwrap();
+        let form = fixture["services"]["griduser-setposition"]["request"]
+            .as_str()
+            .unwrap()
+            .replace(AGENT, crate::live::ESTATE_OWNER)
+            .replace(REGION, crate::live::REGION_UUID);
+        let request = |form: &str| Record {
+            kind: Kind::HttpRequest,
+            time_ms: 0,
+            bytes: format!(
+                "POST /griduser HTTP/1.1\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            )
+            .into_bytes(),
+        };
+        let sent = [128.0, 128.0, 25.960001];
+        let report = request(&form);
+        assert!(verify_login_set_position(std::slice::from_ref(&report), sent).is_ok());
+        assert!(
+            verify_login_set_position(std::slice::from_ref(&report), [128.0, 128.0, 25.96])
+                .is_err()
+        );
+        assert!(
+            verify_login_set_position(
+                &[request(&form.replace(crate::live::ESTATE_OWNER, "other"))],
+                sent
+            )
+            .is_err()
+        );
+        assert!(verify_login_set_position(&[report.clone(), report], sent).is_err());
+    }
+
+    #[test]
     fn generated_ids_normalize_without_hiding_semantic_fields() {
         let mut input = json!({
             "session_id": "11223344-5566-7788-99aa-bbccddeeff00",
@@ -1876,7 +1995,7 @@ mod tests {
     #[test]
     fn the_committed_session_say_matches_channel_zero_chat() {
         let records = records(&crate::repo_root().join("fixtures/captures/session.cap")).unwrap();
-        let says = harness_says(&records).unwrap();
+        let says = harness_says(&records, HARNESS_CHAT).unwrap();
         assert!(says.len() >= 2);
         let owner = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
         for say in &says {
@@ -1887,6 +2006,25 @@ mod tests {
             assert_eq!(say.audible, 1);
             assert_eq!(say.message, b"ferroan harness chat\0");
             assert_eq!(say.source_id, owner);
+        }
+    }
+
+    #[test]
+    fn the_pin8_debug_capture_contains_both_redacted_type_six_deliveries() {
+        let records =
+            records(&crate::repo_root().join("fixtures/captures/chat-debug.cap")).unwrap();
+        let says = harness_says(&records, HARNESS_DEBUG).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(says.len(), 2);
+        let speaker = uuid::Uuid::parse_str(crate::live::ESTATE_OWNER).unwrap();
+        for say in says {
+            assert!(say.reliable);
+            assert!(!say.zerocoded);
+            assert_eq!((say.source_type, say.chat_type, say.audible), (1, 6, 1));
+            assert_eq!(say.message, b"ferroan harness debug\0");
+            assert_eq!(say.source_id, speaker);
+            assert_eq!(say.owner_id, uuid::Uuid::from_u128(1));
+            assert_eq!(say.name, "Redacted");
         }
     }
 
@@ -2152,6 +2290,63 @@ mod tests {
     }
 
     #[test]
+    fn root_arrival_marker_checks_the_captured_commit() {
+        const PIN8: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            crate::repo_root().join("fixtures/walk/walk.cap"),
+            directory.join("capture-udp.cap"),
+        )
+        .unwrap();
+        let marker = root_arrival_marker(&directory, PIN8).unwrap();
+        assert_eq!(
+            marker["channel_version"],
+            "OpenSim-NGC Tranquillity Release 1.3.34-alpha+c401bceecd (X64/Unix/DotNet)"
+        );
+        let error = root_arrival_marker(&directory, crate::arrival_fixtures::PIN).unwrap_err();
+        assert!(error.contains("pinned C# channel/version"), "{error}");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_bad_neighbour_udp_record_reports_its_side_index_and_parse_error() {
+        let side = side_neighbour();
+        let mut captured = records(
+            &crate::repo_root()
+                .join("fixtures/neighbour-teleport")
+                .join(side.udp_file),
+        )
+        .unwrap();
+        let index = captured.len();
+        captured.push(Record {
+            kind: Kind::UdpOut,
+            time_ms: 0,
+            bytes: vec![0],
+        });
+        let directory = crate::repo_root()
+            .join(".scratch")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(side.udp_file),
+            ferroan_capture::write_capture(&captured).unwrap(),
+        )
+        .unwrap();
+        let error = check_udp_side(&directory, &side)
+            .err()
+            .expect("bad datagram");
+        fs::remove_dir_all(directory).unwrap();
+        assert!(
+            error.contains(&format!("neighbour UDP record {index} (UdpOut)")),
+            "{error}"
+        );
+        assert!(error.contains("packet too short"), "{error}");
+    }
+
+    #[test]
     fn neighbour_teleport_fixture_replays_and_compares() {
         let directory = crate::repo_root().join("fixtures/neighbour-teleport");
         let auth = format!("auth={SECRET}");
@@ -2177,6 +2372,81 @@ mod tests {
         assert!(line.contains("no UDP TeleportFinish"), "{line}");
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn neighbour_round_trip_supports_the_q18a_standing_avatar_at_landing() {
+        let fixture = crate::repo_root().join("fixtures/neighbour-teleport/proxy-neighbour.cap");
+        let create = records(&fixture)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == Kind::HttpRequest)
+            .map(|r| Message::parse(&r.bytes).unwrap())
+            .find(|r| r.method == "POST" && r.path.starts_with("/agent/"))
+            .unwrap();
+        let body = json_body(&create, "neighbour").unwrap();
+        assert_eq!(body["start_pos"], LANDING_POS);
+        let height = body["packed_appearance"]["height"].as_f64().unwrap() as f32;
+        assert_eq!(height, NEIGHBOUR_AVATAR_HEIGHT);
+        let half_box = (height + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
+
+        let dir = std::env::temp_dir().join(format!("neighbour-landing-{}", uuid::Uuid::new_v4()));
+        super::super::prepare_neighbour_landing("child-view", &dir)
+            .await
+            .unwrap();
+        assert!(!dir.exists());
+        super::super::prepare_neighbour_landing("neighbour", &dir)
+            .await
+            .unwrap();
+        let map = ferroan_scene::open_terrain(
+            &format!("Data Source={}", dir.join("OpenSim.db").display()),
+            super::super::NEIGHBOUR_UUID.parse().unwrap(),
+            256,
+            256,
+            ferroan_scene::ObjectStoreKind::Sqlite,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = fs::remove_dir_all(dir);
+        let [x, y, z] = LANDING;
+        let seeded = map.height_at(x, y);
+        assert_eq!(seeded, neighbour_landing_floor(height));
+        let clearance = z - half_box - seeded;
+        assert!(
+            (0.01..0.1).contains(&clearance),
+            "capsule clearance at the Q18a landing: {clearance} m"
+        );
+    }
+
+    #[test]
+    fn neighbour_landing_floor_clears_the_physics_capsule() {
+        let half_box = (NEIGHBOUR_AVATAR_HEIGHT + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
+        let bottom = LANDING[2] - half_box;
+        // The 29 m seed sat above this bottom. ubODE's contact push then
+        // raised the centre through the landing (run 45801235266, Z 30.021477).
+        assert!(29.0_f32 > bottom, "old seed penetrates: bottom {bottom}");
+        let floor = neighbour_landing_floor(NEIGHBOUR_AVATAR_HEIGHT);
+        let clearance = bottom - floor;
+        assert!(
+            (clearance - NEIGHBOUR_FOOT_CLEARANCE).abs() < 1.0e-6,
+            "clearance {clearance}"
+        );
+        assert!((0.01..0.1).contains(&clearance), "{clearance}");
+        let resting = floor + half_box;
+        assert!(
+            resting < LANDING[2],
+            "resting {resting} is above the landing"
+        );
+        assert!(
+            resting > LANDING[2] - CSHARP_LANDING_FALL,
+            "resting {resting} is outside the arrival window"
+        );
+        assert!(
+            29.0_f32 + half_box > LANDING[2],
+            "old resting height would not cross the landing"
+        );
+    }
+
     #[test]
     fn landing_allows_a_short_fall_on_csharp_regions_only() {
         let look = LANDING_LOOK;
@@ -2191,6 +2461,11 @@ mod tests {
             assert!(
                 !is_landing([128.0, 128.0, 30.002], look, server),
                 "{server:?} above"
+            );
+            // PR #330 run 45801235266: the contact push through a 29 m seed.
+            assert!(
+                !is_landing([128.0, 128.0, 30.021477], look, server),
+                "{server:?} contact push"
             );
             assert!(
                 !is_landing([128.01, 128.0, 30.0], look, server),

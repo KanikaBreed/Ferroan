@@ -29,6 +29,8 @@
 // and Source/OpenSim.Framework.Servers.HttpServer/{BaseHttpServer,PollServiceHttpRequest}.cs,
 // plus OSHttpServer/HttpResponse.cs there (default MIME and error connection close),
 // OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c.
+// ObjectAnimation and PBR seed negotiation follow BunchOfCaps.cs at
+// KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -178,6 +180,8 @@ struct CapsState {
     granted: Vec<GrantedCap>,
     /// `CapsFlags.SentSeeds`: set once a seed request has been answered.
     seeds_sent: Arc<AtomicBool>,
+    object_animations: Arc<AtomicBool>,
+    supports_pbr: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -290,6 +294,8 @@ impl CapsRegistry {
                 agent_id,
                 granted,
                 seeds_sent: Arc::new(AtomicBool::new(false)),
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
             },
             events_path,
         });
@@ -309,12 +315,26 @@ impl CapsRegistry {
     /// The flag a seed answer sets for this agent's registration
     /// (`CapsFlags.SentSeeds`). `None` when the agent has no seed here.
     pub fn seeds_sent(&self, agent_id: Uuid) -> Option<Arc<AtomicBool>> {
+        self.seed_flags(agent_id).map(|(sent, _, _)| sent)
+    }
+
+    /// Generation-specific SentSeeds, ObjectAnim and PBR flags for the region circuit.
+    pub fn seed_flags(
+        &self,
+        agent_id: Uuid,
+    ) -> Option<(Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>)> {
         self.active
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .iter()
             .find(|registered| registered.state.agent_id == agent_id)
-            .map(|registered| Arc::clone(&registered.state.seeds_sent))
+            .map(|registered| {
+                (
+                    Arc::clone(&registered.state.seeds_sent),
+                    Arc::clone(&registered.state.object_animations),
+                    Arc::clone(&registered.state.supports_pbr),
+                )
+            })
     }
 
     /// Close one agent's seed, event queue and granted paths.
@@ -367,6 +387,61 @@ impl CapsRegistry {
             registered.state.queue.clone()
         };
         queue.enqueue(event)
+    }
+
+    /// Queue one already-encoded element when exactly one agent is registered.
+    /// `caller` is the name a limit readout shows for this enqueue.
+    pub fn enqueue_raw(&self, element: &[u8], caller: &str) -> Result<(), EventQueueError> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if active.len() != 1 {
+            return Err(EventQueueError::Closed);
+        }
+        active[0].state.queue.enqueue_bytes(element, caller)
+    }
+
+    /// Queue one already-encoded element on one agent's event queue.
+    ///
+    /// A missing agent is [`EventQueueError::Closed`]. The bytes are stored as
+    /// the element `GetEvents` writes into the events array. `caller` is the
+    /// name a limit readout shows for this enqueue.
+    pub fn enqueue_raw_for(
+        &self,
+        agent_id: Uuid,
+        element: &[u8],
+        caller: &str,
+    ) -> Result<(), EventQueueError> {
+        let queue = {
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(registered) = active
+                .iter()
+                .find(|registered| registered.state.agent_id == agent_id)
+            else {
+                return Err(EventQueueError::Closed);
+            };
+            registered.state.queue.clone()
+        };
+        queue.enqueue_bytes(element, caller)
+    }
+
+    /// Elements waiting on one agent's queue, in enqueue order.
+    pub fn queued_events(&self, agent_id: Uuid) -> Result<Vec<Vec<u8>>, EventQueueError> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(registered) = active
+            .iter()
+            .find(|registered| registered.state.agent_id == agent_id)
+        else {
+            return Err(EventQueueError::Closed);
+        };
+        Ok(registered.state.queue.queued())
     }
 
     /// Merge this fallback with the region's more specific simulation routes.
@@ -562,6 +637,8 @@ impl CapsServer {
             agent_id: Uuid::nil(),
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
         };
         let queue = state.queue.clone();
         let app = Router::new()
@@ -602,6 +679,12 @@ impl CapsServer {
     pub fn enqueue_event(&self, event: Llsd) -> Result<(), EventQueueError> {
         self.queue.enqueue(event)
     }
+
+    /// Queue one already-encoded element for the next poll.
+    /// `caller` is the name a limit readout shows for this enqueue.
+    pub fn enqueue_raw(&self, element: &[u8], caller: &str) -> Result<(), EventQueueError> {
+        self.queue.enqueue_bytes(element, caller)
+    }
 }
 
 fn is_seed_content_type(headers: &axum::http::HeaderMap) -> bool {
@@ -636,6 +719,14 @@ async fn seed(State(state): State<CapsState>, request: Request) -> Response {
     }
     for name in names {
         let text = name.to_osd_string();
+        if text == "ObjectAnimation" {
+            state.object_animations.store(true, Ordering::Release);
+        }
+        // VTPBR on a 256 m region and VETPBR also set TPBR. The second
+        // RegionHandshake that follows TPBR is not this send.
+        if matches!(text.as_str(), "VTPBR" | "VETPBR" | "ModifyMaterialParams") {
+            state.supports_pbr.store(true, Ordering::Release);
+        }
         if text == "EventQueueGet" {
             continue;
         }
@@ -810,6 +901,8 @@ mod tests {
             agent_id: Uuid::nil(),
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
         };
         // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
         let request = Request::builder()
@@ -845,6 +938,61 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_raw_queues_only_when_one_agent_is_registered() {
+        let element = b"<map><key>Name</key><string>Bob&apos;s Place</string></map>";
+        let none = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        assert!(matches!(
+            none.enqueue_raw(element, "event-queue"),
+            Err(EventQueueError::Closed)
+        ));
+
+        let one = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let agent = Uuid::from_u128(1);
+        one.register_agent(&format!("/CAPS/{agent}0000/"), agent)
+            .unwrap();
+        one.enqueue_raw(element, "event-queue").unwrap();
+        assert_eq!(one.queued_events(agent).unwrap(), vec![element.to_vec()]);
+
+        let two = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        two.register_agent(&format!("/CAPS/{first}0000/"), first)
+            .unwrap();
+        two.register_agent(&format!("/CAPS/{second}0000/"), second)
+            .unwrap();
+        assert!(matches!(
+            two.enqueue_raw(element, "event-queue"),
+            Err(EventQueueError::Closed)
+        ));
+    }
+
+    /// `enqueue_raw_for` forwards its caller into the limit readout. The
+    /// high-water latch is shared, so a climb that loses the slot tries again.
+    #[test]
+    fn parcel_properties_caller_reaches_the_limit_readout() {
+        let element = b"<map />";
+        let mut readout = String::new();
+        for _ in 0..8 {
+            ferroan_diag::observe(ferroan_diag::EVENT_QUEUE, 256, 0, "parcel-properties");
+            let registry = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+            let agent = Uuid::from_u128(1);
+            registry
+                .register_agent(&format!("/CAPS/{agent}0000/"), agent)
+                .unwrap();
+            for _ in 0..205 {
+                registry
+                    .enqueue_raw_for(agent, element, "parcel-properties")
+                    .unwrap();
+            }
+            readout = ferroan_diag::render();
+            if readout.contains("route=parcel-properties") {
+                return;
+            }
+        }
+        panic!("limit readout did not record route=parcel-properties\n{readout}");
+    }
+
+    #[test]
     fn seed_capability_lookup_uses_osd_as_string_and_ignores_unknown_types() {
         assert!(wants_event_queue(&[Llsd::Uri("EventQueueGet".into())]).unwrap());
         assert!(
@@ -862,6 +1010,58 @@ mod tests {
             ])
             .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn pbr_seed_names_set_the_flag_before_the_seed_is_marked_sent() {
+        for name in ["VTPBR", "VETPBR", "ModifyMaterialParams"] {
+            let state = CapsState {
+                event_queue_url: "http://example.invalid/CE/test".into(),
+                queue: EventQueue::new(),
+                agent_id: Uuid::nil(),
+                granted: Vec::new(),
+                seeds_sent: Arc::new(AtomicBool::new(false)),
+                object_animations: Arc::default(),
+                supports_pbr: Arc::default(),
+            };
+            let pbr = Arc::clone(&state.supports_pbr);
+            let sent = Arc::clone(&state.seeds_sent);
+            let request = Request::builder()
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/llsd+xml")
+                .body(axum::body::Body::from(name_list(["EventQueueGet", name])))
+                .unwrap();
+            let response = seed(State(state), request).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(pbr.load(Ordering::Acquire));
+            assert!(sent.load(Ordering::Acquire));
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let map = from_xml(&body).unwrap();
+            assert!(map.get(name).is_undef());
+        }
+        let state = CapsState {
+            event_queue_url: "http://example.invalid/CE/test".into(),
+            queue: EventQueue::new(),
+            agent_id: Uuid::nil(),
+            granted: Vec::new(),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
+            supports_pbr: Arc::default(),
+        };
+        let pbr = Arc::clone(&state.supports_pbr);
+        let request = Request::builder()
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, "application/llsd+xml")
+            .body(axum::body::Body::from(name_list([
+                "EventQueueGet",
+                "GetTexture",
+            ])))
+            .unwrap();
+        let response = seed(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!pbr.load(Ordering::Acquire));
     }
 
     fn name_list<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<u8> {
@@ -913,13 +1113,16 @@ mod tests {
             404
         );
         registry.register(&path).unwrap();
+        let (_, animations, _) = registry.seed_flags(Uuid::nil()).unwrap();
+        assert!(!animations.load(Ordering::Acquire));
         assert!(matches!(registry.register(&path), Err(CapsError::Occupied)));
         let (status, bytes, _) = post(
             &seed_url,
             "application/llsd+xml",
-            name_list(["EventQueueGet"]),
+            name_list(["EventQueueGet", "ObjectAnimation"]),
         )
         .await;
+        assert!(animations.load(Ordering::Acquire));
         assert_eq!(status, 200);
         let map = from_xml(&bytes).unwrap();
         let events = map.get("EventQueueGet").as_str().to_owned();
@@ -1203,6 +1406,23 @@ mod tests {
         let http = ferroan_bot::login::http_client().unwrap();
         let response = http.get(server.seed_url()).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 404);
+    }
+
+    /// `CapsServer::enqueue_raw` keeps the caller and the next poll returns
+    /// the element.
+    #[tokio::test]
+    async fn enqueue_raw_returns_the_element_on_the_next_poll() {
+        let server = CapsServer::bind().await.unwrap();
+        let element = b"<map><key>Name</key><string>West</string></map>";
+        server.enqueue_raw(element, "parcel-properties").unwrap();
+        let (status, body, _) =
+            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
+        assert_eq!(status, 200);
+        assert!(
+            body.windows(element.len()).any(|window| window == element),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]

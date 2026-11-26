@@ -694,14 +694,13 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, basic_physics: bool) -> Result<String, String> {
-    if scenario == "ferrobot" {
+    if ferroan_bot::register::get(scenario)
+        .is_some_and(|row| row.runner == ferroan_bot::register::Runner::Ferrobot)
+    {
         return run_ferrobot(basic_physics);
     }
-    if scenario != "uploads" && ferroan_bot::scenario::selection(scenario).is_none() {
-        return Err(format!(
-            "unknown scenario {scenario}; expected all, uploads or {}",
-            ferroan_bot::scenario::NAMES.join(", ")
-        ));
+    if !ferroan_bot::register::runs_standalone(scenario) {
+        return Err(ferroan_bot::register::standalone_unknown(scenario));
     }
     if let Some(pid) = standalone_is_up()? {
         return Err(format!(
@@ -1578,8 +1577,7 @@ fn shutdown_at(grid: &Path, standalone: &Path, run: &Path) -> Result<String, Str
     )
 }
 
-#[cfg(target_os = "linux")]
-fn read_pin() -> Result<String, String> {
+pub(crate) fn read_pin() -> Result<String, String> {
     let path = repo_root().join("docs/REFERENCES.md");
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
@@ -1725,6 +1723,7 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
 fn tranquillity_publish_properties() -> &'static [&'static str] {
     &[
         "-p:AllowMissingPrunePackageData=true",
+        "-p:UseSharedCompilation=false",
         crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF,
     ]
 }

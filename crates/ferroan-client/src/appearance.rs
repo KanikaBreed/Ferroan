@@ -81,6 +81,7 @@ use ferroan_protocol::msgs::avatar_appearance::{
 use ferroan_protocol::msgs::object_update::{ObjectData, RegionData};
 use ferroan_protocol::msgs::{AvatarAppearance, ObjectUpdate};
 use ferroan_protocol::str_field;
+use ferroan_types::DEFAULT_VISUAL_PARAMS;
 use uuid::Uuid;
 
 /// `PCode.Avatar` in `EnumsPrimitive.cs`.
@@ -94,22 +95,8 @@ const DEFAULT_HEIGHT: f32 = 1.9;
 const SCALE_X: f32 = 0.45;
 const SCALE_Y: f32 = 0.6;
 /// `AppearanceManager.DEFAULT_AVATAR_TEXTURE`, RFC byte order.
-const DEFAULT_TEXTURE: [u8; 16] = [
+pub const DEFAULT_TEXTURE: [u8; 16] = [
     0xc2, 0x28, 0xd1, 0xcf, 0x4b, 0x5d, 0x4b, 0xa8, 0x84, 0xf4, 0x89, 0x9a, 0x07, 0x96, 0xaa, 0x97,
-];
-/// `AvatarAppearance.SetDefaultParams`. The template count is one byte, and this list fits.
-const DEFAULT_VISUAL_PARAMS: &[u8] = &[
-    33, 61, 85, 23, 58, 127, 63, 85, 63, 42, 0, 85, 63, 36, 85, 95, 153, 63, 34, 0, 63, 109, 88,
-    132, 63, 136, 81, 85, 103, 136, 127, 0, 150, 150, 150, 127, 0, 0, 0, 0, 0, 127, 0, 0, 255, 127,
-    114, 127, 99, 63, 127, 140, 127, 127, 0, 0, 0, 191, 0, 104, 0, 0, 0, 0, 0, 0, 0, 0, 0, 145,
-    216, 133, 0, 127, 0, 127, 170, 0, 0, 127, 127, 109, 85, 127, 127, 63, 85, 42, 150, 150, 150,
-    150, 150, 150, 150, 25, 150, 150, 150, 0, 127, 0, 0, 144, 85, 127, 132, 127, 85, 0, 127, 127,
-    127, 127, 127, 127, 59, 127, 85, 127, 127, 106, 47, 79, 127, 127, 204, 2, 141, 66, 0, 0, 127,
-    127, 0, 0, 0, 0, 127, 0, 159, 0, 0, 178, 127, 36, 85, 131, 127, 127, 127, 153, 95, 0, 140, 75,
-    27, 127, 127, 0, 150, 150, 198, 0, 0, 63, 30, 127, 165, 209, 198, 127, 127, 153, 204, 51, 51,
-    255, 255, 255, 204, 0, 255, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 0, 150, 150, 150,
-    150, 150, 0, 127, 127, 150, 150, 150, 150, 150, 150, 150, 150, 0, 0, 150, 51, 132, 150, 150,
-    150,
 ];
 
 /// One root avatar the region is about to announce. Wearables and attachments
@@ -152,10 +139,10 @@ pub struct StoredAppearance {
 
 impl AvatarWire {
     /// Constructor defaults: `SetDefaultParams`, `SetDefaultTexture`, `SetSize(0.45, 0.6, 1.9)`.
-    pub fn standing(agent_id: Uuid, first_name: &str, last_name: &str) -> Self {
+    pub fn standing(agent_id: Uuid, local_id: u32, first_name: &str, last_name: &str) -> Self {
         Self {
             agent_id,
-            local_id: 1,
+            local_id,
             first_name: first_name.to_owned(),
             last_name: last_name.to_owned(),
             title: String::new(),
@@ -340,7 +327,7 @@ mod tests {
     /// velocity and rotation; everything else is the arrival block.
     #[test]
     fn a_live_update_writes_the_presence_values() {
-        let wire = AvatarWire::standing(Uuid::from_u128(7), "Test", "User");
+        let wire = AvatarWire::standing(Uuid::from_u128(7), 7, "Test", "User");
         let look = [0.99, 0.042, 0.0];
         let arrival = wire.object_update(99, [128.0, 128.0, 25.96], look);
         let half = (0.99f32 / (0.99f32 * 0.99 + 0.042 * 0.042).sqrt()).acos() * 0.5;
@@ -384,7 +371,7 @@ mod tests {
 
     #[test]
     fn standing_packets_use_defaults_and_omit_the_bake_block() {
-        let wire = AvatarWire::standing(Uuid::from_u128(7), "Test", "User");
+        let wire = AvatarWire::standing(Uuid::from_u128(7), 7, "Test", "User");
         assert_eq!(wire.visual_params, DEFAULT_VISUAL_PARAMS);
         assert!(wire.visual_params.len() <= 255);
         let update = wire.object_update(99, [128.0, 128.0, 25.0], [0.99, 0.042, 0.0]);
@@ -415,8 +402,7 @@ mod tests {
         let captured_params = include_bytes!("../../../fixtures/appearance/visual-params.bin");
         assert_eq!(captured_params, DEFAULT_VISUAL_PARAMS);
         let agent = Uuid::parse_str("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55").unwrap();
-        let mut wire = AvatarWire::standing(agent, "Test", "User");
-        wire.local_id = 0;
+        let wire = AvatarWire::standing(agent, 0, "Test", "User");
         let appearance = wire.appearance();
         let mut encoded = ferroan_protocol::Writer::new();
         appearance.encode_body(&mut encoded);

@@ -1,0 +1,93 @@
+format 1
+heartbeat	3DBA29C7
+test_commands	threw
+effective	42340000
+effective_presets	Legacy
+step_warning	
+step_note	
+warning	[Jolt] DeterministicMode = "maybe" is invalid (expected true or false); using the default False.
+warning	[Jolt] ScaleCapsWithArea = "1" is invalid (expected true or false); using the default False.
+warning	[Jolt] VehiclePresets = "3" is invalid (expected one of Documented, Legacy); using the default Documented.
+warning	[Jolt] VehicleBehaviour = "ode" is invalid (expected one of SecondLife, InWorldz); using the default InWorldz.
+warning	[Jolt] VehicleSpikeMitigation = "yes" is invalid (expected true or false); using the behaviour's own choice.
+warning	[Jolt] VehicleContactFriction = "eleven" is invalid (expected a finite number in [0, 10], or nothing for the material's value); using the material's.
+warning	[Jolt] BasicForcesBehaviour = "" is invalid (expected one of InWorldz, SecondLife); using the default InWorldz.
+warning	[Jolt] FrictionCombine = "1" is invalid (expected one of Average, GeometricMean, Multiply, Min, Max); using the default Average.
+warning	[Jolt] RestitutionCombine = "-Max" is invalid (expected one of Average, GeometricMean, Multiply, Min, Max); using the default Average.
+field	AllowUnrecordedNative	bool	false
+field	AvatarEnhancedEdgeRemoval	bool	false
+field	AvatarFlyDownSpeedFactor	f32	3FB2AC00	1.395874
+field	AvatarFlySpeedFactor	f32	3F79FFFF	0.97656244
+field	AvatarJumpSpeed	f32	40800000	4
+field	AvatarObjectPushMaxForce	f32	44FA0000	2000
+field	AvatarObjectPushPerMomentum	f32	42C80000	100
+field	AvatarPushMaxSpeed	f32	42C80000	100
+field	AvatarPushRecovery	f32	40A00000	5
+field	AvatarRunSpeedFactor	f32	3FA05000	1.2524414
+field	AvatarWalkSpeedFactor	f32	3F480000	0.78125
+field	BasicForcesBehaviour	enum	InWorldz
+field	BodyEnhancedEdgeRemoval	bool	false
+field	BodyMaxAngularSpeed	f32	423C7EDD	47.12389
+field	BodyMaxLinearSpeed	f32	43FA0000	500
+field	BodyUpdateBufferMax	i32	65536
+field	CameraRayBudgetMs	f32	41F00000	30
+field	CapacityLogIntervalSeconds	f32	41200000	10
+field	CharacterUpdateBufferMax	i32	1024
+field	CollisionSteps	i32	6
+field	ContactBufferMax	i32	0
+field	DeterministicMode	bool	false
+field	FrictionCombine	enum	Average
+field	Gravity	f32	C11CE80A	-9.80665
+field	HonourConvexMesh	bool	false
+field	JobPoolFairHandoff	bool	false
+field	JobPools	i32	1
+field	KeyframedMotionCarriesRiders	bool	true
+field	MaxBodies	i32	0
+field	MaxBodyPairs	i32	65536
+field	MaxContactConstraints	i32	16384
+field	MaxPhysicalComplexity	i32	0
+field	MetricsLogIntervalSeconds	f32	41F00000	30
+field	MovedPrimsCarryRiders	bool	false
+field	PhysicsSit	bool	true
+field	PhysicsStepCollisionSteps	i32	2
+field	PhysicsStepRate	f32	42340000	45
+field	PhysicsStepRateSet	bool	false
+field	PositionIterations	i32	2
+field	PrimAngularDamping	f32	3D4CCCCD	0.05
+field	PrimLinearDamping	f32	3CA3D70A	0.02
+field	RayCastBudgetMs	f32	40A00000	5
+field	RayCastMaxHits	i32	256
+field	RayCastMaxTestedHits	i32	1024
+field	RayCastSimulatorBudgetMs	f32	40A00000	5
+field	RestitutionCombine	enum	Average
+field	ScaleCapsWithArea	bool	false
+field	SledContactFriction	f32	00000000	0
+field	SleepVelocityThreshold	f32	3CF5C28F	0.03
+field	SpeculativeContactDistance	f32	3CA3D70A	0.02
+field	TerrainFriction	f32	3ECCCCCD	0.4
+field	TerrainRestitution	f32	3D4CCCCD	0.05
+field	ThreadCount	i32	0
+field	TwoSidedMeshCollision	bool	false
+field	VehicleAngularLimiterFloor	f32	3DCCCCCD	0.1
+field	VehicleBehaviour	enum	InWorldz
+field	VehicleContactFriction	f32?	null
+field	VehicleGroundGravityFactor	f32	3F800000	1
+field	VehicleMaxAngularSpeed	f32	41490FDB	12.566371
+field	VehicleMaxAttractTimescale	f32	43FA0000	500
+field	VehicleMaxDecayTimescale	f32	42F00000	120
+field	VehicleMaxDecayTimescaleSet	bool	false
+field	VehicleMaxHoverHeight	f32	461C4000	10000
+field	VehicleMaxHoverTimescale	f32	43960000	300
+field	VehicleMaxLinearSpeed	f32	43480000	200
+field	VehicleMaxMotorOffset	f32	42C80000	100
+field	VehicleMaxTimescale	f32	447A0000	1000
+field	VehicleMinHoverHeight	f32	C3000000	-128
+field	VehicleMinTimescale	f32	3C7F9724	0.0156
+field	VehicleMotorTargetOnUndrivenAxes	bool	false
+field	VehiclePresets	enum	Documented
+field	VehiclePresetsSet	bool	false
+field	VehicleReferenceSpeed	f32	41F00000	30
+field	VehicleRestSpeed	f32	3DCCCCCD	0.1
+field	VehicleSledAssist	f32	3D3851EC	0.045
+field	VehicleSpikeMitigation	bool?	null
+field	VelocityIterations	i32	20

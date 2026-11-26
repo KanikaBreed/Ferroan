@@ -8,6 +8,13 @@ use std::time::Duration;
 /// Maximum connections in one pool. Tranquillity's `Maximum Pool Size` is not honoured.
 pub const MAX_POOL_CONNECTIONS: u32 = 8;
 
+/// Bytes in one PostgreSQL zone value (`db.timezone`).
+///
+/// `Timezone=` and `PGTZ` are sent as given. A stored role, database, command-line
+/// or file value is taken as stored. An empty value is not a zone. A longer value
+/// is refused before `set_config`.
+pub const TIMEZONE_BYTES: usize = 128;
+
 /// How long [`crate::Pool::open`] waits for a connection from the pool.
 pub const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
