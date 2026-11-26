@@ -3652,6 +3652,51 @@ mod tests {
         assert!(!flying(&frame, Uuid::from_u128(99)));
     }
 
+    /// `TeleportWithMomentum` stands a ground sitter up (`StandUp(false)`,
+    /// `ScenePresence.cs` lines 1867–1868) before it moves the avatar, so the
+    /// arrival plays `STAND`, not the ground sit.
+    #[test]
+    fn a_local_teleport_stands_a_ground_sitter_up() {
+        use crate::animation::{STAND, default_animation};
+        use crate::motion::CONTROL_SIT_ON_GROUND;
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let agent = Uuid::from_u128(24);
+        login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        reuse(&frame, agent);
+        frame
+            .agent_update(agent, walking_update(1_000, 1, CONTROL_SIT_ON_GROUND))
+            .unwrap();
+        let default = |frame: &TerrainFrame| {
+            frame
+                .departure(agent)
+                .unwrap()
+                .blocking_wait()
+                .unwrap()
+                .unwrap()
+                .animations
+                .default_animation
+                .unwrap()
+                .animation
+        };
+        assert!(motion(&frame, agent).sit_ground);
+        assert_eq!(
+            default(&frame),
+            default_animation("SIT_GROUND_CONSTRAINED").unwrap()
+        );
+        let moved = teleport(&frame, agent, local([40.0, 40.0, 40.0], [1.0, 0.0, 0.0]));
+        assert_eq!(moved.flags, 16);
+        assert!(!motion(&frame, agent).sit_ground);
+        assert_eq!(default(&frame), STAND);
+    }
+
+    #[test]
+    fn enableflyslow_is_read_from_startup() {
+        let read = |text: &str| fly_slow(&Config::parse(text).unwrap());
+        assert!(!read("[Startup]\nphysics = Jolt\n"));
+        assert!(!read("[Startup]\nenableflyslow = false\n"));
+        assert!(read("[Startup]\nenableflyslow = True\n"));
+    }
+
     #[test]
     fn a_hop_completion_takes_the_returning_agent_data() {
         let frame = TerrainFrame::start_without_map().unwrap();

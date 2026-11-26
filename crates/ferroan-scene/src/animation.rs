@@ -1040,6 +1040,25 @@ mod tests {
         assert_eq!(animator.state(), MOTION_ON_SURFACE);
     }
 
+    /// `[Startup] enableflyslow` plays `FLYSLOW` for a flight with a direction.
+    #[test]
+    fn enableflyslow_flies_slow() {
+        let mut animator = Animator::new(AGENT);
+        let mut inputs = air(true, false, 0.0, CONTROL_AT_POS, 0);
+        inputs.fly_slow = true;
+        animator.update(&inputs);
+        assert_eq!(animator.current(), Movement::FlySlow);
+        assert_eq!(
+            animator.animations().default_animation().animation,
+            default_animation("FLYSLOW").unwrap()
+        );
+        assert_eq!(animator.state(), MOTION_FLYING);
+        // No direction still hovers.
+        inputs.control_flags = 0;
+        animator.update(&inputs);
+        assert_eq!(animator.current(), Movement::Hover);
+    }
+
     #[test]
     fn fly_released_onto_the_ground_lands_then_stands() {
         let mut animator = Animator::new(AGENT);
@@ -1285,6 +1304,113 @@ mod tests {
         });
         assert_eq!(animator.animations().default_animation(), Anim::STANDING);
         assert_eq!(animator.animations().implicit_default(), Anim::STANDING);
+    }
+
+    /// Falls for 801 ms at `speed`, lands, and answers the landing.
+    fn land_after_falling_at(speed: f32) -> Movement {
+        let mut animator = Animator::new(AGENT);
+        animator.update(&air(false, false, speed, 0, 1000));
+        animator.update(&air(false, false, speed, 0, 1801));
+        assert_eq!(animator.current(), Movement::FallDown, "{speed}");
+        animator.update(&ground(0, 2000));
+        animator.current()
+    }
+
+    /// `speed * speed > 300` stands up, `> 160` soft-lands. 160 has an f32
+    /// root whose square is exactly 160, so that boundary is pinned on the
+    /// value. No f32 squares to exactly 300, so `>` and `>=` agree there and
+    /// the two neighbouring roots pin it instead.
+    #[test]
+    fn the_landing_speed_thresholds_are_strict() {
+        let root_160 = 160.0_f32.sqrt();
+        assert_eq!(root_160 * root_160, 160.0);
+        assert_eq!(land_after_falling_at(-root_160), Movement::Land);
+        let above_160 = f32::from_bits(root_160.to_bits() + 1);
+        assert_eq!(land_after_falling_at(-above_160), Movement::SoftLand);
+
+        let above_300 = 300.0_f32.sqrt();
+        let below_300 = f32::from_bits(above_300.to_bits() - 1);
+        assert!(below_300 * below_300 < 300.0 && above_300 * above_300 > 300.0);
+        assert_eq!(land_after_falling_at(-below_300), Movement::SoftLand);
+        assert_eq!(land_after_falling_at(-above_300), Movement::StandUp);
+    }
+
+    /// A fall needs more than 800 ms below -3.0: exactly -3.0 is not one.
+    #[test]
+    fn a_fall_at_exactly_minus_three_is_not_a_fall() {
+        let mut animator = Animator::new(AGENT);
+        animator.update(&air(false, false, -3.0, 0, 1000));
+        animator.update(&air(false, false, -3.0, 0, 5000));
+        assert_eq!(animator.current(), Movement::Stand);
+        assert_eq!(animator.state(), MOTION_ON_SURFACE);
+    }
+
+    /// A vertical speed of exactly -0.5 restarts the fall clock.
+    #[test]
+    fn a_vertical_speed_of_minus_half_restarts_the_fall_clock() {
+        let mut animator = Animator::new(AGENT);
+        animator.update(&air(false, false, -20.0, 0, 1000));
+        animator.update(&air(false, false, -0.5, 0, 1500));
+        // 400 ms since the restart, 900 ms since the first update.
+        animator.update(&air(false, false, -20.0, 0, 1900));
+        assert_eq!(animator.current(), Movement::Stand);
+        animator.update(&air(false, false, -20.0, 0, 2301));
+        assert_eq!(animator.current(), Movement::FallDown);
+    }
+
+    /// Jumping, the jump plays once the time since the prejump passes
+    /// `JUMP_PERIOD` (1050 ms), not when it reaches it. A returning motion
+    /// state leaves the movement at `STAND` with the jump tick unset, so the
+    /// answer before 1050 ms is the current movement.
+    #[test]
+    fn a_jump_plays_only_after_the_jump_period() {
+        let mut animator = Animator::new(AGENT);
+        animator.copy_from(&AnimationTransfer {
+            motion_state: MOTION_JUMPING,
+            ..AnimationTransfer::default()
+        });
+        animator.update(&ground(0, 1050));
+        assert_eq!(animator.current(), Movement::Stand);
+        assert_eq!(animator.state(), MOTION_JUMPING);
+        animator.update(&ground(0, 1051));
+        assert_eq!(animator.current(), Movement::Jump);
+    }
+
+    /// The finish-anim shortcut puts the jump tick 451 ms back, so the
+    /// landing (more than 1575 ms on) comes 1125 ms after it.
+    #[test]
+    fn a_finish_anim_jump_starts_451_ms_back() {
+        let mut animator = Animator::new(AGENT);
+        animator.update(&ground(CONTROL_UP_POS | CONTROL_FINISH_ANIM, 0));
+        assert_eq!(animator.current(), Movement::Jump);
+        animator.update(&ground(0, 1124));
+        assert_eq!(animator.current(), Movement::Jump);
+        animator.update(&ground(0, 1125));
+        assert_eq!(animator.current(), Movement::Land);
+    }
+
+    /// `CopyFrom` seeds the highest number from the animator's own next
+    /// one, so lower incoming numbers never take the counter back.
+    #[test]
+    fn copy_from_never_takes_the_sequence_back() {
+        let mut animator = Animator::new(AGENT);
+        animator.sequence = Sequence(500);
+        animator.copy_from(&AnimationTransfer {
+            animations: vec![Anim {
+                animation: Uuid::from_u128(80),
+                sequence: 9,
+                object_id: Uuid::nil(),
+            }],
+            default_animation: Some(Anim {
+                animation: walk_id(),
+                sequence: 7,
+                object_id: Uuid::nil(),
+            }),
+            animation_state: None,
+            motion_state: 0,
+        });
+        // `nanim` was 501, then `++nanim` makes 502, and the next is 503.
+        assert_eq!(animator.sequence.next(), 503);
     }
 
     #[test]

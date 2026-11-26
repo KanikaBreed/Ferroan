@@ -1761,6 +1761,133 @@ mod tests {
         assert!(!body.colliding);
     }
 
+    /// A body on the ground that a returning `UpdateAgent` left falling.
+    fn falling_on_the_ground() -> (Body, Presence) {
+        use crate::animation::{AnimationTransfer, MOTION_FALLING};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        assert!(body.colliding);
+        body.apply_return(
+            &ReturnData {
+                velocity: [0.0, 0.0, 0.0],
+                far: 128.0,
+                body_rotation: [0.0, 0.0, 0.0, 1.0],
+                head_rotation: [0.0, 0.0, 0.0, 1.0],
+                control_flags: 0,
+                always_run: false,
+                animations: AnimationTransfer {
+                    motion_state: MOTION_FALLING,
+                    ..AnimationTransfer::default()
+                },
+            },
+            &mut pose,
+        );
+        assert_eq!(body.animator().state(), MOTION_FALLING);
+        (body, pose)
+    }
+
+    /// A finish-anim packet with nothing else changed still runs the
+    /// animator (`HandleAgentUpdate`'s `AGENT_CONTROL_FINISH_ANIM` branch),
+    /// which skips the landing hold. A held movement flag would take the
+    /// `AddNewMovement` path instead, so the packet holds only the flag.
+    #[test]
+    fn a_finish_anim_packet_runs_the_animator_and_ends_the_landing() {
+        use crate::animation::Movement;
+        let (mut body, mut pose) = falling_on_the_ground();
+        frame_at(&mut body, &mut pose, 1_090);
+        // The landing holds for 600 ms.
+        assert_eq!(movement(&body), Movement::Land);
+        body.apply(&update(1_100, 1, CONTROL_FINISH_ANIM), &mut pose);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    /// A stop with no direction while falling brakes on Z.
+    #[test]
+    fn a_stop_while_falling_brakes_the_fall() {
+        let (mut body, mut pose) = falling_on_the_ground();
+        body.apply(&update(1_050, 1, CONTROL_STOP), &mut pose);
+        assert_eq!(body.view().target_velocity[2], -9999.0);
+    }
+
+    /// Only a colliding actor drops a downward command on the ground.
+    #[test]
+    fn the_downward_clamps_apply_only_on_the_ground() {
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        // A new actor has not collided yet: down enters the command.
+        body.apply(&update(1_000, 1, CONTROL_UP_NEG), &mut pose);
+        assert!(body.view().target_velocity[2] < 0.0);
+
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        assert!(body.colliding);
+        body.apply(
+            &update(1_050, 1, CONTROL_UP_NEG | CONTROL_AT_POS),
+            &mut pose,
+        );
+        assert_eq!(body.view().target_velocity[2], 0.0);
+        assert!(body.view().target_velocity[0] > 0.0);
+    }
+
+    /// The delayed stop is `AddNewMovement(Vector3.Zero, 0)`, which ends in
+    /// the animator: the frame that stops the body also stands it, before
+    /// any heartbeat.
+    #[test]
+    fn the_delayed_stop_runs_the_animator() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::Walk);
+        body.apply(&update(1_100, 2, 0), &mut pose);
+        let deadline = body.view().delayed_stop_ms;
+        assert_eq!(deadline, 1_350);
+        // Steps alone, with no heartbeat: the walk stays until the deadline.
+        let step = |body: &mut Body, pose: &mut Presence, now_ms: u64| {
+            body.step_physics(pose, 21.0, 256.0, 256.0, crate::frame::FRAME_TIME, now_ms);
+        };
+        step(&mut body, &mut pose, 1_350);
+        assert_eq!(movement(&body), Movement::Walk);
+        step(&mut body, &mut pose, 1_351);
+        assert_eq!(body.view().target_velocity, [0.0, 0.0, 0.0]);
+        assert_eq!(movement(&body), Movement::Stand);
+    }
+
+    /// A local teleport stands a ground sitter up first, as
+    /// `TeleportWithMomentum`'s `StandUp(false)` does.
+    #[test]
+    fn standing_up_from_a_ground_sit_clears_the_sit() {
+        use crate::animation::{Movement, STAND};
+        let mut pose = login_pose();
+        let mut body = Body::new(&pose);
+        frame_at(&mut body, &mut pose, 1_000);
+        body.apply(&update(1_050, 1, CONTROL_SIT_ON_GROUND), &mut pose);
+        assert!(body.is_sitting());
+        body.stand_up();
+        assert!(!body.is_sitting());
+        assert!(!body.seated);
+        assert_eq!(movement(&body), Movement::Stand);
+        assert_eq!(
+            body.animator().animations().default_animation().animation,
+            STAND
+        );
+        assert!(!body.colliding && !body.flying());
+    }
+
+    #[test]
+    fn the_region_fly_slow_setting_reaches_the_animator() {
+        use crate::animation::Movement;
+        let mut pose = login_pose();
+        pose.position[2] = 40.0;
+        let mut body = Body::new(&pose);
+        body.set_fly_slow(true);
+        body.apply(&update(1_000, 1, CONTROL_FLY | CONTROL_AT_POS), &mut pose);
+        assert_eq!(movement(&body), Movement::FlySlow);
+    }
+
     #[test]
     fn a_child_is_not_integrated() {
         let mut pose = login_pose();

@@ -493,26 +493,42 @@ fn the_csharp_walk_animates_walk_then_stand_on_the_heartbeat() {
         while let Some(update) = pending.next_if(|update| (update.now_ms as f64) < now) {
             body.apply(update, &mut pose);
             if body.take_animation_pack() {
-                changes.push((update.now_ms as f64, None, body.animator().current()));
+                changes.push((
+                    update.now_ms as f64,
+                    None,
+                    body.animator().current(),
+                    default_sequence(&body),
+                ));
             }
         }
         let terrain = walk::terrain_height(Some(&map), pose.position, edge, edge);
         body.step_physics(&mut pose, terrain, edge, edge, FRAME_TIME, now as u64);
         body.heartbeat(now as u64);
         if body.take_animation_pack() {
-            changes.push((now, Some(k), body.animator().current()));
+            changes.push((
+                now,
+                Some(k),
+                body.animator().current(),
+                default_sequence(&body),
+            ));
         }
         k += 1;
     }
 
     assert_eq!(changes.len(), 2, "{changes:?}");
     // WALK on the first forward update, not on a frame.
-    assert_eq!(changes[0], (forward.now_ms as f64, None, Movement::Walk));
+    let (walked_at, walked_tick, walked, ferroan_walk_seq) = changes[0];
+    assert_eq!(
+        (walked_at, walked_tick, walked),
+        (forward.now_ms as f64, None, Movement::Walk)
+    );
     let walk_sent = walk.animations[1].time_ms as f64;
     assert!(walk_sent >= forward.now_ms as f64 && walk_sent < forward.now_ms as f64 + 20.0);
     // STAND on tick 29, the second heartbeat after the release.
     assert_eq!(changes[1].1, Some(29), "{changes:?}");
     assert_eq!(changes[1].2, Movement::Stand);
+    // Ferroan steps its own numbers as C# did: STAND is WALK's plus one.
+    assert_eq!(changes[1].3, ferroan_walk_seq + 1, "{changes:?}");
     assert!(clock(27) < release.now_ms as f64 && (release.now_ms as f64) < clock(28));
     let stand_offset = walk.animations[2].time_ms as f64 - clock(29);
     assert!(stand_offset.abs() < FRAME_MS / 2.0, "{stand_offset} ms");
@@ -522,7 +538,12 @@ fn the_csharp_walk_animates_walk_then_stand_on_the_heartbeat() {
     let set = body.animator().animations();
     assert_eq!(set.default_animation().animation, STAND);
     assert_eq!(set.default_animation().object_id, agent);
+    assert_eq!(set.default_animation().sequence, ferroan_walk_seq + 1);
     assert!(set.others().is_empty());
+}
+
+fn default_sequence(body: &Body) -> i32 {
+    body.animator().animations().default_animation().sequence
 }
 
 /// The `LayerData` burst C# sent from its generated `pinhead-island` holds
