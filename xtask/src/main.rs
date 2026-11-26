@@ -677,6 +677,7 @@ mod tests {
             "       cargo xtask live run parcel-timing grid --region ferroan\n",
             "       cargo xtask live parcel-timing-fixtures <capture-dir>\n",
             "       cargo xtask live run parcel-properties grid --physics basicphysics\n",
+            "       cargo xtask live run parcel-properties grid --region ferroan\n",
             "       cargo xtask live parcel-properties-fixtures <capture-dir>\n",
             "       cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics\n",
             "       cargo xtask live run prim-load grid --physics basicphysics\n",

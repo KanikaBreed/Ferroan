@@ -65,8 +65,9 @@
 //! heightmap is loaded. ScenePresence's initial camera and velocity are zero,
 //! so a fresh root login without an AgentUpdate uses its exact (not unit
 //! length) fallback look vector. Parcel overlay and land follow
-//! `AgentMovementComplete` on the eligible paths. Parcel properties and
-//! animation messages are later work. The avatar `ObjectUpdate` and
+//! `AgentMovementComplete` on the eligible paths. The frame queues
+//! `ParcelProperties` before that overlay. Animation messages are later work.
+//! The avatar `ObjectUpdate` and
 //! `AvatarAppearance` ride on `avatar` when the region has one.
 
 use ferroan_protocol::msgs::AgentMovementComplete;

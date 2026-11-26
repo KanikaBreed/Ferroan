@@ -76,17 +76,42 @@ const PUBLISHED: [&str; 5] = [
     "walk.bin",
 ];
 
+/// Ferroan sends no parcel requests. Arrival, the West landing and the walk.
+const FERROAN_MOMENTS: [Moment; 3] = [
+    Moment {
+        name: "Your Parcel",
+        sequence: 0,
+        result: 0,
+        file: Some("arrival.bin"),
+    },
+    Moment {
+        name: "West",
+        sequence: 0,
+        result: 0,
+        file: None,
+    },
+    Moment {
+        name: "East",
+        sequence: 0,
+        result: 0,
+        file: Some("walk.bin"),
+    },
+];
+
 struct Split<'a> {
     elements: Vec<&'a [u8]>,
     #[cfg(test)]
     trailer: &'a [u8],
 }
 
-pub(super) fn extract(root: &Path) -> Result<String, String> {
+pub(super) fn extract(root: &Path, ferroan: bool) -> Result<String, String> {
     let udp = read_capture(&bounded(&root.join("capture-udp.cap"), LIMIT)?)
         .map_err(|error| error.to_string())?;
     let http = records(&root.join("proxy-home.cap"))?;
-    let elements = select(&udp, &http)?;
+    let elements = select(&udp, &http, ferroan)?;
+    if ferroan {
+        return compare_captured(&elements);
+    }
     let out = root.join("parcel-properties");
     fs::create_dir_all(&out).map_err(|error| error.to_string())?;
     for (moment, element) in MOMENTS.iter().zip(&elements) {
@@ -99,7 +124,7 @@ pub(super) fn extract(root: &Path) -> Result<String, String> {
     Ok(format!("{report}; fixtures in {}", out.display()))
 }
 
-fn select(udp: &[Record], http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
+fn select(udp: &[Record], http: &[Record], ferroan: bool) -> Result<Vec<Vec<u8>>, String> {
     let window = owner_window(udp)?;
     let mut requests = Vec::new();
     let mut teleport = None;
@@ -151,14 +176,16 @@ fn select(udp: &[Record], http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
             arrival.x, arrival.y
         ));
     }
-    let [cell, span] = requests.as_slice() else {
-        return Err(format!(
-            "expected one cell request and one span request, found {}",
-            requests.len()
-        ));
-    };
-    expect_request(cell, 7, [5.0, 1.0, 6.0, 2.0])?;
-    expect_request(span, 8, [4.0, 0.0, 12.0, 4.0])?;
+    if !ferroan {
+        let [cell, span] = requests.as_slice() else {
+            return Err(format!(
+                "expected one cell request and one span request, found {}",
+                requests.len()
+            ));
+        };
+        expect_request(cell, 7, [5.0, 1.0, 6.0, 2.0])?;
+        expect_request(span, 8, [4.0, 0.0, 12.0, 4.0])?;
+    }
     let teleport = teleport.ok_or("missing TeleportLocationRequest")?;
     let position = teleport.info.position;
     let look = teleport.info.look_at;
@@ -176,10 +203,11 @@ fn select(udp: &[Record], http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
         return Err("no forward AgentUpdate after the teleport".into());
     }
     let elements = event_elements(http)?;
-    if elements.len() != MOMENTS.len() {
+    let moments: &[Moment] = if ferroan { &FERROAN_MOMENTS } else { &MOMENTS };
+    if elements.len() != moments.len() {
         return Err(format!(
             "expected {} ParcelProperties elements, found {} ({})",
-            MOMENTS.len(),
+            moments.len(),
             elements.len(),
             elements
                 .iter()
@@ -188,10 +216,177 @@ fn select(udp: &[Record], http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
                 .join("; ")
         ));
     }
-    for (moment, element) in MOMENTS.iter().zip(&elements) {
+    for (moment, element) in moments.iter().zip(&elements) {
         expect_element(element, moment)?;
     }
     Ok(elements)
+}
+
+fn compare_captured(elements: &[Vec<u8>]) -> Result<String, String> {
+    let fixture = crate::repo_root().join("fixtures/parcel-properties");
+    let arrival = fs::read(fixture.join("arrival.bin")).map_err(|error| error.to_string())?;
+    let walk = fs::read(fixture.join("walk.bin")).map_err(|error| error.to_string())?;
+    let live = elements
+        .first()
+        .ok_or("arrival element does not match fixtures/parcel-properties/arrival.bin")?;
+    arrival_matches(live, &arrival)?;
+    if elements.get(2) != Some(&walk) {
+        return Err("walk element does not match fixtures/parcel-properties/walk.bin".into());
+    }
+    Ok("parcel properties: arrival.bin and walk.bin match the capture".into())
+}
+
+const CLAIM_OPEN: &[u8] = b"<key>ClaimDate</key><date>";
+const CLAIM_CLOSE: &[u8] = b"</date>";
+/// The auto-create branch of `EventManagerOnIncomingLandDataFromStorage`
+/// (`LandManagementModule.cs` 1945–1957) stamps `UnixTimeSinceEpoch` on
+/// Your Parcel. The published arrival file froze the Q61a run's clock. A
+/// later run is the same element with its own load time.
+const CLAIM_WINDOW_SECONDS: i64 = 15 * 60;
+
+/// The default parcel's `ClaimDate` is the load-time clock. Every other byte
+/// equals `arrival.bin`. A stored parcel keeps its database date.
+fn arrival_matches(live: &[u8], fixture: &[u8]) -> Result<(), String> {
+    let live_date = claim_date_text(live)?;
+    let fixture_date = claim_date_text(fixture)?;
+    let stamp = parse_claim_date(live_date)?;
+    let age = i64::from(unix_now()) - i64::from(stamp);
+    if age.abs() > CLAIM_WINDOW_SECONDS {
+        return Err(format!(
+            "arrival ClaimDate {live_date} is not the load-time clock"
+        ));
+    }
+    if with_claim_date(live, fixture_date) != fixture {
+        return Err("arrival element does not match fixtures/parcel-properties/arrival.bin".into());
+    }
+    Ok(())
+}
+
+fn claim_date_text(element: &[u8]) -> Result<&str, String> {
+    if count(element, CLAIM_OPEN) != 1 {
+        return Err("arrival element does not contain one ClaimDate".into());
+    }
+    let start = element
+        .windows(CLAIM_OPEN.len())
+        .position(|window| window == CLAIM_OPEN)
+        .ok_or("arrival element does not contain one ClaimDate")?
+        + CLAIM_OPEN.len();
+    let rest = element
+        .get(start..)
+        .ok_or("arrival ClaimDate is unclosed")?;
+    let end = rest
+        .windows(CLAIM_CLOSE.len())
+        .position(|window| window == CLAIM_CLOSE)
+        .ok_or("arrival ClaimDate is unclosed")?;
+    std::str::from_utf8(&rest[..end]).map_err(|_| "arrival ClaimDate is not text".to_string())
+}
+
+fn with_claim_date(element: &[u8], date: &str) -> Vec<u8> {
+    let Some(at) = element
+        .windows(CLAIM_OPEN.len())
+        .position(|window| window == CLAIM_OPEN)
+    else {
+        return element.to_vec();
+    };
+    let from = at + CLAIM_OPEN.len();
+    let Some(end) = element[from..]
+        .windows(CLAIM_CLOSE.len())
+        .position(|window| window == CLAIM_CLOSE)
+    else {
+        return element.to_vec();
+    };
+    let mut patched = Vec::with_capacity(element.len());
+    patched.extend_from_slice(&element[..from]);
+    patched.extend_from_slice(date.as_bytes());
+    patched.extend_from_slice(&element[from + end..]);
+    patched
+}
+
+fn parse_claim_date(text: &str) -> Result<i32, String> {
+    let (date, time) = if let Some(body) = text.strip_suffix('Z') {
+        let Some((date, time)) = body.split_once('T') else {
+            return Err(format!("arrival ClaimDate {text} is not a load-time clock"));
+        };
+        (date, time)
+    } else {
+        return Err(format!("arrival ClaimDate {text} is not a load-time clock"));
+    };
+    let mut date_parts = date.split('-');
+    let year = date_number(date_parts.next(), 4)?;
+    let month = date_number(date_parts.next(), 2)?;
+    let day = date_number(date_parts.next(), 2)?;
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(format!("arrival ClaimDate {text} is not a load-time clock"));
+    }
+    let mut time_parts = time.split(':');
+    let hour = date_number(time_parts.next(), 2)?;
+    let minute = date_number(time_parts.next(), 2)?;
+    let second = date_number(time_parts.next(), 2)?;
+    if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return Err(format!("arrival ClaimDate {text} is not a load-time clock"));
+    }
+    let days = days_from_civil(year, month as u32, day as u32);
+    let seconds = i64::from(days) * 86_400
+        + i64::from(hour) * 3_600
+        + i64::from(minute) * 60
+        + i64::from(second);
+    i32::try_from(seconds).map_err(|_| format!("arrival ClaimDate {text} is not a load-time clock"))
+}
+
+fn date_number(text: Option<&str>, width: usize) -> Result<i32, String> {
+    let Some(text) = text else {
+        return Err("arrival ClaimDate is not a load-time clock".into());
+    };
+    if text.len() != width || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("arrival ClaimDate is not a load-time clock".into());
+    }
+    text.parse()
+        .map_err(|_| "arrival ClaimDate is not a load-time clock".to_string())
+}
+
+/// Howard Hinnant's `days_from_civil`. Days count from 1970-01-01.
+fn days_from_civil(year: i32, month: u32, day: u32) -> i32 {
+    let y = year - i32::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let month_index = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+    let day_of_era = yoe * 365 + yoe / 4 - yoe / 100 + day_of_year;
+    era * 146_097 + day_of_era as i32 - 719_468
+}
+
+fn unix_now() -> i32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i32::try_from(elapsed.as_secs()).ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn format_claim(seconds: i32) -> String {
+    let days = seconds.div_euclid(86_400);
+    let tod = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = tod / 3600;
+    let minute = (tod % 3600) / 60;
+    let second = tod % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+#[cfg(test)]
+fn civil_from_days(days: i32) -> (i32, u32, u32) {
+    let z = i64::from(days) + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = if month <= 2 { y + 1 } else { y };
+    (year as i32, month, day)
 }
 
 fn expect_request(
@@ -640,6 +835,39 @@ mod tests {
             error.contains("walk.bin includes the poll envelope"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_capture_claim_date_is_that_unix_second() {
+        assert_eq!(
+            parse_claim_date("2026-11-26T06:25:48Z").unwrap(),
+            1_795_674_348
+        );
+        assert_eq!(format_claim(1_795_674_348), "2026-11-26T06:25:48Z");
+    }
+
+    #[test]
+    fn arrival_matches_when_only_the_load_time_claim_date_differs() {
+        let dir = crate::repo_root().join("fixtures/parcel-properties");
+        let arrival = fs::read(dir.join("arrival.bin")).unwrap();
+        let walk = fs::read(dir.join("walk.bin")).unwrap();
+        let stamped = with_claim_date(&arrival, &format_claim(unix_now()));
+        compare_captured(&[stamped.clone(), Vec::new(), walk.clone()]).unwrap();
+        let mut other = stamped.clone();
+        let name = b"<string>Your Parcel</string>";
+        let at = other
+            .windows(name.len())
+            .position(|window| window == name)
+            .unwrap();
+        other[at + 8] = b'X';
+        let error = compare_captured(&[other, Vec::new(), walk.clone()]).unwrap_err();
+        assert!(error.contains("does not match"), "{error}");
+        let error = compare_captured(&[arrival, Vec::new(), walk.clone()]).unwrap_err();
+        assert!(error.contains("load-time clock"), "{error}");
+        let mut walk_changed = walk;
+        walk_changed[20] ^= 1;
+        let error = compare_captured(&[stamped, Vec::new(), walk_changed]).unwrap_err();
+        assert!(error.contains("walk.bin"), "{error}");
     }
 
     #[test]

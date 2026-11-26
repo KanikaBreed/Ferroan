@@ -113,6 +113,8 @@ mod xml_read;
 mod coalesced;
 pub use coalesced::{from_coalesced_xml, from_coalesced_xml_data, to_coalesced_xml};
 
+#[cfg(test)]
+pub(crate) use xml_read::blank_part;
 pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.

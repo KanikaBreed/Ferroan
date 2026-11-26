@@ -231,6 +231,11 @@ impl InitialData {
         self.handshake = false;
     }
 
+    /// `NeedInitialData > 0`. `Update` returns before the movement check.
+    pub(crate) fn waiting(&self) -> bool {
+        self.need > 0
+    }
+
     /// One frame: return early, run `SendInitialData` and return, or run
     /// the threshold test.
     pub fn frame(&mut self, seeds_sent: bool) -> InitialStep {

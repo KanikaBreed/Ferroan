@@ -192,7 +192,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
 | Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | DONE (this PR) |
 | Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | BLOCKED (split into Q61c1–Q61c2) |
-| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | READY |
+| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | DONE (this PR) |
 | Q61c2 | P2.6b3b: `ParcelPropertiesRequest`, the multi-parcel reply cap and the text bound | READY after Q61c1 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |

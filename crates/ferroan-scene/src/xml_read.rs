@@ -985,7 +985,7 @@ fn blank_item(now: u32) -> InventoryItem {
     }
 }
 
-fn blank_part() -> ObjectPart {
+pub(crate) fn blank_part() -> ObjectPart {
     ObjectPart {
         uuid: Uuid::nil(),
         link_num: 0,

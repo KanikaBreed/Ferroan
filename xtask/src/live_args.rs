@@ -520,10 +520,9 @@ fn enforce_flags(
         let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
         let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
         if !pin8 && !ferroan {
-            return Err(ParseFail::Message(
-                "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
-                    .to_string(),
-            ));
+            return Err(ParseFail::Message(format!(
+                "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+            )));
         }
         return Ok(());
     }
@@ -826,6 +825,10 @@ mod tests {
         assert!(ferroan.ferroan_region);
         assert!(!ferroan.basic_physics);
         assert!(parse(&["run", "parcel-timing", "grid", "--region", "ferroan"]).is_ok());
+        let properties = run(&["run", "parcel-properties", "grid", "--region", "ferroan"]);
+        assert!(properties.ferroan_region);
+        assert!(!properties.basic_physics);
+        assert!(parse(&["run", "parcel-properties", "grid", "--region", "ferroan"]).is_ok());
     }
 
     #[test]
@@ -1089,28 +1092,25 @@ mod tests {
             );
             return;
         }
-        if scenario == "parcel-timing" {
+        if matches!(scenario, "parcel-timing" | "parcel-properties") {
             let pin8 = grid && physics && !region;
             let ferroan = grid && region && !physics;
             if !pin8 && !ferroan {
                 match parsed {
                     Err(ParseFail::Message(text)) => assert_eq!(
                         text,
-                        "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it",
+                        format!(
+                            "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+                        ),
                         "{label}"
                     ),
-                    other => panic!("{label} should name both parcel-timing forms, got {other:?}"),
+                    other => panic!("{label} should name both forms, got {other:?}"),
                 }
                 return;
             }
         } else if (matches!(
             scenario,
-            "prim-capture"
-                | "object-cross"
-                | "child-view"
-                | "store-handoff"
-                | "prim-load"
-                | "parcel-properties"
+            "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
         ) || (matches!(scenario, "prim-arrival" | "material-override") && !region))
             && (!grid || region || !physics)
         {
