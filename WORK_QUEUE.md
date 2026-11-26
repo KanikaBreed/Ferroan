@@ -276,86 +276,92 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | BLOCKED (the harness trace waits: the maintainer deferred the C# Jolt module move on 26 November 2026; the file oracle is Q100a) |
+| Q100 | P3.0: Jolt oracle | BLOCKED (the matched-native oracle waits on the deferred upgrade, 26 November 2026; file compiles are Q100a; stock recordings are Q177) |
 | Q100a | P3.0f: Engine-independent file oracle | READY |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
 | Q102 | P3.0c: Move the C# Jolt module | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q103 | P3.0d: Pin move | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q104 | P3.0e: Decision entry | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q103 | P3.0d: Pin move | BLOCKED (the pin change waits on the deferred C# module move, 26 November 2026) |
+| Q104 | P3.0e: Decision entry | BLOCKED (the upgrade decision waits on the pin change, 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | READY |
 | Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY after Q100a |
-| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q100a and Q105 |
-| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
-| Q110 | P3.11a: Mesh-asset decode | READY after Q100a and Q65c3b |
-| Q111 | P3.2a: Free fall until first contact | READY after Q100a |
-| Q112 | P3.2b: Box at rest on terrain | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q113 | P3.2d: Slope and hill | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q114 | P3.2e: Runtime terrain and water | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q115 | P3.3: Physics thread and the request queue | READY after Q105 |
-| Q116 | P3.3b: Time dilation on terse updates | READY after Q115 and Q65c3b |
-| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a |
-| Q118 | P3.5: Create-time body flags | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q119 | P3.18a: Box contacts terrain and another box | READY after Q100a |
-| Q120 | P3.6: Buoyancy and gravity scale | READY after Q100a |
-| Q121 | P3.40: Live physical, phantom and volume-detect toggle | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q122 | P3.41: Resize and reshape, uncut | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q123 | P3.42: Set position and rotation of a physical body | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q124 | P3.43: Grab | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q125 | P3.44: Angular lock | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q126 | P3.45: Impulse and push | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q127 | P3.46: Constant force and torque | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q128 | P3.47: Prim move-to-target, hover and ground repel | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q129 | P3.48: Look-at | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q130 | P3.49: Keyframed motion | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q131 | P3.50: Materials | READY after Q120 and Q107 |
+| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q100a |
+| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 and Q105 |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
+| Q111 | P3.2a: Free fall until first contact | READY after Q100a and Q177 and Q105 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
+| Q113 | P3.2d: Slope and hill | READY after Q111 |
+| Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
+| Q115 | P3.3: Physics thread and the request queue | READY after Q105 and Q111 |
+| Q116 | P3.3b: Time dilation on terse updates | READY after Q100a |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
+| Q118 | P3.5: Create-time body flags | READY after Q117 |
+| Q119 | P3.18a: Box contacts terrain and another box | READY after Q100a and Q177 |
+| Q120 | P3.6: Buoyancy and gravity scale | READY after Q100a and Q177 and Q105 |
+| Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117 and Q118 |
+| Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
+| Q124 | P3.43: Grab | READY after Q118 |
+| Q125 | P3.44: Angular lock | READY after Q126 |
+| Q126 | P3.45: Impulse and push | READY after Q118 |
+| Q127 | P3.46: Constant force and torque | READY after Q118 |
+| Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
+| Q129 | P3.48: Look-at | READY after Q118 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 and Q118 |
 | Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
 | Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
-| Q134 | P3.8: One hull: convex type, and the cell fallback | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q135 | P3.9: Cells for a physical cut prim | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q136 | P3.40b: Toggle that re-cooks a cut prim | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q137 | P3.41b: Resize and reshape a cut prim | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q138 | P3.51: Physics shape type | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
+| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
+| Q138 | P3.51: Physics shape type | READY after Q135 and Q142 |
 | Q139 | P3.10a: Sculpt vertices | READY after Q132 |
 | Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
-| Q141 | P3.11b: Mesh-asset cook | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q142 | P3.12: Linkset of uncut boxes | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q143 | P3.12b: Cells in a compound | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
+| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
 | Q144 | P3.18b: Linkset struck child | READY after Q119 |
-| Q145 | P3.13b: Walk and run | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q146 | P3.13c: Fly | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q147 | P3.14a: Fall, land, jump | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q148 | P3.14b: Stairs, slope and a moving platform | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q149 | P3.14c: Avatar push | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q150 | P3.14d: Avatar position set | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q151 | P3.14e: Avatar size | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q152 | P3.18c: Avatar feet and avatar pairs | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q153 | P3.15: Remove the walking stand-in | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q154 | P3.16: Arrival landing ray | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q155 | P3.16b: Rez ray | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q156 | P3.17: Camera ray | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q157 | P3.17b: Ray budgets and the sit query | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q158 | P3.56: Failed crossing and out of bounds | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
+| Q145 | P3.13b: Walk and run | READY after Q109 and Q115 and Q112 |
+| Q146 | P3.13c: Fly | READY after Q145 |
+| Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
+| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147 and Q130 |
+| Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
+| Q150 | P3.14d: Avatar position set | READY after Q109 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q119 and Q145 |
+| Q153 | P3.15: Remove the walking stand-in | READY after Q145 and Q118 and Q152 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109 and Q118 and Q115 |
+| Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
+| Q156 | P3.17: Camera ray | READY after Q115 and Q118 |
+| Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 |
+| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 and Q161 |
 | Q159 | P3.19: Vehicle parameter store | READY after Q107 |
 | Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q159 |
-| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160 and Q120 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160 and Q120 and Q177 |
 | Q162 | P3.20c: Angular motor and banking | READY after Q161 |
 | Q163 | P3.21a: Hover | READY after Q161 |
 | Q164 | P3.21b: Vertical attraction | READY after Q162 |
 | Q165 | P3.22a: Car | READY after Q163 and Q162 |
-| Q166 | P3.22b: Sled | READY after Q165 |
+| Q166 | P3.22b: Sled | READY after Q165 and Q113 |
 | Q167 | P3.23a: Airplane | READY after Q164 |
 | Q168 | P3.23b: Mouselook | READY after Q167 |
 | Q169 | P3.23c: Balloon | READY after Q163 |
 | Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
-| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
+| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 and Q170 |
 | Q172 | P3.24b: Saved `VehicleData` | READY after Q171 |
-| Q173 | P3.25: Sit | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q174 | P3.26: Attachment forces on the wearer | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q175 | P3.27: Read-only `jolt` commands | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
-| Q176 | P3.28: Gate captures | BLOCKED (Jolt trace waits on the deferred C# module move, 26 November 2026) |
+| Q173 | P3.25: Sit | READY after Q157 and Q147 and Q142 |
+| Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
+| Q175 | P3.27: `jolt` console commands | READY after Q100a |
+| Q176 | P3.28: Gate captures | BLOCKED (the same-native cross-platform gate waits on the deferred upgrade, the pin change and its decision, 26 November 2026) |
+| Q177 | P3.57: Stock Pin8 integrated recordings | READY |
+| Q178 | P3.58: `PhysicsEnabled` off | READY after Q115 |
+| Q179 | P3.59: `PhysicsEnabled` on | READY after Q178 |
+| Q180 | P3.60: Fast body and a sensor between samples | READY after Q118 and Q177 |
+| Q181 | P3.61: Compound hull-count threshold | READY after Q142 and Q135 |
+| Q182 | P3.62: Diagnostic queries that need a scene | READY after Q112 and Q145 and Q161 and Q173 and Q175 |
 
-Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
+Q100 to Q182 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q177 records stock Pin8 output. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
