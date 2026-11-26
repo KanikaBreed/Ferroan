@@ -1280,7 +1280,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
     } else if let Some(observation) = report.child {
-        let line = child_capture::finish(&root, &observation)?;
+        let line = child_capture::finish(&root, &observation, ferroan)?;
         Ok(format!("{}\n{line}", report.lines))
     } else if compare == ferroan_bot::register::Compare::PrimCapture {
         let fixture = prim_capture::extract(&root)?;
