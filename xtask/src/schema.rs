@@ -427,7 +427,7 @@ fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
             "OpenSim-Tranquillity checkout is not clean; schema generation only reads it:\n{status}"
         ));
     }
-    Ok(pinned)
+    Ok(actual)
 }
 
 fn pinned_revision(markdown: &str) -> Result<String, String> {

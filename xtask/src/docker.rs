@@ -1562,17 +1562,20 @@ pub(crate) fn wait_loki_login() -> Result<String, String> {
 #[cfg(target_os = "linux")]
 fn pin_context() -> Result<PathBuf, String> {
     let pin = read_pin()?;
-    if let Some(checkout) = reference_checkout()
-        && clean_at(&checkout, &pin).is_ok()
-    {
-        return Ok(checkout);
-    }
     let dest = if crate::ports::isolated() {
         crate::ports::run_root().join("docker/OpenSim-Tranquillity")
     } else {
         crate::repo_root().join(".scratch/docker/OpenSim-Tranquillity")
     };
     require_scratch(&dest)?;
+    if let Some(source) = reference_checkout() {
+        if dest.exists() && !dest.join(".git").exists() {
+            fs::remove_dir_all(&dest)
+                .map_err(|error| format!("could not remove {}: {error}", dest.display()))?;
+        }
+        crate::oracle_reference::checkout_pin(&source, &dest, "OpenSim-Tranquillity", &pin, true)?;
+        return Ok(dest);
+    }
     if dest.join(".git").exists() && clean_at(&dest, &pin).is_ok() {
         return Ok(dest);
     }
@@ -1598,7 +1601,12 @@ fn pin_context() -> Result<PathBuf, String> {
         .status()
         .map_err(|error| format!("could not check out the pin: {error}"))?;
     if !status.success() {
-        return Err("could not check out the pinned Tranquillity revision".to_string());
+        let head = git(&dest, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "unknown".to_string());
+        return Err(crate::oracle_reference::mismatch(
+            "OpenSim-Tranquillity",
+            &head,
+            &pin,
+        ));
     }
     Ok(dest)
 }

@@ -126,6 +126,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
+| QR49 | R49: oracle and live builds check out the REFERENCES.md pin in their own clone | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
