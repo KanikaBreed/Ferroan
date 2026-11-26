@@ -273,15 +273,15 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | READY |
+| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
 | Q101 | P3.0b: `SubstepAccumulator` | READY |
 | Q102 | P3.0c: Move the C# Jolt module | READY |
-| Q103 | P3.0d: Pin move | READY |
-| Q104 | P3.0e: Decision entry | READY |
+| Q103 | P3.0d: Pin move | READY after Q102 |
+| Q104 | P3.0e: Decision entry | READY after Q103 |
 | Q105 | P3.1: Bind `oxijolt-sys` | READY |
-| Q106 | P3.1b: CI platforms, notices, fallback | READY |
+| Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
-| Q108 | P3.29: Limits and native-boundary fuzz | READY |
+| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
 | Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
 | Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
