@@ -395,7 +395,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         terrain,
         agents,
         stopped_circuits,
-        Arc::new(AtomicUsize::new(0)),
+        StartGate::new(),
         hop,
     ));
     let mut circuits_consumed = false;
@@ -673,6 +673,22 @@ struct LifecycleClients {
     presence: PresenceClient,
 }
 
+/// Counts dequeued generations. A test can hold one count after it is counted
+/// and before that generation skips or poses, then sample the frame.
+struct StartGate {
+    count: AtomicUsize,
+    hold: Mutex<Option<(usize, oneshot::Receiver<()>)>>,
+}
+
+impl StartGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            count: AtomicUsize::new(0),
+            hold: Mutex::new(None),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct DispatchCtx {
     circuit: CircuitServer,
@@ -681,7 +697,7 @@ struct DispatchCtx {
     clients: LifecycleClients,
     stop: watch::Receiver<bool>,
     /// Tests wait until a dequeued agent has passed same-agent cleanup.
-    started: Arc<AtomicUsize>,
+    started: Arc<StartGate>,
     hop: HopEnv,
 }
 
@@ -893,7 +909,7 @@ async fn dispatch_circuits(
     terrain: Option<Arc<TerrainFrame>>,
     agents: mpsc::Receiver<AcceptedAgent>,
     stop: watch::Receiver<bool>,
-    started: Arc<AtomicUsize>,
+    started: Arc<StartGate>,
     hop: HopEnv,
 ) -> Result<(), GridError> {
     circuit.enable_chat();
@@ -924,12 +940,44 @@ async fn dispatch_circuits(
         let ctx = ctx.clone();
         async move {
             agent.wait_for_predecessor().await;
-            ctx.started.fetch_add(1, Ordering::Release);
+            ctx.started.count.fetch_add(1, Ordering::Release);
+            let hold = {
+                let mut gate = ctx
+                    .started
+                    .hold
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                let now = ctx.started.count.load(Ordering::Acquire);
+                match gate.take() {
+                    Some((count, hold)) if now == count => Some(hold),
+                    other => {
+                        *gate = other;
+                        None
+                    }
+                }
+            };
+            if let Some(hold) = hold {
+                let _ = hold.await;
+            }
             if stopping
                 || *ctx.stop.borrow()
                 || ctx.stop.has_changed().is_err()
                 || !agent.is_current()
             {
+                // The HTTP accept may already have seated this generation.
+                // This branch never reaches `ForgetPresence`.
+                if let Some(frame) = ctx.terrain.as_ref() {
+                    match frame.remove_owned(agent.expect.agent_id, agent.generation()) {
+                        Ok(pending) => {
+                            let _ = pending.wait().await;
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                "ferroan-region: skipped presence was not removed: {error}"
+                            );
+                        }
+                    }
+                }
                 let position = agent.start_pos;
                 settle(
                     &ctx.clients.grid_user,
@@ -1868,7 +1916,7 @@ mod tests {
         stop: Option<watch::Sender<bool>>,
         running: Option<tokio::task::JoinHandle<Result<(), GridError>>>,
         tasks: Vec<tokio::task::AbortHandle>,
-        started: Arc<AtomicUsize>,
+        started: Arc<StartGate>,
         users: Arc<Mutex<std::collections::HashMap<String, String>>>,
     }
     impl Drop for Harness {
@@ -1994,8 +2042,11 @@ mod tests {
             let base = format!("http://{}", listener.local_addr().unwrap());
             let caps = CapsRegistry::new(&base).unwrap();
             let (sender, agents) = mpsc::channel(1);
-            let started = Arc::new(AtomicUsize::new(0));
-            let state = SimulationState::new(&config, caps.clone(), sender.clone());
+            let started = StartGate::new();
+            let mut state = SimulationState::new(&config, caps.clone(), sender.clone());
+            if let Some(frame) = &scene {
+                state.keep_scene(Arc::clone(frame));
+            }
             let circuit = CircuitServer::bind()
                 .await
                 .unwrap()
@@ -2048,10 +2099,10 @@ mod tests {
         }
 
         async fn admit(&self, replacement: bool, same_session: bool) -> CircuitExpect {
-            let started = self.started.load(Ordering::Acquire);
+            let started = self.started.count.load(Ordering::Acquire);
             let expect = self.submit_login(replacement, same_session).await;
             tokio::time::timeout(Duration::from_secs(2), async {
-                while self.started.load(Ordering::Acquire) == started {
+                while self.started.count.load(Ordering::Acquire) == started {
                     tokio::task::yield_now().await;
                 }
             })
@@ -2121,7 +2172,7 @@ mod tests {
             self.users.lock().unwrap().insert(session_id, agent_id);
             self.online
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            let started = self.started.load(Ordering::Acquire);
+            let started = self.started.count.load(Ordering::Acquire);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -2140,7 +2191,7 @@ mod tests {
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true, "{value}");
             tokio::time::timeout(Duration::from_secs(2), async {
-                while self.started.load(Ordering::Acquire) == started {
+                while self.started.count.load(Ordering::Acquire) == started {
                     tokio::task::yield_now().await;
                 }
             })
@@ -2168,7 +2219,7 @@ mod tests {
             self.users.lock().unwrap().insert(session_id, agent_id);
             self.online
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            let started = self.started.load(Ordering::Acquire);
+            let started = self.started.count.load(Ordering::Acquire);
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
@@ -2187,7 +2238,7 @@ mod tests {
             let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
             assert_eq!(value["success"], true, "{value}");
             tokio::time::timeout(Duration::from_secs(2), async {
-                while self.started.load(Ordering::Acquire) == started {
+                while self.started.count.load(Ordering::Acquire) == started {
                     tokio::task::yield_now().await;
                 }
             })
@@ -2365,12 +2416,12 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(harness.started.load(Ordering::Acquire), 1);
+        assert_eq!(harness.started.count.load(Ordering::Acquire), 1);
         let other = harness.admit_other().await;
         let other_socket = open(&harness, other).await;
         movement(&other_socket, other, 2).await;
         wait_arrival(&other_socket).await;
-        assert_eq!(harness.started.load(Ordering::Acquire), 2);
+        assert_eq!(harness.started.count.load(Ordering::Acquire), 2);
 
         release.send(()).unwrap();
         let next_socket = open(&harness, next).await;
@@ -2758,6 +2809,142 @@ mod tests {
         ForgetPresence::new(Some(frame), agent, child)
             .finish()
             .await;
+    }
+
+    /// The HTTP seat of a view child whose circuit is skipped must not remain
+    /// for the next login to pose over.
+    #[tokio::test]
+    async fn a_skipped_view_child_is_removed_before_the_next_login_poses() {
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let mut harness = Harness::with_scene(
+            false,
+            false,
+            false,
+            None,
+            Duration::from_secs(120),
+            Some(Arc::clone(&frame)),
+        )
+        .await;
+        let first = harness.admit(false, false).await;
+        let agent = first.agent_id;
+        let socket = open(&harness, first).await;
+        movement(&socket, first, 2).await;
+        wait_arrival(&socket).await;
+
+        let (release_logout, hold_logout) = oneshot::channel();
+        *harness.hold_next_logout.lock().unwrap() = Some(hold_logout);
+        // Pause the view child after it is counted and before it checks
+        // `is_current`. The root drops its agent before the lifecycle lock, so
+        // the next login has to be accepted during this pause or the child is
+        // still current and gets served.
+        let (release_child, hold_child) = oneshot::channel();
+        *harness.started.hold.lock().unwrap() = Some((2, hold_child));
+
+        let mut child: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/region-login/create-agent.request.json"
+        ))
+        .unwrap();
+        let child_session = Uuid::from_u128(80).to_string();
+        child["session_id"] = json!(child_session);
+        child["secure_session_id"] = json!(Uuid::from_u128(81).to_string());
+        child["circuit_code"] = json!("8");
+        child["caps_path"] = json!(Uuid::from_u128(82).to_string());
+        child["teleport_flags"] = json!("0");
+        child["child"] = json!(true);
+        child["start_pos"] = json!("<-56, 128, 6.916>");
+        harness
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(child_session.clone());
+        harness
+            .users
+            .lock()
+            .unwrap()
+            .insert(child_session, agent.to_string());
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap()
+            .post(format!("{}/agent/{agent}/", harness.base))
+            .header("content-type", "application/json")
+            .body(child.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(value["success"], true, "{value}");
+        let seated = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seated.pose.position[0], -56.0);
+        assert!(seated.child);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.count("logout") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(harness.started.count.load(Ordering::Acquire), 1);
+
+        let third = {
+            let login = harness.submit_login(true, false);
+            tokio::pin!(login);
+            tokio::select! {
+                _ = &mut login => panic!("the replacement login finished while the root logout was held"),
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            release_logout.send(()).unwrap();
+            login.await
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.started.count.load(Ordering::Acquire) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (release_pose, hold_pose) = oneshot::channel();
+        *harness.started.hold.lock().unwrap() = Some((3, hold_pose));
+        release_child.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while harness.started.count.load(Ordering::Acquire) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            frame.seated(agent).unwrap().wait().await.unwrap().is_none(),
+            "a skipped view child stayed in the frame"
+        );
+        release_pose.send(()).unwrap();
+
+        let socket = open(&harness, third).await;
+        movement(&socket, third, 2).await;
+        wait_arrival(&socket).await;
+        let arrived = scene_until(
+            &frame,
+            |frame| frame.presence(agent).unwrap(),
+            Option::is_some,
+        )
+        .await
+        .unwrap();
+        assert_eq!(arrived.position[0], 128.0);
+        assert_eq!(arrived.position[1], 128.0);
+        let mut logout = LogoutRequest::default();
+        logout.agent_data.agent_id = agent;
+        logout.agent_data.session_id = third.session_id;
+        send(&socket, &logout, 3).await;
+        wait_packet(&socket, LogoutReply::ID).await;
+        scene_until(
+            &frame,
+            |frame| frame.presence(agent).unwrap(),
+            Option::is_none,
+        )
+        .await;
+        harness.finish().await.unwrap();
     }
 
     #[tokio::test]

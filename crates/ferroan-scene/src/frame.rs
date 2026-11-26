@@ -1248,9 +1248,11 @@ fn answer(
         } => {
             if let Some(avatar) = presences.get(&agent)
                 && avatar.body.child_agent()
+                && avatar.owner == owner
             {
-                // A view child is already seated. Chat must not replace it
-                // with a login hold, or the neighbour enable treats it as a root.
+                // A view child this generation seated stays. Chat must not
+                // replace it with a login hold, or the neighbour enable
+                // treats it as a root. Another generation's pose replaces it.
                 let _ = reply.send(avatar.pose);
             } else {
                 let mut avatar = Avatar::new(agent, pose, fly_slow);
@@ -3852,7 +3854,7 @@ mod tests {
 
 
     /// A Default-flag child gets terrain, the other root, and does not move.
-    /// A later login pose does not replace it.
+    /// The same generation's login pose keeps it. Another generation replaces it.
     #[test]
     fn a_view_child_sends_initial_data_and_does_not_move() {
         let mut scene = bare_scene();
@@ -3880,7 +3882,7 @@ mod tests {
             Request::Pose {
                 agent: child,
                 pose: pose_at([1.0, 1.0, 1.0]),
-                owner: Uuid::from_u128(8),
+                owner: Uuid::from_u128(9),
                 reply,
             },
             &mut scene,
@@ -3919,6 +3921,23 @@ mod tests {
         assert_eq!(avatar.pose.position, start);
         assert!(avatar.body.child_agent());
         assert!(!avatar.body.has_actor());
+        let (reply, _answer) = oneshot::channel();
+        assert!(answer(
+            Request::Pose {
+                agent: child,
+                pose: pose_at([1.0, 1.0, 1.0]),
+                owner: Uuid::from_u128(8),
+                reply,
+            },
+            &mut scene,
+            None,
+            &[],
+            0,
+        ));
+        let replaced = scene.presences.get(&child).unwrap();
+        assert_eq!(replaced.pose.position, [1.0, 1.0, 1.0]);
+        assert!(!replaced.body.child_agent());
+        assert_eq!(replaced.owner, Uuid::from_u128(8));
     }
 
     /// Replacing a live root kills it on the other viewer and keeps the
