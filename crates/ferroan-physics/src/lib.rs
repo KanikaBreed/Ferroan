@@ -33,3 +33,5 @@ pub use thread::{BodyReply, Physics, Pose, REQUEST_QUEUE, RayReply, Refusal, Spa
 
 #[cfg(test)]
 mod jolt_config_oracle;
+#[cfg(test)]
+mod jolt_file_oracle;
