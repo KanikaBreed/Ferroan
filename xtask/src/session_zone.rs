@@ -151,6 +151,116 @@ pub fn run() -> ExitCode {
     if !cargo_presence(&presence_dll, &postgres_ado) {
         return ExitCode::FAILURE;
     }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let tokyo = match measured("tokyo") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_zone(&tokyo, "Asia/Tokyo") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql("ALTER DATABASE ferroan SET timezone TO 'Europe/Berlin'") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let database_zone = match measured("postgres") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_zone(&database_zone, "Europe/Berlin") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres ALTER DATABASE timezone=Europe/Berlin",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &database_zone,
+        "Europe/Berlin",
+        &[],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres PGTZ=Asia/Tokyo",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &tokyo,
+        "Asia/Tokyo",
+        &[("PGTZ", "Asia/Tokyo")],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = psql("ALTER ROLE ferroan SET timezone TO 'Asia/Tokyo'") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let role_zone = match measured("postgres") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_zone(&role_zone, "Asia/Tokyo") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres ALTER ROLE timezone=Asia/Tokyo",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &role_zone,
+        "Asia/Tokyo",
+        &[],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) =
+        psql("ALTER ROLE ferroan IN DATABASE ferroan SET timezone TO 'America/New_York'")
+    {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    let both_zone = match measured("postgres") {
+        Ok(zone) => zone,
+        Err(error) => {
+            eprintln!("session-zone: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = expect_zone(&both_zone, "America/New_York") {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
+    if !cargo_zone(
+        "postgres ALTER ROLE IN DATABASE timezone=America/New_York",
+        &zone_dll,
+        "postgres",
+        &postgres_ado,
+        &both_zone,
+        "America/New_York",
+        &[],
+    ) {
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = postgres_log_has_no_privilege_denial() {
+        eprintln!("session-zone: {error}");
+        return ExitCode::FAILURE;
+    }
     println!("session-zone: Pin8 read Ferroan's rows on both servers");
     ExitCode::SUCCESS
 }
@@ -203,6 +313,20 @@ fn measured(kind: &str) -> Result<Measured, String> {
                 "BEGIN; SET TIME ZONE 'Europe/Berlin'; SELECT current_setting('TimeZone') || ' ' || ((EXTRACT(TIMEZONE FROM now()) / 60)::integer)::text; ROLLBACK;",
             ])
             .output(),
+        "tokyo" => Command::new("docker")
+            .args([
+                "exec",
+                POSTGRES_NAME,
+                "psql",
+                "-U",
+                "ferroan",
+                "-d",
+                "ferroan",
+                "-tA",
+                "-c",
+                "BEGIN; SET TIME ZONE 'Asia/Tokyo'; SELECT current_setting('TimeZone') || ' ' || ((EXTRACT(TIMEZONE FROM now()) / 60)::integer)::text; ROLLBACK;",
+            ])
+            .output(),
         _ => return Err(format!("unknown zone probe {kind}")),
     }
     .map_err(|error| format!("could not read the {kind} zone: {error}"))?;
@@ -249,7 +373,8 @@ fn cargo_zone(
         .env("FERROAN_ZONE_ENGINE", engine)
         .env("FERROAN_ZONE_ADO", ado)
         .env("FERROAN_ZONE_NAME", &zone.name)
-        .env("FERROAN_ZONE_OFFSET", &zone.offset);
+        .env("FERROAN_ZONE_OFFSET", &zone.offset)
+        .env_remove("PGTZ");
     for (key, value) in extra {
         command.env(key, value);
     }
@@ -289,6 +414,7 @@ fn cargo_presence(dll: &std::path::Path, ado: &str) -> bool {
         .env("FERROAN_PRESENCE_PG_CROSS", "1")
         .env("FERROAN_PRESENCE_ORACLE", dll)
         .env("FERROAN_PRESENCE_ADO_POSTGRES", ado)
+        .env_remove("PGTZ")
         .args([
             "test",
             "-p",
@@ -487,14 +613,19 @@ fn wait_ready(mysql: &Container, postgres: &Container) -> Result<(), String> {
 }
 
 fn grant_reader() -> Result<(), String> {
-    let sql = "\
+    psql(
+        "\
 DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'zone_reader') THEN
     CREATE ROLE zone_reader LOGIN PASSWORD 'zone_reader';
   END IF;
 END $$;
 GRANT CONNECT ON DATABASE ferroan TO zone_reader;
-";
+",
+    )
+}
+
+fn psql(sql: &str) -> Result<(), String> {
     let mut child = Command::new("docker")
         .args([
             "exec",
@@ -514,30 +645,58 @@ GRANT CONNECT ON DATABASE ferroan TO zone_reader;
         .spawn()
         .map_err(|error| format!("could not run psql: {error}"))?;
     let Some(mut stdin) = child.stdin.take() else {
-        return Err("could not write the role statement".to_string());
+        return Err("could not write the SQL statement".to_string());
     };
     stdin
         .write_all(sql.as_bytes())
-        .map_err(|error| format!("could not write the role statement: {error}"))?;
+        .map_err(|error| format!("could not write the SQL statement: {error}"))?;
     drop(stdin);
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("could not create the unprivileged role: {error}"))?;
+        .map_err(|error| format!("could not run psql: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.to_ascii_lowercase().contains("password") {
-            Err(format!(
-                "could not create the unprivileged role ({})",
-                output.status
-            ))
+            Err(format!("psql failed ({})", output.status))
         } else {
-            Err(format!(
-                "could not create the unprivileged role: {}",
-                stderr.trim()
-            ))
+            Err(format!("psql failed: {}", stderr.trim()))
         }
+    }
+}
+
+fn expect_zone(zone: &Measured, name: &str) -> Result<(), String> {
+    if zone.name == name {
+        Ok(())
+    } else {
+        Err(format!(
+            "psql reported {}, not the expected {name}",
+            zone.name
+        ))
+    }
+}
+
+fn postgres_log_has_no_privilege_denial() -> Result<(), String> {
+    let output = Command::new("docker")
+        .args(["logs", POSTGRES_NAME])
+        .output()
+        .map_err(|error| format!("could not read the PostgreSQL log: {error}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if let Some(line) = text
+        .lines()
+        .find(|line| line.to_ascii_lowercase().contains("permission denied"))
+    {
+        let line: String = line.chars().take(200).collect();
+        Err(format!(
+            "the PostgreSQL log recorded a permission denial from the zone probe: {line}"
+        ))
+    } else {
+        Ok(())
     }
 }
 

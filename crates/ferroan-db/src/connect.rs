@@ -9,9 +9,11 @@
 //! reference at the pinned revision.
 //!
 //! MySqlConnector leaves the session time zone alone. Npgsql sends `Timezone=`
-//! when the string sets it, and otherwise leaves the server's zone. sqlx does
-//! neither on its own: MySQL defaults to `+00:00`, and PostgreSQL's startup
-//! packet forces `TimeZone=UTC`. The pool corrects both after parsing.
+//! when the string sets it, and otherwise sends `PGTZ` when that variable is
+//! set. When neither is set, PostgreSQL applies the role and database zone,
+//! then the server zone. sqlx does neither on its own: MySQL defaults to
+//! `+00:00`, and PostgreSQL's startup packet forces `TimeZone=UTC`. The pool
+//! corrects both after parsing.
 //!
 //! The pool never grows past [`MAX_POOL_CONNECTIONS`]. A `Maximum Pool Size`
 //! key in the string is rejected so a config file cannot lift that bound.
@@ -19,6 +21,7 @@
 //! create a database and does not apply migrations.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
@@ -279,16 +282,18 @@ pub(crate) fn postgres_url_options(url: &str) -> Result<PgConnectOptions, DbErro
         .map_err(|error| DbError::Input(scrub_driver_message(&error.to_string())))
 }
 
+/// True when the URL query uses a key sqlx's MySQL parser honours.
+///
+/// sqlx matches `timezone` and `time-zone` only, and the match is
+/// case-sensitive. Any other spelling leaves sqlx's `+00:00` default in
+/// place, so the caller clears it and the session uses the server zone.
 fn url_sets_timezone(url: &str) -> bool {
     let Some((_, query)) = url.split_once('?') else {
         return false;
     };
     query.split('&').any(|pair| {
         let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(pair);
-        matches!(
-            key.trim().to_ascii_lowercase().as_str(),
-            "timezone" | "time_zone" | "time-zone"
-        )
+        matches!(key, "timezone" | "time-zone")
     })
 }
 
@@ -404,21 +409,35 @@ fn shell_tokens(text: &str) -> Option<Vec<String>> {
     Some(tokens)
 }
 
+/// One warning per pool when the session has to stay on UTC (D104).
+const UTC_FALLBACK_WARNING: &str = "PostgreSQL session stays on UTC because this login cannot read the server zone (D104). Set Timezone= to that zone";
+
 /// Set the PostgreSQL session zone. sqlx has already forced `TimeZone=UTC`
-/// in the startup packet, and `RESET` keeps that value, so the server default
-/// is read from the postmaster command line or the configuration file.
+/// in the startup packet, and `RESET` keeps that value, so `pg_settings` does
+/// not reveal the server default.
 ///
-/// A login that cannot read either leaves the UTC session in place (D104).
-/// `explicit` is Npgsql's `Timezone=` and is sent as a bound parameter.
+/// Npgsql sends `Timezone=` from the connection string, otherwise `PGTZ`.
+/// When neither is set, PostgreSQL applies `pg_db_role_setting` and then the
+/// command line and configuration file. `explicit` is the connection-string
+/// zone and is sent as a bound parameter. A login that still cannot read a
+/// zone leaves the UTC session in place (D104).
 pub(crate) async fn apply_postgres_timezone(
     conn: &mut sqlx::postgres::PgConnection,
     explicit: Option<String>,
+    warned: &AtomicBool,
 ) -> Result<(), sqlx::Error> {
     let zone = match explicit {
         Some(zone) => zone,
-        None => match server_timezone(conn).await {
+        None => match pgtz_from_env()? {
             Some(zone) => zone,
-            None => return Ok(()),
+            None => match server_timezone(conn).await? {
+                ServerZone::Found(zone) => zone,
+                ServerZone::Unreadable => {
+                    warn_utc_fallback(warned);
+                    return Ok(());
+                }
+                ServerZone::Absent => return Ok(()),
+            },
         },
     };
     sqlx::query("SELECT set_config('TimeZone', $1, false)")
@@ -428,28 +447,234 @@ pub(crate) async fn apply_postgres_timezone(
     Ok(())
 }
 
-async fn server_timezone(conn: &mut sqlx::postgres::PgConnection) -> Option<String> {
-    if let Some(text) = optional_text(conn, "SELECT pg_read_file('postmaster.opts')").await
-        && let Some(zone) = timezone_from_postmaster_opts(&text)
-    {
-        return Some(zone);
+/// Npgsql's `PostgresEnvironment.TimeZone`: the `PGTZ` variable.
+///
+/// An unset variable is not a zone. A value this parser would refuse for
+/// `Timezone=` refuses the connection instead of being sent.
+fn pgtz_from_env() -> Result<Option<String>, sqlx::Error> {
+    match std::env::var("PGTZ") {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(unsupported_pgtz()),
+        Ok(value) => {
+            let value = value.trim();
+            if acceptable_timezone(value) {
+                Ok(Some(value.to_string()))
+            } else {
+                Err(unsupported_pgtz())
+            }
+        }
     }
-    optional_text(
-        conn,
-        "SELECT setting FROM pg_file_settings \
-         WHERE lower(name) = 'timezone' AND applied AND (error IS NULL OR error = '') \
-         ORDER BY seqno DESC LIMIT 1",
-    )
-    .await
-    .map(|zone| zone.trim().to_string())
-    .filter(|zone| acceptable_timezone(zone))
 }
 
-async fn optional_text(conn: &mut sqlx::postgres::PgConnection, sql: &str) -> Option<String> {
-    sqlx::query_scalar::<_, String>(sql)
+fn unsupported_pgtz() -> sqlx::Error {
+    sqlx::Error::Configuration(Box::new(UnsupportedZone(
+        "PGTZ is empty or has an unsupported character",
+    )))
+}
+
+#[derive(Debug)]
+struct UnsupportedZone(&'static str);
+
+impl std::fmt::Display for UnsupportedZone {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for UnsupportedZone {}
+
+enum ServerZone {
+    Found(String),
+    /// Role, database, command line and configuration file named no zone.
+    Absent,
+    /// No role or database zone, and this login cannot read the files (D104).
+    Unreadable,
+}
+
+/// PostgreSQL applies `pg_db_role_setting` above the command line, and the
+/// command line above the configuration file. The first zone in that order
+/// is the one a client that sent no `TimeZone` parameter receives.
+async fn server_timezone(
+    conn: &mut sqlx::postgres::PgConnection,
+) -> Result<ServerZone, sqlx::Error> {
+    if let Some(zone) = role_database_timezone(conn).await? {
+        return Ok(ServerZone::Found(zone));
+    }
+    let mut readable = false;
+    if let Some(zone) = command_line_timezone(conn, &mut readable).await? {
+        return Ok(ServerZone::Found(zone));
+    }
+    if let Some(zone) = configured_timezone(conn, &mut readable).await? {
+        return Ok(ServerZone::Found(zone));
+    }
+    if readable {
+        Ok(ServerZone::Absent)
+    } else {
+        Ok(ServerZone::Unreadable)
+    }
+}
+
+/// Highest precedence first: this database and role, this role, this
+/// database, then a setting for every database and role. Within one row the
+/// last `timezone` assignment wins.
+const ROLE_DATABASE_ZONE: &str = "\
+SELECT source_rank, setting FROM ( \
+  SELECT 1 AS source_rank, entry.setting, entry.ord \
+  FROM pg_db_role_setting AS setting, \
+       LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
+  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+  UNION ALL \
+  SELECT 2, entry.setting, entry.ord \
+  FROM pg_db_role_setting AS setting, \
+       LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
+  WHERE setting.setdatabase = 0 \
+    AND setting.setrole = (SELECT oid FROM pg_roles WHERE rolname = session_user) \
+  UNION ALL \
+  SELECT 3, entry.setting, entry.ord \
+  FROM pg_db_role_setting AS setting, \
+       LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
+  WHERE setting.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+    AND setting.setrole = 0 \
+  UNION ALL \
+  SELECT 4, entry.setting, entry.ord \
+  FROM pg_db_role_setting AS setting, \
+       LATERAL unnest(setting.setconfig) WITH ORDINALITY AS entry(setting, ord) \
+  WHERE setting.setdatabase = 0 AND setting.setrole = 0 \
+) AS levels \
+ORDER BY source_rank, ord";
+
+async fn role_database_timezone(
+    conn: &mut sqlx::postgres::PgConnection,
+) -> Result<Option<String>, sqlx::Error> {
+    let rows: Vec<(i32, String)> = sqlx::query_as(ROLE_DATABASE_ZONE)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(timezone_from_ranked_settings(
+        rows.iter().map(|(rank, setting)| (*rank, setting.as_str())),
+    ))
+}
+
+/// The last acceptable `timezone` assignment. A lower rank does not replace
+/// a higher one. `entries` are in the order PostgreSQL applies them.
+pub(crate) fn timezone_from_ranked_settings<'a>(
+    entries: impl IntoIterator<Item = (i32, &'a str)>,
+) -> Option<String> {
+    let mut best: Option<(i32, String)> = None;
+    for (rank, entry) in entries {
+        let Some(value) = timezone_from_setting(entry) else {
+            continue;
+        };
+        match &best {
+            Some((kept, _)) if rank > *kept => {}
+            _ => best = Some((rank, value.to_string())),
+        }
+    }
+    best.map(|(_, zone)| zone)
+}
+
+fn timezone_from_setting(entry: &str) -> Option<&str> {
+    let (key, value) = entry.split_once('=')?;
+    if !key.eq_ignore_ascii_case("timezone") {
+        return None;
+    }
+    let value = value.trim();
+    if acceptable_timezone(value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+const READ_FILE_PRIVILEGE: &str =
+    "SELECT has_function_privilege(session_user, 'pg_read_file(text)', 'EXECUTE')";
+
+const POSTMASTER_OPTS: &str = "SELECT pg_read_file('postmaster.opts')";
+
+const FILE_SETTINGS_PRIVILEGE: &str =
+    "SELECT has_table_privilege(session_user, 'pg_file_settings', 'SELECT')";
+
+const FILE_TIMEZONE: &str = "\
+SELECT setting FROM pg_file_settings \
+WHERE lower(name) = 'timezone' AND applied AND (error IS NULL OR error = '') \
+ORDER BY seqno DESC LIMIT 1";
+
+async fn command_line_timezone(
+    conn: &mut sqlx::postgres::PgConnection,
+    readable: &mut bool,
+) -> Result<Option<String>, sqlx::Error> {
+    match probe_text(conn, READ_FILE_PRIVILEGE, POSTMASTER_OPTS).await? {
+        Probe::Denied => Ok(None),
+        Probe::Value(text) => {
+            *readable = true;
+            Ok(text.as_deref().and_then(timezone_from_postmaster_opts))
+        }
+    }
+}
+
+async fn configured_timezone(
+    conn: &mut sqlx::postgres::PgConnection,
+    readable: &mut bool,
+) -> Result<Option<String>, sqlx::Error> {
+    match probe_text(conn, FILE_SETTINGS_PRIVILEGE, FILE_TIMEZONE).await? {
+        Probe::Denied => Ok(None),
+        Probe::Value(zone) => {
+            *readable = true;
+            Ok(zone
+                .map(|zone| zone.trim().to_string())
+                .filter(|zone| acceptable_timezone(zone)))
+        }
+    }
+}
+
+enum Probe {
+    Denied,
+    Value(Option<String>),
+}
+
+/// Ask before reading. A refused `pg_read_file` or `pg_file_settings` query
+/// writes an error to the server log on every new connection. Only SQLSTATE
+/// 42501 counts as unreadable; a dropped connection or any other error is
+/// returned so the pool does not keep it.
+async fn probe_text(
+    conn: &mut sqlx::postgres::PgConnection,
+    privilege_sql: &str,
+    read_sql: &str,
+) -> Result<Probe, sqlx::Error> {
+    let allowed: bool = sqlx::query_scalar(privilege_sql)
         .fetch_one(&mut *conn)
+        .await?;
+    if !allowed {
+        return Ok(Probe::Denied);
+    }
+    match sqlx::query_scalar::<_, String>(read_sql)
+        .fetch_optional(&mut *conn)
         .await
-        .ok()
+    {
+        Ok(value) => Ok(Probe::Value(value)),
+        Err(error) if insufficient_privilege(&error) => Ok(Probe::Denied),
+        Err(error) => Err(error),
+    }
+}
+
+fn insufficient_privilege(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .is_some_and(|code| code == "42501")
+}
+
+/// Returns whether this call logged. Later calls on the same flag do not.
+fn warn_utc_fallback(warned: &AtomicBool) -> bool {
+    if warned
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        tracing::warn!("{UTC_FALLBACK_WARNING}");
+        true
+    } else {
+        false
+    }
 }
 
 pub(crate) fn postgres_options(target: &PostgresTarget, password: &str) -> PgConnectOptions {
@@ -821,6 +1046,65 @@ mod tests {
         let mysql = mysql_target("Server=localhost;Database=db;User ID=u;Password=p;Timezone=UTC")
             .unwrap_err();
         assert!(mysql.to_string().contains("unsupported MySQL"));
+    }
+
+    #[test]
+    fn mysql_url_timezone_key_matches_sqlx() {
+        assert!(url_sets_timezone("mysql://u@h/db?timezone=%2B08%3A00"));
+        assert!(url_sets_timezone(
+            "mysql://u@h/db?ssl-mode=disabled&time-zone=%2B08%3A00"
+        ));
+        assert!(!url_sets_timezone("mysql://u@h/db?time_zone=%2B08%3A00"));
+        assert!(!url_sets_timezone("mysql://u@h/db?Timezone=%2B08%3A00"));
+        assert!(!url_sets_timezone("mysql://u@h/db?TIMEZONE=UTC"));
+        assert!(!url_sets_timezone("mysql://u@h/db"));
+    }
+
+    #[test]
+    fn ranked_settings_keep_postgresql_order() {
+        let specific = [
+            (1, "search_path=public"),
+            (1, "TimeZone=Europe/Berlin"),
+            (1, "TimeZone=Asia/Tokyo"),
+            (2, "TimeZone=America/New_York"),
+            (3, "timezone=UTC"),
+        ];
+        assert_eq!(
+            timezone_from_ranked_settings(specific).as_deref(),
+            Some("Asia/Tokyo")
+        );
+        let role_over_database = [
+            (3, "TimeZone=Europe/Berlin"),
+            (2, "TimeZone=Asia/Tokyo"),
+            (4, "TimeZone=UTC"),
+        ];
+        assert_eq!(
+            timezone_from_ranked_settings(role_over_database).as_deref(),
+            Some("Asia/Tokyo")
+        );
+        let database_when_the_role_row_names_no_zone = [
+            (1, "search_path=public"),
+            (2, "TimeZone=not a zone"),
+            (3, "TimeZone=Europe/Berlin"),
+        ];
+        assert_eq!(
+            timezone_from_ranked_settings(database_when_the_role_row_names_no_zone).as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            timezone_from_ranked_settings([(4, "TimeZone=UTC")]).as_deref(),
+            Some("UTC")
+        );
+        assert!(timezone_from_ranked_settings([(1, "listen_addresses=*")]).is_none());
+    }
+
+    #[test]
+    fn utc_fallback_warning_is_once_per_pool() {
+        assert!(UTC_FALLBACK_WARNING.contains("D104"));
+        assert!(UTC_FALLBACK_WARNING.contains("Timezone="));
+        let warned = AtomicBool::new(false);
+        assert!(warn_utc_fallback(&warned));
+        assert!(!warn_utc_fallback(&warned));
     }
 
     #[test]

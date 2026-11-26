@@ -8,6 +8,8 @@
 //! executes a migration script.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -333,20 +335,24 @@ async fn connect_postgres(
 ) -> Result<PgPool, sqlx::Error> {
     // sqlx retries an `after_connect` error until the acquire timeout, so an
     // invalid Timezone= would surface as a pool timeout. Check it once first.
+    // One pool logs the unreadable-zone warning once, not once per connection.
+    let warned = Arc::new(AtomicBool::new(false));
     if let Some(zone) = timezone.clone() {
         use sqlx::Connection;
         let mut conn = sqlx::postgres::PgConnection::connect_with(&options).await?;
-        let applied = apply_postgres_timezone(&mut conn, Some(zone)).await;
+        let applied = apply_postgres_timezone(&mut conn, Some(zone), &warned).await;
         let _ = conn.close().await;
         applied?;
     }
+    let warned = Arc::clone(&warned);
     PgPoolOptions::new()
         .max_connections(MAX_POOL_CONNECTIONS)
         .min_connections(0)
         .acquire_timeout(ACQUIRE_TIMEOUT)
         .after_connect(move |conn, _meta| {
             let timezone = timezone.clone();
-            Box::pin(async move { apply_postgres_timezone(conn, timezone).await })
+            let warned = Arc::clone(&warned);
+            Box::pin(async move { apply_postgres_timezone(conn, timezone, &warned).await })
         })
         .connect_with(options)
         .await

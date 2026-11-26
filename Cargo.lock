@@ -420,6 +420,7 @@ dependencies = [
  "ferroan-diag",
  "sqlx",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
