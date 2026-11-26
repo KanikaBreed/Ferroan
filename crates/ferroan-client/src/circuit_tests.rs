@@ -45,6 +45,23 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
     let mut state = State::new(captured_config(), config);
     state.peer = Some(peer());
     let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    assert!(
+        state.pending_land.is_empty(),
+        "terrain waits for CompleteAgentMovement"
+    );
+    let expect = identity(Uuid::from_u128(1));
+    let request = movement(expect, 1, &[]);
+    state
+        .handle(
+            &io,
+            peer(),
+            &expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
     release_throttled(&mut state, &io).await;
     let sent = io.sent.lock().unwrap();
     let bodies: Vec<(u8, Vec<u8>)> = sent
@@ -63,6 +80,265 @@ async fn land_packets_drain_while_the_reliable_window_has_room() {
         vec![(0x4c, b"patch-a".to_vec()), (0x4c, b"patch-b".to_vec()),]
     );
     assert!(state.pending_land.is_empty());
+}
+
+fn overlay_chunk(sequence_id: i32, byte: u8) -> crate::ParcelOverlayChunk {
+    crate::ParcelOverlayChunk {
+        sequence_id,
+        data: vec![byte; 8],
+    }
+}
+
+fn overlay_message(sequence_id: i32, byte: u8) -> ferroan_protocol::msgs::ParcelOverlay {
+    let mut message = ferroan_protocol::msgs::ParcelOverlay::default();
+    message.parcel_data.sequence_id = sequence_id;
+    message.parcel_data.data = vec![byte; 8];
+    message
+}
+
+fn sample_land() -> ArrivalConfig {
+    ArrivalConfig {
+        overlay: vec![overlay_chunk(0, 0x11), overlay_chunk(1, 0x22)],
+        land: vec![crate::LandLayer {
+            kind: 0x4c,
+            data: b"patch".to_vec(),
+        }],
+        ..ArrivalConfig::default()
+    }
+}
+
+fn land_ids(bytes: &[Vec<u8>]) -> Vec<ferroan_protocol::MsgId> {
+    bytes
+        .iter()
+        .filter_map(|packet| {
+            let parsed = parse_packet(packet).ok()?;
+            matches!(
+                parsed.id,
+                ferroan_protocol::msgs::ParcelOverlay::ID | ferroan_protocol::msgs::LayerData::ID
+            )
+            .then_some(parsed.id)
+        })
+        .collect()
+}
+
+async fn complete(state: &mut State, io: &FakeIo, expect: &CircuitExpect, sequence: u32) {
+    let request = movement(*expect, sequence, &[]);
+    state
+        .handle(
+            io,
+            peer(),
+            expect,
+            &parse_packet(&request).unwrap(),
+            request.len(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Eligible completion queues the overlay ahead of staged terrain and drains
+/// both on Land while the reliable window has room.
+#[tokio::test]
+async fn overlay_precedes_land_and_drains_through_the_reliable_window() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    state.maintain(&io).await.unwrap();
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    assert!(state.pending_land.is_empty());
+    complete(&mut state, &io, &expect, 1).await;
+    let mut layer = ferroan_protocol::msgs::LayerData::default();
+    layer.layer_id.type_ = 0x4c;
+    layer.layer_data.data = b"patch".to_vec();
+    let queued = [
+        encode_payload(&overlay_message(0, 0x11)).unwrap().bytes,
+        encode_payload(&overlay_message(1, 0x22)).unwrap().bytes,
+        encode_payload(&layer).unwrap().bytes,
+    ];
+    let pending: Vec<_> = state
+        .pending_land
+        .iter()
+        .map(|payload| payload.bytes.clone())
+        .collect();
+    assert_eq!(pending, queued);
+    release_throttled(&mut state, &io).await;
+    assert_eq!(
+        land_ids(&io.sent.lock().unwrap()),
+        vec![
+            ferroan_protocol::msgs::ParcelOverlay::ID,
+            ferroan_protocol::msgs::ParcelOverlay::ID,
+            ferroan_protocol::msgs::LayerData::ID,
+        ]
+    );
+    let sent = io.sent.lock().unwrap();
+    let sequences: Vec<i32> = sent
+        .iter()
+        .filter_map(|bytes| {
+            let packet = parse_packet(bytes).ok()?;
+            if packet.id != ferroan_protocol::msgs::ParcelOverlay::ID {
+                return None;
+            }
+            Some(
+                packet
+                    .decode::<ferroan_protocol::msgs::ParcelOverlay>()
+                    .unwrap()
+                    .parcel_data
+                    .sequence_id,
+            )
+        })
+        .collect();
+    assert_eq!(sequences, vec![0, 1]);
+}
+
+/// A crossing update that teleport flags did not clear suppresses terrain and
+/// the overlay. AgentMovementComplete still goes out.
+#[tokio::test]
+async fn a_crossing_update_suppresses_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut config = sample_land();
+    config.teleport_flags = 0;
+    config.crossing_flags = 4;
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    assert!(state.pending_land.is_empty());
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    assert!(message_ids(&io).contains(&ferroan_protocol::msgs::AgentMovementComplete::ID));
+    state.maintain(&io).await.unwrap();
+    assert!(state.pending_land.is_empty());
+}
+
+/// Positive teleport flags clear the crossing update, so the pass is sent.
+#[tokio::test]
+async fn positive_teleport_flags_clear_a_crossing_update() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut config = sample_land();
+    config.crossing_flags = 4;
+    let mut state = State::new(captured_config(), config);
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    assert_eq!(state.pending_land.len(), 3);
+}
+
+/// A second CompleteAgentMovement does not send another arrival or overlay.
+#[tokio::test]
+async fn a_second_complete_movement_does_not_repeat_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    let queued = state.pending_land.len();
+    complete(&mut state, &io, &expect, 2).await;
+    assert_eq!(state.pending_land.len(), queued);
+    let arrivals = message_ids(&io)
+        .iter()
+        .filter(|id| **id == ferroan_protocol::msgs::AgentMovementComplete::ID)
+        .count();
+    assert_eq!(arrivals, 1);
+}
+
+#[derive(Default)]
+struct LandPass {
+    flag: std::sync::atomic::AtomicBool,
+}
+
+impl crate::EntityUpdates for LandPass {
+    fn has_updates(&self) -> bool {
+        false
+    }
+
+    fn take_updates(&self, _: &mut crate::TaskBatch) {}
+
+    fn take_avatar_packets(&self, _: usize) -> Vec<AvatarPacket> {
+        Vec::new()
+    }
+
+    fn take_land_pass(&self) -> bool {
+        self.flag.swap(false, Ordering::AcqRel)
+    }
+}
+
+fn with_pass(flags: u32, pass: Arc<LandPass>) -> ArrivalConfig {
+    ArrivalConfig {
+        teleport_flags: flags,
+        updates: Some(crate::EntityFeed {
+            updates: pass,
+            wake: Arc::new(Notify::new()),
+        }),
+        ..sample_land()
+    }
+}
+
+/// Zero teleport flags append another copy when SendInitialData asks.
+/// ViaLogin ignores that signal.
+#[tokio::test]
+async fn the_initial_data_gate_repeats_land_only_for_zero_teleport_flags() {
+    let expect = identity(Uuid::from_u128(1));
+    let pass = Arc::new(LandPass::default());
+    let mut state = State::new(captured_config(), with_pass(0, Arc::clone(&pass)));
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    release_throttled(&mut state, &io).await;
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
+    pass.flag.store(true, Ordering::Release);
+    state.advance_throttle(std::time::Duration::from_secs(1));
+    state.maintain(&io).await.unwrap();
+    release_throttled(&mut state, &io).await;
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 6);
+
+    let login = Arc::new(LandPass::default());
+    let mut state = State::new(
+        captured_config(),
+        with_pass(crate::VIA_LOGIN, Arc::clone(&login)),
+    );
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    complete(&mut state, &io, &expect, 1).await;
+    release_throttled(&mut state, &io).await;
+    login.flag.store(true, Ordering::Release);
+    state.advance_throttle(std::time::Duration::from_secs(1));
+    state.maintain(&io).await.unwrap();
+    assert!(state.pending_land.is_empty());
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
+}
+
+/// The overlay waits on Land with the same reliable-window stall as terrain.
+#[tokio::test(start_paused = true)]
+async fn a_full_reliable_window_holds_the_overlay() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), sample_land());
+    state.peer = Some(peer());
+    let io = FakeIo::default();
+    for _ in 0..=ACK_STALL {
+        state
+            .send_payload(
+                &io,
+                peer(),
+                Payload {
+                    bytes: vec![0xff, 0xff, 0x00, 0x01, 1],
+                    coding: Coding::Plain,
+                    reliable: true,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    io.sent.lock().unwrap().clear();
+    complete(&mut state, &io, &expect, 1).await;
+    assert_eq!(state.pending_land.len(), 3);
+    state.advance_throttle(std::time::Duration::from_millis(200));
+    state.maintain(&io).await.unwrap();
+    assert_eq!(state.pending_land.len(), 3);
+    assert!(land_ids(&io.sent.lock().unwrap()).is_empty());
+    state.unacked.acknowledge(1..=10);
+    release_throttled(&mut state, &io).await;
+    assert!(state.pending_land.is_empty());
+    assert_eq!(land_ids(&io.sent.lock().unwrap()).len(), 3);
 }
 
 fn teleport_request(
@@ -356,6 +632,10 @@ impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
         assert!(self.take_avatar_packets(max).is_empty());
         Vec::new()
     }
+
+    fn take_land_pass(&self) -> bool {
+        ferroan_scene::terse::ViewerFeed::take_land_pass(self)
+    }
 }
 
 #[tokio::test]
@@ -381,6 +661,7 @@ async fn local_teleport_stays_behind_the_frames_preteleport_terse() {
             height: 1.9,
             hover: 0.0,
         }),
+        teleport_flags: 1 << 7,
     };
     let local_id = frame
         .attach(expect.agent_id, link)
@@ -979,6 +1260,9 @@ async fn complete_movement_send_path_matches_captured_csharp_arrival() {
         channel_version:
             "OpenSim-NGC Tranquillity Release 1.2.192-alpha+f67db54399 (X64/Unix/DotNet)".into(),
         land: Vec::new(),
+        overlay: Vec::new(),
+        teleport_flags: 1 << 7,
+        crossing_flags: 0,
         avatar: None,
         teleport: None,
         source_hop: None,
@@ -1326,6 +1610,37 @@ async fn pending_logins_keep_all_61_and_report_only_an_eviction() {
     let pending = &shared.fan.lock().unwrap().pending;
     let ports: Vec<_> = pending.iter().map(|d| d.from.port()).collect();
     assert_eq!(ports, (3..=61).chain([1, 62]).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn a_pending_login_keeps_the_movement_burst_until_its_serve() {
+    let server = CircuitServer::bind().await.unwrap();
+    let expect = identity(Uuid::from_u128(7));
+    let from = SocketAddr::from(([127, 0, 0, 1], 4400));
+    let opened = use_circuit(expect);
+    let first = movement(expect, 2, &[]);
+    let second = movement(expect, 3, &[]);
+    {
+        let shared = &server.inner.shared;
+        assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+        assert_eq!(route(shared, from, first.clone()), None);
+        assert_eq!(route(shared, from, second.clone()), None);
+        // A resent UseCircuitCode is acknowledged and does not join the burst.
+        assert_eq!(route(shared, from, opened.clone()), Some((from, 1)));
+        let other = SocketAddr::from(([127, 0, 0, 1], 4401));
+        assert_eq!(route(shared, other, first.clone()), None);
+        let pending = &shared.fan.lock().unwrap().pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].packets.len(), 3);
+    }
+    let session = server.open_session(expect);
+    let mut buf = [0u8; 2048];
+    let mut taken = Vec::new();
+    while let Some((len, source)) = session.try_recv_from(&mut buf).unwrap() {
+        assert_eq!(source, from);
+        taken.push(buf[..len].to_vec());
+    }
+    assert_eq!(taken, vec![opened, first, second]);
 }
 
 #[tokio::test]

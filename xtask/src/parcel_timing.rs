@@ -4,7 +4,7 @@
 //! Pin8 parcel arrivals. Keep original Land datagrams. Other messages contribute
 //! timing and sequence metadata only; no agent, session or capability is published.
 use super::login_capture::{bounded, object_cross::decode_original};
-use chrono::{Local, NaiveDateTime, TimeZone};
+use chrono::{Local, NaiveDateTime, TimeZone, Utc};
 use ferroan_capture::{Kind, Record, read_capture, write_capture};
 use ferroan_protocol::{Msg, msgs::*, parse_packet};
 use serde::{Deserialize, Serialize};
@@ -47,37 +47,71 @@ fn capture(path: &Path) -> Result<Vec<Record>, String> {
     read_capture(&bounded(path, LIMIT)?).map_err(|e| e.to_string())
 }
 
+fn gate_millis(line: &str, utc: bool) -> Result<u64, String> {
+    let stamp = NaiveDateTime::parse_from_str(
+        line.get(..23).ok_or("missing log timestamp")?,
+        "%Y-%m-%d %H:%M:%S,%3f",
+    )
+    .map_err(|e| e.to_string())?;
+    let ms = if utc {
+        Utc.from_utc_datetime(&stamp).timestamp_millis()
+    } else {
+        Local
+            .from_local_datetime(&stamp)
+            .single()
+            .ok_or("ambiguous region log timestamp")?
+            .timestamp_millis()
+    };
+    u64::try_from(ms).map_err(|_| "negative log timestamp".to_string())
+}
+
+fn gate_lines(path: &Path, needle: &str, utc: bool) -> Result<Vec<u64>, String> {
+    let bytes = bounded(path, LIMIT)?;
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter(|line| line.contains(needle))
+        .map(|line| gate_millis(line, utc))
+        .collect()
+}
+
 fn gates(root: &Path, agent: &str) -> Result<Vec<u64>, String> {
-    let mut found = Vec::new();
     let needle = format!("SendInitialData for \"{agent}\"");
-    for file in fs::read_dir(root.join("home")).map_err(|e| e.to_string())? {
-        let path = file.map_err(|e| e.to_string())?.path();
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        if !(name.starts_with("OpenSim.Server.RegionServer") && name.ends_with(".log")) {
-            continue;
-        }
-        let bytes = bounded(&path, LIMIT)?;
-        for line in String::from_utf8_lossy(&bytes)
-            .lines()
-            .filter(|line| line.contains(&needle))
-        {
-            let stamp = NaiveDateTime::parse_from_str(
-                line.get(..23).ok_or("missing log timestamp")?,
-                "%Y-%m-%d %H:%M:%S,%3f",
-            )
-            .map_err(|e| e.to_string())?;
-            let ms = Local
-                .from_local_datetime(&stamp)
-                .single()
-                .ok_or("ambiguous region log timestamp")?
-                .timestamp_millis();
-            found.push(u64::try_from(ms).map_err(|_| "negative log timestamp")?);
+    let mut csharp = Vec::new();
+    let home = root.join("home");
+    if home.is_dir() {
+        for file in fs::read_dir(&home).map_err(|e| e.to_string())? {
+            let path = file.map_err(|e| e.to_string())?.path();
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            if !(name.starts_with("OpenSim.Server.RegionServer") && name.ends_with(".log")) {
+                continue;
+            }
+            csharp.extend(gate_lines(&path, &needle, false)?);
         }
     }
-    Ok(found)
+    // A C# gate is local time in the OpenSim log. Do not also read region.log.
+    if !csharp.is_empty() {
+        return Ok(csharp);
+    }
+    // Ferroan writes the same sentence to region.log, stamped in UTC.
+    let region_log = home.join("region.log");
+    if region_log.is_file() {
+        return gate_lines(&region_log, &needle, true);
+    }
+    Ok(Vec::new())
+}
+
+fn accept_channel(bytes: &[u8], revision: &str) -> Result<(), String> {
+    let text = bytes
+        .strip_suffix(&[0])
+        .and_then(|body| std::str::from_utf8(body).ok())
+        .unwrap_or("");
+    if text.starts_with("Ferroan ") {
+        return Ok(());
+    }
+    crate::arrival_fixtures::pinned_channel(bytes, revision).map(|_| ())
 }
 
 fn seed_times(records: &[Record], start: u64, end: u64) -> Result<(u64, u64), String> {
@@ -144,7 +178,7 @@ fn timeline(
                 let msg = p
                     .decode::<AgentMovementComplete>()
                     .map_err(|e| e.to_string())?;
-                crate::arrival_fixtures::pinned_channel(&msg.sim_data.channel_version, revision)?;
+                accept_channel(&msg.sim_data.channel_version, revision)?;
                 "AgentMovementComplete"
             }
             (Kind::UdpOut, RegionHandshake::ID) => "RegionHandshake",
@@ -292,6 +326,7 @@ struct Arrival {
     passes: Passes,
     rates: Vec<(u64, [f32; 7])>,
     terrain: usize,
+    first_terrain: Option<u64>,
     gate: u64,
 }
 
@@ -333,6 +368,7 @@ fn viewer(out: &Path, name: &str) -> Result<Arrival, String> {
         passes: Passes::default(),
         rates: Vec::new(),
         terrain: 0,
+        first_terrain: None,
         gate,
     };
     let land = capture(&out.join(format!("{name}.cap")))?;
@@ -363,6 +399,9 @@ fn viewer(out: &Path, name: &str) -> Result<Arrival, String> {
                     let m = decode_original::<LayerData>(&p, &record.bytes)?;
                     if !matches!(m.layer_id.type_, b'L' | b'M') {
                         return Err("unexpected terrain layer".into());
+                    }
+                    if arrival.first_terrain.is_none() {
+                        arrival.first_terrain = Some(e.ms);
                     }
                     arrival.terrain += 1;
                 } else {
@@ -396,6 +435,29 @@ fn viewer(out: &Path, name: &str) -> Result<Arrival, String> {
     Ok(arrival)
 }
 
+fn stable(name: &str, arrival: &Arrival) -> Result<(), String> {
+    let terrain = arrival
+        .first_terrain
+        .ok_or_else(|| format!("{name}: missing land terrain"))?;
+    if arrival.passes.first_sends.iter().any(|ms| *ms >= terrain) {
+        return Err(format!(
+            "{name}: overlay did not precede the first land terrain datagram"
+        ));
+    }
+    if arrival.passes.resends != 0 {
+        return Err(format!("{name}: overlay was resent"));
+    }
+    // Pin8 packs the island into 11 LayerData datagrams. Ferroan sends one
+    // patch per datagram, 256 on a 256 m region (`land_layers`).
+    if !matches!(arrival.terrain, 11 | 256) {
+        return Err(format!(
+            "{name}: expected 11 or 256 land terrain datagrams, saw {}",
+            arrival.terrain
+        ));
+    }
+    Ok(())
+}
+
 fn replay(out: &Path) -> Result<String, String> {
     let control = viewer(out, "owner")?;
     let limited = viewer(out, "member")?;
@@ -418,6 +480,14 @@ fn replay(out: &Path) -> Result<String, String> {
     {
         return Err(format!(
             "Land did not delay and resume outstanding overlay chunks: {a:?}, {b:?}, restored {restore}"
+        ));
+    }
+    stable("owner", &control)?;
+    stable("member", &limited)?;
+    if !(b[0] < limited.gate && b[1] > limited.gate && b[2] > limited.gate && b[3] > limited.gate) {
+        return Err(format!(
+            "member's last three overlay chunks did not follow the initial-data gate: {b:?}, gate {}",
+            limited.gate
         ));
     }
     Ok(format!(

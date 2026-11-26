@@ -307,6 +307,8 @@ pub struct AcceptedAgent {
     pub via_login: bool,
     pub client_ip: String,
     pub service_session_id: String,
+    /// `TeleportFlags` from the accepted login, including bits other than ViaLogin.
+    pub teleport_flags: u32,
     pub viewer: String,
     pub channel: String,
     pub mac: String,
@@ -789,6 +791,7 @@ impl SimulationState {
             via_login: fields.via_login,
             client_ip: fields.client_ip,
             service_session_id: fields.service_session_id,
+            teleport_flags: fields.teleport_flags,
             viewer: fields.viewer,
             channel: fields.channel,
             mac: fields.mac,
@@ -1751,6 +1754,8 @@ struct AgentFields {
     via_login: bool,
     client_ip: String,
     service_session_id: String,
+    /// The full `teleport_flags` word. ViaLogin is one bit of it.
+    teleport_flags: u32,
     viewer: String,
     channel: String,
     mac: String,
@@ -1847,6 +1852,7 @@ impl AgentFields {
             via_login,
             client_ip: optional_string(args, "client_ip"),
             service_session_id: optional_string(args, "service_session_id"),
+            teleport_flags: flags,
             viewer: optional_string(args, "viewer"),
             channel: optional_string(args, "channel"),
             mac: optional_string(args, "mac"),
@@ -2490,6 +2496,7 @@ mod tests {
             via_login: true,
             client_ip: String::new(),
             service_session_id: String::new(),
+            teleport_flags: VIA_LOGIN,
             viewer: String::new(),
             channel: String::new(),
             mac: String::new(),
@@ -2760,6 +2767,7 @@ mod tests {
             let mut fields = other_agent(u128::from(n), n);
             fields.child = true;
             fields.via_login = false;
+            fields.teleport_flags = 0;
             fields
         };
         for n in 10..10 + CHILD_DISPATCH_CAPACITY as u32 {
@@ -3469,6 +3477,7 @@ mod tests {
         let mut child = other_agent(6, 43);
         child.child = true;
         child.via_login = false;
+        child.teleport_flags = 0;
         state.accept(child).unwrap();
         let accepted = receiver.recv().await.unwrap();
         assert!(accepted.return_slot.is_child());
@@ -3479,6 +3488,7 @@ mod tests {
         let mut again = synthetic_agent();
         again.child = true;
         again.via_login = false;
+        again.teleport_flags = 0;
         again.caps_path = Uuid::from_u128(99).to_string();
         state
             .reuse_child(&again, state.reserve_child_place().unwrap())
@@ -4090,6 +4100,7 @@ mod tests {
                     height: 1.9,
                     hover: 0.0,
                 }),
+                teleport_flags: 1 << 7,
             };
             let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
             let pose = ferroan_scene::Presence {

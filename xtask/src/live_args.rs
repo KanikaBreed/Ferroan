@@ -477,9 +477,20 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
     if *scenario == "prim-arrival" && flags.region_ferroan && !grid {
         return Err(ParseFail::Usage);
     }
-    if (matches!(
+    // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
+    // scenario on the Ferroan home region and does not select that engine.
+    if *scenario == "parcel-timing" {
+        let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
+        let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
+        if !pin8 && !ferroan {
+            return Err(ParseFail::Message(
+                "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+                    .to_string(),
+            ));
+        }
+    } else if (matches!(
         *scenario,
-        "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "parcel-timing"
+        "prim-capture" | "object-cross" | "child-view" | "store-handoff"
     ) || (*scenario == "prim-arrival" && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
@@ -785,6 +796,10 @@ mod tests {
             assert_eq!(ferroan.is_ok(), scenario == "prim-arrival");
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
         }
+        let ferroan = run(&["run", "parcel-timing", "grid", "--region", "ferroan"]);
+        assert!(ferroan.ferroan_region);
+        assert!(!ferroan.basic_physics);
+        assert!(parse(&["run", "parcel-timing", "grid", "--region", "ferroan"]).is_ok());
     }
 
     #[test]

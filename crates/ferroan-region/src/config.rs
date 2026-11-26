@@ -481,6 +481,10 @@ impl RegionConfig {
             region_handle: self.handle(),
             channel_version: self.channel_version.clone(),
             land: Vec::new(),
+            overlay: Vec::new(),
+            // `serve_agent` overwrites this from the accepted login.
+            teleport_flags: 0,
+            crossing_flags: 0,
             avatar: None,
             teleport: None,
             source_hop: None,

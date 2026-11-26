@@ -28,7 +28,9 @@ mod throttle;
 pub use appearance::{
     AvatarWire, DEFAULT_TEXTURE as DEFAULT_AVATAR_TEXTURE, LiveAvatar, StoredAppearance,
 };
-pub use arrival::{ArrivalConfig, LandLayer};
+pub use arrival::{
+    ArrivalConfig, LandLayer, ParcelOverlayChunk, VIA_LOGIN, land_at_complete, land_at_initial,
+};
 pub use caps::{
     CapAnswer, CapExchange, CapGrantSet, CapService, CapTarget, CapsError, CapsRegistry,
     CapsServer, UploaderRoutes,
