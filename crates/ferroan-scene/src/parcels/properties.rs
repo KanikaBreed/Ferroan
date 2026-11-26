@@ -130,6 +130,8 @@ impl Default for ParcelRegion {
 
 impl ParcelRegion {
     /// `AllowEnvironmentOverride` is the estate bit the handshake leaves clear.
+    /// Bits 23, 24, 25 and 30 are cleared: `GetRegionFlags` never sets them
+    /// (D108, TB152), even when the handshake word does.
     pub fn from_handshake(
         handshake_flags: u32,
         object_bonus: f64,
@@ -137,7 +139,8 @@ impl ParcelRegion {
         tax_free: bool,
         allow_environment: bool,
     ) -> Self {
-        let mut region_flags = handshake_flags;
+        let mut region_flags =
+            handshake_flags & !(DENY_ANONYMOUS | DENY_IDENTIFIED | DENY_TRANSACTED | DENY_AGE);
         if allow_environment {
             region_flags |= ALLOW_ENVIRONMENT;
         }
@@ -806,6 +809,41 @@ mod tests {
         assert!(
             taxed.contains("<key>RegionPushOverride</key><boolean>0</boolean>"),
             "{taxed}"
+        );
+        let denied = ParcelRegion::from_handshake(
+            (1 << 22) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 30),
+            2.0,
+            15_000,
+            false,
+            true,
+        );
+        let denied = map
+            .parcel_properties(local_id, &denied.element(PrimCounts::default()))
+            .unwrap();
+        let denied = String::from_utf8(denied).unwrap();
+        assert!(
+            denied.contains("<key>RegionDenyAnonymous</key><boolean>0</boolean>"),
+            "{denied}"
+        );
+        assert!(
+            denied.contains("<key>RegionDenyIdentified</key><boolean>0</boolean>"),
+            "{denied}"
+        );
+        assert!(
+            denied.contains("<key>RegionDenyTransacted</key><boolean>0</boolean>"),
+            "{denied}"
+        );
+        assert!(
+            denied.contains("<key>RegionDenyAgeUnverified</key><boolean>0</boolean>"),
+            "{denied}"
+        );
+        assert!(
+            denied.contains("<key>RegionPushOverride</key><boolean>1</boolean>"),
+            "{denied}"
+        );
+        assert!(
+            denied.contains("<key>RegionAllowEnvironmentOverride</key><boolean>1</boolean>"),
+            "{denied}"
         );
     }
 
