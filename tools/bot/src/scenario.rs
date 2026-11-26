@@ -7,6 +7,7 @@
 #[path = "object_cross.rs"]
 mod object_cross;
 mod observer;
+mod prim_arrival;
 use observer::{ObservedAvatar, ObserverSession};
 
 use std::future::Future;
@@ -161,6 +162,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "object-cross" {
         return object_cross::run(&http, harness).await;
     }
+    if name == "prim-arrival" {
+        return prim_arrival::run(&http, harness).await;
+    }
     if name == "prim-capture" {
         let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
         let result = wait_for_stored_prims(&mut session).await;
@@ -177,7 +181,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all, object-cross, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {name}; expected all, object-cross, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };
@@ -1716,6 +1720,16 @@ async fn enter(
     account: &Account,
     start: &str,
 ) -> Result<(Session, LoginResponse), String> {
+    enter_with_task(http, harness, account, start, None).await
+}
+
+async fn enter_with_task(
+    http: &reqwest::Client,
+    harness: &Harness,
+    account: &Account,
+    start: &str,
+    task_bps: Option<f32>,
+) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
     }
@@ -1745,6 +1759,9 @@ async fn enter(
     )
     .await
     .map_err(|error| error.to_string())?;
+    if let Some(rate) = task_bps {
+        session.capture_prim_arrival(rate);
+    }
     session
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
         .await

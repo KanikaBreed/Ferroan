@@ -3,7 +3,7 @@
 
 //! Grid services. This crate holds the asset service, the user-account
 //! service (including user aliases), authentication, the grid-user service,
-//! the Null and MySQL Presence stores, and the raw avatar service.
+//! the Null, MySQL and PostgreSQL Presence stores, and the raw avatar service.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies

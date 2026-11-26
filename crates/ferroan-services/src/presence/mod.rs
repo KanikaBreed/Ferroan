@@ -31,7 +31,7 @@
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Presence rows and the Null and MySQL providers.
+//! Presence rows and the Null, MySQL and PostgreSQL providers.
 
 mod mysql;
 pub use mysql::MySqlPresenceData;
@@ -337,6 +337,9 @@ impl PresenceStore for NullPresenceData {
         Box::pin(async { Ok(false) })
     }
 }
+
+mod postgres;
+pub use postgres::PgPresenceData;
 
 #[cfg(test)]
 mod mysql_tests;

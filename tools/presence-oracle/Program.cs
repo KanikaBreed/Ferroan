@@ -10,7 +10,11 @@ if (args is ["mysql", var mysqlPhase, var mysqlPrefix, "default" or "alternate"]
     return MysqlCross.Run(mysqlPhase, mysqlPrefix, args[3] == "alternate");
 
 if (args.Length != 4 || args[0] is not ("generate" or "verify") || args[2] != "--revision")
+{
+    if (args is ["postgres", var phase, var prefix, var timestamp, "default" or "alternate"])
+        return PostgresCross.Run(phase, prefix, timestamp, args[4] == "alternate");
     return 2;
+}
 
 // Each step includes its arguments so Rust replays the same calls and field values.
 NullPresenceData[] stores = [new("", "first"), new("", "second")];

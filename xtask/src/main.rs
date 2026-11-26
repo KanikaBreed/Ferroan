@@ -31,6 +31,7 @@
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
 //! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
+//! `presence cross postgres` cross-reads the PostgreSQL v4 store with Pin8.
 //!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
@@ -143,6 +144,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask presence generate
        cargo xtask presence verify
        cargo xtask presence cross mysql
+       cargo xtask presence cross postgres
        cargo xtask asset generate [directory]
        cargo xtask asset verify [directory]
        cargo xtask asset cross
@@ -178,6 +180,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live run object-cross grid --physics basicphysics
        cargo xtask live object-cross-fixtures <capture-dir>
        cargo xtask live run prim-capture grid --physics basicphysics
+       cargo xtask live run prim-arrival grid --physics basicphysics
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
@@ -271,6 +274,7 @@ fn main() -> ExitCode {
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
+        ["presence", "cross", "postgres"] => asset_oracle::presence_postgres_cross(),
         ["presence", "verify"] => fixture_oracle::run("presence", "PresenceOracle.csproj", false),
         ["asset", "generate"] => asset_oracle::generate(None),
         ["asset", "generate", directory] => asset_oracle::generate(Some(PathBuf::from(directory))),

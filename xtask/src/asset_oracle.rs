@@ -152,6 +152,16 @@ pub fn avatar_cross() -> ExitCode {
     )
 }
 
+/// The pinned PostgreSQL provider migrates the database named in the environment.
+pub fn presence_postgres_cross() -> ExitCode {
+    run_plugin_cross(
+        &PRESENCE_CROSS,
+        "postgres_presence_plugins_cross_read",
+        "FERROAN_PRESENCE_PG_CROSS",
+        false,
+    )
+}
+
 /// Record or check the pinned loopback HTTP responses for the five avatar forms.
 pub fn avatar_service(writing: bool) -> ExitCode {
     let (dll, pin) = match build_plugin_oracle(&AVATAR_CROSS) {
