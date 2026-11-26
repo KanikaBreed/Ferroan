@@ -65,8 +65,6 @@
 
 use std::collections::HashMap;
 
-use std::collections::HashMap;
-
 use base64::Engine;
 use ferroan_diag::{Kind, PARCEL_REPLY, PARCEL_TEXT};
 use uuid::Uuid;
