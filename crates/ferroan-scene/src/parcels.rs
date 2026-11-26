@@ -34,9 +34,11 @@
 //! SQLite land rows and the immutable region parcel map, in four-metre cells.
 
 mod overlay;
+mod properties;
 mod vector_text;
 
 pub use overlay::OverlayPacket;
+pub use properties::{ParcelPropertiesSend, PrimCounts};
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -198,6 +200,24 @@ impl ParcelMap {
         self.parcels.get(id.checked_sub(1)? as usize)
     }
 
+    /// `GetLandObject(float, float)`: truncate to an integer metre, return
+    /// nothing outside the region, then index the 4 m cell. An empty land
+    /// list is nothing, including inside the region.
+    pub fn at_metres(&self, x: f32, y: f32) -> Option<&Parcel> {
+        if self.width == 0 || !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let x = x as i32;
+        let y = y as i32;
+        let height = self.cells.len() / self.width;
+        let size_x = (self.width * 4) as i32;
+        let size_y = (height * 4) as i32;
+        if x < 0 || y < 0 || x >= size_x || y >= size_y {
+            return None;
+        }
+        self.at_cell((x / 4) as usize, (y / 4) as usize)
+    }
+
     fn empty(size: [u32; 2]) -> Result<Self, ParcelError> {
         for side in size {
             crate::height::check_edge(i32::try_from(side).unwrap_or(i32::MAX))?;
@@ -285,11 +305,27 @@ fn bitmap_cells(
 
 /// Load just this SQLite region. A missing file or absent store has no parcels.
 /// The generated default exists only in memory (the database write is P2.9a).
+/// Its claim time is the unix seconds of this call.
 pub async fn open_parcels(
     connection: Option<&str>,
     region: Uuid,
     size: [u32; 2],
     estate: Uuid,
+) -> Result<ParcelMap, ParcelError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i32;
+    open_parcels_at(connection, region, size, estate, now).await
+}
+
+/// [`open_parcels`] with the default parcel's claim time supplied by the caller.
+pub async fn open_parcels_at(
+    connection: Option<&str>,
+    region: Uuid,
+    size: [u32; 2],
+    estate: Uuid,
+    now: i32,
 ) -> Result<ParcelMap, ParcelError> {
     let mut map = ParcelMap::empty(size)?;
     if let Some(connection) = connection
@@ -307,10 +343,6 @@ pub async fn open_parcels(
         pool.close().await;
         result?;
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i32;
     map.fill_unclaimed(estate, now);
     Ok(map)
 }

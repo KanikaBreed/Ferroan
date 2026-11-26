@@ -124,6 +124,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
 | QR42 | R42: live scenarios register in one table | READY |
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
+| QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
@@ -179,30 +180,32 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q57 | P2.S1: object XML writer (XML2 and original), serializer oracle | DONE (this PR) |
 | Q58 | P2.S2: object XML reader (`m_SOPXmlProcessors`) | DONE (this PR) |
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
-| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
+| Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | DONE (split into Q60a–Q60c, all done) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
 | Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
-| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
+| Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | DONE (split into Q60c1–Q60c3, all done) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
-| Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | READY after Q60c1 and Q60c2 |
+| Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | DONE (this PR) |
 | Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
 | Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
-| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | READY after Q61a |
-| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | READY after Q61a, Q61b and Q60c3 |
+| Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | DONE (this PR) |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | BLOCKED (split into Q61c1–Q61c2) |
+| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | READY |
+| Q61c2 | P2.6b3b: `ParcelPropertiesRequest`, the multi-parcel reply cap and the text bound | READY after Q61c1 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | DONE (this PR) |
-| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
+| Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | DONE (split into Q65a–Q65d, all done) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
-| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
+| Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | DONE (split into Q65c1–Q65c3, all done) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
-| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
+| Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | DONE (split into Q65c3a–Q65c3b, all done) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | DONE (this PR) |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | DONE (this PR) |
-| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | BLOCKED (split into Q65d1–Q65d2) |
+| Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | DONE (split into Q65d1–Q65d2, all done) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
@@ -227,8 +230,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
 | Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | DONE (this PR) |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
-| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2b |
-| Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
+| Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split into Q80a–Q80b) |
+| Q80a | P2.11b1: keep the C# neighbour's child a child presence | READY after Q79c2b |
+| Q80b | P2.11b2: apply `AgentPosition` and prove the mirror of child-view live | READY after Q80a |
+| Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80b |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
@@ -276,15 +281,17 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
-| Q101 | P3.0b: `SubstepAccumulator` | READY |
-| Q102 | P3.0c: Move the C# Jolt module | READY |
-| Q103 | P3.0d: Pin move | READY after Q102 |
-| Q104 | P3.0e: Decision entry | READY after Q103 |
-| Q105 | P3.1: Bind `oxijolt-sys` | READY |
-| Q106 | P3.1b: CI platforms, notices, fallback | READY after Q105 |
+| Q100 | P3.0: Jolt oracle | BLOCKED (needs Q102 and Q103, deferred to a later upgrade) |
+| Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
+| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
+| Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
-| Q108 | P3.29: Limits and native-boundary fuzz | READY after Q105 |
+| Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
+| Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
+| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q141, Q157, Q122 and Q123 |
 | Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
 | Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
@@ -420,7 +427,7 @@ Q18 BLOCKED (22 November 2026, `docs/q18-blocked`): the row is more than about a
 
 Q18 split (manager, 22 November 2026): the block in #164 is right, and its three parts are taken as Q18a to Q18c. Q18a is fixtures only, no Ferroan transfer code. If Q18b or Q18c is still more than about a day, block it again with a split. P2.0i stays TODO until all three are DONE. Q19 follows Q18c.
 
-Proposed split, for the manager to queue. P2.0i stays the parent row until all three are done.
+Split approved by the manager on 26 November 2026, for the manager to queue. P2.0i stays the parent row until all three are done.
 
 (1) Fixtures from two C# regions at `1d7abb8337`, both directions, using the existing neighbour scenario. Save `QueryAccess`, `CreateAgent`, `UpdateAgent`, `ReleaseAgent` and `CloseAgent`, and the viewer sequence the bot already accepts: `TeleportStart`, the event-queue `TeleportFinish` (sim version 13, the caps seed, the destination endpoint), `AgentMovementComplete`, and the source circuit kept as a child. A compare checks those fields. No Ferroan behaviour change.
 
@@ -874,6 +881,25 @@ Split approved by the manager on 26 November 2026 as Q61a, Q61b and Q61c. Each p
 2. **Encode `SendLandProperties`** (about a day, after 1). Write the six blocks with Encode2's rules for the types this message uses, from Q60a's parcel map, the two capacity formulas, `PrimCounts` and `GetRegionFlags` as TB152 leaves it. Enqueue the raw element. A test shows each captured element byte for byte, including a zero integer, an empty uuid, the flags binary, the bitmap and a vector. `to_xml` stays the capability serializer.
 3. **Deliver and compare** (about a day, after 1, 2 and Q60c3). Send on arrival, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. Handle `ParcelPropertiesRequest` for one cell, for several parcels, for a banned parcel and for a bound the handler ignores. Send again when a walk changes the parcel `GlobalID`. The bot reads the parcel flags from the arrival element. Live-compare those moments with the capture. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them. Ban lines, ban enforcement and avatar hiding stay out.
 
+### Q61c proposed split
+
+**BLOCKED, 26 November 2026** (`docs/q61c-split`). The approved delivery day is item 3 above. The brief for that day also includes three decisions from the Q61b review. Together that is more than about a day. No `ParcelProperties` sender is in this change. Pin8 is `c401bceecd`. P2.6b stays `TODO`. Parcel editing stays in Phase 5 (D39). This note does not add or reorder queue rows.
+
+The delivery day sends on arrival before the overlay (`LandManagementModule.sendClientInitialLandInfo`, 492–507), and again at the initial-data gate only when teleport flags are `<= 0` (`ScenePresence` 4343). Ferroan already requests the overlay from `send_initial_data` when `teleport_flags == 0`, and queues staged land when `land_at_complete` is true. It handles `ClientOnParcelPropertiesRequest` (1594–1646) for one cell, several parcels, a banned parcel and a bound the handler ignores, and it sends when a walk changes `GlobalID` (`EventManagerOnClientMovement` 536–553, `EventManagerOnAvatarEnteringNewParcel` 449–466). The live compare uses the Q61a captures. The bot reads the parcel flags.
+
+The three decisions are a second day of work on top of that wiring and the live compare:
+
+A. Pin8 sends one element per parcel with no cap (1594–1646). Its event queue is an unbounded `Queue<byte[]>` per agent (`EventQueueGetModule.cs` 67, enqueue at 212, drain at 455–468). Ferroan's 4 MiB queue is per agent and holds 23 elements at 4096 m. Cap one multi-parcel reply at `(edge/64)^2` elements, and at 256, and report the hit through a stable limit id. [LIMITS.md](docs/LIMITS.md) says that `event.queue-bytes` is per agent.
+
+B. The per-event bound is the largest bitmap plus the fixed fields plus a recorded text bound. Pin8 stores parcel text with no length check: the `ParcelPropertiesUpdate` capability copies `Desc` through (`LandManagementModule.cs` 2110–2160), and `osSetParcelDetails` writes `PARCEL_DETAILS_DESC` straight onto `Description` (`OSSL_Api.cs` 1878–1884). A parcel over the bound is refused with a limit id. A and B share one D entry.
+
+C. Bounding-box heights are set when the parcel is loaded. `ForceUpdateLandInfo` (`LandObject.cs` 1188) calls `UpdateGeometryValues` (1203), and land load calls that at `LandManagementModule.cs` 818. The stored Z values are the heightmap samples at 1306–1327. Q61b samples the heightmap on every encode (`crates/ferroan-scene/src/parcels/properties.rs`). `CapsServer::enqueue_raw` (`crates/ferroan-client/src/caps.rs`) records every queue hit as `event-queue`. It takes the caller, and that name is what the limit readout shows.
+
+Proposed split. Each part is about a day. If one is still more than about a day, block it again with a split. P2.6b stays `TODO` until both are `DONE`.
+
+1. **Arrival, the initial-data gate and the walk, with heights taken at land load** (about a day). One element on each send, before the overlay, and again at the initial-data gate only when teleport flags are `<= 0`. A child skips properties. On a walk, send when `GlobalID` changes. Store the bounding-box heights when the parcel is loaded, and encode those stored values, so `arrival.bin` and `walk.bin` still match. `CapsServer::enqueue_raw` takes its caller. Live-compare those two captures. The bot reads the parcel flags from the arrival element. Ban lines, ban enforcement and avatar hiding stay out.
+2. **`ParcelPropertiesRequest`, the reply cap and the text bound** (about a day, after 1). One cell, several parcels, a banned parcel, and a bound the handler ignores. Live-compare `request-cell.bin`, `request-span-west.bin` and `request-span-east.bin`. Cap one multi-parcel reply at `(edge/64)^2` elements, and at 256, through a stable limit id. Refuse a parcel whose element would pass the per-event bound, through a limit id. One D entry covers both divergences from Pin8. [LIMITS.md](docs/LIMITS.md) says the queue limit is per agent. Walk, avatars, teleport and `live compare region` stay as Q60c3 left them.
+
 ### Q65 split
 
 **BLOCKED, 25 November 2026** (`feat/q65-prim-updates`). P2.5a exceeds one day. At Pin8 `c401bceecd`, `LLClientView.CreatePrimUpdateBlock` (lines 7572–7862) has distinct vegetation and ordinary-prim layouts, mesh shape corrections, and conditional text, particle, sound and owner fields. The immediate full-update sender (4766–4788) uses the same block. `ProcessEntityUpdates` (4996 onward, full-packet assembly at 5334–5431) splits on the zero-coded size and sends on Task. Q53 and QR22 already load this region's parts, with local and parent IDs left at zero. The groups stay on `SimulationState`. Q42 supplies priorities, but `ViewerFeed::take_terse` consumes and skips full updates. Q43 supplies the circuit's Task bucket. The grid harness copies `objects.db` for a different region UUID, and Q53c's 500-prim measurement counted loaded rows without a viewer.
@@ -931,6 +957,24 @@ The frame half is its own boundary. `CheckForSignificantMovement` (`ScenePresenc
 2. **Q79c2b — drive the neighbour set from the frame** (after Q79c2a, about one day). On the arrival sites (2575 and 4398) and on the child half of `CheckForSignificantMovement` (4750–4828), diff the visible neighbours. New neighbours go through Q79c2a's admission task. Neighbours that leave get `CloseAgent` with the session from `Admission::Close`. Neighbours that stay get `AgentPosition` on the 2 s gate and the 10 m / 32 m draw-distance test. God level stays the value Ferroan already stores. Prove it with `cargo xtask live run child-view grid --physics basicphysics` and Ferroan as home, under the shared live lock with a free port base and `UseSharedCompilation=false`. Compare the child POST, the movement PUT, the event order and the close with the Q79a capture, and require the home viewer to see the neighbour's resident and stored prim on the child circuit.
 
 Q80 should wait for Q79c2b. This note leaves Q80's row as it is. No new decision or Tranquillity bug number is used.
+
+### Q80 proposed split (P2.11b)
+
+**BLOCKED (26 November 2026, `docs/q80-blocked`).** More than about a day. No region code is in this change. Pin8 is `c401bceecd`. Q79c2b is in review at `1fe06bc` on `feat/q79c2b-frame-drive`. Both halves stack on that commit until it squash-merges. On a `Cargo.lock` conflict, take `main`'s lock.
+
+The TASKS row says a child `CreateAgent` is refused today. `AgentFields::parse` refuses `child && ViaLogin` ("Child agent connections are not implemented") and a non-child without `ViaLogin`. The Q79a neighbour POST is `child: true` and `teleport_flags` `"0"` (`fixtures/child-view/trace.json`). That post is already admitted: it takes a child place, the session is not root, and the HTTP success keeps the connection open. The hop's child post is the same shape with `teleport_flags` `"16"` (`ViaLocation`). Both children share `ReturnSlot` and `CompleteAgentMovement`.
+
+A view child (`TPFlags.Default`) is a different presence from a hop return. `NewUserConnection` clamps X/Y only when `teleportFlags != Default` (`Scene.cs` 4281–4292). The captured start is `<-56, 128, 6.916>`, which `clamp_position` currently folds to X 1. Inside the new-user lock (4316–4352) a same-session root that is not in transit and not via login becomes a child (`HasMovedAway(false)`, `MakeChildAgent`); any other existing root is closed; an existing child keeps its circuit and `AdjustKnownSeeds` (4431–4444). `AuthorizeUser` runs for a new child. `SendInitialData` (4266–4392) still runs for a child after the handshake and the seeds: with flags 0 it sends terrain and the overlay, then every other root avatar, then the objects in range, and `Update` returns without moving the child (4067–4074). `CompleteAgentMovement` on that circuit must leave it a child: no `MakeRootAgent`, no grid root report. Ferroan's child circuit takes the hop-return wait (`return_wait` until `AgentData`), and `serve_agent` marks the session root when that arrival reports. A view child that becomes root would record the grid user in the neighbour.
+
+`IncomingUpdateChildAgent(AgentPosition)` (`Scene.cs` 4848–4881) requires the presence and a matching session, returns true for a root without moving it, and for a child calls `UpdateChildAgent` (5141–5191). The position and camera shift by `(source cell − this cell) × region size` from `region_handle`. The captured handle is the home cell `(1000, 1000)`. Draw distance is `Far`. A nonempty `ChildrenCapSeeds` updates known regions. `checkRePrioritization` (4679–4721) follows. The throttle scale at 5170–5187 is Q85. Ferroan checks the session and stores the raw position on `ReturnSlot` (`apply_agent_position`). The scene presence stays at the login pose, so the interest list does too. `CloseAgent` (5085–5110) already matches: the session string must equal the circuit session, a miss closes nothing, and the HTTP handler still answers 200 with `OpenSim agent {id}` because the C# delete is fire-and-forget.
+
+The live proof is the mirror of child-view. Home stays C# with BasicPhysics and hosts the root. The neighbour is Ferroan, with the same prim fixture the capture puts on the C# neighbour. Today `grid.rs` starts the neighbour with `ferroan: false`. The bot already logs the resident into the neighbour and the observer into home, opens the child circuit, and walks 20 m. The Pin8-to-Pin8 bodies are `fixtures/child-view/avatar.bin` and `prim.bin`. Comparing Ferroan's child-circuit blocks to those bytes, with local IDs mapped the way the prim fixtures do, depends on the presence and on `AgentPosition`. The circuit split, the position update and that live run are more than about a day together.
+
+1. **Q80a — keep the neighbour's child a child presence** (after Q79c2b, about one day). No live grid and no throttle scaling. A child whose teleport flags are `Default` is left unclamped and is not a hop return. The scene presence exists before `CreateAgent` returns, at the posted start, with no physics actor. The same session, not via login and not in transit, turns a stale root into that child and keeps the circuit. A different session closes the old root. An existing child keeps the circuit and adjusts seeds. `CompleteAgentMovement` leaves this child unpromoted: no `AgentMovementComplete`, no root session, no Presence notification. After the handshake and the seeds, `SendInitialData` runs (terrain and overlay because the flags are 0, other root avatars, stored parts from the child's position) and later frames do not move it. `CloseAgent` still requires the session token. Unit tests replay the captured child POST (`child` true, flags `"0"`, start `<-56, 128, 6.916>`): accepted, unclamped, still a child after `CompleteAgentMovement`, and a mismatched session PUT and DELETE change nothing. A flags-`"16"` child still waits for `AgentData` and can become root. Walking across the border stays deferred (D38).
+
+2. **Q80b — apply `AgentPosition` and prove the mirror** (after Q80a, about one day). `UpdateChildAgent(AgentPosition)` stores `position + offset`, `center + offset` and `Far`, and applies a nonempty children-seed map, then `checkRePrioritization`. The throttle factor stays Q85. A root returns true and does not move. A missing presence or a mismatched session returns false. Live, under the shared live lock with a free port base and `UseSharedCompilation=false`: C# hosts the root and Ferroan is the neighbour, the mirror of `child-view`, the same walk as the Pin8-to-Pin8 capture. The observer on the C# region receives the Ferroan resident and the stored prim. Those blocks match `fixtures/child-view/avatar.bin` and `prim.bin`, with local IDs mapped, and re-encoding the unredacted original still reproduces the captured bytes before anything is published. The child POST, the movement PUTs and `CloseAgent` stay in the capture's order.
+
+Q85 still waits for inbound child throttles and should follow Q80b. This note does not add queue rows and does not retarget Q85 or Q81. P2.11b stays the parent until both parts are done. No new decision or Tranquillity bug number is used.
 
 ### Q65d store swap and viewer load
 

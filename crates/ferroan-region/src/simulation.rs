@@ -82,7 +82,7 @@ use std::{
     io::Read,
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -103,7 +103,8 @@ use axum::{
     routing::any,
 };
 use ferroan_client::{
-    CapsError, CapsRegistry, CircuitExpect, CircuitStop, ROOT_WAIT, ReturnPose, ReturnSlot,
+    CapsError, CapsRegistry, CircuitExpect, CircuitServer, CircuitStop, LoginReservation,
+    ROOT_WAIT, ReturnPose, ReturnSlot,
 };
 use ferroan_diag::{self, HTTP_POST_BODY, Kind, ROOT_AGENTS, ROOT_BYPASS};
 use flate2::read::GzDecoder;
@@ -253,6 +254,12 @@ pub struct SimulationState {
     objects: Arc<Vec<ferroan_scene::ObjectGroup>>,
     /// The frame, when this process has one. Child hops skip its physics tick.
     scene: Option<Arc<ferroan_scene::TerrainFrame>>,
+    /// The UDP listener, once `serve` has bound it. Accept reserves the
+    /// circuit code there, before the group and avatar lookups.
+    circuit: Arc<OnceLock<CircuitServer>>,
+    /// `LoginConnectWaitSeconds`. A reserved pending login lasts until the
+    /// session opens or this long after accept. Zero means no connect deadline.
+    login_connect_wait: Duration,
     /// Child destinations and seeds for each root circuit generation.
     children: Arc<crate::children::ChildBook>,
 }
@@ -307,6 +314,8 @@ pub struct AcceptedAgent {
     pub via_login: bool,
     pub client_ip: String,
     pub service_session_id: String,
+    /// `TeleportFlags` from the accepted login, including bits other than ViaLogin.
+    pub teleport_flags: u32,
     pub viewer: String,
     pub channel: String,
     pub mac: String,
@@ -322,6 +331,9 @@ pub struct AcceptedAgent {
     pub supports_pbr: Arc<AtomicBool>,
     cancelled: oneshot::Receiver<CircuitStop>,
     _lease: SessionLease,
+    /// Keeps this login's pending `UseCircuitCode` until the session opens
+    /// or the connect wait ends. Drop releases it.
+    _circuit_hold: Option<LoginReservation>,
     // Drop last, after the UDP serve, frame removal, service writes and generation lease.
     _logout_done: watch::Sender<()>,
 }
@@ -522,7 +534,15 @@ impl SimulationState {
             objects: Arc::new(Vec::new()),
             children: Arc::new(crate::children::ChildBook::new()),
             scene: None,
+            circuit: Arc::new(OnceLock::new()),
+            login_connect_wait: config.login_connect_wait,
         }
+    }
+
+    /// Point admission at the listener that will serve the accepted login.
+    /// A second call keeps the first listener.
+    pub fn bind_circuit(&self, circuit: CircuitServer) {
+        let _ = self.circuit.set(circuit);
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -774,16 +794,29 @@ impl SimulationState {
         };
         let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();
+        let accepted_at = tokio::time::Instant::now();
+        let expect = CircuitExpect {
+            agent_id: fields.agent_id,
+            session_id: fields.session_id,
+            circuit_code: fields.circuit_code,
+            region_id: self.region_id,
+        };
+        // Before the group lookup, the avatar lookup and the frame attach.
+        // Those can outlast the 60 second pending cache. The hold keeps this
+        // code until the session opens or the connect wait ends.
+        let circuit_hold = self.circuit.get().map(|circuit| {
+            let until = if self.login_connect_wait.is_zero() {
+                None
+            } else {
+                Some(accepted_at + self.login_connect_wait)
+            };
+            circuit.reserve_login(expect, until)
+        });
         let accepted = AcceptedAgent {
             _logout_done: logout_done,
             predecessor,
-            accepted_at: tokio::time::Instant::now(),
-            expect: CircuitExpect {
-                agent_id: fields.agent_id,
-                session_id: fields.session_id,
-                circuit_code: fields.circuit_code,
-                region_id: self.region_id,
-            },
+            accepted_at,
+            expect,
             secure_session_id: fields.secure_session_id,
             caps_path: fields.caps_path,
             start_pos: fields.start_pos,
@@ -792,6 +825,7 @@ impl SimulationState {
             via_login: fields.via_login,
             client_ip: fields.client_ip,
             service_session_id: fields.service_session_id,
+            teleport_flags: fields.teleport_flags,
             viewer: fields.viewer,
             channel: fields.channel,
             mac: fields.mac,
@@ -805,6 +839,7 @@ impl SimulationState {
             supports_pbr,
             cancelled,
             _lease: lease,
+            _circuit_hold: circuit_hold,
         };
         // A receiver dropped after reservation may drop this lease in send().
         // Release the admission lock first so that cleanup cannot deadlock.
@@ -1812,6 +1847,8 @@ struct AgentFields {
     via_login: bool,
     client_ip: String,
     service_session_id: String,
+    /// The full `teleport_flags` word. ViaLogin is one bit of it.
+    teleport_flags: u32,
     viewer: String,
     channel: String,
     mac: String,
@@ -1908,6 +1945,7 @@ impl AgentFields {
             via_login,
             client_ip: optional_string(args, "client_ip"),
             service_session_id: optional_string(args, "service_session_id"),
+            teleport_flags: flags,
             viewer: optional_string(args, "viewer"),
             channel: optional_string(args, "channel"),
             mac: optional_string(args, "mac"),
@@ -2565,6 +2603,7 @@ mod tests {
             via_login: true,
             client_ip: String::new(),
             service_session_id: String::new(),
+            teleport_flags: VIA_LOGIN,
             viewer: String::new(),
             channel: String::new(),
             mac: String::new(),
@@ -2622,6 +2661,23 @@ mod tests {
         assert!(state.accept(synthetic_agent()).is_err());
         assert!(state.sessions.lock().unwrap().is_empty());
         caps.register("/CAPS/after-closed-queue0000/").unwrap();
+    }
+
+    #[tokio::test]
+    async fn accept_reserves_the_login_until_the_accepted_agent_is_dropped() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let state =
+            SimulationState::new(&test_config("http://127.0.0.1:8003", region), caps, sender);
+        let circuit = CircuitServer::bind().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 0);
+        state.bind_circuit(circuit.clone());
+        state.accept(synthetic_agent()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        assert_eq!(circuit.reserved_logins(), 1);
+        drop(accepted);
+        assert_eq!(circuit.reserved_logins(), 0);
     }
 
     #[tokio::test]
@@ -2835,6 +2891,7 @@ mod tests {
             let mut fields = other_agent(u128::from(n), n);
             fields.child = true;
             fields.via_login = false;
+            fields.teleport_flags = 0;
             fields
         };
         for n in 10..10 + CHILD_DISPATCH_CAPACITY as u32 {
@@ -3544,6 +3601,7 @@ mod tests {
         let mut child = other_agent(6, 43);
         child.child = true;
         child.via_login = false;
+        child.teleport_flags = 0;
         state.accept(child).unwrap();
         let accepted = receiver.recv().await.unwrap();
         assert!(accepted.return_slot.is_child());
@@ -3554,6 +3612,7 @@ mod tests {
         let mut again = synthetic_agent();
         again.child = true;
         again.via_login = false;
+        again.teleport_flags = 0;
         again.caps_path = Uuid::from_u128(99).to_string();
         state
             .reuse_child(&again, state.reserve_child_place().unwrap())
@@ -4387,6 +4446,7 @@ mod tests {
                     height: 1.9,
                     hover: 0.0,
                 }),
+                teleport_flags: 1 << 7,
             };
             let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
             let pose = ferroan_scene::Presence {

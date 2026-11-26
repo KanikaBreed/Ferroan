@@ -1723,6 +1723,7 @@ fn git_apply(src: &Path, patch: &Path) -> Result<(), String> {
 fn tranquillity_publish_properties() -> &'static [&'static str] {
     &[
         "-p:AllowMissingPrunePackageData=true",
+        "-p:UseSharedCompilation=false",
         crate::dotnet_ci::CLOUD_BUILD_VERSION_VARS_OFF,
     ]
 }

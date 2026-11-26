@@ -64,6 +64,21 @@ pub struct OverlayPacket {
 }
 
 impl ParcelMap {
+    /// `sendClientInitialLandInfo`: a root with no parcel under them returns
+    /// before the overlay. A child skips that lookup and still receives it.
+    pub fn arrival_overlay(
+        &self,
+        requester: Uuid,
+        position: [f32; 3],
+        child: bool,
+        is_member: impl Fn(Uuid) -> bool,
+    ) -> Vec<OverlayPacket> {
+        if !child && self.at_metres(position[0], position[1]).is_none() {
+            return Vec::new();
+        }
+        self.overlay(requester, is_member).collect()
+    }
+
     /// Encode the bounded region map from southwest to northeast in 4 m cells.
     /// Membership is tested in each parcel's group independently of the active group.
     pub fn overlay(
@@ -207,6 +222,19 @@ mod tests {
                 assert!(packets.next().is_none());
             }
         }
+    }
+
+    #[test]
+    fn a_root_with_no_parcel_gets_no_overlay_and_a_child_still_does() {
+        let map = ParcelMap::empty([16, 16]).unwrap();
+        let root = map.arrival_overlay(OWNER, [8.0, 8.0, 25.0], false, |_| false);
+        assert!(root.is_empty());
+        let child = map.arrival_overlay(OWNER, [8.0, 8.0, 25.0], true, |_| false);
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].sequence_id, 0);
+        assert_eq!(child[0].data, [0; 1024]);
+        assert!(map.at_metres(-1.0, 8.0).is_none());
+        assert!(map.at_metres(16.0, 8.0).is_none());
     }
 
     #[test]

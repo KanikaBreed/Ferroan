@@ -44,6 +44,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+use std::collections::BTreeSet;
 use std::env;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -224,6 +225,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
+    simulation.bind_circuit(circuit.clone());
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
@@ -526,6 +528,29 @@ async fn terrain_login(
     (position, land)
 }
 
+/// Overlay chunks for an arrival at `position`. A root with no parcel under
+/// them gets none: `sendClientInitialLandInfo` returns before the overlay,
+/// after terrain was already queued. A child skips that lookup and still
+/// receives the overlay. Group cells use key presence only.
+fn overlay_chunks(
+    parcels: Option<&ferroan_scene::parcels::ParcelMap>,
+    agent: Uuid,
+    position: [f32; 3],
+    child: bool,
+    members: &BTreeSet<Uuid>,
+) -> Vec<ferroan_client::ParcelOverlayChunk> {
+    let Some(map) = parcels else {
+        return Vec::new();
+    };
+    map.arrival_overlay(agent, position, child, |group| members.contains(&group))
+        .into_iter()
+        .map(|packet| ferroan_client::ParcelOverlayChunk {
+            sequence_id: packet.sequence_id,
+            data: packet.data.to_vec(),
+        })
+        .collect()
+}
+
 async fn notify_region_presence(presence: &PresenceClient, region: uuid::Uuid) {
     if let Err(error) = presence.logout_region(region).await {
         tracing::error!("ferroan-region: Presence logoutregion failed: {error}");
@@ -825,10 +850,25 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
     let forget = ForgetPresence::new(terrain.clone(), agent.expect.agent_id);
     let mut root_arrived = false;
     let already_stopped = *stop.borrow_and_update();
-    let (position, land) = if already_stopped {
-        (agent.start_pos, Vec::new())
+    let (position, land, members) = if already_stopped {
+        (agent.start_pos, Vec::new(), BTreeSet::new())
     } else {
-        terrain_login(terrain.as_deref(), agent.start_pos).await
+        // RefreshGroupMembership runs in the ScenePresence constructor, before
+        // the viewer connects. A transport error leaves the map empty: the
+        // overlay still goes out, and every group cell reads as non-member.
+        let frame = terrain.as_deref();
+        let ((position, land), memberships) = tokio::join!(
+            terrain_login(frame, agent.start_pos),
+            config.groups.memberships(agent.expect.agent_id),
+        );
+        let members = match memberships {
+            Ok(rows) => rows.into_keys().collect(),
+            Err(error) => {
+                tracing::error!("ferroan-region: group membership lookup failed: {error}");
+                BTreeSet::new()
+            }
+        };
+        (position, land, members)
     };
     // Logout reports this. It starts as the login position and follows a local landing.
     let landed = Arc::new(Mutex::new(position));
@@ -847,6 +887,15 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         let half_height = avatar.height / 2.0;
         let mut arrival = config.arrival(position);
         arrival.land = land;
+        arrival.teleport_flags = agent.teleport_flags;
+        arrival.crossing_flags = 0;
+        arrival.overlay = overlay_chunks(
+            terrain.as_deref().and_then(TerrainFrame::parcels),
+            expect.agent_id,
+            position,
+            agent.return_slot.is_child(),
+            &members,
+        );
         // The owner and the frame use the same region id space, even if attach fails.
         let attached = if let Some(frame) = terrain.as_deref() {
             let feed = frame.new_feed();
@@ -854,6 +903,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                 feed: Arc::clone(&feed),
                 seeds_sent: Arc::clone(&agent.seeds_sent),
                 circuit_open: Arc::clone(&circuit_open),
+                teleport_flags: agent.teleport_flags,
                 look: Arc::new(ferroan_scene::AvatarLook {
                     first_name: avatar.first_name.clone(),
                     last_name: avatar.last_name.clone(),
@@ -1171,6 +1221,10 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 None => break,
             }
         }
+    }
+
+    fn take_land_pass(&self) -> bool {
+        self.feed.take_land_pass()
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
@@ -1737,6 +1791,13 @@ mod tests {
             let (sender, agents) = mpsc::channel(1);
             let started = Arc::new(AtomicUsize::new(0));
             let state = SimulationState::new(&config, caps.clone(), sender.clone());
+            let circuit = CircuitServer::bind()
+                .await
+                .unwrap()
+                .with_timing(config.circuit_timing)
+                .unwrap()
+                .with_throttle(config.circuit_throttle);
+            state.bind_circuit(circuit.clone());
             let app = state.clone().router().merge(caps.router());
             let http = tokio::spawn(async move {
                 axum::serve(
@@ -1746,12 +1807,6 @@ mod tests {
                 .await
                 .unwrap()
             });
-            let circuit = CircuitServer::bind()
-                .await
-                .unwrap()
-                .with_timing(config.circuit_timing)
-                .unwrap()
-                .with_throttle(config.circuit_throttle);
             let (stop, stopped) = watch::channel(false);
             let udp = circuit.local_addr().unwrap();
             let hop = HopEnv::from_region(&config, caps.clone(), HopPresence::live(state.clone()));
@@ -3388,6 +3443,7 @@ mod tests {
                         height: 1.8,
                         hover: 0.0,
                     }),
+                    teleport_flags: 1 << 7,
                 },
             )
             .unwrap()
@@ -3466,6 +3522,7 @@ mod tests {
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
+            teleport_flags: 1 << 7,
         };
         let watcher = Uuid::from_u128(91);
         let watcher_link = ferroan_scene::ViewerLink {
@@ -3473,6 +3530,7 @@ mod tests {
             seeds_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             circuit_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             look: Arc::clone(&look),
+            teleport_flags: 1 << 7,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -3606,6 +3664,7 @@ mod tests {
                         height: 1.8,
                         hover: 0.0,
                     }),
+                    teleport_flags: 1 << 7,
                 },
             )
             .unwrap()

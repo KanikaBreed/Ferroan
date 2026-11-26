@@ -67,6 +67,7 @@
 //! Established ACKs are queued. Reliable packets remain until acknowledgment or
 //! inactivity, with the pinned server's ping-derived RTO and timer intervals.
 
+use crate::arrival::{land_at_complete, land_at_initial};
 use crate::chat::{ChatSeat, DEBUG_CHANNEL, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
@@ -80,11 +81,14 @@ use crate::throttle::{
     CircuitThrottle, ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock,
 };
 use crate::{ArrivalConfig, HandshakeConfig};
-use ferroan_diag::{self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGINS, UDP_UNACKED};
+use ferroan_diag::{
+    self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGIN_BURST, UDP_PENDING_LOGINS,
+    UDP_UNACKED,
+};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocal,
+    PacketAck, ParcelOverlay, RegionHandshakeReply, SetAlwaysRun, StartPingCheck, TeleportLocal,
     TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply, packet_ack,
     start_ping_check,
 };
@@ -444,6 +448,11 @@ trait DatagramIo: Sync {
     ) -> impl Future<Output = io::Result<(usize, SocketAddr)>> + Send;
     fn send_to(&self, buf: &[u8], to: SocketAddr)
     -> impl Future<Output = io::Result<usize>> + Send;
+    /// A datagram already queued for this circuit. Empty unless the shared
+    /// listener held a login burst before this serve started reading.
+    fn try_recv_from(&self, _buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        Ok(None)
+    }
 }
 impl DatagramIo for UdpSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -530,11 +539,15 @@ struct State {
     udp: Option<Arc<UdpCounters>>,
     /// This circuit's last addition to the shared unacked gauge.
     published_unacked: u64,
-    /// Land packets waiting for the land bucket and a free reliable slot: the
-    /// arrival `LayerData` and `MapBlockReply`. A 256 metre map is 256 packets,
-    /// and `AgentMovementComplete` already occupies one, so the burst does not
-    /// fit in `udp.unacked`.
+    /// Land packets waiting for the land bucket and a free reliable slot:
+    /// `ParcelOverlay`, arrival `LayerData` and `MapBlockReply`. A 256 metre
+    /// map is 256 packets, and `AgentMovementComplete` already occupies one,
+    /// so the burst does not fit in `udp.unacked`.
     pending_land: VecDeque<Payload>,
+    /// Overlay chunks for an eligible land pass. Cloned onto `pending_land`.
+    staged_overlay: Vec<Payload>,
+    /// Terrain patches for an eligible land pass, after the overlay.
+    staged_land: Vec<Payload>,
     /// Avatar terse updates and `TeleportLocal`. `f6cc9597ad` puts the teleport
     /// on this queue, behind terse updates already built, so a moving avatar
     /// cannot snap back to the pre-teleport position.
@@ -606,12 +619,21 @@ impl State {
         let throttle_clock = ThrottleClock::start();
         let client_max = scene.client_max();
         let throttle = ClientThrottle::open(scene, client_max, throttle_clock.now_secs());
-        let mut pending_land = VecDeque::with_capacity(arrival.land.len());
+        // Held until CompleteMovement or SendInitialData. UseCircuitCode must
+        // not drain terrain ahead of the overlay.
+        let mut staged_land = Vec::with_capacity(arrival.land.len());
         for layer in std::mem::take(&mut arrival.land) {
             let mut message = LayerData::default();
             message.layer_id.type_ = layer.kind;
             message.layer_data.data = layer.data;
-            pending_land.push_back(encode_payload(&message)?);
+            staged_land.push(encode_payload(&message)?);
+        }
+        let mut staged_overlay = Vec::with_capacity(arrival.overlay.len());
+        for chunk in std::mem::take(&mut arrival.overlay) {
+            let mut message = ParcelOverlay::default();
+            message.parcel_data.sequence_id = chunk.sequence_id;
+            message.parcel_data.data = chunk.data;
+            staged_overlay.push(encode_payload(&message)?);
         }
         let source_hop = arrival.source_hop.clone();
         let return_slot = arrival.return_slot.clone();
@@ -648,7 +670,9 @@ impl State {
             paused: false,
             udp: None,
             published_unacked: 0,
-            pending_land,
+            pending_land: VecDeque::new(),
+            staged_overlay,
+            staged_land,
             pending_task: VecDeque::new(),
             pending_teleports: 0,
             pending_chat: None,
@@ -795,6 +819,7 @@ impl State {
             self.ping_at = now + PING_INTERVAL;
             self.send_ping(sock, peer).await?;
         }
+        self.take_initial_land();
         self.drain_land(sock, peer).await?;
         self.take_avatar_packets()?;
         self.drain_task(sock, peer).await?;
@@ -883,6 +908,28 @@ impl State {
             queued = true;
         }
         Ok(queued)
+    }
+
+    /// `SendInitialData` asked for another pass. ViaLogin ignores it: the
+    /// frame also withholds the request when the teleport flags are not zero.
+    fn take_initial_land(&mut self) {
+        let requested = self
+            .feed
+            .as_ref()
+            .is_some_and(|feed| feed.updates.take_land_pass());
+        if requested && land_at_initial(self.arrival.teleport_flags) {
+            self.enqueue_staged_land();
+        }
+    }
+
+    /// One terrain-and-overlay pass. Pin8 calls `SendLayerData` first, on a
+    /// pool thread, then `SendLandParcelOverlay` on this thread. The capture's
+    /// socket shows the overlay ahead of the first land terrain datagram, so
+    /// the FIFO is overlay chunks, then the staged patches.
+    fn enqueue_staged_land(&mut self) {
+        self.pending_land
+            .extend(self.staged_overlay.iter().cloned());
+        self.pending_land.extend(self.staged_land.iter().cloned());
     }
 
     async fn drain_land(
@@ -1352,6 +1399,11 @@ impl State {
             self.enqueue_task(&update)?;
             let appearance = avatar.appearance();
             self.enqueue_task(&appearance)?;
+        }
+        // CompleteMovement queues terrain and the overlay unless a crossing
+        // update remains. Positive teleport flags already cleared that state.
+        if land_at_complete(self.arrival.teleport_flags, self.arrival.crossing_flags) {
+            self.enqueue_staged_land();
         }
         Ok(())
     }
@@ -1891,11 +1943,26 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
 /// Remembered UseCircuitCode datagrams for logins that have not started serving.
 /// One slot per source address for 40 ordinary roots and the 21 staff bypass places.
 pub const PENDING_LOGINS: usize = 61;
+/// Datagrams kept for one pending login. Pin8's queue is unbounded.
+const PENDING_BURST_CAP: usize = 32;
+/// `LLUDPServer.PacketReceived` stores the pending queue with a 60 second expiry.
+const PENDING_LOGIN_TTL: Duration = Duration::from_secs(60);
 const INBOX_CAP: usize = 128;
 
 struct Datagram {
     from: SocketAddr,
     bytes: Vec<u8>,
+}
+
+/// Packets from one source that arrived before its serve was registered.
+/// The first is `UseCircuitCode`. Later ones are the viewer's login burst
+/// (`CompleteAgentMovement`, `AgentThrottle`), which Pin8 keeps in
+/// `m_pendingCache` and replays once the client exists.
+struct PendingLogin {
+    from: SocketAddr,
+    /// When this `UseCircuitCode` was stored. A resend does not refresh it.
+    seen: Instant,
+    packets: VecDeque<Vec<u8>>,
 }
 
 struct Inbox {
@@ -1944,11 +2011,22 @@ struct UnboundServe {
     inbox: Arc<Inbox>,
 }
 
+/// A circuit code accepted before its lookups. The pending `UseCircuitCode`
+/// for this login stays past the 60 second cache until the login is served
+/// or `until`, when the connect wait has one.
+#[derive(Clone, Copy)]
+struct ReservedLogin {
+    id: u64,
+    expect: CircuitExpect,
+    until: Option<Instant>,
+}
+
 struct Fan {
     bound: HashMap<SocketAddr, u64>,
     senders: HashMap<u64, Arc<Inbox>>,
     unbound: VecDeque<UnboundServe>,
-    pending: VecDeque<Datagram>,
+    pending: VecDeque<PendingLogin>,
+    reserved: Vec<ReservedLogin>,
 }
 
 struct SharedUdp {
@@ -1994,6 +2072,22 @@ struct SessionSock {
     inbox: Arc<Inbox>,
 }
 
+impl SessionSock {
+    fn copy_in(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        let Some(datagram) = self.inbox.pop() else {
+            return Ok(None);
+        };
+        if datagram.bytes.len() > buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "datagram exceeds the receive buffer",
+            ));
+        }
+        buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
+        Ok(Some((datagram.bytes.len(), datagram.from)))
+    }
+}
+
 impl Drop for SessionSock {
     fn drop(&mut self) {
         let mut fan = self
@@ -2010,18 +2104,15 @@ impl Drop for SessionSock {
 impl DatagramIo for SessionSock {
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         loop {
-            if let Some(datagram) = self.inbox.pop() {
-                if datagram.bytes.len() > buf.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "datagram exceeds the receive buffer",
-                    ));
-                }
-                buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
-                return Ok((datagram.bytes.len(), datagram.from));
+            if let Some(datagram) = self.copy_in(buf)? {
+                return Ok(datagram);
             }
             self.inbox.notify.notified().await;
         }
+    }
+
+    fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        self.copy_in(buf)
     }
 
     async fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
@@ -2046,8 +2137,68 @@ fn datagram_matches(bytes: &[u8], expect: &CircuitExpect) -> bool {
     use_circuit(bytes).is_some_and(|packet| expect_matches(&packet, expect))
 }
 
+/// Same circuit code, agent and session. A resend may carry a new sequence.
+fn login_matches(packet: &IncomingPacket, stored: &[u8]) -> bool {
+    let Ok(next) = packet.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    let Some(stored) = use_circuit(stored) else {
+        return false;
+    };
+    let Ok(first) = stored.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    next.circuit_code.code == first.circuit_code.code
+        && next.circuit_code.id == first.circuit_code.id
+        && next.circuit_code.session_id == first.circuit_code.session_id
+}
+
+fn reservation_holds(item: &ReservedLogin, packet: &IncomingPacket, now: Instant) -> bool {
+    item.until.is_none_or(|until| now < until) && expect_matches(packet, &item.expect)
+}
+
+fn pending_is_reserved(login: &PendingLogin, reserved: &[ReservedLogin], now: Instant) -> bool {
+    let Some(bytes) = login.packets.front() else {
+        return false;
+    };
+    let Some(packet) = use_circuit(bytes) else {
+        return false;
+    };
+    reserved
+        .iter()
+        .any(|item| reservation_holds(item, &packet, now))
+}
+
+/// Drop pending logins older than 60 seconds. A code reserved at accept stays
+/// until that login is served or its connect deadline passes.
+fn expire_pending(fan: &mut Fan, now: Instant) {
+    let reserved = fan.reserved.clone();
+    fan.pending.retain(|login| {
+        now.saturating_duration_since(login.seen) < PENDING_LOGIN_TTL
+            || pending_is_reserved(login, &reserved, now)
+    });
+}
+
+fn release_reservation(fan: &mut Fan, expect: &CircuitExpect) {
+    fan.reserved.retain(|item| {
+        item.expect.agent_id != expect.agent_id
+            || item.expect.session_id != expect.session_id
+            || item.expect.circuit_code != expect.circuit_code
+    });
+}
+
 /// Route one datagram. Returns a source and sequence to ACK when the datagram
 /// is kept for a serve that has not started. A matching waiter ACKs it itself.
+///
+/// An unbound serve is matched before any pending login from the same
+/// endpoint, so a new `UseCircuitCode` is not swallowed by one nobody claimed.
+/// While a login is waiting, later packets from that endpoint stay in its
+/// burst. A `UseCircuitCode` with the same code, agent and session is
+/// acknowledged and not queued again. Any other `UseCircuitCode` replaces the
+/// entry and drops the old burst. An unreserved entry expires after 60
+/// seconds. A code reserved at accept stays until that login is served or
+/// its login-connect deadline passes. A serve that accepts a different code
+/// drops the old burst as well.
 fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(SocketAddr, u32)> {
     let mut fan = shared
         .fan
@@ -2070,19 +2221,59 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
         ferroan_diag::log_malformed("udp", &bytes, "datagram exceeds udp.datagram");
         return None;
     }
-    let packet = use_circuit(&bytes)?;
-    if let Some(pos) = fan
-        .unbound
-        .iter()
-        .position(|waiter| expect_matches(&packet, &waiter.expect))
-        && pos < fan.unbound.len()
+    let now = Instant::now();
+    expire_pending(&mut fan, now);
+    if let Some(packet) = use_circuit(&bytes)
+        && let Some(pos) = fan
+            .unbound
+            .iter()
+            .position(|waiter| expect_matches(&packet, &waiter.expect))
         && let Some(waiter) = fan.unbound.remove(pos)
     {
+        // The new code won. Drop the burst HandleUseCircuitCode would remove
+        // when the earlier login is no longer the one being accepted.
+        fan.pending.retain(|login| login.from != from);
         fan.bound.insert(from, waiter.id);
         waiter.inbox.push(Datagram { from, bytes });
         return None;
     }
-    fan.pending.retain(|queued| queued.from != from);
+    if let Some(pos) = fan.pending.iter().position(|queued| queued.from == from) {
+        if let Some(packet) = use_circuit(&bytes) {
+            let same = fan
+                .pending
+                .get(pos)
+                .and_then(|login| login.packets.front())
+                .is_some_and(|stored| login_matches(&packet, stored));
+            if same {
+                // A live resend must not be the oldest login when the cache is full.
+                if let Some(login) = fan.pending.remove(pos) {
+                    fan.pending.push_back(login);
+                }
+                return Some((from, packet.sequence));
+            }
+            fan.pending.remove(pos);
+            fan.pending.push_back(PendingLogin {
+                from,
+                seen: now,
+                packets: VecDeque::from([bytes]),
+            });
+            return Some((from, packet.sequence));
+        }
+        let login = fan.pending.get_mut(pos)?;
+        if login.packets.len() >= PENDING_BURST_CAP {
+            ferroan_diag::refuse(
+                UDP_PENDING_LOGIN_BURST,
+                Kind::Hard,
+                PENDING_BURST_CAP as u64,
+                (login.packets.len() + 1) as u64,
+                "udp",
+            );
+            return None;
+        }
+        login.packets.push_back(bytes);
+        return None;
+    }
+    let packet = use_circuit(&bytes)?;
     if fan.pending.len() >= PENDING_LOGINS {
         ferroan_diag::drop_bound(
             UDP_PENDING_LOGINS,
@@ -2093,7 +2284,11 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
         );
         fan.pending.pop_front();
     }
-    fan.pending.push_back(Datagram { from, bytes });
+    fan.pending.push_back(PendingLogin {
+        from,
+        seen: now,
+        packets: VecDeque::from([bytes]),
+    });
     Some((from, packet.sequence))
 }
 
@@ -2115,11 +2310,29 @@ async fn read_loop(shared: Arc<SharedUdp>) {
     }
 }
 
+/// One accepted login's circuit code. Dropping it allows the 60 second expiry.
+pub struct LoginReservation {
+    shared: Arc<SharedUdp>,
+    id: u64,
+}
+
+impl Drop for LoginReservation {
+    fn drop(&mut self) {
+        let mut fan = self
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.retain(|item| item.id != self.id);
+    }
+}
+
 /// One UDP listener with the region settings to announce.
 ///
 /// Several logins share the socket. Each serve receives only its own peer,
-/// plus the UseCircuitCode that opened it. A login packet that arrives before
-/// its serve is acknowledged and kept for that serve.
+/// plus the UseCircuitCode that opened it and the packets that arrived while
+/// that login was still waiting. A login packet that arrives before its serve
+/// is acknowledged and kept, with that burst, for that serve.
 pub struct CircuitServer {
     inner: Arc<CircuitInner>,
 }
@@ -2146,6 +2359,7 @@ impl CircuitServer {
                         senders: HashMap::new(),
                         unbound: VecDeque::new(),
                         pending: VecDeque::new(),
+                        reserved: Vec::new(),
                     }),
                 }),
                 handshake: Mutex::new(HandshakeConfig::for_region(Uuid::nil())),
@@ -2293,6 +2507,37 @@ impl CircuitServer {
         Ok(self.inner.shared.socket.local_addr()?)
     }
 
+    /// Reserve `expect` when the login is accepted, before the group and
+    /// avatar lookups. A pending `UseCircuitCode` for that code is kept past
+    /// the 60 second cache until this login is served or `until`. `None`
+    /// means the login has no connect deadline. Drop the reservation when
+    /// the accepted login is discarded.
+    pub fn reserve_login(&self, expect: CircuitExpect, until: Option<Instant>) -> LoginReservation {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut fan = self
+            .inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        fan.reserved.push(ReservedLogin { id, expect, until });
+        LoginReservation {
+            shared: Arc::clone(&self.inner.shared),
+            id,
+        }
+    }
+
+    /// Logins reserved at accept and not yet released by the serve.
+    pub fn reserved_logins(&self) -> usize {
+        self.inner
+            .shared
+            .fan
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .reserved
+            .len()
+    }
+
     fn ensure_reader(&self) {
         let mut reader = self
             .inner
@@ -2317,15 +2562,22 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         fan.senders.insert(id, Arc::clone(&inbox));
-        if let Some(pos) = fan
-            .pending
-            .iter()
-            .position(|queued| datagram_matches(&queued.bytes, &expect))
-            && pos < fan.pending.len()
-            && let Some(datagram) = fan.pending.remove(pos)
+        expire_pending(&mut fan, Instant::now());
+        if let Some(pos) = fan.pending.iter().position(|queued| {
+            queued
+                .packets
+                .front()
+                .is_some_and(|bytes| datagram_matches(bytes, &expect))
+        }) && let Some(login) = fan.pending.remove(pos)
         {
-            fan.bound.insert(datagram.from, id);
-            inbox.push(datagram);
+            fan.bound.insert(login.from, id);
+            let source = login.from;
+            for bytes in login.packets {
+                inbox.push(Datagram {
+                    from: source,
+                    bytes,
+                });
+            }
         } else {
             fan.unbound.push_back(UnboundServe {
                 id,
@@ -2333,6 +2585,9 @@ impl CircuitServer {
                 inbox: Arc::clone(&inbox),
             });
         }
+        // The login is being served, so a later pending entry for this code
+        // keeps the ordinary 60 second expiry.
+        release_reservation(&mut fan, &expect);
         SessionSock {
             shared: Arc::clone(&self.inner.shared),
             id,
@@ -2699,7 +2954,7 @@ async fn serve_socket_reporting(
             }
             received = tokio::time::timeout(wait, sock.recv_from(&mut buf)) => received,
         };
-        let (len, from) = match received {
+        let (mut len, mut from) = match received {
             Ok(Ok(received)) => received,
             Ok(Err(_)) => {
                 // Includes Windows WSAECONNRESET; back off to avoid spinning
@@ -2709,38 +2964,54 @@ async fn serve_socket_reporting(
             }
             Err(_) => continue,
         };
-        if len > MAX_DATAGRAM {
-            ferroan_diag::refuse(
-                UDP_DATAGRAM,
-                Kind::Hard,
-                MAX_DATAGRAM as u64,
-                len as u64,
-                "udp",
-            );
-            ferroan_diag::log_malformed("udp", &buf[..len], "datagram exceeds udp.datagram");
-            continue;
-        }
-        let Ok(packet) = packet::parse_packet(&buf[..len]) else {
-            continue;
-        };
-        if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
-            if state.retarget_child(sock, from, &expect, &packet).await? {
-                continue;
-            }
-            // Store before the ACK so a test that waits for the ACK can already
-            // see the datagram queued for the replacement serve.
-            if let Some(slot) = extra.pending {
-                // INFALLIBLE: the pending slot is locked only to push or take one datagram.
-                #[allow(clippy::unwrap_used)]
-                {
-                    *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+        // Pin8 replays the pending-login queue before the send loop runs again,
+        // so AgentThrottle is applied before CompleteMovement's land pass drains.
+        // One pass stops after a full inbox. The outer loop then runs
+        // maintenance and can observe CircuitStop, instead of a busy endpoint
+        // holding pings, resends, acks and the land and task drains.
+        let mut drain_budget = INBOX_CAP;
+        loop {
+            if len > MAX_DATAGRAM {
+                ferroan_diag::refuse(
+                    UDP_DATAGRAM,
+                    Kind::Hard,
+                    MAX_DATAGRAM as u64,
+                    len as u64,
+                    "udp",
+                );
+                ferroan_diag::log_malformed("udp", &buf[..len], "datagram exceeds udp.datagram");
+            } else if let Ok(packet) = packet::parse_packet(&buf[..len]) {
+                if state.peer.is_some_and(|peer| peer != from) && packet.id == UseCircuitCode::ID {
+                    if state.retarget_child(sock, from, &expect, &packet).await? {
+                        break;
+                    }
+                    // Store before the ACK so a test that waits for the ACK can already
+                    // see the datagram queued for the replacement serve.
+                    if let Some(slot) = extra.pending {
+                        // INFALLIBLE: the pending slot is locked only to push or take one datagram.
+                        #[allow(clippy::unwrap_used)]
+                        {
+                            *slot.lock().unwrap() = Some((from, buf[..len].to_vec()));
+                        }
+                    }
+                    State::immediate_ack(sock, from, packet.sequence).await;
+                    break;
+                }
+                if state.handle(sock, from, &expect, &packet, len).await? {
+                    return Ok(());
                 }
             }
-            State::immediate_ack(sock, from, packet.sequence).await;
-            continue;
-        }
-        if state.handle(sock, from, &expect, &packet, len).await? {
-            return Ok(());
+            drain_budget = drain_budget.saturating_sub(1);
+            if drain_budget == 0 {
+                break;
+            }
+            match sock.try_recv_from(&mut buf)? {
+                Some(next) => {
+                    len = next.0;
+                    from = next.1;
+                }
+                None => break,
+            }
         }
     }
 }
