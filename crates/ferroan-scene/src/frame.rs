@@ -38,7 +38,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryS
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
+use ferroan_diag::{Kind, REGION_CHILD_NOTICES, REGION_SCENE_INBOUND, refuse};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -105,6 +105,10 @@ pub const FRAME_TIME: f32 = 0.0909;
 /// Waiting scene posts. C# `packetInbox` is unbounded. Height queries do not
 /// use this queue.
 pub const SCENE_INBOUND: usize = 256;
+
+/// Waiting child notices. Pin8's queue is unbounded. A full queue rolls a
+/// movement pass back and defers an arrival.
+pub const CHILD_NOTICE_QUEUE: usize = 64;
 
 /// Per-avatar pose owned by the frame thread.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -892,183 +896,174 @@ fn answer(
     layers: &[TerrainLayer],
     frames: u64,
 ) -> bool {
-    let mut arm_child = None;
-    let running = {
-        let presences = &mut scene.presences;
-        match request {
-            Request::Height { x, y, reply } => {
-                let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
-                let _ = reply.send(height);
-            }
-            Request::Layers { reply } => {
-                let _ = reply.send(layers.to_vec());
-            }
-            Request::Read { agent, reply } => {
-                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
-            }
-            Request::Motion { agent, reply } => {
-                let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
-            }
-            Request::Frames { reply } => {
-                let _ = reply.send(frames);
-            }
-            Request::Remove { agent, reply } => {
-                let root = presences
-                    .get(&agent)
-                    .is_some_and(|avatar| !avatar.body.is_child());
-                if let Some(viewer) = scene.viewers.remove(&agent) {
-                    scene.board.remove(viewer.local_id);
-                    // `RemoveClient` kills a root on every client.
-                    if root {
-                        scene.kill_everywhere(viewer.local_id);
-                    }
-                }
-                let presences = &mut scene.presences;
-                let leaving = presences.remove(&agent).map(|avatar| Leaving {
-                    position: avatar.pose.position,
-                    look_at: look_at(avatar.body.camera_at_axis()),
-                });
-                let _ = reply.send(leaving);
-            }
-            Request::Attach { agent, link, reply } => {
-                let local_id = match scene.viewers.get(&agent) {
-                    Some(viewer) => viewer.local_id,
-                    None => scene.local_ids.allocate(),
-                };
-                scene.viewers.insert(
-                    agent,
-                    Viewer {
-                        local_id,
-                        link,
-                        initial: InitialData::default(),
-                        last: LastSent::default(),
-                        coarse: CoarseState::default(),
-                    },
-                );
-                let _ = reply.send(local_id);
-            }
-            Request::Pose { agent, pose, reply } => {
-                let mut avatar = Avatar::new(pose);
-                // Chat can read this pose immediately. The actor waits until
-                // the arrival packet samples it, or a tick would change the
-                // position that packet and GridUser still report.
-                avatar.body.set_actor(false);
-                let pose = avatar.pose;
-                presences.insert(agent, avatar);
-                let _ = reply.send(pose);
-            }
-            Request::Arrive {
-                agent,
-                pose,
-                look_at,
-                reply,
-            } => {
-                let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
-                arrive_at_rest(avatar);
-                // `CompleteMovement` turns a non-crossing arrival to the look it
-                // sends in `AgentMovementComplete` (`RotateToLookAt`).
-                avatar
-                    .body
-                    .turn_to(look_rotation(look_at), &mut avatar.pose);
-                let pose = avatar.pose;
-                scene.announce(agent);
-                // CompleteMovement's child pass (ScenePresence.cs 4395–4407).
-                arm_child = Some(agent);
-                let _ = reply.send(pose);
-            }
-            Request::MovedAway { agent, away, reply } => {
-                scene.moved_away(agent, &away);
-                let _ = reply.send(());
-            }
-            Request::Places { agents, reply } => {
-                let mut found = HashMap::new();
-                for agent in agents {
-                    if let Some(avatar) = presences.get(&agent) {
-                        found.insert(agent, avatar.pose.position);
-                    }
-                }
-                let _ = reply.send(found);
-            }
-            Request::Teleport {
-                agent,
-                request,
-                reply,
-            } => {
-                let position = place_teleport(map, &request);
-                let look_at = flatten_look(request.look_at);
-                let avatar = presences
-                    .entry(agent)
-                    .or_insert_with(|| Avatar::new(fresh(position)));
-                let mut flags = request.flags;
-                if avatar.body.flying() {
-                    flags |= TELEPORT_IS_FLYING;
-                }
-                avatar.pose.position = position;
-                avatar
-                    .body
-                    .turn_to(look_rotation(look_at), &mut avatar.pose);
-                avatar.pose.velocity = [0.0, 0.0, 0.0];
-                avatar.body.halt_command();
-                // C# sends a terse update here without the thresholds
-                // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
-                // frame's test, so a landing under 0.05 m away sends nothing.
-                let _ = reply.send(TeleportStored {
-                    pose: avatar.pose,
-                    look_at,
-                    flags,
-                });
-            }
-            Request::Complete { agent, hop, reply } => {
-                let avatar = presences
-                    .entry(agent)
-                    .or_insert_with(|| Avatar::new(fresh(hop.position)));
-                avatar.pose.position = hop.position;
-                avatar.body.apply_return(&hop.data, &mut avatar.pose);
-                // CompleteMovement's RotateToLookAt replaces the copied body rotation.
-                avatar
-                    .body
-                    .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
-                hold_for_arrival(avatar);
-                // The cross arrival's child pass (ScenePresence.cs 2573–2584).
-                arm_child = Some(agent);
-                let _ = reply.send(avatar.pose);
-            }
-            Request::ChildSettled {
-                agent,
-                epoch,
-                committed,
-            } => {
-                if let Some(avatar) = presences.get_mut(&agent) {
-                    settle_gate(&mut avatar.gate, epoch, committed, scene_now_ms());
-                }
-            }
-            Request::ChildKnown { agent, others } => {
-                if let Some(avatar) = presences.get_mut(&agent) {
-                    avatar.gate.known_other = others;
-                }
-            }
-            Request::Departure { agent, reply } => {
-                let departure = presences.get(&agent).map(|avatar| {
-                    let view = avatar.body.view();
-                    Departure {
-                        always_run: view.always_run,
-                        flying: avatar.body.flying(),
-                        camera_center: view.camera_center,
-                        head_rotation: view.head_rotation,
-                        body_rotation: view.body_rotation,
-                    }
-                });
-                let _ = reply.send(departure);
-            }
-            Request::Wake => {}
-            Request::Stop => return false,
+    let presences = &mut scene.presences;
+    match request {
+        Request::Height { x, y, reply } => {
+            let height = map.map(|map| map.height_at(x, y)).unwrap_or(0.0);
+            let _ = reply.send(height);
         }
-        true
-    };
-    if let Some(agent) = arm_child {
-        schedule_arrival(scene, agent, scene_now_ms());
+        Request::Layers { reply } => {
+            let _ = reply.send(layers.to_vec());
+        }
+        Request::Read { agent, reply } => {
+            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.pose));
+        }
+        Request::Motion { agent, reply } => {
+            let _ = reply.send(presences.get(&agent).map(|avatar| avatar.body.view()));
+        }
+        Request::Frames { reply } => {
+            let _ = reply.send(frames);
+        }
+        Request::Remove { agent, reply } => {
+            let root = presences
+                .get(&agent)
+                .is_some_and(|avatar| !avatar.body.is_child());
+            if let Some(viewer) = scene.viewers.remove(&agent) {
+                scene.board.remove(viewer.local_id);
+                // `RemoveClient` kills a root on every client.
+                if root {
+                    scene.kill_everywhere(viewer.local_id);
+                }
+            }
+            let presences = &mut scene.presences;
+            let leaving = presences.remove(&agent).map(|avatar| Leaving {
+                position: avatar.pose.position,
+                look_at: look_at(avatar.body.camera_at_axis()),
+            });
+            let _ = reply.send(leaving);
+        }
+        Request::Attach { agent, link, reply } => {
+            let local_id = match scene.viewers.get(&agent) {
+                Some(viewer) => viewer.local_id,
+                None => scene.local_ids.allocate(),
+            };
+            scene.viewers.insert(
+                agent,
+                Viewer {
+                    local_id,
+                    link,
+                    initial: InitialData::default(),
+                    last: LastSent::default(),
+                    coarse: CoarseState::default(),
+                },
+            );
+            let _ = reply.send(local_id);
+        }
+        Request::Pose { agent, pose, reply } => {
+            let mut avatar = Avatar::new(pose);
+            // Chat can read this pose immediately. The actor waits until
+            // the arrival packet samples it, or a tick would change the
+            // position that packet and GridUser still report.
+            avatar.body.set_actor(false);
+            let pose = avatar.pose;
+            presences.insert(agent, avatar);
+            let _ = reply.send(pose);
+        }
+        Request::Arrive {
+            agent,
+            pose,
+            look_at,
+            reply,
+        } => {
+            let avatar = presences.entry(agent).or_insert_with(|| Avatar::new(pose));
+            arrive_at_rest(avatar);
+            // `CompleteMovement` turns a non-crossing arrival to the look it
+            // sends in `AgentMovementComplete` (`RotateToLookAt`).
+            avatar
+                .body
+                .turn_to(look_rotation(look_at), &mut avatar.pose);
+            let pose = avatar.pose;
+            scene.announce(agent);
+            let _ = reply.send(pose);
+        }
+        Request::MovedAway { agent, away, reply } => {
+            scene.moved_away(agent, &away);
+            let _ = reply.send(());
+        }
+        Request::Places { agents, reply } => {
+            let mut found = HashMap::new();
+            for agent in agents {
+                if let Some(avatar) = presences.get(&agent) {
+                    found.insert(agent, avatar.pose.position);
+                }
+            }
+            let _ = reply.send(found);
+        }
+        Request::Teleport {
+            agent,
+            request,
+            reply,
+        } => {
+            let position = place_teleport(map, &request);
+            let look_at = flatten_look(request.look_at);
+            let avatar = presences
+                .entry(agent)
+                .or_insert_with(|| Avatar::new(fresh(position)));
+            let mut flags = request.flags;
+            if avatar.body.flying() {
+                flags |= TELEPORT_IS_FLYING;
+            }
+            avatar.pose.position = position;
+            avatar
+                .body
+                .turn_to(look_rotation(look_at), &mut avatar.pose);
+            avatar.pose.velocity = [0.0, 0.0, 0.0];
+            avatar.body.halt_command();
+            // C# sends a terse update here without the thresholds
+            // (`ScenePresence.cs` line 1880). Ferroan leaves it to the next
+            // frame's test, so a landing under 0.05 m away sends nothing.
+            let _ = reply.send(TeleportStored {
+                pose: avatar.pose,
+                look_at,
+                flags,
+            });
+        }
+        Request::Complete { agent, hop, reply } => {
+            let avatar = presences
+                .entry(agent)
+                .or_insert_with(|| Avatar::new(fresh(hop.position)));
+            avatar.pose.position = hop.position;
+            avatar.body.apply_return(&hop.data, &mut avatar.pose);
+            // CompleteMovement's RotateToLookAt replaces the copied body rotation.
+            avatar
+                .body
+                .turn_to(look_rotation(hop.look_at), &mut avatar.pose);
+            hold_for_arrival(avatar);
+            // A teleport sets CrossingFlags to 0, so this is not the
+            // border-crossing child pass (ScenePresence.cs 2573–2584).
+            let _ = reply.send(avatar.pose);
+        }
+        Request::ChildSettled {
+            agent,
+            epoch,
+            committed,
+        } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                settle_gate(&mut avatar.gate, epoch, committed, scene_now_ms());
+            }
+        }
+        Request::ChildKnown { agent, others } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.gate.known_other = others;
+            }
+        }
+        Request::Departure { agent, reply } => {
+            let departure = presences.get(&agent).map(|avatar| {
+                let view = avatar.body.view();
+                Departure {
+                    always_run: view.always_run,
+                    flying: avatar.body.flying(),
+                    camera_center: view.camera_center,
+                    head_rotation: view.head_rotation,
+                    body_rotation: view.body_rotation,
+                }
+            });
+            let _ = reply.send(departure);
+        }
+        Request::Wake => {}
+        Request::Stop => return false,
     }
-    running
+    true
 }
 
 impl Avatar {
@@ -1264,7 +1259,21 @@ fn offer_child(watch: &ChildWatch, notice: ChildNotice) -> bool {
     let Some(sender) = slot.as_ref() else {
         return false;
     };
-    sender.try_send(notice).is_ok()
+    match sender.try_send(notice) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            let configured = sender.max_capacity() as u64;
+            refuse(
+                REGION_CHILD_NOTICES,
+                Kind::Soft,
+                configured,
+                configured.saturating_add(1),
+                "child-notice",
+            );
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 fn snap_of(gate: &ChildGate) -> ChildSnap {
@@ -1664,8 +1673,11 @@ impl Scene {
     }
 
     /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
-    /// then its appearance, to this viewer.
-    fn send_initial_data(&self, agent: Uuid) {
+    /// then its appearance, to this viewer. A root then arms one child pass,
+    /// which is `EnableChildAgents` inside `SendInitialData`
+    /// (`ScenePresence.cs` 4395–4407), after the handshake reply, the seeds
+    /// and four more frames. A border crossing is a separate site.
+    fn send_initial_data(&mut self, agent: Uuid) {
         // ScenePresence.cs 4337 logs before the teleport-flag check.
         tracing::info!("SendInitialData for \"{agent}\"");
         // ScenePresence.cs 4338: flags of zero request terrain and the overlay again.
@@ -1693,6 +1705,7 @@ impl Scene {
                 sitting_on: None,
             });
         }
+        schedule_arrival(self, agent, scene_now_ms());
     }
 
     /// `SendCoarseLocations`: the root avatars in scene order, the same list
@@ -3263,6 +3276,70 @@ mod tests {
         assert_eq!(due(&gate, &lifted), ChildDue::None);
     }
 
+    fn wait_enable(rx: &mut tokio::sync::mpsc::Receiver<ChildNotice>, agent: Uuid) -> ChildNotice {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(notice) = rx.try_recv()
+                && notice.agent == agent
+                && notice.pass == ChildPass::Enable
+            {
+                return notice;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SendInitialData did not arm an enable"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A login and a hop return each arm one enable, on the `SendInitialData`
+    /// frame. `CompleteMovement` and the arrival sample do not arm one.
+    #[test]
+    fn send_initial_data_arms_one_enable_per_arrival() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        frame.watch_children(tx);
+        let agent = Uuid::from_u128(81);
+        let (_, _, seeds) = attach(&frame, agent);
+        seeds.store(true, Ordering::Release);
+        login(&frame, agent, pose_at([16.0, 128.0, 30.0]));
+        let _ = frame
+            .arrive(agent, pose_at([16.0, 128.0, 30.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            rx.try_recv().is_err(),
+            "arrival armed before SendInitialData"
+        );
+        frame.handshake_reply(agent).unwrap();
+        let first = wait_enable(&mut rx, agent);
+        assert!(!first.settle);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "a login armed a second enable");
+
+        frame.set_child(agent, true).unwrap();
+        let _ = complete(&frame, agent, standing_return([20.0, 128.0, 25.0]));
+        let _ = frame
+            .arrive(agent, pose_at([20.0, 128.0, 25.0]), EAST)
+            .unwrap()
+            .blocking_wait()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            rx.try_recv().is_err(),
+            "a hop return armed before SendInitialData"
+        );
+        frame.handshake_reply(agent).unwrap();
+        let second = wait_enable(&mut rx, agent);
+        assert_eq!(second.pass, ChildPass::Enable);
+        assert!(!second.settle);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "a hop return armed twice");
+    }
+
     #[test]
     fn arrival_offers_enable_without_blocking_when_the_channel_is_full() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3282,6 +3359,8 @@ mod tests {
         .unwrap();
         frame.watch_children(tx);
         let agent = Uuid::from_u128(79);
+        let (_, _, seeds) = attach(&frame, agent);
+        seeds.store(true, Ordering::Release);
         let started = std::time::Instant::now();
         let stored = frame
             .arrive(agent, pose_at([20.0, 30.0, 40.0]), EAST)
@@ -3290,7 +3369,20 @@ mod tests {
             .unwrap();
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(stored.position, [20.0, 30.0, 40.0]);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        frame.handshake_reply(agent).unwrap();
+        // SendInitialData is several frames after the reply. Leave the filler
+        // in the queue until that offer is refused, or the retry succeeds
+        // into the slot the filler occupied and nothing is reported.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ferroan_diag::metrics().contains("region.child-notices") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a full child-notice queue was not reported"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let filler = rx.try_recv().unwrap();
+        assert!(filler.agent.is_nil());
         let notice = loop {
             if let Ok(notice) = rx.try_recv()
                 && notice.agent == agent

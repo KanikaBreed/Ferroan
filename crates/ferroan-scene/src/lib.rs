@@ -112,8 +112,8 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway, Pending, Presence,
-    TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
+    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway,
+    Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
