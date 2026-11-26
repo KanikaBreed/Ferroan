@@ -74,6 +74,8 @@ The grid harness captures riderless object crossings on two separate C# simulato
 
 ## Where code comes from
 
+The scene's `ParcelMap::overlay` encodes the loaded 4 m cells for one viewer using the requester's ID and membership in each owning group. It yields numbered 1,024-byte payloads in south-to-north row order. Q60c supplies arrival timing and delivery on the Land throttle.
+
 The [permissions oracle](tools/permissions-oracle/README.md) records the pinned scene dispatcher's viewer flags and object and parcel decisions. P2.7b and P2.7c consume the same cases.
 
 The grid harness schedules scenarios individually and waits for bounded
