@@ -543,6 +543,34 @@ internal static class Program
         string shortPath = Path.Combine(dir, "rv-short-header.oar");
         GzipMembers(shortPath, shortTar);
         cases.Add(Run("rv-short-header", "rv-short-header.oar", "gzip-path", shortPath, HomeRoot(), HomeScenes()));
+        string idLine = "<id>11111111-1111-1111-1111-111111111111</id>";
+        cases.Add(XmlCase(dir, "p2-mismatch-end", single.Replace("</region_info>", "</regionx>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-trailing-text", single + "junk", HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-leading-text", "junk" + single.Substring(single.IndexOf("<archive")), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-entity", single.Replace(idLine, "<id>&foo;</id>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-cdata-id", single.Replace(idLine, "<id><![CDATA[11111111-1111-1111-1111-111111111111]]></id>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-charref-id", single.Replace(idLine, "<id>&#50;1111111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-dup-attr", single.Replace("major_version=\"0\"", "major_version=\"0\" major_version=\"2\""), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-late-decl", single.Replace("<creation_info>", "<?xml version=\"1.0\"?><creation_info>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "p2-prefix", single.Replace(idLine, "<a:id>x</a:id>" + idLine), HomeRoot(), HomeScenes(), null));
+        {
+            byte[] ctl = Encoding.UTF8.GetPreamble().Concat(Encoding.ASCII.GetBytes(single)).ToArray();
+            byte[] bomTar = TarBytes(t => { t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, ctl); t.WriteFile("notes/after.txt", "after"); });
+            string bomPath = Path.Combine(dir, "p2-utf8-bom.oar");
+            GzipMembers(bomPath, bomTar);
+            cases.Add(Run("p2-utf8-bom", "p2-utf8-bom.oar", "gzip-path", bomPath, HomeRoot(), HomeScenes()));
+        }
+        {
+            byte[] t2 = TarBytes(t => { t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, single); t.WriteFile("notes/after.txt", "after"); });
+            string zp = Path.Combine(dir, "p2-gz-trailing-zeros.oar");
+            GzipMembers(zp, t2);
+            using (var f = new FileStream(zp, FileMode.Append)) f.Write(new byte[512], 0, 512);
+            cases.Add(Run("p2-gz-trailing-zeros", "p2-gz-trailing-zeros.oar", "gzip-path", zp, HomeRoot(), HomeScenes()));
+            string gp = Path.Combine(dir, "p2-gz-trailing-garbage.oar");
+            GzipMembers(gp, t2);
+            using (var f = new FileStream(gp, FileMode.Append)) f.Write(Encoding.ASCII.GetBytes("garbage!garbage!"), 0, 16);
+            cases.Add(Run("p2-gz-trailing-garbage", "p2-gz-trailing-garbage.oar", "gzip-path", gp, HomeRoot(), HomeScenes()));
+        }
     }
 
     static Case XmlCase(string dir, string name, string xml, Placed root, List<Placed> scenes, Action<TarArchiveWriter> more)
