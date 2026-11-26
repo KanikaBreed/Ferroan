@@ -116,7 +116,7 @@ Release `open_objects` on stores that also have a shape and an item for every ex
 
 ## Parcel group memberships
 
-`cargo xtask live group-memberships` compares the Rust region reader with the pinned Robust Groups V2 service on SQLite. It records the three original XML replies and checks every request. The [fixture](../fixtures/group-memberships/README.md) covers inactive membership, combined role powers and the owners role.
+`cargo xtask live group-memberships` compares the Rust region reader with the pinned Robust Groups V2 service on SQLite. It records the three original XML replies and checks every request. The [fixture](../fixtures/group-memberships/README.md) covers inactive membership, combined role powers and the owners role. `local_memberships_match_the_pin8_store` opens that same seed through the Local SQLite connector and matches those three maps. `local_memberships_paint_the_captured_overlay` opens the parcel membership seed and compares both multi-store overlay payloads with the captured bodies.
 
 ## SQLite parcels
 

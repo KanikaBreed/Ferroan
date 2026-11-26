@@ -2,7 +2,7 @@
 
 These are the ParcelData bodies received by two viewer circuits on Tranquillity `dev-build` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Each record has a four-byte little-endian signed parcel sequence ID, a two-byte little-endian length (1,024), and the captured cell bytes. The sequence starts at zero for each viewer. Bodies carry no names, addresses or session identifiers.
 
-Each run opens a disposable copy of [the SQLite store](../regionstore/objects.db). The estate owner and a second viewer log in separately. Only the second viewer belongs to East's group. The [membership seed](membership.sql) gives that viewer the Everyone role without selecting an active group.
+Each run opens a disposable copy of [the SQLite store](../regionstore/objects.db). The estate owner and a second viewer log in separately. Only the second viewer belongs to East's group. The [membership seed](membership.sql) gives that viewer the Everyone role without selecting an active group. `local_memberships_paint_the_captured_overlay` opens that seed and compares the multi-store member and owner payloads with these captured bodies.
 
 | Store | What the capture exercises | Bodies per viewer |
 | --- | --- | --- |
