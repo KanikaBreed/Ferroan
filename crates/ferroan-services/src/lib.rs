@@ -3,7 +3,7 @@
 
 //! Grid services. This crate holds the asset service, the user-account
 //! service (including user aliases), authentication, the grid-user service,
-//! the in-memory Presence store, and the raw avatar service.
+//! the Null and PostgreSQL Presence stores, and the raw avatar service.
 //!
 //! `ferroan-robust` serves a service when its ini section is present.
 //! Inventory and the other Robust services are later work. Asset HTTP bodies
@@ -36,3 +36,13 @@ pub use asset::{
     encode_bool, encode_bools, encode_metadata, encode_string, encode_strings, listen_address,
     network_port,
 };
+
+/// A single table identifier accepted by the grid service stores.
+pub(crate) fn sql_ident(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 64
+        && bytes
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+        && bytes.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}

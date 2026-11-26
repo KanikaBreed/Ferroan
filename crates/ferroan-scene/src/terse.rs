@@ -78,7 +78,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
 
 use crate::avatars::{AvatarPacket, AvatarPackets};
-use crate::entity_queue::{EntityUpdateQueue, FieldPacket, TERSE_UPDATE, classify};
+use crate::entity_queue::{EntityUpdateQueue, QueuedUpdate, TERSE_UPDATE};
+
+use crate::prim_update::{PrimUpdateError, StoredPrimUpdate};
+use crate::prioritizer::{PriorityViewer, best_avatar_responsiveness};
+use crate::stored_scene::StoredScene;
+
+/// One entry from the viewer's mixed Task queue, resolved at dequeue.
+pub enum ViewerUpdate<'a> {
+    Full {
+        queued: QueuedUpdate,
+        part: &'a crate::ObjectPart,
+        update: Result<&'a StoredPrimUpdate, &'a PrimUpdateError>,
+    },
+    Terse([u8; AVATAR_TERSE_LEN]),
+}
 
 /// `ScenePresence.cs` lines 4056–4060.
 const ROTATION_TOLERANCE: f32 = 0.01;
@@ -387,6 +401,7 @@ impl AvatarBoard {
 /// and are taken first ([`ViewerFeed::take_avatar_packets`]).
 pub struct ViewerFeed {
     queue: Mutex<EntityUpdateQueue>,
+    objects: Arc<StoredScene>,
     packets: Mutex<AvatarPackets>,
     board: AvatarBoard,
     wake: Arc<Notify>,
@@ -394,7 +409,12 @@ pub struct ViewerFeed {
 
 impl ViewerFeed {
     pub fn new(board: AvatarBoard) -> Self {
+        Self::with_objects(board, Arc::default())
+    }
+
+    pub(crate) fn with_objects(board: AvatarBoard, objects: Arc<StoredScene>) -> Self {
         Self {
+            objects,
             queue: Mutex::new(EntityUpdateQueue::new()),
             packets: Mutex::new(AvatarPackets::default()),
             board,
@@ -441,6 +461,41 @@ impl ViewerFeed {
         }
     }
 
+    pub(crate) fn offer_stored_parts(&self, viewer: &PriorityViewer) {
+        let mut queued = false;
+        for (entity, local_id, flags) in self.objects.initial_parts() {
+            let priority = best_avatar_responsiveness(viewer, &entity);
+            queued |= self.queue().enqueue(priority, local_id, flags);
+        }
+        if queued {
+            self.wake.notify_one();
+        }
+    }
+
+    /// Dequeue one full or terse entry in Q42 priority order. A caller can
+    /// stop at its batch budget without consuming the following entry.
+    pub fn take_update(&self) -> Option<ViewerUpdate<'_>> {
+        let mut queue = self.queue();
+        while let Some(queued) = queue.dequeue() {
+            if let Some((part, update)) = self.objects.get(queued.local_id) {
+                return Some(ViewerUpdate::Full {
+                    queued,
+                    part,
+                    update,
+                });
+            }
+            if let Some(avatar) = self.board.get(queued.local_id) {
+                return Some(ViewerUpdate::Terse(avatar_block(&avatar)));
+            }
+        }
+        None
+    }
+
+    /// Readiness for the avatar-only circuit drain, until Q65c3 sends prims.
+    pub fn has_avatar_terse(&self) -> bool {
+        self.queue().has_avatar_terse()
+    }
+
     /// Notified after an offer. A permit is kept while nobody waits.
     pub fn wake(&self) -> Arc<Notify> {
         Arc::clone(&self.wake)
@@ -459,14 +514,9 @@ impl ViewerFeed {
         let mut blocks = Vec::new();
         let mut queue = self.queue();
         while budget > 0 {
-            let Some(update) = queue.dequeue() else {
+            let Some(update) = queue.dequeue_avatar_terse() else {
                 break;
             };
-            let classified = classify(update.flags, false);
-            if classified.kill || classified.field != Some(FieldPacket::Terse) {
-                // Kills and full updates are later rows. Nothing offers them.
-                continue;
-            }
             let Some(avatar) = self.board.get(update.local_id) else {
                 continue;
             };

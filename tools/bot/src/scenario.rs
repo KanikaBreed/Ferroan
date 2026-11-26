@@ -7,6 +7,7 @@
 #[path = "object_cross.rs"]
 mod object_cross;
 mod observer;
+mod prim_arrival;
 use observer::{ObservedAvatar, ObserverSession};
 
 use std::future::Future;
@@ -161,6 +162,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     if name == "object-cross" {
         return object_cross::run(&http, harness).await;
     }
+    if name == "prim-arrival" {
+        return prim_arrival::run(&http, harness).await;
+    }
     if name == "prim-capture" {
         let (mut session, _) = enter(&http, harness, &harness.owner, "last").await?;
         let result = wait_for_stored_prims(&mut session).await;
@@ -177,7 +181,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     let Some(names) = selection(name) else {
         return Err(format!(
-            "unknown scenario {name}; expected all, object-cross, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {name}; expected all, object-cross, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             NAMES.join(", ")
         ));
     };
@@ -210,6 +214,71 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     }
     lines.push("live: run passed".to_string());
     Ok(lines.join("\n"))
+}
+
+/// The two test accounts receive their own unredacted ParcelData bodies on separate circuits.
+pub async fn parcel_overlays(harness: &Harness, count: usize) -> Result<[Vec<u8>; 2], String> {
+    if !matches!(count, 4 | 16) {
+        return Err("parcel capture expects four or sixteen packets".into());
+    }
+    let http = login::http_client().map_err(|e| e.to_string())?;
+    let mut captures = [Vec::new(), Vec::new()];
+    for (out, account) in captures.iter_mut().zip([&harness.owner, &harness.chat]) {
+        let (mut session, login) = enter(&http, harness, account, "last").await?;
+        let result = if session.region_id() == Some(harness.region_id)
+            && login.agent_id == account.principal_id
+        {
+            receive_overlay(&mut session, count).await
+        } else {
+            Err("parcel capture arrived on the wrong region or account".into())
+        };
+        let logout = leave(harness, &mut session, account).await;
+        *out = result?;
+        logout?;
+    }
+    Ok(captures)
+}
+
+async fn receive_overlay(session: &mut Session, count: usize) -> Result<Vec<u8>, String> {
+    use ferroan_protocol::{Writer, msgs::ParcelOverlay};
+    let mut bodies = vec![None; count];
+    let mut received = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        session.drive(STEP).await.map_err(|e| e.to_string())?;
+        while let Some(packet) = session.poll_inbox() {
+            if packet.id != ParcelOverlay::ID {
+                continue;
+            }
+            let msg = packet
+                .decode::<ParcelOverlay>()
+                .map_err(|e| e.to_string())?;
+            let seq = msg.parcel_data.sequence_id;
+            let mut check = Writer::new();
+            msg.encode_body(&mut check);
+            if check.buf != packet.body || msg.parcel_data.data.len() != 1024 {
+                return Err(format!("ParcelOverlay {seq}: invalid captured body"));
+            }
+            let slot = usize::try_from(seq)
+                .ok()
+                .and_then(|i| bodies.get_mut(i))
+                .ok_or_else(|| format!("out-of-range ParcelOverlay sequence {seq}"))?;
+            if let Some(original) = slot {
+                if original != &packet.body {
+                    return Err(format!("conflicting ParcelOverlay {seq}"));
+                }
+            } else {
+                *slot = Some(packet.body);
+                received += 1;
+            }
+        }
+        if received == count {
+            return Ok(bodies.into_iter().flatten().flatten().collect());
+        }
+    }
+    Err(format!(
+        "viewer received {received} of {count} ParcelOverlay packets"
+    ))
 }
 
 /// Wait for the full set of fixture parts, including the linked child.
@@ -1716,6 +1785,16 @@ async fn enter(
     account: &Account,
     start: &str,
 ) -> Result<(Session, LoginResponse), String> {
+    enter_with_task(http, harness, account, start, None).await
+}
+
+async fn enter_with_task(
+    http: &reqwest::Client,
+    harness: &Harness,
+    account: &Account,
+    start: &str,
+    task_bps: Option<f32>,
+) -> Result<(Session, LoginResponse), String> {
     if account.principal_id.is_nil() {
         return Err("the account has no principal id".to_string());
     }
@@ -1745,6 +1824,9 @@ async fn enter(
     )
     .await
     .map_err(|error| error.to_string())?;
+    if let Some(rate) = task_bps {
+        session.capture_prim_arrival(rate);
+    }
     session
         .run_until_ready(http, &response.seed_capability, HANDSHAKE)
         .await
