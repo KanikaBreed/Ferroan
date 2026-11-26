@@ -8,6 +8,7 @@ pub mod child_view;
 mod material_override;
 #[path = "object_cross.rs"]
 mod object_cross;
+mod object_properties;
 mod observer;
 mod parcel_properties;
 mod prim_arrival;
@@ -147,6 +148,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         Some(Bot::ObjectCross) => object_cross::run(&http, harness).await,
         Some(Bot::PrimArrival) => prim_arrival::run(&http, harness).await,
         Some(Bot::MaterialOverride) => material_override::run(&http, harness).await,
+        Some(Bot::ObjectProperties) => object_properties::run(&http, harness).await,
         Some(Bot::Stored(kind)) => {
             let (count, throttle, handoff) = match kind {
                 crate::register::Stored::Load => (

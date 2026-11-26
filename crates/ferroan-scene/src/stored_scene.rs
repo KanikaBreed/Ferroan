@@ -55,8 +55,9 @@
 
 //! Restored world objects share one set of local IDs and cache revisions across viewers.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 use crate::entity_queue::{FULL_UPDATE, FULL_UPDATE_WITH_ANIM, MATERIAL_OVR};
 use crate::prim_update::{LinksetUpdateFlags, PrimUpdateError, StoredPrimUpdate};
@@ -153,12 +154,26 @@ struct PreparedPart {
     update: Result<StoredPrimUpdate, PrimUpdateError>,
 }
 
+/// Facts the frame needs after it drops the part borrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PartFacts {
+    pub root_local_id: u32,
+    /// Owner of the root. `CanDeleteObject` matches the agent against that owner.
+    pub owner_id: Uuid,
+    pub is_root: bool,
+    /// `IsAttachmentCheckFull`: primitive code 9 and a nonzero attachment state.
+    pub attachment: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct StoredScene {
     pub(crate) groups: Arc<Vec<ObjectGroup>>,
     // Allocation and initial viewer delivery both use this stable link order.
     parts: Vec<PreparedPart>,
     by_local_id: HashMap<u32, usize>,
+    by_uuid: HashMap<Uuid, u32>,
+    /// In-memory hide. The store row stays. `get` pretends the part is gone.
+    removed: Mutex<HashSet<u32>>,
 }
 
 impl StoredScene {
@@ -171,6 +186,7 @@ impl StoredScene {
     ) -> Self {
         let mut parts = Vec::new();
         let mut by_local_id = HashMap::new();
+        let mut by_uuid = HashMap::new();
         let mut link_order = Vec::new();
         for (group_index, group) in Arc::make_mut(&mut groups).iter_mut().enumerate() {
             let Some((root, children)) = group.parts.split_first() else {
@@ -238,6 +254,7 @@ impl StoredScene {
                 };
                 let update =
                     StoredPrimUpdate::from_store(part, &permissions, part.local_id, root_id);
+                by_uuid.insert(part.uuid, part.local_id);
                 by_local_id.insert(part.local_id, parts.len());
                 parts.push(PreparedPart {
                     group: group_index,
@@ -252,14 +269,19 @@ impl StoredScene {
             groups,
             parts,
             by_local_id,
+            by_uuid,
+            removed: Mutex::new(HashSet::new()),
         }
     }
 
     pub(crate) fn initial_parts(&self) -> impl Iterator<Item = (PriorityEntity, u32, u32)> {
-        self.parts.iter().map(|prepared| {
+        self.parts.iter().filter_map(|prepared| {
             let group = &self.groups[prepared.group];
             let root = &group.parts[0];
             let part = &group.parts[prepared.part];
+            if self.hidden(part.local_id) {
+                return None;
+            }
             let entity = PriorityEntity::Prim {
                 id: part.uuid,
                 linkset: root.uuid,
@@ -267,7 +289,7 @@ impl StoredScene {
                 attachment: false,
                 physical: prepared.physical_root,
             };
-            (entity, part.local_id, prepared.flags)
+            Some((entity, part.local_id, prepared.flags))
         })
     }
 
@@ -275,10 +297,82 @@ impl StoredScene {
         &self,
         id: u32,
     ) -> Option<(&ObjectPart, Result<&StoredPrimUpdate, &PrimUpdateError>)> {
+        if self.hidden(id) {
+            return None;
+        }
         let entry = &self.parts[*self.by_local_id.get(&id)?];
         Some((
             &self.groups[entry.group].parts[entry.part],
             entry.update.as_ref(),
         ))
+    }
+
+    /// The part and its root. A removed id is absent. The root stays `parts[0]`.
+    pub(crate) fn parts_of(&self, local_id: u32) -> Option<(&ObjectPart, &ObjectPart)> {
+        if self.hidden(local_id) {
+            return None;
+        }
+        let entry = self.parts.get(*self.by_local_id.get(&local_id)?)?;
+        let group = &self.groups[entry.group];
+        Some((&group.parts[entry.part], &group.parts[0]))
+    }
+
+    pub(crate) fn describe(&self, local_id: u32) -> Option<PartFacts> {
+        if self.hidden(local_id) {
+            return None;
+        }
+        let entry = self.parts.get(*self.by_local_id.get(&local_id)?)?;
+        let group = &self.groups[entry.group];
+        let root = &group.parts[0];
+        Some(PartFacts {
+            root_local_id: root.local_id,
+            owner_id: root.owner_id,
+            is_root: entry.part == 0,
+            attachment: root.shape.pcode == 9 && root.shape.state != 0,
+        })
+    }
+
+    /// Root local id of a live part. A child and its root share that id.
+    pub(crate) fn root_of_uuid(&self, uuid: Uuid) -> Option<u32> {
+        let local_id = *self.by_uuid.get(&uuid)?;
+        self.describe(local_id).map(|facts| facts.root_local_id)
+    }
+
+    /// Hide every part of the group whose root has `root_local_id`.
+    /// A child id, an unknown id, and a second call return false.
+    pub(crate) fn remove_group(&self, root_local_id: u32) -> bool {
+        let Some(&index) = self.by_local_id.get(&root_local_id) else {
+            return false;
+        };
+        if self.parts[index].part != 0 {
+            return false;
+        }
+        let group = self.parts[index].group;
+        let mut ids = Vec::new();
+        for entry in &self.parts {
+            if entry.group == group {
+                ids.push(entry.part);
+            }
+        }
+        let ids: Vec<u32> = ids
+            .into_iter()
+            .map(|part| self.groups[group].parts[part].local_id)
+            .collect();
+        let mut removed = self
+            .removed
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if removed.contains(&root_local_id) {
+            return false;
+        }
+        removed.extend(ids);
+        true
+    }
+
+    fn hidden(&self, local_id: u32) -> bool {
+        self.removed
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .contains(&local_id)
     }
 }

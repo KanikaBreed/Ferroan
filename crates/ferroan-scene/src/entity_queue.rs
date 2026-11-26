@@ -56,7 +56,8 @@
 //! Probe and animations apply to prims only. `material_override` is set only
 //! for a full prim update that still carries `MaterialOvr`. A tree, PBR
 //! support and a present render-materials list stay with the packet row.
-//! Packet bytes, distance culling and deleted-object kills are later rows.
+//! Packet bytes and distance culling are later rows. A dequeued `Kill` is
+//! `KillObject`, recorded during the entity pass and sent after it.
 //!
 //! C# grows this queue without a bound. The bound is `region.objects` plus
 //! 4,096. A new local id past that is refused when it is not a kill and its

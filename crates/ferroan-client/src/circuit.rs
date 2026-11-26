@@ -72,7 +72,7 @@ use crate::chat::{ChatSeat, DEBUG_CHANNEL, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
     AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
-    terse_packets,
+    kill_packets, terse_packets,
 };
 use crate::names::{CircuitNames, RegionNames, Requested, UserName};
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
@@ -87,10 +87,11 @@ use ferroan_diag::{
 };
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
-    CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply, SetAlwaysRun,
-    StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode,
-    logout_reply, packet_ack, start_ping_check,
+    CompletePingCheck, DeRezObject, DisableSimulator, KickUser, LayerData, LogoutReply,
+    LogoutRequest, ObjectSelect, PacketAck, ParcelOverlay, ParcelPropertiesRequest,
+    RegionHandshakeReply, RequestObjectPropertiesFamily, SetAlwaysRun, StartPingCheck,
+    TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply,
+    packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -117,6 +118,8 @@ const MAX_PENDING_ACKS: usize = 4096;
 /// `LLUDPClient.DequeueOutgoing` sends only resends while more than this many
 /// reliable packets wait for an ack.
 const ACK_STALL: usize = 50;
+/// `DeRezAction.Delete`.
+const DEREZ_DELETE: u8 = 6;
 const ACKS_PER_PACKET: usize = 255;
 /// Maximum unsent TeleportLocal replies per circuit, independent of Land and other Task traffic.
 const MAX_PENDING_TELEPORTS: usize = 256;
@@ -302,6 +305,13 @@ pub enum SceneCall {
     HandshakeReply,
     /// `ParcelPropertiesRequest`. The frame queues the elements, then answers.
     ParcelRequest(ParcelQuery),
+    /// `RequestObjectPropertiesFamily`. One post, no answer. A full inbound
+    /// queue drops it.
+    PropertiesFamily { object_id: Uuid, request_flags: u32 },
+    /// `ObjectSelect`. One post, no answer. A full inbound queue drops it.
+    ObjectSelect(Vec<u32>),
+    /// `DeRezObject` with destination Delete. One post, no answer.
+    DeRezDelete(Vec<u32>),
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
 }
@@ -898,6 +908,7 @@ impl State {
             full,
             terse: blocks,
             materials,
+            kills,
         } = crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
         let mut queued = !full.is_empty();
         for bytes in full {
@@ -919,6 +930,30 @@ impl State {
             self.pending_task.push_back(Payload {
                 bytes,
                 coding: Coding::Plain,
+                reliable: true,
+            });
+            queued = true;
+        }
+        // `SendKillObject` runs at the end of `ProcessEntityUpdates`, before properties.
+        for packet in kill_packets(&kills) {
+            self.pending_task.push_back(encode_payload(&packet)?);
+            queued = true;
+        }
+        // `HandleQueueEmpty` gives properties the same fresh task budget.
+        let property_budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
+        let properties = feed.updates.take_properties(property_budget);
+        for bytes in properties.objects {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Preencoded,
+                reliable: true,
+            });
+            queued = true;
+        }
+        for bytes in properties.families {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Zero,
                 reliable: true,
             });
             queued = true;
@@ -1380,6 +1415,36 @@ impl State {
             if let Ok(update) = packet.decode::<SetAlwaysRun>() {
                 self.forward_always_run(expect, update.agent_data.always_run);
             }
+        } else if packet.id == RequestObjectPropertiesFamily::ID {
+            if let Ok(request) = packet.decode::<RequestObjectPropertiesFamily>() {
+                self.post_scene(
+                    expect.agent_id,
+                    SceneCall::PropertiesFamily {
+                        object_id: request.object_data.object_id,
+                        request_flags: request.object_data.request_flags,
+                    },
+                );
+            }
+        } else if packet.id == ObjectSelect::ID {
+            if let Ok(request) = packet.decode::<ObjectSelect>() {
+                let ids = request
+                    .object_data
+                    .iter()
+                    .map(|block| block.object_local_id)
+                    .collect();
+                self.post_scene(expect.agent_id, SceneCall::ObjectSelect(ids));
+            }
+        } else if packet.id == DeRezObject::ID {
+            if let Ok(request) = packet.decode::<DeRezObject>()
+                && request.agent_block.destination == DEREZ_DELETE
+            {
+                let ids = request
+                    .object_data
+                    .iter()
+                    .map(|block| block.object_local_id)
+                    .collect();
+                self.post_scene(expect.agent_id, SceneCall::DeRezDelete(ids));
+            }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
@@ -1548,6 +1613,13 @@ impl State {
         }
         self.always_run = Some((expect.agent_id, always_run));
         self.flush_motion();
+    }
+
+    /// A property, select, or delete post. A full inbound queue drops it.
+    fn post_scene(&mut self, agent: Uuid, call: SceneCall) {
+        if let Some(scene) = self.login_scene.clone() {
+            let _ = scene(agent, call);
+        }
     }
 
     /// `RegionHandshakeReply` onto the frame, without waiting.
@@ -3348,7 +3420,10 @@ mod tests {
                 | SceneCall::AlwaysRun(_)
                 | SceneCall::HandshakeReply
                 | SceneCall::InitialLand
-                | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
+                | SceneCall::ParcelRequest(_)
+                | SceneCall::PropertiesFamily { .. }
+                | SceneCall::ObjectSelect(_)
+                | SceneCall::DeRezDelete(_) => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),

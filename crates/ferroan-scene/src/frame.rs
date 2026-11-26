@@ -313,6 +313,22 @@ enum Inbound {
     HandshakeReply {
         agent: Uuid,
     },
+    /// `RequestObjectPropertiesFamily`. The frame queues the root.
+    PropertiesFamily {
+        agent: Uuid,
+        object_id: Uuid,
+        request_flags: u32,
+    },
+    /// `ObjectSelect`. The frame queues a property reply for each live part.
+    ObjectSelect {
+        agent: Uuid,
+        local_ids: Vec<u32>,
+    },
+    /// `DeRezObject` Delete. Owner, root, and not an attachment.
+    DeRezDelete {
+        agent: Uuid,
+        local_ids: Vec<u32>,
+    },
 }
 
 struct Avatar {
@@ -349,6 +365,7 @@ struct Scene {
     admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
     /// `LandObject.m_lastSeqId` for each local id, shared by every client.
     parcel_seq: HashMap<i32, i32>,
+    objects: Arc<StoredScene>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -453,6 +470,7 @@ impl TerrainFrame {
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            objects: Arc::clone(&objects),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -544,6 +562,30 @@ impl TerrainFrame {
     /// inbound slot, no answer.
     pub fn handshake_reply(&self, agent: Uuid) -> Result<(), TerrainError> {
         self.push(Inbound::HandshakeReply { agent })
+    }
+
+    /// `RequestObjectPropertiesFamily`. A missing part is left alone.
+    pub fn properties_family(
+        &self,
+        agent: Uuid,
+        object_id: Uuid,
+        request_flags: u32,
+    ) -> Result<(), TerrainError> {
+        self.push(Inbound::PropertiesFamily {
+            agent,
+            object_id,
+            request_flags,
+        })
+    }
+
+    /// `ObjectSelect`. Selection state stays with a later row.
+    pub fn object_select(&self, agent: Uuid, local_ids: Vec<u32>) -> Result<(), TerrainError> {
+        self.push(Inbound::ObjectSelect { agent, local_ids })
+    }
+
+    /// `DeRezObject` Delete for roots this agent owns. The store row stays.
+    pub fn derez_delete(&self, agent: Uuid, local_ids: Vec<u32>) -> Result<(), TerrainError> {
+        self.push(Inbound::DeRezDelete { agent, local_ids })
     }
 
     pub fn has_map(&self) -> bool {
@@ -808,6 +850,13 @@ fn apply(post: Inbound, scene: &mut Scene) {
                 avatar.body.set_always_run(always_run);
             }
         }
+        Inbound::PropertiesFamily {
+            agent,
+            object_id,
+            request_flags,
+        } => scene.enqueue_family(agent, object_id, request_flags),
+        Inbound::ObjectSelect { agent, local_ids } => scene.enqueue_selected(&agent, &local_ids),
+        Inbound::DeRezDelete { agent, local_ids } => scene.delete_owned_roots(agent, &local_ids),
     }
 }
 
@@ -1493,6 +1542,57 @@ impl Scene {
                     .link
                     .feed
                     .send_avatar_packet(AvatarPacket::Coarse(packet));
+            }
+        }
+    }
+
+    /// `RequestObjectPropertiesFamily` queues the root, whichever part was asked.
+    fn enqueue_family(&self, agent: Uuid, object_id: Uuid, request_flags: u32) {
+        let Some(viewer) = self.viewers.get(&agent) else {
+            return;
+        };
+        let Some(root) = self.objects.root_of_uuid(object_id) else {
+            return;
+        };
+        viewer.link.feed.enqueue_family(root, request_flags);
+    }
+
+    /// `SelectPrim` sends the property reply. Selection state is a later row.
+    fn enqueue_selected(&self, agent: &Uuid, local_ids: &[u32]) {
+        let Some(viewer) = self.viewers.get(agent) else {
+            return;
+        };
+        for &local_id in local_ids {
+            if self.objects.get(local_id).is_some() {
+                viewer.link.feed.enqueue_object(local_id);
+            }
+        }
+    }
+
+    /// `DeRezObjects` Delete: the owner, the root, and not an attachment.
+    /// The group leaves the in-memory scene. The store row stays.
+    fn delete_owned_roots(&self, agent: Uuid, local_ids: &[u32]) {
+        for &local_id in local_ids {
+            let Some(facts) = self.objects.describe(local_id) else {
+                continue;
+            };
+            if !facts.is_root || facts.attachment || facts.owner_id != agent {
+                continue;
+            }
+            if !self.objects.remove_group(facts.root_local_id) {
+                continue;
+            }
+            self.kill_object_everywhere(facts.root_local_id);
+        }
+    }
+
+    /// Immediate kill, then the delayed kill, on every open viewer.
+    fn kill_object_everywhere(&self, local_id: u32) {
+        for (other, _) in self.viewer_order() {
+            if self.is_open(&other)
+                && let Some(viewer) = self.viewers.get(&other)
+            {
+                viewer.link.feed.kill_object(local_id);
             }
         }
     }
@@ -2330,6 +2430,7 @@ mod tests {
             groups: Arc::default(),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            objects: Arc::default(),
         }
     }
 

@@ -423,6 +423,11 @@ impl HopEnv {
         }
     }
 
+    /// `ObjectPhysicsProperties` onto this agent's event queue. A missing agent is skipped.
+    pub fn enqueue_event(&self, agent: Uuid, element: &[u8]) {
+        let _ = self.caps.enqueue_raw_for(agent, element, "object-physics");
+    }
+
     /// Close children a replaced root left behind. The auth token is the session
     /// that opened them. One take, so the old circuit and the new login cannot
     /// both send the same close. The sends run on a separate task, as

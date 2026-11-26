@@ -79,7 +79,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
 
 use crate::avatars::{AvatarPacket, AvatarPackets};
-use crate::entity_queue::{EntityUpdateQueue, QueuedUpdate, TERSE_UPDATE};
+use crate::entity_queue::{EntityUpdateQueue, KILL, QueuedUpdate, TERSE_UPDATE};
+use crate::object_properties::{
+    FAMILY, FAMILY_COST, OBJECT, OBJECT_COST, PropertyDrain, PropertyQueue, family_payload,
+    object_block, physics_of,
+};
 
 use crate::prim_update::{PrimUpdateError, StoredPrimUpdate};
 use crate::prioritizer::{PriorityViewer, best_avatar_responsiveness};
@@ -95,7 +99,14 @@ pub enum ViewerUpdate<'a> {
         update: Result<&'a StoredPrimUpdate, &'a PrimUpdateError>,
     },
     Terse([u8; AVATAR_TERSE_LEN]),
+    /// `PrimUpdateFlags.Kill`. The id is the queued one. The part is not looked up.
+    Kill {
+        local_id: u32,
+    },
 }
+
+/// Ordinary queue for the delayed kill `SendEntityUpdate` enqueues after `SendKillObject`.
+const DELAYED_KILL_PRIORITY: u8 = 2;
 
 /// `ScenePresence.cs` lines 4056–4060.
 const ROTATION_TOLERANCE: f32 = 0.01;
@@ -409,6 +420,7 @@ impl AvatarBoard {
 /// and are taken first ([`ViewerFeed::take_avatar_packets`]).
 pub struct ViewerFeed {
     queue: Mutex<EntityUpdateQueue>,
+    property_queue: Mutex<PropertyQueue>,
     objects: Arc<StoredScene>,
     packets: Mutex<AvatarPackets>,
     board: AvatarBoard,
@@ -426,6 +438,7 @@ impl ViewerFeed {
         Self {
             objects,
             queue: Mutex::new(EntityUpdateQueue::new()),
+            property_queue: Mutex::new(PropertyQueue::default()),
             packets: Mutex::new(AvatarPackets::default()),
             board,
             wake: Arc::new(Notify::new()),
@@ -457,15 +470,81 @@ impl ViewerFeed {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    fn properties(&self) -> MutexGuard<'_, PropertyQueue> {
+        self.property_queue
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     /// Queue one avatar packet for the circuit. A kill first drops the
     /// waiting updates for those ids (`SendKillObject` removes them from
-    /// `m_entityUpdates`).
+    /// `m_entityUpdates` and `m_entityProps`). The entity lock is released
+    /// before the property lock.
     pub(crate) fn send_avatar_packet(&self, packet: AvatarPacket) {
         if let AvatarPacket::Kill(ids) = &packet {
             self.queue().remove(ids);
+            self.drop_properties(ids);
         }
         if self.packets().push(packet) {
             self.wake.notify_one();
+        }
+    }
+
+    /// `SendObjectPropertiesFamilyData` for the root local id.
+    pub(crate) fn enqueue_family(&self, local_id: u32, request_flags: u32) {
+        self.properties().enqueue_family(local_id, request_flags);
+        self.wake.notify_one();
+    }
+
+    /// `SendObjectPropertiesReply`.
+    pub(crate) fn enqueue_object(&self, local_id: u32) {
+        self.properties().enqueue_object(local_id);
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn drop_properties(&self, local_ids: &[u32]) {
+        self.properties().remove(local_ids);
+    }
+
+    /// Immediate `SendKillObject`, then the delayed `PrimUpdateFlags.Kill`.
+    /// The immediate remove runs first, so the delayed entry survives it.
+    pub(crate) fn kill_object(&self, local_id: u32) {
+        self.send_avatar_packet(AvatarPacket::Kill(vec![local_id]));
+        if self.queue().enqueue(DELAYED_KILL_PRIORITY, local_id, KILL) {
+            self.wake.notify_one();
+        }
+    }
+
+    /// `ProcessEntityPropertyRequests`. A missing part and a zero flag cost nothing.
+    /// One item is taken when the budget is still positive, then its cost is subtracted.
+    pub fn drain_properties(&self, mut budget: i32) -> PropertyDrain {
+        let mut objects = Vec::new();
+        let mut families = Vec::new();
+        let mut physics = Vec::new();
+        while budget > 0 {
+            let Some(slot) = self.properties().pop() else {
+                break;
+            };
+            if slot.flags == 0 {
+                continue;
+            }
+            let Some((part, root)) = self.objects.parts_of(slot.local_id) else {
+                continue;
+            };
+            if slot.flags & OBJECT != 0 {
+                objects.push(object_block(part, root));
+                physics.push(physics_of(part));
+                budget = budget.saturating_sub(OBJECT_COST);
+            }
+            if slot.flags & FAMILY != 0 {
+                families.push(family_payload(part, root, slot.request_flags));
+                budget = budget.saturating_sub(FAMILY_COST);
+            }
+        }
+        PropertyDrain {
+            objects,
+            families,
+            physics,
         }
     }
 
@@ -509,6 +588,13 @@ impl ViewerFeed {
     ) -> Option<ViewerUpdate<'_>> {
         let mut queue = self.queue();
         while let Some(queued) = queue.dequeue() {
+            if queued.flags & KILL != 0 {
+                let local_id = queued.local_id;
+                queue.remove(&[local_id]);
+                drop(queue);
+                self.drop_properties(&[local_id]);
+                return Some(ViewerUpdate::Kill { local_id });
+            }
             if let Some((part, update)) = self.objects.get(queued.local_id) {
                 let animations = if supports_object_animations
                     && queued.flags & crate::entity_queue::ANIMATIONS != 0
@@ -543,7 +629,7 @@ impl ViewerFeed {
 
     /// `HandleHasUpdates` for the task category.
     pub fn has_updates(&self) -> bool {
-        !self.queue().is_empty()
+        !self.queue().is_empty() || !self.properties().is_empty()
     }
 
     /// `ProcessEntityUpdates(maxUpdatesBytes)` for avatar terse updates. A
@@ -626,6 +712,18 @@ mod tests {
             assert_eq!(queued.flags, flags);
             assert_eq!(animations, expected);
         }
+    }
+
+    #[test]
+    fn a_kill_flag_is_taken_without_a_part() {
+        let feed = ViewerFeed::new(AvatarBoard::default());
+        assert!(feed.queue().enqueue(2, 41, crate::entity_queue::KILL));
+        feed.enqueue_object(41);
+        let Some(ViewerUpdate::Kill { local_id }) = feed.take_update() else {
+            panic!("kill dequeue");
+        };
+        assert_eq!(local_id, 41);
+        assert!(feed.drain_properties(1_000).objects.is_empty());
     }
 
     fn standing(position: [f32; 3], velocity: [f32; 3]) -> AvatarTerse {

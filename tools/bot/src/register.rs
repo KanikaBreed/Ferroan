@@ -73,6 +73,7 @@ pub enum Bot {
     ObjectCross,
     PrimArrival,
     MaterialOverride,
+    ObjectProperties,
     Stored(Stored),
     Avatars,
     ChildView,
@@ -102,6 +103,7 @@ pub enum Compare {
     PrimCapture,
     PrimArrival,
     MaterialOverride,
+    ObjectProperties,
     Report,
     Ferrobot,
     /// Ferroan prints the proxy report. C# finishes the capture.
@@ -355,6 +357,11 @@ const HELP_MATERIAL: &str = concat!(
     "       cargo xtask live run material-override grid --region ferroan\n",
 );
 
+const HELP_OBJECT_PROPERTIES: &str = concat!(
+    "       cargo xtask live run object-properties grid --region ferroan\n",
+    "       cargo xtask live run object-properties grid --physics basicphysics\n",
+);
+
 const HELP_ALL: &str = "       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]\n";
 
 const HELP_LOGIN: &str = "       cargo xtask live run login grid --region ferroan\n";
@@ -584,6 +591,15 @@ pub const SCENARIOS: &[Scenario] = &[
     .home(Store::Prim)
     .patch_materials()
     .help(100, HELP_MATERIAL),
+    row(
+        "object-properties",
+        Flags::Pin8OrFerroan,
+        Ferroan::Allow(21),
+        Bot::ObjectProperties,
+        Compare::ObjectProperties,
+    )
+    .home(Store::Prim)
+    .help(105, HELP_OBJECT_PROPERTIES),
     row(
         "object-cross",
         Flags::Pin8,
@@ -889,7 +905,7 @@ mod tests {
     fn ferroan_refusal_lists_the_allowed_rows_in_order() {
         assert_eq!(
             ferroan_denied(),
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing and parcel-properties scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing, parcel-properties and object-properties scenarios"
         );
     }
 }

@@ -82,6 +82,8 @@ mod login_capture;
 pub(crate) mod login_probe;
 #[path = "material_override.rs"]
 mod material_override;
+#[path = "object_properties.rs"]
+mod object_properties;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
@@ -1284,6 +1286,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(format!("{}\n{line}", report.lines))
     } else if compare == ferroan_bot::register::Compare::PrimCapture {
         let fixture = prim_capture::extract(&root)?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if compare == ferroan_bot::register::Compare::ObjectProperties {
+        let fixture = object_properties::extract(&root, ferroan)?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if compare == ferroan_bot::register::Compare::PrimArrival {
         let fixture =

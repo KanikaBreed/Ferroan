@@ -213,7 +213,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q206 | P2.5b1: compressed object updates | READY |
 | Q207 | P2.5b2: cached object probes | READY |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | BLOCKED (split into Q208–Q209) |
-| Q208 | P2.5c1: object properties and kills | READY |
+| Q208 | P2.5c1: object properties and kills | DONE (this PR) |
 | Q209 | P2.5c2: distance culling | READY after Q208 |
 | Q68 | P2.8a: rez a new prim and select it | READY after Q208 and Q64 |
 | Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`) | READY after Q68 |

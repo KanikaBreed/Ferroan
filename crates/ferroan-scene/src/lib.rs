@@ -84,6 +84,7 @@ mod height;
 mod initial;
 mod motion;
 pub mod object_permissions;
+pub mod object_properties;
 mod objects;
 pub mod parcels;
 mod payloads;

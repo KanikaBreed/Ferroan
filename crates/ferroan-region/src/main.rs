@@ -804,6 +804,12 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |()| Ok(SceneReply::Applied),
         ),
+        SceneCall::PropertiesFamily {
+            object_id,
+            request_flags,
+        } => queued(frame.properties_family(agent, object_id, request_flags)),
+        SceneCall::ObjectSelect(local_ids) => queued(frame.object_select(agent, local_ids)),
+        SceneCall::DeRezDelete(local_ids) => queued(frame.derez_delete(agent, local_ids)),
     }
 }
 
@@ -998,6 +1004,12 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                 Err(_) => None,
             };
             if attached.is_some() {
+                let events = {
+                    let hop = hop.clone();
+                    let viewer = expect.agent_id;
+                    Arc::new(move |element: &[u8]| hop.enqueue_event(viewer, element))
+                        as Arc<dyn Fn(&[u8]) + Send + Sync>
+                };
                 arrival.updates = Some(ferroan_client::EntityFeed {
                     wake: feed.wake(),
                     updates: Arc::new(SceneFeed {
@@ -1006,6 +1018,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
                         supports_pbr: Arc::clone(&agent.supports_pbr),
                         feed,
                         region_handle: arrival.region_handle,
+                        events: Some(events),
                     }),
                 });
             }
@@ -1260,6 +1273,9 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
     .await;
 }
 
+/// `ObjectPhysicsProperties` for one signed-in viewer.
+type PhysicsEvents = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 /// One viewer's frame feed, as the circuit drains it.
 struct SceneFeed {
     object_animations: Arc<std::sync::atomic::AtomicBool>,
@@ -1267,6 +1283,8 @@ struct SceneFeed {
     viewer: Uuid,
     feed: Arc<ferroan_scene::terse::ViewerFeed>,
     region_handle: u64,
+    /// Absent in tests that never select an object.
+    events: Option<PhysicsEvents>,
 }
 
 impl ferroan_client::EntityUpdates for SceneFeed {
@@ -1282,6 +1300,7 @@ impl ferroan_client::EntityUpdates for SceneFeed {
         while batch.has_room() {
             match self.feed.take_update_for_viewer(supports_animations) {
                 Some(ViewerUpdate::Terse(block)) => batch.push_terse(block),
+                Some(ViewerUpdate::Kill { local_id }) => batch.note_kill(local_id),
                 Some(ViewerUpdate::Full {
                     update: Ok(update),
                     animations,
@@ -1304,6 +1323,21 @@ impl ferroan_client::EntityUpdates for SceneFeed {
 
     fn take_land_pass(&self) -> bool {
         self.feed.take_land_pass()
+    }
+
+    fn take_properties(&self, budget: i32) -> ferroan_client::PropertySend {
+        let drained = self.feed.drain_properties(budget);
+        if !drained.physics.is_empty()
+            && let Some(events) = &self.events
+        {
+            events(&ferroan_scene::object_properties::physics_event(
+                &drained.physics,
+            ));
+        }
+        ferroan_client::PropertySend {
+            objects: ferroan_client::object_property_packets(&drained.objects),
+            families: drained.families,
+        }
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<ferroan_client::AvatarPacket> {
@@ -3565,6 +3599,7 @@ mod tests {
             region_handle: 7,
             object_animations: Arc::default(),
             supports_pbr: Arc::default(),
+            events: None,
         };
         let ferroan_client::TaskPackets { full, .. } =
             ferroan_client::TaskBatch::drain(&scene_feed, 7, 0, 8);
@@ -3642,6 +3677,7 @@ mod tests {
                 supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
+                events: None,
             };
             let packets = scene_feed.take_avatar_packets(usize::MAX);
             assert_eq!(packets.len(), 3);
@@ -3785,6 +3821,7 @@ mod tests {
             region_handle: 7,
             object_animations: Arc::default(),
             supports_pbr: Arc::new(pbr.into()),
+            events: None,
         };
         let ferroan_client::TaskPackets {
             full, materials, ..

@@ -796,6 +796,7 @@ mod tests {
             "prim-capture",
             "prim-arrival",
             "material-override",
+            "object-properties",
             "object-cross",
             "child-view",
             "store-handoff",
@@ -817,7 +818,10 @@ mod tests {
             ]);
             assert_eq!(
                 ferroan.is_ok(),
-                matches!(scenario, "prim-arrival" | "material-override")
+                matches!(
+                    scenario,
+                    "prim-arrival" | "material-override" | "object-properties"
+                )
             );
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
         }
@@ -1026,6 +1030,7 @@ mod tests {
             "prim-capture",
             "prim-arrival",
             "material-override",
+            "object-properties",
             "object-cross",
             "child-view",
             "store-handoff",
@@ -1085,7 +1090,12 @@ mod tests {
             }
             return;
         }
-        if matches!(scenario, "prim-arrival" | "material-override") && region && !grid {
+        if matches!(
+            scenario,
+            "prim-arrival" | "material-override" | "object-properties"
+        ) && region
+            && !grid
+        {
             assert!(
                 matches!(parsed, Err(ParseFail::Usage)),
                 "{label} should be usage, got {parsed:?}"
@@ -1111,7 +1121,10 @@ mod tests {
         } else if (matches!(
             scenario,
             "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
-        ) || (matches!(scenario, "prim-arrival" | "material-override") && !region))
+        ) || (matches!(
+            scenario,
+            "prim-arrival" | "material-override" | "object-properties"
+        ) && !region))
             && (!grid || region || !physics)
         {
             match parsed {
