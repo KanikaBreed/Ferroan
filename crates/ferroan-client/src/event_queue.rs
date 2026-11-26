@@ -120,6 +120,33 @@ impl EventQueue {
         }
         // to_xml always emits exactly one <llsd>...</llsd> wrapper.
         let inner = encoded[6..encoded.len() - 7].to_vec();
+        self.push(inner)
+    }
+
+    /// Queue one element that is already encoded. `to_xml` is not applied.
+    pub(crate) fn enqueue_bytes(&self, element: &[u8]) -> Result<(), EventQueueError> {
+        if element.len() > MAX_EVENT_BYTES {
+            ferroan_diag::refuse(
+                EVENT_BYTES,
+                Kind::Hard,
+                MAX_EVENT_BYTES as u64,
+                element.len() as u64,
+                "event-queue",
+            );
+            return Err(EventQueueError::EventLimit);
+        }
+        self.push(element.to_vec())
+    }
+
+    pub(crate) fn queued(&self) -> Vec<Vec<u8>> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.events.iter().cloned().collect()
+    }
+
+    fn push(&self, element: Vec<u8>) -> Result<(), EventQueueError> {
         let mut state = self
             .state
             .lock()
@@ -137,18 +164,18 @@ impl EventQueue {
             );
             return Err(EventQueueError::Full);
         }
-        if state.bytes + inner.len() > MAX_QUEUE_BYTES {
+        if state.bytes + element.len() > MAX_QUEUE_BYTES {
             ferroan_diag::refuse(
                 EVENT_QUEUE_BYTES,
                 Kind::Soft,
                 MAX_QUEUE_BYTES as u64,
-                (state.bytes + inner.len()) as u64,
+                (state.bytes + element.len()) as u64,
                 "event-queue",
             );
             return Err(EventQueueError::Full);
         }
-        state.bytes += inner.len();
-        state.events.push_back(inner);
+        state.bytes += element.len();
+        state.events.push_back(element);
         let queued = state.events.len() as u64;
         let queued_bytes = state.bytes as u64;
         drop(state);
@@ -282,6 +309,22 @@ mod tests {
         event.insert("message", "TestEvent");
         event.insert("body", Llsd::new_map());
         event
+    }
+
+    #[tokio::test]
+    async fn raw_elements_keep_the_empty_forms() {
+        let queue = EventQueue::with_id(1);
+        let element = b"<map><key>AuctionID</key><integer /><key>AuthBuyerID</key><uuid /></map>";
+        queue.enqueue_bytes(element).unwrap();
+        let PollReply::Events(body) = queue.poll().await else {
+            panic!("expected events");
+        };
+        assert!(body.windows(element.len()).any(|window| window == element));
+        assert!(
+            !body
+                .windows(b"<integer>0</integer>".len())
+                .any(|window| window == b"<integer>0</integer>")
+        );
     }
 
     fn id(reply: PollReply) -> i32 {

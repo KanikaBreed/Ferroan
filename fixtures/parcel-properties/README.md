@@ -12,7 +12,7 @@ One estate-owner circuit logged in to Pin8 on the [Q60b multi-parcel store](../p
 
 Pin8 `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` sends `ParcelProperties` from `ScenePresence.CompleteMovement` (`ScenePresence.cs` 2475), from `LandManagementModule.ClientOnParcelPropertiesRequest` (1594) and from `EventManagerOnClientMovement` (536) when a walk changes parcel. A same-region teleport only moves the avatar (`EntityTransferModule.TeleportAgentWithinRegion` 703). The next `AgentUpdate` sends the landing parcel. That landing element is sequence 0 on West. The extractor checks it and does not publish it. The published walk element is the later sequence-0 East element.
 
-The span covers land units (1, 0) and (2, 0). Pin8 scans x then y and sends West before East. Each file is one element. Snap selection is false. Empty integers use Encode2's `<integer />`. The bitmap is the original `<binary>` value.
+The span covers land units (1, 0) and (2, 0). Pin8 scans x then y and sends West before East. Each file is one element. Snap selection is false. Empty integers use Encode2's `<integer />`. The bitmap is the original `<binary>` value. `send_land_properties_matches_each_captured_element` builds each element from the parcel map and matches these files byte for byte.
 
 Extraction slices each proxy HTTP 200 for `/CE/`. It cuts the captured body into consecutive event elements and the id trailer, then copies a `ParcelProperties` element. The poll id stays in the trailer.
 

@@ -389,6 +389,54 @@ impl CapsRegistry {
         queue.enqueue(event)
     }
 
+    /// Queue one already-encoded element when exactly one agent is registered.
+    pub fn enqueue_raw(&self, element: &[u8]) -> Result<(), EventQueueError> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if active.len() != 1 {
+            return Err(EventQueueError::Closed);
+        }
+        active[0].state.queue.enqueue_bytes(element)
+    }
+
+    /// Queue one already-encoded element on one agent's event queue.
+    ///
+    /// A missing agent is [`EventQueueError::Closed`]. The bytes are stored as
+    /// the element `GetEvents` writes into the events array.
+    pub fn enqueue_raw_for(&self, agent_id: Uuid, element: &[u8]) -> Result<(), EventQueueError> {
+        let queue = {
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(registered) = active
+                .iter()
+                .find(|registered| registered.state.agent_id == agent_id)
+            else {
+                return Err(EventQueueError::Closed);
+            };
+            registered.state.queue.clone()
+        };
+        queue.enqueue_bytes(element)
+    }
+
+    /// Elements waiting on one agent's queue, in enqueue order.
+    pub fn queued_events(&self, agent_id: Uuid) -> Result<Vec<Vec<u8>>, EventQueueError> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(registered) = active
+            .iter()
+            .find(|registered| registered.state.agent_id == agent_id)
+        else {
+            return Err(EventQueueError::Closed);
+        };
+        Ok(registered.state.queue.queued())
+    }
+
     /// Merge this fallback with the region's more specific simulation routes.
     pub fn router(&self) -> Router {
         Router::new()
@@ -623,6 +671,11 @@ impl CapsServer {
     /// Queue an LLSD event for the next poll.
     pub fn enqueue_event(&self, event: Llsd) -> Result<(), EventQueueError> {
         self.queue.enqueue(event)
+    }
+
+    /// Queue one already-encoded element for the next poll.
+    pub fn enqueue_raw(&self, element: &[u8]) -> Result<(), EventQueueError> {
+        self.queue.enqueue_bytes(element)
     }
 }
 
