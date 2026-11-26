@@ -23,6 +23,8 @@ pub enum TerrainError {
     NoMap,
     #[error("scene inbound queue is full")]
     InboundFull,
+    #[error("RAW32 terrain could not be decoded")]
+    Raw32,
 }
 
 #[derive(Debug, Error)]

@@ -95,6 +95,7 @@ pub mod parcels;
 mod payloads;
 pub mod prim_update;
 pub mod prioritizer;
+mod raw32;
 mod settings;
 mod store;
 mod stored_scene;
@@ -136,6 +137,7 @@ pub use payloads::{
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
 pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
+pub use raw32::load_raw32;
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;
