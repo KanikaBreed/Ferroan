@@ -90,7 +90,7 @@ pub fn packet(local_id: u32, pcode: u8, faces: Option<&[Face<'_>]>) -> Option<Ve
 /// Face text stays borrowed. The caller measures [`notation_bytes`] before
 /// [`join_parts`], so an override of several megabytes is not copied into one string.
 fn nonempty_parts<'a>(local_id: u32, faces: &'a [Face<'a>]) -> Vec<Cow<'a, str>> {
-    let mut parts = Vec::with_capacity(faces.len().saturating_mul(2).saturating_add(6));
+    let mut parts = Vec::with_capacity(faces.len().saturating_mul(4).saturating_add(3));
     parts.push(Cow::Borrowed("{'id':i"));
     parts.push(Cow::Owned((local_id as i32).to_string()));
     parts.push(Cow::Borrowed(",'te':["));
@@ -135,18 +135,10 @@ fn empty_notation(local_id: u32) -> String {
     format!("{{'id':i{local_id},'od':[],'te':[]}}")
 }
 
-/// The nonempty branch also skips a string shorter than four UTF-16 code units.
-/// A notation past [`MAX_NOTATION_BYTES`] is refused here when a caller already
-/// built it. [`packet`] measures the length and refuses before that build.
+/// A nonempty string shorter than four UTF-16 code units is skipped.
+/// [`packet`] refuses a notation past [`MAX_NOTATION_BYTES`] before [`join_parts`].
 fn within_cap(notation: &str, nonempty: bool) -> bool {
-    if nonempty && notation.encode_utf16().count() < 4 {
-        return false;
-    }
-    if notation.len() > MAX_NOTATION_BYTES {
-        refuse_over_cap(notation.len() as u64);
-        return false;
-    }
-    true
+    !nonempty || notation.encode_utf16().count() >= 4
 }
 
 fn refuse_over_cap(observed: u64) {
@@ -245,6 +237,8 @@ mod tests {
         let over = "a".repeat(room + 1);
         let kept = [face(0, &fitting)];
         let dropped = [face(0, &over)];
+        let parts = nonempty_parts(1, &dropped);
+        assert!(notation_bytes(&parts) > MAX_NOTATION_BYTES as u64);
         let body = packet(1, 9, Some(&kept)).unwrap();
         let message = GenericStreamingMessage::decode(&body[1..]).unwrap();
         assert_eq!(message.data_block.data.len(), MAX_NOTATION_BYTES);

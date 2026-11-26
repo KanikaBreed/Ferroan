@@ -2159,6 +2159,28 @@ fn captured_material_payload() -> Vec<u8> {
     datagram[ferroan_protocol::packet::HEADER_SIZE..].to_vec()
 }
 
+fn pin8_material_faces() -> [crate::Face<'static>; 2] {
+    [
+        crate::Face {
+            te_index: 0,
+            data: "{'bc':[r1,r0,r0,r1]}",
+        },
+        crate::Face {
+            te_index: 2,
+            data: "{'ds':1}",
+        },
+    ]
+}
+
+#[test]
+fn the_encoder_matches_the_pin8_material_body() {
+    let faces = pin8_material_faces();
+    assert_eq!(
+        crate::material_packet(1, 9, Some(&faces)).unwrap(),
+        captured_material_payload()
+    );
+}
+
 /// A full update, a terse block and the captured material body stay queued,
 /// reliable, in that order. The material body is plain. Flipping its reliable
 /// flag or its coding changes this result.
@@ -2168,7 +2190,9 @@ async fn a_queued_material_payload_is_reliable_plain_and_follows_full_and_terse(
         GenericStreamingMessage, ImprovedTerseObjectUpdate, ObjectUpdate,
     };
 
-    let captured = captured_material_payload();
+    let faces = pin8_material_faces();
+    let captured = crate::material_packet(1, 9, Some(&faces)).unwrap();
+    assert_eq!(captured, captured_material_payload());
     let source = Arc::new(BlockFeed::default());
     *source.full.lock().unwrap() = Some(ferroan_protocol::msgs::object_update::ObjectData {
         id: 1,
