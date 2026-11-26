@@ -34,18 +34,21 @@
 //!
 //! `load_oar` is `FindAndLoadControlFile` plus the `GetRegionFromPath` test
 //! `DearchiveRegion` applies to every later member. Terrain, objects, parcels,
-//! settings and assets stay with their own rows.
+//! settings and assets stay with their own rows. A throw reports an empty
+//! scene list. The regions parsed before a throw that happens after the
+//! control file stay on the report.
 
 mod control;
 mod tar;
+mod xml_text;
 
-use std::io::Read;
+use std::io::{Cursor, Read};
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use uuid::Uuid;
 
-use control::{LoadedControl, RegionRow};
-use tar::{TYPE_DIRECTORY, TarEntry};
+use control::LoadedControl;
+use tar::TYPE_DIRECTORY;
 
 const CONTROL_FILE: &str = "archive.xml";
 const SEEK_ERROR: &str = "[ARCHIVER]: Error reading archive: control file wasn't the first file, and the input stream doesn't allow seeking";
@@ -63,6 +66,7 @@ pub struct SimulatorRegion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OarSource {
     /// Gzip member. A late control file decompresses the same bytes again.
+    /// Concatenated gzip members are one archive, as `GZipStream` reads them.
     GzipPath,
     /// Uncompressed tar that can be read from the start again.
     TarSeek,
@@ -115,87 +119,138 @@ pub fn load_oar(
     bytes: &[u8],
     source: OarSource,
 ) -> OarReport {
-    let tar = match tar_bytes(bytes, source) {
-        Ok(tar) => tar,
+    match source {
+        OarSource::GzipPath => load_from(
+            root,
+            scenes,
+            tar::Session::new(MultiGzDecoder::new(bytes)),
+            true,
+            || tar::Session::new(MultiGzDecoder::new(bytes)),
+        ),
+        OarSource::TarSeek => load_from(
+            root,
+            scenes,
+            tar::Session::new(Cursor::new(bytes)),
+            true,
+            || tar::Session::new(Cursor::new(bytes)),
+        ),
+        OarSource::TarNoSeek => load_from(
+            root,
+            scenes,
+            tar::Session::new(Cursor::new(bytes)),
+            false,
+            || tar::Session::new(Cursor::new(bytes)),
+        ),
+    }
+}
+
+fn load_from<R, F>(
+    root: &SimulatorRegion,
+    scenes: &[SimulatorRegion],
+    mut session: tar::Session<R>,
+    can_reopen: bool,
+    reopen: F,
+) -> OarReport
+where
+    R: Read,
+    F: FnOnce() -> tar::Session<R>,
+{
+    let mut incoming = control::default_size_bits();
+    let found = match find_control(&mut session) {
+        Ok(found) => found,
         Err(error) => return empty_report(Some(error)),
     };
-    let members = tar::entries(&tar);
-    let Some(control_at) = find_control(&members) else {
+    let Some(control_body) = found.body else {
         return empty_report(Some(MISSING_CONTROL.to_string()));
     };
     let mut state = control::fresh_scenes();
-    let mut incoming = control::default_size_bits();
-    if let Err(error) = control::load_control(&members[control_at].body, &mut state, &mut incoming)
-    {
-        return report_of(state.finish(Some(error), false, incoming), Vec::new());
+    if let Err(error) = control::load_control(&control_body, &mut state, &mut incoming) {
+        return control_failure(error, incoming);
     }
     state.match_simulator(root, scenes);
-    if !control_is_first(&members, control_at) && source == OarSource::TarNoSeek {
-        return report_of(
-            state.finish(Some(SEEK_ERROR.to_string()), true, incoming),
-            Vec::new(),
-        );
-    }
-    let walk = if control_is_first(&members, control_at) {
-        &members[control_at + 1..]
-    } else {
-        members.as_slice()
-    };
-    let entries = walk.iter().map(|entry| map_entry(entry, &state)).collect();
-    report_of(state.finish(None, true, incoming), entries)
-}
-
-fn tar_bytes(bytes: &[u8], source: OarSource) -> Result<Vec<u8>, String> {
-    match source {
-        OarSource::GzipPath => {
-            let mut decoder = GzDecoder::new(bytes);
-            let mut tar = Vec::new();
-            decoder
-                .read_to_end(&mut tar)
-                .map_err(|error| error.to_string())?;
-            Ok(tar)
+    if found.late {
+        if !can_reopen {
+            return report_of(
+                state.finish(Some(SEEK_ERROR.to_string()), true, incoming),
+                Vec::new(),
+            );
         }
-        OarSource::TarSeek | OarSource::TarNoSeek => Ok(bytes.to_vec()),
+        session = reopen();
     }
+    let (entries, error) = walk(&mut session, &state);
+    report_of(state.finish(error, true, incoming), entries)
 }
 
-fn find_control(members: &[TarEntry]) -> Option<usize> {
-    members
-        .iter()
-        .position(|entry| entry.kind != TYPE_DIRECTORY && entry.path == CONTROL_FILE)
+struct Found {
+    body: Option<Vec<u8>>,
+    late: bool,
 }
 
-/// A directory before the control file does not make the control file late.
-fn control_is_first(members: &[TarEntry], control_at: usize) -> bool {
-    members
-        .iter()
-        .take(control_at)
-        .all(|entry| entry.kind == TYPE_DIRECTORY)
-}
-
-fn map_entry(entry: &TarEntry, state: &control::Scenes) -> OarEntry {
-    if entry.kind == TYPE_DIRECTORY {
-        return OarEntry {
-            path: entry.path.clone(),
-            kind: entry.kind,
-            use_entry: false,
-            scene_id: None,
-            relative: entry.path.clone(),
-            body: entry.body.clone(),
+fn find_control<R: Read>(session: &mut tar::Session<R>) -> Result<Found, String> {
+    let mut saw_file = false;
+    loop {
+        let Some(member) = session.next_member()? else {
+            return Ok(Found {
+                body: None,
+                late: false,
+            });
         };
+        if member.kind == TYPE_DIRECTORY {
+            session.skip_body()?;
+            continue;
+        }
+        if member.path == CONTROL_FILE {
+            let body = session.read_body()?;
+            return Ok(Found {
+                body: Some(body),
+                late: saw_file,
+            });
+        }
+        session.skip_body()?;
+        saw_file = true;
     }
-    let (use_entry, scene_id, relative) = state.region_from_path(&entry.path);
-    OarEntry {
-        path: entry.path.clone(),
-        kind: entry.kind,
-        use_entry,
-        scene_id,
-        relative,
-        body: entry.body.clone(),
+}
+
+fn walk<R: Read>(
+    session: &mut tar::Session<R>,
+    state: &control::Scenes,
+) -> (Vec<OarEntry>, Option<String>) {
+    let mut entries = Vec::new();
+    loop {
+        let member = match session.next_member() {
+            Ok(Some(member)) => member,
+            Ok(None) => return (entries, None),
+            Err(error) => return (entries, Some(error)),
+        };
+        let body = match session.read_body() {
+            Ok(body) => body,
+            Err(error) => return (entries, Some(error)),
+        };
+        if member.kind == TYPE_DIRECTORY {
+            entries.push(OarEntry {
+                path: member.path.clone(),
+                kind: member.kind,
+                use_entry: false,
+                scene_id: None,
+                relative: member.path,
+                body,
+            });
+            continue;
+        }
+        let (use_entry, scene_id, relative) = state.region_from_path(&member.path);
+        entries.push(OarEntry {
+            path: member.path,
+            kind: member.kind,
+            use_entry,
+            scene_id,
+            relative,
+            body,
+        });
     }
 }
 
 fn report_of(loaded: LoadedControl, entries: Vec<OarEntry>) -> OarReport {
+    let failed = loaded.error.is_some();
     OarReport {
         error: loaded.error,
         creation_time: loaded.creation_time,
@@ -204,13 +259,30 @@ fn report_of(loaded: LoadedControl, entries: Vec<OarEntry>) -> OarReport {
         control_loaded: loaded.control_loaded,
         incoming_size_bits: loaded.incoming_size_bits,
         scene_count: i32::try_from(loaded.regions.len()).unwrap_or(i32::MAX),
-        loaded_scenes: loaded.loaded,
+        loaded_scenes: if failed { Vec::new() } else { loaded.loaded },
         regions: loaded.regions.into_iter().map(archived).collect(),
         entries,
     }
 }
 
-fn archived(region: RegionRow) -> ArchivedRegion {
+/// A control-file throw leaves the out arguments unset. The size already
+/// written to the request is the one field that survives.
+fn control_failure(error: String, incoming: [i32; 3]) -> OarReport {
+    OarReport {
+        error: Some(error),
+        creation_time: 0,
+        default_original_id: String::new(),
+        multi_region: false,
+        control_loaded: false,
+        incoming_size_bits: incoming,
+        scene_count: 0,
+        loaded_scenes: Vec::new(),
+        regions: Vec::new(),
+        entries: Vec::new(),
+    }
+}
+
+fn archived(region: control::RegionRow) -> ArchivedRegion {
     ArchivedRegion {
         directory: region.directory,
         original_id: region.original_id,
@@ -270,11 +342,108 @@ mod tests {
                 &bytes,
                 source_of(case["source"].as_str().unwrap()),
             );
-            assert_eq!(report_value(&report), control_value(case), "{name}");
-            if case["source"] == "gzip-path" {
-                assert_path_event(case, name);
-            }
+            assert_eq!(report_value(&report), expected(case), "{name}");
+            assert_event(case, &report, name);
         }
+    }
+
+    #[test]
+    fn the_last_scene_registered_at_a_cell_wins() {
+        let xml = b"<?xml version=\"1.0\" encoding=\"utf-16\"?>\n\
+            <archive major_version=\"0\" minor_version=\"8\">\n\
+            <creation_info><datetime>1700000000</datetime>\n\
+            <id>11111111-1111-1111-1111-111111111111</id></creation_info>\n\
+            <region_info><size_in_meters>256,256</size_in_meters></region_info>\n\
+            </archive>";
+        let bytes = tar_file("archive.xml", xml);
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let root = SimulatorRegion {
+            id: second,
+            loc_x: 4,
+            loc_y: 5,
+        };
+        let scenes = [
+            SimulatorRegion {
+                id: first,
+                loc_x: 4,
+                loc_y: 5,
+            },
+            SimulatorRegion {
+                id: second,
+                loc_x: 4,
+                loc_y: 5,
+            },
+        ];
+        let report = load_oar(&root, &scenes, &bytes, OarSource::TarSeek);
+        assert!(report.error.is_none());
+        assert_eq!(report.loaded_scenes, vec![second]);
+        assert_eq!(report.regions[0].scene_id, Some(second));
+    }
+
+    #[test]
+    fn a_second_directory_loads_the_scene_once() {
+        let xml = b"<archive major_version=\"1\" minor_version=\"0\">\n\
+            <regions><row><region>\n\
+            <id>11111111-1111-1111-1111-111111111111</id>\n\
+            <dir>west</dir><dir>alias</dir>\n\
+            <size_in_meters>256,256</size_in_meters>\n\
+            </region></row></regions></archive>";
+        let bytes = tar_file("archive.xml", xml);
+        let scene = Uuid::from_u128(0xaaaa);
+        let root = SimulatorRegion {
+            id: scene,
+            loc_x: 10,
+            loc_y: 10,
+        };
+        let report = load_oar(&root, &[root], &bytes, OarSource::TarSeek);
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(report.scene_count, 2);
+        assert_eq!(report.regions[0].directory, "west");
+        assert_eq!(report.regions[1].directory, "alias");
+        assert_eq!(report.regions[0].scene_id, Some(scene));
+        assert_eq!(report.regions[1].scene_id, Some(scene));
+        assert_eq!(report.regions[0].original_id, report.regions[1].original_id);
+        assert_eq!(report.loaded_scenes, vec![scene]);
+    }
+
+    #[test]
+    fn a_nan_size_keeps_pin8s_sign_and_infinity_does_not_parse() {
+        let nan = load_size("NaN,256");
+        assert_eq!(nan.incoming_size_bits[0], -4_194_304);
+        assert_eq!(nan.incoming_size_bits[1], 256.0f32.to_bits() as i32);
+        assert_eq!(nan.incoming_size_bits[2], 0);
+        let infinity = load_size("Infinity,256");
+        assert_eq!(infinity.incoming_size_bits, control::default_size_bits());
+        assert_eq!(infinity.regions[0].size_bits, control::default_size_bits());
+    }
+
+    fn load_size(text: &str) -> OarReport {
+        let xml = format!(
+            "<archive major_version=\"0\" minor_version=\"8\">\n\
+             <size_in_meters>{text}</size_in_meters></archive>"
+        );
+        let bytes = tar_file("archive.xml", xml.as_bytes());
+        let root = SimulatorRegion {
+            id: Uuid::nil(),
+            loc_x: 0,
+            loc_y: 0,
+        };
+        load_oar(&root, &[root], &bytes, OarSource::TarSeek)
+    }
+
+    fn tar_file(path: &str, data: &[u8]) -> Vec<u8> {
+        let mut header = vec![0u8; 512];
+        header[..path.len()].copy_from_slice(path.as_bytes());
+        let size = format!("{:011o}", data.len());
+        header[124..135].copy_from_slice(size.as_bytes());
+        header[156] = b'0';
+        header.extend(data);
+        if !data.len().is_multiple_of(512) {
+            header.extend(vec![0u8; 512 - (data.len() % 512)]);
+        }
+        header.extend(vec![0u8; 1024]);
+        header
     }
 
     fn region_of(value: &Value) -> SimulatorRegion {
@@ -290,7 +459,7 @@ mod tests {
             "gzip-path" => OarSource::GzipPath,
             "tar-seek" => OarSource::TarSeek,
             "tar-noseek" => OarSource::TarNoSeek,
-            _ => panic!("unknown oar source {name}"),
+            other => panic!("unknown oar source {other}"),
         }
     }
 
@@ -330,7 +499,11 @@ mod tests {
         })
     }
 
-    fn control_value(case: &Value) -> Value {
+    /// Pin8's record, adjusted where Ferroan deliberately differs.
+    /// A throw carries the event's empty scene list (D1). Compact XML that
+    /// skips the next element is loaded (D132). A culture-sensitive region
+    /// prefix is compared ordinally (D133, TB196).
+    fn expected(case: &Value) -> Value {
         let mut value = case.clone();
         let object = value.as_object_mut().unwrap();
         for key in [
@@ -346,21 +519,113 @@ mod tests {
         ] {
             object.remove(key);
         }
+        if !case["error"].is_null() {
+            object.insert("error".to_string(), case["dearchive_error"].clone());
+            object.insert("loaded_scenes".to_string(), json!([]));
+        }
+        match case["name"].as_str() {
+            Some("compact-skip") => {
+                let id = json!("11111111-1111-1111-1111-111111111111");
+                object.insert("default_original_id".to_string(), id.clone());
+                object["regions"][0]["original_id"] = id;
+            }
+            Some("rv-compact-multi") => {
+                object.insert("scene_count".to_string(), json!(3));
+                object.insert(
+                    "loaded_scenes".to_string(),
+                    json!([
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                    ]),
+                );
+                object.insert(
+                    "regions".to_string(),
+                    json!([
+                        region_row(
+                            "1_1_West",
+                            "11111111-1111-1111-1111-111111111111",
+                            0,
+                            0,
+                            256.0,
+                            Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                        ),
+                        region_row(
+                            "3_1_East_Isle",
+                            "22222222-2222-2222-2222-222222222222",
+                            2,
+                            0,
+                            512.0,
+                            Some("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+                        ),
+                        region_row(
+                            "1_3_North",
+                            "33333333-3333-3333-3333-333333333333",
+                            0,
+                            2,
+                            256.0,
+                            None
+                        ),
+                    ]),
+                );
+                object["entries"][1]["use"] = json!(true);
+                object["entries"][1]["scene_id"] = json!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            }
+            Some("rv-two-dirs") => {
+                let mut alias = object["regions"][0].clone();
+                alias["directory"] = json!("alias");
+                object["regions"].as_array_mut().unwrap().insert(1, alias);
+                object.insert("scene_count".to_string(), json!(4));
+                object["entries"][1]["use"] = json!(true);
+                object["entries"][1]["scene_id"] = json!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            }
+            Some("rv-ignorable-path") => {
+                let path = object["entries"][1]["path"].clone();
+                object["entries"][1]["scene_id"] = Value::Null;
+                object["entries"][1]["relative"] = path;
+            }
+            _ => {}
+        }
         value
     }
 
-    fn assert_path_event(case: &Value, name: &str) {
+    fn region_row(
+        directory: &str,
+        original_id: &str,
+        loc_x: i32,
+        loc_y: i32,
+        metres: f32,
+        scene_id: Option<&str>,
+    ) -> Value {
+        json!({
+            "directory": directory,
+            "original_id": original_id,
+            "loc_x": loc_x,
+            "loc_y": loc_y,
+            "size_bits": [net_component(metres), net_component(metres), 0],
+            "scene_id": scene_id,
+        })
+    }
+
+    fn net_component(value: f32) -> i32 {
+        value.to_bits() as i32
+    }
+
+    /// Every source fires the loaded event. A throw's scene list is empty.
+    fn assert_event(case: &Value, report: &OarReport, name: &str) {
         assert!(case["dearchive_fired"].as_bool().unwrap(), "{name}");
         assert!(case["dearchive_thrown"].is_null(), "{name}");
         if case["error"].is_null() {
-            assert_eq!(case["dearchive_error"].as_str(), Some(""), "{name}");
-            assert_eq!(case["dearchive_scenes"], case["loaded_scenes"], "{name}");
-        } else {
-            assert!(
-                case["dearchive_scenes"].as_array().unwrap().is_empty(),
-                "{name}"
-            );
-            assert_eq!(case["dearchive_error"], case["error"], "{name}");
+            return;
         }
+        assert!(
+            case["dearchive_scenes"].as_array().unwrap().is_empty(),
+            "{name}"
+        );
+        assert!(report.loaded_scenes.is_empty(), "{name}");
+        assert_eq!(
+            report.error.as_deref(),
+            case["dearchive_error"].as_str(),
+            "{name}"
+        );
     }
 }

@@ -37,6 +37,30 @@ pub(super) enum Components {
     Rotation,
 }
 
+/// One `NumberStyles.Float` component in the en-US culture. `∞` and `NaN` are
+/// accepted. The word `Infinity` is not the en-US infinity symbol.
+pub(crate) fn parse_f32(component: &str) -> Option<f32> {
+    let symbol = component.trim();
+    let unsigned = symbol.strip_prefix(['+', '-']).unwrap_or(symbol);
+    if unsigned == "∞" {
+        return Some(if symbol.starts_with('-') {
+            f32::NEG_INFINITY
+        } else {
+            f32::INFINITY
+        });
+    }
+    if unsigned.eq_ignore_ascii_case("nan") {
+        return Some(f32::NAN);
+    }
+    if !number(component) {
+        return None;
+    }
+    let value = component
+        .trim_end_matches('\0')
+        .trim_matches(|c| matches!(c, ' ' | '\t'..='\r'));
+    value.parse().ok()
+}
+
 fn number(component: &str) -> bool {
     // NumberStyles.Float uses the en-US infinity symbol and NaN. The special
     // symbols accept Unicode whitespace, ordinary numbers use ASCII space.

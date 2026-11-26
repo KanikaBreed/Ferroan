@@ -35,7 +35,7 @@
 
 mod overlay;
 mod properties;
-mod vector_text;
+pub(crate) mod vector_text;
 
 pub use overlay::OverlayPacket;
 pub(crate) use properties::prim_counts;

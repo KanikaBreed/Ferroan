@@ -46,6 +46,10 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | `library.files` | 64 | `crates/ferroan-region/src/library.rs` | hard | no | The library loader does not cap the file count. |
 | `library.file-bytes` | 2 MiB | `crates/ferroan-region/src/library.rs` | hard | no | One library file is not capped. |
 | `library.total-bytes` | 8 MiB | `crates/ferroan-region/src/library.rs` | hard | no | The archive total is not capped. |
+| `oar.members` | 262,144 | `crates/ferroan-scene/src/oar/tar.rs` | hard | no | Pin8 does not cap the member count. A late control file starts a new count, so an archive at the limit can still be read twice. |
+| `oar.member-bytes` | 1,610,612,736 bytes (1536 MiB) | `crates/ferroan-scene/src/oar/tar.rs` | hard | no | Pin8 allocates the declared size. Ferroan refuses a larger declaration before allocating it. 1536 MiB is above the size a 200-byte header's octal field wraps to. |
+| `oar.decompressed-bytes` | 1 GiB | `crates/ferroan-scene/src/oar/tar.rs` | hard | no | Pin8 does not cap the bytes `GZipStream` yields. The count is bytes the decoder produces, including headers and padding. One pass hits the cap. |
+| `oar.path-bytes` | 1024 bytes | `crates/ferroan-scene/src/oar/tar.rs` | hard | no | Pin8 does not cap a member path. A GNU long name longer than this is refused before its body is read. |
 | `asset.remote-body` | 16 MiB | `crates/ferroan-region/src/remote_asset.rs` | hard | no | The region connector does not cap the asset body. |
 | `asset.xml-depth` | 32 | `crates/ferroan-services/src/asset/xml.rs` | hard | no | `XmlSerializer` has no matching depth cap. |
 | `asset.xml-elements` | 100,000 | `crates/ferroan-services/src/asset/xml.rs` | hard | no | No matching element cap. |

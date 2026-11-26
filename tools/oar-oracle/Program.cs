@@ -83,6 +83,7 @@ internal static class Program
         cases.Add(BadFields(dir));
         cases.Add(StreamSeek(dir));
         cases.Add(StreamNoSeek(dir));
+        AddReviewCases(dir, cases);
 
         string jsonPath = Path.Combine(dir, "load.json");
         using var stream = File.Create(jsonPath);
@@ -389,16 +390,23 @@ internal static class Program
             byte[] data;
             string fullPath;
             TarArchiveReader.TarEntryType entryType;
-            while ((data = archive.ReadEntry(out fullPath, out entryType)) != null)
+            try
             {
-                if (entryType == TarArchiveReader.TarEntryType.TYPE_DIRECTORY)
+                while ((data = archive.ReadEntry(out fullPath, out entryType)) != null)
                 {
-                    entries.Add(new EntryRecord(fullPath, entryType.ToString(), false, null, fullPath));
-                    continue;
+                    if (entryType == TarArchiveReader.TarEntryType.TYPE_DIRECTORY)
+                    {
+                        entries.Add(new EntryRecord(fullPath, entryType.ToString(), false, null, fullPath));
+                        continue;
+                    }
+                    bool use = scenes.GetRegionFromPath(fullPath, out Scene scene, out string relative);
+                    string sceneId = scene == null ? null : scene.RegionInfo.RegionID.ToString();
+                    entries.Add(new EntryRecord(fullPath, entryType.ToString(), use, sceneId, relative));
                 }
-                bool use = scenes.GetRegionFromPath(fullPath, out Scene scene, out string relative);
-                string sceneId = scene == null ? null : scene.RegionInfo.RegionID.ToString();
-                entries.Add(new EntryRecord(fullPath, entryType.ToString(), use, sceneId, relative));
+            }
+            catch (Exception ex)
+            {
+                error = "WALK: " + ex.GetType().Name + ": " + ex.Message;
             }
         }
         if (archive != null)
@@ -493,6 +501,83 @@ internal static class Program
             RegionSizeY = size
         };
         return new Placed(id, x, y, new Scene(info));
+    }
+
+    static void AddReviewCases(string dir, List<Case> cases)
+    {
+        string single = SingleControl(HomeSave());
+        string multi = MultiControl();
+        Placed west = Place(LoadWest, "Load West", 50, 60, 256);
+        Placed east = Place(LoadEast, "Load East", 52, 60, 256);
+        var multiScenes = new List<Placed> { west, east };
+        cases.Add(XmlCase(dir, "rv-two-dirs", multi.Replace("<dir>1_1_West</dir>", "<dir>1_1_West</dir><dir>alias</dir>"), west, multiScenes,
+            t => { t.WriteFile("regions/alias/x.txt", "a"); t.WriteFile("regions/1_1_West/x.txt", "w"); }));
+        cases.Add(XmlCase(dir, "rv-rekey", multi.Replace("<id>22222222-2222-2222-2222-222222222222</id>\n        <dir>3_1_East_Isle</dir>", "<dir>3_1_East_Isle</dir>\n        <id>22222222-2222-2222-2222-222222222222</id>"), west, multiScenes,
+            t => { t.WriteFile("regions/3_1_East_Isle/x.txt", "e"); }));
+        cases.Add(XmlCase(dir, "rv-compact-multi", Compact(multi), west, multiScenes, t => t.WriteFile("regions/1_1_West/x.txt", "w")));
+        cases.Add(XmlCase(dir, "rv-comment-compact", Compact(single).Replace("</datetime>", "</datetime><!--c-->"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-bad-major", single.Replace("major_version=\"0\"", "major_version=\"x\""), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-no-minor", single.Replace(" minor_version=\"8\"", ""), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-inf-size", single.Replace("<size_in_meters>256,256</size_in_meters>", "<size_in_meters>Infinity,256</size_in_meters>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-nan-size", single.Replace("<size_in_meters>256,256</size_in_meters>", "<size_in_meters>NaN,256</size_in_meters>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-id-child", single.Replace("<id>11111111-1111-1111-1111-111111111111</id>", "<id><b/>abc</id>"), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-trailing-root", single + "<extra/>", HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-malformed", single.Substring(0, single.Length - 12), HomeRoot(), HomeScenes(), null));
+        cases.Add(XmlCase(dir, "rv-ignorable-path", multi, west, multiScenes, t => t.WriteFile("\u0001regions/1_1_West/x.txt", "w")));
+        byte[] splitTar = TarBytes(t => { t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, single); t.WriteFile("notes/after.txt", "after"); });
+        int split = 512 + ((Encoding.ASCII.GetByteCount(single) + 511) / 512) * 512;
+        string membersPath = Path.Combine(dir, "rv-two-members.oar");
+        GzipMembers(membersPath, splitTar[..split], splitTar[split..]);
+        cases.Add(Run("rv-two-members", "rv-two-members.oar", "gzip-path", membersPath, HomeRoot(), HomeScenes()));
+        byte[] negative = TarBytes(t => { t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, single); t.WriteFile("notes/after.txt", "after"); t.WriteFile("notes/last.txt", "last"); });
+        int at = 512 + ((Encoding.ASCII.GetByteCount(single) + 511) / 512) * 512;
+        byte[] field = Encoding.ASCII.GetBytes("0000000000/");
+        Array.Copy(field, 0, negative, at + 124, 11);
+        string negativePath = Path.Combine(dir, "rv-negative-size.oar");
+        GzipMembers(negativePath, negative);
+        cases.Add(Run("rv-negative-size", "rv-negative-size.oar", "gzip-path", negativePath, HomeRoot(), HomeScenes()));
+        byte[] whole = TarBytes(t => { t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, single); t.WriteFile("notes/after.txt", "after"); });
+        byte[] cut = whole[..(whole.Length - 2048)];
+        byte[] tail = Enumerable.Repeat((byte)'x', 200).ToArray();
+        byte[] shortTar = cut.Concat(tail).ToArray();
+        string shortPath = Path.Combine(dir, "rv-short-header.oar");
+        GzipMembers(shortPath, shortTar);
+        cases.Add(Run("rv-short-header", "rv-short-header.oar", "gzip-path", shortPath, HomeRoot(), HomeScenes()));
+    }
+
+    static Case XmlCase(string dir, string name, string xml, Placed root, List<Placed> scenes, Action<TarArchiveWriter> more)
+    {
+        string path = Path.Combine(dir, name + ".oar");
+        byte[] tar = TarBytes(t =>
+        {
+            t.WriteFile(ArchiveConstants.CONTROL_FILE_PATH, xml);
+            t.WriteFile("notes/after.txt", "after");
+            if (more != null)
+                more(t);
+        });
+        GzipMembers(path, tar);
+        return Run(name, name + ".oar", "gzip-path", path, root, scenes);
+    }
+
+    static byte[] TarBytes(Action<TarArchiveWriter> fill)
+    {
+        var ms = new MemoryStream();
+        var tar = new TarArchiveWriter(ms);
+        fill(tar);
+        var field = typeof(TarArchiveWriter).GetField("m_bw", BindingFlags.Instance | BindingFlags.NonPublic);
+        ((BinaryWriter)field.GetValue(tar)).Write(new byte[1024]);
+        ((BinaryWriter)field.GetValue(tar)).Flush();
+        return ms.ToArray();
+    }
+
+    static void GzipMembers(string path, params byte[][] members)
+    {
+        using var file = File.Create(path);
+        foreach (byte[] member in members)
+        {
+            using var gzip = new System.IO.Compression.GZipStream(file, System.IO.Compression.CompressionMode.Compress, leaveOpen: true);
+            gzip.Write(member, 0, member.Length);
+        }
     }
 
 }

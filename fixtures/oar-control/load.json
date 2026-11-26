@@ -889,6 +889,940 @@
       "dearchive_scenes": [],
       "dearchive_error": "[ARCHIVER]: Error reading archive: control file wasn\u0027t the first file, and the input stream doesn\u0027t allow seeking",
       "dearchive_thrown": null
+    },
+    {
+      "name": "rv-two-dirs",
+      "archive": "rv-two-dirs.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 50,
+        "loc_y": 60
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 50,
+          "loc_y": 60
+        },
+        {
+          "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          "loc_x": 52,
+          "loc_y": 60
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "33333333-3333-3333-3333-333333333333",
+      "multi_region": true,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 3,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      ],
+      "regions": [
+        {
+          "directory": "1_1_West",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        },
+        {
+          "directory": "3_1_East_Isle",
+          "original_id": "22222222-2222-2222-2222-222222222222",
+          "loc_x": 2,
+          "loc_y": 0,
+          "size_bits": [
+            1140850688,
+            1140850688,
+            0
+          ],
+          "scene_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        },
+        {
+          "directory": "1_3_North",
+          "original_id": "33333333-3333-3333-3333-333333333333",
+          "loc_x": 0,
+          "loc_y": 2,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": null
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": null,
+          "relative": "notes/after.txt"
+        },
+        {
+          "path": "regions/alias/x.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": false,
+          "scene_id": null,
+          "relative": "x.txt"
+        },
+        {
+          "path": "regions/1_1_West/x.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "x.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-rekey",
+      "archive": "rv-rekey.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 50,
+        "loc_y": 60
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 50,
+          "loc_y": 60
+        },
+        {
+          "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          "loc_x": 52,
+          "loc_y": 60
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "33333333-3333-3333-3333-333333333333",
+      "multi_region": true,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 3,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "1_1_West",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        },
+        {
+          "directory": "3_1_East_Isle",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        },
+        {
+          "directory": "1_3_North",
+          "original_id": "33333333-3333-3333-3333-333333333333",
+          "loc_x": 0,
+          "loc_y": 2,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": null
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": null,
+          "relative": "notes/after.txt"
+        },
+        {
+          "path": "regions/3_1_East_Isle/x.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "x.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-compact-multi",
+      "archive": "rv-compact-multi.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 50,
+        "loc_y": 60
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 50,
+          "loc_y": 60
+        },
+        {
+          "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          "loc_x": 52,
+          "loc_y": 60
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "33333333-3333-3333-3333-333333333333",
+      "multi_region": true,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": null,
+          "relative": "notes/after.txt"
+        },
+        {
+          "path": "regions/1_1_West/x.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": false,
+          "scene_id": null,
+          "relative": "x.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-comment-compact",
+      "archive": "rv-comment-compact.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "notes/after.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-bad-major",
+      "archive": "rv-bad-major.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "The input string \u0027x\u0027 was not in a correct format.",
+      "creation_time": 0,
+      "default_original_id": "",
+      "multi_region": false,
+      "control_loaded": false,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        2139095039
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "The input string \u0027x\u0027 was not in a correct format.",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-no-minor",
+      "archive": "rv-no-minor.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "Value cannot be null. (Parameter \u0027s\u0027)",
+      "creation_time": 0,
+      "default_original_id": "",
+      "multi_region": false,
+      "control_loaded": false,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        2139095039
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "Value cannot be null. (Parameter \u0027s\u0027)",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-inf-size",
+      "archive": "rv-inf-size.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        2139095039
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            2139095039
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "notes/after.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-nan-size",
+      "archive": "rv-nan-size.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        -4194304,
+        1132462080,
+        0
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            -4194304,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "notes/after.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-id-child",
+      "archive": "rv-id-child.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "ReadElementContentAs() methods cannot be called on an element that has child elements. Line 5, position 10.",
+      "creation_time": 0,
+      "default_original_id": "",
+      "multi_region": false,
+      "control_loaded": false,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        2139095039
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "ReadElementContentAs() methods cannot be called on an element that has child elements. Line 5, position 10.",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-trailing-root",
+      "archive": "rv-trailing-root.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "There are multiple root elements. Line 11, position 12.",
+      "creation_time": 0,
+      "default_original_id": "",
+      "multi_region": false,
+      "control_loaded": false,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "There are multiple root elements. Line 11, position 12.",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-malformed",
+      "archive": "rv-malformed.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "Unexpected end of file has occurred. The following elements are not closed: region_info, archive. Line 10, position 16.",
+      "creation_time": 0,
+      "default_original_id": "",
+      "multi_region": false,
+      "control_loaded": false,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 0,
+      "loaded_scenes": [],
+      "regions": [],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "Unexpected end of file has occurred. The following elements are not closed: region_info, archive. Line 10, position 16.",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-ignorable-path",
+      "archive": "rv-ignorable-path.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 50,
+        "loc_y": 60
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 50,
+          "loc_y": 60
+        },
+        {
+          "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          "loc_x": 52,
+          "loc_y": 60
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "33333333-3333-3333-3333-333333333333",
+      "multi_region": true,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 3,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      ],
+      "regions": [
+        {
+          "directory": "1_1_West",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        },
+        {
+          "directory": "3_1_East_Isle",
+          "original_id": "22222222-2222-2222-2222-222222222222",
+          "loc_x": 2,
+          "loc_y": 0,
+          "size_bits": [
+            1140850688,
+            1140850688,
+            0
+          ],
+          "scene_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        },
+        {
+          "directory": "1_3_North",
+          "original_id": "33333333-3333-3333-3333-333333333333",
+          "loc_x": 0,
+          "loc_y": 2,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": null
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": null,
+          "relative": "notes/after.txt"
+        },
+        {
+          "path": "\u0001regions/1_1_West/x.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "x.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-two-members",
+      "archive": "rv-two-members.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [
+        {
+          "path": "notes/after.txt",
+          "type": "TYPE_NORMAL_FILE",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "notes/after.txt"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-negative-size",
+      "archive": "rv-negative-size.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": "WALK: ArgumentOutOfRangeException: count (\u0027-1\u0027) must be a non-negative value. (Parameter \u0027count\u0027)\nActual value was -1.",
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [],
+      "dearchive_fired": true,
+      "dearchive_scenes": [],
+      "dearchive_error": "count (\u0027-1\u0027) must be a non-negative value. (Parameter \u0027count\u0027)\nActual value was -1.",
+      "dearchive_thrown": null
+    },
+    {
+      "name": "rv-short-header",
+      "archive": "rv-short-header.oar",
+      "source": "gzip-path",
+      "root": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "loc_x": 4,
+        "loc_y": 5
+      },
+      "scenes": [
+        {
+          "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "loc_x": 4,
+          "loc_y": 5
+        },
+        {
+          "id": "99999999-9999-9999-9999-999999999999",
+          "loc_x": 9,
+          "loc_y": 9
+        }
+      ],
+      "error": null,
+      "creation_time": 1700000000,
+      "default_original_id": "11111111-1111-1111-1111-111111111111",
+      "multi_region": false,
+      "control_loaded": true,
+      "incoming_size_bits": [
+        1132462080,
+        1132462080,
+        0
+      ],
+      "scene_count": 1,
+      "loaded_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "regions": [
+        {
+          "directory": "",
+          "original_id": "11111111-1111-1111-1111-111111111111",
+          "loc_x": 0,
+          "loc_y": 0,
+          "size_bits": [
+            1132462080,
+            1132462080,
+            0
+          ],
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        }
+      ],
+      "entries": [
+        {
+          "path": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "type": "TYPE_UNKNOWN",
+          "use": true,
+          "scene_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "relative": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "dearchive_fired": true,
+      "dearchive_scenes": [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      ],
+      "dearchive_error": "",
+      "dearchive_thrown": null
     }
   ]
 }

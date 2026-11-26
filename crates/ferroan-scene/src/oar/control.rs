@@ -23,27 +23,70 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
+// Copyright (c) 2006-2016, openmetaverse.co
+// All rights reserved.
+//
+// - Redistribution and use in source and binary forms, with or without
+//   modification, are permitted provided that the following conditions are met:
+//
+// - Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+// - Neither the name of the openmetaverse.co nor the names
+//   of its contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.CoreModules/World/Archiver/ArchiveReadRequest.cs
 //     (LoadControlFile)
 //   Source/OpenSim.Region.CoreModules/World/Archiver/DearchiveScenesGroup.cs
 //     (DearchiveScenesInfo)
 //   OpenMetaverse.Types/Vector3.cs (TryParse)
+//     libopenmetaverse a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Control file and the region map. `ReadElementContentAsString` leaves the
-//! reader on the node after the end tag, and the caller's next `Read` skips
-//! that node.
+//! Control file and the region map.
+//!
+//! `LoadControlFile` reads each element, including the one that follows a
+//! content value. Pin8's extra `Read` skips that element in compact XML
+//! (TB195). Ferroan loads those regions (D132). A second `<dir>` files the
+//! current region under the new name as well. `SetRegionDirectory` never
+//! clears the current region.
 
-use ferroan_llsd::xml::{self, Element, Node};
 use uuid::Uuid;
 
 use super::SimulatorRegion;
+use super::xml_text::{StartEl, XmlText};
+use crate::parcels::vector_text::parse_f32;
 
 const MAX_MAJOR_VERSION: i32 = 1;
 const REGIONS_PATH: &str = "regions/";
+
+struct RegionObj {
+    original_id: String,
+    loc_x: i32,
+    loc_y: i32,
+    size_bits: [i32; 3],
+    scene_id: Option<Uuid>,
+}
+
+struct DirKey {
+    directory: String,
+    index: usize,
+}
 
 pub(super) struct RegionRow {
     pub directory: String,
@@ -82,7 +125,8 @@ pub(super) struct Scenes {
     multi: bool,
     creation: i32,
     default_original_id: String,
-    regions: Vec<RegionRow>,
+    regions: Vec<RegionObj>,
+    keys: Vec<DirKey>,
     loaded: Vec<Uuid>,
     cur_y: Option<i32>,
     cur_x: Option<i32>,
@@ -90,11 +134,7 @@ pub(super) struct Scenes {
 }
 
 pub(super) fn default_size_bits() -> [i32; 3] {
-    [
-        256.0f32.to_bits() as i32,
-        256.0f32.to_bits() as i32,
-        f32::MAX.to_bits() as i32,
-    ]
+    [net_bits(256.0), net_bits(256.0), net_bits(f32::MAX)]
 }
 
 pub(super) fn fresh_scenes() -> Scenes {
@@ -103,6 +143,7 @@ pub(super) fn fresh_scenes() -> Scenes {
         creation: 0,
         default_original_id: String::new(),
         regions: Vec::new(),
+        keys: Vec::new(),
         loaded: Vec::new(),
         cur_y: None,
         cur_x: None,
@@ -118,15 +159,10 @@ pub(super) fn load_control(
     scenes.creation = 0;
     scenes.default_original_id.clear();
     let text = ascii_bytes(data);
-    let root = xml::parse(&text).map_err(|error| error.to_string())?;
-    let mut cursor = Cursor::new(&root);
+    let mut reader = XmlText::new(text);
     let mut multi = false;
-    while cursor.read() {
-        let (name, attrs) = match cursor.current() {
-            Some(Tok::Start { name, attrs, .. }) => (name.clone(), attrs.clone()),
-            _ => continue,
-        };
-        on_element(&name, &attrs, &mut cursor, scenes, incoming, &mut multi)?;
+    while let Some(element) = reader.next_element()? {
+        on_element(&element, &mut reader, scenes, incoming, &mut multi)?;
     }
     scenes.multi = multi;
     if !multi {
@@ -141,23 +177,22 @@ pub(super) fn load_control(
 }
 
 fn on_element(
-    name: &str,
-    attrs: &[(String, String)],
-    cursor: &mut Cursor,
+    element: &StartEl,
+    reader: &mut XmlText,
     scenes: &mut Scenes,
     incoming: &mut [i32; 3],
     multi: &mut bool,
 ) -> Result<(), String> {
-    match name {
+    match element.name.as_str() {
         "archive" => {
-            let major = require_int(attrs, "major_version")?;
-            let _minor = require_int(attrs, "minor_version")?;
+            let major = require_int(&element.attrs, "major_version")?;
+            let _minor = require_int(&element.attrs, "minor_version")?;
             if major > MAX_MAJOR_VERSION {
                 return Err(version_error(major));
             }
         }
         "datetime" => {
-            let text = cursor.read_element_content();
+            let text = reader.read_content(element)?;
             if let Some(value) = try_i32(&text) {
                 scenes.creation = value;
             }
@@ -168,18 +203,18 @@ fn on_element(
         }
         "region" => scenes.start_region(),
         "id" => {
-            let id = cursor.read_element_content();
+            let id = reader.read_content(element)?;
             scenes.default_original_id = id.clone();
             if *multi {
                 scenes.set_original_id(&id);
             }
         }
         "dir" => {
-            let directory = cursor.read_element_content();
+            let directory = reader.read_content(element)?;
             scenes.set_directory(&directory);
         }
         "size_in_meters" => {
-            let text = cursor.read_element_content();
+            let text = reader.read_content(element)?;
             if let Some(size) = try_vector3(&format!("<{text},0>")) {
                 *incoming = size;
                 if *multi {
@@ -201,12 +236,18 @@ fn version_error(major: i32) -> String {
 
 impl Scenes {
     fn start_row(&mut self) {
-        self.cur_y = Some(self.cur_y.map_or(0, |y| y + 1));
+        self.cur_y = Some(match self.cur_y {
+            None => 0,
+            Some(y) => y.wrapping_add(1),
+        });
         self.cur_x = None;
     }
 
     fn start_region(&mut self) {
-        self.cur_x = Some(self.cur_x.map_or(0, |x| x + 1));
+        self.cur_x = Some(match self.cur_x {
+            None => 0,
+            Some(x) => x.wrapping_add(1),
+        });
     }
 
     fn set_original_id(&mut self, id: &str) {
@@ -218,50 +259,62 @@ impl Scenes {
         });
     }
 
+    /// Files the current region under `directory`. A region already stored
+    /// stays current, so a second directory names that same object.
     fn set_directory(&mut self, directory: &str) {
-        let draft = match std::mem::replace(&mut self.current, Current::None) {
-            Current::Draft(draft) => draft,
+        let index = match std::mem::replace(&mut self.current, Current::None) {
+            Current::None => return,
             Current::Stored(index) => {
                 self.current = Current::Stored(index);
-                return;
+                index
             }
-            Current::None => return,
+            Current::Draft(draft) => {
+                let index = self.regions.len();
+                self.regions.push(RegionObj {
+                    original_id: draft.original_id,
+                    loc_x: draft.loc_x,
+                    loc_y: draft.loc_y,
+                    size_bits: draft.size_bits,
+                    scene_id: None,
+                });
+                self.current = Current::Stored(index);
+                index
+            }
         };
-        if let Some(index) = self
-            .regions
-            .iter()
-            .position(|region| region.directory == directory)
-        {
-            let scene_id = self.regions[index].scene_id;
-            self.regions[index] = row(directory, &draft, scene_id);
-            self.current = Current::Stored(index);
+        if let Some(key) = self.keys.iter_mut().find(|key| key.directory == directory) {
+            key.index = index;
             return;
         }
-        self.regions.push(row(directory, &draft, None));
-        self.current = Current::Stored(self.regions.len() - 1);
+        self.keys.push(DirKey {
+            directory: directory.to_string(),
+            index,
+        });
     }
 
     fn set_size(&mut self, size: [i32; 3]) {
-        let stored = match &mut self.current {
-            Current::Draft(draft) => {
-                draft.size_bits = size;
-                return;
+        match &mut self.current {
+            Current::Draft(draft) => draft.size_bits = size,
+            Current::Stored(index) => {
+                if let Some(region) = self.regions.get_mut(*index) {
+                    region.size_bits = size;
+                }
             }
-            Current::Stored(index) => *index,
-            Current::None => return,
-        };
-        if let Some(region) = self.regions.get_mut(stored) {
-            region.size_bits = size;
+            Current::None => {}
         }
     }
 
     pub(super) fn match_simulator(&mut self, root: &SimulatorRegion, scenes: &[SimulatorRegion]) {
-        self.loaded.clear();
         for region in &mut self.regions {
             region.scene_id = None;
-            let x = root.loc_x as i32 + region.loc_x;
-            let y = root.loc_y as i32 + region.loc_y;
+        }
+        self.loaded.clear();
+        let indexes: Vec<usize> = self.keys.iter().map(|key| key.index).collect();
+        for index in indexes {
+            let region = &mut self.regions[index];
+            let x = (root.loc_x as i32).wrapping_add(region.loc_x);
+            let y = (root.loc_y as i32).wrapping_add(region.loc_y);
             if x < 0 || y < 0 {
+                region.scene_id = None;
                 continue;
             }
             let Some(scene) = scenes
@@ -269,6 +322,7 @@ impl Scenes {
                 .rev()
                 .find(|scene| scene.loc_x == x as u32 && scene.loc_y == y as u32)
             else {
+                region.scene_id = None;
                 continue;
             };
             region.scene_id = Some(scene.id);
@@ -278,7 +332,8 @@ impl Scenes {
         }
     }
 
-    /// `(use this file, scene, relative path)`.
+    /// `(use this file, scene, relative path)`. The `regions/` check is
+    /// ordinal. Pin8's culture-sensitive `StartsWith` is TB196 (D133).
     pub(super) fn region_from_path(&self, full_path: &str) -> (bool, Option<Uuid>, String) {
         if !self.multi {
             return (true, self.loaded.first().copied(), full_path.to_string());
@@ -291,18 +346,11 @@ impl Scenes {
         let (Some(directory), Some(relative)) = (parts.next(), parts.next()) else {
             return (false, None, full_path.to_string());
         };
-        let Some(region) = self
-            .regions
-            .iter()
-            .find(|region| region.directory == directory)
-        else {
+        let Some(key) = self.keys.iter().find(|key| key.directory == directory) else {
             return (false, None, relative.to_string());
         };
-        (
-            region.scene_id.is_some(),
-            region.scene_id,
-            relative.to_string(),
-        )
+        let scene_id = self.regions[key.index].scene_id;
+        (scene_id.is_some(), scene_id, relative.to_string())
     }
 
     pub(super) fn finish(
@@ -311,6 +359,21 @@ impl Scenes {
         control_loaded: bool,
         incoming: [i32; 3],
     ) -> LoadedControl {
+        let regions = self
+            .keys
+            .iter()
+            .map(|key| {
+                let region = &self.regions[key.index];
+                RegionRow {
+                    directory: key.directory.clone(),
+                    original_id: region.original_id.clone(),
+                    loc_x: region.loc_x,
+                    loc_y: region.loc_y,
+                    size_bits: region.size_bits,
+                    scene_id: region.scene_id,
+                }
+            })
+            .collect();
         LoadedControl {
             error,
             creation_time: self.creation,
@@ -318,20 +381,9 @@ impl Scenes {
             multi_region: self.multi,
             control_loaded,
             incoming_size_bits: incoming,
-            regions: self.regions,
+            regions,
             loaded: self.loaded,
         }
-    }
-}
-
-fn row(directory: &str, draft: &Draft, scene_id: Option<Uuid>) -> RegionRow {
-    RegionRow {
-        directory: directory.to_string(),
-        original_id: draft.original_id.clone(),
-        loc_x: draft.loc_x,
-        loc_y: draft.loc_y,
-        size_bits: draft.size_bits,
-        scene_id,
     }
 }
 
@@ -374,6 +426,7 @@ fn integer_text(text: &str) -> bool {
 }
 
 /// `Vector3.TryParse` for the `<x,y,z>` form `LoadControlFile` builds.
+/// Components go through the shared en-US parser. `NaN` keeps Pin8's sign bit.
 fn try_vector3(text: &str) -> Option<[i32; 3]> {
     let bytes = text.as_bytes();
     if bytes.len() < 7 {
@@ -405,7 +458,7 @@ fn try_vector3(text: &str) -> Option<[i32; 3]> {
             return None;
         }
     }
-    let x = parse_float(text.get(start..comma)?)?;
+    let x = parse_f32(text.get(start..comma)?)?;
     comma += 1;
     start = comma;
     loop {
@@ -417,7 +470,7 @@ fn try_vector3(text: &str) -> Option<[i32; 3]> {
     if comma > bytes.len().saturating_sub(3) {
         return None;
     }
-    let y = parse_float(text.get(start..comma)?)?;
+    let y = parse_f32(text.get(start..comma)?)?;
     comma += 1;
     start = comma;
     loop {
@@ -426,125 +479,15 @@ fn try_vector3(text: &str) -> Option<[i32; 3]> {
             break;
         }
     }
-    let z = parse_float(text.get(start..comma.min(bytes.len()))?)?;
-    Some([x.to_bits() as i32, y.to_bits() as i32, z.to_bits() as i32])
+    let z = parse_f32(text.get(start..comma.min(bytes.len()))?)?;
+    Some([net_bits(x), net_bits(y), net_bits(z)])
 }
 
-fn parse_float(text: &str) -> Option<f32> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
+/// `.NET` `Single.NaN` is the quiet NaN with the sign bit set.
+fn net_bits(value: f32) -> i32 {
+    if value.is_nan() {
+        -4_194_304
+    } else {
+        value.to_bits() as i32
     }
-    let body = trimmed
-        .strip_prefix('+')
-        .or_else(|| trimmed.strip_prefix('-'))
-        .unwrap_or(trimmed);
-    if body.is_empty()
-        || !body
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-'))
-    {
-        return None;
-    }
-    trimmed.parse().ok()
-}
-
-enum Tok {
-    Start {
-        name: String,
-        attrs: Vec<(String, String)>,
-        empty: bool,
-    },
-    End,
-    Text(String),
-}
-
-struct Cursor {
-    toks: Vec<Tok>,
-    index: usize,
-    started: bool,
-}
-
-impl Cursor {
-    fn new(root: &Element) -> Self {
-        let mut toks = Vec::new();
-        flatten(root, &mut toks);
-        Self {
-            toks,
-            index: 0,
-            started: false,
-        }
-    }
-
-    fn read(&mut self) -> bool {
-        if !self.started {
-            self.started = true;
-            self.index = 0;
-        } else if self.index < self.toks.len() {
-            self.index += 1;
-        }
-        self.index < self.toks.len()
-    }
-
-    fn current(&self) -> Option<&Tok> {
-        self.toks.get(self.index)
-    }
-
-    fn read_element_content(&mut self) -> String {
-        if matches!(self.current(), Some(Tok::Start { empty: true, .. })) {
-            let _ = self.read();
-            return String::new();
-        }
-        let mut depth = 1i32;
-        let mut text = String::new();
-        loop {
-            if !self.read() {
-                break;
-            }
-            let step = match self.current() {
-                Some(Tok::Start { empty: false, .. }) => Step::Deeper,
-                Some(Tok::End) => Step::Shallower,
-                Some(Tok::Text(value)) => Step::Text(value.clone()),
-                _ => Step::Skip,
-            };
-            match step {
-                Step::Deeper => depth += 1,
-                Step::Shallower => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                Step::Text(value) => text.push_str(&value),
-                Step::Skip => {}
-            }
-        }
-        let _ = self.read();
-        text
-    }
-}
-
-enum Step {
-    Deeper,
-    Shallower,
-    Text(String),
-    Skip,
-}
-
-fn flatten(element: &Element, out: &mut Vec<Tok>) {
-    out.push(Tok::Start {
-        name: element.name.clone(),
-        attrs: element.attrs.clone(),
-        empty: element.self_closing,
-    });
-    if element.self_closing {
-        return;
-    }
-    for child in &element.children {
-        match child {
-            Node::Text(text) => out.push(Tok::Text(text.clone())),
-            Node::Element(child) => flatten(child, out),
-        }
-    }
-    out.push(Tok::End);
 }
