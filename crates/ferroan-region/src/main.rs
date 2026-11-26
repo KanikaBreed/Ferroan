@@ -908,7 +908,8 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
         arrival.return_slot = Some(agent.return_slot.clone());
         let mut promotions = agent.return_slot.take_promotions();
         // A different session already staged the previous root's children.
-        // Send those closes with the old session id before this circuit roots.
+        // The closes go out on a separate task with the old session id.
+        // This login does not wait on them.
         hop.close_staged(expect.agent_id).await;
         arrival.source_hop = Some(hop.install(HopLogin {
             agent_id: expect.agent_id,
@@ -1098,6 +1099,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
             .await;
     }
     // The circuit that was replaced drains the same list when it ends first.
+    // The sends do not hold this cleanup.
     hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without

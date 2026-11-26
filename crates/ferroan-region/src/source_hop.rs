@@ -416,17 +416,24 @@ impl HopEnv {
 
     /// Close children a replaced root left behind. The auth token is the session
     /// that opened them. One take, so the old circuit and the new login cannot
-    /// both send the same close.
+    /// both send the same close. The sends run on a separate task, as
+    /// `SendCloseChildAgentConnections` does: an unresponsive neighbour does
+    /// not delay the new login.
     pub async fn close_staged(&self, agent: Uuid) {
         let staged = self.presence.take_staged(agent);
-        let Some(client) = &self.client else {
+        let Some(client) = self.client.clone() else {
             return;
         };
-        for (session, end) in staged {
-            if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
-                tracing::debug!("replaced root child close: {error}");
-            }
+        if staged.is_empty() {
+            return;
         }
+        let _detached = tokio::spawn(async move {
+            for (session, end) in staged {
+                if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+                    tracing::debug!("replaced root child close: {error}");
+                }
+            }
+        });
     }
 
     /// Close the in-view neighbour children this root opened. One attempt each.

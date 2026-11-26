@@ -37,13 +37,16 @@
 //!
 //! The seed is stored before the admission POST, as `EnableChildAgents` does.
 //! A second claim for that destination does not start another POST. Refusal
-//! drops the claim and produces no viewer events. Logout during the POST
-//! closes an accepted child once and does not announce it (D106). A timeout
-//! or a transport failure after logout closes once too. A completion after
-//! the hop promoted the destination still announces once. The same session
-//! carries that neighbour into the next generation as an open child, so
-//! logout closes it. A different session closes the old root's open children
-//! with the old session id. An in-view hop reads the same seed.
+//! drops the claim and produces no viewer events. A failed POST before logout
+//! drops the claim the same way, so the next pass can POST again. Logout
+//! during the POST closes an accepted child once and does not announce it
+//! (D106). A timeout or a transport failure after logout closes once too. A
+//! completion after the hop promoted the destination still announces once,
+//! including when the same session has carried that neighbour forward. The
+//! carry keeps the promoted flag until this generation is root again, so a
+//! later login does not close a destination that is still the remote root.
+//! A different session closes the old root's other open children with the
+//! old session id. An in-view hop reads the same seed.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -147,12 +150,13 @@ impl ChildBook {
     }
 
     /// The root circuit generation that now owns this agent's children.
-    /// Open children move only with the session that opened them, including a
-    /// neighbour the hop promoted: it comes back as an ordinary open child, so
-    /// logout still closes it. A different session closes those open children
-    /// with the old session id and starts empty. A pending admission stays
-    /// with the generation that claimed it. A promoted neighbour is not closed
-    /// for a different session: that region is the remote root.
+    /// Open children move only with the session that opened them. A neighbour
+    /// the hop promoted stays promoted across that carry, until
+    /// [`Self::release_promoted`] clears it when this generation is root
+    /// again. A different session does not queue a close for a destination
+    /// that is still the remote root. It closes the other open children with
+    /// the old session id and starts empty. A pending admission stays with
+    /// the generation that claimed it.
     pub fn attach(&self, agent: Uuid, generation: Uuid, session: Uuid) {
         let mut books = self.lock();
         let book = books.agents.entry(agent).or_default();
@@ -169,7 +173,6 @@ impl ChildBook {
                     }
                     if same_session {
                         let mut carried = destination.clone();
-                        carried.promoted = false;
                         carried.phase = Phase::Open;
                         moved.push((*region, carried));
                     } else if !destination.promoted {
@@ -312,7 +315,9 @@ impl ChildBook {
                 })
             })
         else {
-            return Admission::Quiet;
+            // The same session carried the hop's neighbour. Announce that
+            // copy once; the claiming generation no longer holds it.
+            return announce_carried(&mut books, agent, region);
         };
         if promoted_elsewhere || (current_owns && !promoted) {
             if !promoted {
@@ -362,10 +367,11 @@ impl ChildBook {
         }
     }
 
-    /// The POST failed after the seed was stored. Not a refusal.
-    /// Logout already won: close once, including a timeout or a transport
-    /// failure (D106). Still logged in: keep an open child and do not
-    /// announce, so a later logout closes it. The hop's remote root stays.
+    /// The POST failed after the seed was stored. While this generation is
+    /// still logged in, drop the claim the way [`Self::refuse`] does, so the
+    /// next pass can POST again. Logout that already won closes once,
+    /// including a timeout or a transport failure (D106). The hop's remote
+    /// root stays.
     pub fn failed(&self, agent: Uuid, generation: Uuid, region: Uuid) -> Admission {
         let mut books = self.lock();
         let current = books
@@ -398,10 +404,10 @@ impl ChildBook {
             remove_destination(&mut books, agent, generation, region);
             return Admission::Close { end };
         }
-        if let Some(destination) = generation_mut(&mut books, agent, generation)
-            .and_then(|generation_book| generation_book.by_region.get_mut(&region))
-        {
-            destination.phase = Phase::Open;
+        // Drop a claim that never opened. An open child, and the remote
+        // root, stay. `promoted && !stale` already returned above.
+        if !promoted && matches!(phase, Phase::Pending | Phase::CloseWhenAccepted) {
+            remove_destination(&mut books, agent, generation, region);
         }
         Admission::Quiet
     }
@@ -555,6 +561,35 @@ impl ChildBook {
         }
         known
     }
+}
+
+/// The claiming generation no longer holds the destination because a
+/// same-session carry moved it. Announce the current copy once when the hop
+/// promoted it and the viewer has not been told.
+fn announce_carried(books: &mut Books, agent: Uuid, region: Uuid) -> Admission {
+    let Some(book) = books.agents.get(&agent) else {
+        return Admission::Quiet;
+    };
+    let current = book.current;
+    let Some(destination) = book
+        .generations
+        .get(&current)
+        .and_then(|generation_book| generation_book.by_region.get(&region))
+    else {
+        return Admission::Quiet;
+    };
+    if !destination.promoted || destination.announced {
+        return Admission::Quiet;
+    }
+    let seed = destination.seed.clone();
+    let end = destination.end.clone();
+    if let Some(destination) = generation_mut(books, agent, current)
+        .and_then(|generation_book| generation_book.by_region.get_mut(&region))
+    {
+        destination.announced = true;
+        destination.phase = Phase::Open;
+    }
+    Admission::Announce { seed, end }
 }
 
 fn report_destination_bound(count: usize) {
@@ -937,21 +972,67 @@ mod tests {
     }
 
     #[test]
-    fn a_same_session_carries_a_promoted_neighbour_as_an_open_child() {
+    fn a_same_session_carry_keeps_the_promoted_neighbour_until_release() {
         let agent = Uuid::from_u128(4);
         let older = Uuid::from_u128(8);
-        let replacement = Uuid::from_u128(9);
+        let carried = Uuid::from_u128(9);
         let book = book_for(agent, older);
         let region = end(6);
         let Claim::New { seed } = book.claim(agent, older, region.clone()) else {
             panic!("claim");
         };
         book.promote(agent, &region, &seed);
-        book.attach(agent, replacement, session());
+        book.attach(agent, carried, session());
+        assert!(book.begin_logout(agent).is_empty());
+        book.release_promoted(agent);
         let close = book.begin_logout(agent);
         assert_eq!(
             close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
             vec![region.region_id]
+        );
+    }
+
+    #[test]
+    fn a_later_session_does_not_queue_a_close_of_the_carried_root() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let carried = Uuid::from_u128(9);
+        let later = Uuid::from_u128(10);
+        let book = book_for(agent, older);
+        let region = end(6);
+        let Claim::New { seed } = book.claim(agent, older, region.clone()) else {
+            panic!("claim");
+        };
+        book.promote(agent, &region, &seed);
+        book.attach(agent, carried, session());
+        book.attach(agent, later, Uuid::from_u128(70));
+        assert!(book.take_staged_closes(agent).is_empty());
+    }
+
+    #[test]
+    fn a_carried_promoted_claim_announces_once() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let carried = Uuid::from_u128(9);
+        let book = book_for(agent, older);
+        let region = end(6);
+        let Claim::New { seed } = book.claim(agent, older, region.clone()) else {
+            panic!("claim");
+        };
+        book.promote(agent, &region, &seed);
+        book.attach(agent, carried, session());
+        let admission = book.accepted(agent, older, region.region_id);
+        let Admission::Announce {
+            seed: announced, ..
+        } = &admission
+        else {
+            panic!("a carried promotion should announce");
+        };
+        assert_eq!(announced, &seed);
+        assert!(!admission_events(&admission, &dummy_view(agent)).is_empty());
+        assert_eq!(
+            book.accepted(agent, older, region.region_id),
+            Admission::Quiet
         );
     }
 
@@ -1002,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_post_before_logout_stays_open_without_announcing() {
+    fn fail_child_then_claim_child_returns_new() {
         let agent = Uuid::from_u128(4);
         let generation = Uuid::from_u128(8);
         let book = book_for(agent, generation);
@@ -1012,11 +1093,10 @@ mod tests {
         let admission = book.failed(agent, generation, Uuid::from_u128(5));
         assert_eq!(admission, Admission::Quiet);
         assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
-        let close = book.begin_logout(agent);
-        assert_eq!(
-            close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
-            vec![Uuid::from_u128(5)]
-        );
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("fail_child then claim_child returns New");
+        };
+        assert!(book.begin_logout(agent).is_empty());
     }
 
     #[test]

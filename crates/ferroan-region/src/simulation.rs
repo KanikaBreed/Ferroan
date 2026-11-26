@@ -1053,7 +1053,8 @@ impl SimulationState {
         self.children.refuse(agent, generation, region);
     }
 
-    /// The admission POST failed after the seed was stored. Not a refusal.
+    /// The admission POST failed after the seed was stored. Before logout the
+    /// claim is dropped, as a refusal is. After logout the child is closed.
     pub fn fail_child(
         &self,
         agent: Uuid,
@@ -4165,6 +4166,8 @@ mod tests {
         state.accept(synthetic_agent()).unwrap();
         let second = receiver.recv().await.unwrap();
         drop(first);
+        assert!(state.take_open_children(agent).is_empty());
+        second.mark_root();
         assert_eq!(
             state
                 .take_open_children(agent)
