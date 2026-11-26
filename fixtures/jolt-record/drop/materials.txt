@@ -1,0 +1,6 @@
+format 1
+friction 3F19999A
+restitution 3F000000
+density 447A0000
+gravity 3F800000
+buoyancy 00000000

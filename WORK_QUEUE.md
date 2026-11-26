@@ -307,7 +307,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
 | Q100 | P3.0: Jolt oracle | READY after Q102, Q103 and Q177 |
 | Q100a | P3.0f: Engine-independent file oracle | DONE (this PR) |
-| Q177 | P3.57: Stock Pin8 integrated recordings | READY |
+| Q177 | P3.57: Stock Pin8 integrated recordings | DONE (this PR) |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
 | Q102 | P3.0c: Move the C# Jolt module | READY |
 | Q103 | P3.0d: Pin move | READY after Q102 |
@@ -562,7 +562,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q375 | P4.F3.11: async notecard reads | READY after Q232, Q234, Q256 and Q271 |
 | Q376 | P4.F3.12: synchronous and `os` notecard reads | READY after Q232, Q253, Q256, Q270, Q273 and Q327 |
 
-Q100 to Q205 are the Phase 3 rows. Q102 (the C# module move) is READY again: the maintainer reversed the deferral on 26 November 2026. Q103, Q104 and Q100 follow it in order; Q176 still waits on them. Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and stays READY. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+Q100 to Q205 are the Phase 3 rows. Q102 (the C# module move) is READY again: the maintainer reversed the deferral on 26 November 2026. Q103, Q104 and Q100 follow it in order; Q176 still waits on them. Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q294 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). Q295 to Q321 are the stage 2 placeholders. The pure-function plan and the communication plan replace P4.S1, P4.S2, P4.S3, P4.S13, P4.S24 and P4.S25, and they narrow P4.S4, P4.S5, P4.S6, P4.S19 and P4.S27. A replaced placeholder does not start. Q322 to Q376 are those rows. A row is READY only when every dependency is already DONE. The others are READY after the items named in the status.
 
