@@ -144,6 +144,7 @@ fn select(udp: &[Record], http: &[Record]) -> Result<Captured, String> {
     }
     expect_script(&aliases, &local_by_full, &requests, &selected, &deleted)?;
     expect_replies(&families, &objects, &kills)?;
+    let kills = kills.into_iter().take(2).collect();
     let physics = physics_bodies(http, &local_by_full, &aliases)?;
     Ok(Captured {
         families,
@@ -379,11 +380,16 @@ fn expect_replies(
     if objects.is_empty() {
         return Err("no ObjectProperties packets".into());
     }
-    if kills.len() != 2 {
+    // Two open viewers each receive the immediate kill and the delayed kill.
+    // The published fixture keeps the first two bodies. They are the same root kill.
+    if kills.len() != 4 {
         return Err(format!(
-            "expected two prim KillObject packets, found {}",
+            "expected four prim KillObject packets, found {}",
             kills.len()
         ));
+    }
+    if kills.iter().any(|body| body != &kills[0]) {
+        return Err("prim KillObject packets are not the same root kill".into());
     }
     Ok(())
 }
