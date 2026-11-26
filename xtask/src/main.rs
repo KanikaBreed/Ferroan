@@ -29,6 +29,10 @@
 //! `throttle generate` and `throttle verify` read the pinned category token
 //! buckets and compare `fixtures/throttle/rates.json`. Neither starts a region.
 //!
+//! `jolt substeps` and `jolt substeps-verify` run the pinned
+//! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. Neither
+//! starts a region. `jolt generate` and `jolt verify` stay with the harness.
+//!
 //! `presence generate` and `presence verify` record and compare the pinned Null
 //! provider's calls and results in `fixtures/presence/null.json`.
 //! `presence cross mysql` cross-reads a disposable MySQL Presence v4 store.
@@ -101,6 +105,7 @@ mod grid_state;
 mod group_memberships;
 mod http_oracle;
 mod inventory_probe;
+mod jolt;
 mod limit_ids;
 mod limits_probe;
 mod live;
@@ -149,6 +154,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask http status-verify
        cargo xtask throttle generate
        cargo xtask throttle verify
+       cargo xtask jolt substeps
+       cargo xtask jolt substeps-verify
        cargo xtask presence service-generate|service-verify
        cargo xtask presence generate
        cargo xtask presence verify
@@ -295,6 +302,8 @@ fn main() -> ExitCode {
         ["http", "status-verify"] => http_oracle::status_verify(),
         ["throttle", "generate"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", true),
         ["throttle", "verify"] => fixture_oracle::run("throttle", "ThrottleOracle.csproj", false),
+        ["jolt", "substeps"] => jolt::substeps(true),
+        ["jolt", "substeps-verify"] => jolt::substeps(false),
         ["presence", "cross", "mysql"] => asset_oracle::presence_mysql_cross(),
         ["presence", "generate"] => fixture_oracle::run("presence", "PresenceOracle.csproj", true),
         ["presence", "service-generate"] => asset_oracle::presence_service(true),

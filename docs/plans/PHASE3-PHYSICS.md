@@ -274,7 +274,7 @@ Mesh assets, sculpt images and prim parameters from an OAR or the database are e
 
 ## 2. What Ferroan has today, and what Phase 3 replaces
 
-`ferroan-physics` does not exist. Nothing in the workspace depends on `oxijolt-sys`. The workspace forbids unsafe code. [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys` as planned. Their licence texts, and joltc's, are added when the dependency lands (P3.1b).
+`ferroan-physics` holds the substep accumulator (P3.0b) and forbids unsafe code. Nothing in the workspace depends on `oxijolt-sys`. The workspace forbids unsafe code. [NOTICE.md](../../NOTICE.md) names Jolt and `oxijolt-sys` as planned. Their licence texts, and joltc's, are added when the dependency lands (P3.1b).
 
 What touches motion today:
 
@@ -379,7 +379,7 @@ The first slice, in this order. Engine-independent rows come first. Then the Tra
 
 P3.1b is the rest of the bind row (the other two CI platforms, the NOTICE lines, the vendored-fork fallback), with `cross-platform-deterministic` on. It does not block P3.2a on linux. It does block calling a later row done on Windows or macOS.
 
-[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.0, P3.0b, P3.0c, P3.0d, P3.0e, P3.1, P3.1b, P3.2c and P3.29 `READY` (Q100 to Q108). The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
+[WORK_QUEUE.md](../../WORK_QUEUE.md) marks P3.0, P3.0c, P3.0d, P3.0e, P3.1, P3.1b, P3.2c and P3.29 `READY` (Q100 and Q102 to Q108). P3.0b (Q101) is done. The other rows wait on the queue items their dependencies name. Taking a row still requires its [TASKS.md](../../TASKS.md) dependencies to be done.
 
 Every Jolt-backed row below is an exact trace against the deterministic C# build, and it also depends on P3.0d and P3.1 even when the depends cell names only the physics row it builds on. Geometry rows (P3.4, P3.7a, P3.7b, P3.10a) and P3.20a stay on the ulp or exact rules in section 3.
 

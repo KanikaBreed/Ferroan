@@ -277,7 +277,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
 | Q100 | P3.0: Jolt oracle | READY after Q102 and Q103 |
-| Q101 | P3.0b: `SubstepAccumulator` | READY |
+| Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
 | Q102 | P3.0c: Move the C# Jolt module | READY |
 | Q103 | P3.0d: Pin move | READY after Q102 |
 | Q104 | P3.0e: Decision entry | READY after Q103 |
