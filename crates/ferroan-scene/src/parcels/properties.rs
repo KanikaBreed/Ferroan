@@ -81,13 +81,15 @@ const DENY_AGE: u32 = 1 << 30;
 
 /// `PrimCounts` for one parcel.
 ///
-/// The tally walks the groups admitted at startup. Attachments and
-/// `TemporaryOnRez` are skipped. Owner, group and other follow the land owner
-/// and group, and the part count is the group's length. Selected stays zero:
-/// a stored group is not selected and holds no sitting avatar. Simulator is
-/// that land owner's total on every parcel they own. A parcel with nothing
-/// counted stays at zero. Runtime rez, moves, selection and sitting are not
-/// in the admitted set.
+/// The tally walks the groups admitted at startup. A stored group is counted
+/// even when its root pcode is 9 and `State` is non-zero: `PrimCountModule`
+/// skips `IsAttachment`, and a group restored from storage never has that
+/// flag. `TemporaryOnRez` on the root is skipped. Owner, group and other
+/// follow the land owner and group, and the part count is the group's length.
+/// Selected stays zero: a stored group is not selected and holds no sitting
+/// avatar. Simulator is that land owner's total on every parcel they own. A
+/// parcel with nothing counted stays at zero. Runtime rez, moves, selection
+/// and sitting are not in the admitted set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PrimCounts {
     pub owner: i32,
@@ -194,9 +196,9 @@ impl ParcelPropertiesSend {
 }
 
 /// `PrimFlags.TemporaryOnRez`. `PrimCountModule.AddObject` skips it on the root.
+/// A stored group is counted even when its root pcode is 9 and `State` is
+/// non-zero: `IsAttachment` is a field a restored group never has.
 const TEMPORARY_ON_REZ: u32 = 0x2000_0000;
-/// Primitive pcode. A nonzero state on that pcode is an attachment.
-const PRIM_PCODE: u8 = 9;
 
 /// `PrimCountModule.Recount` over the groups the region admitted.
 pub(crate) fn prim_counts(map: &ParcelMap, groups: &[ObjectGroup]) -> HashMap<Uuid, PrimCounts> {
@@ -210,9 +212,6 @@ pub(crate) fn prim_counts(map: &ParcelMap, groups: &[ObjectGroup]) -> HashMap<Uu
         let Some(root) = group.parts.first() else {
             continue;
         };
-        if root.shape.pcode == PRIM_PCODE && root.shape.state != 0 {
-            continue;
-        }
         if root.flags & TEMPORARY_ON_REZ != 0 {
             continue;
         }
@@ -874,12 +873,12 @@ mod tests {
         assert_eq!(
             counts[&west_id],
             PrimCounts {
-                owner: 2,
+                owner: 11,
                 group: 3,
                 others: 1,
                 selected: 0,
-                total: 6,
-                simulator: 10,
+                total: 15,
+                simulator: 19,
             }
         );
         assert_eq!(
@@ -890,7 +889,7 @@ mod tests {
                 others: 0,
                 selected: 0,
                 total: 4,
-                simulator: 10,
+                simulator: 19,
             }
         );
     }
