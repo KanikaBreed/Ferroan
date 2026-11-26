@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Ferroan contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text;
@@ -246,7 +249,7 @@ static void WriteTar(Stream tar, string name, byte[] body)
     if (nameBytes.Length > 100)
         throw new InvalidOperationException(name);
     nameBytes.CopyTo(header, 0);
-    PutOctal(header, 100, 8, 0644);
+    PutOctal(header, 100, 8, Convert.ToInt32("644", 8));
     PutOctal(header, 108, 8, 0);
     PutOctal(header, 116, 8, 0);
     PutOctal(header, 124, 12, body.Length);

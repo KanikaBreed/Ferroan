@@ -57,6 +57,10 @@
 //! containers, then removes the containers. None of them starts a server or
 //! the live harness.
 //!
+//! `raw32 verify` rebuilds the RAW32 oracle at the pin and diffs
+//! `fixtures/oar-raw32`. It starts the in-process scene that oracle uses and
+//! does not start the live harness.
+//!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
 //! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
@@ -125,6 +129,7 @@ mod oracle_reference;
 mod personal_paths;
 mod pin3_oracle;
 mod ports;
+mod raw32;
 mod region_report;
 mod regionstore;
 mod schema;
@@ -196,6 +201,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore serialize
        cargo xtask regionstore read
        cargo xtask regionstore verify
+       cargo xtask raw32 verify
        cargo xtask regionstore scales
        cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
@@ -348,6 +354,7 @@ fn main() -> ExitCode {
         ["regionstore", "serialize"] => regionstore::serialize(),
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
+        ["raw32", "verify"] => raw32::verify(),
         ["regionstore", "scales"] => regionstore::scales(true),
         ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
