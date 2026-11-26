@@ -1234,6 +1234,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
+    if scenario == "login" && !ferroan {
+        login_probe::verify_csharp_login_position(&root)?;
+    }
     if scenario == "object-cross" {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))

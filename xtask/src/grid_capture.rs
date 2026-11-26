@@ -194,6 +194,40 @@ pub(super) fn root_arrival_exchanges(directory: &Path) -> Result<Value, String> 
     service_exchanges_selected(directory, true)
 }
 
+/// The C# login scenario uses one fresh circuit and one GridUser report. Only
+/// its request is needed to verify what Robust stored, even if replies overlap.
+pub(super) fn verify_login_set_position(
+    records: &[Record],
+    stored: [f32; 3],
+) -> Result<(), String> {
+    let mut position = None;
+    for record in records.iter().filter(|r| r.kind == Kind::HttpRequest) {
+        let request = Message::parse(&record.bytes)?;
+        if request.probe || request.method != "POST" || request.path != "/griduser" {
+            continue;
+        }
+        let fields = parse_query_string(&request.text()?).map_err(|error| error.to_string())?;
+        if text_field(&fields, "METHOD")? != "setposition"
+            || text_field(&fields, "UserID")? != crate::live::ESTATE_OWNER
+            || text_field(&fields, "RegionID")? != crate::live::REGION_UUID
+        {
+            continue;
+        }
+        let sent = super::login_probe::vector(&text_field(&fields, "Position")?)
+            .ok_or("invalid C# login setposition coordinates")?;
+        if position.replace(sent).is_some() {
+            return Err("ambiguous C# login setposition reports".into());
+        }
+    }
+    let sent = position.ok_or("missing C# login setposition report")?;
+    if sent != stored {
+        return Err(format!(
+            "GridUser LastPosition {stored:?} differs from C# setposition {sent:?}"
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn root_arrival_marker(directory: &Path, revision: &str) -> Result<Value, String> {
     use ferroan_protocol::{Msg, msgs::AgentMovementComplete, parse_packet};
     for record in records(&directory.join("capture-udp.cap"))? {
@@ -1859,6 +1893,42 @@ mod tests {
             item_ids: BTreeMap::new(),
             rewrites: Vec::new(),
         }
+    }
+
+    #[test]
+    fn griduser_must_store_the_exact_csharp_login_report() {
+        let fixture: Value =
+            serde_json::from_slice(include_bytes!("../../fixtures/root-arrival/exchanges.json"))
+                .unwrap();
+        let form = fixture["services"]["griduser-setposition"]["request"]
+            .as_str()
+            .unwrap()
+            .replace(AGENT, crate::live::ESTATE_OWNER)
+            .replace(REGION, crate::live::REGION_UUID);
+        let request = |form: &str| Record {
+            kind: Kind::HttpRequest,
+            time_ms: 0,
+            bytes: format!(
+                "POST /griduser HTTP/1.1\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            )
+            .into_bytes(),
+        };
+        let sent = [128.0, 128.0, 25.960001];
+        let report = request(&form);
+        assert!(verify_login_set_position(std::slice::from_ref(&report), sent).is_ok());
+        assert!(
+            verify_login_set_position(std::slice::from_ref(&report), [128.0, 128.0, 25.96])
+                .is_err()
+        );
+        assert!(
+            verify_login_set_position(
+                &[request(&form.replace(crate::live::ESTATE_OWNER, "other"))],
+                sent
+            )
+            .is_err()
+        );
+        assert!(verify_login_set_position(&[report.clone(), report], sent).is_err());
     }
 
     #[test]
